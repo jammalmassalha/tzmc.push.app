@@ -171,6 +171,9 @@ async function updateMessageStatus(messageId, status) {
 
 async function flushOutbox() {
   const db = await openDB();
+  if (!db.objectStoreNames.contains(OUTBOX_STORE)) {
+    return;
+  }
   const tx = db.transaction(OUTBOX_STORE, 'readwrite');
   const store = tx.objectStore(OUTBOX_STORE);
   const records = await new Promise((resolve, reject) => {
