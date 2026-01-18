@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+    <head>
+      <link rel="icon" href="favicon.ico">
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
+      <meta name="mobile-web-app-capable" content="yes">
+      <link rel="manifest" href="/subscribes/manifest.webmanifest">
+      <meta name="apple-mobile-web-app-capable" content="yes">
+      <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+      <meta name="apple-mobile-web-app-title" content="TZMC | Medical Center">
+    
+      <title>TZMC | מרכז רפואי</title>
+    
+      <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+      <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    
+      <link rel="stylesheet" href="css/style.css?v=28.131244">
+    </head>
+    
+    <body>
+        
+      <div id="loading" class="loading">
+          <span>מאתחל...</span>
+          <small style="margin-top:10px; font-size: 10px; color:#999;">אנא המתן</small>
+      </div>
+    
+      <div id="viewSetup" class="setup-screen hidden">
+         <div class="setup-card">
+            
+            <img src="assets/icon.png" alt="Logo" style="width: 150px; height: auto; margin-bottom: 20px;">
+    
+            <h2 style="color:#293B8F; margin-top:0;">ברוכים הבאים למרכז רפואי צפון </h2>
+            <p>הפעל התראות כדי להתחיל לקבל הודעות.</p>
+            
+            <div id="installContainer" class="hidden" style="margin-bottom:15px;">
+                 <button id="installBtn" class="btn" style="background:#293B8F; color:#fff; display:flex; align-items:center; justify-content:center; gap:8px;">
+                     <span class="material-icons">download</span> התקן אפליקציה
+                 </button>
+            </div>
+            
+            <input type="tel" id="usernameInput" placeholder="הכנס מס' נייד">
+            <button id="subscribeButton" class="btn btn-primary">הרשמה</button>
+            <div id="statusMessage" style="margin-top:10px; height:20px; font-size:12px;"></div>
+         </div>
+      </div>
+    
+      <div id="viewContacts" class="hidden" style="display:flex; flex-direction:column; height:100%;">
+          <div class="app-header">
+              
+              <div style="position: relative; margin-right: 10px;">
+                  <button class="material-icons icon-btn" onclick="toggleMainMenu()" style="color: white; float: right; margin-left: 20px; z-index: 9999; position: absolute; width: 50px; height: 40px; right: -65px; top: -5px;">more_vert</button>
+                  
+                  <div id="mainMenu" class="attach-menu hidden" style="top: 40px; left: 0; right: auto; min-width: 160px;">
+                      <button onclick="backupChats(); toggleMainMenu();">
+                          <span class="material-icons" style="color:#293B8F;">cloud_upload</span> 
+                          גיבוי צ'אטים
+                      </button>
+                      <button onclick="clearAllChats(); toggleMainMenu();" style="border-top: 1px solid #eee;">
+                            <span class="material-icons" style="color:#d32f2f;">delete_forever</span> 
+                            <span style="color:#d32f2f;">מחק הכל</span>
+                        </button>
+                  </div>
+              </div>
+              <span class="header-title">צ'אטים</span>
+    
+              <div class="header-left">
+                  <button class="material-icons icon-btn logout-btn" onclick="logoutUser()">logout</button>
+              </div>
+          </div>
+    
+          <div id="contactsListContainer" class="contact-list"></div>
+    
+          <button id="btnNewChat" class="btn-new-chat" onclick="openNewChatModal()">
+              <span class="material-icons">chat</span>
+          </button>
+      </div>
+    
+      <div id="modalNewChat" class="modal-overlay hidden">
+          <div class="modal-content">
+              <div class="modal-header">
+                  <span>התחל צ'אט חדש</span>
+                  <button class="material-icons icon-btn" onclick="closeNewChatModal()" style="color:white;">close</button>
+              </div>
+              <div class="search-container" style="position: relative;">
+                  <span class="material-icons search-icon">search</span>
+                  <input type="text" id="userSearchInput" class="search-box" placeholder="חפש איש קשר..." onkeyup="filterUserList()" style="margin:0;">
+              </div>
+              <div id="modalUserList" class="modal-list">
+                  <div style="padding:20px; text-align:center;">טוען משתמשים...</div>
+              </div>
+          </div>
+      </div>
+    
+      <div id="viewChatRoom" class="hidden" style="display:flex; flex-direction:column; height:100%;">
+          <div class="app-header">
+                <div class="header-left">
+                    <button class="material-icons icon-btn back-btn" onclick="showContacts()">arrow_back</button>
+                    
+                    <div class="avatar" style="width:35px; height:35px; font-size:18px;">
+                        <span class="material-icons">person</span>
+                    </div>
+                    
+                    <div style="display:flex; flex-direction:column;">
+                        <span class="header-title" id="chatRoomTitle" style="font-size:16px;">שם השולח</span>
+                    </div>
+            
+                    <div style="margin-right: auto; float:left; display:flex; align-items:center; gap: 15px;"> 
+                        
+                        <a id="headerCallBtn" href="#" class="material-icons icon-btn" 
+                           style="color: #90ee90; text-decoration: none; display: none; position: relative; z-index: 9999;">
+                           call
+                        </a>
+            
+                        <button class="material-icons icon-btn" onclick="deleteCurrentChat()" style="color: #ffcccc;">delete</button>
+                    </div>
+                </div>
+            </div>
+    
+          <div class="chat-container">
+              <div id="messagesArea" class="messages-area"></div>
+              <div class="chat-footer">
+                <input type="file" id="fileInput" style="display:none" accept="image/*,application/pdf" onchange="handleFileUpload(this)">
+            
+                <div class="attach-dropdown">
+                    <div id="attachMenu" class="attach-menu hidden">
+                        <button onclick=" toggleAttachMenu();document.getElementById('fileInput').click();">
+                            <span class="material-icons" style="color:#7f66ff;">description</span> 
+                            מסמך / תמונה
+                        </button>
+                        <button onclick="shareLocation(); toggleAttachMenu();">
+                            <span class="material-icons" style="color:#ff6666;">location_on</span> 
+                            מיקום
+                        </button>
+                    </div>
+            
+                    <button class="material-icons icon-btn" onclick="toggleAttachMenu()" style="transform: rotate(45deg); font-size:28px; color:#54656f;">
+                        attach_file
+                    </button>
+                </div>
+            
+                <textarea 
+                id="chatInputBar" 
+                placeholder="הקלד הודעה" 
+                rows="1" 
+                style="resize: none; overflow-y: hidden; min-height: 40px; padding-top: 10px;"
+                oninput="autoResize(this)"></textarea>
+                
+                <button class="btn-send-fab" onclick="sendMessage()">
+                    <span class="material-icons">send</span>
+                </button>
+            </div>
+          </div>
+      </div>
+      <div id="deleteModal" class="modal-overlay hidden" style="z-index: 10000;">
+        <div class="modal-content" style="width: 80%; max-width: 300px;">
+            <h3 style="margin-top:0; color:#333;">מחיקת הודעה?</h3>
+            <div style="display:flex; flex-direction:column; gap:10px; margin-top:20px;">
+                <button id="btnDeleteEveryone" class="btn" style="background:#d32f2f; color:white; display:none;" onclick="confirmDelete('everyone')">מחיקה לכולם</button>
+                <button class="btn" style="background:#fff; color:#d32f2f; border:1px solid #d32f2f;" onclick="confirmDelete('me')">מחק עבורי</button>
+                <button class="btn" style="background:#eee; color:#333;" onclick="closeDeleteModal()">סגור</button>
+            </div>
+        </div>
+    </div>
+      <script src="js/app.js?v=32.113"></script>
+      <script src="js/bot.js?v=3.212"></script>
+    
+    </body>
+</html>
