@@ -995,7 +995,9 @@ async function loadAndGroupHistory() {
         allHistoryData = uniqueData;
 
         // Update UI
-        if (!viewContacts.classList.contains('hidden')) renderContactList();
+        if (typeof renderContactList === 'function') {
+            renderContactList();
+        }
         if (!viewChatRoom.classList.contains('hidden') && activeChatSender) renderChatMessages(); 
     };
 }
