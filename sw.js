@@ -374,9 +374,11 @@ self.addEventListener('push', event => {
   // 🔥 PARALLEL EXECUTION ---
   const notificationPromise = self.registration.showNotification(title, options);
   const savePromise = saveNotificationExplicit(recordToSave);
-  const refreshPromise = self.clients.matchAll().then(clients => {
-      clients.forEach(client => client.postMessage({ action: 'refresh' }));
-  });
+  const refreshPromise = savePromise.then(() =>
+      self.clients.matchAll().then(clients => {
+          clients.forEach(client => client.postMessage({ action: 'refresh' }));
+      })
+  );
 
      event.waitUntil(
         Promise.all([
