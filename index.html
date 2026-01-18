@@ -41,7 +41,11 @@
                  </button>
             </div>
             
-            <input type="tel" id="usernameInput" placeholder="הכנס מס' נייד" inputmode="tel" autocomplete="tel" aria-describedby="statusMessage">
+            <div class="phone-input-alert">
+                <span class="material-icons">smartphone</span>
+                <span>נא להזין מספר נייד (ללא מקפים)</span>
+            </div>
+            <input type="tel" id="usernameInput" class="phone-input" placeholder="05XXXXXXXX" maxlength="10" inputmode="tel" autocomplete="tel" aria-describedby="statusMessage">
             <button id="subscribeButton" class="btn btn-primary" type="button">הרשמה</button>
             <div id="statusMessage" class="status-message" role="status" aria-live="polite"></div>
          </div>

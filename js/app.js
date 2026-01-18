@@ -146,16 +146,12 @@ function setStatusMessage(text, type = 'info') {
 
 function normalizePhoneInput(value) {
     if (!value) return '';
-    const trimmed = value.trim();
-    if (trimmed.startsWith('+')) {
-        return '+' + trimmed.slice(1).replace(/\D/g, '');
-    }
-    return trimmed.replace(/\D/g, '');
+    return value.replace(/\D/g, '');
 }
 
 function isValidPhoneNumber(value) {
     const digits = value.replace(/\D/g, '');
-    return digits.length >= 9 && digits.length <= 15;
+    return digits.length === 10 && digits.startsWith('05');
 }
 
 function validateUsernameInput(showEmptyMessage = false) {
@@ -169,6 +165,11 @@ function validateUsernameInput(showEmptyMessage = false) {
         return false;
     }
     const normalized = normalizePhoneInput(rawValue);
+    if (!showEmptyMessage && normalized.length < 10) {
+        if (usernameInput) usernameInput.value = normalized;
+        setStatusMessage('');
+        return false;
+    }
     if (!isValidPhoneNumber(normalized)) {
         setStatusMessage(t('status_invalid_phone'), 'error');
         return false;
@@ -489,9 +490,17 @@ window.addEventListener('load', async () => {
         }, 300);
     });
     if (usernameInput) {
-        usernameInput.addEventListener('input', () => {
+        usernameInput.addEventListener('input', (e) => {
+            let value = e.target.value.replace(/\D/g, '');
+            if (value.length > 10) {
+                value = value.slice(0, 10);
+            }
+            e.target.value = value;
             validateUsernameInput(false);
         });
+        if (!localStorage.getItem('username')) {
+            setTimeout(() => usernameInput.focus(), 500);
+        }
     }
     if (savedUser || userParam) {
         currentUserContext = savedUser || userParam;
