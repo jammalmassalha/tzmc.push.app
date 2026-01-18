@@ -91,6 +91,7 @@ if (mainMenuToggleBtn) mainMenuToggleBtn.addEventListener('click', toggleMainMen
 if (backupChatsBtn) backupChatsBtn.addEventListener('click', () => { backupChats(); toggleMainMenu(); });
 if (clearChatsBtn) clearChatsBtn.addEventListener('click', () => { clearAllChats(); toggleMainMenu(); });
 if (logoutBtn) logoutBtn.addEventListener('click', logoutUser);
+if (btnNewChat) btnNewChat.addEventListener('click', openNewChatModal);
 if (closeNewChatBtn) closeNewChatBtn.addEventListener('click', closeNewChatModal);
 if (backToContactsBtn) backToContactsBtn.addEventListener('click', showContacts);
 if (deleteChatBtn) deleteChatBtn.addEventListener('click', deleteCurrentChat);
