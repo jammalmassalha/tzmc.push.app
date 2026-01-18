@@ -271,11 +271,28 @@ input[type="text"] { width: 78%; padding: 12px; margin: 15px 0; box-sizing: bord
     padding: 10px 60px 10px 16px; 
     padding-top: max(10px, env(safe-area-inset-top)); 
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
 }
 
 .header-title { font-size: 20px; font-weight: 500; }
 
-.header-left { display: flex; align-items: center; gap: 10px; position:relative; }
+.header-left { 
+    display: flex; 
+    align-items: center; 
+    gap: 10px; 
+    position: relative;
+    justify-content: end;
+    float: left;
+}
+
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    justify-content: flex-end;
+}
 
 .logout-btn {
     position: static;
