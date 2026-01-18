@@ -23,28 +23,35 @@ window.onerror = function(msg, url, line) {
     console.error("Global Error:", msg);
 };
 
-var userMap = {};        // Fast lookup { "36826717": "Jamal Massalha" }
-var selectedMessageId = null; // Store ID of message being deleted
-var selectedMessageData = null; // Store the full message object
-// --- CONFIG ---
-const DB_NAME = 'PushNotificationsDB';
-const STORE_NAME = 'history';
-const DB_VERSION = 2;
-const VAPID_PUBLIC_KEY = 'BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk';
-const SUBSCRIPTION_URL = 'https://script.google.com/macros/s/AKfycbw70tnIlHsQTke8BxFhEbEQQJxMhKzN85cCTkJOuS_L7zUnCxNYLX-r2cxYU2j8jIn5/exec';
+const config = window.APP_CONFIG || {};
+const t = (key, vars) => (window.I18N && typeof window.I18N.t === 'function' ? window.I18N.t(key, vars) : key);
+const fetchWithRetry = window.fetchWithRetry ? window.fetchWithRetry : fetch;
 
-const NOTIFY_SERVER_URL = 'https://www.tzmc.co.il/notify/reply';
-const UPLOAD_SERVER_URL = 'https://www.tzmc.co.il/notify/upload';
-const VERSION_CHECK_URL = 'https://www.tzmc.co.il/notify/version';
-const VERIFY_STATUS_URL = 'https://www.tzmc.co.il/notify/verify-status'; // Added specific URL variable
+let userMap = {};        // Fast lookup { "36826717": "Jamal Massalha" }
+let selectedMessageId = null; // Store ID of message being deleted
+let selectedMessageData = null; // Store the full message object
+// --- CONFIG ---
+const DB_NAME = config.DB_NAME || 'PushNotificationsDB';
+const STORE_NAME = config.STORE_NAME || 'history';
+const OUTBOX_STORE = config.OUTBOX_STORE || 'outbox';
+const DB_VERSION = config.DB_VERSION || 3;
+const VAPID_PUBLIC_KEY = config.VAPID_PUBLIC_KEY || 'BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk';
+const SUBSCRIPTION_URL = config.SUBSCRIPTION_URL || 'https://script.google.com/macros/s/AKfycbw70tnIlHsQTke8BxFhEbEQQJxMhKzN85cCTkJOuS_L7zUnCxNYLX-r2cxYU2j8jIn5/exec';
+const NOTIFY_SERVER_URL = config.NOTIFY_SERVER_URL || 'https://www.tzmc.co.il/notify/reply';
+const UPLOAD_SERVER_URL = config.UPLOAD_SERVER_URL || 'https://www.tzmc.co.il/notify/upload';
+const VERSION_CHECK_URL = config.VERSION_CHECK_URL || 'https://www.tzmc.co.il/notify/version';
+const VERIFY_STATUS_URL = config.VERIFY_STATUS_URL || 'https://www.tzmc.co.il/notify/verify-status';
+const LOG_SERVER_URL = config.LOG_SERVER_URL || 'https://www.tzmc.co.il/notify/log';
 
 // --- STATE ---
-var currentUserContext = null; 
-var activeChatSender = null;
-var allHistoryData = [];
-var cachedUserList = [];
-var deferredPrompt;
-var justOpenedChat = false; 
+let currentUserContext = null; 
+let activeChatSender = null;
+let allHistoryData = [];
+let cachedUserList = [];
+let deferredPrompt;
+let justOpenedChat = false; 
+let lastContactsFetch = 0;
+const CONTACTS_TTL_MS = 5 * 60 * 1000;
 
 // --- DOM ---
 const loadingDiv = document.getElementById('loading');
@@ -57,6 +64,44 @@ const modalNewChat = document.getElementById('modalNewChat');
 const modalUserList = document.getElementById('modalUserList');
 const userSearchInput = document.getElementById('userSearchInput');
 const btnNewChat = document.getElementById('btnNewChat');
+const mainMenuToggleBtn = document.getElementById('mainMenuToggleBtn');
+const backupChatsBtn = document.getElementById('backupChatsBtn');
+const clearChatsBtn = document.getElementById('clearChatsBtn');
+const logoutBtn = document.getElementById('logoutBtn');
+const closeNewChatBtn = document.getElementById('closeNewChatBtn');
+const backToContactsBtn = document.getElementById('backToContactsBtn');
+const deleteChatBtn = document.getElementById('deleteChatBtn');
+const attachFileBtn = document.getElementById('attachFileBtn');
+const shareLocationBtn = document.getElementById('shareLocationBtn');
+const toggleAttachBtn = document.getElementById('toggleAttachBtn');
+const sendBtn = document.getElementById('sendBtn');
+const fileInput = document.getElementById('fileInput');
+const btnDeleteEveryone = document.getElementById('btnDeleteEveryone');
+const btnDeleteMe = document.getElementById('btnDeleteMe');
+const btnDeleteClose = document.getElementById('btnDeleteClose');
+const confirmModal = document.getElementById('confirmModal');
+const confirmModalMessage = document.getElementById('confirmModalMessage');
+const confirmModalConfirm = document.getElementById('confirmModalConfirm');
+const confirmModalCancel = document.getElementById('confirmModalCancel');
+const toastContainer = document.getElementById('toastContainer');
+const networkStatus = document.getElementById('networkStatus');
+const networkStatusChat = document.getElementById('networkStatusChat');
+
+if (mainMenuToggleBtn) mainMenuToggleBtn.addEventListener('click', toggleMainMenu);
+if (backupChatsBtn) backupChatsBtn.addEventListener('click', () => { backupChats(); toggleMainMenu(); });
+if (clearChatsBtn) clearChatsBtn.addEventListener('click', () => { clearAllChats(); toggleMainMenu(); });
+if (logoutBtn) logoutBtn.addEventListener('click', logoutUser);
+if (closeNewChatBtn) closeNewChatBtn.addEventListener('click', closeNewChatModal);
+if (backToContactsBtn) backToContactsBtn.addEventListener('click', showContacts);
+if (deleteChatBtn) deleteChatBtn.addEventListener('click', deleteCurrentChat);
+if (attachFileBtn) attachFileBtn.addEventListener('click', () => { toggleAttachMenu(); if (fileInput) fileInput.click(); });
+if (shareLocationBtn) shareLocationBtn.addEventListener('click', () => { shareLocation(); toggleAttachMenu(); });
+if (toggleAttachBtn) toggleAttachBtn.addEventListener('click', toggleAttachMenu);
+if (sendBtn) sendBtn.addEventListener('click', () => sendMessage());
+if (fileInput) fileInput.addEventListener('change', () => handleFileUpload(fileInput));
+if (btnDeleteEveryone) btnDeleteEveryone.addEventListener('click', () => confirmDelete('everyone'));
+if (btnDeleteMe) btnDeleteMe.addEventListener('click', () => confirmDelete('me'));
+if (btnDeleteClose) btnDeleteClose.addEventListener('click', closeDeleteModal);
 
 // --- HELPER: GET DISPLAY NAME ---
 function getDisplayName(username) {
@@ -79,6 +124,219 @@ function autoResize(textarea) {
     }
 }
 
+function generateMessageId() {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID();
+    }
+    return `msg_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function getMessageDomId(message) {
+    const key = message.messageId || message.clientMessageId || message.timestamp;
+    return `msg-${key}`;
+}
+
+function setStatusMessage(text, type = 'info') {
+    const status = document.getElementById('statusMessage');
+    if (!status) return;
+    status.textContent = text;
+    status.dataset.type = type;
+    status.style.color = type === 'error' ? '#d32f2f' : '#54656f';
+}
+
+function normalizePhoneInput(value) {
+    if (!value) return '';
+    const trimmed = value.trim();
+    if (trimmed.startsWith('+')) {
+        return '+' + trimmed.slice(1).replace(/\D/g, '');
+    }
+    return trimmed.replace(/\D/g, '');
+}
+
+function isValidPhoneNumber(value) {
+    const digits = value.replace(/\D/g, '');
+    return digits.length >= 9 && digits.length <= 15;
+}
+
+function validateUsernameInput(showEmptyMessage = false) {
+    const rawValue = usernameInput ? usernameInput.value : '';
+    if (!rawValue) {
+        if (showEmptyMessage) {
+            setStatusMessage(t('status_empty_input'), 'error');
+        } else {
+            setStatusMessage('');
+        }
+        return false;
+    }
+    const normalized = normalizePhoneInput(rawValue);
+    if (!isValidPhoneNumber(normalized)) {
+        setStatusMessage(t('status_invalid_phone'), 'error');
+        return false;
+    }
+    if (usernameInput) usernameInput.value = normalized;
+    setStatusMessage('');
+    return true;
+}
+
+function showToast(message, type = 'info', duration = 3000) {
+    if (!toastContainer) return;
+    const toast = document.createElement('div');
+    toast.className = `toast toast--${type}`;
+    toast.textContent = message;
+    toastContainer.appendChild(toast);
+    setTimeout(() => toast.remove(), duration);
+}
+
+function openModal(modal) {
+    if (!modal) return;
+    modal.classList.remove('hidden');
+    modal.setAttribute('aria-hidden', 'false');
+    trapFocus(modal);
+}
+
+function closeModal(modal) {
+    if (!modal) return;
+    modal.classList.add('hidden');
+    modal.setAttribute('aria-hidden', 'true');
+    releaseFocus(modal);
+}
+
+function trapFocus(modal) {
+    const focusableSelectors = 'button, [href], input, textarea, [tabindex]:not([tabindex="-1"])';
+    const focusableElements = Array.from(modal.querySelectorAll(focusableSelectors))
+        .filter(el => !el.hasAttribute('disabled'));
+    if (focusableElements.length === 0) return;
+
+    const firstEl = focusableElements[0];
+    const lastEl = focusableElements[focusableElements.length - 1];
+    const handleKeydown = (event) => {
+        if (event.key === 'Escape') {
+            if (modal === modalNewChat) closeNewChatModal();
+            if (modal === document.getElementById('deleteModal')) closeDeleteModal();
+            if (modal === confirmModal) closeModal(confirmModal);
+        }
+        if (event.key !== 'Tab') return;
+        if (event.shiftKey && document.activeElement === firstEl) {
+            event.preventDefault();
+            lastEl.focus();
+        } else if (!event.shiftKey && document.activeElement === lastEl) {
+            event.preventDefault();
+            firstEl.focus();
+        }
+    };
+    modal._focusHandler = handleKeydown;
+    modal.addEventListener('keydown', handleKeydown);
+    setTimeout(() => firstEl.focus(), 0);
+}
+
+function releaseFocus(modal) {
+    if (modal && modal._focusHandler) {
+        modal.removeEventListener('keydown', modal._focusHandler);
+        delete modal._focusHandler;
+    }
+}
+
+function showConfirm(message) {
+    return new Promise((resolve) => {
+        if (!confirmModal || !confirmModalConfirm || !confirmModalCancel || !confirmModalMessage) {
+            resolve(false);
+            return;
+        }
+        confirmModalMessage.textContent = message;
+        const onConfirm = () => {
+            cleanup();
+            resolve(true);
+        };
+        const onCancel = () => {
+            cleanup();
+            resolve(false);
+        };
+        const cleanup = () => {
+            confirmModalConfirm.removeEventListener('click', onConfirm);
+            confirmModalCancel.removeEventListener('click', onCancel);
+            closeModal(confirmModal);
+        };
+        confirmModalConfirm.addEventListener('click', onConfirm);
+        confirmModalCancel.addEventListener('click', onCancel);
+        openModal(confirmModal);
+    });
+}
+
+function debounce(fn, delay = 200) {
+    let timer;
+    return (...args) => {
+        clearTimeout(timer);
+        timer = setTimeout(() => fn(...args), delay);
+    };
+}
+
+function renderListInBatches(items, container, renderItem, batchSize = 30, onComplete) {
+    if (!container) return;
+    container.innerHTML = '';
+    let index = 0;
+    const renderBatch = () => {
+        const fragment = document.createDocumentFragment();
+        const end = Math.min(index + batchSize, items.length);
+        for (; index < end; index++) {
+            fragment.appendChild(renderItem(items[index]));
+        }
+        container.appendChild(fragment);
+        if (index < items.length) {
+            requestAnimationFrame(renderBatch);
+        } else if (typeof onComplete === 'function') {
+            onComplete();
+        }
+    };
+    requestAnimationFrame(renderBatch);
+}
+
+function updateNetworkStatus() {
+    const isOnline = navigator.onLine;
+    const statusText = isOnline ? t('network_online') : t('network_offline');
+    [networkStatus, networkStatusChat].forEach((el) => {
+        if (!el) return;
+        el.textContent = statusText;
+        el.classList.toggle('online', isOnline);
+        el.classList.toggle('offline', !isOnline);
+    });
+    if (isOnline) {
+        requestOutboxFlush();
+    }
+}
+
+function getDeliveryStatusMarkup(status) {
+    if (status === 'failed') {
+        return '<span class="material-icons msg-status msg-status-failed" title="נכשל">error</span>';
+    }
+    if (status === 'queued' || status === 'pending') {
+        return '<span class="material-icons msg-status msg-status-pending" title="ממתין">schedule</span>';
+    }
+    return '<span class="material-icons msg-status msg-status-sent" title="נשלח">done_all</span>';
+}
+
+async function logClientEvent(eventName, payload = {}) {
+    const body = JSON.stringify({
+        event: eventName,
+        payload,
+        user: currentUserContext || null,
+        timestamp: Date.now()
+    });
+    if (navigator.sendBeacon) {
+        const blob = new Blob([body], { type: 'application/json' });
+        navigator.sendBeacon(LOG_SERVER_URL, blob);
+        return;
+    }
+    try {
+        await fetchWithRetry(LOG_SERVER_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body
+        }, { timeoutMs: 8000, retries: 1 });
+    } catch (e) {
+        console.warn('Telemetry failed', e);
+    }
+}
+
 // --- HELPER: DETECT BASE64, LINKS, AND IMAGES ---
 // --- HELPER: DETECT BASE64, LINKS, IMAGES, AND VIDEOS ---
 function formatMessageText(text) {
@@ -89,19 +347,19 @@ function formatMessageText(text) {
     const base64Regex = /(data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,[a-zA-Z0-9+/=]+)/g;
     processedText = processedText.replace(base64Regex, function(match, fullDataUri, mimeType) {
         if (mimeType.match(/^image\/(png|jpeg|jpg|gif|webp)/i)) {
-             return `<br><img src="${fullDataUri}" class="msg-image" onclick="window.open(this.src)" onload="scrollToBottom()"><br>`;
+             return `<br><img src="${fullDataUri}" class="msg-image" data-open-url="${fullDataUri}" loading="lazy"><br>`;
         }
         if (mimeType === 'application/pdf') {
-             return `<a href="${fullDataUri}" download="document.pdf" style="display:flex; align-items:center; gap:10px; text-decoration:none; color:#333; background:#f0f2f5; padding:8px 12px; border-radius:8px; margin-top:5px; border:1px solid #ddd;">
-                        <div style="font-size:28px;">📄</div> 
-                        <div style="display:flex; flex-direction:column;">
-                            <span style="font-weight:500; font-size:14px;">PDF Document</span>
-                            <span style="font-size:11px; color:#666;">Tap to download</span>
-                        </div>
-                     </a>`;
+             return `<a href="${fullDataUri}" download="document.pdf" class="msg-attachment">
+                       <div class="msg-attachment-icon">📄</div>
+                       <div class="msg-attachment-meta">
+                           <span class="msg-attachment-title">מסמך PDF</span>
+                           <span class="msg-attachment-subtitle">לחץ להורדה</span>
+                       </div>
+                    </a>`;
         }
-        return `<a href="${fullDataUri}" download="file" style="color:#027eb5; text-decoration:underline;">
-                    <span class="material-icons" style="font-size:14px; vertical-align:middle;">download</span> Download File
+        return `<a href="${fullDataUri}" download="file" class="msg-file-link">
+                    <span class="material-icons msg-file-icon">download</span> הורד קובץ
                 </a>`;
     });
 
@@ -113,7 +371,7 @@ function formatMessageText(text) {
 
         // A. IMAGE LINKS
         if (lowerUrl.match(/\.(jpeg|jpg|gif|png|webp)($|\?)/)) {
-            return `<img src="${cleanUrl}" class="msg-image" onclick="window.open(this.src)" onload="scrollToBottom()">`;
+            return `<img src="${cleanUrl}" class="msg-image" data-open-url="${cleanUrl}" loading="lazy">`;
         }
 
         // B. DIRECT VIDEO FILES
@@ -143,13 +401,13 @@ function formatMessageText(text) {
         // E. GOOGLE MAPS
         if (lowerUrl.includes('maps.google.com') || lowerUrl.includes('google.com/maps') || lowerUrl.includes('maps.app.goo.gl')) {
              return `<a href="${cleanUrl}" target="_blank" class="msg-link">
-                        <span class="material-icons" style="font-size:18px; color:#e91e63;">location_on</span> 
-                        <span style="font-weight:500;">📍 My Location</span>
+                        <span class="material-icons msg-link-icon-location">location_on</span> 
+                        <span class="msg-link-label">📍 המיקום שלי</span>
                      </a>`;
         }
 
         // F. DEFAULT LINK
-        return `<a href="${cleanUrl}" target="_blank" style="color:#027eb5; text-decoration:underline; word-break:break-all;">${cleanUrl}</a>`;
+        return `<a href="${cleanUrl}" target="_blank" class="msg-link-default">${cleanUrl}</a>`;
     });
 }
 
@@ -161,12 +419,16 @@ window.addEventListener('load', async () => {
     const chatFromUrl = urlParams.get('chat');
     if ('serviceWorker' in navigator) {
         try {
-            await navigator.serviceWorker.register('./sw.js');
+            const swUrl = new URL('sw.js', window.location.href).toString();
+            await navigator.serviceWorker.register(swUrl);
             
             // [NEW] Listen for navigation messages from SW (iOS Fix)
             navigator.serviceWorker.addEventListener('message', (event) => {
                 if (event.data && event.data.action === 'refresh') {
                     console.log("Refreshing view due to background update...");
+                    loadAndGroupHistory();
+                }
+                if (event.data && event.data.action === 'outbox-updated') {
                     loadAndGroupHistory();
                 }
                 if (event.data && event.data.action === 'navigate-route') {
@@ -184,6 +446,12 @@ window.addEventListener('load', async () => {
     }
     
     verifyAndReactivate();
+    updateNetworkStatus();
+    if (navigator.onLine) {
+        requestOutboxFlush();
+    }
+    window.addEventListener('online', updateNetworkStatus);
+    window.addEventListener('offline', updateNetworkStatus);
     
     // --- SETUP TEXTAREA ENTER KEY ---
     const chatInput = document.getElementById('chatInputBar');
@@ -196,12 +464,35 @@ window.addEventListener('load', async () => {
            // }
         //});
     }
+    const messagesArea = document.getElementById('messagesArea');
+    if (messagesArea) {
+        messagesArea.addEventListener('click', (event) => {
+            const target = event.target;
+            if (target && target.classList && target.classList.contains('msg-image')) {
+                const url = target.dataset.openUrl || target.dataset.full || target.src;
+                if (url) window.open(url, '_blank');
+            }
+        });
+        messagesArea.addEventListener('load', (event) => {
+            if (event.target && event.target.classList && event.target.classList.contains('msg-image')) {
+                scrollToBottom();
+            }
+        }, true);
+    }
+    chatInput.addEventListener('input', function() {
+        autoResize(chatInput);
+    });
     chatInput.addEventListener('focus', function() {
         // Small delay to allow keyboard to fully open
         setTimeout(() => {
             scrollToBottom();
         }, 300);
     });
+    if (usernameInput) {
+        usernameInput.addEventListener('input', () => {
+            validateUsernameInput(false);
+        });
+    }
     if (savedUser || userParam) {
         currentUserContext = savedUser || userParam;
         
@@ -245,29 +536,28 @@ function scheduleStatusCheck(username, subscription) {
     console.log("🕒 Status check scheduled for 70 seconds from now...");
 
     // 70000 milliseconds = 70 seconds
-    setTimeout(() => {
+    setTimeout(async () => {
         console.log("⏰ Executing 70s Status Check...");
-
-        fetch(VERIFY_STATUS_URL, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                username: username,
-                subscription: subscription
-            })
-        })
-        .then(res => res.json())
-        .then(data => {
+        try {
+            const res = await fetchWithRetry(VERIFY_STATUS_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    username: username,
+                    subscription: subscription
+                })
+            }, { timeoutMs: 8000, retries: 2 });
+            const data = await res.json();
             if (data.status === 'blocked') {
                 console.warn("User is blocked. Notification should arrive shortly.");
             } else {
                 console.log("User status verified: Active.");
             }
-        })
-        .catch(err => console.error("Error checking status:", err));
-
+        } catch (err) {
+            console.error("Error checking status:", err);
+        }
     }, 70000); 
 }
 
@@ -322,69 +612,50 @@ function toggleMainMenu() {
     }
 }
 
-// 2. Close menu if clicked outside
-document.addEventListener('click', function(event) {
-    const attachMenu = document.getElementById('attachMenu');
-    const attachBtn = document.querySelector('.attach-dropdown .icon-btn');
-    if (attachMenu && !attachMenu.classList.contains('hidden')) {
-        if (!attachMenu.contains(event.target) && !attachBtn.contains(event.target)) {
-            attachMenu.classList.add('hidden');
+async function clearAllChats() { 
+    const confirmed = await showConfirm(t('confirm_clear_all'));
+    if (!confirmed) return;
+
+    try {
+        const db = await openDB();
+        const transaction = db.transaction([STORE_NAME, OUTBOX_STORE], "readwrite");
+        transaction.objectStore(STORE_NAME).clear();
+        if (db.objectStoreNames.contains(OUTBOX_STORE)) {
+            transaction.objectStore(OUTBOX_STORE).clear();
         }
-    }
-
-    const mainMenu = document.getElementById('mainMenu');
-    const mainBtn = document.querySelector('#viewContacts .app-header .icon-btn'); 
-    
-    if (mainMenu && !mainMenu.classList.contains('hidden')) {
-        if (!mainMenu.contains(event.target) && (mainBtn && !mainBtn.contains(event.target))) {
-            mainMenu.classList.add('hidden');
-        }
-    }
-});
-
-function clearAllChats() { 
-    if(!confirm("⚠️ ARE YOU SURE?\n\nThis will permanently delete ALL chat history from this phone.\nThis cannot be undone.")) return;
-
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-    request.onsuccess = (event) => {
-        const db = event.target.result;
-        const transaction = db.transaction([STORE_NAME], "readwrite");
-        const objectStore = transaction.objectStore(STORE_NAME);
-        const clearRequest = objectStore.clear();
-
-        clearRequest.onsuccess = () => {
-            alert("✅ All chats cleared successfully.");
+        transaction.oncomplete = () => {
+            showToast(t('status_all_cleared'), 'success');
             localStorage.removeItem('activeChat');
-            location.reload(); 
+            location.reload();
         };
-
-        clearRequest.onerror = (e) => {
-            alert("❌ Error clearing database: " + e.target.error);
+        transaction.onerror = (e) => {
+            console.error("DB Error", e);
+            showToast('שגיאת מסד נתונים', 'error');
         };
-    };
-    
-    request.onerror = (e) => {
+    } catch (e) {
         console.error("DB Error", e);
-        alert("Could not open database.");
-    };
+        showToast('שגיאת מסד נתונים', 'error');
+    }
 }
 
 // 3. The Backup Function (Chunked Upload)
 async function backupChats() {
-    if (!currentUserContext) return alert("Not logged in.");
+    if (!currentUserContext) {
+        showToast('יש להתחבר כדי לגבות', 'error');
+        return;
+    }
 
-    const btn = document.querySelector('#mainMenu button');
-    const originalText = ' <span class="material-icons" style="color:#00a884;">cloud_upload</span> Backup Chats';
+    const btn = backupChatsBtn;
+    const originalText = btn ? btn.innerHTML : '';
     
     function updateStatus(text) {
         if(btn) btn.innerHTML = `<span>⏳</span> ${text}`;
     }
 
-    updateStatus('Starting...');
+    updateStatus(t('status_backup_start'));
 
     try {
-        updateStatus('Reading DB...');
+        updateStatus('טוען...');
         const db = await openDB();
         const tx = db.transaction(STORE_NAME, 'readonly');
         const store = tx.objectStore(STORE_NAME);
@@ -394,12 +665,12 @@ async function backupChats() {
             const rawRecords = request.result;
 
             if (!rawRecords || rawRecords.length === 0) {
-                alert("No chats found.");
+                showToast(t('status_backup_empty'), 'info');
                 if(btn) btn.innerHTML = originalText;
                 return;
             }
 
-            updateStatus(`Found ${rawRecords.length} msgs...`);
+            updateStatus(`נמצאו ${rawRecords.length} הודעות...`);
             await new Promise(r => setTimeout(r, 100)); 
 
             // 1. Format Data
@@ -422,21 +693,21 @@ async function backupChats() {
                 const end = start + BATCH_SIZE;
                 const batch = allChats.slice(start, end);
                 
-                updateStatus(`Sending ${i + 1}/${totalBatches}...`);
+                updateStatus(`שולח ${i + 1}/${totalBatches}...`);
 
                 try {
-                    const response = await fetch('https://www.tzmc.co.il/notify/backup', {
+                    const response = await fetchWithRetry('https://www.tzmc.co.il/notify/backup', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ chats: batch })
-                    });
+                    }, { timeoutMs: 12000, retries: 2 });
 
                     if (!response.ok) {
                         throw new Error(`Batch ${i+1} failed (Error ${response.status})`);
                     }
                 } catch (batchErr) {
                     console.error(batchErr);
-                    alert(`❌ Upload stopped at batch ${i+1}. Check connection.`);
+                    showToast(t('status_backup_failed'), 'error');
                     if(btn) btn.innerHTML = originalText;
                     return; 
                 }
@@ -445,20 +716,20 @@ async function backupChats() {
             }
 
             // 3. Success
-            updateStatus('Done! ✅');
-            setTimeout(() => { alert(`✅ Backup Complete! Uploaded ${allChats.length} messages.`); }, 100);
+            updateStatus('הסתיים ✅');
+            setTimeout(() => { showToast(t('status_backup_done'), 'success'); }, 100);
             
             setTimeout(() => { if(btn) btn.innerHTML = originalText; }, 2000);
         };
 
         request.onerror = () => {
-            alert("❌ Could not read local database.");
+            showToast(t('status_backup_failed'), 'error');
             if(btn) btn.innerHTML = originalText;
         };
 
     } catch (e) {
         console.error(e);
-        alert("❌ Error: " + e.message);
+        showToast(t('status_backup_failed'), 'error');
         if(btn) btn.innerHTML = originalText;
     }
 }
@@ -544,7 +815,7 @@ function showChatRoom(senderName) {
     }, 100); 
 }
 function logoutUser() {
-    debugger
+    logClientEvent('logout', { deviceType: getDeviceType() });
     // 1. Clear Data
     localStorage.removeItem('username');
     localStorage.removeItem('activeChat');
@@ -564,15 +835,15 @@ function logoutUser() {
 
 // --- MODAL & SEARCH ---
 function openNewChatModal() {
-    modalNewChat.classList.remove('hidden');
+    openModal(modalNewChat);
     userSearchInput.value = ''; 
     userSearchInput.focus();
     if (cachedUserList.length > 0) { renderUserList(cachedUserList); } 
     else { fetchUsersFromSheet(); }
 }
-function closeNewChatModal() { modalNewChat.classList.add('hidden'); }
+function closeNewChatModal() { closeModal(modalNewChat); }
 function filterUserList() {
-    const filter = userSearchInput.value.toLowerCase();
+    const filter = (userSearchInput.value || '').toLowerCase();
     const items = modalUserList.getElementsByClassName('contact-item');
     for (let i = 0; i < items.length; i++) {
         const nameDiv = items[i].getElementsByClassName('contact-name')[0];
@@ -581,6 +852,11 @@ function filterUserList() {
             items[i].style.display = txtValue.toLowerCase().indexOf(filter) > -1 ? "" : "none";
         }
     }
+}
+
+const debouncedFilterUserList = debounce(filterUserList, 200);
+if (userSearchInput) {
+    userSearchInput.addEventListener('input', debouncedFilterUserList);
 }
 
 // [NEW] Load contacts from Local Storage
@@ -608,19 +884,23 @@ function loadLocalContacts() {
 // [UPDATED] Fetch from Sheet & Save to Local
 async function fetchUsersFromSheet() {
     try {
-        var currentUser = localStorage.getItem('username'); 
+        const currentUser = localStorage.getItem('username'); 
 
         if (!currentUser) {
             console.warn("fetchUsersFromSheet: No user found. Skipping.");
             return;
         }
+        if (Date.now() - lastContactsFetch < CONTACTS_TTL_MS) {
+            return;
+        }
         const url = SUBSCRIPTION_URL + '?action=get_contacts&user=' + encodeURIComponent(currentUser);
         
-        const res = await fetch(url);
+        const res = await fetchWithRetry(url, {}, { timeoutMs: 10000, retries: 2 });
         const data = await res.json();
         
         if (data.users && Array.isArray(data.users)) {
             cachedUserList = data.users; 
+            lastContactsFetch = Date.now();
             
             // Save to Local Storage
             localStorage.setItem('cachedContacts', JSON.stringify(cachedUserList));
@@ -637,8 +917,9 @@ async function fetchUsersFromSheet() {
             // User blocked or empty list
             cachedUserList = []; 
             localStorage.removeItem('cachedContacts');
+            lastContactsFetch = Date.now();
             if (modalUserList) {
-                modalUserList.innerHTML = '<div style="padding:20px; text-align:center;">No contacts found (Access Denied or Empty).</div>';
+                modalUserList.innerHTML = '<div class="modal-loading">לא נמצאו אנשי קשר.</div>';
             }
         }
     } catch (e) {
@@ -647,23 +928,20 @@ async function fetchUsersFromSheet() {
 }
 
 function renderUserList(users) {
-    modalUserList.innerHTML = '';
-    users.forEach(u => {
-        if (u.username.toLowerCase() === currentUserContext.toLowerCase()) return;
-        
+    const currentLower = currentUserContext ? currentUserContext.toLowerCase() : '';
+    const filteredUsers = users.filter(u => u.username && u.username.toLowerCase() !== currentLower);
+    renderListInBatches(filteredUsers, modalUserList, (u) => {
         const div = document.createElement('div');
         div.className = 'contact-item';
-        div.onclick = () => { showChatRoom(u.username); closeNewChatModal(); };
-        
+        div.addEventListener('click', () => { showChatRoom(u.username); closeNewChatModal(); });
         div.innerHTML = `
             <div class="avatar"><span class="material-icons">person</span></div>
             <div class="contact-info">
                 <div class="contact-name">${u.displayName}</div>
-                <div class="contact-meta" style="margin:0; font-size:11px;">${u.username}</div>
+                <div class="contact-meta contact-meta-secondary">${u.username}</div>
             </div>`;
-        modalUserList.appendChild(div);
-    });
-    filterUserList(); 
+        return div;
+    }, 40, filterUserList);
 }
 async function loadAndGroupHistory() {
     if(!currentUserContext) return;
@@ -687,23 +965,14 @@ async function loadAndGroupHistory() {
 
         // --- DEDUPLICATION LOGIC ---
         const uniqueData = [];
+        const seenKeys = new Set();
         for (let i = 0; i < filtered.length; i++) {
             const current = filtered[i];
-            const prev = uniqueData[uniqueData.length - 1];
-
-            // Normalize senders for comparison (fixes "054..." vs "Jamal" mismatch)
-            const currSender = (current.sender || '').trim().toLowerCase();
-            const prevSender = prev ? (prev.sender || '').trim().toLowerCase() : '';
-
-            if (prev && 
-                prev.body === current.body && 
-                prevSender === currSender &&
-                Math.abs(prev.timestamp - current.timestamp) < 5000) { // 5 second tolerance
-                
-                // If duplicates found, we skip the 'current' one (keeping the older one).
-                // This ensures the ID 'msg-timestamp' stays stable.
-                continue; 
-            }
+            const stableKey = current.messageId || current.clientMessageId;
+            const fallbackKey = `${(current.sender || '').trim().toLowerCase()}|${current.timestamp}|${current.body || ''}|${current.reply || ''}`;
+            const messageKey = stableKey || fallbackKey;
+            if (seenKeys.has(messageKey)) continue;
+            seenKeys.add(messageKey);
             uniqueData.push(current);
         }
 
@@ -734,11 +1003,11 @@ function renderContactList() {
         const lastMsg = msgs[msgs.length - 1];
         const isOutgoing = lastMsg.direction === 'outgoing' || lastMsg.reply;
         
-        let lastText = isOutgoing ? `You: ${lastMsg.body || lastMsg.reply}` : lastMsg.body;
+        let lastText = isOutgoing ? `אתה: ${lastMsg.body || lastMsg.reply}` : lastMsg.body;
         
         const hasImage = lastMsg.image || (lastMsg.body && lastMsg.body.includes('/uploads/'));
         if (hasImage && (!lastText || lastText === lastMsg.image)) {
-            lastText = isOutgoing ? "You sent a photo" : "📷 Photo";
+            lastText = isOutgoing ? "שלחת תמונה" : "📷 תמונה";
         }
         
         return {
@@ -750,11 +1019,11 @@ function renderContactList() {
     }).sort((a,b) => b.timestamp - a.timestamp);
 
     if(sortedSenders.length === 0) {
-        listContainer.innerHTML = '<div style="text-align:center; padding:20px; color:#999;">No active chats.<br>Click + to start one.</div>';
+        listContainer.innerHTML = '<div class="empty-state">אין צ׳אטים פעילים.<br>לחץ על + להתחלה.</div>';
         return;
     }
 
-    sortedSenders.forEach(contact => {
+    renderListInBatches(sortedSenders, listContainer, (contact) => {
         const dateObj = new Date(contact.timestamp);
         const timeStr = dateObj.getHours() + ':' + String(dateObj.getMinutes()).padStart(2, '0');
         const displayName = getDisplayName(contact.name); 
@@ -762,38 +1031,66 @@ function renderContactList() {
 
         const div = document.createElement('div');
         div.className = 'contact-item';
-        div.onclick = () => showChatRoom(contact.name);
-        
-        div.innerHTML = `
-            <div class="avatar"><span class="material-icons">person</span></div>
-            <div class="contact-info">
-                <div class="contact-name">${displayName}</div>
-                <div class="contact-last-msg">${contact.lastMsg}</div>
-            </div>
-            <div class="contact-meta">${timeStr}</div>
-            
-            <div class="contact-actions">
-                <button class="material-icons more-btn" onclick="toggleContactMenu(event, '${menuId}')">more_vert</button>
-                
-                
-            </div>
-            <div id="${menuId}" class="context-menu">
-                    
-                <button onclick="callUser(event, '${contact.name}')">
-                    <span class="material-icons" style="font-size:18px; color:#4caf50;">call</span>
-                    התקשר
-                </button>
+        div.addEventListener('click', () => showChatRoom(contact.name));
 
-                <button onclick="deleteChatFromList(event, '${contact.name}')" class="text-danger">
-                    <span class="material-icons" style="font-size:18px;">delete</span>
-                    מחק צ'אט
-                </button>
-            </div>
-        `;
-        listContainer.appendChild(div);
+        const avatar = document.createElement('div');
+        avatar.className = 'avatar';
+        avatar.innerHTML = '<span class="material-icons">person</span>';
+
+        const info = document.createElement('div');
+        info.className = 'contact-info';
+        info.innerHTML = `
+            <div class="contact-name">${displayName}</div>
+            <div class="contact-last-msg">${contact.lastMsg}</div>`;
+
+        const meta = document.createElement('div');
+        meta.className = 'contact-meta';
+        meta.textContent = timeStr;
+
+        const actions = document.createElement('div');
+        actions.className = 'contact-actions';
+        const moreBtn = document.createElement('button');
+        moreBtn.className = 'material-icons more-btn';
+        moreBtn.type = 'button';
+        moreBtn.setAttribute('aria-label', 'פעולות');
+        moreBtn.setAttribute('title', 'פעולות');
+        moreBtn.textContent = 'more_vert';
+        moreBtn.addEventListener('click', (event) => toggleContactMenu(event, menuId));
+        actions.appendChild(moreBtn);
+
+        const menu = document.createElement('div');
+        menu.id = menuId;
+        menu.className = 'context-menu';
+
+        const callBtn = document.createElement('button');
+        const callIcon = document.createElement('span');
+        callIcon.className = 'material-icons menu-icon menu-icon-call';
+        callIcon.textContent = 'call';
+        callBtn.appendChild(callIcon);
+        callBtn.append(' התקשר');
+        callBtn.addEventListener('click', (event) => callUser(event, contact.name));
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'text-danger';
+        const deleteIcon = document.createElement('span');
+        deleteIcon.className = 'material-icons menu-icon menu-icon-delete';
+        deleteIcon.textContent = 'delete';
+        deleteBtn.appendChild(deleteIcon);
+        deleteBtn.append(" מחק צ'אט");
+        deleteBtn.addEventListener('click', (event) => deleteChatFromList(event, contact.name));
+
+        menu.appendChild(callBtn);
+        menu.appendChild(deleteBtn);
+
+        div.appendChild(avatar);
+        div.appendChild(info);
+        div.appendChild(meta);
+        div.appendChild(actions);
+        div.appendChild(menu);
+        return div;
+    }, 30, () => {
+        listContainer.scrollTop = scrollTop;
     });
-
-    listContainer.scrollTop = scrollTop;
 }
 // --- TOGGLE CONTACT MENU (3-Dots) ---
 function toggleContactMenu(event, menuId) {
@@ -811,13 +1108,14 @@ function toggleContactMenu(event, menuId) {
         menu.classList.add('show');
     }
 }
-function deleteChatFromList(event, senderName) {
+async function deleteChatFromList(event, senderName) {
     // 1. STOP the click from bubbling up to the row (which would open the chat)
     if (event) {
         event.stopPropagation();
     }
 
-    if (!confirm(`Delete chat with ${getDisplayName(senderName)}?`)) return;
+    const confirmed = await showConfirm(t('confirm_delete_chat', { name: getDisplayName(senderName) }));
+    if (!confirmed) return;
 
     openDB().then(db => {
         const tx = db.transaction(STORE_NAME, 'readwrite');
@@ -839,6 +1137,7 @@ function deleteChatFromList(event, senderName) {
                 store.delete(record.id).onsuccess = () => {
                     count++;
                     if (count === toDelete.length) {
+                        showToast(t('status_chat_deleted'), 'success');
                         // Reload history to update the UI
                         loadAndGroupHistory(); 
                     }
@@ -857,7 +1156,7 @@ function renderChatMessages() {
     // --- NEW: GARBAGE COLLECTION ---
     // Remove any messages from the screen that are NOT in our data list anymore
     // (This fixes the "UI shows duplicate but DB is clean" bug)
-    const validIds = new Set(chatMsgs.map(m => `msg-${m.timestamp}`));
+    const validIds = new Set(chatMsgs.map(m => getMessageDomId(m)));
     const existingRows = Array.from(area.getElementsByClassName('msg-row'));
     
     existingRows.forEach(row => {
@@ -873,7 +1172,7 @@ function renderChatMessages() {
     let hasNewMessage = false; 
 
     chatMsgs.forEach(msg => {
-        const msgId = `msg-${msg.timestamp}`;
+        const msgId = getMessageDomId(msg);
         const d = new Date(msg.timestamp);
         const dateStr = d.toLocaleDateString();
         
@@ -899,22 +1198,24 @@ function renderChatMessages() {
         const timeStr = d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0');
         let bodyText = (msg.direction === 'outgoing' ? msg.body : msg.reply) || msg.body || '';
         const attachmentUrl = msg.image || (bodyText && bodyText.includes('/uploads/') ? bodyText : null);
+        const thumbUrl = msg.thumbnail || msg.thumbUrl || null;
         let mediaHtml = '';
 
         if (attachmentUrl) {
             const lowerUrl = attachmentUrl.toLowerCase();
             if (lowerUrl.endsWith('.pdf')) {
                 mediaHtml = `
-                    <a href="${attachmentUrl}" target="_blank" style="display:flex; align-items:center; gap:10px; text-decoration:none; color:#333; background:#f0f2f5; padding:8px 12px; border-radius:8px; margin-top:5px; border:1px solid #ddd;">
-                        <div style="font-size:28px;">📄</div> 
-                        <div style="display:flex; flex-direction:column;">
-                            <span style="font-weight:500; font-size:14px;">Document.pdf</span>
-                            <span style="font-size:11px; color:#666;">Tap to open</span>
+                    <a href="${attachmentUrl}" target="_blank" class="msg-attachment">
+                        <div class="msg-attachment-icon">📄</div>
+                        <div class="msg-attachment-meta">
+                            <span class="msg-attachment-title">מסמך.pdf</span>
+                            <span class="msg-attachment-subtitle">לחץ לפתיחה</span>
                         </div>
                     </a>`;
                 if (bodyText === attachmentUrl) bodyText = '';
             } else {
-                mediaHtml = `<img src="${attachmentUrl}" class="msg-image" onclick="window.open(this.src)" onload="scrollToBottom()">`;
+                const previewUrl = thumbUrl || attachmentUrl;
+                mediaHtml = `<img src="${previewUrl}" class="msg-image" data-full="${attachmentUrl}" loading="lazy">`;
                 if (bodyText === attachmentUrl) bodyText = '';
             }
         }
@@ -939,7 +1240,7 @@ function renderChatMessages() {
             (bodyText ? `<div>${formatMessageText(bodyText)}</div>` : '') +
             `<div class="msg-time">` +
                 `${timeStr}` +
-                (isOutgoing ? `<span class="material-icons" style="font-size:15px; color:#4fb6ec; vertical-align:middle; margin-right:7px;">done_all</span>` : '') +
+                (isOutgoing ? getDeliveryStatusMarkup(msg.deliveryStatus || 'sent') : '') +
             `</div>`;
 
         div.appendChild(bubble);
@@ -960,11 +1261,12 @@ function renderChatMessages() {
          justOpenedChat = false; 
     }
 }// --- DELETE SPECIFIC CHAT ---
-function deleteCurrentChat() {
+async function deleteCurrentChat() {
     if (!activeChatSender) return;
     
     // Confirm with user
-    if (!confirm("Are you sure you want to delete this conversation?")) return;
+    const confirmed = await showConfirm(t('confirm_delete_current'));
+    if (!confirmed) return;
 
     openDB().then(db => {
         const tx = db.transaction(STORE_NAME, 'readwrite');
@@ -980,7 +1282,7 @@ function deleteCurrentChat() {
             );
 
             if (toDelete.length === 0) {
-                alert("Chat is empty.");
+                showToast('אין הודעות למחיקה', 'info');
                 return;
             }
 
@@ -991,7 +1293,7 @@ function deleteCurrentChat() {
                     count++;
                     // When all are deleted, return to contact list
                     if (count === toDelete.length) {
-                        alert("Conversation deleted.");
+                        showToast(t('status_chat_deleted'), 'success');
                         showContacts(); 
                     }
                 };
@@ -1007,14 +1309,24 @@ function openDB() {
         request.onsuccess = (e) => resolve(e.target.result);
         request.onupgradeneeded = (e) => {
             const db = e.target.result;
+            let store;
             if (!db.objectStoreNames.contains(STORE_NAME)) {
-                db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+                store = db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+            } else {
+                store = e.target.transaction.objectStore(STORE_NAME);
+            }
+            if (store && !store.indexNames.contains('messageId')) {
+                store.createIndex('messageId', 'messageId', { unique: false });
+            }
+            if (!db.objectStoreNames.contains(OUTBOX_STORE)) {
+                db.createObjectStore(OUTBOX_STORE, { keyPath: 'id', autoIncrement: true });
             }
         };
     });
 }
 function scrollToBottom() {
     const area = document.getElementById('messagesArea');
+    if (!area) return;
     requestAnimationFrame(() => {
         area.scrollTop = area.scrollHeight;
     });
@@ -1023,7 +1335,7 @@ function scrollToBottom() {
 // --- LOCATION FUNCTION ---
 function shareLocation() {
     if (!navigator.geolocation) {
-        alert('Geolocation is not supported by your browser.');
+        showToast('המכשיר לא תומך במיקום', 'error');
         return;
     }
     
@@ -1032,7 +1344,7 @@ function shareLocation() {
     const tempDiv = document.createElement('div');
     tempDiv.id = tempId;
     tempDiv.className = 'msg-row row-outgoing';
-    tempDiv.innerHTML = `<div class="msg-bubble bubble-outgoing"><i>Getting location...</i></div>`;
+    tempDiv.innerHTML = `<div class="msg-bubble bubble-outgoing"><i>משיג מיקום...</i></div>`;
     area.appendChild(tempDiv);
     scrollToBottom();
 
@@ -1048,33 +1360,38 @@ function shareLocation() {
         (error) => {
             if(document.getElementById(tempId)) document.getElementById(tempId).remove();
             console.error(error);
-            alert('Unable to retrieve location. Please allow permissions.');
+            showToast(t('status_location_error'), 'error');
         }
     );
 }
 
 // --- SEND MESSAGE ---
-async function sendMessage(text = null, imageUrl = null) {
+async function sendMessage(text = null, imageUrl = null, thumbnailUrl = null) {
     let finalBody = text;
     if (!finalBody && !imageUrl) {
         const input = document.getElementById('chatInputBar');
         finalBody = input.value.trim();
         if(!finalBody) return;
         input.value = '';
+        input.style.height = 'auto';
     }
 
+    const messageId = generateMessageId();
     const newRecord = {
+        messageId,
         sender: activeChatSender,
         user: currentUserContext,
         body: finalBody || (imageUrl ? imageUrl : ''),
         image: imageUrl, 
+        thumbnail: thumbnailUrl || null,
         direction: 'outgoing', 
+        deliveryStatus: 'pending',
         timestamp: new Date().getTime(),
         dateString: new Date().toLocaleString()
     };
     
-    await saveNewMessageToDB(newRecord);
-    allHistoryData.push(newRecord); 
+    const savedRecord = await saveNewMessageToDB(newRecord);
+    allHistoryData.push(savedRecord); 
     renderChatMessages(); 
     scrollToBottom();
 
@@ -1084,41 +1401,93 @@ async function sendMessage(text = null, imageUrl = null) {
         return; 
     }
 
-    try {
-        
-        const myName = getDisplayName(currentUserContext); 
+    const myName = getDisplayName(currentUserContext); 
+    const payload = {
+        user: currentUserContext, 
+        senderName: myName,
+        reply: finalBody,
+        imageUrl: imageUrl, 
+        originalSender: activeChatSender,
+        messageId
+    };
 
-        await fetch(NOTIFY_SERVER_URL, {
+    if (!navigator.onLine) {
+        await queueOutboxMessage(messageId, payload);
+        await updateMessageDeliveryStatus(messageId, 'queued');
+        showToast(t('status_offline_queue'), 'info');
+        return;
+    }
+
+    try {
+        const response = await fetchWithRetry(NOTIFY_SERVER_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                user: currentUserContext, 
-                senderName: myName, // <--- SEND THE NAME
-                reply: finalBody,
-                imageUrl: imageUrl, 
-                originalSender: activeChatSender 
-            })
-        });
-    } catch(e) { console.error("Send failed", e); }
+            body: JSON.stringify(payload)
+        }, { timeoutMs: 10000, retries: 2 });
+
+        if (!response.ok) {
+            throw new Error(`Send failed ${response.status}`);
+        }
+        await updateMessageDeliveryStatus(messageId, 'sent');
+    } catch(e) {
+        console.error("Send failed", e);
+        await queueOutboxMessage(messageId, payload);
+        await updateMessageDeliveryStatus(messageId, 'queued');
+        showToast(t('status_send_failed'), 'error');
+    }
+}
+
+async function resizeImageFile(file, maxDimension, quality = 0.82) {
+    if (!file || !file.type || !file.type.startsWith('image/')) {
+        return file;
+    }
+    const bitmap = typeof createImageBitmap === 'function' ? await createImageBitmap(file) : null;
+    const imageWidth = bitmap ? bitmap.width : 0;
+    const imageHeight = bitmap ? bitmap.height : 0;
+    if (!bitmap || !imageWidth || !imageHeight) {
+        return file;
+    }
+    const scale = Math.min(1, maxDimension / Math.max(imageWidth, imageHeight));
+    if (scale >= 1) return file;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(imageWidth * scale);
+    canvas.height = Math.round(imageHeight * scale);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+    if (!blob) return file;
+    const newName = file.name.replace(/\.[^/.]+$/, '') + '.jpg';
+    return new File([blob], newName, { type: blob.type });
 }
 
 async function handleFileUpload(input) {
     if (input.files && input.files[0]) {
         const file = input.files[0];
         const formData = new FormData();
-        formData.append('file', file);
         
         const area = document.getElementById('messagesArea');
         const tempId = 'temp-' + Date.now();
         const tempDiv = document.createElement('div');
         tempDiv.id = tempId;
         tempDiv.className = 'msg-row row-outgoing';
-        tempDiv.innerHTML = `<div class="msg-bubble bubble-outgoing"><i>Uploading ${file.name}...</i></div>`;
+        tempDiv.innerHTML = `<div class="msg-bubble bubble-outgoing"><i>${t('status_uploading')} ${file.name}...</i></div>`;
         area.appendChild(tempDiv);
         scrollToBottom();
 
         try {
-            const res = await fetch(UPLOAD_SERVER_URL, { method: 'POST', body: formData });
+            let uploadFile = file;
+            let thumbnailFile = null;
+            if (file.type && file.type.startsWith('image/')) {
+                uploadFile = await resizeImageFile(file, 1280, 0.85);
+                thumbnailFile = await resizeImageFile(file, 320, 0.7);
+            }
+
+            formData.append('file', uploadFile, uploadFile.name);
+            if (thumbnailFile && thumbnailFile !== uploadFile) {
+                formData.append('thumbnail', thumbnailFile, thumbnailFile.name);
+            }
+
+            const res = await fetchWithRetry(UPLOAD_SERVER_URL, { method: 'POST', body: formData }, { timeoutMs: 20000, retries: 2 });
             const data = await res.json();
             
             const tempEl = document.getElementById(tempId);
@@ -1129,30 +1498,103 @@ async function handleFileUpload(input) {
                 if (isPdf) {
                     sendMessage(data.url, null); 
                 } else {
-                    sendMessage(null, data.url); 
+                    sendMessage(null, data.url, data.thumbUrl || null); 
                 }
             } else { 
-                alert('Upload failed'); 
+                showToast(t('status_upload_failed'), 'error');
             }
         } catch (e) {
             const tempEl = document.getElementById(tempId);
             if(tempEl) tempEl.remove();
             console.error(e); 
-            alert('Upload error');
+            showToast(t('status_upload_failed'), 'error');
         }
         input.value = '';
     }
 }
 
 function saveNewMessageToDB(record) {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+        if (!record.messageId) {
+            record.messageId = generateMessageId();
+        }
         openDB().then(db => {
             const tx = db.transaction(STORE_NAME, 'readwrite');
             const store = tx.objectStore(STORE_NAME);
-            store.add(record);
-            resolve();
-        });
+            const request = store.add(record);
+            request.onsuccess = () => {
+                record.id = request.result;
+                resolve(record);
+            };
+            request.onerror = () => reject(request.error);
+        }).catch(reject);
     });
+}
+
+async function updateMessageDeliveryStatus(messageId, status) {
+    if (!messageId) return;
+    const inMemory = allHistoryData.find(m => m.messageId === messageId);
+    if (inMemory) {
+        inMemory.deliveryStatus = status;
+    }
+    if (!viewChatRoom.classList.contains('hidden')) {
+        renderChatMessages();
+    }
+    const db = await openDB();
+    return new Promise((resolve) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        let request;
+        if (store.indexNames.contains('messageId')) {
+            request = store.index('messageId').get(messageId);
+        } else {
+            request = store.get(messageId);
+        }
+        request.onsuccess = () => {
+            const record = request.result;
+            if (record) {
+                record.deliveryStatus = status;
+                store.put(record);
+            }
+            tx.oncomplete = () => resolve();
+        };
+        request.onerror = () => resolve();
+    });
+}
+
+async function queueOutboxMessage(messageId, payload) {
+    const db = await openDB();
+    const tx = db.transaction(OUTBOX_STORE, 'readwrite');
+    const store = tx.objectStore(OUTBOX_STORE);
+    store.add({
+        messageId,
+        payload,
+        url: NOTIFY_SERVER_URL,
+        headers: { 'Content-Type': 'application/json' },
+        createdAt: Date.now(),
+        attempts: 0
+    });
+    await registerOutboxSync();
+}
+
+async function registerOutboxSync() {
+    if (!('serviceWorker' in navigator)) return;
+    try {
+        const reg = await navigator.serviceWorker.ready;
+        if ('sync' in reg) {
+            await reg.sync.register('outbox-sync');
+        } else {
+            requestOutboxFlush();
+        }
+    } catch (e) {
+        console.warn('Failed to register outbox sync', e);
+    }
+}
+
+function requestOutboxFlush() {
+    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({ action: 'flush-outbox' });
+    }
 }
 
 
@@ -1167,11 +1609,11 @@ function clearAppBadge() {
 
     // 2. [NEW] Tell Server to reset counter to 0
     if (currentUserContext) {
-        fetch('https://www.tzmc.co.il/notify/reset-badge', {
+        fetchWithRetry('https://www.tzmc.co.il/notify/reset-badge', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ user: currentUserContext })
-        }).catch(err => console.error("Failed to reset server badge:", err));
+        }, { timeoutMs: 8000, retries: 1 }).catch(err => console.error("Failed to reset server badge:", err));
     }
 }
 
@@ -1179,6 +1621,7 @@ function clearAppBadge() {
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
         clearAppBadge();
+        refreshOnVisible();
     }
 });
 
@@ -1197,12 +1640,19 @@ if(installBtn) {
 // [UPDATED] REGISTER SUBSCRIPTION (Handles PC vs Mobile)
 // ==========================================================
 document.getElementById('subscribeButton').addEventListener('click', async () => {
-    let user = usernameInput.value.trim().toLowerCase();
-    if(!user) return alert('Enter username');
+    if (!validateUsernameInput(true)) return;
+    let user = (usernameInput.value || '').trim().toLowerCase();
+    if(!user) {
+        setStatusMessage(t('status_empty_input'), 'error');
+        return;
+    }
     console.log(user);
-    document.getElementById('statusMessage').textContent = 'Requesting permission...';
+    setStatusMessage(t('status_requesting_permission'));
     
-    if (!('serviceWorker' in navigator)) return;
+    if (!('serviceWorker' in navigator)) {
+        setStatusMessage(t('status_failed_install'), 'error');
+        return;
+    }
     
     try {
         const reg = await navigator.serviceWorker.ready;
@@ -1223,12 +1673,12 @@ document.getElementById('subscribeButton').addEventListener('click', async () =>
             payload.subscriptionPC = sub;
         }
 
-        await fetch(SUBSCRIPTION_URL, { 
+        await fetchWithRetry(SUBSCRIPTION_URL, { 
             method: 'POST', 
             mode: 'no-cors', 
             headers: { 'Content-Type': 'application/json' }, 
             body: JSON.stringify(payload) 
-        });
+        }, { timeoutMs: 10000, retries: 2 });
         
         scheduleStatusCheck(user, sub);
         localStorage.setItem('username', user);
@@ -1237,7 +1687,7 @@ document.getElementById('subscribeButton').addEventListener('click', async () =>
         fetchUsersFromSheet();
     } catch (e) {
         console.error(e);
-        document.getElementById('statusMessage').textContent = 'Failed. Try adding to Home Screen first.';
+        setStatusMessage(t('status_failed_install'), 'error');
     }
 });
 
@@ -1251,10 +1701,13 @@ function urlBase64ToUint8Array(base64String) {
 }
 
 // --- TIMERS ---
-setInterval(() => { if(currentUserContext && !document.hidden) loadAndGroupHistory(); }, 5000);
-
-// [UPDATED] Check for contact updates every 60 seconds (1 minute)
-setInterval(() => { if(currentUserContext && !document.hidden) fetchUsersFromSheet(); }, 60000);
+function refreshOnVisible() {
+    if (currentUserContext && !document.hidden) {
+        loadAndGroupHistory();
+        fetchUsersFromSheet();
+    }
+}
+window.addEventListener('focus', refreshOnVisible);
 
 // --- AUTO RELOAD ON UPDATE ---
 let currentAppVersion = null;
@@ -1263,7 +1716,7 @@ async function checkVersion() {
 
     try {
         // Add timestamp to prevent caching of the version check itself
-        const res = await fetch(VERSION_CHECK_URL + '?t=' + Date.now());
+        const res = await fetchWithRetry(VERSION_CHECK_URL + '?t=' + Date.now(), {}, { timeoutMs: 8000, retries: 1 });
         
         if (res.status === 429) {
             console.warn("Too many requests. Skipping version check.");
@@ -1323,16 +1776,16 @@ function toggleAttachMenu() {
 document.addEventListener('click', function(event) {
     // ... existing attachMenu logic ...
     const attachMenu = document.getElementById('attachMenu');
-    const attachBtn = document.querySelector('.attach-dropdown .icon-btn');
+    const attachBtn = toggleAttachBtn;
     if (attachMenu && !attachMenu.classList.contains('hidden')) {
-        if (!attachMenu.contains(event.target) && !attachBtn.contains(event.target)) {
+        if (!attachMenu.contains(event.target) && (!attachBtn || !attachBtn.contains(event.target))) {
             attachMenu.classList.add('hidden');
         }
     }
 
     // ... existing mainMenu logic ...
     const mainMenu = document.getElementById('mainMenu');
-    const mainBtn = document.querySelector('#viewContacts .app-header .icon-btn'); 
+    const mainBtn = mainMenuToggleBtn; 
     
     if (mainMenu && !mainMenu.classList.contains('hidden')) {
         if (!mainMenu.contains(event.target) && (mainBtn && !mainBtn.contains(event.target))) {
@@ -1356,18 +1809,20 @@ function showDeleteOptions(msgId, msgData) {
     const btnEveryone = document.getElementById('btnDeleteEveryone');
     
     // Only show "Delete for Everyone" if YOU sent the message
-    if (msgData.direction === 'outgoing' || msgData.sender === currentUserContext) {
-        btnEveryone.style.display = 'block';
-    } else {
-        btnEveryone.style.display = 'none';
+    if (btnEveryone) {
+        if (msgData.direction === 'outgoing' || msgData.sender === currentUserContext) {
+            btnEveryone.style.display = 'block';
+        } else {
+            btnEveryone.style.display = 'none';
+        }
     }
     
-    modal.classList.remove('hidden');
+    openModal(modal);
 }
 
 // 2. Close Modal
 function closeDeleteModal() {
-    document.getElementById('deleteModal').classList.add('hidden');
+    closeModal(document.getElementById('deleteModal'));
     selectedMessageId = null;
     selectedMessageData = null;
 }
@@ -1384,27 +1839,28 @@ async function confirmDelete(type) {
         // DELETE FOR ME: Remove strictly from local DB
         store.delete(selectedMessageId);
         // Remove from UI immediately
-        const el = document.getElementById(`msg-${selectedMessageData.timestamp}`);
+        const el = document.getElementById(getMessageDomId(selectedMessageData));
         if(el) el.remove();
         
         // Remove from memory array
         allHistoryData = allHistoryData.filter(m => m.id !== selectedMessageId);
     } 
     else if (type === 'everyone') {
-        // DELETE FOR EVERYONE: Update text to "You deleted this message"
-        const updatedRecord = { ...selectedMessageData, body: '🚫 You deleted this message', image: null };
+        // DELETE FOR EVERYONE: Update text to "הודעה זו נמחקה"
+        const updatedRecord = { ...selectedMessageData, body: '🚫 הודעה זו נמחקה', image: null, thumbnail: null };
         store.put(updatedRecord);
         
         // Tell Server to notify recipient
-        fetch('https://www.tzmc.co.il/notify/delete', {
+        fetchWithRetry('https://www.tzmc.co.il/notify/delete', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 timestamp: selectedMessageData.timestamp,
+                messageId: selectedMessageData.messageId || null,
                 sender: currentUserContext,
                 recipient: activeChatSender 
             })
-        });
+        }, { timeoutMs: 8000, retries: 1 }).catch(err => console.error('Delete notify failed', err));
         
         // Update UI
         loadAndGroupHistory();
@@ -1472,12 +1928,12 @@ async function verifyAndReactivate() {
                     payload.subscriptionPC = sub;
                 }
 
-                await fetch(SUBSCRIPTION_URL, {
+                await fetchWithRetry(SUBSCRIPTION_URL, {
                     method: 'POST',
                     mode: 'no-cors',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
-                });
+                }, { timeoutMs: 10000, retries: 2 });
                 console.log("[Auto-Fix] Reactivation sent.");
             }
         } catch (e) {
@@ -1497,11 +1953,12 @@ function callUser(event, phoneNumber) {
 
     // 3. Check if it's a valid number (basic check)
     // Assuming 'phoneNumber' is the username like '054...'
-    if (!phoneNumber || phoneNumber.length < 3 || isNaN(phoneNumber)) {
-        alert("לא ניתן להתקשר למספר זה"); // "Cannot call this number"
+    const normalized = normalizePhoneInput(phoneNumber);
+    if (!normalized || !isValidPhoneNumber(normalized)) {
+        showToast("לא ניתן להתקשר למספר זה", 'error'); // "Cannot call this number"
         return;
     }
 
     // 4. Open the dialer
-    window.location.href = `tel:${phoneNumber}`;
+    window.location.href = `tel:${normalized}`;
 }

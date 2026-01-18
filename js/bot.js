@@ -11,6 +11,9 @@ let tempRegistrationData = {
 let tempDepartments = []; 
 let tempActions = [];
 
+const t = (key, vars) => (window.I18N && typeof window.I18N.t === 'function' ? window.I18N.t(key, vars) : key);
+const fetchWithRetry = window.fetchWithRetry ? window.fetchWithRetry : fetch;
+
 // ==========================================
 //        UPDATED BOT LOGIC (js/bot.js)
 // ==========================================
@@ -62,12 +65,12 @@ async function startBotChat(selectedCategory = 'General') {
     
     const welcomeMsg = {
         sender: botName, user: currentUserContext,
-        body: `Hello! You selected ${selectedCategory}. To get started, please enter your ID:`,
+        body: t('bot_welcome', { category: selectedCategory }),
         direction: 'incoming', timestamp: new Date().getTime()
     };
     
-    await saveNewMessageToDB(welcomeMsg);
-    allHistoryData.push(welcomeMsg);
+    const savedWelcome = await saveNewMessageToDB(welcomeMsg);
+    allHistoryData.push(savedWelcome);
     renderChatMessages();
     scrollToBottom();
 }
@@ -79,8 +82,8 @@ async function handleBotRegistrationStep(userReply) {
     // Helper to send bot message
     const sendBotMsg = async (text) => {
         const msg = { sender: botName, user: currentUserContext, body: text, direction: 'incoming', timestamp: new Date().getTime() };
-        await saveNewMessageToDB(msg);
-        allHistoryData.push(msg);
+        const savedMsg = await saveNewMessageToDB(msg);
+        allHistoryData.push(savedMsg);
         renderChatMessages();
         scrollToBottom();
     };
@@ -91,19 +94,19 @@ async function handleBotRegistrationStep(userReply) {
             currentUserContext = tempRegistrationData.id;
             localStorage.setItem('username', tempRegistrationData.id);
             botFlowStep = 'WAITING_FIRST';
-            nextQuestion = "Thanks. What is your First Name?";
+            nextQuestion = t('bot_first_name');
             break;
 
         case 'WAITING_FIRST':
             tempRegistrationData.firstName = userReply;
             botFlowStep = 'WAITING_LAST';
-            nextQuestion = "Got it. What is your Last Name?";
+            nextQuestion = t('bot_last_name');
             break;
 
         case 'WAITING_LAST':
             tempRegistrationData.lastName = userReply;
             botFlowStep = 'WAITING_PHONE';
-            nextQuestion = "Finally, what is your Phone Number?";
+            nextQuestion = t('bot_phone');
             break;
 
         case 'WAITING_PHONE':
@@ -111,21 +114,21 @@ async function handleBotRegistrationStep(userReply) {
             
             // IF CATEGORY IS SUPPORT -> GO TO DEPARTMENTS
             if (tempRegistrationData.category === 'Support') {
-                await sendBotMsg("Searching for departments...");
+                await sendBotMsg(t('bot_loading_departments'));
                 
                 try {
-                    const res = await fetch(SUBSCRIPTION_URL + '?action=get_departments');
+                    const res = await fetchWithRetry(SUBSCRIPTION_URL + '?action=get_departments', {}, { timeoutMs: 10000, retries: 2 });
                     const data = await res.json();
                     
                     if (data.result === 'success' && data.data.length > 0) {
                         tempDepartments = data.data; 
                         
                         // --- CHANGED: Build HTML List (<ul>) ---
-                        let listStr = "Please select a department by typing the number:<br>";
-                        listStr += "<ul style='padding-left: 20px; margin-top: 5px; margin-bottom: 0;'>";
+                        let listStr = `${t('bot_select_department')}<br>`;
+                        listStr += "<ul class='bot-list'>";
                         
                         tempDepartments.forEach((dept, index) => {
-                            listStr += `<li style='margin-bottom: 5px;'><b>${index + 1}.</b> ${dept.name}</li>`;
+                            listStr += `<li class='bot-list-item'><b>${index + 1}.</b> ${dept.name}</li>`;
                         });
                         listStr += "</ul>";
                         // ---------------------------------------
@@ -133,18 +136,18 @@ async function handleBotRegistrationStep(userReply) {
                         botFlowStep = 'WAITING_DEPT_SELECT';
                         nextQuestion = listStr;
                     } else {
-                        nextQuestion = "Error loading departments. Please try again later.";
+                        nextQuestion = t('bot_error_departments');
                         botFlowStep = null;
                     }
                 } catch (e) {
                     console.error(e);
-                    nextQuestion = "Connection error.";
+                    nextQuestion = t('bot_error_departments');
                     botFlowStep = null;
                 }
             } else {
                 // Not Support? Just register normally
                 isFinished = true;
-                nextQuestion = "Thank you! Registering...";
+                nextQuestion = t('bot_registering');
             }
             break;
 
@@ -152,29 +155,29 @@ async function handleBotRegistrationStep(userReply) {
             const deptIndex = parseInt(userReply) - 1;
             
             if (isNaN(deptIndex) || deptIndex < 0 || deptIndex >= tempDepartments.length) {
-                nextQuestion = "Invalid number. Please try again.";
+                nextQuestion = t('bot_invalid_number');
             } else {
                 // Save Selection
                 const selectedDept = tempDepartments[deptIndex];
                 tempRegistrationData.deptId = selectedDept.id;
                 tempRegistrationData.deptName = selectedDept.name;
 
-                await sendBotMsg(`You selected: <b>${selectedDept.name}</b>. Loading actions...`);
+                await sendBotMsg(`${t('bot_loading_actions')} <b>${selectedDept.name}</b>`);
 
                 // FETCH ACTIONS
                 try {
-                    const res = await fetch(`${SUBSCRIPTION_URL}?action=get_actions&deptId=${selectedDept.id}`);
+                    const res = await fetchWithRetry(`${SUBSCRIPTION_URL}?action=get_actions&deptId=${selectedDept.id}`, {}, { timeoutMs: 10000, retries: 2 });
                     const data = await res.json();
                     
                     if (data.result === 'success' && data.data.length > 0) {
                         tempActions = data.data;
                         
                         // --- CHANGED: Build HTML List (<ul>) ---
-                        let listStr = "Please select the relevant topic:<br>";
-                        listStr += "<ul style='padding-left: 20px; margin-top: 5px; margin-bottom: 0;'>";
+                        let listStr = `${t('bot_select_action')}<br>`;
+                        listStr += "<ul class='bot-list'>";
                         
                         tempActions.forEach((act, index) => {
-                            listStr += `<li style='margin-bottom: 5px;'><b>${index + 1}.</b> ${act.name}</li>`;
+                            listStr += `<li class='bot-list-item'><b>${index + 1}.</b> ${act.name}</li>`;
                         });
                         listStr += "</ul>";
                         // ---------------------------------------
@@ -183,10 +186,10 @@ async function handleBotRegistrationStep(userReply) {
                         nextQuestion = listStr;
                     } else {
                         isFinished = true;
-                        nextQuestion = "No specific actions found for this department. Registering request...";
+                        nextQuestion = t('bot_no_actions');
                     }
                 } catch(e) {
-                    nextQuestion = "Error loading actions.";
+                    nextQuestion = t('bot_error_actions');
                 }
             }
             break;
@@ -194,14 +197,14 @@ async function handleBotRegistrationStep(userReply) {
         case 'WAITING_ACTION_SELECT':
             const actIndex = parseInt(userReply) - 1;
             if (isNaN(actIndex) || actIndex < 0 || actIndex >= tempActions.length) {
-                nextQuestion = "Invalid number. Please try again.";
+                nextQuestion = t('bot_invalid_number');
             } else {
                 const selectedAction = tempActions[actIndex];
                 tempRegistrationData.actionId = selectedAction.id;
                 tempRegistrationData.actionName = selectedAction.name;
                 
                 isFinished = true;
-                nextQuestion = "Thank you! Submitting your request...";
+                nextQuestion = t('bot_registering');
             }
             break;
     }
@@ -233,7 +236,7 @@ async function performBotSupportRegistration() {
         }
 
         // 2. Send Data to Server
-        await fetch(SUBSCRIPTION_URL, { 
+        await fetchWithRetry(SUBSCRIPTION_URL, { 
             method: 'POST', 
             mode: 'no-cors', 
             headers: { 'Content-Type': 'application/json' }, 
@@ -247,16 +250,16 @@ async function performBotSupportRegistration() {
                 actionChoice: tempRegistrationData.actionName || 'General',
                 subscription: subscription // <--- Sending the key
             }) 
-        });
+        }, { timeoutMs: 10000, retries: 2 });
 
         // 3. Success Message
         const successMsg = {
             sender: "Bot", user: currentUserContext,
-            body: "✅ Your support request has been logged, and notifications are enabled!",
+            body: `✅ ${t('bot_support_logged')}`,
             direction: 'incoming', timestamp: new Date().getTime() + 100
         };
-        await saveNewMessageToDB(successMsg);
-        allHistoryData.push(successMsg);
+        const savedSuccess = await saveNewMessageToDB(successMsg);
+        allHistoryData.push(savedSuccess);
         renderChatMessages();
         scrollToBottom();
 
@@ -265,11 +268,11 @@ async function performBotSupportRegistration() {
         // Fallback: Show error but assume data might have sent if it was just a network glitch
         const errorMsg = {
              sender: "Bot", user: currentUserContext,
-             body: "⚠️ Connection error, but we will try to process your request.",
+             body: `⚠️ ${t('bot_support_error')}`,
              direction: 'incoming', timestamp: new Date().getTime() + 100
         };
-        await saveNewMessageToDB(errorMsg);
-        allHistoryData.push(errorMsg);
+        const savedError = await saveNewMessageToDB(errorMsg);
+        allHistoryData.push(savedError);
         renderChatMessages();
     }
 }

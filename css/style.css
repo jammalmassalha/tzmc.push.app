@@ -44,14 +44,56 @@ body {
     text-align: right;
 }
 
+/* --- LOADING --- */
+.loading-subtext {
+    margin-top: 10px;
+    font-size: 10px;
+    color: #999;
+}
+
+/* --- SETUP SCREEN EXTRAS --- */
+.setup-logo {
+    width: 150px;
+    height: auto;
+    margin-bottom: 20px;
+}
+
+.install-container {
+    margin-bottom: 15px;
+}
+
+.install-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+.status-message {
+    margin-top: 10px;
+    min-height: 20px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.view-contacts,
+.view-chatroom {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    width: 100%;
+}
+
 /* --- HEADER MENU FIX (BACKUP MENU) --- */
 #mainMenu {
     top: 33px  !important;
     bottom: auto !important;
-    right: -50px !important;
+    right: auto !important;
+    left: 0 !important;
     margin-top: 5px;
-    transform-origin: top right;
+    transform-origin: top left;
     z-index: 2000;              /* Ensure it sits on top of everything */
+    min-width: 160px;
 }
 
 .hidden { display: none !important; }
@@ -70,6 +112,61 @@ body {
     position: relative; 
     display: flex;
     align-items: center;
+}
+
+.main-menu-wrapper {
+    position: relative;
+    margin-right: 10px;
+}
+
+.main-menu-btn {
+    color: white;
+    position: absolute;
+    right: -65px;
+    top: -5px;
+    width: 50px;
+    height: 40px;
+    z-index: 9999;
+    margin-left: 20px;
+}
+
+.main-menu {
+    top: 40px;
+    left: 0;
+    right: auto;
+    min-width: 160px;
+}
+
+.menu-icon {
+    font-size: 18px;
+}
+
+.menu-icon-call {
+    color: #4caf50;
+}
+
+.menu-icon-delete {
+    color: var(--danger-color);
+}
+
+.menu-icon-primary {
+    color: var(--brand-dark-blue);
+}
+
+.menu-icon-danger {
+    color: var(--danger-color);
+}
+
+.menu-icon-accent {
+    color: #7f66ff;
+}
+
+.menu-icon-warn {
+    color: #ff6666;
+}
+
+.menu-danger {
+    border-top: 1px solid #eee;
 }
 
 /* The Popup Menu */
@@ -133,6 +230,12 @@ input[type="text"] { width: 78%; padding: 12px; margin: 15px 0; box-sizing: bord
 
 .btn-primary { background-color: var(--brand-dark-blue); color: white; } 
 
+.btn-secondary { background-color: #eee; color: #333; }
+
+.btn-danger { background-color: var(--danger-color); color: white; }
+
+.btn-outline-danger { background-color: #fff; color: var(--danger-color); border: 1px solid var(--danger-color); }
+
 .btn-text { background: transparent; color: var(--brand-dark-blue); margin-top: 10px; font-size: 14px;}
 
 .app-header { 
@@ -151,10 +254,7 @@ input[type="text"] { width: 78%; padding: 12px; margin: 15px 0; box-sizing: bord
 .header-left { display: flex; align-items: center; gap: 10px; position:relative; }
 
 .logout-btn {
-    position: absolute;
-    left: 25px; /* RTL: Move to left */
-    right: auto;
-    top: -25px;
+    position: static;
 }
 
 /* RESET FOR ICON BUTTONS */
@@ -177,7 +277,47 @@ button.icon-btn {
     transform: rotate(180deg); /* RTL: Flip arrow to point right */
 }
 
+.chat-header-avatar {
+    width: 35px;
+    height: 35px;
+    font-size: 18px;
+}
+
+.chat-header-info {
+    display: flex;
+    flex-direction: column;
+}
+
+.chat-header-info .header-title {
+    font-size: 16px;
+}
+
+.chat-header-actions {
+    margin-right: auto;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.header-call-btn {
+    color: #90ee90;
+    text-decoration: none;
+    display: none;
+    position: relative;
+    z-index: 9999;
+}
+
+.icon-btn-danger {
+    color: #ffcccc;
+}
+
 .contact-list { flex-grow: 1; overflow-y: auto; background: #fff; position: relative; }
+
+.empty-state {
+    text-align: center;
+    padding: 20px;
+    color: #999;
+}
 
 .contact-item { position: relative; display: flex; align-items: center; padding: 12px 16px; border-bottom: 1px solid #f0f0f0; cursor: pointer; transition: background 0.2s; }
 
@@ -193,6 +333,11 @@ button.icon-btn {
 
 .contact-meta { font-size: 12px; color: var(--text-secondary); flex-shrink: 0; margin-right: 10px; margin-left: 35px; }
 
+.contact-meta-secondary {
+    margin: 0;
+    font-size: 11px;
+}
+
 .btn-new-chat { 
     position: absolute; bottom: 30px; left: 20px; /* RTL: Move to left */
     width: 56px; height: 56px; 
@@ -206,13 +351,49 @@ button.icon-btn {
 
 .modal-overlay { position: fixed; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.5); z-index: 100; display: flex; align-items: center; justify-content: center; }
 
+#deleteModal {
+    z-index: 10000;
+}
+
 .modal-content { background: white; width: 90%; max-width: 350px; height: 70%; border-radius: 8px; display: flex; flex-direction: column; overflow: hidden; }
+
+.modal-confirm {
+    width: 80%;
+    max-width: 320px;
+    height: auto;
+    padding: 22px;
+}
+
+.modal-title {
+    margin-top: 0;
+    color: #333;
+}
+
+.modal-message {
+    margin: 12px 0 20px;
+    color: #555;
+    font-size: 14px;
+}
+
+.modal-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+}
+
+.modal-actions-column {
+    flex-direction: column;
+}
 
 .modal-header { padding: 15px; background: var(--brand-dark-blue); color: white; font-weight: 500; display: flex; justify-content: space-between; align-items: center; }
 
+.modal-close-btn {
+    color: white;
+}
+
 .modal-list { flex-grow: 1; overflow-y: auto; }
 
-.search-container { padding: 10px; background-color: #f7f7f7; border-bottom: 1px solid #ddd; display: flex; align-items: center; }
+.search-container { padding: 10px; background-color: #f7f7f7; border-bottom: 1px solid #ddd; display: flex; align-items: center; position: relative; }
 
 .search-icon {
     position: absolute;
@@ -233,6 +414,13 @@ button.icon-btn {
     outline: none; 
     background: white; 
     text-align: right;
+    margin: 0;
+}
+
+.modal-loading {
+    padding: 20px;
+    text-align: center;
+    color: var(--text-secondary);
 }
 
 .chat-container { 
@@ -296,6 +484,12 @@ button.icon-btn {
 #deleteModal .modal-content{
     height: auto !important;
     padding: 22px;
+    width: 80%;
+    max-width: 300px;
+}
+
+#btnDeleteEveryone {
+    display: none;
 }
 .msg-row { display: flex; width: 100%; margin-bottom: 2px; }
 
@@ -342,6 +536,12 @@ button.icon-btn {
     transform: rotate(180deg); /* RTL: Icon points left */
 }
 
+.attach-toggle-btn {
+    transform: rotate(45deg);
+    font-size: 28px;
+    color: #54656f;
+}
+
 .date-badge { align-self: center; background: #e1f3fb; color: #555; padding: 5px 12px; border-radius: 8px; font-size: 12px; margin: 10px 0; box-shadow: 0 1px 0.5px rgba(0,0,0,0.1); }
 
 .loading { position: fixed; top:0; left:0; width:100%; height:100%; background:white; z-index:999; display:flex; align-items:center; justify-content:center; flex-direction: column; color: #555; }
@@ -369,6 +569,71 @@ button.icon-btn {
     align-items: center; 
     gap: 5px;
 }
+.msg-link-icon-location {
+    font-size: 18px;
+    color: #e91e63;
+}
+
+.msg-link-label {
+    font-weight: 500;
+}
+.msg-link-default {
+    color: #027eb5;
+    text-decoration: underline;
+    word-break: break-all;
+}
+.msg-file-link {
+    color: #027eb5;
+    text-decoration: underline;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.msg-file-icon {
+    font-size: 14px;
+    vertical-align: middle;
+}
+.msg-attachment {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    text-decoration: none;
+    color: #333;
+    background: #f0f2f5;
+    padding: 8px 12px;
+    border-radius: 8px;
+    margin-top: 5px;
+    border: 1px solid #ddd;
+}
+.msg-attachment-icon {
+    font-size: 28px;
+}
+.msg-attachment-meta {
+    display: flex;
+    flex-direction: column;
+}
+.msg-attachment-title {
+    font-weight: 500;
+    font-size: 14px;
+}
+.msg-attachment-subtitle {
+    font-size: 11px;
+    color: #666;
+}
+.msg-status {
+    font-size: 15px;
+    vertical-align: middle;
+    margin-right: 7px;
+}
+.msg-status-sent {
+    color: #4fb6ec;
+}
+.msg-status-pending {
+    color: #f9a825;
+}
+.msg-status-failed {
+    color: #d32f2f;
+}
 /* Ensure textarea looks like the old input */
 #chatInputBar {
     flex: 1;
@@ -376,11 +641,15 @@ button.icon-btn {
     outline: none;
     font-size: 16px;
     padding: 10px 15px;
+    padding-top: 10px;
+    min-height: 40px;
     border-radius: 20px;
     background-color: #ffffff;
     margin: 0 5px;
     font-family: 'Roboto', sans-serif; /* Maintain font */
     line-height: 1.4;
+    resize: none;
+    overflow-y: hidden;
     /* Hide scrollbar until needed */
     scrollbar-width: none; 
 }
@@ -390,7 +659,78 @@ button.icon-btn {
 }
 .msg-link:hover { text-decoration: underline; }
 
+.bot-list {
+    padding-left: 20px;
+    margin-top: 5px;
+    margin-bottom: 0;
+}
+
+.bot-list-item {
+    margin-bottom: 5px;
+}
+
 #scrollAnchor { height: 1px; width: 1px; }
+
+.file-input {
+    display: none;
+}
+
+.network-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: #fff;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.network-status::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #ccc;
+}
+
+.network-status.online::before {
+    background: #4caf50;
+}
+
+.network-status.offline::before {
+    background: #f44336;
+}
+
+/* Toasts */
+.toast-container {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 20000;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: min(90%, 360px);
+}
+
+.toast {
+    background: #323232;
+    color: #fff;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+
+.toast--success {
+    background: #2e7d32;
+}
+
+.toast--error {
+    background: #c62828;
+}
 
 /* --- CATEGORY BUTTON STYLES (RTL) --- */
 .btn-category {

@@ -12,11 +12,17 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
+const crypto = require('crypto');
 
 // --- 1. SETUP UPLOADS FOLDER ---
 const uploadDir = path.join(__dirname, 'uploads');
 const app = express();
-const SERVER_VERSION = '1.13'; // Bumped version
+const SERVER_VERSION = '1.14'; // Bumped version
+
+const fsp = fs.promises;
+const stateDir = path.join(__dirname, 'data');
+const stateFile = path.join(stateDir, 'state.json');
+let stateSaveTimer = null;
 
 let unreadCounts = {};
 
@@ -67,6 +73,7 @@ const storage = multer.diskStorage({
     }
 });
 const upload = multer({ storage: storage });
+const uploadFields = upload.fields([{ name: 'file', maxCount: 1 }, { name: 'thumbnail', maxCount: 1 }]);
 
 // --- 3. WEB PUSH CONFIG ---
 
@@ -83,6 +90,14 @@ webpush.setVapidDetails(
 // [NEW] 4. POLLING MAILBOX (IN-MEMORY STORAGE)
 // ======================================================
 let messageQueue = {}; 
+const sseClients = new Map();
+
+function notifySseClients(username, messageObj) {
+    const clientSet = sseClients.get(username);
+    if (!clientSet) return;
+    const payload = `event: message\ndata: ${JSON.stringify(messageObj)}\n\n`;
+    clientSet.forEach(res => res.write(payload));
+}
 
 // Helper: Add message to queue (NORMALIZED TO LOWERCASE)
 function addToQueue(targetUser, messageObj) {
@@ -96,15 +111,88 @@ function addToQueue(targetUser, messageObj) {
             messageQueue[normalizedUser] = [];
         }
         messageQueue[normalizedUser].push(messageObj);
+        notifySseClients(normalizedUser, messageObj);
     });
+    scheduleStateSave();
 }
 // ======================================================
 
+loadState().catch(err => console.warn('[STATE] Init failed:', err.message));
+
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+const generateMessageId = () => {
+    if (crypto.randomUUID) return crypto.randomUUID();
+    return `srv_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+};
+
+const fetchWithRetry = async (url, options = {}, retryOptions = {}) => {
+    const { retries = 2, timeoutMs = 10000, backoffMs = 500 } = retryOptions;
+    let lastError;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+        try {
+            const response = await fetch(url, {
+                ...options,
+                signal: controller ? controller.signal : undefined
+            });
+            if (!response.ok && attempt < retries && (response.status >= 500 || response.status === 429)) {
+                await sleep(backoffMs * Math.pow(2, attempt));
+                continue;
+            }
+            return response;
+        } catch (err) {
+            lastError = err;
+            if (attempt < retries) {
+                await sleep(backoffMs * Math.pow(2, attempt));
+                continue;
+            }
+            throw err;
+        } finally {
+            if (timeoutId) clearTimeout(timeoutId);
+        }
+    }
+    throw lastError;
+};
+
+async function loadState() {
+    try {
+        await fsp.mkdir(stateDir, { recursive: true });
+        const raw = await fsp.readFile(stateFile, 'utf8');
+        const data = JSON.parse(raw);
+        unreadCounts = (data.unreadCounts && typeof data.unreadCounts === 'object') ? data.unreadCounts : {};
+        messageQueue = (data.messageQueue && typeof data.messageQueue === 'object') ? data.messageQueue : {};
+        console.log('[STATE] Loaded persisted state.');
+    } catch (err) {
+        if (err.code !== 'ENOENT') {
+            console.warn('[STATE] Failed to load state:', err.message);
+        }
+    }
+}
+
+async function persistState() {
+    try {
+        const payload = JSON.stringify({ unreadCounts, messageQueue });
+        const tmpFile = `${stateFile}.tmp`;
+        await fsp.writeFile(tmpFile, payload, 'utf8');
+        await fsp.rename(tmpFile, stateFile);
+    } catch (err) {
+        console.warn('[STATE] Failed to persist state:', err.message);
+    }
+}
+
+function scheduleStateSave() {
+    if (stateSaveTimer) return;
+    stateSaveTimer = setTimeout(async () => {
+        stateSaveTimer = null;
+        await persistState();
+    }, 1000);
+}
 
 // Helper: Log status to Google Sheets
 function logNotificationStatus(sender, recipient, messageShort, status, details) {
-    fetch(GOOGLE_SHEET_URL, {
+    fetchWithRetry(GOOGLE_SHEET_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -115,14 +203,14 @@ function logNotificationStatus(sender, recipient, messageShort, status, details)
             status: status,
             details: details
         })
-    }).catch(err => console.error('[LOG ERROR]', err.message));
+    }, { timeoutMs: 10000, retries: 2 }).catch(err => console.error('[LOG ERROR]', err.message));
 }
 
 async function getSubscriptionFromSheet(usernames) {
     if (!usernames || usernames.length === 0) return [];
     const userListString = Array.isArray(usernames) ? usernames.join(',') : usernames;
     try {
-        const response = await fetch(`${GOOGLE_SHEET_URL}?usernames=${encodeURIComponent(userListString)}`);
+        const response = await fetchWithRetry(`${GOOGLE_SHEET_URL}?usernames=${encodeURIComponent(userListString)}`, {}, { timeoutMs: 10000, retries: 2 });
         const result = await response.json();
         if (result.result === 'success' && Array.isArray(result.subscriptions)) {
             return result.subscriptions;
@@ -140,8 +228,19 @@ app.post(['/reset-badge', '/notify/reset-badge'], (req, res) => {
         // Reset count for this user
         unreadCounts[String(user).toLowerCase()] = 0;
         console.log(`[BADGE] Reset count for ${user}`);
+        scheduleStateSave();
     }
     res.json({ status: 'success' });
+});
+
+// --- CLIENT TELEMETRY ---
+app.post(['/log', '/notify/log'], (req, res) => {
+    const { event, payload, user, timestamp } = req.body || {};
+    console.log(`[CLIENT LOG] ${event || 'event'} | user=${user || 'unknown'} | ts=${timestamp || Date.now()}`);
+    if (payload) {
+        console.log('[CLIENT LOG] payload:', payload);
+    }
+    res.json({ status: 'ok' });
 });
 // ======================================================
 // [UPDATED] BACKUP CHATS ENDPOINT (NON-BLOCKING)
@@ -162,7 +261,7 @@ app.post(['/backup', '/notify/backup'], (req, res) => {
 
         // 2. SAVE TO GOOGLE SHEET IN BACKGROUND
         // We do NOT use 'await' here. The server continues working while this uploads.
-        fetch(GOOGLE_SHEET_URL, {
+        fetchWithRetry(GOOGLE_SHEET_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -182,7 +281,7 @@ app.post(['/backup', '/notify/backup'], (req, res) => {
 // --- DELETE MESSAGE ENDPOINT ---
 app.post(['/delete', '/notify/delete'], async (req, res) => {
     try {
-        const { timestamp, sender, recipient } = req.body;
+        const { timestamp, sender, recipient, messageId } = req.body;
         console.log(`[DELETE] Request from ${sender} to remove msg ${timestamp}`);
 
         // Send Silent Push to Recipient
@@ -191,7 +290,8 @@ app.post(['/delete', '/notify/delete'], async (req, res) => {
             data: {
                 type: 'delete-action',
                 timestamp: timestamp,
-                sender: sender
+                sender: sender,
+                messageId: messageId || null
             }
         });
 
@@ -223,7 +323,7 @@ app.post(['/verify-status', '/notify/verify-status'], async (req, res) => {
     try {
         
         
-        const sheetResponse = await fetch(scriptUrl);
+        const sheetResponse = await fetchWithRetry(scriptUrl, {}, { timeoutMs: 10000, retries: 2 });
         
         // Safety check: Ensure we got a valid JSON response from Google
         if (!sheetResponse.ok) {
@@ -265,7 +365,7 @@ app.post(['/verify-status', '/notify/verify-status'], async (req, res) => {
 // ======================================================
 // [FINAL FIX] CORE SENDING LOGIC (Collision Proof)
 // ======================================================
-async function sendPushNotificationToUser(targetUser, message, senderuser) {
+async function sendPushNotificationToUser(targetUser, message, senderuser, options = {}) {
     const targetUsersArray = Array.isArray(targetUser) ? targetUser : [targetUser];
     
     // 1. Prepare Content
@@ -274,6 +374,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser) {
     const msgTitle = message.title || 'Work Alert';
     const imageUrl = message.image || null;
     const finalSender = senderuser || 'System';
+    const messageId = options.messageId || message.messageId || generateMessageId();
 
     console.log(`[PUSH] Searching subs for: ${targetUsersArray.join(', ')} from ${finalSender}`);
 
@@ -321,7 +422,8 @@ async function sendPushNotificationToUser(targetUser, message, senderuser) {
                 sender: finalSender,
                 
                 // THE NUMBER (Only this variable holds the integer)
-                badgeCount: currentCount 
+                badgeCount: currentCount,
+                messageId: messageId
             }
         });
 
@@ -342,6 +444,8 @@ async function sendPushNotificationToUser(targetUser, message, senderuser) {
         }
         await sleep(40); 
     }
+
+    scheduleStateSave();
 
     // Log to Sheet
     const fullReport = executionLogs.join('\n');
@@ -376,6 +480,7 @@ app.get(['/messages', '/notify/messages'], (req, res) => {
         
         // Clear mailbox after picking up
         messageQueue[user] = []; 
+        scheduleStateSave();
         
         console.log(`[POLLING] Delivered ${waitingMessages.length} msgs to ${user}`);
         return res.json({ messages: waitingMessages });
@@ -384,12 +489,53 @@ app.get(['/messages', '/notify/messages'], (req, res) => {
     return res.json({ messages: [] });
 });
 
-app.post(['/upload', '/notify/upload'], upload.single('file'), (req, res) => {
-    if (!req.file) {
+// ======================================================
+// [NEW] SSE STREAM (REAL-TIME)
+// ======================================================
+app.get(['/stream', '/notify/stream'], (req, res) => {
+    const user = req.query.user ? String(req.query.user).trim().toLowerCase() : null;
+    if (!user) {
+        return res.status(400).json({ error: 'Missing user' });
+    }
+
+    res.set({
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive'
+    });
+    res.flushHeaders();
+    res.write(`event: connected\ndata: ${JSON.stringify({ user })}\n\n`);
+
+    const existing = sseClients.get(user) || new Set();
+    existing.add(res);
+    sseClients.set(user, existing);
+
+    const keepAlive = setInterval(() => {
+        res.write(': keep-alive\n\n');
+    }, 25000);
+
+    req.on('close', () => {
+        clearInterval(keepAlive);
+        const set = sseClients.get(user);
+        if (set) {
+            set.delete(res);
+            if (set.size === 0) {
+                sseClients.delete(user);
+            }
+        }
+    });
+});
+
+app.post(['/upload', '/notify/upload'], uploadFields, (req, res) => {
+    const file = req.files && req.files.file ? req.files.file[0] : null;
+    const thumbnail = req.files && req.files.thumbnail ? req.files.thumbnail[0] : null;
+
+    if (!file) {
         return res.status(400).json({ error: 'No file uploaded' });
     }
-    const fileUrl = `https://www.tzmc.co.il/notify/uploads/${req.file.filename}`;
-    res.json({ status: 'success', url: fileUrl, type: req.file.mimetype });
+    const fileUrl = `https://www.tzmc.co.il/notify/uploads/${file.filename}`;
+    const thumbUrl = thumbnail ? `https://www.tzmc.co.il/notify/uploads/${thumbnail.filename}` : null;
+    res.json({ status: 'success', url: fileUrl, thumbUrl, type: file.mimetype });
 });
 
 app.post(['/reply', '/notify/reply'], async (req, res) => {
@@ -408,7 +554,7 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
         // ======================================================
         // [NEW] SAVE TO GOOGLE SHEET "Replay"
         // ======================================================
-        fetch(GOOGLE_SHEET_URL, {
+        fetchWithRetry(GOOGLE_SHEET_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -417,9 +563,11 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
                 toUser: originalSender || 'System',
                 message: messageContent
             })
-        }).catch(err => console.error('[SHEET ERROR] Failed to save reply:', err.message));
+        }, { timeoutMs: 10000, retries: 2 }).catch(err => console.error('[SHEET ERROR] Failed to save reply:', err.message));
 
+        const messageId = generateMessageId();
         const notificationData = {
+            messageId,
             title: `New message from ${senderName || user}`,
             body: {
                 shortText: reply || (imageUrl ? 'Sent an image' : 'New Message'),
@@ -430,6 +578,7 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
 
         // [EXISTING] SAVE TO POLLING QUEUE
         const pollingMessage = {
+            messageId,
             sender: user, 
             body: reply,
             timestamp: Date.now(),
@@ -438,7 +587,7 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
         addToQueue(targetToNotify, pollingMessage);
 
         // [EXISTING] SEND WEB PUSH (To all devices)
-        const result = await sendPushNotificationToUser(targetToNotify, notificationData, user);
+        const result = await sendPushNotificationToUser(targetToNotify, notificationData, user, { messageId });
         res.json({ status: 'success', details: result });
 
     } catch (e) {
@@ -453,7 +602,9 @@ app.post('/notify', async (req, res) => {
 
         if (!targetUser) return res.status(400).json({ error: 'Missing targetUser' });
 
+        const messageId = generateMessageId();
         const messageParam = {
+            messageId,
             title: title || 'Work Alert',
             body: {
                 shortText: shortText || (imageUrl ? 'Image Attachment' : 'Alert'),
@@ -466,6 +617,7 @@ app.post('/notify', async (req, res) => {
         // [NEW] SAVE TO POLLING QUEUE
         // ======================================================
         const pollingMessage = {
+            messageId,
             sender: senderuser || 'System',
             body: longText || shortText,
             timestamp: Date.now(),
@@ -477,7 +629,7 @@ app.post('/notify', async (req, res) => {
         await sleep(100);
         
         // [UPDATED] Send to ALL devices found for this user
-        const result = await sendPushNotificationToUser(targetUser, messageParam, senderuser || 'System');
+        const result = await sendPushNotificationToUser(targetUser, messageParam, senderuser || 'System', { messageId });
         res.json({ status: 'done', details: result });
 
     } catch (e) {
@@ -492,7 +644,7 @@ app.post('/notify', async (req, res) => {
 async function checkOutgoingQueue() {
     try {
         // Ask Google Script for pending messages
-        const response = await fetch(`${GOOGLE_SHEET_URL}?action=check_queue`);
+        const response = await fetchWithRetry(`${GOOGLE_SHEET_URL}?action=check_queue`, {}, { timeoutMs: 10000, retries: 2 });
         const data = await response.json();
 
         if (data.messages && data.messages.length > 0) {
@@ -503,7 +655,9 @@ async function checkOutgoingQueue() {
                 const senderName = msg.sender || 'System'; 
                 const bodyText = msg.content;
                 
+                const messageId = msg.messageId || generateMessageId();
                 const notificationData = {
+                    messageId,
                     title: `Message from ${senderName}`,
                     body: {
                         shortText: bodyText,
@@ -512,10 +666,11 @@ async function checkOutgoingQueue() {
                 };
 
                 // 1. Send Push Notification (Handles all devices)
-                await sendPushNotificationToUser(targetUser, notificationData, senderName);
+                await sendPushNotificationToUser(targetUser, notificationData, senderName, { messageId });
                 
                 // 2. Add to Polling Queue
                 const pollingMessage = {
+                    messageId,
                     sender: senderName,
                     body: bodyText,
                     timestamp: Date.now(),
