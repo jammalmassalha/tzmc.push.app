@@ -52,6 +52,7 @@ let deferredPrompt;
 let justOpenedChat = false; 
 let lastContactsFetch = 0;
 const CONTACTS_TTL_MS = 5 * 60 * 1000;
+let renderSequence = 0;
 
 // --- DOM ---
 const loadingDiv = document.getElementById('loading');
@@ -272,11 +273,16 @@ function debounce(fn, delay = 200) {
     };
 }
 
-function renderListInBatches(items, container, renderItem, batchSize = 30, onComplete) {
+function renderListInBatches(items, container, renderItem, batchSize = 30, onComplete, renderToken) {
     if (!container) return;
+    const token = renderToken || String(++renderSequence);
+    container.dataset.renderToken = token;
     container.innerHTML = '';
     let index = 0;
     const renderBatch = () => {
+        if (container.dataset.renderToken !== token) {
+            return;
+        }
         const fragment = document.createDocumentFragment();
         const end = Math.min(index + batchSize, items.length);
         for (; index < end; index++) {
