@@ -1206,8 +1206,26 @@ function renderChatMessages() {
             lastDateStr = dateStr;
         }
 
-        // Check if message exists to avoid re-rendering
-        if (document.getElementById(msgId)) return; 
+        const isOutgoing = (msg.direction === 'outgoing' || msg.reply);
+        const existingRow = document.getElementById(msgId);
+        if (existingRow) {
+            if (isOutgoing) {
+                const timeEl = existingRow.querySelector('.msg-time');
+                if (timeEl) {
+                    const existingStatus = timeEl.querySelector('.msg-status');
+                    const statusMarkup = getDeliveryStatusMarkup(msg.deliveryStatus || 'sent');
+                    if (existingStatus) {
+                        const temp = document.createElement('span');
+                        temp.innerHTML = statusMarkup;
+                        const newNode = temp.firstChild;
+                        if (newNode) existingStatus.replaceWith(newNode);
+                    } else {
+                        timeEl.insertAdjacentHTML('beforeend', statusMarkup);
+                    }
+                }
+            }
+            return;
+        }
 
         // --- RENDER NEW MESSAGE ---
         hasNewMessage = true;
@@ -1238,7 +1256,6 @@ function renderChatMessages() {
 
         const div = document.createElement('div');
         div.id = msgId; 
-        const isOutgoing = (msg.direction === 'outgoing' || msg.reply);
         div.className = isOutgoing ? 'msg-row row-outgoing' : 'msg-row row-incoming';
 
         // Add Bubble
