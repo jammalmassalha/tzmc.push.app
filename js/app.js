@@ -1417,11 +1417,31 @@ async function deleteCurrentChat() {
     });
 }
 // --- DB HELPER FUNCTION ---
+function upgradeDb(version, resolve, reject) {
+    const upgradeRequest = indexedDB.open(DB_NAME, version);
+    upgradeRequest.onerror = (event) => reject(event);
+    upgradeRequest.onupgradeneeded = (event) => {
+        const db = event.target.result;
+        let store;
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+            store = db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+        } else {
+            store = event.target.transaction.objectStore(STORE_NAME);
+        }
+        if (store && !store.indexNames.contains('messageId')) {
+            store.createIndex('messageId', 'messageId', { unique: false });
+        }
+        if (!db.objectStoreNames.contains(OUTBOX_STORE)) {
+            db.createObjectStore(OUTBOX_STORE, { keyPath: 'id', autoIncrement: true });
+        }
+    };
+    upgradeRequest.onsuccess = (event) => resolve(event.target.result);
+}
+
 function openDB() {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        const request = indexedDB.open(DB_NAME);
         request.onerror = (e) => reject(e);
-        request.onsuccess = (e) => resolve(e.target.result);
         request.onupgradeneeded = (e) => {
             const db = e.target.result;
             let store;
@@ -1436,6 +1456,28 @@ function openDB() {
             if (!db.objectStoreNames.contains(OUTBOX_STORE)) {
                 db.createObjectStore(OUTBOX_STORE, { keyPath: 'id', autoIncrement: true });
             }
+        };
+        request.onsuccess = (e) => {
+            const db = e.target.result;
+            const hasHistory = db.objectStoreNames.contains(STORE_NAME);
+            const hasOutbox = db.objectStoreNames.contains(OUTBOX_STORE);
+            let hasIndex = true;
+            if (hasHistory) {
+                try {
+                    const tx = db.transaction(STORE_NAME, 'readonly');
+                    const store = tx.objectStore(STORE_NAME);
+                    hasIndex = store.indexNames.contains('messageId');
+                } catch (err) {
+                    hasIndex = true;
+                }
+            }
+            if (hasHistory && hasOutbox && hasIndex) {
+                resolve(db);
+                return;
+            }
+            const nextVersion = db.version + 1;
+            db.close();
+            upgradeDb(nextVersion, resolve, reject);
         };
     });
 }
