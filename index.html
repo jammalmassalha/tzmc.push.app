@@ -67,9 +67,11 @@
                             <span>מחק הכל</span>
                         </button>
                   </div>
+                  <span class="header-title">צ'אטים</span>
               </div>
-              <span class="header-title">צ'אטים</span>
-    
+              
+               <div class="header-right">  
+               </div>
               <div class="header-left">
                   <span id="networkStatus" class="network-status" role="status" aria-live="polite"></span>
                   <button id="logoutBtn" class="material-icons icon-btn logout-btn" type="button" aria-label="התנתקות" title="התנתקות">logout</button>
@@ -101,26 +103,29 @@
     
       <div id="viewChatRoom" class="view-chatroom hidden">
           <div class="app-header">
-                <div class="header-right">
-                    <button id="backToContactsBtn" class="material-icons icon-btn back-btn" type="button" aria-label="חזרה לרשימת צ׳אטים" title="חזרה לרשימת צ׳אטים">arrow_back</button>
+              <div class="header-right">  
+              <button id="backToContactsBtn" class="material-icons icon-btn back-btn" type="button" aria-label="חזרה לרשימת צ׳אטים" title="חזרה לרשימת צ׳אטים">arrow_back</button>
                     
                     <div class="avatar chat-header-avatar">
                         <span class="material-icons">person</span>
                     </div>
                     
                     <div class="chat-header-info">
-                        <span class="header-title" id="chatRoomTitle">מעבדה</span>
+                        <span class="header-title" id="chatRoomTitle">שם השולח</span>
                     </div>
-                </div>
-            
+               </div>
                 <div class="header-left">
-                    <span id="networkStatusChat" class="network-status" role="status" aria-live="polite"></span>
                     
-                    <a id="headerCallBtn" href="#" class="material-icons icon-btn header-call-btn" aria-label="חיוג" title="חיוג">
-                       call
-                    </a>
             
-                    <button id="deleteChatBtn" class="material-icons icon-btn icon-btn-danger" type="button" aria-label="מחיקת שיחה" title="מחיקת שיחה">delete</button>
+                    <div class="chat-header-actions"> 
+                        <span id="networkStatusChat" class="network-status" role="status" aria-live="polite"></span>
+                        
+                        <a id="headerCallBtn" href="#" class="material-icons icon-btn header-call-btn" aria-label="חיוג" title="חיוג">
+                           call
+                        </a>
+            
+                        <button id="deleteChatBtn" class="material-icons icon-btn icon-btn-danger" type="button" aria-label="מחיקת שיחה" title="מחיקת שיחה">delete</button>
+                    </div>
                 </div>
             </div>
     
@@ -179,11 +184,11 @@
         </div>
       </div>
       <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
-      <script src="js/shared-config.js?v=1.0"></script>
-      <script src="js/i18n.js?v=1.0"></script>
-      <script src="js/network.js?v=1.0"></script>
-      <script src="js/app.js?v=33.0"></script>
-      <script src="js/bot.js?v=4.0"></script>
+      <script src="js/shared-config.js?v=1.1"></script>
+      <script src="js/i18n.js?v=1.1"></script>
+      <script src="js/network.js?v=1.1"></script>
+      <script src="js/app.js?v=33.2"></script>
+      <!--<script src="js/bot.js?v=4.0"></script>-->
     
     </body>
 </html>
