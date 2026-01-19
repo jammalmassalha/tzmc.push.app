@@ -376,7 +376,7 @@ self.addEventListener('push', event => {
   const savePromise = saveNotificationExplicit(recordToSave);
   const refreshPromise = savePromise.then(() =>
       self.clients.matchAll().then(clients => {
-          clients.forEach(client => client.postMessage({ action: 'refresh' }));
+          clients.forEach(client => client.postMessage({ action: 'refresh', record: recordToSave }));
       })
   );
 

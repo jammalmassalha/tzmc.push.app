@@ -299,6 +299,41 @@ function renderListInBatches(items, container, renderItem, batchSize = 30, onCom
     requestAnimationFrame(renderBatch);
 }
 
+function shouldIncludeRecord(record) {
+    if (!record || !currentUserContext) return false;
+    const currentLower = String(currentUserContext).toLowerCase();
+    const recordUser = record.user ? String(record.user).toLowerCase() : '';
+    if (recordUser && recordUser === currentLower) return true;
+    if (record.url) {
+        return record.url.toLowerCase().includes(`user=${encodeURIComponent(currentLower)}`);
+    }
+    return false;
+}
+
+function upsertMessageInMemory(record) {
+    if (!record) return false;
+    const messageId = record.messageId || record.clientMessageId;
+    let index = -1;
+    if (messageId) {
+        index = allHistoryData.findIndex(m => m.messageId === messageId || m.clientMessageId === messageId);
+    }
+    if (index < 0) {
+        const senderKey = String(record.sender || '').trim().toLowerCase();
+        index = allHistoryData.findIndex(m =>
+            String(m.sender || '').trim().toLowerCase() === senderKey &&
+            m.timestamp === record.timestamp &&
+            (m.body || '') === (record.body || '') &&
+            (m.reply || '') === (record.reply || '')
+        );
+    }
+    if (index >= 0) {
+        allHistoryData[index] = { ...allHistoryData[index], ...record };
+        return true;
+    }
+    allHistoryData.push(record);
+    return true;
+}
+
 function formatContactTimestamp(timestamp) {
     if (!timestamp) return '';
     const date = new Date(timestamp);
@@ -455,6 +490,13 @@ window.addEventListener('load', async () => {
             navigator.serviceWorker.addEventListener('message', (event) => {
                 if (event.data && event.data.action === 'refresh') {
                     console.log("Refreshing view due to background update...");
+                    if (event.data.record && shouldIncludeRecord(event.data.record)) {
+                        upsertMessageInMemory(event.data.record);
+                        renderContactList();
+                        if (!viewChatRoom.classList.contains('hidden') && activeChatSender) {
+                            renderChatMessages();
+                        }
+                    }
                     loadAndGroupHistory();
                 }
                 if (event.data && event.data.action === 'outbox-updated') {
