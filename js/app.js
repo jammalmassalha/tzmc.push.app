@@ -109,7 +109,8 @@ if (btnDeleteClose) btnDeleteClose.addEventListener('click', closeDeleteModal);
 function getDisplayName(username) {
     if (!username) return 'Unknown';
     if (username === 'Bot' || username === 'Support' || username === 'System') return username;
-    return userMap[username.toLowerCase()] || username;
+    const key = String(username).toLowerCase();
+    return userMap[key] || username;
 }
 
 // --- HELPER: TEXTAREA AUTO RESIZE ---
@@ -296,6 +297,26 @@ function renderListInBatches(items, container, renderItem, batchSize = 30, onCom
         }
     };
     requestAnimationFrame(renderBatch);
+}
+
+function formatContactTimestamp(timestamp) {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const diffDays = Math.round((startOfToday - startOfDate) / (24 * 60 * 60 * 1000));
+
+    if (diffDays <= 0) {
+        return date.getHours() + ':' + String(date.getMinutes()).padStart(2, '0');
+    }
+    if (diffDays === 1) {
+        return 'אתמול';
+    }
+    if (diffDays === 2) {
+        return 'לפני יומיים';
+    }
+    return date.toLocaleDateString('he-IL');
 }
 
 function updateNetworkStatus() {
@@ -944,7 +965,7 @@ async function fetchUsersFromSheet() {
 }
 
 function renderUserList(users) {
-    const currentLower = currentUserContext ? currentUserContext.toLowerCase() : '';
+    const currentLower = currentUserContext ? String(currentUserContext).toLowerCase() : '';
     const filteredUsers = users.filter(u => u.username && u.username.toLowerCase() !== currentLower);
     renderListInBatches(filteredUsers, modalUserList, (u) => {
         const div = document.createElement('div');
@@ -960,6 +981,10 @@ function renderUserList(users) {
     }, 40, filterUserList);
 }
 async function loadAndGroupHistory() {
+    if (!currentUserContext) {
+        const stored = localStorage.getItem('username');
+        if (stored) currentUserContext = stored;
+    }
     if(!currentUserContext) return;
     const db = await openDB();
     const tx = db.transaction(STORE_NAME, 'readonly');
@@ -970,9 +995,9 @@ async function loadAndGroupHistory() {
         const rawData = request.result;
         
         // Filter for current user
-        const currentLower = currentUserContext.toLowerCase();
+        const currentLower = String(currentUserContext).toLowerCase();
         let filtered = rawData.filter(item => {
-            const u = (item.user || '').toLowerCase();
+            const u = String(item.user || '').toLowerCase();
             return u === currentLower || (item.url && item.url.toLowerCase().includes(`user=${encodeURIComponent(currentLower)}`));
         });
 
@@ -985,7 +1010,8 @@ async function loadAndGroupHistory() {
         for (let i = 0; i < filtered.length; i++) {
             const current = filtered[i];
             const stableKey = current.messageId || current.clientMessageId;
-            const fallbackKey = `${(current.sender || '').trim().toLowerCase()}|${current.timestamp}|${current.body || ''}|${current.reply || ''}`;
+            const senderKey = String(current.sender || '').trim().toLowerCase();
+            const fallbackKey = `${senderKey}|${current.timestamp}|${current.body || ''}|${current.reply || ''}`;
             const messageKey = stableKey || fallbackKey;
             if (seenKeys.has(messageKey)) continue;
             seenKeys.add(messageKey);
@@ -1010,7 +1036,7 @@ function renderContactList() {
     
     allHistoryData.forEach(msg => {
         const rawSender = msg.sender || 'System';
-        const senderKey = rawSender.toLowerCase(); 
+        const senderKey = String(rawSender).toLowerCase(); 
         if(!groups[senderKey]) groups[senderKey] = { displayName: rawSender, msgs: [] };
         groups[senderKey].displayName = rawSender; 
         groups[senderKey].msgs.push(msg);
@@ -1042,8 +1068,7 @@ function renderContactList() {
     }
 
     renderListInBatches(sortedSenders, listContainer, (contact) => {
-        const dateObj = new Date(contact.timestamp);
-        const timeStr = dateObj.getHours() + ':' + String(dateObj.getMinutes()).padStart(2, '0');
+        const timeStr = formatContactTimestamp(contact.timestamp);
         const displayName = getDisplayName(contact.name); 
         const menuId = `menu-${contact.name.replace(/[^a-zA-Z0-9]/g, '')}`;
 
@@ -1145,7 +1170,7 @@ async function deleteChatFromList(event, senderName) {
             
             // Find all messages from this specific sender
             const toDelete = records.filter(r => 
-                (r.sender || 'System').toLowerCase() === senderName.toLowerCase()
+                String(r.sender || 'System').toLowerCase() === String(senderName || '').toLowerCase()
             );
 
             if (toDelete.length === 0) return;
@@ -1169,7 +1194,7 @@ function renderChatMessages() {
     if (!area) return;
 
     // Filter messages for this specific chat
-    const chatMsgs = allHistoryData.filter(m => (m.sender || 'System').toLowerCase() === activeChatSender.toLowerCase());
+    const chatMsgs = allHistoryData.filter(m => String(m.sender || 'System').toLowerCase() === String(activeChatSender || '').toLowerCase());
     
     // --- NEW: GARBAGE COLLECTION ---
     // Remove any messages from the screen that are NOT in our data list anymore
@@ -1313,7 +1338,7 @@ async function deleteCurrentChat() {
             
             // Filter messages for the current chat only
             const toDelete = records.filter(r => 
-                (r.sender || 'System').toLowerCase() === activeChatSender.toLowerCase()
+                String(r.sender || 'System').toLowerCase() === String(activeChatSender || '').toLowerCase()
             );
 
             if (toDelete.length === 0) {
