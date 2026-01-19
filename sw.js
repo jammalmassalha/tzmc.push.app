@@ -22,7 +22,7 @@ const ASSETS_TO_CACHE = [
   './js/network.js',
   './js/network.js?v=1.1',
   './js/app.js',
-  './js/app.js?v=33.2',
+  './js/app.js?v=33.3',
   './js/bot.js',
   './manifest.webmanifest',
   './favicon.ico',
@@ -330,9 +330,9 @@ self.addEventListener('push', event => {
   const badgeNum = parseInt(payload.badgeCount || payload.badge, 10);
     let badgePromise = Promise.resolve();
     
-    if (!isNaN(badgeNum) && self.registration.setBadge) {
+    if (!isNaN(badgeNum) && self.registration.setAppBadge) {
         badgePromise = (async () => {
-            await self.registration.setBadge(badgeNum);
+            await self.registration.setAppBadge(badgeNum);
             if (self.registration.sync) {
                 await self.registration.sync.register('badge-sync');
             }
@@ -371,6 +371,46 @@ self.addEventListener('push', event => {
       });
       event.waitUntil(Promise.all([deletePromise, logPromise]));
       return; 
+  }
+
+  if (payload.type === 'read-receipt') {
+      const messageIds = Array.isArray(payload.messageIds) ? payload.messageIds : [];
+      const readAt = payload.readAt || Date.now();
+      const updatePromise = new Promise((resolve, reject) => {
+          if (!messageIds.length) {
+              resolve();
+              return;
+          }
+          openDB().then(db => {
+              const tx = db.transaction(STORE_NAME, 'readwrite');
+              const store = tx.objectStore(STORE_NAME);
+              let pending = 0;
+              messageIds.forEach(id => {
+                  if (!id || !store.indexNames.contains('messageId')) return;
+                  pending++;
+                  const req = store.index('messageId').get(id);
+                  req.onsuccess = () => {
+                      const record = req.result;
+                      if (record) {
+                          record.readAt = readAt;
+                          store.put(record);
+                      }
+                      pending--;
+                      if (pending === 0) resolve();
+                  };
+                  req.onerror = () => {
+                      pending--;
+                      if (pending === 0) resolve();
+                  };
+              });
+              if (pending === 0) resolve();
+          }).catch(reject);
+      });
+      const refreshPromise = self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
+          clients.forEach(client => client.postMessage({ action: 'refresh' }));
+      });
+      event.waitUntil(Promise.all([updatePromise, logPromise, refreshPromise]));
+      return;
   }
 
   // Notification Options
@@ -440,9 +480,9 @@ self.addEventListener('notificationclick', event => {
   const user = data.user || 'Unknown';
 
   // Clear Badge on Click (Optional - good for UX)
-     if (self.registration.clearBadge) {
+     if (self.registration.clearAppBadge) {
         event.waitUntil(
-            self.registration.clearBadge().catch(() => {})
+            self.registration.clearAppBadge().catch(() => {})
         );
     }
 

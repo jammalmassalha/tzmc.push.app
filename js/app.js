@@ -381,14 +381,107 @@ function updateNetworkStatus() {
     }
 }
 
-function getDeliveryStatusMarkup(status) {
+function isOutgoingMessage(msg) {
+    return msg && (msg.direction === 'outgoing' || msg.reply);
+}
+
+function updateAppBadgeFromUnread() {
+    if (!navigator.setAppBadge) return;
+    const totalUnread = allHistoryData.reduce((count, msg) => {
+        if (msg && !isOutgoingMessage(msg) && !msg.readAt) {
+            return count + 1;
+        }
+        return count;
+    }, 0);
+    if (totalUnread > 0) {
+        navigator.setAppBadge(totalUnread).catch(() => {});
+    } else {
+        navigator.clearAppBadge && navigator.clearAppBadge().catch(() => {});
+    }
+}
+
+function getDeliveryStatusMarkup(status, isRead) {
     if (status === 'failed') {
         return '<span class="material-icons msg-status msg-status-failed" title="נכשל">error</span>';
     }
     if (status === 'queued' || status === 'pending') {
         return '<span class="material-icons msg-status msg-status-pending" title="ממתין">schedule</span>';
     }
-    return '<span class="material-icons msg-status msg-status-sent" title="נשלח">done_all</span>';
+    if (isRead) {
+        return '<span class="material-icons msg-status msg-status-read" title="נקרא">done_all</span>';
+    }
+    return '<span class="material-icons msg-status msg-status-delivered" title="נשלח">done_all</span>';
+}
+
+async function sendReadReceipt(senderName, messageIds, readAt) {
+    if (!senderName || !currentUserContext || !messageIds.length) return;
+    if (!navigator.onLine) return;
+    try {
+        await fetchWithRetry('https://www.tzmc.co.il/notify/read', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                reader: currentUserContext,
+                sender: senderName,
+                messageIds,
+                readAt
+            })
+        }, { timeoutMs: 8000, retries: 1 });
+    } catch (err) {
+        console.warn('Read receipt failed', err);
+    }
+}
+
+async function markChatAsRead(senderName) {
+    if (!senderName) return;
+    const senderKey = String(senderName).toLowerCase();
+    const toUpdate = allHistoryData.filter(msg =>
+        !isOutgoingMessage(msg) &&
+        !msg.readAt &&
+        String(msg.sender || '').toLowerCase() === senderKey
+    );
+    if (!toUpdate.length) return;
+
+    const readAt = Date.now();
+    const messageIds = [];
+    toUpdate.forEach(msg => {
+        msg.readAt = readAt;
+        if (msg.messageId) messageIds.push(msg.messageId);
+    });
+
+    renderContactList();
+    if (!viewChatRoom.classList.contains('hidden') && activeChatSender) {
+        renderChatMessages();
+    }
+    updateAppBadgeFromUnread();
+
+    try {
+        const db = await openDB();
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        toUpdate.forEach(msg => {
+            if (msg.id) {
+                store.put(msg);
+                return;
+            }
+            if (msg.messageId && store.indexNames.contains('messageId')) {
+                const req = store.index('messageId').get(msg.messageId);
+                req.onsuccess = () => {
+                    const record = req.result;
+                    if (record) {
+                        record.readAt = readAt;
+                        store.put(record);
+                    }
+                };
+            }
+        });
+    } catch (err) {
+        console.warn('Failed to mark read', err);
+    }
+
+    if (messageIds.length) {
+        sendReadReceipt(senderName, messageIds, readAt);
+    }
 }
 
 async function logClientEvent(eventName, payload = {}) {
@@ -509,6 +602,7 @@ window.addEventListener('load', async () => {
                         if (!viewChatRoom.classList.contains('hidden') && activeChatSender) {
                             renderChatMessages();
                         }
+                        updateAppBadgeFromUnread();
                     }
                     loadAndGroupHistory();
                 }
@@ -1079,7 +1173,11 @@ async function loadAndGroupHistory() {
         if (typeof renderContactList === 'function') {
             renderContactList();
         }
-        if (!viewChatRoom.classList.contains('hidden') && activeChatSender) renderChatMessages(); 
+        if (!viewChatRoom.classList.contains('hidden') && activeChatSender) {
+            renderChatMessages();
+            markChatAsRead(activeChatSender);
+        }
+        updateAppBadgeFromUnread();
     };
 }
 function renderContactList() {
@@ -1100,7 +1198,13 @@ function renderContactList() {
     const sortedSenders = Object.values(groups).map(group => {
         const msgs = group.msgs;
         const lastMsg = msgs[msgs.length - 1];
-        const isOutgoing = lastMsg.direction === 'outgoing' || lastMsg.reply;
+        const isOutgoing = isOutgoingMessage(lastMsg);
+        const unreadCount = msgs.reduce((count, msg) => {
+            if (!isOutgoingMessage(msg) && !msg.readAt) {
+                return count + 1;
+            }
+            return count;
+        }, 0);
         
         let lastText = isOutgoing ? `אתה: ${lastMsg.body || lastMsg.reply}` : lastMsg.body;
         
@@ -1113,7 +1217,8 @@ function renderContactList() {
             name: group.displayName, 
             lastMsg: lastText,
             timestamp: lastMsg.timestamp,
-            msgs: msgs
+            msgs: msgs,
+            unreadCount
         };
     }).sort((a,b) => b.timestamp - a.timestamp);
 
@@ -1143,7 +1248,15 @@ function renderContactList() {
 
         const meta = document.createElement('div');
         meta.className = 'contact-meta';
-        meta.textContent = timeStr;
+        const timeEl = document.createElement('span');
+        timeEl.textContent = timeStr;
+        meta.appendChild(timeEl);
+        if (contact.unreadCount > 0) {
+            const badge = document.createElement('span');
+            badge.className = 'unread-badge';
+            badge.textContent = contact.unreadCount > 99 ? '99+' : String(contact.unreadCount);
+            meta.appendChild(badge);
+        }
 
         const actions = document.createElement('div');
         actions.className = 'contact-actions';
@@ -1288,14 +1401,14 @@ function renderChatMessages() {
             lastDateStr = dateStr;
         }
 
-        const isOutgoing = (msg.direction === 'outgoing' || msg.reply);
+        const isOutgoing = isOutgoingMessage(msg);
         const existingRow = document.getElementById(msgId);
         if (existingRow) {
             if (isOutgoing) {
                 const timeEl = existingRow.querySelector('.msg-time');
                 if (timeEl) {
                     const existingStatus = timeEl.querySelector('.msg-status');
-                    const statusMarkup = getDeliveryStatusMarkup(msg.deliveryStatus || 'sent');
+                    const statusMarkup = getDeliveryStatusMarkup(msg.deliveryStatus || 'sent', !!msg.readAt);
                     if (existingStatus) {
                         const temp = document.createElement('span');
                         temp.innerHTML = statusMarkup;
@@ -1355,7 +1468,7 @@ function renderChatMessages() {
             (bodyText ? `<div>${formatMessageText(bodyText)}</div>` : '') +
             `<div class="msg-time">` +
                 `${timeStr}` +
-                (isOutgoing ? getDeliveryStatusMarkup(msg.deliveryStatus || 'sent') : '') +
+                (isOutgoing ? getDeliveryStatusMarkup(msg.deliveryStatus || 'sent', !!msg.readAt) : '') +
             `</div>`;
 
         div.appendChild(bubble);

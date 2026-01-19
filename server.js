@@ -375,6 +375,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     const imageUrl = message.image || null;
     const finalSender = senderuser || 'System';
     const messageId = options.messageId || message.messageId || generateMessageId();
+    const shouldIncrementBadge = !options.skipBadge;
 
     console.log(`[PUSH] Searching subs for: ${targetUsersArray.join(', ')} from ${finalSender}`);
 
@@ -398,32 +399,36 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         
         // 2. Increment Badge (Server Memory)
         const userKey = String(subscription.username).trim().toLowerCase();
-        let currentCount = (unreadCounts[userKey] || 0) + 1;
-        unreadCounts[userKey] = currentCount;
+        let currentCount = unreadCounts[userKey] || 0;
+        if (shouldIncrementBadge) {
+            currentCount = currentCount + 1;
+            unreadCounts[userKey] = currentCount;
+        }
 
         const clickUrl = `https://www.tzmc.co.il/subscribes/?chat=${encodeURIComponent(finalSender)}&user=${encodeURIComponent(subscription.username)}`;
         const customData = message.data || {};
 
         // 3. [CRITICAL CHANGE] Rename keys to prevent collision
+        const payloadData = {
+            ...customData,
+            title: msgTitle,
+            body: msgBody.shortText || 'New Notification',
+            badge: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png', 
+            icon: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
+            requireInteraction: true,
+            image: imageUrl,
+            url: clickUrl,
+            user: subscription.username,
+            sender: finalSender,
+            messageId: messageId
+        };
+        if (shouldIncrementBadge) {
+            payloadData.badgeCount = currentCount;
+        }
+
         const payload = JSON.stringify({
             data: {
-                ...customData,
-                title: msgTitle,
-                body: msgBody.shortText || 'New Notification',
-                
-                // RENAMED: 'badge' -> 'badgeIcon' (The small monochrome icon)
-                badge: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png', 
-                icon: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
-                requireInteraction: true,
-                image: imageUrl,
-                
-                url: clickUrl,
-                user: subscription.username,
-                sender: finalSender,
-                
-                // THE NUMBER (Only this variable holds the integer)
-                badgeCount: currentCount,
-                messageId: messageId
+                ...payloadData
             }
         });
 
@@ -593,6 +598,32 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
     } catch (e) {
         console.error('[REPLY ERROR]', e);
         res.status(500).json({ error: e.message });
+    }
+});
+
+app.post(['/read', '/notify/read'], async (req, res) => {
+    try {
+        const { reader, sender, messageIds, readAt } = req.body;
+        if (!reader || !sender || !Array.isArray(messageIds) || messageIds.length === 0) {
+            return res.status(400).json({ status: 'error', message: 'Missing fields' });
+        }
+
+        const payload = {
+            title: '',
+            body: { shortText: '', longText: '' },
+            data: {
+                type: 'read-receipt',
+                messageIds,
+                readAt: readAt || Date.now(),
+                sender: reader
+            }
+        };
+
+        const result = await sendPushNotificationToUser(sender, payload, reader, { skipBadge: true });
+        res.json({ status: 'ok', details: result });
+    } catch (err) {
+        console.error('[READ RECEIPT] Failed:', err.message);
+        res.status(500).json({ status: 'error', message: err.message });
     }
 });
 
