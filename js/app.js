@@ -300,7 +300,20 @@ function renderListInBatches(items, container, renderItem, batchSize = 30, onCom
 }
 
 function shouldIncludeRecord(record) {
-    if (!record || !currentUserContext) return false;
+    if (!record) return false;
+    if (!currentUserContext) {
+        if (record.user) {
+            currentUserContext = record.user;
+            localStorage.setItem('username', record.user);
+        } else if (record.url) {
+            const match = record.url.match(/[?&]user=([^&]+)/);
+            if (match && match[1]) {
+                currentUserContext = decodeURIComponent(match[1]);
+                localStorage.setItem('username', currentUserContext);
+            }
+        }
+    }
+    if (!currentUserContext) return false;
     const currentLower = String(currentUserContext).toLowerCase();
     const recordUser = record.user ? String(record.user).toLowerCase() : '';
     if (recordUser && recordUser === currentLower) return true;
