@@ -16,15 +16,14 @@ const ASSETS_TO_CACHE = [
   './css/style.css',
   './css/style.css?v=29.0',
   './js/shared-config.js',
-  './js/shared-config.js?v=1.0',
+  './js/shared-config.js?v=1.1',
   './js/i18n.js',
-  './js/i18n.js?v=1.0',
+  './js/i18n.js?v=1.1',
   './js/network.js',
-  './js/network.js?v=1.0',
+  './js/network.js?v=1.1',
   './js/app.js',
-  './js/app.js?v=33.0',
+  './js/app.js?v=33.2',
   './js/bot.js',
-  './js/bot.js?v=4.0',
   './manifest.webmanifest',
   './favicon.ico',
   './assets/icon-128.png',
@@ -34,9 +33,30 @@ const ASSETS_TO_CACHE = [
 
 
 
+function upgradeDb(version, resolve, reject) {
+  const upgradeRequest = indexedDB.open(DB_NAME, version);
+  upgradeRequest.onerror = (event) => reject('DB Error: ' + event.target.error);
+  upgradeRequest.onupgradeneeded = (event) => {
+    const db = event.target.result;
+    let store;
+    if (!db.objectStoreNames.contains(STORE_NAME)) {
+      store = db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+    } else {
+      store = event.target.transaction.objectStore(STORE_NAME);
+    }
+    if (store && !store.indexNames.contains('messageId')) {
+      store.createIndex('messageId', 'messageId', { unique: false });
+    }
+    if (!db.objectStoreNames.contains(OUTBOX_STORE)) {
+      db.createObjectStore(OUTBOX_STORE, { keyPath: 'id', autoIncrement: true });
+    }
+  };
+  upgradeRequest.onsuccess = (event) => resolve(event.target.result);
+}
+
 function openDB() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    const request = indexedDB.open(DB_NAME);
     request.onerror = (event) => reject('DB Error: ' + event.target.error);
     request.onupgradeneeded = (event) => {
       const db = event.target.result;
@@ -53,7 +73,28 @@ function openDB() {
         db.createObjectStore(OUTBOX_STORE, { keyPath: 'id', autoIncrement: true });
       }
     };
-    request.onsuccess = (event) => resolve(event.target.result);
+    request.onsuccess = (event) => {
+      const db = event.target.result;
+      const hasHistory = db.objectStoreNames.contains(STORE_NAME);
+      const hasOutbox = db.objectStoreNames.contains(OUTBOX_STORE);
+      let hasIndex = true;
+      if (hasHistory) {
+        try {
+          const tx = db.transaction(STORE_NAME, 'readonly');
+          const store = tx.objectStore(STORE_NAME);
+          hasIndex = store.indexNames.contains('messageId');
+        } catch (err) {
+          hasIndex = true;
+        }
+      }
+      if (hasHistory && hasOutbox && hasIndex) {
+        resolve(db);
+        return;
+      }
+      const nextVersion = db.version + 1;
+      db.close();
+      upgradeDb(nextVersion, resolve, reject);
+    };
   });
 }
 
@@ -201,7 +242,7 @@ async function flushOutbox() {
       await updateMessageStatus(record.messageId, attempts >= 3 ? 'failed' : 'queued');
     }
   }
-  const clientsList = await self.clients.matchAll();
+  const clientsList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
   clientsList.forEach(client => client.postMessage({ action: 'outbox-updated' }));
 }
 
@@ -319,7 +360,7 @@ self.addEventListener('push', event => {
                       msg.image = null; 
                       msg.thumbnail = null;
                       store.put(msg);
-                      self.clients.matchAll().then(clients => {
+                      self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
                           clients.forEach(client => client.postMessage({ action: 'refresh' }));
                           resolve(); 
                       });
@@ -375,8 +416,8 @@ self.addEventListener('push', event => {
   const notificationPromise = self.registration.showNotification(title, options);
   const savePromise = saveNotificationExplicit(recordToSave);
   const refreshPromise = savePromise.then(() =>
-      self.clients.matchAll().then(clients => {
-          clients.forEach(client => client.postMessage({ action: 'refresh' }));
+      self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
+          clients.forEach(client => client.postMessage({ action: 'refresh', record: recordToSave }));
       })
   );
 
