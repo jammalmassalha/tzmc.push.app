@@ -201,7 +201,7 @@ async function flushOutbox() {
       await updateMessageStatus(record.messageId, attempts >= 3 ? 'failed' : 'queued');
     }
   }
-  const clientsList = await self.clients.matchAll();
+  const clientsList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
   clientsList.forEach(client => client.postMessage({ action: 'outbox-updated' }));
 }
 
@@ -319,7 +319,7 @@ self.addEventListener('push', event => {
                       msg.image = null; 
                       msg.thumbnail = null;
                       store.put(msg);
-                      self.clients.matchAll().then(clients => {
+                      self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
                           clients.forEach(client => client.postMessage({ action: 'refresh' }));
                           resolve(); 
                       });
@@ -375,7 +375,7 @@ self.addEventListener('push', event => {
   const notificationPromise = self.registration.showNotification(title, options);
   const savePromise = saveNotificationExplicit(recordToSave);
   const refreshPromise = savePromise.then(() =>
-      self.clients.matchAll().then(clients => {
+      self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
           clients.forEach(client => client.postMessage({ action: 'refresh', record: recordToSave }));
       })
   );
