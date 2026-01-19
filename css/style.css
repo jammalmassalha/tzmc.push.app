@@ -88,8 +88,8 @@ body {
 #mainMenu {
     top: 33px  !important;
     bottom: auto !important;
-    right: 0  !important;
-    left: auto  !important;
+    right: auto !important;
+    left: 0 !important;
     margin-top: 5px;
     transform-origin: top left;
     z-index: 2000;              /* Ensure it sits on top of everything */
@@ -116,7 +116,7 @@ body {
 
 .main-menu-wrapper {
     position: relative;
-    margin-right: 10px;     float: right;
+    margin-right: 10px;
 }
 
 .main-menu-btn {
