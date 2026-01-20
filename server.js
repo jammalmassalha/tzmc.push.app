@@ -545,7 +545,7 @@ app.post(['/upload', '/notify/upload'], uploadFields, (req, res) => {
 
 app.post(['/reply', '/notify/reply'], async (req, res) => {
     try {
-        const { user, reply, originalSender, imageUrl, senderName } = req.body;
+        const { user, reply, originalSender, imageUrl, senderName, messageId: clientMessageId } = req.body;
         console.log(`[REPLY] From: ${user} | To: ${originalSender}`);
 
         const targetToNotify = (originalSender && originalSender !== 'System') ? originalSender : ['Jmassalha'];
@@ -570,7 +570,7 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
             })
         }, { timeoutMs: 10000, retries: 2 }).catch(err => console.error('[SHEET ERROR] Failed to save reply:', err.message));
 
-        const messageId = generateMessageId();
+        const messageId = clientMessageId || generateMessageId();
         const notificationData = {
             messageId,
             title: `New message from ${senderName || user}`,

@@ -1249,6 +1249,7 @@ function renderContactList() {
         const meta = document.createElement('div');
         meta.className = 'contact-meta';
         const timeEl = document.createElement('span');
+        timeEl.className = 'contact-meta-time';
         timeEl.textContent = timeStr;
         meta.appendChild(timeEl);
         if (contact.unreadCount > 0) {
