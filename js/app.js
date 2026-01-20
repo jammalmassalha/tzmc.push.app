@@ -84,6 +84,13 @@ const confirmModal = document.getElementById('confirmModal');
 const confirmModalMessage = document.getElementById('confirmModalMessage');
 const confirmModalConfirm = document.getElementById('confirmModalConfirm');
 const confirmModalCancel = document.getElementById('confirmModalCancel');
+const releaseNotesModal = document.getElementById('releaseNotesModal');
+const releaseNotesTitle = document.getElementById('releaseNotesTitle');
+const releaseNotesList = document.getElementById('releaseNotesList');
+const releaseNotesVersion = document.getElementById('releaseNotesVersion');
+const releaseNotesCloseBtn = document.getElementById('releaseNotesCloseBtn');
+const releaseNotesReloadBtn = document.getElementById('releaseNotesReloadBtn');
+const releaseNotesLaterBtn = document.getElementById('releaseNotesLaterBtn');
 const toastContainer = document.getElementById('toastContainer');
 const networkStatus = document.getElementById('networkStatus');
 const networkStatusChat = document.getElementById('networkStatusChat');
@@ -104,6 +111,12 @@ if (fileInput) fileInput.addEventListener('change', () => handleFileUpload(fileI
 if (btnDeleteEveryone) btnDeleteEveryone.addEventListener('click', () => confirmDelete('everyone'));
 if (btnDeleteMe) btnDeleteMe.addEventListener('click', () => confirmDelete('me'));
 if (btnDeleteClose) btnDeleteClose.addEventListener('click', closeDeleteModal);
+if (releaseNotesCloseBtn) releaseNotesCloseBtn.addEventListener('click', closeReleaseNotesModal);
+if (releaseNotesLaterBtn) releaseNotesLaterBtn.addEventListener('click', closeReleaseNotesModal);
+if (releaseNotesReloadBtn) releaseNotesReloadBtn.addEventListener('click', () => {
+    closeReleaseNotesModal();
+    handleReloadNow('release-notes');
+});
 
 // --- HELPER: GET DISPLAY NAME ---
 function getDisplayName(username) {
@@ -191,6 +204,52 @@ function showToast(message, type = 'info', duration = 3000) {
     setTimeout(() => toast.remove(), duration);
 }
 
+let updateToastEl = null;
+
+function clearUpdateToast() {
+    if (updateToastEl) {
+        updateToastEl.remove();
+        updateToastEl = null;
+    }
+}
+
+function showUpdateToast(versionLabel = '') {
+    if (!toastContainer || updateToastEl) return;
+    const label = versionLabel ? `(${versionLabel})` : '';
+    const message = t('update_available', { version: label }).trim();
+    const toast = document.createElement('div');
+    toast.className = 'toast toast--update';
+    const content = document.createElement('div');
+    content.className = 'toast__content';
+    const icon = document.createElement('span');
+    icon.className = 'material-icons';
+    icon.textContent = 'system_update';
+    const text = document.createElement('span');
+    text.textContent = message;
+    content.appendChild(icon);
+    content.appendChild(text);
+
+    const actions = document.createElement('div');
+    actions.className = 'toast__actions';
+    const reloadBtn = document.createElement('button');
+    reloadBtn.className = 'toast__btn toast__btn-primary';
+    reloadBtn.type = 'button';
+    reloadBtn.textContent = t('update_reload_now');
+    reloadBtn.addEventListener('click', () => handleReloadNow('toast'));
+    const laterBtn = document.createElement('button');
+    laterBtn.className = 'toast__btn';
+    laterBtn.type = 'button';
+    laterBtn.textContent = t('update_later');
+    laterBtn.addEventListener('click', clearUpdateToast);
+    actions.appendChild(reloadBtn);
+    actions.appendChild(laterBtn);
+
+    toast.appendChild(content);
+    toast.appendChild(actions);
+    toastContainer.appendChild(toast);
+    updateToastEl = toast;
+}
+
 function openModal(modal) {
     if (!modal) return;
     modal.classList.remove('hidden');
@@ -203,6 +262,47 @@ function closeModal(modal) {
     modal.classList.add('hidden');
     modal.setAttribute('aria-hidden', 'true');
     releaseFocus(modal);
+}
+
+function closeReleaseNotesModal() {
+    closeModal(releaseNotesModal);
+}
+
+function normalizeReleaseNotes(notes) {
+    if (!notes) return [];
+    if (Array.isArray(notes)) return notes.filter(Boolean);
+    if (typeof notes === 'string') {
+        return notes.split('\n').map(item => item.trim()).filter(Boolean);
+    }
+    if (typeof notes === 'object' && Array.isArray(notes.items)) {
+        return notes.items.filter(Boolean);
+    }
+    return [];
+}
+
+function showReleaseNotesModal(version, notes = []) {
+    if (!releaseNotesModal || !releaseNotesList) return;
+    const noteItems = normalizeReleaseNotes(notes);
+    const finalNotes = noteItems.length ? noteItems : [t('release_notes_default')];
+    if (releaseNotesTitle) {
+        releaseNotesTitle.textContent = t('release_notes_title');
+    }
+    if (releaseNotesVersion) {
+        releaseNotesVersion.textContent = version ? t('release_notes_version', { version }) : '';
+    }
+    if (releaseNotesReloadBtn) {
+        releaseNotesReloadBtn.textContent = t('update_reload_now');
+    }
+    if (releaseNotesLaterBtn) {
+        releaseNotesLaterBtn.textContent = t('update_later');
+    }
+    releaseNotesList.innerHTML = '';
+    finalNotes.forEach(note => {
+        const li = document.createElement('li');
+        li.textContent = note;
+        releaseNotesList.appendChild(li);
+    });
+    openModal(releaseNotesModal);
 }
 
 function trapFocus(modal) {
@@ -600,12 +700,12 @@ window.addEventListener('load', async () => {
                     skipControllerChange = false;
                     return;
                 }
-                if (document.hidden) {
-                    pendingUpdateReload = true;
-                    console.log('[Update] SW activated in background; will reload on focus.');
+                if (isHardReloading) {
                     return;
                 }
-                forceHardReload('sw-controller-change');
+                pendingUpdateReload = true;
+                console.log('[Update] New service worker activated.');
+                ensureUpdateToast();
             });
 
             if (registration) {
@@ -614,10 +714,7 @@ window.addEventListener('load', async () => {
                     if (!installing) return;
                     installing.addEventListener('statechange', () => {
                         if (installing.state === 'installed' && navigator.serviceWorker.controller) {
-                            const waiting = registration.waiting;
-                            if (waiting) {
-                                waiting.postMessage({ type: 'SKIP_WAITING' });
-                            }
+                            setWaitingServiceWorker(registration, 'install');
                         }
                     });
                 });
@@ -741,6 +838,7 @@ window.addEventListener('load', async () => {
         loadingDiv.classList.add('hidden');
         viewSetup.classList.remove('hidden');
     }
+    restorePendingUpdate();
     setTimeout(clearAppBadge, 2000);
 });
 
@@ -1926,8 +2024,9 @@ document.addEventListener('visibilitychange', () => {
         refreshOnVisible();
         if (pendingUpdateReload) {
             pendingUpdateReload = false;
-            forceHardReload('resume-update');
+            ensureUpdateToast();
         }
+        ensureUpdateToast();
     } else {
         requestServiceWorkerUpdate('background');
     }
@@ -2017,12 +2116,55 @@ function refreshOnVisible() {
 }
 window.addEventListener('focus', refreshOnVisible);
 
-// --- AUTO RELOAD ON UPDATE ---
+// --- UPDATE EXPERIENCE ---
 let currentAppVersion = null;
 let isHardReloading = false;
 let pendingUpdateReload = false;
+let pendingUpdateVersion = null;
+let waitingServiceWorker = null;
 let lastSwUpdateCheck = 0;
 const SW_UPDATE_THROTTLE_MS = 60 * 1000;
+const UPDATE_PENDING_KEY = 'pendingUpdateVersion';
+const RELEASE_NOTES_SEEN_KEY = 'releaseNotesSeenVersion';
+
+function ensureUpdateToast() {
+    if (pendingUpdateVersion) {
+        showUpdateToast(pendingUpdateVersion);
+        return;
+    }
+    if (pendingUpdateReload) {
+        showUpdateToast('');
+    }
+}
+
+function setWaitingServiceWorker(registration, reason = 'update') {
+    if (!registration || !registration.waiting) return;
+    waitingServiceWorker = registration.waiting;
+    pendingUpdateReload = true;
+    console.log(`[Update] New SW waiting (${reason}).`);
+    ensureUpdateToast();
+}
+
+async function activateWaitingServiceWorker() {
+    if (!('serviceWorker' in navigator)) return;
+    try {
+        const registration = await navigator.serviceWorker.getRegistration();
+        const waiting = waitingServiceWorker || (registration ? registration.waiting : null);
+        if (waiting) {
+            waiting.postMessage({ type: 'SKIP_WAITING' });
+        }
+    } catch (e) {
+        console.warn('Failed to activate waiting SW:', e);
+    }
+}
+
+function handleReloadNow(reason = 'update') {
+    pendingUpdateReload = false;
+    pendingUpdateVersion = null;
+    localStorage.removeItem(UPDATE_PENDING_KEY);
+    clearUpdateToast();
+    forceHardReload(reason);
+}
 
 async function requestServiceWorkerUpdate(reason = 'manual') {
     if (!('serviceWorker' in navigator)) return;
@@ -2034,9 +2176,7 @@ async function requestServiceWorkerUpdate(reason = 'manual') {
         const registration = await navigator.serviceWorker.getRegistration();
         if (!registration) return;
         await registration.update();
-        if (registration.waiting) {
-            registration.waiting.postMessage({ type: 'SKIP_WAITING' });
-        }
+        setWaitingServiceWorker(registration, reason);
         console.log(`[Update] Background SW check (${reason}).`);
     } catch (e) {
         console.warn('SW update check failed:', e);
@@ -2048,13 +2188,11 @@ async function forceHardReload(reason = 'update') {
     isHardReloading = true;
     console.log(`[Update] Forcing hard reload (${reason}).`);
     try {
+        await activateWaitingServiceWorker();
         if ('serviceWorker' in navigator) {
             const registration = await navigator.serviceWorker.getRegistration();
             if (registration) {
                 await registration.update().catch(() => {});
-                if (registration.waiting) {
-                    registration.waiting.postMessage({ type: 'SKIP_WAITING' });
-                }
             }
         }
         if ('caches' in window) {
@@ -2067,6 +2205,32 @@ async function forceHardReload(reason = 'update') {
         const url = new URL(window.location.href);
         url.searchParams.set('__reload', Date.now().toString());
         window.location.replace(url.toString());
+    }
+}
+
+function maybeShowReleaseNotes(version, notes) {
+    if (!version) return;
+    const lastSeen = localStorage.getItem(RELEASE_NOTES_SEEN_KEY);
+    if (lastSeen === version) return;
+    showReleaseNotesModal(version, notes);
+    localStorage.setItem(RELEASE_NOTES_SEEN_KEY, version);
+}
+
+function handleUpdateAvailable(version, notes) {
+    if (version) {
+        pendingUpdateVersion = version;
+        localStorage.setItem(UPDATE_PENDING_KEY, version);
+    }
+    ensureUpdateToast();
+    maybeShowReleaseNotes(version, notes);
+    requestServiceWorkerUpdate('version-change');
+}
+
+function restorePendingUpdate() {
+    const stored = localStorage.getItem(UPDATE_PENDING_KEY);
+    if (stored) {
+        pendingUpdateVersion = stored;
+        ensureUpdateToast();
     }
 }
 
@@ -2084,6 +2248,7 @@ async function checkVersion() {
 
         const data = await res.json();
         const serverVersion = data.version;
+        const releaseNotes = data.notes || data.releaseNotes || [];
 
         // 1. First Load: Just set the variable
         if (currentAppVersion === null) {
@@ -2091,11 +2256,11 @@ async function checkVersion() {
             return;
         }
 
-        // 2. Update Detected: Clear Cache and Reload
+        // 2. Update Detected: Notify user and preload update
         if (currentAppVersion !== serverVersion) {
             console.log(`Update detected: ${currentAppVersion} -> ${serverVersion}`);
             currentAppVersion = serverVersion;
-            await forceHardReload('version-change');
+            handleUpdateAvailable(serverVersion, releaseNotes);
         }
     } catch (e) { 
         console.error('Version check failed:', e); 
