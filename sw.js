@@ -7,7 +7,7 @@ const DB_NAME = config.DB_NAME || 'PushNotificationsDB';
 const STORE_NAME = config.STORE_NAME || 'history';
 const OUTBOX_STORE = config.OUTBOX_STORE || 'outbox';
 const DB_VERSION = config.DB_VERSION || 3;
-const CACHE_NAME = config.CACHE_NAME || 'static-assets-v2';
+const CACHE_NAME = config.CACHE_NAME || 'static-assets-v3';
 
 const ASSETS_TO_CACHE = [
   './',
@@ -266,6 +266,13 @@ self.addEventListener('install', event => {
 
 self.addEventListener('activate', event => {
   event.waitUntil((async () => {
+    if (self.registration && self.registration.navigationPreload) {
+      try {
+        await self.registration.navigationPreload.enable();
+      } catch (err) {
+        console.warn('[SW] Navigation preload enable failed:', err);
+      }
+    }
     const keys = await caches.keys();
     await Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key)));
     await clients.claim();
@@ -301,7 +308,20 @@ self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
   if (event.request.mode === 'navigate') {
-    event.respondWith(networkFirst(event.request));
+    event.respondWith((async () => {
+      const cache = await caches.open(CACHE_NAME);
+      try {
+        const preloadResponse = await event.preloadResponse;
+        const response = preloadResponse || await fetch(event.request);
+        if (response && response.ok) {
+          cache.put(event.request, response.clone());
+        }
+        return response;
+      } catch (e) {
+        const cached = await cache.match(event.request);
+        return cached || cache.match('./offline.html');
+      }
+    })());
     return;
   }
   if (url.origin === self.location.origin) {

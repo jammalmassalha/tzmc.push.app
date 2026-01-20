@@ -590,7 +590,32 @@ window.addEventListener('load', async () => {
     if ('serviceWorker' in navigator) {
         try {
             const swUrl = new URL('sw.js', window.location.href).toString();
-            await navigator.serviceWorker.register(swUrl);
+            const hadController = Boolean(navigator.serviceWorker.controller);
+            const registration = await navigator.serviceWorker.register(swUrl);
+
+            let skipControllerChange = !hadController;
+            navigator.serviceWorker.addEventListener('controllerchange', () => {
+                if (skipControllerChange) {
+                    skipControllerChange = false;
+                    return;
+                }
+                forceHardReload('sw-controller-change');
+            });
+
+            if (registration) {
+                registration.addEventListener('updatefound', () => {
+                    const installing = registration.installing;
+                    if (!installing) return;
+                    installing.addEventListener('statechange', () => {
+                        if (installing.state === 'installed' && navigator.serviceWorker.controller) {
+                            const waiting = registration.waiting;
+                            if (waiting) {
+                                waiting.postMessage({ type: 'SKIP_WAITING' });
+                            }
+                        }
+                    });
+                });
+            }
             
             // [NEW] Listen for navigation messages from SW (iOS Fix)
             navigator.serviceWorker.addEventListener('message', (event) => {
@@ -1982,8 +2007,37 @@ window.addEventListener('focus', refreshOnVisible);
 
 // --- AUTO RELOAD ON UPDATE ---
 let currentAppVersion = null;
+let isHardReloading = false;
+
+async function forceHardReload(reason = 'update') {
+    if (isHardReloading) return;
+    isHardReloading = true;
+    console.log(`[Update] Forcing hard reload (${reason}).`);
+    try {
+        if ('serviceWorker' in navigator) {
+            const registration = await navigator.serviceWorker.getRegistration();
+            if (registration) {
+                await registration.update().catch(() => {});
+                if (registration.waiting) {
+                    registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+                }
+            }
+        }
+        if ('caches' in window) {
+            const keys = await caches.keys();
+            await Promise.all(keys.map(key => caches.delete(key)));
+        }
+    } catch (e) {
+        console.warn('Hard reload prep failed:', e);
+    } finally {
+        const url = new URL(window.location.href);
+        url.searchParams.set('__reload', Date.now().toString());
+        window.location.replace(url.toString());
+    }
+}
+
 async function checkVersion() {
-    if (document.hidden) return; 
+    if (document.hidden || !navigator.onLine) return;
 
     try {
         // Add timestamp to prevent caching of the version check itself
@@ -2006,28 +2060,8 @@ async function checkVersion() {
         // 2. Update Detected: Clear Cache and Reload
         if (currentAppVersion !== serverVersion) {
             console.log(`Update detected: ${currentAppVersion} -> ${serverVersion}`);
-            
-            // A. Update Service Worker
-            if ('serviceWorker' in navigator) {
-                const registrations = await navigator.serviceWorker.getRegistrations();
-                for (let registration of registrations) { 
-                    await registration.update(); 
-                    if (registration.waiting) {
-                        // Force the waiting worker to activate
-                        registration.waiting.postMessage({ type: 'SKIP_WAITING' });
-                    }
-                }
-            }
-
-            // B. Clear Browser Cache Storage (Crucial for PWAs)
-            if ('caches' in window) {
-                const keys = await caches.keys();
-                // Delete all old caches
-                await Promise.all(keys.map(key => caches.delete(key)));
-            }
-
-            // C. Force Reload from Server (ignoring cache)
-            window.location.reload(true);
+            currentAppVersion = serverVersion;
+            await forceHardReload('version-change');
         }
     } catch (e) { 
         console.error('Version check failed:', e); 
