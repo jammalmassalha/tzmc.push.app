@@ -187,11 +187,27 @@
             </div>
         </div>
       </div>
+      <div id="releaseNotesModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="releaseNotesTitle" aria-hidden="true">
+        <div class="modal-content modal-release" role="document">
+            <div class="modal-header">
+                <span id="releaseNotesTitle">מה חדש</span>
+                <button id="releaseNotesCloseBtn" class="material-icons icon-btn modal-close-btn" type="button" aria-label="סגור" title="סגור">close</button>
+            </div>
+            <div class="release-notes-body">
+                <p id="releaseNotesVersion" class="release-notes-version"></p>
+                <ul id="releaseNotesList" class="release-notes-list"></ul>
+            </div>
+            <div class="modal-actions release-notes-actions">
+                <button id="releaseNotesReloadBtn" class="btn btn-primary" type="button">טען מחדש</button>
+                <button id="releaseNotesLaterBtn" class="btn btn-secondary" type="button">מאוחר יותר</button>
+            </div>
+        </div>
+      </div>
       <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
       <script src="js/shared-config.js?v=1.8"></script>
-      <script src="js/i18n.js?v=1.8"></script>
+      <script src="js/i18n.js?v=1.9"></script>
       <script src="js/network.js?v=1.8"></script>
-      <script src="js/app.js?v=33.99"></script>
+      <script src="js/app.js?v=34.0"></script>
       <!--<script src="js/bot.js?v=4.0"></script>-->
     
     </body>

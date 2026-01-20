@@ -470,6 +470,40 @@ button.icon-btn {
     color: var(--text-secondary);
 }
 
+.modal-release {
+    width: 90%;
+    max-width: 420px;
+    height: auto;
+    max-height: 80vh;
+}
+
+.release-notes-body {
+    padding: 16px 20px 8px;
+    overflow-y: auto;
+}
+
+.release-notes-version {
+    margin: 0 0 10px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.release-notes-list {
+    margin: 0;
+    padding: 0 18px 0 0;
+    list-style: disc;
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+.release-notes-list li + li {
+    margin-top: 8px;
+}
+
+.release-notes-actions {
+    padding: 0 20px 16px;
+}
+
 .chat-container { 
     background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); 
     background-repeat: repeat; background-color: #efeae2; 
@@ -786,6 +820,39 @@ button.icon-btn {
     border-radius: 8px;
     font-size: 13px;
     box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+
+.toast--update {
+    background: #1f2a44;
+}
+
+.toast__content {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.toast__actions {
+    margin-top: 8px;
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.toast__btn {
+    border: 1px solid rgba(255,255,255,0.4);
+    background: transparent;
+    color: #fff;
+    padding: 6px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.toast__btn-primary {
+    background: #ffffff;
+    color: #1f2a44;
+    border-color: #ffffff;
 }
 
 .toast--success {

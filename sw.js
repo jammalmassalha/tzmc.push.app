@@ -7,7 +7,7 @@ const DB_NAME = config.DB_NAME || 'PushNotificationsDB';
 const STORE_NAME = config.STORE_NAME || 'history';
 const OUTBOX_STORE = config.OUTBOX_STORE || 'outbox';
 const DB_VERSION = config.DB_VERSION || 3;
-const CACHE_NAME = config.CACHE_NAME || 'static-assets-v3';
+const CACHE_NAME = config.CACHE_NAME || 'static-assets-v4';
 
 const ASSETS_TO_CACHE = [
   './',
@@ -16,13 +16,13 @@ const ASSETS_TO_CACHE = [
   './css/style.css',
   './css/style.css?v=29.0',
   './js/shared-config.js',
-  './js/shared-config.js?v=1.2',
+  './js/shared-config.js?v=1.8',
   './js/i18n.js',
-  './js/i18n.js?v=1.2',
+  './js/i18n.js?v=1.9',
   './js/network.js',
-  './js/network.js?v=1.2',
+  './js/network.js?v=1.8',
   './js/app.js',
-  './js/app.js?v=33.4',
+  './js/app.js?v=34.0',
   './js/bot.js',
   './manifest.webmanifest',
   './favicon.ico',
