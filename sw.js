@@ -22,7 +22,7 @@ const ASSETS_TO_CACHE = [
   './js/network.js',
   './js/network.js?v=1.2',
   './js/app.js',
-  './js/app.js?v=33.4',
+  './js/app.js?v=33.5',
   './js/bot.js',
   './manifest.webmanifest',
   './favicon.ico',

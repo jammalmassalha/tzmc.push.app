@@ -378,6 +378,7 @@ function updateNetworkStatus() {
     });
     if (isOnline) {
         requestOutboxFlush();
+        requestServiceWorkerUpdate('online');
     }
 }
 
@@ -597,6 +598,11 @@ window.addEventListener('load', async () => {
             navigator.serviceWorker.addEventListener('controllerchange', () => {
                 if (skipControllerChange) {
                     skipControllerChange = false;
+                    return;
+                }
+                if (document.hidden) {
+                    pendingUpdateReload = true;
+                    console.log('[Update] SW activated in background; will reload on focus.');
                     return;
                 }
                 forceHardReload('sw-controller-change');
@@ -1918,6 +1924,12 @@ document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
         clearAppBadge();
         refreshOnVisible();
+        if (pendingUpdateReload) {
+            pendingUpdateReload = false;
+            forceHardReload('resume-update');
+        }
+    } else {
+        requestServiceWorkerUpdate('background');
     }
 });
 
@@ -2008,6 +2020,28 @@ window.addEventListener('focus', refreshOnVisible);
 // --- AUTO RELOAD ON UPDATE ---
 let currentAppVersion = null;
 let isHardReloading = false;
+let pendingUpdateReload = false;
+let lastSwUpdateCheck = 0;
+const SW_UPDATE_THROTTLE_MS = 60 * 1000;
+
+async function requestServiceWorkerUpdate(reason = 'manual') {
+    if (!('serviceWorker' in navigator)) return;
+    if (!navigator.onLine) return;
+    const now = Date.now();
+    if (now - lastSwUpdateCheck < SW_UPDATE_THROTTLE_MS) return;
+    lastSwUpdateCheck = now;
+    try {
+        const registration = await navigator.serviceWorker.getRegistration();
+        if (!registration) return;
+        await registration.update();
+        if (registration.waiting) {
+            registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+        }
+        console.log(`[Update] Background SW check (${reason}).`);
+    } catch (e) {
+        console.warn('SW update check failed:', e);
+    }
+}
 
 async function forceHardReload(reason = 'update') {
     if (isHardReloading) return;
