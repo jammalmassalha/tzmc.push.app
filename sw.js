@@ -305,6 +305,11 @@ self.addEventListener('fetch', event => {
     return;
   }
   if (url.origin === self.location.origin) {
+    const destination = event.request.destination;
+    if (destination === 'script' || destination === 'style') {
+      event.respondWith(networkFirst(event.request));
+      return;
+    }
     event.respondWith(cacheFirst(event.request));
   }
 });
