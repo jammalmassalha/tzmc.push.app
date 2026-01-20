@@ -17,7 +17,7 @@ const crypto = require('crypto');
 // --- 1. SETUP UPLOADS FOLDER ---
 const uploadDir = path.join(__dirname, 'uploads');
 const app = express();
-const SERVER_VERSION = '1.19'; // Bumped version
+const SERVER_VERSION = '1.20'; // Bumped version
 
 const fsp = fs.promises;
 const stateDir = path.join(__dirname, 'data');
