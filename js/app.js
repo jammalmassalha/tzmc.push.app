@@ -378,17 +378,111 @@ function updateNetworkStatus() {
     });
     if (isOnline) {
         requestOutboxFlush();
+        requestServiceWorkerUpdate('online');
     }
 }
 
-function getDeliveryStatusMarkup(status) {
+function isOutgoingMessage(msg) {
+    return msg && (msg.direction === 'outgoing' || msg.reply);
+}
+
+function updateAppBadgeFromUnread() {
+    if (!navigator.setAppBadge) return;
+    const totalUnread = allHistoryData.reduce((count, msg) => {
+        if (msg && !isOutgoingMessage(msg) && !msg.readAt) {
+            return count + 1;
+        }
+        return count;
+    }, 0);
+    if (totalUnread > 0) {
+        navigator.setAppBadge(totalUnread).catch(() => {});
+    } else {
+        navigator.clearAppBadge && navigator.clearAppBadge().catch(() => {});
+    }
+}
+
+function getDeliveryStatusMarkup(status, isRead) {
     if (status === 'failed') {
         return '<span class="material-icons msg-status msg-status-failed" title="נכשל">error</span>';
     }
     if (status === 'queued' || status === 'pending') {
         return '<span class="material-icons msg-status msg-status-pending" title="ממתין">schedule</span>';
     }
-    return '<span class="material-icons msg-status msg-status-sent" title="נשלח">done_all</span>';
+    if (isRead) {
+        return '<span class="material-icons msg-status msg-status-read" title="נקרא">done_all</span>';
+    }
+    return '<span class="material-icons msg-status msg-status-delivered" title="נשלח">done_all</span>';
+}
+
+async function sendReadReceipt(senderName, messageIds, readAt) {
+    if (!senderName || !currentUserContext || !messageIds.length) return;
+    if (!navigator.onLine) return;
+    try {
+        await fetchWithRetry('https://www.tzmc.co.il/notify/read', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                reader: currentUserContext,
+                sender: senderName,
+                messageIds,
+                readAt
+            })
+        }, { timeoutMs: 8000, retries: 1 });
+    } catch (err) {
+        console.warn('Read receipt failed', err);
+    }
+}
+
+async function markChatAsRead(senderName) {
+    if (!senderName) return;
+    const senderKey = String(senderName).toLowerCase();
+    const toUpdate = allHistoryData.filter(msg =>
+        !isOutgoingMessage(msg) &&
+        !msg.readAt &&
+        String(msg.sender || '').toLowerCase() === senderKey
+    );
+    if (!toUpdate.length) return;
+
+    const readAt = Date.now();
+    const messageIds = [];
+    toUpdate.forEach(msg => {
+        msg.readAt = readAt;
+        if (msg.messageId) messageIds.push(msg.messageId);
+    });
+
+    renderContactList();
+    if (!viewChatRoom.classList.contains('hidden') && activeChatSender) {
+        renderChatMessages();
+    }
+    updateAppBadgeFromUnread();
+
+    try {
+        const db = await openDB();
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        toUpdate.forEach(msg => {
+            if (msg.id) {
+                store.put(msg);
+                return;
+            }
+            if (msg.messageId && store.indexNames.contains('messageId')) {
+                const req = store.index('messageId').get(msg.messageId);
+                req.onsuccess = () => {
+                    const record = req.result;
+                    if (record) {
+                        record.readAt = readAt;
+                        store.put(record);
+                    }
+                };
+            }
+        });
+    } catch (err) {
+        console.warn('Failed to mark read', err);
+    }
+
+    if (messageIds.length) {
+        sendReadReceipt(senderName, messageIds, readAt);
+    }
 }
 
 async function logClientEvent(eventName, payload = {}) {
@@ -497,7 +591,37 @@ window.addEventListener('load', async () => {
     if ('serviceWorker' in navigator) {
         try {
             const swUrl = new URL('sw.js', window.location.href).toString();
-            await navigator.serviceWorker.register(swUrl);
+            const hadController = Boolean(navigator.serviceWorker.controller);
+            const registration = await navigator.serviceWorker.register(swUrl);
+
+            let skipControllerChange = !hadController;
+            navigator.serviceWorker.addEventListener('controllerchange', () => {
+                if (skipControllerChange) {
+                    skipControllerChange = false;
+                    return;
+                }
+                if (document.hidden) {
+                    pendingUpdateReload = true;
+                    console.log('[Update] SW activated in background; will reload on focus.');
+                    return;
+                }
+                forceHardReload('sw-controller-change');
+            });
+
+            if (registration) {
+                registration.addEventListener('updatefound', () => {
+                    const installing = registration.installing;
+                    if (!installing) return;
+                    installing.addEventListener('statechange', () => {
+                        if (installing.state === 'installed' && navigator.serviceWorker.controller) {
+                            const waiting = registration.waiting;
+                            if (waiting) {
+                                waiting.postMessage({ type: 'SKIP_WAITING' });
+                            }
+                        }
+                    });
+                });
+            }
             
             // [NEW] Listen for navigation messages from SW (iOS Fix)
             navigator.serviceWorker.addEventListener('message', (event) => {
@@ -509,6 +633,7 @@ window.addEventListener('load', async () => {
                         if (!viewChatRoom.classList.contains('hidden') && activeChatSender) {
                             renderChatMessages();
                         }
+                        updateAppBadgeFromUnread();
                     }
                     loadAndGroupHistory();
                 }
@@ -1079,7 +1204,11 @@ async function loadAndGroupHistory() {
         if (typeof renderContactList === 'function') {
             renderContactList();
         }
-        if (!viewChatRoom.classList.contains('hidden') && activeChatSender) renderChatMessages(); 
+        if (!viewChatRoom.classList.contains('hidden') && activeChatSender) {
+            renderChatMessages();
+            markChatAsRead(activeChatSender);
+        }
+        updateAppBadgeFromUnread();
     };
 }
 function renderContactList() {
@@ -1100,7 +1229,13 @@ function renderContactList() {
     const sortedSenders = Object.values(groups).map(group => {
         const msgs = group.msgs;
         const lastMsg = msgs[msgs.length - 1];
-        const isOutgoing = lastMsg.direction === 'outgoing' || lastMsg.reply;
+        const isOutgoing = isOutgoingMessage(lastMsg);
+        const unreadCount = msgs.reduce((count, msg) => {
+            if (!isOutgoingMessage(msg) && !msg.readAt) {
+                return count + 1;
+            }
+            return count;
+        }, 0);
         
         let lastText = isOutgoing ? `אתה: ${lastMsg.body || lastMsg.reply}` : lastMsg.body;
         
@@ -1113,7 +1248,8 @@ function renderContactList() {
             name: group.displayName, 
             lastMsg: lastText,
             timestamp: lastMsg.timestamp,
-            msgs: msgs
+            msgs: msgs,
+            unreadCount
         };
     }).sort((a,b) => b.timestamp - a.timestamp);
 
@@ -1143,7 +1279,16 @@ function renderContactList() {
 
         const meta = document.createElement('div');
         meta.className = 'contact-meta';
-        meta.textContent = timeStr;
+        const timeEl = document.createElement('span');
+        timeEl.className = 'contact-meta-time';
+        timeEl.textContent = timeStr;
+        meta.appendChild(timeEl);
+        if (contact.unreadCount > 0) {
+            const badge = document.createElement('span');
+            badge.className = 'unread-badge';
+            badge.textContent = contact.unreadCount > 99 ? '99+' : String(contact.unreadCount);
+            meta.appendChild(badge);
+        }
 
         const actions = document.createElement('div');
         actions.className = 'contact-actions';
@@ -1288,14 +1433,14 @@ function renderChatMessages() {
             lastDateStr = dateStr;
         }
 
-        const isOutgoing = (msg.direction === 'outgoing' || msg.reply);
+        const isOutgoing = isOutgoingMessage(msg);
         const existingRow = document.getElementById(msgId);
         if (existingRow) {
             if (isOutgoing) {
                 const timeEl = existingRow.querySelector('.msg-time');
                 if (timeEl) {
                     const existingStatus = timeEl.querySelector('.msg-status');
-                    const statusMarkup = getDeliveryStatusMarkup(msg.deliveryStatus || 'sent');
+                    const statusMarkup = getDeliveryStatusMarkup(msg.deliveryStatus || 'sent', !!msg.readAt);
                     if (existingStatus) {
                         const temp = document.createElement('span');
                         temp.innerHTML = statusMarkup;
@@ -1355,7 +1500,7 @@ function renderChatMessages() {
             (bodyText ? `<div>${formatMessageText(bodyText)}</div>` : '') +
             `<div class="msg-time">` +
                 `${timeStr}` +
-                (isOutgoing ? getDeliveryStatusMarkup(msg.deliveryStatus || 'sent') : '') +
+                (isOutgoing ? getDeliveryStatusMarkup(msg.deliveryStatus || 'sent', !!msg.readAt) : '') +
             `</div>`;
 
         div.appendChild(bubble);
@@ -1417,11 +1562,31 @@ async function deleteCurrentChat() {
     });
 }
 // --- DB HELPER FUNCTION ---
+function upgradeDb(version, resolve, reject) {
+    const upgradeRequest = indexedDB.open(DB_NAME, version);
+    upgradeRequest.onerror = (event) => reject(event);
+    upgradeRequest.onupgradeneeded = (event) => {
+        const db = event.target.result;
+        let store;
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+            store = db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+        } else {
+            store = event.target.transaction.objectStore(STORE_NAME);
+        }
+        if (store && !store.indexNames.contains('messageId')) {
+            store.createIndex('messageId', 'messageId', { unique: false });
+        }
+        if (!db.objectStoreNames.contains(OUTBOX_STORE)) {
+            db.createObjectStore(OUTBOX_STORE, { keyPath: 'id', autoIncrement: true });
+        }
+    };
+    upgradeRequest.onsuccess = (event) => resolve(event.target.result);
+}
+
 function openDB() {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        const request = indexedDB.open(DB_NAME);
         request.onerror = (e) => reject(e);
-        request.onsuccess = (e) => resolve(e.target.result);
         request.onupgradeneeded = (e) => {
             const db = e.target.result;
             let store;
@@ -1436,6 +1601,28 @@ function openDB() {
             if (!db.objectStoreNames.contains(OUTBOX_STORE)) {
                 db.createObjectStore(OUTBOX_STORE, { keyPath: 'id', autoIncrement: true });
             }
+        };
+        request.onsuccess = (e) => {
+            const db = e.target.result;
+            const hasHistory = db.objectStoreNames.contains(STORE_NAME);
+            const hasOutbox = db.objectStoreNames.contains(OUTBOX_STORE);
+            let hasIndex = true;
+            if (hasHistory) {
+                try {
+                    const tx = db.transaction(STORE_NAME, 'readonly');
+                    const store = tx.objectStore(STORE_NAME);
+                    hasIndex = store.indexNames.contains('messageId');
+                } catch (err) {
+                    hasIndex = true;
+                }
+            }
+            if (hasHistory && hasOutbox && hasIndex) {
+                resolve(db);
+                return;
+            }
+            const nextVersion = db.version + 1;
+            db.close();
+            upgradeDb(nextVersion, resolve, reject);
         };
     });
 }
@@ -1737,6 +1924,12 @@ document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
         clearAppBadge();
         refreshOnVisible();
+        if (pendingUpdateReload) {
+            pendingUpdateReload = false;
+            forceHardReload('resume-update');
+        }
+    } else {
+        requestServiceWorkerUpdate('background');
     }
 });
 
@@ -1826,8 +2019,59 @@ window.addEventListener('focus', refreshOnVisible);
 
 // --- AUTO RELOAD ON UPDATE ---
 let currentAppVersion = null;
+let isHardReloading = false;
+let pendingUpdateReload = false;
+let lastSwUpdateCheck = 0;
+const SW_UPDATE_THROTTLE_MS = 60 * 1000;
+
+async function requestServiceWorkerUpdate(reason = 'manual') {
+    if (!('serviceWorker' in navigator)) return;
+    if (!navigator.onLine) return;
+    const now = Date.now();
+    if (now - lastSwUpdateCheck < SW_UPDATE_THROTTLE_MS) return;
+    lastSwUpdateCheck = now;
+    try {
+        const registration = await navigator.serviceWorker.getRegistration();
+        if (!registration) return;
+        await registration.update();
+        if (registration.waiting) {
+            registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+        }
+        console.log(`[Update] Background SW check (${reason}).`);
+    } catch (e) {
+        console.warn('SW update check failed:', e);
+    }
+}
+
+async function forceHardReload(reason = 'update') {
+    if (isHardReloading) return;
+    isHardReloading = true;
+    console.log(`[Update] Forcing hard reload (${reason}).`);
+    try {
+        if ('serviceWorker' in navigator) {
+            const registration = await navigator.serviceWorker.getRegistration();
+            if (registration) {
+                await registration.update().catch(() => {});
+                if (registration.waiting) {
+                    registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+                }
+            }
+        }
+        if ('caches' in window) {
+            const keys = await caches.keys();
+            await Promise.all(keys.map(key => caches.delete(key)));
+        }
+    } catch (e) {
+        console.warn('Hard reload prep failed:', e);
+    } finally {
+        const url = new URL(window.location.href);
+        url.searchParams.set('__reload', Date.now().toString());
+        window.location.replace(url.toString());
+    }
+}
+
 async function checkVersion() {
-    if (document.hidden) return; 
+    if (document.hidden || !navigator.onLine) return;
 
     try {
         // Add timestamp to prevent caching of the version check itself
@@ -1850,28 +2094,8 @@ async function checkVersion() {
         // 2. Update Detected: Clear Cache and Reload
         if (currentAppVersion !== serverVersion) {
             console.log(`Update detected: ${currentAppVersion} -> ${serverVersion}`);
-            
-            // A. Update Service Worker
-            if ('serviceWorker' in navigator) {
-                const registrations = await navigator.serviceWorker.getRegistrations();
-                for (let registration of registrations) { 
-                    await registration.update(); 
-                    if (registration.waiting) {
-                        // Force the waiting worker to activate
-                        registration.waiting.postMessage({ type: 'SKIP_WAITING' });
-                    }
-                }
-            }
-
-            // B. Clear Browser Cache Storage (Crucial for PWAs)
-            if ('caches' in window) {
-                const keys = await caches.keys();
-                // Delete all old caches
-                await Promise.all(keys.map(key => caches.delete(key)));
-            }
-
-            // C. Force Reload from Server (ignoring cache)
-            window.location.reload(true);
+            currentAppVersion = serverVersion;
+            await forceHardReload('version-change');
         }
     } catch (e) { 
         console.error('Version check failed:', e); 

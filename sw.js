@@ -7,7 +7,7 @@ const DB_NAME = config.DB_NAME || 'PushNotificationsDB';
 const STORE_NAME = config.STORE_NAME || 'history';
 const OUTBOX_STORE = config.OUTBOX_STORE || 'outbox';
 const DB_VERSION = config.DB_VERSION || 3;
-const CACHE_NAME = config.CACHE_NAME || 'static-assets-v2';
+const CACHE_NAME = config.CACHE_NAME || 'static-assets-v3';
 
 const ASSETS_TO_CACHE = [
   './',
@@ -16,13 +16,13 @@ const ASSETS_TO_CACHE = [
   './css/style.css',
   './css/style.css?v=29.0',
   './js/shared-config.js',
-  './js/shared-config.js?v=1.1',
+  './js/shared-config.js?v=1.2',
   './js/i18n.js',
-  './js/i18n.js?v=1.1',
+  './js/i18n.js?v=1.2',
   './js/network.js',
-  './js/network.js?v=1.1',
+  './js/network.js?v=1.2',
   './js/app.js',
-  './js/app.js?v=33.2',
+  './js/app.js?v=33.4',
   './js/bot.js',
   './manifest.webmanifest',
   './favicon.ico',
@@ -266,6 +266,13 @@ self.addEventListener('install', event => {
 
 self.addEventListener('activate', event => {
   event.waitUntil((async () => {
+    if (self.registration && self.registration.navigationPreload) {
+      try {
+        await self.registration.navigationPreload.enable();
+      } catch (err) {
+        console.warn('[SW] Navigation preload enable failed:', err);
+      }
+    }
     const keys = await caches.keys();
     await Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key)));
     await clients.claim();
@@ -301,10 +308,28 @@ self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
   if (event.request.mode === 'navigate') {
-    event.respondWith(networkFirst(event.request));
+    event.respondWith((async () => {
+      const cache = await caches.open(CACHE_NAME);
+      try {
+        const preloadResponse = await event.preloadResponse;
+        const response = preloadResponse || await fetch(event.request);
+        if (response && response.ok) {
+          cache.put(event.request, response.clone());
+        }
+        return response;
+      } catch (e) {
+        const cached = await cache.match(event.request);
+        return cached || cache.match('./offline.html');
+      }
+    })());
     return;
   }
   if (url.origin === self.location.origin) {
+    const destination = event.request.destination;
+    if (destination === 'script' || destination === 'style') {
+      event.respondWith(networkFirst(event.request));
+      return;
+    }
     event.respondWith(cacheFirst(event.request));
   }
 });
@@ -330,9 +355,9 @@ self.addEventListener('push', event => {
   const badgeNum = parseInt(payload.badgeCount || payload.badge, 10);
     let badgePromise = Promise.resolve();
     
-    if (!isNaN(badgeNum) && self.registration.setBadge) {
+    if (!isNaN(badgeNum) && self.registration.setAppBadge) {
         badgePromise = (async () => {
-            await self.registration.setBadge(badgeNum);
+            await self.registration.setAppBadge(badgeNum);
             if (self.registration.sync) {
                 await self.registration.sync.register('badge-sync');
             }
@@ -371,6 +396,46 @@ self.addEventListener('push', event => {
       });
       event.waitUntil(Promise.all([deletePromise, logPromise]));
       return; 
+  }
+
+  if (payload.type === 'read-receipt') {
+      const messageIds = Array.isArray(payload.messageIds) ? payload.messageIds : [];
+      const readAt = payload.readAt || Date.now();
+      const updatePromise = new Promise((resolve, reject) => {
+          if (!messageIds.length) {
+              resolve();
+              return;
+          }
+          openDB().then(db => {
+              const tx = db.transaction(STORE_NAME, 'readwrite');
+              const store = tx.objectStore(STORE_NAME);
+              let pending = 0;
+              messageIds.forEach(id => {
+                  if (!id || !store.indexNames.contains('messageId')) return;
+                  pending++;
+                  const req = store.index('messageId').get(id);
+                  req.onsuccess = () => {
+                      const record = req.result;
+                      if (record) {
+                          record.readAt = readAt;
+                          store.put(record);
+                      }
+                      pending--;
+                      if (pending === 0) resolve();
+                  };
+                  req.onerror = () => {
+                      pending--;
+                      if (pending === 0) resolve();
+                  };
+              });
+              if (pending === 0) resolve();
+          }).catch(reject);
+      });
+      const refreshPromise = self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
+          clients.forEach(client => client.postMessage({ action: 'refresh' }));
+      });
+      event.waitUntil(Promise.all([updatePromise, logPromise, refreshPromise]));
+      return;
   }
 
   // Notification Options
@@ -440,9 +505,9 @@ self.addEventListener('notificationclick', event => {
   const user = data.user || 'Unknown';
 
   // Clear Badge on Click (Optional - good for UX)
-     if (self.registration.clearBadge) {
+     if (self.registration.clearAppBadge) {
         event.waitUntil(
-            self.registration.clearBadge().catch(() => {})
+            self.registration.clearAppBadge().catch(() => {})
         );
     }
 
