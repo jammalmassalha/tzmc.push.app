@@ -2,7 +2,7 @@ const vapidKeys = {
     publicKey: "BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk",
     privateKey: "fMQqCaakMboV7LEV57wJhxPAdyppOBRDBjRDVQBxg1s"
 };
-const GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbw70tnIlHsQTke8BxFhEbEQQJxMhKzN85cCTkJOuS_L7zUnCxNYLX-r2cxYU2j8jIn5/exec';
+const GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbxTzd4oEqs_3vGEObKpFUPcDjQbjuiOiFKDjUm6Kvvh2zsdzhu7zGrcewnuWrtEExbC/exec';
 
 const express = require('express');
 const webpush = require('web-push');
@@ -17,10 +17,20 @@ const crypto = require('crypto');
 // --- 1. SETUP UPLOADS FOLDER ---
 const uploadDir = path.join(__dirname, 'uploads');
 const app = express();
-const SERVER_VERSION = '1.30'; // Bumped version
+const SERVER_VERSION = '1.40'; // Bumped version
 const SERVER_RELEASE_NOTES = [
     'Update available toast with reload button.',
-    'Release notes modal for new versions.'
+    'Release notes modal for new versions.',
+    'Create groups and send messages to group members.',
+    'Group messages show group name for recipients.',
+    'Group updates sync members and names.',
+    'Group message body no longer duplicates sender name.',
+    'Group list now fetches from server on refresh.',
+    'Community groups are admin-only for sending.',
+    'Community group reactions supported.',
+    'Reaction updates persist per user.',
+    'Reaction notifications for admins.',
+    'Reactions update instantly with background submit.'
 ];
 
 const fsp = fs.promises;
@@ -29,6 +39,7 @@ const stateFile = path.join(stateDir, 'state.json');
 let stateSaveTimer = null;
 
 let unreadCounts = {};
+let groups = {};
 
 
 
@@ -160,6 +171,33 @@ const fetchWithRetry = async (url, options = {}, retryOptions = {}) => {
     throw lastError;
 };
 
+const normalizeUserKey = (value) => String(value || '').trim().toLowerCase();
+const normalizeGroupType = (value) => (value === 'community' ? 'community' : 'group');
+
+function upsertGroup(payload = {}) {
+    const groupId = payload.groupId;
+    const groupName = typeof payload.groupName === 'string' ? payload.groupName.trim() : payload.groupName;
+    if (!groupId || !groupName) return null;
+    const existing = groups[groupId] || {};
+    const updatedAt = payload.groupUpdatedAt || Date.now();
+    const createdAt = existing.createdAt || payload.groupCreatedAt || Date.now();
+    const shouldUpdateMembers = Array.isArray(payload.groupMembers) &&
+        (!existing.updatedAt || updatedAt >= existing.updatedAt);
+    const nextMembers = shouldUpdateMembers ? payload.groupMembers : (existing.members || []);
+    const nextGroup = {
+        id: groupId,
+        name: groupName,
+        members: nextMembers,
+        createdBy: payload.groupCreatedBy || existing.createdBy || null,
+        createdAt,
+        updatedAt: Math.max(existing.updatedAt || 0, updatedAt),
+        type: normalizeGroupType(payload.groupType || existing.type || 'group')
+    };
+    groups[groupId] = nextGroup;
+    scheduleStateSave();
+    return nextGroup;
+}
+
 async function loadState() {
     try {
         await fsp.mkdir(stateDir, { recursive: true });
@@ -167,6 +205,7 @@ async function loadState() {
         const data = JSON.parse(raw);
         unreadCounts = (data.unreadCounts && typeof data.unreadCounts === 'object') ? data.unreadCounts : {};
         messageQueue = (data.messageQueue && typeof data.messageQueue === 'object') ? data.messageQueue : {};
+        groups = (data.groups && typeof data.groups === 'object') ? data.groups : {};
         console.log('[STATE] Loaded persisted state.');
     } catch (err) {
         if (err.code !== 'ENOENT') {
@@ -177,7 +216,7 @@ async function loadState() {
 
 async function persistState() {
     try {
-        const payload = JSON.stringify({ unreadCounts, messageQueue });
+        const payload = JSON.stringify({ unreadCounts, messageQueue, groups });
         const tmpFile = `${stateFile}.tmp`;
         await fsp.writeFile(tmpFile, payload, 'utf8');
         await fsp.rename(tmpFile, stateFile);
@@ -439,7 +478,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         try {
             const options = {
                 TTL: 86400,
-                headers: { 'Urgency': 'high', 'Topic': 'messages' }
+                headers: { 'Urgency': 'high' }
             };
         
             await webpush.sendNotification(subscription, payload, options);
@@ -472,6 +511,16 @@ app.get(['/', '/notify'], (req, res) => {
 app.get(['/version', '/notify/version'], (req, res) => {
     res.set('Cache-Control', 'no-store');
     res.json({ version: SERVER_VERSION, notes: SERVER_RELEASE_NOTES });
+});
+
+app.get(['/groups', '/notify/groups'], (req, res) => {
+    const user = req.query.user ? normalizeUserKey(req.query.user) : '';
+    if (!user) return res.json({ groups: [] });
+    const result = Object.values(groups || {}).filter(group => {
+        if (!group || !Array.isArray(group.members)) return false;
+        return group.members.map(normalizeUserKey).includes(user);
+    });
+    res.json({ groups: result });
 });
 
 // ======================================================
@@ -549,10 +598,55 @@ app.post(['/upload', '/notify/upload'], uploadFields, (req, res) => {
 
 app.post(['/reply', '/notify/reply'], async (req, res) => {
     try {
-        const { user, reply, originalSender, imageUrl, senderName, messageId: clientMessageId } = req.body;
+        const {
+            user,
+            reply,
+            originalSender,
+            imageUrl,
+            senderName,
+            messageId: clientMessageId,
+            groupId,
+            groupName,
+            groupMembers,
+            groupCreatedBy,
+            groupUpdatedAt,
+            groupSenderName,
+            membersToNotify
+        } = req.body;
         console.log(`[REPLY] From: ${user} | To: ${originalSender}`);
 
-        const targetToNotify = (originalSender && originalSender !== 'System') ? originalSender : ['Jmassalha'];
+        let groupRecord = null;
+        if (groupId) {
+            groupRecord = upsertGroup({
+                groupId,
+                groupName,
+                groupMembers,
+                groupCreatedBy,
+                groupUpdatedAt,
+                groupType: req.body.groupType
+            });
+            if (groupRecord && groupRecord.type === 'community' && groupRecord.createdBy && normalizeUserKey(user) !== normalizeUserKey(groupRecord.createdBy)) {
+                return res.status(403).json({ error: 'Only admins can send to this group' });
+            }
+        }
+
+        let targetToNotify = [];
+        if (Array.isArray(membersToNotify) && membersToNotify.length) {
+            targetToNotify = membersToNotify;
+        } else if (groupId) {
+            const groupList = groupRecord && Array.isArray(groupRecord.members) ? groupRecord.members : groupMembers;
+            targetToNotify = Array.isArray(groupList) ? groupList : [];
+        } else if (originalSender && originalSender !== 'System') {
+            targetToNotify = [originalSender];
+        } else {
+            targetToNotify = ['Jmassalha'];
+        }
+        targetToNotify = Array.isArray(targetToNotify)
+            ? targetToNotify.filter(member => normalizeUserKey(member) !== normalizeUserKey(user))
+            : targetToNotify;
+        if (Array.isArray(targetToNotify) && targetToNotify.length === 0) {
+            return res.json({ status: 'success', details: { success: 0, failed: 0 } });
+        }
 
         // 1. Prepare Message Text for Logging
         let messageContent = reply;
@@ -569,39 +663,149 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
             body: JSON.stringify({
                 action: 'save_reply',
                 fromUser: user,
-                toUser: originalSender || 'System',
+                toUser: groupId ? groupId : (originalSender || 'System'),
                 message: messageContent
             })
         }, { timeoutMs: 10000, retries: 2 }).catch(err => console.error('[SHEET ERROR] Failed to save reply:', err.message));
 
         const messageId = clientMessageId || generateMessageId();
+        const isGroup = Boolean(groupId);
+        const senderLabel = groupSenderName || senderName || user;
+        const normalizedGroupName = (typeof groupName === 'string') ? groupName.trim() : groupName;
+        const notificationTitle = isGroup ? (normalizedGroupName || 'Group message') : `New message from ${senderLabel}`;
+        const shortText = reply || (imageUrl ? 'Sent an image' : 'New Message');
         const notificationData = {
             messageId,
-            title: `New message from ${senderName || user}`,
+            title: notificationTitle,
             body: {
-                shortText: reply || (imageUrl ? 'Sent an image' : 'New Message'),
+                shortText: isGroup ? `${senderLabel}: ${shortText}` : shortText,
                 longText: reply
             },
-            image: imageUrl 
+            image: imageUrl,
+            data: isGroup ? {
+                groupId,
+                groupName: normalizedGroupName,
+                groupMembers,
+                groupCreatedBy,
+                groupUpdatedAt,
+                groupType: groupRecord ? groupRecord.type : normalizeGroupType(req.body.groupType || 'group'),
+                groupMessageText: shortText,
+                groupSenderName: senderLabel
+            } : undefined
         };
 
         // [EXISTING] SAVE TO POLLING QUEUE
         const pollingMessage = {
             messageId,
-            sender: user, 
+            sender: isGroup ? groupId : user,
             body: reply,
             timestamp: Date.now(),
-            imageUrl: imageUrl || null
+            imageUrl: imageUrl || null,
+            groupId: groupId || null,
+            groupName: groupName || null,
+            groupMembers: groupMembers || null,
+            groupCreatedBy: groupCreatedBy || null,
+            groupUpdatedAt: groupUpdatedAt || null,
+            groupType: groupRecord ? groupRecord.type : normalizeGroupType(req.body.groupType || 'group'),
+            groupSenderName: senderLabel
         };
         addToQueue(targetToNotify, pollingMessage);
 
         // [EXISTING] SEND WEB PUSH (To all devices)
-        const result = await sendPushNotificationToUser(targetToNotify, notificationData, user, { messageId });
+        const senderForPush = isGroup ? groupId : user;
+        const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, { messageId });
         res.json({ status: 'success', details: result });
 
     } catch (e) {
         console.error('[REPLY ERROR]', e);
         res.status(500).json({ error: e.message });
+    }
+});
+
+app.post(['/group-update', '/notify/group-update'], async (req, res) => {
+    try {
+        const { groupId, groupName, groupMembers, groupCreatedBy, groupUpdatedAt, groupType, membersToNotify } = req.body || {};
+        if (!groupId || !groupName || !Array.isArray(membersToNotify) || membersToNotify.length === 0) {
+            return res.status(400).json({ error: 'Missing group update fields' });
+        }
+        const groupRecord = upsertGroup({ groupId, groupName, groupMembers, groupCreatedBy, groupUpdatedAt, groupType });
+        const messageId = generateMessageId();
+        const notificationData = {
+            messageId,
+            title: '',
+            body: {
+                shortText: '',
+                longText: ''
+            },
+            data: {
+                type: 'group-update',
+                groupId,
+                groupName: groupRecord ? groupRecord.name : groupName,
+                groupMembers: Array.isArray(groupMembers) ? groupMembers : [],
+                groupCreatedBy: groupCreatedBy || null,
+                groupUpdatedAt: groupUpdatedAt || Date.now(),
+                groupType: normalizeGroupType(groupType || (groupRecord ? groupRecord.type : 'group'))
+            }
+        };
+        const result = await sendPushNotificationToUser(membersToNotify, notificationData, groupId, { messageId, skipBadge: true });
+        res.json({ status: 'success', details: result });
+    } catch (e) {
+        console.error('[GROUP UPDATE ERROR]', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post(['/reaction', '/notify/reaction'], async (req, res) => {
+    try {
+        const {
+            groupId,
+            groupName,
+            groupMembers,
+            groupCreatedBy,
+            groupUpdatedAt,
+            groupType,
+            targetMessageId,
+            emoji,
+            reactor,
+            reactorName
+        } = req.body || {};
+        if (!groupId || !targetMessageId || !emoji) {
+            return res.status(400).json({ error: 'Missing reaction fields' });
+        }
+        const groupRecord = upsertGroup({ groupId, groupName, groupMembers, groupCreatedBy, groupUpdatedAt, groupType });
+        const membersToNotify = groupRecord && Array.isArray(groupRecord.members)
+            ? groupRecord.members
+            : (Array.isArray(groupMembers) ? groupMembers : []);
+        if (!membersToNotify.length) {
+            return res.json({ status: 'success', details: { success: 0, failed: 0 } });
+        }
+        const reactionId = generateMessageId();
+        const notificationData = {
+            messageId: reactionId,
+            title: '',
+            body: {
+                shortText: '',
+                longText: ''
+            },
+            data: {
+                type: 'reaction',
+                targetMessageId,
+                emoji,
+                reactor,
+                reactorName,
+                groupId,
+                groupName: groupRecord ? groupRecord.name : groupName,
+                groupMembers: groupRecord ? groupRecord.members : groupMembers,
+                groupCreatedBy: groupRecord ? groupRecord.createdBy : groupCreatedBy,
+                groupUpdatedAt: groupRecord ? groupRecord.updatedAt : groupUpdatedAt,
+                groupType: groupRecord ? groupRecord.type : normalizeGroupType(groupType || 'group')
+            }
+        };
+        const result = await sendPushNotificationToUser(membersToNotify, notificationData, groupId, { messageId: reactionId, skipBadge: true });
+        res.json({ status: 'success', details: result });
+    } catch (err) {
+        console.error('[REACTION ERROR]', err);
+        res.status(500).json({ error: err.message });
     }
 });
 

@@ -20,7 +20,7 @@
       <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
       <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
     
-      <link rel="stylesheet" href="css/style.css?v=29.99">
+      <link rel="stylesheet" href="css/style.css?v=31.0">
     </head>
     
     <body>
@@ -66,6 +66,10 @@
                           <span class="material-icons menu-icon menu-icon-primary">cloud_upload</span>
                           <span>גיבוי צ'אטים</span>
                       </button>
+                      <button id="createGroupBtn" type="button">
+                          <span class="material-icons menu-icon menu-icon-primary">group_add</span>
+                          <span>קבוצה חדשה</span>
+                      </button>
                       <button id="clearChatsBtn" class="menu-danger" type="button">
                             <span class="material-icons menu-icon menu-icon-danger">delete_forever</span>
                             <span>מחק הכל</span>
@@ -104,13 +108,43 @@
               </div>
           </div>
       </div>
+
+      <div id="modalCreateGroup" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="createGroupTitle" aria-hidden="true">
+          <div class="modal-content modal-group" role="document">
+              <div class="modal-header">
+                  <span id="createGroupTitle">קבוצה חדשה</span>
+                  <button id="closeCreateGroupBtn" class="material-icons icon-btn modal-close-btn" type="button" aria-label="סגור" title="סגור">close</button>
+              </div>
+              <div class="modal-body">
+                  <input type="text" id="groupNameInput" class="group-name-input" placeholder="שם הקבוצה" aria-label="שם הקבוצה">
+                  <div class="group-helper">בחר אנשי קשר לקבוצה</div>
+                  <div class="group-type-row">
+                      <label id="groupTypeLabel" for="groupTypeInput" class="group-type-label">סוג קבוצה</label>
+                      <select id="groupTypeInput" class="group-type-select" aria-label="סוג קבוצה">
+                          <option value="group">קבוצה רגילה</option>
+                          <option value="community">קבוצת קהילה</option>
+                      </select>
+                      <div id="groupTypeHint" class="group-type-hint"></div>
+                  </div>
+                  <div class="search-container group-search-container">
+                      <span class="material-icons search-icon">search</span>
+                      <input type="text" id="groupSearchInput" class="search-box" placeholder="חפש איש קשר..." aria-label="חיפוש איש קשר">
+                  </div>
+                  <div id="groupUserList" class="modal-list group-user-list"></div>
+              </div>
+              <div class="modal-actions">
+                  <button id="createGroupSaveBtn" class="btn btn-primary" type="button">צור קבוצה</button>
+                  <button id="createGroupCancelBtn" class="btn btn-secondary" type="button">בטל</button>
+              </div>
+          </div>
+      </div>
     
       <div id="viewChatRoom" class="view-chatroom hidden">
           <div class="app-header">
               <div class="header-right">  
               <button id="backToContactsBtn" class="material-icons icon-btn back-btn" type="button" aria-label="חזרה לרשימת צ׳אטים" title="חזרה לרשימת צ׳אטים">arrow_back</button>
                     
-                    <div class="avatar chat-header-avatar">
+                    <div class="avatar chat-header-avatar" id="groupMembersTrigger">
                         <span class="material-icons">person</span>
                     </div>
                     
@@ -203,11 +237,40 @@
             </div>
         </div>
       </div>
+      <div id="groupMembersModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="groupMembersTitle" aria-hidden="true">
+        <div class="modal-content modal-group-members" role="document">
+            <div class="modal-header">
+                <span id="groupMembersTitle">חברי קבוצה</span>
+                <button id="closeGroupMembersBtn" class="material-icons icon-btn modal-close-btn" type="button" aria-label="סגור" title="סגור">close</button>
+            </div>
+            <div id="groupMembersMeta" class="group-members-meta"></div>
+            <div id="groupMembersList" class="modal-list group-members-list"></div>
+        </div>
+      </div>
+      <div id="reactionModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="reactionTitle" aria-hidden="true">
+        <div class="modal-content modal-reaction" role="document">
+            <div class="modal-header">
+                <span id="reactionTitle">תגובה</span>
+                <button id="closeReactionBtn" class="material-icons icon-btn modal-close-btn" type="button" aria-label="סגור" title="סגור">close</button>
+            </div>
+            <div id="reactionList" class="reaction-list"></div>
+        </div>
+      </div>
+      <div id="reactionDetailModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="reactionDetailTitle" aria-hidden="true">
+        <div class="modal-content modal-reaction-detail" role="document">
+            <div class="modal-header">
+                <span id="reactionDetailTitle">תגובות</span>
+                <button id="closeReactionDetailBtn" class="material-icons icon-btn modal-close-btn" type="button" aria-label="סגור" title="סגור">close</button>
+            </div>
+            <div id="reactionDetailList" class="modal-list reaction-detail-list"></div>
+        </div>
+      </div>
       <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
-      <script src="js/shared-config.js?v=1.8"></script>
-      <script src="js/i18n.js?v=1.9"></script>
-      <script src="js/network.js?v=1.8"></script>
-      <script src="js/app.js?v=34.0"></script>
+      <script src="js/shared-config.js?v=4.84"></script>
+      <script src="js/i18n.js?v=2.87"></script>
+      <script src="js/network.js?v=1.88"></script>
+      <script src="js/app.js?v=36.82"></script>
+      <script src="js/hr.js?v=1.68"></script>
       <!--<script src="js/bot.js?v=4.0"></script>-->
     
     </body>

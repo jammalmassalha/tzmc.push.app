@@ -16,13 +16,13 @@ const ASSETS_TO_CACHE = [
   './css/style.css',
   './css/style.css?v=29.0',
   './js/shared-config.js',
-  './js/shared-config.js?v=1.8',
+  './js/shared-config.js?v=1.2',
   './js/i18n.js',
-  './js/i18n.js?v=1.9',
+  './js/i18n.js?v=1.1',
   './js/network.js',
-  './js/network.js?v=1.8',
+  './js/network.js?v=1.1',
   './js/app.js',
-  './js/app.js?v=34.0',
+  './js/app.js?v=33.3',
   './js/bot.js',
   './manifest.webmanifest',
   './favicon.ico',
@@ -266,13 +266,6 @@ self.addEventListener('install', event => {
 
 self.addEventListener('activate', event => {
   event.waitUntil((async () => {
-    if (self.registration && self.registration.navigationPreload) {
-      try {
-        await self.registration.navigationPreload.enable();
-      } catch (err) {
-        console.warn('[SW] Navigation preload enable failed:', err);
-      }
-    }
     const keys = await caches.keys();
     await Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key)));
     await clients.claim();
@@ -308,28 +301,10 @@ self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
   if (event.request.mode === 'navigate') {
-    event.respondWith((async () => {
-      const cache = await caches.open(CACHE_NAME);
-      try {
-        const preloadResponse = await event.preloadResponse;
-        const response = preloadResponse || await fetch(event.request);
-        if (response && response.ok) {
-          cache.put(event.request, response.clone());
-        }
-        return response;
-      } catch (e) {
-        const cached = await cache.match(event.request);
-        return cached || cache.match('./offline.html');
-      }
-    })());
+    event.respondWith(networkFirst(event.request));
     return;
   }
   if (url.origin === self.location.origin) {
-    const destination = event.request.destination;
-    if (destination === 'script' || destination === 'style') {
-      event.respondWith(networkFirst(event.request));
-      return;
-    }
     event.respondWith(cacheFirst(event.request));
   }
 });
@@ -350,14 +325,14 @@ self.addEventListener('push', event => {
   const user = payload.user || rawData.notification?.username || 'Unknown';
   const messageId = payload.messageId || payload.message_id || payload.id || generateMessageId();
 
-  // --- 🔥 FIX 1: SET BADGE IMMEDIATELY 🔥 ---
+  // --- ðŸ”¥ FIX 1: SET BADGE IMMEDIATELY ðŸ”¥ ---
   // We do this first to ensure iOS catches it
   const badgeNum = parseInt(payload.badgeCount || payload.badge, 10);
     let badgePromise = Promise.resolve();
     
-    if (!isNaN(badgeNum) && self.registration.setAppBadge) {
+    if (!isNaN(badgeNum) && self.registration.setBadge) {
         badgePromise = (async () => {
-            await self.registration.setAppBadge(badgeNum);
+            await self.registration.setBadge(badgeNum);
             if (self.registration.sync) {
                 await self.registration.sync.register('badge-sync');
             }
@@ -381,7 +356,7 @@ self.addEventListener('push', event => {
                   const records = request.result;
                   const msg = records.find(r => targetMessageId ? r.messageId === targetMessageId : r.timestamp == targetTimestamp);
                   if (msg) {
-                      msg.body = "🚫 הודעה זו נמחקה";
+                      msg.body = "ðŸš« ×”×•×“×¢×” ×–×• × ×ž×—×§×”";
                       msg.image = null; 
                       msg.thumbnail = null;
                       store.put(msg);
@@ -396,46 +371,6 @@ self.addEventListener('push', event => {
       });
       event.waitUntil(Promise.all([deletePromise, logPromise]));
       return; 
-  }
-
-  if (payload.type === 'read-receipt') {
-      const messageIds = Array.isArray(payload.messageIds) ? payload.messageIds : [];
-      const readAt = payload.readAt || Date.now();
-      const updatePromise = new Promise((resolve, reject) => {
-          if (!messageIds.length) {
-              resolve();
-              return;
-          }
-          openDB().then(db => {
-              const tx = db.transaction(STORE_NAME, 'readwrite');
-              const store = tx.objectStore(STORE_NAME);
-              let pending = 0;
-              messageIds.forEach(id => {
-                  if (!id || !store.indexNames.contains('messageId')) return;
-                  pending++;
-                  const req = store.index('messageId').get(id);
-                  req.onsuccess = () => {
-                      const record = req.result;
-                      if (record) {
-                          record.readAt = readAt;
-                          store.put(record);
-                      }
-                      pending--;
-                      if (pending === 0) resolve();
-                  };
-                  req.onerror = () => {
-                      pending--;
-                      if (pending === 0) resolve();
-                  };
-              });
-              if (pending === 0) resolve();
-          }).catch(reject);
-      });
-      const refreshPromise = self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
-          clients.forEach(client => client.postMessage({ action: 'refresh' }));
-      });
-      event.waitUntil(Promise.all([updatePromise, logPromise, refreshPromise]));
-      return;
   }
 
   // Notification Options
@@ -477,7 +412,7 @@ self.addEventListener('push', event => {
       dateString: new Date(sharedTimestamp).toLocaleString() 
   };
 
-  // 🔥 PARALLEL EXECUTION ---
+  // ðŸ”¥ PARALLEL EXECUTION ---
   const notificationPromise = self.registration.showNotification(title, options);
   const savePromise = saveNotificationExplicit(recordToSave);
   const refreshPromise = savePromise.then(() =>
@@ -505,9 +440,9 @@ self.addEventListener('notificationclick', event => {
   const user = data.user || 'Unknown';
 
   // Clear Badge on Click (Optional - good for UX)
-     if (self.registration.clearAppBadge) {
+     if (self.registration.clearBadge) {
         event.waitUntil(
-            self.registration.clearAppBadge().catch(() => {})
+            self.registration.clearBadge().catch(() => {})
         );
     }
 
@@ -532,7 +467,7 @@ self.addEventListener('notificationclick', event => {
       }, { timeoutMs: 10000, retries: 1 }).catch(err => console.error('[SW] Reply failed:', err));
 
       const updateNotifPromise = Promise.all([localDbPromise, serverPromise]).then(() => {
-          return self.registration.showNotification("Reply Sent ✓", {
+          return self.registration.showNotification("Reply Sent âœ“", {
               body: `You: "${replyText}"`, 
               icon: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
               data: data, 
