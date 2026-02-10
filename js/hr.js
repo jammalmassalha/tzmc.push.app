@@ -90,6 +90,21 @@
         return lastRecord;
     }
 
+    function getLastHrMessage(userKey) {
+        if (typeof allHistoryData === 'undefined' || !Array.isArray(allHistoryData)) return null;
+        const userKeyNorm = normalizeKey(userKey);
+        let lastRecord = null;
+        allHistoryData.forEach(record => {
+            if (!record) return;
+            if (normalizeKey(record.sender) !== normalizeKey(HR_CHAT_NAME)) return;
+            if (normalizeKey(record.user) !== userKeyNorm) return;
+            if (!lastRecord || (record.timestamp || 0) > (lastRecord.timestamp || 0)) {
+                lastRecord = record;
+            }
+        });
+        return lastRecord;
+    }
+
     async function fetchHrSteps() {
         const now = Date.now();
         if (stepsCache.steps.length && now - stepsCache.at < STEPS_CACHE_TTL_MS) {
@@ -247,6 +262,10 @@
         if (!isHrChat(senderName)) return;
         const userKey = getCurrentUser();
         if (!userKey) return;
+        const lastMessage = getLastHrMessage(userKey);
+        if (lastMessage && lastMessage.direction === 'incoming') {
+            return;
+        }
         const lastUserMessage = getLastUserMessage(userKey);
         const lastHrMessage = getLastHrIncomingMessage(userKey);
         if (lastUserMessage === '0') {

@@ -157,6 +157,33 @@ async function saveNotificationExplicit(record) {
   }
 }
 
+async function applyReadReceipt(messageIds, readAt) {
+  if (!Array.isArray(messageIds) || messageIds.length === 0) return;
+  const db = await openDB();
+  return new Promise((resolve) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const store = tx.objectStore(STORE_NAME);
+    messageIds.forEach((messageId) => {
+      if (!messageId) return;
+      let request;
+      if (store.indexNames.contains('messageId')) {
+        request = store.index('messageId').get(messageId);
+      } else {
+        request = store.get(messageId);
+      }
+      request.onsuccess = () => {
+        const record = request.result;
+        if (record) {
+          record.readAt = readAt || Date.now();
+          store.put(record);
+        }
+      };
+    });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+  });
+}
+
 function saveReplyToHistory(originalTimestamp, replyText, messageId = null) {
   return new Promise((resolve, reject) => {
     openDB().then(db => {
@@ -324,6 +351,17 @@ self.addEventListener('push', event => {
   const payload = rawData.data || rawData; 
   const user = payload.user || rawData.notification?.username || 'Unknown';
   const messageId = payload.messageId || payload.message_id || payload.id || generateMessageId();
+
+  if (payload && payload.type === 'read-receipt') {
+    const readAt = payload.readAt || Date.now();
+    const messageIds = Array.isArray(payload.messageIds) ? payload.messageIds : [];
+    const updatePromise = applyReadReceipt(messageIds, readAt);
+    const notifyPromise = self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
+      clients.forEach(client => client.postMessage({ action: 'read-receipt', messageIds, readAt, sender: payload.sender }));
+    });
+    event.waitUntil(Promise.all([updatePromise, notifyPromise]));
+    return;
+  }
 
   // --- ðŸ”¥ FIX 1: SET BADGE IMMEDIATELY ðŸ”¥ ---
   // We do this first to ensure iOS catches it

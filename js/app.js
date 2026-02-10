@@ -45,15 +45,33 @@ function updateFooterOffset() {
     document.documentElement.style.setProperty('--chat-footer-height', `${height}px`);
 }
 
+function updateHeaderOffset() {
+    const headers = Array.from(document.querySelectorAll('.app-header'));
+    if (!headers.length) return;
+    let maxHeight = 0;
+    headers.forEach((header) => {
+        const rect = header.getBoundingClientRect();
+        if (rect.height > maxHeight) {
+            maxHeight = rect.height;
+        }
+    });
+    if (maxHeight > 0) {
+        document.documentElement.style.setProperty('--app-header-height', `${maxHeight}px`);
+    }
+}
+
 const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
 if (isIOS) {
     document.body.classList.add('ios');
 }
 
 updateFooterOffset();
+updateHeaderOffset();
 window.addEventListener('resize', updateFooterOffset);
+window.addEventListener('resize', updateHeaderOffset);
 if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', updateFooterOffset);
+    window.visualViewport.addEventListener('resize', updateHeaderOffset);
 }
 
 let userMap = {};        // Fast lookup { "36826717": "Jamal Massalha" }
@@ -100,6 +118,7 @@ const REACTION_EMOJIS = [
 ];
 let deferredPrompt;
 let justOpenedChat = false; 
+let shouldAutoScroll = true;
 let lastContactsFetch = 0;
 const CONTACTS_TTL_MS = 5 * 60 * 1000;
 let lastGroupsFetch = 0;
@@ -585,6 +604,24 @@ function upsertMessageInMemory(record) {
     return true;
 }
 
+function applyReadReceiptUpdate(messageIds, readAt) {
+    if (!Array.isArray(messageIds) || messageIds.length === 0) return;
+    const appliedAt = readAt || Date.now();
+    let updated = false;
+    messageIds.forEach((messageId) => {
+        if (!messageId) return;
+        const message = allHistoryData.find(m => m.messageId === messageId || m.clientMessageId === messageId);
+        if (message && !message.readAt) {
+            message.readAt = appliedAt;
+            updated = true;
+        }
+    });
+    if (!updated) return;
+    if (typeof renderChatMessages === 'function' && !viewChatRoom.classList.contains('hidden')) {
+        renderChatMessages();
+    }
+}
+
 function formatContactTimestamp(timestamp) {
     if (!timestamp) return '';
     const date = new Date(timestamp);
@@ -910,6 +947,11 @@ window.addEventListener('load', async () => {
                     const record = event.data.record || event.data;
                     applyReactionRecord(record, { persist: false, render: true });
                 }
+                if (event.data && event.data.action === 'read-receipt') {
+                    const messageIds = event.data.messageIds || [];
+                    const readAt = event.data.readAt;
+                    applyReadReceiptUpdate(messageIds, readAt);
+                }
             });
 
             const urlParams = new URLSearchParams(window.location.search);
@@ -940,6 +982,9 @@ window.addEventListener('load', async () => {
     }
     const messagesArea = document.getElementById('messagesArea');
     if (messagesArea) {
+        messagesArea.addEventListener('scroll', () => {
+            shouldAutoScroll = isMessagesAreaNearBottom();
+        });
         messagesArea.addEventListener('click', (event) => {
             const target = event.target;
             if (target && target.classList && target.classList.contains('msg-image')) {
@@ -949,7 +994,9 @@ window.addEventListener('load', async () => {
         });
         messagesArea.addEventListener('load', (event) => {
             if (event.target && event.target.classList && event.target.classList.contains('msg-image')) {
-                scrollToBottom();
+                if (shouldAutoScroll) {
+                    scrollToBottom();
+                }
             }
         }, true);
     }
@@ -959,7 +1006,9 @@ window.addEventListener('load', async () => {
     chatInput.addEventListener('focus', function() {
         // Small delay to allow keyboard to fully open
         setTimeout(() => {
-            scrollToBottom();
+            if (shouldAutoScroll) {
+                scrollToBottom();
+            }
         }, 300);
     });
     if (usernameInput) {
@@ -1231,6 +1280,7 @@ function showContacts() {
     hideAllViews();
     viewContacts.classList.remove('hidden');
     closeNewChatModal();
+    updateHeaderOffset();
 
     const fabButton = document.getElementById('myFloatingButton');
     if (fabButton) {
@@ -1244,6 +1294,7 @@ function showChatRoom(senderName) {
     localStorage.setItem('activeChat', senderName);
     hideAllViews();
     viewChatRoom.classList.remove('hidden');
+    updateHeaderOffset();
 
     const fabButton = document.getElementById('myFloatingButton');
     if (fabButton) {
@@ -1313,13 +1364,6 @@ function showChatRoom(senderName) {
     }
     loadAndGroupHistory(); 
     
-    // Focus the input area immediately
-    setTimeout(() => {
-        const input = document.getElementById('chatInputBar');
-        if (input) {
-           input.focus();
-        }
-    }, 100); 
 }
 
 function updateGroupComposerState(group) {
@@ -2593,11 +2637,14 @@ function renderChatMessages() {
     });
     // -------------------------------
 
-    const isAtBottom = (area.scrollHeight - area.scrollTop - area.clientHeight) < 150;
     let lastDateStr = '';
     let hasNewMessage = false; 
+    let firstUnreadIndex = -1;
 
-    chatMsgs.forEach(msg => {
+    chatMsgs.forEach((msg, index) => {
+        if (firstUnreadIndex < 0 && !isOutgoingMessage(msg) && !msg.readAt) {
+            firstUnreadIndex = index;
+        }
         const msgId = getMessageDomId(msg);
         const d = new Date(msg.timestamp);
         const dateStr = d.toLocaleDateString();
@@ -2756,9 +2803,20 @@ function renderChatMessages() {
         area.appendChild(anchor);
     }
 
-    if (justOpenedChat || (hasNewMessage && isAtBottom)) {
-         scrollToBottom();
-         justOpenedChat = false; 
+    if (justOpenedChat) {
+        if (firstUnreadIndex >= 0) {
+            const didScroll = scrollToLastReadMessage(chatMsgs, firstUnreadIndex);
+            shouldAutoScroll = false;
+            justOpenedChat = false;
+            if (!didScroll) return;
+        } else {
+            scrollToBottom();
+            justOpenedChat = false;
+        }
+        return;
+    }
+    if (hasNewMessage && shouldAutoScroll) {
+        scrollToBottom();
     }
 }// --- DELETE SPECIFIC CHAT ---
 async function deleteCurrentChat() {
@@ -2874,9 +2932,41 @@ function openDB() {
         };
     });
 }
+
+const AUTO_SCROLL_THRESHOLD_PX = 24;
+
+function isMessagesAreaNearBottom(threshold = AUTO_SCROLL_THRESHOLD_PX) {
+    const area = document.getElementById('messagesArea');
+    if (!area) return true;
+    return (area.scrollHeight - area.scrollTop - area.clientHeight) < threshold;
+}
+
+function scrollToLastReadMessage(chatMsgs, firstUnreadIndex = -1) {
+    const area = document.getElementById('messagesArea');
+    if (!area || !Array.isArray(chatMsgs) || chatMsgs.length === 0) return false;
+    let unreadIndex = firstUnreadIndex;
+    if (unreadIndex < 0) {
+        unreadIndex = chatMsgs.findIndex(msg => !isOutgoingMessage(msg) && !msg.readAt);
+    }
+    if (unreadIndex < 0) return false;
+    const targetIndex = Math.max(unreadIndex - 1, 0);
+    let targetMsg = chatMsgs[targetIndex];
+    let targetEl = document.getElementById(getMessageDomId(targetMsg));
+    if (!targetEl) {
+        targetMsg = chatMsgs[unreadIndex];
+        targetEl = document.getElementById(getMessageDomId(targetMsg));
+    }
+    if (!targetEl) return false;
+    const padding = 16;
+    const desiredTop = targetEl.offsetTop + targetEl.offsetHeight - area.clientHeight + padding;
+    area.scrollTop = Math.max(0, desiredTop);
+    return true;
+}
+
 function scrollToBottom() {
     const area = document.getElementById('messagesArea');
     if (!area) return;
+    shouldAutoScroll = true;
     requestAnimationFrame(() => {
         area.scrollTop = area.scrollHeight;
     });

@@ -4,7 +4,7 @@
     STORE_NAME: 'history',
     OUTBOX_STORE: 'outbox',
     DB_VERSION: 4,
-    CACHE_NAME: 'static-assets-v28',
+    CACHE_NAME: 'static-assets-v34',
     VAPID_PUBLIC_KEY: 'BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk',
     SUBSCRIPTION_URL: 'https://script.google.com/macros/s/AKfycbxTzd4oEqs_3vGEObKpFUPcDjQbjuiOiFKDjUm6Kvvh2zsdzhu7zGrcewnuWrtEExbC/exec',
     NOTIFY_SERVER_URL: 'https://www.tzmc.co.il/notify/reply',
