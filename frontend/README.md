@@ -51,12 +51,12 @@ Output is generated under:
 frontend/dist/frontend
 ```
 
-### Deploying under `/subscribesin/`
+### Deploying under `/subscribes/`
 
 This repository is configured so production builds use:
 
-- `baseHref: /subscribesin/`
-- `deployUrl: /subscribesin/`
+- `baseHref: /subscribes/`
+- `deployUrl: /subscribes/`
 
 So a standard production build is enough:
 

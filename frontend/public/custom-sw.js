@@ -66,9 +66,9 @@ function buildIconUrl(payload) {
 function normalizeTargetUrl(rawUrl) {
   try {
     const target = new URL(rawUrl, self.registration.scope);
-    if (target.origin === self.location.origin && target.pathname.startsWith('/subscribes/')) {
+    /*if (target.origin === self.location.origin && target.pathname.startsWith('/subscribes/')) {
       target.pathname = target.pathname.replace('/subscribes/', '/subscribesin/');
-    }
+    }*/
     return target.toString();
   } catch (_) {
     return new URL('./', self.registration.scope).toString();

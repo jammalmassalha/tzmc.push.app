@@ -49,8 +49,8 @@
               ],
               "outputHashing": "all",
               "serviceWorker": "ngsw-config.json",
-              "baseHref": "/subscribesin/",
-              "deployUrl": "/subscribesin/"
+              "baseHref": "/subscribes/",
+              "deployUrl": "/subscribes/"
             },
             "development": {
               "optimization": false,
