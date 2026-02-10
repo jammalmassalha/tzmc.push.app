@@ -65,7 +65,14 @@ app.use(bodyParser.json());
 app.use(cors({
     origin: '*', 
     methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'Cache-Control',
+        'Pragma',
+        'Last-Event-ID',
+        'X-Requested-With'
+    ]
 }));
 
 app.options('*', cors());
@@ -557,22 +564,35 @@ app.get(['/stream', '/notify/stream'], (req, res) => {
     }
 
     res.set({
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive'
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, Cache-Control, Pragma, Last-Event-ID'
     });
-    res.flushHeaders();
+    req.socket.setTimeout(0);
+    res.setTimeout(0);
+    if (typeof res.flushHeaders === 'function') {
+        res.flushHeaders();
+    }
     res.write(`event: connected\ndata: ${JSON.stringify({ user })}\n\n`);
+    if (typeof res.flush === 'function') {
+        res.flush();
+    }
 
     const existing = sseClients.get(user) || new Set();
     existing.add(res);
     sseClients.set(user, existing);
 
     const keepAlive = setInterval(() => {
-        res.write(': keep-alive\n\n');
-    }, 25000);
+        res.write(`event: ping\ndata: ${Date.now()}\n\n`);
+        if (typeof res.flush === 'function') {
+            res.flush();
+        }
+    }, 15000);
 
-    req.on('close', () => {
+    const cleanup = () => {
         clearInterval(keepAlive);
         const set = sseClients.get(user);
         if (set) {
@@ -581,7 +601,10 @@ app.get(['/stream', '/notify/stream'], (req, res) => {
                 sseClients.delete(user);
             }
         }
-    });
+    };
+
+    req.on('close', cleanup);
+    req.on('error', cleanup);
 });
 
 app.post(['/upload', '/notify/upload'], uploadFields, (req, res) => {

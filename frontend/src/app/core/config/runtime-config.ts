@@ -11,17 +11,34 @@ export interface RuntimeConfig {
   versionUrl: string;
 }
 
+const DEFAULT_REMOTE_ORIGIN = 'https://www.tzmc.co.il';
+
+function resolveBackendOrigin(): string {
+  if (typeof window === 'undefined') {
+    return DEFAULT_REMOTE_ORIGIN;
+  }
+
+  const origin = window.location.origin;
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) {
+    return DEFAULT_REMOTE_ORIGIN;
+  }
+
+  return origin;
+}
+
+const backendOrigin = resolveBackendOrigin();
+
 export const runtimeConfig: RuntimeConfig = {
   dbName: 'PushNotificationsDB',
   storeName: 'history',
   outboxStore: 'outbox',
   vapidPublicKey: 'BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk',
   subscriptionUrl: 'https://script.google.com/macros/s/AKfycbxTzd4oEqs_3vGEObKpFUPcDjQbjuiOiFKDjUm6Kvvh2zsdzhu7zGrcewnuWrtEExbC/exec',
-  notifyReplyUrl: 'https://www.tzmc.co.il/notify/reply',
-  uploadUrl: 'https://www.tzmc.co.il/notify/upload',
-  groupUpdateUrl: 'https://www.tzmc.co.il/notify/group-update',
-  groupsUrl: 'https://www.tzmc.co.il/notify/groups',
-  versionUrl: 'https://www.tzmc.co.il/notify/version'
+  notifyReplyUrl: `${backendOrigin}/notify/reply`,
+  uploadUrl: `${backendOrigin}/notify/upload`,
+  groupUpdateUrl: `${backendOrigin}/notify/group-update`,
+  groupsUrl: `${backendOrigin}/notify/groups`,
+  versionUrl: `${backendOrigin}/notify/version`
 };
 
 export const SYSTEM_CHAT_IDS = ['ציפי'] as const;
