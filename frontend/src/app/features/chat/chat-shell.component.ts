@@ -12,7 +12,6 @@ import {
 } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
-import { MatBadgeModule } from '@angular/material/badge';
 import { MatButtonModule } from '@angular/material/button';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
@@ -57,7 +56,6 @@ interface ParsedMessageCacheEntry {
     MatToolbarModule,
     MatProgressBarModule,
     MatChipsModule,
-    MatBadgeModule,
     MatSnackBarModule
   ],
   templateUrl: './chat-shell.component.html',
@@ -459,7 +457,11 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   private updateViewportHeight(): void {
-    const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+    const visualViewport = window.visualViewport;
+    const shouldUseVisualViewport = Boolean(visualViewport && visualViewport.scale <= 1.05);
+    const viewportHeight = shouldUseVisualViewport
+      ? (visualViewport?.height ?? window.innerHeight)
+      : window.innerHeight;
     document.documentElement.style.setProperty('--app-height', `${Math.round(viewportHeight)}px`);
   }
 

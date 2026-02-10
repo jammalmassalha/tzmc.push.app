@@ -87,7 +87,7 @@
                 <span class="chat-time">{{ formatChatListTime(chat.lastTimestamp) }}</span>
               }
               @if (chat.unread > 0) {
-                <span class="chat-unread" [matBadge]="chat.unread" matBadgeColor="primary"></span>
+                <span class="chat-unread">{{ chat.unread > 99 ? '99+' : chat.unread }}</span>
               }
             </div>
           </button>
