@@ -127,6 +127,17 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     queueMicrotask(() => this.contactsViewport?.checkViewportSize());
   });
 
+  private readonly bodyScrollLockEffect = effect(() => {
+    const hasActiveChat = Boolean(this.store.activeChatId());
+    const chatRoomVisible = !this.isMobile() || !this.showContactsPane();
+    const shouldLockBodyScroll = hasActiveChat && chatRoomVisible;
+
+    if (typeof document !== 'undefined') {
+      document.body.classList.toggle('chat-room-active', shouldLockBodyScroll);
+      document.documentElement.classList.toggle('chat-room-active', shouldLockBodyScroll);
+    }
+  });
+
   constructor(
     readonly store: ChatStoreService,
     private readonly dialog: MatDialog,
@@ -154,6 +165,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     window.removeEventListener('resize', this.onViewportResize);
     window.visualViewport?.removeEventListener('resize', this.onViewportResize);
     window.visualViewport?.removeEventListener('scroll', this.onViewportResize);
+    if (typeof document !== 'undefined') {
+      document.body.classList.remove('chat-room-active');
+      document.documentElement.classList.remove('chat-room-active');
+    }
   }
 
   openChat(chatId: string): void {

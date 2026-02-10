@@ -12,6 +12,12 @@ body {
   color: #202330;
 }
 
+html.chat-room-active,
+body.chat-room-active {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 *,
 *::before,
 *::after {
