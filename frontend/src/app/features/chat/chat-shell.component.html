@@ -169,16 +169,16 @@
             accept="image/*"
             (change)="onFileSelected($event)" />
 
-          <button
-            mat-fab
-            color="primary"
-            type="submit"
-            class="send-btn"
-            [disabled]="!canSendMessage()">
-            <mat-icon>send</mat-icon>
-          </button>
-
           <div class="composer-input-shell">
+            <button
+              type="button"
+              class="attach-btn"
+              [matMenuTriggerFor]="attachMenu"
+              [disabled]="!store.activeChat() || !store.canSendToActiveChat()"
+              aria-label="Attach">
+              <span class="attach-plus">+</span>
+            </button>
+
             <textarea
               class="composer-textarea"
               rows="1"
@@ -187,13 +187,11 @@
           </div>
 
           <button
-            mat-mini-fab
-            type="button"
-            class="attach-btn"
-            [matMenuTriggerFor]="attachMenu"
-            [disabled]="!store.activeChat() || !store.canSendToActiveChat()"
-            aria-label="Attach">
-            <span class="attach-plus">+</span>
+            type="submit"
+            class="send-btn"
+            [disabled]="!canSendMessage()"
+            aria-label="Send message">
+            <mat-icon>send</mat-icon>
           </button>
 
           <mat-menu #attachMenu="matMenu">

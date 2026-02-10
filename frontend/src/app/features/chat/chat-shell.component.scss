@@ -298,8 +298,7 @@ mat-chip:not(.offline) {
   z-index: 5;
   flex: 0 0 auto;
   min-height: 64px;
-  display: grid;
-  grid-template-columns: auto 1fr auto;
+  display: flex;
   gap: 10px;
   align-items: center;
   padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
@@ -308,42 +307,59 @@ mat-chip:not(.offline) {
 }
 
 .composer-input-shell {
-  width: 100%;
+  flex: 1 1 auto;
   min-height: 48px;
   display: flex;
+  direction: ltr;
+  gap: 8px;
   align-items: center;
-  padding: 8px 14px;
+  padding: 6px 10px;
   background: #fff;
-  border: 1px solid rgba(11, 20, 26, 0.12);
+  border: 1px solid rgba(11, 20, 26, 0.1);
   border-radius: 24px;
-  box-shadow: 0 1px 1px rgba(11, 20, 26, 0.06);
+  box-shadow: 0 1px 2px rgba(11, 20, 26, 0.08);
 }
 
 .attach-btn {
-  width: 44px;
-  height: 44px;
+  width: 34px;
+  height: 34px;
+  border: 0;
   border-radius: 50%;
-  background: #ffffff;
-  color: #54656f;
-  box-shadow: 0 1px 3px rgba(11, 20, 26, 0.16);
+  background: transparent;
+  color: #667781;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.attach-btn:hover {
+  background: rgba(11, 20, 26, 0.06);
+}
+
+.attach-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .composer-textarea {
-  width: 100%;
+  flex: 1 1 auto;
   min-height: 22px;
-  max-height: 110px;
+  max-height: 120px;
   border: 0;
   outline: none;
   resize: none;
   background: transparent;
   font: inherit;
-  line-height: 1.35;
+  line-height: 1.4;
+  font-size: 15px;
   color: #111b21;
   direction: rtl;
+  text-align: right;
+  padding: 6px 0;
 }
 
 .attach-plus {
-  font-size: 28px;
+  font-size: 30px;
   line-height: 1;
   font-weight: 400;
 }
@@ -351,15 +367,28 @@ mat-chip:not(.offline) {
 .send-btn {
   width: 48px;
   height: 48px;
-  background: linear-gradient(180deg, #25d366 0%, #128c7e 100%);
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: #00a884;
   color: #fff;
-  box-shadow: 0 4px 12px rgba(18, 140, 126, 0.35);
+  cursor: pointer;
+  box-shadow: 0 4px 10px rgba(0, 168, 132, 0.35);
 }
 
 .send-btn[disabled] {
-  background: #d6d9dd;
-  color: #7b8790;
+  background: #d1d7db;
+  color: #8696a0;
   box-shadow: none;
+  cursor: not-allowed;
+}
+
+.send-btn mat-icon {
+  font-size: 22px;
+  width: 22px;
+  height: 22px;
+  line-height: 22px;
 }
 
 .hidden-input {
