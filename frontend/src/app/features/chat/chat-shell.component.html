@@ -175,6 +175,11 @@
             (change)="onFileSelected($event)" />
 
           <div class="composer-input-shell">
+            <textarea
+              class="composer-textarea"
+              rows="1"
+              [formControl]="messageControl"
+              [placeholder]="composerPlaceholder()"></textarea>
             <button
               type="button"
               class="attach-btn"
@@ -184,11 +189,7 @@
               <span class="attach-plus">+</span>
             </button>
 
-            <textarea
-              class="composer-textarea"
-              rows="1"
-              [formControl]="messageControl"
-              [placeholder]="composerPlaceholder()"></textarea>
+            
           </div>
 
           <button
