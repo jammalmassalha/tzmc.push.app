@@ -159,6 +159,12 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     await this.store.sendTextMessage(content);
   }
 
+  async handleComposerSubmit(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    event.stopPropagation();
+    await this.sendMessage();
+  }
+
   async onFileSelected(event: Event): Promise<void> {
     const input = event.target as HTMLInputElement;
     const file = input.files?.[0];
