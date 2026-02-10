@@ -111,7 +111,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly isBusy = computed(
     () => this.store.loading() || this.store.syncing() || this.store.uploading()
   );
+  readonly nowTimestamp = signal(Date.now());
   private readonly messagePartsCache = new Map<string, ParsedMessageCacheEntry>();
+  private relativeTimeRefreshId: number | null = null;
 
   private readonly autoScrollEffect = effect(() => {
     const activeChatId = this.store.activeChatId();
@@ -152,6 +154,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     window.visualViewport?.addEventListener('resize', this.onViewportResize);
     window.visualViewport?.addEventListener('scroll', this.onViewportResize);
     this.updateViewportHeight();
+    this.relativeTimeRefreshId = window.setInterval(() => {
+      this.nowTimestamp.set(Date.now());
+    }, 60_000);
 
     await this.store.initialize();
     const chatFromUrl = this.route.snapshot.queryParamMap.get('chat');
@@ -170,6 +175,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     window.removeEventListener('resize', this.onViewportResize);
     window.visualViewport?.removeEventListener('resize', this.onViewportResize);
     window.visualViewport?.removeEventListener('scroll', this.onViewportResize);
+    if (this.relativeTimeRefreshId !== null) {
+      window.clearInterval(this.relativeTimeRefreshId);
+      this.relativeTimeRefreshId = null;
+    }
     if (typeof document !== 'undefined') {
       document.body.classList.remove('chat-room-active');
       document.documentElement.classList.remove('chat-room-active');
@@ -314,6 +323,49 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     }).format(new Date(timestamp));
   }
 
+  formatChatListTime(timestamp: number): string {
+    if (!timestamp) return '';
+
+    const now = this.nowTimestamp();
+    const diffMs = now - timestamp;
+    if (diffMs < 0) {
+      return this.formatTime(timestamp);
+    }
+
+    const minuteMs = 60_000;
+    const hourMs = 60 * minuteMs;
+    const dayMs = 24 * hourMs;
+
+    if (diffMs < 2 * minuteMs) {
+      return 'לפני דקה';
+    }
+
+    if (diffMs < hourMs) {
+      const minutes = Math.max(2, Math.floor(diffMs / minuteMs));
+      return `${minutes} דקות`;
+    }
+
+    if (diffMs < 2 * hourMs) {
+      return 'שעה';
+    }
+
+    const messageDate = new Date(timestamp);
+    const nowDate = new Date(now);
+    if (this.isSameCalendarDay(messageDate, nowDate)) {
+      return this.formatTime(timestamp);
+    }
+
+    if (diffMs < 2 * dayMs) {
+      return 'לפני יום';
+    }
+
+    return new Intl.DateTimeFormat('he-IL', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
+    }).format(messageDate);
+  }
+
   getMessageRenderParts(messageId: string, body: string): MessageRenderPart[] {
     const key = messageId || body;
     const cached = this.messagePartsCache.get(key);
@@ -357,6 +409,14 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   private updateViewportHeight(): void {
     const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
     document.documentElement.style.setProperty('--app-height', `${Math.round(viewportHeight)}px`);
+  }
+
+  private isSameCalendarDay(a: Date, b: Date): boolean {
+    return (
+      a.getFullYear() === b.getFullYear() &&
+      a.getMonth() === b.getMonth() &&
+      a.getDate() === b.getDate()
+    );
   }
 
   private parseMessageBody(body: string): MessageRenderPart[] {
