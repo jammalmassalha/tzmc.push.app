@@ -44,11 +44,16 @@
   <div class="chat-layout">
     <aside class="contacts-pane" [class.hidden-mobile]="isMobile() && !showContactsPane()">
       <div class="contacts-toolbar">
-        <mat-form-field appearance="outline" class="search-field">
-          <mat-label>חיפוש צ׳אטים</mat-label>
-          <input matInput [formControl]="searchControl" placeholder="שם, מספר, הודעה..." />
-          <mat-icon matSuffix>search</mat-icon>
-        </mat-form-field>
+        <label class="search-shell">
+          <mat-icon class="search-icon">search</mat-icon>
+          <input
+            class="search-input"
+            type="search"
+            [formControl]="searchControl"
+            placeholder="חיפוש או פתיחת צ׳אט חדש"
+            aria-label="חיפוש צ׳אטים"
+            autocomplete="off" />
+        </label>
 
         <div class="contacts-actions">
           <button mat-stroked-button type="button" (click)="openNewChatDialog()">
