@@ -175,6 +175,8 @@ export class ChatStoreService {
 
     this.initializedUser = user;
     await this.refresh(true);
+    // Recover silently if a device lost its push subscription.
+    void this.tryRegisterPush(user);
     this.connectRealtime(user);
     await this.flushOutbox();
 
@@ -1493,6 +1495,7 @@ export class ChatStoreService {
     this.networkOnline.set(true);
     const user = this.currentUser();
     if (!user) return;
+    void this.tryRegisterPush(user);
     this.connectRealtime(user);
     void this.flushOutbox();
     void this.refresh(false);
