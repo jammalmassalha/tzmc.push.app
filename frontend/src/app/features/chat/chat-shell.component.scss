@@ -441,6 +441,7 @@ mat-chip:not(.offline) {
     box-shadow 200ms ease,
     transform 120ms ease,
     opacity 180ms ease;
+  rotate: 180deg;
 }
 
 .send-btn:not([disabled]):hover {
