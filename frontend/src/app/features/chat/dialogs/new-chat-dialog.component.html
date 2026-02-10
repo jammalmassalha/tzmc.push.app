@@ -1,0 +1,26 @@
+<h2 mat-dialog-title>צ'אט חדש</h2>
+
+<mat-dialog-content>
+  <mat-form-field appearance="outline" class="full-width">
+    <mat-label>חיפוש איש קשר</mat-label>
+    <input matInput [formControl]="searchControl" placeholder="שם או מספר" />
+    <mat-icon matSuffix>search</mat-icon>
+  </mat-form-field>
+
+  <div class="contacts-list">
+    @if (!filteredContacts().length) {
+      <div class="empty-state">לא נמצאו אנשי קשר.</div>
+    } @else {
+      @for (contact of filteredContacts(); track contact.username) {
+        <button mat-button type="button" class="contact-row" (click)="startChat(contact.username)">
+          <span class="name">{{ contact.displayName }}</span>
+          <span class="meta">{{ contact.username }}</span>
+        </button>
+      }
+    }
+  </div>
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-stroked-button mat-dialog-close>סגור</button>
+</mat-dialog-actions>

@@ -1,0 +1,53 @@
+<div class="setup-page">
+  <mat-card class="setup-card">
+    <mat-card-header>
+      <mat-card-title>TZMC | מודרניזציה ל-Angular</mat-card-title>
+      <mat-card-subtitle>כניסה מהירה ומאובטחת</mat-card-subtitle>
+    </mat-card-header>
+
+    <mat-card-content>
+      <p class="setup-hint">
+        הזן מספר נייד (ללא מקפים) כדי להפעיל את חוויית הצ'אט המודרנית.
+      </p>
+
+      <form class="setup-form" [formGroup]="form" (ngSubmit)="submit()">
+        <mat-form-field appearance="outline">
+          <mat-label>מספר נייד</mat-label>
+          <input
+            matInput
+            inputmode="numeric"
+            maxlength="10"
+            autocomplete="tel"
+            formControlName="phone"
+            placeholder="05XXXXXXXX" />
+          @if (form.controls.phone.hasError('required') && form.controls.phone.touched) {
+            <mat-error>יש להזין מספר נייד.</mat-error>
+          }
+          @if (form.controls.phone.hasError('pattern') && form.controls.phone.touched) {
+            <mat-error>מספר לא תקין. יש להזין 10 ספרות.</mat-error>
+          }
+        </mat-form-field>
+
+        <button
+          mat-flat-button
+          color="primary"
+          type="submit"
+          class="full-width"
+          [disabled]="submitting()">
+          @if (!submitting()) {
+            <span>כניסה</span>
+          } @else {
+            <mat-spinner diameter="20"></mat-spinner>
+          }
+        </button>
+      </form>
+
+      @if (canInstall()) {
+        <button mat-stroked-button type="button" class="full-width install-btn" (click)="installApp()">
+          <mat-icon>download</mat-icon>
+          <span>התקן אפליקציה</span>
+        </button>
+      }
+    </mat-card-content>
+  </mat-card>
+</div>

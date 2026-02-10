@@ -1,0 +1,190 @@
+<div class="chat-root">
+  <mat-toolbar class="app-toolbar">
+    <div class="brand">
+      <mat-icon>forum</mat-icon>
+      <span>TZMC Chats · Angular</span>
+    </div>
+
+    <span class="spacer"></span>
+
+    <mat-chip-set>
+      <mat-chip [class.offline]="!store.networkOnline()">
+        {{ store.networkOnline() ? 'מקוון' : 'לא מחובר' }}
+      </mat-chip>
+    </mat-chip-set>
+
+    <button mat-icon-button type="button" [matMenuTriggerFor]="mainMenu" aria-label="תפריט">
+      <mat-icon>more_vert</mat-icon>
+    </button>
+  </mat-toolbar>
+
+  <mat-menu #mainMenu="matMenu">
+    <button mat-menu-item type="button" (click)="refresh()">
+      <mat-icon>refresh</mat-icon>
+      <span>רענון</span>
+    </button>
+    <button mat-menu-item type="button" (click)="flushOutbox()">
+      <mat-icon>sync</mat-icon>
+      <span>סנכרון הודעות</span>
+    </button>
+    <button mat-menu-item type="button" (click)="openCreateGroupDialog()">
+      <mat-icon>group_add</mat-icon>
+      <span>קבוצה חדשה</span>
+    </button>
+    <button mat-menu-item type="button" (click)="logout()">
+      <mat-icon>logout</mat-icon>
+      <span>התנתקות</span>
+    </button>
+  </mat-menu>
+
+  @if (isBusy()) {
+    <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+  }
+
+  <div class="chat-layout">
+    <aside class="contacts-pane" [class.hidden-mobile]="isMobile() && !showContactsPane()">
+      <div class="contacts-toolbar">
+        <mat-form-field appearance="outline" class="search-field">
+          <mat-label>חיפוש צ׳אטים</mat-label>
+          <input matInput [formControl]="searchControl" placeholder="שם, מספר, הודעה..." />
+          <mat-icon matSuffix>search</mat-icon>
+        </mat-form-field>
+
+        <div class="contacts-actions">
+          <button mat-stroked-button type="button" (click)="openNewChatDialog()">
+            <mat-icon>chat</mat-icon>
+            <span>צ'אט חדש</span>
+          </button>
+          <button mat-stroked-button type="button" (click)="openCreateGroupDialog()">
+            <mat-icon>groups</mat-icon>
+            <span>קבוצה</span>
+          </button>
+        </div>
+      </div>
+
+      @if (!filteredChats().length) {
+        <div class="empty-chat-list">אין צ׳אטים פעילים. צור צ׳אט חדש כדי להתחיל.</div>
+      } @else {
+        <cdk-virtual-scroll-viewport class="contacts-viewport" itemSize="82">
+          <button
+            type="button"
+            class="chat-item"
+            *cdkVirtualFor="let chat of filteredChats(); trackBy: trackByChatId"
+            [class.active]="store.activeChatId() === chat.id"
+            (click)="openChat(chat.id)">
+            <div class="chat-text">
+              <span class="chat-title">{{ chat.title }}</span>
+              <span class="chat-subtitle">{{ chat.subtitle || 'אין הודעות עדיין' }}</span>
+            </div>
+
+            <div class="chat-meta">
+              @if (chat.lastTimestamp) {
+                <span class="chat-time">{{ formatTime(chat.lastTimestamp) }}</span>
+              }
+              @if (chat.unread > 0) {
+                <span class="chat-unread" [matBadge]="chat.unread" matBadgeColor="primary"></span>
+              }
+            </div>
+          </button>
+        </cdk-virtual-scroll-viewport>
+      }
+    </aside>
+
+    <section class="conversation-pane" [class.hidden-mobile]="isMobile() && showContactsPane()">
+      @if (store.activeChat(); as activeChat) {
+        <header class="conversation-header">
+          @if (isMobile()) {
+            <button mat-icon-button type="button" (click)="backToList()" aria-label="חזרה">
+              <mat-icon>arrow_back</mat-icon>
+            </button>
+          }
+
+          <div class="conversation-title">
+            <h2>{{ activeChat.title }}</h2>
+            <small>{{ activeChat.isGroup ? 'קבוצה' : activeChat.id }}</small>
+          </div>
+        </header>
+
+        <div #messagesPanel class="messages-panel">
+          @for (message of store.activeMessages(); track message.messageId) {
+            <article class="message-row" [class.outgoing]="message.direction === 'outgoing'">
+              <div class="message-bubble">
+                @if (message.direction === 'incoming' && message.groupId) {
+                  <div class="message-sender">{{ message.senderDisplayName || message.sender }}</div>
+                }
+
+                @if (message.imageUrl) {
+                  <img class="message-image" [src]="message.imageUrl" alt="Attachment" loading="lazy" />
+                }
+
+                @if (message.body) {
+                  @if (isHttpLink(message.body)) {
+                    @if (isImageLink(message.body)) {
+                      <img class="message-image" [src]="message.body" alt="Image" loading="lazy" />
+                    } @else if (isDocumentLink(message.body)) {
+                      <a [href]="message.body" target="_blank" rel="noopener" class="message-link">
+                        מסמך מצורף
+                      </a>
+                    } @else {
+                      <a [href]="message.body" target="_blank" rel="noopener" class="message-link">
+                        {{ message.body }}
+                      </a>
+                    }
+                  } @else {
+                    <p class="message-text">{{ message.body }}</p>
+                  }
+                }
+
+                <div class="message-meta">
+                  <span>{{ formatTime(message.timestamp) }}</span>
+                  @if (message.direction === 'outgoing') {
+                    <span>{{ outgoingStatusLabel(message.deliveryStatus) }}</span>
+                  }
+                </div>
+              </div>
+            </article>
+          }
+        </div>
+
+        <form class="composer" (ngSubmit)="sendMessage()">
+          <input
+            #fileInput
+            class="hidden-input"
+            type="file"
+            accept="image/*,application/pdf,.doc,.docx"
+            (change)="onFileSelected($event)" />
+
+          <button
+            mat-icon-button
+            type="button"
+            (click)="fileInput.click()"
+            [disabled]="!store.canSendToActiveChat()">
+            <mat-icon>attach_file</mat-icon>
+          </button>
+
+          <mat-form-field appearance="outline" class="composer-field">
+            <textarea
+              matInput
+              rows="1"
+              [formControl]="messageControl"
+              [placeholder]="composerPlaceholder()"></textarea>
+          </mat-form-field>
+
+          <button
+            mat-fab
+            color="primary"
+            type="submit"
+            class="send-btn"
+            [disabled]="!canSendMessage()">
+            <mat-icon>send</mat-icon>
+          </button>
+        </form>
+      } @else {
+        <div class="empty-conversation">
+          <mat-icon>chat_bubble</mat-icon>
+          <p>בחר צ׳אט מהרשימה כדי להתחיל התכתבות.</p>
+        </div>
+      }
+    </section>
+  </div>
+</div>
