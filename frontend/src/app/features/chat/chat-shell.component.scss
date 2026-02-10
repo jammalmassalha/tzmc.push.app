@@ -297,32 +297,38 @@ mat-chip:not(.offline) {
   position: relative;
   z-index: 5;
   flex: 0 0 auto;
-  min-height: 64px;
+  min-height: 62px;
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
-  padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+  padding: 7px 10px calc(7px + env(safe-area-inset-bottom));
   background: #f0f2f5;
   border-top: 1px solid rgba(11, 20, 26, 0.08);
 }
 
 .composer-input-shell {
   flex: 1 1 auto;
-  min-height: 48px;
+  min-height: 46px;
   display: flex;
   direction: ltr;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
-  padding: 6px 10px;
+  padding: 5px 10px;
   background: #fff;
   border: 1px solid rgba(11, 20, 26, 0.1);
-  border-radius: 24px;
+  border-radius: 23px;
   box-shadow: 0 1px 2px rgba(11, 20, 26, 0.08);
+  transition: border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.composer-input-shell:focus-within {
+  border-color: rgba(32, 64, 160, 0.26);
+  box-shadow: 0 1px 2px rgba(11, 20, 26, 0.08), 0 0 0 2px rgba(32, 64, 160, 0.08);
 }
 
 .attach-btn {
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   border: 0;
   border-radius: 50%;
   background: transparent;
@@ -330,10 +336,16 @@ mat-chip:not(.offline) {
   display: grid;
   place-items: center;
   cursor: pointer;
+  transition: background-color 160ms ease, color 160ms ease, transform 120ms ease;
 }
 
 .attach-btn:hover {
-  background: rgba(11, 20, 26, 0.06);
+  background: rgba(11, 20, 26, 0.07);
+  color: #4d5f69;
+}
+
+.attach-btn:active {
+  transform: scale(0.94);
 }
 
 .attach-btn:disabled {
@@ -343,38 +355,60 @@ mat-chip:not(.offline) {
 
 .composer-textarea {
   flex: 1 1 auto;
-  min-height: 22px;
-  max-height: 120px;
+  min-height: 21px;
+  max-height: 118px;
   border: 0;
   outline: none;
   resize: none;
   background: transparent;
   font: inherit;
-  line-height: 1.4;
-  font-size: 15px;
+  line-height: 1.35;
+  font-size: 14.5px;
+  font-weight: 400;
+  letter-spacing: 0.01em;
   color: #111b21;
   direction: rtl;
   text-align: right;
-  padding: 6px 0;
+  padding: 6px 0 5px;
+}
+
+.composer-textarea::placeholder {
+  color: #77858e;
+  opacity: 0.95;
 }
 
 .attach-plus {
-  font-size: 30px;
+  font-size: 26px;
   line-height: 1;
-  font-weight: 400;
+  font-weight: 300;
 }
 
 .send-btn {
-  width: 48px;
-  height: 48px;
+  width: 44px;
+  height: 44px;
   border: 0;
   border-radius: 50%;
   display: grid;
   place-items: center;
-  background: #00a884;
+  background: linear-gradient(180deg, #5f74d9 0%, #455bc6 100%);
   color: #fff;
   cursor: pointer;
-  box-shadow: 0 4px 10px rgba(0, 168, 132, 0.35);
+  box-shadow: 0 3px 10px rgba(53, 74, 168, 0.34);
+  transition:
+    background-color 180ms ease,
+    box-shadow 200ms ease,
+    transform 120ms ease,
+    opacity 180ms ease;
+}
+
+.send-btn:not([disabled]):hover {
+  box-shadow: 0 5px 12px rgba(53, 74, 168, 0.4);
+  transform: translateY(-1px);
+}
+
+.send-btn:not([disabled]):active {
+  transform: scale(0.94);
+  box-shadow: 0 2px 8px rgba(53, 74, 168, 0.28);
 }
 
 .send-btn[disabled] {
@@ -382,13 +416,43 @@ mat-chip:not(.offline) {
   color: #8696a0;
   box-shadow: none;
   cursor: not-allowed;
+  animation: send-btn-disabled-breathe 1800ms ease-in-out infinite;
 }
 
 .send-btn mat-icon {
-  font-size: 22px;
-  width: 22px;
-  height: 22px;
-  line-height: 22px;
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+  line-height: 20px;
+  transition: transform 140ms ease;
+}
+
+.send-btn:not([disabled]):hover mat-icon {
+  transform: translateX(0.5px) translateY(-0.5px);
+}
+
+@keyframes send-btn-disabled-breathe {
+  0%,
+  100% {
+    opacity: 0.78;
+  }
+  50% {
+    opacity: 0.92;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .attach-btn,
+  .composer-input-shell,
+  .send-btn,
+  .send-btn mat-icon {
+    transition: none;
+  }
+
+  .send-btn[disabled] {
+    animation: none;
+    opacity: 0.9;
+  }
 }
 
 .hidden-input {
