@@ -1,4 +1,4 @@
-import { Injectable, computed, signal } from '@angular/core';
+import { Injectable, computed, effect, signal } from '@angular/core';
 import { SYSTEM_CHAT_IDS } from '../config/runtime-config';
 import {
   ChatGroup,
@@ -37,6 +37,15 @@ interface HrConversationState {
   actions: HrActionOption[];
 }
 
+type BadgeCapableNavigator = Navigator & {
+  setAppBadge?: (count?: number) => Promise<void>;
+  clearAppBadge?: () => Promise<void>;
+};
+
+type BadgeMessage =
+  | { action: 'set-app-badge-count'; count: number }
+  | { action: 'clear-app-badge' };
+
 @Injectable({ providedIn: 'root' })
 export class ChatStoreService {
   readonly currentUser = signal<string | null>(this.readStoredUser());
@@ -62,6 +71,7 @@ export class ChatStoreService {
   private hrStepsCache: { at: number; steps: HrStepOption[] } = { at: 0, steps: [] };
   private hrActionsCache: Record<string, { at: number; actions: HrActionOption[] }> = {};
   private hrInitInFlight = false;
+  private lastAppliedAppBadgeCount = -1;
 
   readonly chatItems = computed<ChatListItem[]>(() => {
     const groupsById = new Map(this.groups().map((group) => [group.id, group]));
@@ -134,6 +144,12 @@ export class ChatStoreService {
     if (!group) return true;
     if (group.type !== 'community') return true;
     return this.normalizeUser(group.createdBy) === this.normalizeUser(this.currentUser() ?? '');
+  });
+
+  private readonly appBadgeSyncEffect = effect(() => {
+    const unreadMap = this.unreadByChat();
+    const unreadTotal = Object.values(unreadMap).reduce((sum, count) => sum + (Number(count) || 0), 0);
+    this.syncAppBadge(unreadTotal);
   });
 
   constructor(private readonly api: ChatApiService) {
@@ -1485,4 +1501,45 @@ export class ChatStoreService {
   private handleOffline = (): void => {
     this.networkOnline.set(false);
   };
+
+  private syncAppBadge(unreadTotal: number): void {
+    if (typeof navigator === 'undefined') return;
+
+    const normalizedUnread = Math.max(0, Math.floor(Number(unreadTotal) || 0));
+    if (this.lastAppliedAppBadgeCount === normalizedUnread) {
+      return;
+    }
+    this.lastAppliedAppBadgeCount = normalizedUnread;
+
+    const badgeNavigator = navigator as BadgeCapableNavigator;
+    if (normalizedUnread > 0) {
+      if (typeof badgeNavigator.setAppBadge === 'function') {
+        void badgeNavigator.setAppBadge(normalizedUnread).catch(() => undefined);
+        return;
+      }
+      this.postBadgeMessageToServiceWorker({ action: 'set-app-badge-count', count: normalizedUnread });
+      return;
+    }
+
+    if (typeof badgeNavigator.clearAppBadge === 'function') {
+      void badgeNavigator.clearAppBadge().catch(() => undefined);
+      return;
+    }
+    if (typeof badgeNavigator.setAppBadge === 'function') {
+      void badgeNavigator.setAppBadge(0).catch(() => undefined);
+      return;
+    }
+    this.postBadgeMessageToServiceWorker({ action: 'clear-app-badge' });
+  }
+
+  private postBadgeMessageToServiceWorker(message: BadgeMessage): void {
+    if (!('serviceWorker' in navigator)) return;
+
+    void navigator.serviceWorker.ready
+      .then((registration) => {
+        const activeWorker = registration.active ?? navigator.serviceWorker.controller;
+        activeWorker?.postMessage(message);
+      })
+      .catch(() => undefined);
+  }
 }

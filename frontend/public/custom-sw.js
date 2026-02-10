@@ -30,6 +30,80 @@ function parsePushPayload(event) {
   }
 }
 
+function parseBadgeCount(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+
+  const candidates = [
+    payload.badgeCount,
+    payload.badge_count,
+    payload.unreadCount,
+    payload.unread_count,
+    payload.unread
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      return Math.max(0, Math.floor(candidate));
+    }
+    if (typeof candidate === 'string' && /^\d+$/.test(candidate.trim())) {
+      return Math.max(0, Number.parseInt(candidate.trim(), 10));
+    }
+  }
+
+  if (typeof payload.badge === 'number' && Number.isFinite(payload.badge)) {
+    return Math.max(0, Math.floor(payload.badge));
+  }
+  if (typeof payload.badge === 'string' && /^\d+$/.test(payload.badge.trim())) {
+    return Math.max(0, Number.parseInt(payload.badge.trim(), 10));
+  }
+
+  return null;
+}
+
+function setHomeScreenBadgeCount(count) {
+  const normalized = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : Number.NaN;
+  if (!Number.isFinite(normalized)) {
+    return Promise.resolve();
+  }
+
+  if (self.navigator && typeof self.navigator.setAppBadge === 'function') {
+    return self.navigator.setAppBadge(normalized).catch(() => undefined);
+  }
+  if (self.registration && typeof self.registration.setAppBadge === 'function') {
+    return self.registration.setAppBadge(normalized).catch(() => undefined);
+  }
+  if (self.registration && typeof self.registration.setBadge === 'function') {
+    return self.registration.setBadge(normalized).catch(() => undefined);
+  }
+
+  return Promise.resolve();
+}
+
+function clearHomeScreenBadgeCount() {
+  if (self.navigator && typeof self.navigator.clearAppBadge === 'function') {
+    return self.navigator.clearAppBadge().catch(() => undefined);
+  }
+  if (self.navigator && typeof self.navigator.setAppBadge === 'function') {
+    return self.navigator.setAppBadge(0).catch(() => undefined);
+  }
+  if (self.registration && typeof self.registration.clearAppBadge === 'function') {
+    return self.registration.clearAppBadge().catch(() => undefined);
+  }
+  if (self.registration && typeof self.registration.clearBadge === 'function') {
+    return self.registration.clearBadge().catch(() => undefined);
+  }
+  if (self.registration && typeof self.registration.setAppBadge === 'function') {
+    return self.registration.setAppBadge(0).catch(() => undefined);
+  }
+  if (self.registration && typeof self.registration.setBadge === 'function') {
+    return self.registration.setBadge(0).catch(() => undefined);
+  }
+
+  return Promise.resolve();
+}
+
 function normalizeBody(payload) {
   if (typeof payload.body === 'string') {
     return payload.body;
@@ -86,6 +160,7 @@ function broadcastPushPayload(payload) {
 self.addEventListener('push', (event) => {
   const payload = parsePushPayload(event);
   const icon = buildIconUrl(payload);
+  const badgeCount = parseBadgeCount(payload);
   const title = typeof payload.title === 'string' && payload.title ? payload.title : FALLBACK_TITLE;
   const body = normalizeBody(payload) || FALLBACK_BODY;
   const url = normalizeTargetUrl(
@@ -93,6 +168,9 @@ self.addEventListener('push', (event) => {
   );
 
   const tasks = [broadcastPushPayload(payload)];
+  if (badgeCount !== null) {
+    tasks.push(setHomeScreenBadgeCount(badgeCount));
+  }
   if (shouldShowNotification(payload)) {
     tasks.push(
       self.registration.showNotification(title, {
@@ -110,6 +188,22 @@ self.addEventListener('push', (event) => {
   }
 
   event.waitUntil(Promise.all(tasks));
+});
+
+self.addEventListener('message', (event) => {
+  const data = event.data && typeof event.data === 'object' ? event.data : null;
+  if (!data) {
+    return;
+  }
+
+  if (data.action === 'set-app-badge-count') {
+    event.waitUntil(setHomeScreenBadgeCount(Number(data.count)));
+    return;
+  }
+
+  if (data.action === 'clear-app-badge') {
+    event.waitUntil(clearHomeScreenBadgeCount());
+  }
 });
 
 self.addEventListener('notificationclick', (event) => {
