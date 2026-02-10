@@ -178,13 +178,13 @@
             <mat-icon>send</mat-icon>
           </button>
 
-          <mat-form-field appearance="outline" class="composer-field">
+          <div class="composer-input-shell">
             <textarea
-              matInput
+              class="composer-textarea"
               rows="1"
               [formControl]="messageControl"
               [placeholder]="composerPlaceholder()"></textarea>
-          </mat-form-field>
+          </div>
 
           <button
             mat-mini-fab
