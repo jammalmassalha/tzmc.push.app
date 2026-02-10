@@ -47,6 +47,10 @@ mat-chip.offline {
   --mdc-chip-label-text-color: #b3261e;
 }
 
+mat-chip:not(.offline) {
+  --mdc-chip-label-text-color: rgb(40 220 61 / 87%);
+}
+
 .chat-layout {
   height: calc(100dvh - var(--app-toolbar-height));
   display: grid;
