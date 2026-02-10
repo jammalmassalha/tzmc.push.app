@@ -30,6 +30,17 @@ import { ChatStoreService } from '../../core/services/chat-store.service';
 import { CreateGroupDialogComponent } from './dialogs/create-group-dialog.component';
 import { NewChatDialogComponent } from './dialogs/new-chat-dialog.component';
 
+type MessageRenderPart =
+  | { kind: 'text'; text: string }
+  | { kind: 'link'; url: string; label: string }
+  | { kind: 'location'; url: string; label: string }
+  | { kind: 'image'; url: string };
+
+interface ParsedMessageCacheEntry {
+  body: string;
+  parts: MessageRenderPart[];
+}
+
 @Component({
   selector: 'app-chat-shell',
   standalone: true,
@@ -100,6 +111,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly isBusy = computed(
     () => this.store.loading() || this.store.syncing() || this.store.uploading()
   );
+  private readonly messagePartsCache = new Map<string, ParsedMessageCacheEntry>();
 
   private readonly autoScrollEffect = effect(() => {
     const activeChatId = this.store.activeChatId();
@@ -281,16 +293,21 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     }).format(new Date(timestamp));
   }
 
-  isHttpLink(text: string): boolean {
-    return /^https?:\/\/\S+$/i.test(text.trim());
+  getMessageRenderParts(messageId: string, body: string): MessageRenderPart[] {
+    const key = messageId || body;
+    const cached = this.messagePartsCache.get(key);
+    if (cached && cached.body === body) {
+      return cached.parts;
+    }
+
+    const parts = this.parseMessageBody(body);
+    this.messagePartsCache.set(key, { body, parts });
+    return parts;
   }
 
-  isImageLink(url: string): boolean {
-    return /\.(jpeg|jpg|png|gif|webp)(\?|$)/i.test(url);
-  }
-
-  isDocumentLink(url: string): boolean {
-    return /\.(pdf|doc|docx)(\?|$)/i.test(url);
+  openFullImage(url: string): void {
+    if (!url) return;
+    window.open(url, '_blank', 'noopener,noreferrer');
   }
 
   outgoingStatusLabel(status: DeliveryStatus): string {
@@ -319,6 +336,76 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   private updateViewportHeight(): void {
     const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
     document.documentElement.style.setProperty('--app-height', `${Math.round(viewportHeight)}px`);
+  }
+
+  private parseMessageBody(body: string): MessageRenderPart[] {
+    const value = String(body || '');
+    if (!value.trim()) {
+      return [];
+    }
+
+    const urlRegex = /(https?:\/\/[^\s<>"']+)/gi;
+    const parts: MessageRenderPart[] = [];
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = urlRegex.exec(value)) !== null) {
+      const start = match.index;
+      const rawMatch = match[0];
+
+      if (start > lastIndex) {
+        parts.push({ kind: 'text', text: value.slice(lastIndex, start) });
+      }
+
+      const { cleanUrl, trailingText } = this.stripTrailingPunctuation(rawMatch);
+
+      if (this.isImageUrl(cleanUrl)) {
+        parts.push({ kind: 'image', url: cleanUrl });
+      } else if (this.isLocationUrl(cleanUrl)) {
+        parts.push({ kind: 'location', url: cleanUrl, label: 'המיקום שלי' });
+      } else {
+        parts.push({ kind: 'link', url: cleanUrl, label: 'לחץ כאן למעבר לכתובת' });
+      }
+
+      if (trailingText) {
+        parts.push({ kind: 'text', text: trailingText });
+      }
+
+      lastIndex = start + rawMatch.length;
+    }
+
+    if (lastIndex < value.length) {
+      parts.push({ kind: 'text', text: value.slice(lastIndex) });
+    }
+
+    if (!parts.length) {
+      parts.push({ kind: 'text', text: value });
+    }
+
+    return parts;
+  }
+
+  private stripTrailingPunctuation(url: string): { cleanUrl: string; trailingText: string } {
+    let cleanUrl = String(url || '');
+    let trailingText = '';
+    while (/[),.!?;:]$/.test(cleanUrl)) {
+      trailingText = `${cleanUrl.slice(-1)}${trailingText}`;
+      cleanUrl = cleanUrl.slice(0, -1);
+    }
+    return { cleanUrl, trailingText };
+  }
+
+  private isImageUrl(url: string): boolean {
+    return /\.(jpeg|jpg|png|gif|webp)(\?|$)/i.test(url);
+  }
+
+  private isLocationUrl(url: string): boolean {
+    const lower = url.toLowerCase();
+    return (
+      lower.includes('maps.google.com') ||
+      lower.includes('google.com/maps') ||
+      lower.includes('maps.app.goo.gl')
+    );
   }
 
   private getCurrentPosition(): Promise<GeolocationPosition> {

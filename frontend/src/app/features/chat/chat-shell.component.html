@@ -119,25 +119,35 @@
                 }
 
                 @if (message.imageUrl) {
-                  <img class="message-image" [src]="message.imageUrl" alt="Attachment" loading="lazy" />
+                  <button
+                    type="button"
+                    class="message-image-btn"
+                    (click)="openFullImage(message.imageUrl)"
+                    aria-label="Open full image">
+                    <img class="message-image" [src]="message.imageUrl" alt="Attachment" loading="lazy" />
+                  </button>
                 }
 
                 @if (message.body) {
-                  @if (isHttpLink(message.body)) {
-                    @if (isImageLink(message.body)) {
-                      <img class="message-image" [src]="message.body" alt="Image" loading="lazy" />
-                    } @else if (isDocumentLink(message.body)) {
-                      <a [href]="message.body" target="_blank" rel="noopener" class="message-link">
-                        מסמך מצורף
-                      </a>
-                    } @else {
-                      <a [href]="message.body" target="_blank" rel="noopener" class="message-link">
-                        {{ message.body }}
-                      </a>
+                  <div class="message-content">
+                    @for (part of getMessageRenderParts(message.messageId, message.body); track $index) {
+                      @if (part.kind === 'text') {
+                        <span class="message-text">{{ part.text }}</span>
+                      } @else if (part.kind === 'image') {
+                        <button
+                          type="button"
+                          class="message-image-btn"
+                          (click)="openFullImage(part.url)"
+                          aria-label="Open full image">
+                          <img class="message-image" [src]="part.url" alt="Image" loading="lazy" />
+                        </button>
+                      } @else {
+                        <a [href]="part.url" target="_blank" rel="noopener" class="message-link">
+                          {{ part.label }}
+                        </a>
+                      }
                     }
-                  } @else {
-                    <p class="message-text">{{ message.body }}</p>
-                  }
+                  </div>
                 }
 
                 <div class="message-meta">
