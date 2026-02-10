@@ -47,6 +47,10 @@ mat-chip.offline {
   --mdc-chip-label-text-color: #b3261e;
 }
 
+mat-chip:not(.offline) {
+  --mdc-chip-label-text-color: rgb(40 220 61 / 87%);
+}
+
 .chat-layout {
   height: calc(100dvh - var(--app-toolbar-height));
   display: grid;
@@ -177,6 +181,7 @@ mat-chip.offline {
   top: 0;
   z-index: 6;
   flex: 0 0 auto;
+  direction: rtl;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -184,6 +189,14 @@ mat-chip.offline {
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
   background: rgba(249, 250, 254, 0.98);
   backdrop-filter: blur(2px);
+}
+
+.back-button-rtl {
+  flex: 0 0 auto;
+}
+
+.conversation-title {
+  text-align: right;
 }
 
 .conversation-title h2 {
@@ -200,7 +213,7 @@ mat-chip.offline {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 16px 16px calc(var(--composer-height) + 12px + env(safe-area-inset-bottom));
+  padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -264,10 +277,11 @@ mat-chip.offline {
 }
 
 .composer {
-  position: absolute;
-  inset-inline: 0;
+  position: sticky;
   bottom: 0;
   z-index: 5;
+  flex: 0 0 auto;
+  min-height: var(--composer-height);
   display: grid;
   grid-template-columns: auto 1fr auto;
   gap: 8px;

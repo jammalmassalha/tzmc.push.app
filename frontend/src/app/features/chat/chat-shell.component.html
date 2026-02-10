@@ -94,7 +94,12 @@
       @if (store.activeChat(); as activeChat) {
         <header class="conversation-header">
           @if (isMobile()) {
-            <button mat-icon-button type="button" (click)="backToList()" aria-label="חזרה">
+            <button
+              mat-icon-button
+              type="button"
+              class="back-button-rtl"
+              (click)="backToList()"
+              aria-label="חזרה">
               <mat-icon>arrow_back</mat-icon>
             </button>
           }
