@@ -282,25 +282,28 @@ function logNotificationStatus(sender, recipient, messageShort, status, details)
 }
 
 async function getSubscriptionFromSheet(usernames) {
-    const userListString = buildSubscriptionCacheKey(usernames);
-    if (!userListString) return [];
+    const cacheKey = buildSubscriptionCacheKey(usernames);
+    if (!cacheKey) return [];
+
+    const requestUserList = Array.isArray(usernames) ? usernames.join(',') : String(usernames || '').trim();
+    if (!requestUserList) return [];
 
     const now = Date.now();
-    const cached = subscriptionCache.get(userListString);
+    const cached = subscriptionCache.get(cacheKey);
     if (cached && now - cached.at < SUBSCRIPTION_CACHE_TTL_MS) {
         return cached.subscriptions;
     }
 
     try {
         const response = await fetchWithRetry(
-            `${GOOGLE_SHEET_URL}?usernames=${encodeURIComponent(userListString)}`,
+            `${GOOGLE_SHEET_URL}?usernames=${encodeURIComponent(requestUserList)}`,
             {},
-            { timeoutMs: 8000, retries: 1, backoffMs: 300 }
+            { timeoutMs: 12000, retries: 2, backoffMs: 500 }
         );
         const result = await response.json();
-        if (result.result === 'success' && Array.isArray(result.subscriptions)) {
+        if (Array.isArray(result.subscriptions)) {
             const subscriptions = result.subscriptions.filter(Boolean);
-            subscriptionCache.set(userListString, { at: now, subscriptions });
+            subscriptionCache.set(cacheKey, { at: now, subscriptions });
             return subscriptions;
         }
         return cached ? cached.subscriptions : [];
@@ -523,9 +526,8 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
             try {
                 const pushOptions = {
                     TTL: 86400,
-                    urgency: 'high',
                     headers: { 'Urgency': 'high' },
-                    timeout: 8000
+                    timeout: 15000
                 };
                 await webpush.sendNotification(subscription, payload, pushOptions);
                 return { ok: true, username: subscription.username, badge: currentCount };
