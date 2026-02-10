@@ -100,7 +100,7 @@
               class="back-button-rtl"
               (click)="backToList()"
               aria-label="חזרה">
-              <mat-icon>arrow_back</mat-icon>
+              <mat-icon>arrow_forward</mat-icon>
             </button>
           }
 
@@ -160,6 +160,23 @@
             (change)="onFileSelected($event)" />
 
           <button
+            mat-fab
+            color="primary"
+            type="submit"
+            class="send-btn"
+            [disabled]="!canSendMessage()">
+            <mat-icon>send</mat-icon>
+          </button>
+
+          <mat-form-field appearance="outline" class="composer-field">
+            <textarea
+              matInput
+              rows="1"
+              [formControl]="messageControl"
+              [placeholder]="composerPlaceholder()"></textarea>
+          </mat-form-field>
+
+          <button
             mat-mini-fab
             type="button"
             class="attach-btn"
@@ -179,23 +196,6 @@
               <span>Share location</span>
             </button>
           </mat-menu>
-
-          <mat-form-field appearance="outline" class="composer-field">
-            <textarea
-              matInput
-              rows="1"
-              [formControl]="messageControl"
-              [placeholder]="composerPlaceholder()"></textarea>
-          </mat-form-field>
-
-          <button
-            mat-fab
-            color="primary"
-            type="submit"
-            class="send-btn"
-            [disabled]="!canSendMessage()">
-            <mat-icon>send</mat-icon>
-          </button>
         </form>
       } @else {
         <div class="empty-conversation">
