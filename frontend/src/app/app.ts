@@ -25,7 +25,7 @@ export class App {
     }
 
     try {
-      await this.clearServiceWorkers();
+      await this.refreshServiceWorkers();
 
       if ('caches' in window) {
         const keys = await caches.keys();
@@ -59,13 +59,13 @@ export class App {
     }
   }
 
-  private async clearServiceWorkers(): Promise<void> {
+  private async refreshServiceWorkers(): Promise<void> {
     if (!('serviceWorker' in navigator)) {
       return;
     }
 
     const registrations = await navigator.serviceWorker.getRegistrations();
-    await Promise.all(registrations.map((registration) => registration.unregister().catch(() => false)));
+    await Promise.all(registrations.map((registration) => registration.update().catch(() => undefined)));
   }
 
   private async clearIndexedDatabases(): Promise<void> {
@@ -73,7 +73,7 @@ export class App {
       return;
     }
 
-    const knownNames = ['ngsw:db', 'PushNotificationsDB'];
+    const knownNames = ['PushNotificationsDB'];
     const idbFactory = indexedDB as IDBFactory & {
       databases?: () => Promise<Array<{ name?: string }>>;
     };
@@ -87,6 +87,7 @@ export class App {
             ...knownNames,
             ...discovered
               .map((entry) => String(entry?.name ?? '').trim())
+              .filter((name) => !name.startsWith('ngsw:'))
               .filter(Boolean)
           ])
         );
