@@ -86,7 +86,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   });
 
   readonly isMobile = signal(this.mobileQuery.matches);
-  readonly showContactsPane = signal(!this.mobileQuery.matches);
+  readonly showContactsPane = signal(this.mobileQuery.matches);
 
   readonly filteredChats = computed(() => {
     const query = this.searchTerm().trim().toLowerCase();
@@ -157,6 +157,11 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const chatFromUrl = this.route.snapshot.queryParamMap.get('chat');
     if (chatFromUrl) {
       this.openChat(chatFromUrl);
+      return;
+    }
+
+    if (this.isMobile() && this.store.activeChatId()) {
+      this.showContactsPane.set(false);
     }
   }
 
@@ -179,6 +184,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   backToList(): void {
+    this.store.clearLastActiveChat();
     this.showContactsPane.set(true);
     queueMicrotask(() => this.contactsViewport?.checkViewportSize());
   }

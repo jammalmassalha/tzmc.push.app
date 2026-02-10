@@ -168,6 +168,11 @@ export class ChatStoreService {
       return;
     }
 
+    if (this.shouldOpenHomeOnInit(user)) {
+      this.activeChatId.set(null);
+      return;
+    }
+
     if (!this.activeChatId()) {
       const preferredChat = this.pickInitialChatId();
       if (preferredChat) {
@@ -207,6 +212,7 @@ export class ChatStoreService {
     localStorage.removeItem('username');
     if (user) {
       localStorage.removeItem(this.activeChatKey(user));
+      localStorage.removeItem(this.homeViewKey(user));
     }
     this.currentUser.set(null);
     this.contacts.set([]);
@@ -264,6 +270,7 @@ export class ChatStoreService {
     const user = this.currentUser();
     if (user) {
       localStorage.setItem(this.activeChatKey(user), normalized);
+      localStorage.removeItem(this.homeViewKey(user));
     }
     this.unreadByChat.update((map) => ({
       ...map,
@@ -271,6 +278,15 @@ export class ChatStoreService {
     }));
     void this.onChatActivated(normalized);
     this.schedulePersist();
+  }
+
+  clearLastActiveChat(): void {
+    const user = this.currentUser();
+    this.activeChatId.set(null);
+    if (!user) return;
+
+    localStorage.removeItem(this.activeChatKey(user));
+    localStorage.setItem(this.homeViewKey(user), '1');
   }
 
   startDirectChat(username: string): void {
@@ -462,6 +478,14 @@ export class ChatStoreService {
 
   private activeChatKey(user: string): string {
     return `modern-chat-active:${user}`;
+  }
+
+  private homeViewKey(user: string): string {
+    return `modern-chat-home:${user}`;
+  }
+
+  private shouldOpenHomeOnInit(user: string): boolean {
+    return localStorage.getItem(this.homeViewKey(user)) === '1';
   }
 
   private async onChatActivated(chatId: string): Promise<void> {
