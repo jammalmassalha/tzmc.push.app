@@ -180,6 +180,31 @@ const fetchWithRetry = async (url, options = {}, retryOptions = {}) => {
 
 const normalizeUserKey = (value) => String(value || '').trim().toLowerCase();
 const normalizeGroupType = (value) => (value === 'community' ? 'community' : 'group');
+const SUBSCRIPTION_CACHE_TTL_MS = 2 * 60 * 1000;
+const subscriptionCache = new Map();
+
+function buildSubscriptionCacheKey(usernames) {
+    const values = Array.isArray(usernames) ? usernames : [usernames];
+    const normalized = Array.from(
+        new Set(values.map(normalizeUserKey).filter(Boolean))
+    ).sort();
+    return normalized.join(',');
+}
+
+function pruneSubscriptionCacheEndpoint(endpointToRemove) {
+    if (!endpointToRemove) return;
+    for (const [cacheKey, cacheEntry] of subscriptionCache.entries()) {
+        const filtered = (cacheEntry.subscriptions || []).filter(
+            (subscription) => subscription && subscription.endpoint !== endpointToRemove
+        );
+        if (filtered.length !== (cacheEntry.subscriptions || []).length) {
+            subscriptionCache.set(cacheKey, {
+                at: cacheEntry.at,
+                subscriptions: filtered
+            });
+        }
+    }
+}
 
 function upsertGroup(payload = {}) {
     const groupId = payload.groupId;
@@ -257,18 +282,31 @@ function logNotificationStatus(sender, recipient, messageShort, status, details)
 }
 
 async function getSubscriptionFromSheet(usernames) {
-    if (!usernames || usernames.length === 0) return [];
-    const userListString = Array.isArray(usernames) ? usernames.join(',') : usernames;
+    const userListString = buildSubscriptionCacheKey(usernames);
+    if (!userListString) return [];
+
+    const now = Date.now();
+    const cached = subscriptionCache.get(userListString);
+    if (cached && now - cached.at < SUBSCRIPTION_CACHE_TTL_MS) {
+        return cached.subscriptions;
+    }
+
     try {
-        const response = await fetchWithRetry(`${GOOGLE_SHEET_URL}?usernames=${encodeURIComponent(userListString)}`, {}, { timeoutMs: 10000, retries: 2 });
+        const response = await fetchWithRetry(
+            `${GOOGLE_SHEET_URL}?usernames=${encodeURIComponent(userListString)}`,
+            {},
+            { timeoutMs: 8000, retries: 1, backoffMs: 300 }
+        );
         const result = await response.json();
         if (result.result === 'success' && Array.isArray(result.subscriptions)) {
-            return result.subscriptions;
+            const subscriptions = result.subscriptions.filter(Boolean);
+            subscriptionCache.set(userListString, { at: now, subscriptions });
+            return subscriptions;
         }
-        return [];
+        return cached ? cached.subscriptions : [];
     } catch (error) {
         console.error('Network Error fetching from Google Sheet:', error);
-        return [];
+        return cached ? cached.subscriptions : [];
     }
 }
 // --- RESET BADGE ENDPOINT ---
@@ -441,63 +479,78 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         index === self.findIndex((t) => t.endpoint === sub.endpoint)
     );
 
+    const badgeCountByUser = new Map();
+    const sendResults = await Promise.all(
+        uniqueSubscriptions.map(async (subscription) => {
+            // Increment unread badge once per user, not once per device endpoint.
+            const userKey = normalizeUserKey(subscription.username);
+            let currentCount = unreadCounts[userKey] || 0;
+            if (shouldIncrementBadge) {
+                if (badgeCountByUser.has(userKey)) {
+                    currentCount = badgeCountByUser.get(userKey);
+                } else {
+                    currentCount = currentCount + 1;
+                    unreadCounts[userKey] = currentCount;
+                    badgeCountByUser.set(userKey, currentCount);
+                }
+            }
+
+            const clickUrl = `https://www.tzmc.co.il/subscribes/?chat=${encodeURIComponent(finalSender)}&user=${encodeURIComponent(subscription.username)}`;
+            const customData = message.data || {};
+            const payloadData = {
+                ...customData,
+                title: msgTitle,
+                body: msgBody.shortText || 'New Notification',
+                badge: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
+                icon: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
+                requireInteraction: true,
+                image: imageUrl,
+                url: clickUrl,
+                user: subscription.username,
+                sender: finalSender,
+                messageId: messageId
+            };
+            if (shouldIncrementBadge) {
+                payloadData.badgeCount = currentCount;
+            }
+
+            const payload = JSON.stringify({
+                data: {
+                    ...payloadData
+                }
+            });
+
+            try {
+                const pushOptions = {
+                    TTL: 86400,
+                    urgency: 'high',
+                    headers: { 'Urgency': 'high' },
+                    timeout: 8000
+                };
+                await webpush.sendNotification(subscription, payload, pushOptions);
+                return { ok: true, username: subscription.username, badge: currentCount };
+            } catch (err) {
+                const statusCode = err.statusCode || 'N/A';
+                if (statusCode === 404 || statusCode === 410) {
+                    pruneSubscriptionCacheEndpoint(subscription.endpoint);
+                }
+                return { ok: false, username: subscription.username, statusCode, message: err.message };
+            }
+        })
+    );
+
     let successCount = 0;
     let failCount = 0;
-    let executionLogs = [];
-
-    for (const subscription of uniqueSubscriptions) {
-        
-        // 2. Increment Badge (Server Memory)
-        const userKey = String(subscription.username).trim().toLowerCase();
-        let currentCount = unreadCounts[userKey] || 0;
-        if (shouldIncrementBadge) {
-            currentCount = currentCount + 1;
-            unreadCounts[userKey] = currentCount;
-        }
-
-        const clickUrl = `https://www.tzmc.co.il/subscribes/?chat=${encodeURIComponent(finalSender)}&user=${encodeURIComponent(subscription.username)}`;
-        const customData = message.data || {};
-
-        // 3. [CRITICAL CHANGE] Rename keys to prevent collision
-        const payloadData = {
-            ...customData,
-            title: msgTitle,
-            body: msgBody.shortText || 'New Notification',
-            badge: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png', 
-            icon: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
-            requireInteraction: true,
-            image: imageUrl,
-            url: clickUrl,
-            user: subscription.username,
-            sender: finalSender,
-            messageId: messageId
-        };
-        if (shouldIncrementBadge) {
-            payloadData.badgeCount = currentCount;
-        }
-
-        const payload = JSON.stringify({
-            data: {
-                ...payloadData
-            }
-        });
-
-        try {
-            const options = {
-                TTL: 86400,
-                headers: { 'Urgency': 'high' }
-            };
-        
-            await webpush.sendNotification(subscription, payload, options);
+    const executionLogs = [];
+    for (const result of sendResults) {
+        if (result.ok) {
             successCount++;
-            executionLogs.push(`Device (${subscription.username}): ✅ Delivered (Badge: ${currentCount})`);
-        } catch (err) {
+            executionLogs.push(`Device (${result.username}): ✅ Delivered (Badge: ${result.badge})`);
+        } else {
             failCount++;
-            const statusCode = err.statusCode || 'N/A';
-            executionLogs.push(`Device (${subscription.username}): ❌ Failed [${statusCode}]`);
-            console.error(`[PUSH FAIL] ${subscription.username}:`, err.message);
+            executionLogs.push(`Device (${result.username}): ❌ Failed [${result.statusCode}]`);
+            console.error(`[PUSH FAIL] ${result.username}:`, result.message);
         }
-        await sleep(40); 
     }
 
     scheduleStateSave();
