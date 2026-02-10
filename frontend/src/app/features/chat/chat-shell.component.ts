@@ -62,6 +62,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     this.isMobile.set(event.matches);
     this.showContactsPane.set(!event.matches || !this.store.activeChatId());
   };
+  private readonly onViewportResize = (): void => this.updateViewportHeight();
 
   readonly searchControl = new FormControl('', { nonNullable: true });
   readonly messageControl = new FormControl('', { nonNullable: true });
@@ -124,6 +125,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   async ngOnInit(): Promise<void> {
     this.mobileQuery.addEventListener('change', this.onMediaChange);
+    window.addEventListener('resize', this.onViewportResize, { passive: true });
+    window.visualViewport?.addEventListener('resize', this.onViewportResize);
+    window.visualViewport?.addEventListener('scroll', this.onViewportResize);
+    this.updateViewportHeight();
 
     await this.store.initialize();
     const chatFromUrl = this.route.snapshot.queryParamMap.get('chat');
@@ -136,6 +141,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.mobileQuery.removeEventListener('change', this.onMediaChange);
+    window.removeEventListener('resize', this.onViewportResize);
+    window.visualViewport?.removeEventListener('resize', this.onViewportResize);
+    window.visualViewport?.removeEventListener('scroll', this.onViewportResize);
   }
 
   openChat(chatId: string): void {
@@ -308,6 +316,11 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const panel = this.messagesPanel?.nativeElement;
     if (!panel) return;
     panel.scrollTop = panel.scrollHeight;
+  }
+
+  private updateViewportHeight(): void {
+    const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+    document.documentElement.style.setProperty('--app-height', `${Math.round(viewportHeight)}px`);
   }
 
   private getCurrentPosition(): Promise<GeolocationPosition> {
