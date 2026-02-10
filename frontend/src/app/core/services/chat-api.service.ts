@@ -56,6 +56,34 @@ interface VersionResponse {
   releaseNotes?: string[];
 }
 
+interface HrStepsResponse {
+  result?: string;
+  data?: Array<{
+    id?: string | number;
+    name?: string;
+    subject?: string;
+  }>;
+}
+
+interface HrActionsResponse {
+  result?: string;
+  data?: Array<{
+    stepName?: string;
+    returnValue?: string;
+  }>;
+}
+
+export interface HrStepOption {
+  id: string;
+  name: string;
+  subject: string;
+}
+
+export interface HrActionOption {
+  stepName: string;
+  returnValue: string;
+}
+
 @Injectable({ providedIn: 'root' })
 export class ChatApiService {
   private readonly config = runtimeConfig;
@@ -258,6 +286,50 @@ export class ChatApiService {
           ? body.releaseNotes
           : []
     };
+  }
+
+  async getHrSteps(): Promise<HrStepOption[]> {
+    const url = `${this.config.subscriptionUrl}?action=get_hr_steps`;
+    const response = await this.fetchWithRetry(url, {}, { retries: 2, timeoutMs: 10000 });
+    if (!response.ok) {
+      throw new Error(`HR steps request failed with ${response.status}`);
+    }
+
+    const body = (await response.json()) as HrStepsResponse;
+    if (body.result !== 'success' || !Array.isArray(body.data)) {
+      return [];
+    }
+
+    return body.data
+      .map((item) => ({
+        id: String(item.id ?? '').trim(),
+        name: String(item.name ?? '').trim(),
+        subject: String(item.subject ?? '').trim()
+      }))
+      .filter((item) => Boolean(item.id && item.name));
+  }
+
+  async getHrActions(serviceId: string): Promise<HrActionOption[]> {
+    const normalized = String(serviceId || '').trim();
+    if (!normalized) return [];
+
+    const url = `${this.config.subscriptionUrl}?action=get_hr_steps_action&serviceId=${encodeURIComponent(normalized)}`;
+    const response = await this.fetchWithRetry(url, {}, { retries: 2, timeoutMs: 10000 });
+    if (!response.ok) {
+      throw new Error(`HR actions request failed with ${response.status}`);
+    }
+
+    const body = (await response.json()) as HrActionsResponse;
+    if (body.result !== 'success' || !Array.isArray(body.data)) {
+      return [];
+    }
+
+    return body.data
+      .map((item) => ({
+        stepName: String(item.stepName ?? '').trim(),
+        returnValue: String(item.returnValue ?? '').trim()
+      }))
+      .filter((item) => Boolean(item.stepName || item.returnValue));
   }
 
   private detectDeviceType(): 'Mobile' | 'PC' {

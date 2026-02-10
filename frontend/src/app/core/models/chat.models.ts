@@ -23,6 +23,7 @@ export interface ChatMessage {
   chatId: string;
   sender: string;
   senderDisplayName?: string;
+  recordType?: string;
   body: string;
   imageUrl?: string | null;
   thumbnailUrl?: string | null;

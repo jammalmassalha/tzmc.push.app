@@ -15,13 +15,27 @@ import {
   PersistedChatState,
   ReplyPayload
 } from '../models/chat.models';
-import { ChatApiService } from './chat-api.service';
+import { ChatApiService, HrActionOption, HrStepOption } from './chat-api.service';
 
 const CONTACTS_TTL_MS = 5 * 60 * 1000;
 const GROUPS_TTL_MS = 2 * 60 * 1000;
 const POLL_INTERVAL_MS = 15000;
 const STREAM_RETRY_MS = 5000;
 const MAX_PERSISTED_MESSAGES = 2500;
+const HR_CHAT_NAME = 'ציפי';
+const HR_WELCOME_KEY_PREFIX = 'hr_welcome_sent_';
+const HR_STATE_KEY_PREFIX = 'hr_state_';
+const HR_UPLOAD_BASE_URL = 'https://www.tzmc.co.il/notify/uploads/';
+const HR_STEPS_CACHE_TTL_MS = 5 * 60 * 1000;
+const HR_ACTIONS_CACHE_TTL_MS = 5 * 60 * 1000;
+
+type HrAwaitingState = 'step' | 'action' | 'free-text';
+
+interface HrConversationState {
+  awaiting: HrAwaitingState;
+  stepId: string | null;
+  actions: HrActionOption[];
+}
 
 @Injectable({ providedIn: 'root' })
 export class ChatStoreService {
@@ -45,6 +59,9 @@ export class ChatStoreService {
   private initializedUser: string | null = null;
   private lastContactsFetchAt = 0;
   private lastGroupsFetchAt = 0;
+  private hrStepsCache: { at: number; steps: HrStepOption[] } = { at: 0, steps: [] };
+  private hrActionsCache: Record<string, { at: number; actions: HrActionOption[] }> = {};
+  private hrInitInFlight = false;
 
   readonly chatItems = computed<ChatListItem[]>(() => {
     const groupsById = new Map(this.groups().map((group) => [group.id, group]));
@@ -145,8 +162,17 @@ export class ChatStoreService {
     this.connectRealtime(user);
     await this.flushOutbox();
 
+    const storedActive = this.getStoredActiveChat(user);
+    if (storedActive && this.chatItems().some((chat) => chat.id === storedActive)) {
+      this.setActiveChat(storedActive);
+      return;
+    }
+
     if (!this.activeChatId()) {
-      this.activeChatId.set(this.chatItems()[0]?.id ?? null);
+      const preferredChat = this.pickInitialChatId();
+      if (preferredChat) {
+        this.setActiveChat(preferredChat);
+      }
     }
   }
 
@@ -175,9 +201,13 @@ export class ChatStoreService {
   }
 
   logout(): void {
+    const user = this.currentUser();
     this.stopRealtime();
     this.initializedUser = null;
     localStorage.removeItem('username');
+    if (user) {
+      localStorage.removeItem(this.activeChatKey(user));
+    }
     this.currentUser.set(null);
     this.contacts.set([]);
     this.groups.set([]);
@@ -231,10 +261,15 @@ export class ChatStoreService {
 
     const normalized = this.normalizeChatId(chatId);
     this.activeChatId.set(normalized);
+    const user = this.currentUser();
+    if (user) {
+      localStorage.setItem(this.activeChatKey(user), normalized);
+    }
     this.unreadByChat.update((map) => ({
       ...map,
       [normalized]: 0
     }));
+    void this.onChatActivated(normalized);
     this.schedulePersist();
   }
 
@@ -404,6 +439,309 @@ export class ChatStoreService {
     this.schedulePersist();
   }
 
+  private pickInitialChatId(): string | null {
+    const items = this.chatItems();
+    if (!items.length) return null;
+
+    const latestNonPinned = items.find((item) => item.lastTimestamp > 0 && !item.pinned);
+    if (latestNonPinned) return latestNonPinned.id;
+
+    const latestAny = items.find((item) => item.lastTimestamp > 0);
+    if (latestAny) return latestAny.id;
+
+    const firstNonPinned = items.find((item) => !item.pinned);
+    if (firstNonPinned) return firstNonPinned.id;
+
+    return items[0]?.id ?? null;
+  }
+
+  private getStoredActiveChat(user: string): string | null {
+    const value = localStorage.getItem(this.activeChatKey(user));
+    return value ? this.normalizeChatId(value) : null;
+  }
+
+  private activeChatKey(user: string): string {
+    return `modern-chat-active:${user}`;
+  }
+
+  private async onChatActivated(chatId: string): Promise<void> {
+    if (!this.isHrChat(chatId)) return;
+    await this.ensureHrFlowOnOpen();
+  }
+
+  private isHrChat(chatId: string | null): boolean {
+    return this.normalizeChatId(chatId ?? '') === this.normalizeChatId(HR_CHAT_NAME);
+  }
+
+  private async ensureHrFlowOnOpen(): Promise<void> {
+    const user = this.currentUser();
+    if (!user || this.hrInitInFlight) return;
+
+    this.hrInitInFlight = true;
+    try {
+      const lastHrMessage = this.getLastHrMessage();
+      if (lastHrMessage?.direction === 'incoming') {
+        return;
+      }
+
+      const lastOutgoing = this.getLastOutgoingHrMessageBody();
+      if (lastOutgoing === '0') {
+        this.resetHrState(user);
+        await this.startHrFlow({ skipWelcome: this.hasHrWelcomeMessage(user) });
+        return;
+      }
+
+      if (!this.hasHrWelcomeMessage(user)) {
+        await this.startHrFlow();
+      }
+    } finally {
+      this.hrInitInFlight = false;
+    }
+  }
+
+  private async handleHrOutgoing(messageBody: string): Promise<boolean> {
+    const user = this.currentUser();
+    if (!user) return false;
+    const trimmed = String(messageBody || '').trim();
+    if (!trimmed) return false;
+
+    if (trimmed === '0') {
+      this.resetHrState(user);
+      await this.startHrFlow({ skipWelcome: this.hasHrWelcomeMessage(user) });
+      return true;
+    }
+
+    const state = this.loadHrState(user) ?? { awaiting: 'step', stepId: null, actions: [] };
+    if (state.awaiting === 'step') {
+      const steps = await this.fetchHrStepsCached();
+      const index = Number.parseInt(trimmed, 10) - 1;
+      if (!steps.length || Number.isNaN(index) || index < 0 || index >= steps.length) {
+        this.sendHrSystemMessage('בחירה לא תקינה, נסה שוב.');
+        return true;
+      }
+
+      const selected = steps[index];
+      const actions = await this.fetchHrActionsCached(selected.id);
+      if (!actions.length) {
+        this.sendHrSystemMessage('לא נמצאו פעולות לשלב זה.');
+        return true;
+      }
+
+      this.saveHrState(user, { awaiting: 'action', stepId: selected.id, actions });
+      this.sendHrSystemMessage(this.buildHrActionsMessage(actions));
+      return true;
+    }
+
+    if (state.awaiting === 'action') {
+      const index = Number.parseInt(trimmed, 10) - 1;
+      if (Number.isNaN(index) || index < 0 || index >= state.actions.length) {
+        this.sendHrSystemMessage('בחירה לא תקינה, נסה שוב.');
+        return true;
+      }
+
+      const selectedAction = state.actions[index];
+      const returnValue = String(selectedAction.returnValue || '').trim();
+      if (returnValue.toUpperCase() === 'FREE TEXT') {
+        this.saveHrState(user, { ...state, awaiting: 'free-text' });
+        this.sendHrSystemMessage('נא כתוב את הודעתך.');
+        return true;
+      }
+
+      if (returnValue) {
+        const normalizedUrl = this.buildHrAssetUrl(returnValue);
+        const lower = returnValue.toLowerCase();
+        const isImage = /\.(jpeg|jpg|gif|png|webp)(\?|$)/.test(lower);
+        const isDoc = /\.(pdf|doc|docx)(\?|$)/.test(lower);
+
+        if (isImage) {
+          this.sendHrSystemMessage('', { imageUrl: normalizedUrl, recordType: 'hr-asset' });
+          return true;
+        }
+
+        if (isDoc) {
+          this.sendHrSystemMessage(normalizedUrl, { recordType: 'hr-asset' });
+          return true;
+        }
+
+        this.sendHrSystemMessage(returnValue);
+        return true;
+      }
+
+      if (selectedAction.stepName) {
+        this.sendHrSystemMessage(selectedAction.stepName);
+      }
+      return true;
+    }
+
+    if (state.awaiting === 'free-text') {
+      return false;
+    }
+
+    return false;
+  }
+
+  private async fetchHrStepsCached(): Promise<HrStepOption[]> {
+    const now = Date.now();
+    if (this.hrStepsCache.steps.length && now - this.hrStepsCache.at < HR_STEPS_CACHE_TTL_MS) {
+      return this.hrStepsCache.steps;
+    }
+
+    try {
+      const steps = await this.api.getHrSteps();
+      this.hrStepsCache = { at: now, steps };
+      return steps;
+    } catch {
+      return [];
+    }
+  }
+
+  private async fetchHrActionsCached(stepId: string): Promise<HrActionOption[]> {
+    const key = String(stepId || '').trim();
+    if (!key) return [];
+
+    const now = Date.now();
+    const cached = this.hrActionsCache[key];
+    if (cached && now - cached.at < HR_ACTIONS_CACHE_TTL_MS) {
+      return cached.actions;
+    }
+
+    try {
+      const actions = await this.api.getHrActions(key);
+      this.hrActionsCache[key] = { at: now, actions };
+      return actions;
+    } catch {
+      return [];
+    }
+  }
+
+  private async startHrFlow(options: { skipWelcome?: boolean } = {}): Promise<void> {
+    const user = this.currentUser();
+    if (!user) return;
+
+    if (!options.skipWelcome) {
+      const contactName = this.getDisplayName(user);
+      const welcome = `${contactName} שלום, הגעת ל Tzipi- מערכת הפניות של משאבי אנוש.\nבמערכת זו ניתן לקבל ולשלוח טפסים וכן לפנות במלל חופשי למשאבי אנוש ולהמשיך התכתבות.`;
+      this.sendHrSystemMessage(welcome, { recordType: 'hr-welcome' });
+      localStorage.setItem(this.hrWelcomeKey(user), '1');
+    }
+
+    const steps = await this.fetchHrStepsCached();
+    if (steps.length) {
+      this.sendHrSystemMessage(this.buildHrStepsMessage(steps), { recordType: 'hr-steps' });
+    }
+
+    this.saveHrState(user, { awaiting: 'step', stepId: null, actions: [] });
+  }
+
+  private buildHrStepsMessage(steps: HrStepOption[]): string {
+    const prompt = 'יש לבחור באמצעות מענה בהודעת ווטסאפ, את מספר הענף הרלוונטי לפנייה:';
+    const lines = steps.map((step, index) => `${index + 1}. ${step.name}`);
+    return `${prompt}\n${lines.join('\n')}`;
+  }
+
+  private buildHrActionsMessage(actions: HrActionOption[]): string {
+    const prompt = 'יש לבחור באמצעות מענה בהודעת ווטסאפ, את מספר הענף הרלוונטי לפנייה:';
+    const lines = actions.map((action, index) => `${index + 1}. ${action.stepName || 'פעולה'}`);
+    return `${prompt}\n${lines.join('\n')}`;
+  }
+
+  private sendHrSystemMessage(
+    body: string,
+    options: { imageUrl?: string | null; recordType?: string } = {}
+  ): void {
+    const chatId = this.normalizeChatId(HR_CHAT_NAME);
+    const message: ChatMessage = {
+      id: this.generateId('rec'),
+      messageId: this.generateId('hr'),
+      chatId,
+      sender: chatId,
+      senderDisplayName: HR_CHAT_NAME,
+      recordType: options.recordType,
+      body,
+      imageUrl: options.imageUrl ?? null,
+      direction: 'incoming',
+      timestamp: Date.now(),
+      deliveryStatus: 'delivered'
+    };
+
+    this.appendMessage(message);
+    if (this.activeChatId() !== chatId) {
+      this.unreadByChat.update((map) => ({
+        ...map,
+        [chatId]: (map[chatId] ?? 0) + 1
+      }));
+    }
+  }
+
+  private getLastHrMessage(): ChatMessage | null {
+    const chatId = this.normalizeChatId(HR_CHAT_NAME);
+    const messages = this.messagesByChat()[chatId] ?? [];
+    return messages.length ? messages[messages.length - 1] : null;
+  }
+
+  private getLastOutgoingHrMessageBody(): string {
+    const chatId = this.normalizeChatId(HR_CHAT_NAME);
+    const messages = this.messagesByChat()[chatId] ?? [];
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.direction === 'outgoing') {
+        return String(message.body || '').trim();
+      }
+    }
+    return '';
+  }
+
+  private hrWelcomeKey(user: string): string {
+    return `${HR_WELCOME_KEY_PREFIX}${this.normalizeUser(user)}`;
+  }
+
+  private hrStateKey(user: string): string {
+    return `${HR_STATE_KEY_PREFIX}${this.normalizeUser(user)}`;
+  }
+
+  private hasHrWelcomeMessage(user: string): boolean {
+    if (localStorage.getItem(this.hrWelcomeKey(user))) {
+      return true;
+    }
+    const chatId = this.normalizeChatId(HR_CHAT_NAME);
+    return (this.messagesByChat()[chatId] ?? []).some((message) => message.recordType === 'hr-welcome');
+  }
+
+  private loadHrState(user: string): HrConversationState | null {
+    const raw = localStorage.getItem(this.hrStateKey(user));
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as HrConversationState;
+      if (!parsed || !parsed.awaiting) return null;
+      return {
+        awaiting: parsed.awaiting,
+        stepId: parsed.stepId ?? null,
+        actions: Array.isArray(parsed.actions) ? parsed.actions : []
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private saveHrState(user: string, state: HrConversationState): void {
+    localStorage.setItem(this.hrStateKey(user), JSON.stringify(state));
+  }
+
+  private resetHrState(user: string): void {
+    localStorage.removeItem(this.hrStateKey(user));
+    localStorage.removeItem(this.hrWelcomeKey(user));
+  }
+
+  private buildHrAssetUrl(value: string): string {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) return '';
+    if (/^https?:\/\//i.test(trimmed)) {
+      return trimmed;
+    }
+    const encoded = encodeURIComponent(trimmed).replace(/%2F/g, '/');
+    return `${HR_UPLOAD_BASE_URL}${encoded}`;
+  }
+
   private async sendMessageInternal(payload: {
     body: string;
     imageUrl: string | null;
@@ -440,6 +778,14 @@ export class ChatStoreService {
 
     this.appendMessage(newMessage);
     this.setActiveChat(chatId);
+
+    if (this.isHrChat(chatId) && payload.body.trim()) {
+      const handledByHrFlow = await this.handleHrOutgoing(payload.body);
+      if (handledByHrFlow) {
+        this.setMessageStatus(messageId, 'delivered');
+        return;
+      }
+    }
 
     if (!this.networkOnline()) {
       if (group) {

@@ -134,8 +134,6 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const chatFromUrl = this.route.snapshot.queryParamMap.get('chat');
     if (chatFromUrl) {
       this.openChat(chatFromUrl);
-    } else if (!this.store.activeChatId()) {
-      this.store.setActiveChat(this.store.chatItems()[0]?.id ?? null);
     }
   }
 
