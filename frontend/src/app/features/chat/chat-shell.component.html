@@ -38,7 +38,7 @@
   </mat-menu>
 
   @if (isBusy()) {
-    <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+    <mat-progress-bar class="app-progress" mode="indeterminate"></mat-progress-bar>
   }
 
   <div class="chat-layout">
@@ -65,7 +65,7 @@
       @if (!filteredChats().length) {
         <div class="empty-chat-list">אין צ׳אטים פעילים. צור צ׳אט חדש כדי להתחיל.</div>
       } @else {
-        <cdk-virtual-scroll-viewport class="contacts-viewport" itemSize="82">
+        <cdk-virtual-scroll-viewport class="contacts-viewport" [itemSize]="84" [minBufferPx]="336" [maxBufferPx]="840">
           <button
             type="button"
             class="chat-item"

@@ -106,6 +106,13 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     queueMicrotask(() => this.scrollMessagesToBottom());
   });
 
+  private readonly viewportStabilityEffect = effect(() => {
+    const visible = !this.isMobile() || this.showContactsPane();
+    const count = this.filteredChats().length;
+    if (!visible || count === 0) return;
+    queueMicrotask(() => this.contactsViewport?.checkViewportSize());
+  });
+
   constructor(
     readonly store: ChatStoreService,
     private readonly dialog: MatDialog,
@@ -139,6 +146,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   backToList(): void {
     this.showContactsPane.set(true);
+    queueMicrotask(() => this.contactsViewport?.checkViewportSize());
   }
 
   async refresh(): Promise<void> {

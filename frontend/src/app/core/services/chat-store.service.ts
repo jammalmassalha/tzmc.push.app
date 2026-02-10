@@ -882,7 +882,8 @@ export class ChatStoreService {
 
   private getMessagePreview(message: ChatMessage): string {
     if (message.imageUrl) {
-      return message.direction === 'outgoing' ? 'אתה: שלחת תמונה' : '📷 תמונה';
+      const imagePreview = message.direction === 'outgoing' ? 'אתה: שלחת תמונה' : '📷 תמונה';
+      return this.truncatePreview(imagePreview);
     }
     if (!message.body) {
       return '';
@@ -891,10 +892,20 @@ export class ChatStoreService {
     const trimmed = message.body.trim();
     const isDocumentLink = /^https?:\/\/\S+\.(pdf|doc|docx)(\?|$)/i.test(trimmed);
     if (isDocumentLink) {
-      return message.direction === 'outgoing' ? 'אתה: מסמך' : 'מסמך';
+      const documentPreview = message.direction === 'outgoing' ? 'אתה: מסמך' : 'מסמך';
+      return this.truncatePreview(documentPreview);
     }
 
-    return message.direction === 'outgoing' ? `אתה: ${trimmed}` : trimmed;
+    const preview = message.direction === 'outgoing' ? `אתה: ${trimmed}` : trimmed;
+    return this.truncatePreview(preview);
+  }
+
+  private truncatePreview(value: string, maxChars = 100): string {
+    const compact = value.replace(/\s+/g, ' ').trim();
+    if (compact.length <= maxChars) {
+      return compact;
+    }
+    return `${compact.slice(0, maxChars)}…`;
   }
 
   private getDisplayName(username: string): string {
