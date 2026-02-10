@@ -51,6 +51,19 @@ Output is generated under:
 frontend/dist/frontend
 ```
 
+### Deploying under `/subscribesin/`
+
+This repository is configured so production builds use:
+
+- `baseHref: /subscribesin/`
+- `deployUrl: /subscribesin/`
+
+So a standard production build is enough:
+
+```bash
+ng build --configuration production
+```
+
 ## Tests
 
 ```bash
