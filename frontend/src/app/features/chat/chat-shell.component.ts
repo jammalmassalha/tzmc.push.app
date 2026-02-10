@@ -366,6 +366,38 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     }).format(messageDate);
   }
 
+  shouldShowMessageDateBadge(index: number, timestamp: number): boolean {
+    if (index <= 0) return true;
+
+    const messages = this.store.activeMessages();
+    const previous = messages[index - 1];
+    if (!previous) return true;
+
+    return this.getCalendarDayKey(previous.timestamp) !== this.getCalendarDayKey(timestamp);
+  }
+
+  formatMessageDateBadge(timestamp: number): string {
+    if (!timestamp) return '';
+
+    const messageDate = new Date(timestamp);
+    const nowDate = new Date(this.nowTimestamp());
+    if (this.isSameCalendarDay(messageDate, nowDate)) {
+      return 'היום';
+    }
+
+    const yesterdayDate = new Date(nowDate);
+    yesterdayDate.setDate(nowDate.getDate() - 1);
+    if (this.isSameCalendarDay(messageDate, yesterdayDate)) {
+      return 'אתמול';
+    }
+
+    return new Intl.DateTimeFormat('he-IL', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
+    }).format(messageDate);
+  }
+
   getMessageRenderParts(messageId: string, body: string): MessageRenderPart[] {
     const key = messageId || body;
     const cached = this.messagePartsCache.get(key);
@@ -417,6 +449,11 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       a.getMonth() === b.getMonth() &&
       a.getDate() === b.getDate()
     );
+  }
+
+  private getCalendarDayKey(timestamp: number): string {
+    const value = new Date(timestamp);
+    return `${value.getFullYear()}-${value.getMonth()}-${value.getDate()}`;
   }
 
   private parseMessageBody(body: string): MessageRenderPart[] {

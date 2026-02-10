@@ -262,6 +262,31 @@ mat-chip:not(.offline) {
   background: linear-gradient(180deg, #f6f7fc 0%, #fff 35%);
 }
 
+.message-date-badge {
+  position: sticky;
+  top: 8px;
+  z-index: 2;
+  display: flex;
+  justify-content: center;
+  margin: 2px 0 6px;
+  pointer-events: none;
+}
+
+.message-date-badge span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 3px 10px;
+  border-radius: 8px;
+  background: #eaf3fb;
+  border: 1px solid rgba(11, 20, 26, 0.06);
+  color: #54656f;
+  font-size: 12px;
+  line-height: 1.2;
+  box-shadow: 0 1px 2px rgba(11, 20, 26, 0.08);
+}
+
 .message-row {
   display: flex;
   justify-content: flex-start;

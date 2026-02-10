@@ -116,7 +116,12 @@
         </header>
 
         <div #messagesPanel class="messages-panel">
-          @for (message of store.activeMessages(); track message.messageId) {
+          @for (message of store.activeMessages(); track message.messageId; let index = $index) {
+            @if (shouldShowMessageDateBadge(index, message.timestamp)) {
+              <div class="message-date-badge">
+                <span>{{ formatMessageDateBadge(message.timestamp) }}</span>
+              </div>
+            }
             <article class="message-row" [class.outgoing]="message.direction === 'outgoing'">
               <div class="message-bubble">
                 @if (message.direction === 'incoming' && message.groupId) {
