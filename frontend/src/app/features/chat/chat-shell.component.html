@@ -156,16 +156,29 @@
             #fileInput
             class="hidden-input"
             type="file"
-            accept="image/*,application/pdf,.doc,.docx"
+            accept="image/*"
             (change)="onFileSelected($event)" />
 
           <button
-            mat-icon-button
+            mat-mini-fab
             type="button"
-            (click)="fileInput.click()"
-            [disabled]="!store.canSendToActiveChat()">
-            <mat-icon>attach_file</mat-icon>
+            class="attach-btn"
+            [matMenuTriggerFor]="attachMenu"
+            [disabled]="!store.activeChat() || !store.canSendToActiveChat()"
+            aria-label="Attach">
+            <span class="attach-plus">+</span>
           </button>
+
+          <mat-menu #attachMenu="matMenu">
+            <button mat-menu-item type="button" (click)="openImagePicker()">
+              <mat-icon>image</mat-icon>
+              <span>Pic</span>
+            </button>
+            <button mat-menu-item type="button" (click)="shareLocation()">
+              <mat-icon>location_on</mat-icon>
+              <span>Share location</span>
+            </button>
+          </mat-menu>
 
           <mat-form-field appearance="outline" class="composer-field">
             <textarea

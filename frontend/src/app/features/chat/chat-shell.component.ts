@@ -55,6 +55,7 @@ import { NewChatDialogComponent } from './dialogs/new-chat-dialog.component';
 export class ChatShellComponent implements OnInit, OnDestroy {
   @ViewChild(CdkVirtualScrollViewport) contactsViewport?: CdkVirtualScrollViewport;
   @ViewChild('messagesPanel') messagesPanel?: ElementRef<HTMLDivElement>;
+  @ViewChild('fileInput') fileInputRef?: ElementRef<HTMLInputElement>;
 
   private readonly mobileQuery = window.matchMedia('(max-width: 960px)');
   private readonly onMediaChange = (event: MediaQueryListEvent): void => {
@@ -188,6 +189,36 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     input.value = '';
   }
 
+  openImagePicker(): void {
+    if (!this.store.activeChat() || !this.store.canSendToActiveChat()) {
+      this.snackBar.open('לא ניתן לצרף תמונה בצ׳אט זה.', 'סגור', { duration: 2500 });
+      return;
+    }
+    this.fileInputRef?.nativeElement.click();
+  }
+
+  async shareLocation(): Promise<void> {
+    if (!this.store.activeChat() || !this.store.canSendToActiveChat()) {
+      this.snackBar.open('לא ניתן לשתף מיקום בצ׳אט זה.', 'סגור', { duration: 2500 });
+      return;
+    }
+    if (!('geolocation' in navigator)) {
+      this.snackBar.open('המכשיר לא תומך בשיתוף מיקום.', 'סגור', { duration: 3000 });
+      return;
+    }
+
+    try {
+      const position = await this.getCurrentPosition();
+      const latitude = position.coords.latitude.toFixed(6);
+      const longitude = position.coords.longitude.toFixed(6);
+      const mapLink = `https://www.google.com/maps?q=${latitude},${longitude}`;
+      await this.store.sendTextMessage(`📍 ${mapLink}`);
+      this.snackBar.open('המיקום נשלח.', 'סגור', { duration: 2000 });
+    } catch {
+      this.snackBar.open('לא ניתן לקבל מיקום. אנא אשר הרשאות.', 'סגור', { duration: 3500 });
+    }
+  }
+
   canSendMessage(): boolean {
     return Boolean(this.messageValue().trim()) && this.store.canSendToActiveChat() && !!this.store.activeChat();
   }
@@ -277,5 +308,15 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const panel = this.messagesPanel?.nativeElement;
     if (!panel) return;
     panel.scrollTop = panel.scrollHeight;
+  }
+
+  private getCurrentPosition(): Promise<GeolocationPosition> {
+    return new Promise((resolve, reject) => {
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: true,
+        timeout: 12000,
+        maximumAge: 60000
+      });
+    });
   }
 }
