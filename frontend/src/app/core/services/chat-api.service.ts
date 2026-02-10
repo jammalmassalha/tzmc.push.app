@@ -17,6 +17,8 @@ interface FetchRetryOptions {
 interface ContactResponse {
   users?: Array<{
     username?: string;
+    fullName?: string;
+    full_name?: string;
     displayName?: string;
     phone?: string;
   }>;
@@ -113,14 +115,34 @@ export class ChatApiService {
 
     return (body.users ?? [])
       .map((contact) => {
+        const hasFullNameField = (
+          Object.prototype.hasOwnProperty.call(contact, 'fullName') ||
+          Object.prototype.hasOwnProperty.call(contact, 'full_name')
+        );
         const username = String(contact.username ?? '').trim();
-        const displayName = String(contact.displayName ?? username).trim();
+        const fullName = String(contact.fullName ?? contact.full_name ?? '').trim();
+        const displayName = String(contact.displayName ?? '').trim();
         const phone = String(contact.phone ?? '').trim();
 
         return {
           username,
-          displayName: displayName || username,
-          phone: phone || undefined
+          displayName: fullName || displayName,
+          phone: phone || undefined,
+          hasFullNameField,
+          fullName
+        };
+      })
+      .filter((contact) => {
+        if (contact.hasFullNameField && !contact.fullName) {
+          return false;
+        }
+        return Boolean(contact.username && contact.displayName);
+      })
+      .map((contact) => {
+        return {
+          username: contact.username,
+          displayName: contact.displayName,
+          phone: contact.phone
         } satisfies Contact;
       })
       .filter((contact) => {

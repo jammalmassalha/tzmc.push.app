@@ -112,6 +112,11 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     () => this.store.loading() || this.store.syncing() || this.store.uploading()
   );
   readonly nowTimestamp = signal(Date.now());
+  readonly stickyMessageTimestamp = signal<number | null>(null);
+  readonly stickyMessageDateLabel = computed(() => {
+    const timestamp = this.stickyMessageTimestamp();
+    return timestamp ? this.formatMessageDateBadge(timestamp) : '';
+  });
   private readonly messagePartsCache = new Map<string, ParsedMessageCacheEntry>();
   private relativeTimeRefreshId: number | null = null;
 
@@ -127,6 +132,16 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const count = this.filteredChats().length;
     if (!visible || count === 0) return;
     queueMicrotask(() => this.contactsViewport?.checkViewportSize());
+  });
+
+  private readonly stickyDateViewportEffect = effect(() => {
+    const activeChatId = this.store.activeChatId();
+    const count = this.store.activeMessages().length;
+    if (!activeChatId || count === 0) {
+      this.stickyMessageTimestamp.set(null);
+      return;
+    }
+    queueMicrotask(() => this.updateStickyMessageDateFromViewport());
   });
 
   private readonly bodyScrollLockEffect = effect(() => {
@@ -220,6 +235,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     event.preventDefault();
     event.stopPropagation();
     await this.sendMessage();
+  }
+
+  onMessagesPanelScroll(): void {
+    this.updateStickyMessageDateFromViewport();
   }
 
   async onFileSelected(event: Event): Promise<void> {
@@ -436,6 +455,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const panel = this.messagesPanel?.nativeElement;
     if (!panel) return;
     panel.scrollTop = panel.scrollHeight;
+    this.updateStickyMessageDateFromViewport();
   }
 
   private updateViewportHeight(): void {
@@ -454,6 +474,36 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   private getCalendarDayKey(timestamp: number): string {
     const value = new Date(timestamp);
     return `${value.getFullYear()}-${value.getMonth()}-${value.getDate()}`;
+  }
+
+  private updateStickyMessageDateFromViewport(): void {
+    const panel = this.messagesPanel?.nativeElement;
+    const messages = this.store.activeMessages();
+    if (!panel || !messages.length) {
+      this.stickyMessageTimestamp.set(null);
+      return;
+    }
+
+    const rows = panel.querySelectorAll<HTMLElement>('.message-row[data-message-index]');
+    const viewportTop = panel.scrollTop + 1;
+    let timestamp = messages[messages.length - 1]?.timestamp ?? null;
+
+    for (const row of rows) {
+      if (row.offsetTop + row.offsetHeight < viewportTop) {
+        continue;
+      }
+
+      const rawIndex = row.dataset['messageIndex'];
+      const index = rawIndex ? Number.parseInt(rawIndex, 10) : Number.NaN;
+      if (!Number.isNaN(index) && messages[index]) {
+        timestamp = messages[index].timestamp;
+      }
+      break;
+    }
+
+    if (this.stickyMessageTimestamp() !== timestamp) {
+      this.stickyMessageTimestamp.set(timestamp);
+    }
   }
 
   private parseMessageBody(body: string): MessageRenderPart[] {

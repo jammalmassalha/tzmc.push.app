@@ -262,16 +262,24 @@ mat-chip:not(.offline) {
   background: linear-gradient(180deg, #f6f7fc 0%, #fff 35%);
 }
 
-.message-date-badge {
+.messages-sticky-date {
   position: sticky;
   top: 8px;
-  z-index: 2;
+  z-index: 3;
+  display: flex;
+  justify-content: center;
+  margin: 0 0 4px;
+  pointer-events: none;
+}
+
+.message-date-badge {
   display: flex;
   justify-content: center;
   margin: 2px 0 6px;
   pointer-events: none;
 }
 
+.messages-sticky-date span,
 .message-date-badge span {
   display: inline-flex;
   align-items: center;

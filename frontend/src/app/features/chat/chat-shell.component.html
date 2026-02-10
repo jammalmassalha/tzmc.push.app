@@ -115,14 +115,23 @@
           </div>
         </header>
 
-        <div #messagesPanel class="messages-panel">
+        <div #messagesPanel class="messages-panel" (scroll)="onMessagesPanelScroll()">
+          @if (stickyMessageDateLabel(); as stickyDateLabel) {
+            <div class="messages-sticky-date">
+              <span>{{ stickyDateLabel }}</span>
+            </div>
+          }
+
           @for (message of store.activeMessages(); track message.messageId; let index = $index) {
             @if (shouldShowMessageDateBadge(index, message.timestamp)) {
               <div class="message-date-badge">
                 <span>{{ formatMessageDateBadge(message.timestamp) }}</span>
               </div>
             }
-            <article class="message-row" [class.outgoing]="message.direction === 'outgoing'">
+            <article
+              class="message-row"
+              [class.outgoing]="message.direction === 'outgoing'"
+              [attr.data-message-index]="index">
               <div class="message-bubble">
                 @if (message.direction === 'incoming' && message.groupId) {
                   <div class="message-sender">{{ message.senderDisplayName || message.sender }}</div>
