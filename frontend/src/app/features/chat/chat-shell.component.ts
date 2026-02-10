@@ -493,7 +493,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
         continue;
       }
 
-      const rawIndex = row.dataset.messageIndex;
+      const rawIndex = row.dataset['messageIndex'];
       const index = rawIndex ? Number.parseInt(rawIndex, 10) : Number.NaN;
       if (!Number.isNaN(index) && messages[index]) {
         timestamp = messages[index].timestamp;
