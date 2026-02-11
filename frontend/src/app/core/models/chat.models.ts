@@ -1,6 +1,6 @@
 export type GroupType = 'group' | 'community';
 
-export type DeliveryStatus = 'pending' | 'sent' | 'queued' | 'failed' | 'delivered';
+export type DeliveryStatus = 'pending' | 'sent' | 'queued' | 'failed' | 'delivered' | 'read';
 
 export interface MessageReaction {
   emoji: string;
@@ -59,6 +59,8 @@ export interface IncomingServerMessage {
   messageId?: string;
   sender?: string;
   type?: string;
+  messageIds?: string[];
+  readAt?: number;
   targetMessageId?: string;
   emoji?: string;
   reactor?: string;
@@ -112,6 +114,13 @@ export interface ReactionPayload {
   emoji: string;
   reactor: string;
   reactorName: string;
+}
+
+export interface ReadReceiptPayload {
+  reader: string;
+  sender: string;
+  messageIds: string[];
+  readAt: number;
 }
 
 export interface OutboxDirectItem {

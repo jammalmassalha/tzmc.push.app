@@ -5,6 +5,7 @@ import {
   Contact,
   GroupUpdatePayload,
   IncomingServerMessage,
+  ReadReceiptPayload,
   ReactionPayload,
   ReplyPayload
 } from '../models/chat.models';
@@ -284,6 +285,22 @@ export class ChatApiService {
 
     if (!response.ok) {
       throw new Error(`Reaction update failed with ${response.status}`);
+    }
+  }
+
+  async sendReadReceipt(payload: ReadReceiptPayload): Promise<void> {
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/read`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      },
+      { retries: 2, timeoutMs: 10000 }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Read receipt failed with ${response.status}`);
     }
   }
 

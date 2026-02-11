@@ -206,7 +206,14 @@
                 <div class="message-meta">
                   <span>{{ formatTime(message.timestamp) }}</span>
                   @if (message.direction === 'outgoing') {
-                    <span>{{ outgoingStatusLabel(message.deliveryStatus) }}</span>
+                    <span
+                      class="message-status"
+                      [class.read]="isOutgoingStatusRead(message.deliveryStatus)"
+                      [class.failed]="message.deliveryStatus === 'failed'"
+                      [attr.aria-label]="outgoingStatusLabel(message.deliveryStatus)"
+                      [attr.title]="outgoingStatusLabel(message.deliveryStatus)">
+                      <mat-icon>{{ outgoingStatusIcon(message.deliveryStatus) }}</mat-icon>
+                    </span>
                   }
                 </div>
 

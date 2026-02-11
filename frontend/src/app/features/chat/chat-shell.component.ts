@@ -818,14 +818,32 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   outgoingStatusLabel(status: DeliveryStatus): string {
     switch (status) {
       case 'queued':
-        return 'ממתין';
       case 'pending':
         return 'שולח';
+      case 'sent':
+      case 'delivered':
+        return 'נמסר';
+      case 'read':
+        return 'נקרא';
       case 'failed':
         return 'נכשל';
       default:
-        return 'נשלח';
+        return 'שולח';
     }
+  }
+
+  outgoingStatusIcon(status: DeliveryStatus): string {
+    if (status === 'failed') {
+      return 'error_outline';
+    }
+    if (status === 'read' || status === 'sent' || status === 'delivered') {
+      return 'done_all';
+    }
+    return 'done';
+  }
+
+  isOutgoingStatusRead(status: DeliveryStatus): boolean {
+    return status === 'read';
   }
 
   trackByChatId(_: number, chat: ChatListItem): string {

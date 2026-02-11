@@ -582,6 +582,28 @@ mat-chip:not(.offline) {
   color: #5b6172;
 }
 
+.message-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #7d879a;
+}
+
+.message-status mat-icon {
+  width: 15px;
+  height: 15px;
+  font-size: 15px;
+  line-height: 15px;
+}
+
+.message-status.read {
+  color: #4ca9ff;
+}
+
+.message-status.failed {
+  color: #c53939;
+}
+
 .message-reactions {
   margin-top: 6px;
   display: inline-flex;

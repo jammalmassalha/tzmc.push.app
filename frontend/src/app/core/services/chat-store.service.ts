@@ -85,6 +85,7 @@ export class ChatStoreService {
   private hrActionsCache: Record<string, { at: number; actions: HrActionOption[] }> = {};
   private hrInitInFlight = false;
   private lastAppliedAppBadgeCount = -1;
+  private readonly readReceiptSentByChat = new Map<string, Set<string>>();
   private pushRegisterInFlight = false;
   private lastPushRegisterAttemptAt = 0;
 
@@ -237,6 +238,7 @@ export class ChatStoreService {
     this.groups.set([]);
     this.messagesByChat.set({});
     this.unreadByChat.set({});
+    this.readReceiptSentByChat.clear();
     this.activeChatId.set(null);
     this.lastError.set(null);
 
@@ -259,6 +261,7 @@ export class ChatStoreService {
     this.groups.set([]);
     this.messagesByChat.set({});
     this.unreadByChat.set({});
+    this.readReceiptSentByChat.clear();
     this.activeChatId.set(null);
     this.lastError.set(null);
   }
@@ -316,6 +319,7 @@ export class ChatStoreService {
       ...map,
       [normalized]: 0
     }));
+    void this.sendReadReceiptsForChat(normalized);
     void this.onChatActivated(normalized);
     this.schedulePersist();
   }
@@ -1079,6 +1083,41 @@ export class ChatStoreService {
     this.setMessageStatus(messageId, 'sent');
   }
 
+  private async sendReadReceiptsForChat(chatId: string): Promise<void> {
+    const user = this.currentUser();
+    if (!user || !this.networkOnline()) return;
+
+    const normalizedChatId = this.normalizeChatId(chatId);
+    if (!normalizedChatId) return;
+    if (this.groups().some((group) => group.id === normalizedChatId)) return;
+    if (SYSTEM_CHAT_IDS.some((id) => this.normalizeChatId(id) === normalizedChatId)) return;
+
+    const messages = this.messagesByChat()[normalizedChatId] ?? [];
+    if (!messages.length) return;
+
+    const sentSet = this.readReceiptSentByChat.get(normalizedChatId) ?? new Set<string>();
+    const messageIds = messages
+      .filter((message) => message.direction === 'incoming' && Boolean(message.messageId))
+      .map((message) => message.messageId)
+      .filter((messageId) => !sentSet.has(messageId));
+    if (!messageIds.length) return;
+
+    try {
+      await this.api.sendReadReceipt({
+        reader: this.normalizeUser(user),
+        sender: normalizedChatId,
+        messageIds,
+        readAt: Date.now()
+      });
+
+      const nextSent = new Set(sentSet);
+      messageIds.forEach((messageId) => nextSent.add(messageId));
+      this.readReceiptSentByChat.set(normalizedChatId, nextSent);
+    } catch {
+      // Best-effort only; next activation/receive will retry.
+    }
+  }
+
   private queueDirectMessage(
     originalSender: string,
     messageId: string,
@@ -1263,6 +1302,10 @@ export class ChatStoreService {
       this.applyIncomingGroupUpdate(incoming);
       return;
     }
+    if (incomingType === 'read-receipt') {
+      this.applyIncomingReadReceipt(incoming);
+      return;
+    }
 
     const sender = this.normalizeUser(incoming.sender ?? '');
     if (!sender) return;
@@ -1312,6 +1355,7 @@ export class ChatStoreService {
         ...map,
         [chatId]: 0
       }));
+      void this.sendReadReceiptsForChat(chatId);
     }
 
     this.schedulePersist();
@@ -1332,6 +1376,15 @@ export class ChatStoreService {
 
     this.ensureGroupFromIncoming(incoming);
     this.schedulePersist();
+  }
+
+  private applyIncomingReadReceipt(incoming: IncomingServerMessage): void {
+    const messageIds = Array.isArray(incoming.messageIds)
+      ? incoming.messageIds.map((id) => String(id || '').trim()).filter(Boolean)
+      : [];
+    if (!messageIds.length) return;
+
+    this.markOutgoingMessagesAsRead(messageIds);
   }
 
   private applyIncomingReaction(incoming: IncomingServerMessage): void {
@@ -1578,6 +1631,34 @@ export class ChatStoreService {
     });
 
     this.schedulePersist();
+  }
+
+  private markOutgoingMessagesAsRead(messageIds: string[]): void {
+    const targetIds = new Set(messageIds.map((id) => String(id || '').trim()).filter(Boolean));
+    if (!targetIds.size) return;
+
+    let changed = false;
+    this.messagesByChat.update((messageMap) => {
+      const next: Record<string, ChatMessage[]> = {};
+
+      for (const [chatId, list] of Object.entries(messageMap)) {
+        const updated = list.map((message) => {
+          if (message.direction !== 'outgoing') return message;
+          if (!targetIds.has(message.messageId)) return message;
+          if (message.deliveryStatus === 'read' || message.deliveryStatus === 'failed') return message;
+
+          changed = true;
+          return { ...message, deliveryStatus: 'read' };
+        });
+        next[chatId] = updated;
+      }
+
+      return changed ? next : messageMap;
+    });
+
+    if (changed) {
+      this.schedulePersist();
+    }
   }
 
   private tryRegisterPush = async (
@@ -1911,6 +1992,10 @@ export class ChatStoreService {
     this.connectRealtime(user);
     void this.flushOutbox();
     void this.refresh(false);
+    const activeChat = this.activeChatId();
+    if (activeChat) {
+      void this.sendReadReceiptsForChat(activeChat);
+    }
   };
 
   private handleOffline = (): void => {
@@ -1946,12 +2031,19 @@ export class ChatStoreService {
     if (payloadUser && payloadUser !== currentUser) return;
 
     const payloadType = String(payload['type'] ?? '').trim().toLowerCase();
-    if (payloadType !== 'reaction' && payloadType !== 'group-update') return;
+    if (payloadType !== 'reaction' && payloadType !== 'group-update' && payloadType !== 'read-receipt') {
+      return;
+    }
 
     const numericGroupUpdatedAt = Number(payload['groupUpdatedAt']);
+    const numericReadAt = Number(payload['readAt']);
     const incoming: IncomingServerMessage = {
       type: payloadType,
       messageId: typeof payload['messageId'] === 'string' ? payload['messageId'] : undefined,
+      messageIds: Array.isArray(payload['messageIds'])
+        ? payload['messageIds'].map((id) => String(id || '').trim()).filter(Boolean)
+        : undefined,
+      readAt: Number.isFinite(numericReadAt) ? numericReadAt : undefined,
       sender: typeof payload['sender'] === 'string' ? payload['sender'] : undefined,
       targetMessageId:
         typeof payload['targetMessageId'] === 'string' ? payload['targetMessageId'] : undefined,
