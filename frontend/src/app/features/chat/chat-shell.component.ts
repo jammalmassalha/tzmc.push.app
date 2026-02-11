@@ -40,6 +40,11 @@ interface ParsedMessageCacheEntry {
   parts: MessageRenderPart[];
 }
 
+interface AvatarPreview {
+  title: string;
+  imageUrl: string;
+}
+
 @Component({
   selector: 'app-chat-shell',
   standalone: true,
@@ -111,6 +116,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   );
   readonly nowTimestamp = signal(Date.now());
   readonly stickyMessageTimestamp = signal<number | null>(null);
+  readonly avatarPreview = signal<AvatarPreview | null>(null);
   readonly stickyMessageDateLabel = computed(() => {
     const timestamp = this.stickyMessageTimestamp();
     return timestamp ? this.formatMessageDateBadge(timestamp) : '';
@@ -413,6 +419,27 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       month: '2-digit',
       year: 'numeric'
     }).format(messageDate);
+  }
+
+  openChatAvatar(event: MouseEvent, chat: ChatListItem): void {
+    event.stopPropagation();
+    const imageUrl = String(chat.avatarUrl || '').trim();
+    if (!imageUrl) return;
+
+    this.avatarPreview.set({
+      title: chat.title || chat.id,
+      imageUrl
+    });
+  }
+
+  closeChatAvatar(): void {
+    this.avatarPreview.set(null);
+  }
+
+  chatAvatarFallback(chat: ChatListItem): string {
+    const source = String(chat.title || chat.id || '').trim();
+    if (!source) return '?';
+    return source.charAt(0).toUpperCase();
   }
 
   getMessageRenderParts(messageId: string, body: string): MessageRenderPart[] {

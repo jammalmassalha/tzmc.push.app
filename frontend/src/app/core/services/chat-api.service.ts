@@ -21,6 +21,7 @@ interface ContactResponse {
     full_name?: string;
     displayName?: string;
     phone?: string;
+    upic?: string;
   }>;
 }
 
@@ -123,11 +124,13 @@ export class ChatApiService {
         const fullName = String(contact.fullName ?? contact.full_name ?? '').trim();
         const displayName = String(contact.displayName ?? '').trim();
         const phone = String(contact.phone ?? '').trim();
+        const upic = String(contact.upic ?? '').trim();
 
         return {
           username,
           displayName: fullName || displayName,
           phone: phone || undefined,
+          upic: upic || undefined,
           hasFullNameField,
           fullName
         };
@@ -142,7 +145,8 @@ export class ChatApiService {
         return {
           username: contact.username,
           displayName: contact.displayName,
-          phone: contact.phone
+          phone: contact.phone,
+          upic: contact.upic
         } satisfies Contact;
       })
       .filter((contact) => {

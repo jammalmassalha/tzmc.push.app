@@ -77,9 +77,23 @@
             *cdkVirtualFor="let chat of filteredChats(); trackBy: trackByChatId"
             [class.active]="store.activeChatId() === chat.id"
             (click)="openChat(chat.id)">
-            <div class="chat-text">
-              <span class="chat-title">{{ chat.title }}</span>
-              <span class="chat-subtitle">{{ chat.subtitle || 'אין הודעות עדיין' }}</span>
+            <div class="chat-item-main">
+              <span
+                class="chat-avatar-wrap"
+                [class.clickable]="!!chat.avatarUrl"
+                (click)="openChatAvatar($event, chat)"
+                [attr.aria-label]="chat.avatarUrl ? 'Open profile image' : null">
+                @if (chat.avatarUrl) {
+                  <img class="chat-avatar" [src]="chat.avatarUrl" [alt]="chat.title" loading="lazy" />
+                } @else {
+                  <span class="chat-avatar-fallback">{{ chatAvatarFallback(chat) }}</span>
+                }
+              </span>
+
+              <div class="chat-text">
+                <span class="chat-title">{{ chat.title }}</span>
+                <span class="chat-subtitle">{{ chat.subtitle || 'אין הודעות עדיין' }}</span>
+              </div>
             </div>
 
             <div class="chat-meta">
@@ -233,4 +247,16 @@
       }
     </section>
   </div>
+
+  @if (avatarPreview(); as avatar) {
+    <div class="avatar-preview-backdrop" (click)="closeChatAvatar()">
+      <div class="avatar-preview-dialog" (click)="$event.stopPropagation()">
+        <button type="button" class="avatar-preview-close" (click)="closeChatAvatar()" aria-label="Close">
+          <mat-icon>close</mat-icon>
+        </button>
+        <img class="avatar-preview-image" [src]="avatar.imageUrl" [alt]="avatar.title" />
+        <div class="avatar-preview-title">{{ avatar.title }}</div>
+      </div>
+    </div>
+  }
 </div>

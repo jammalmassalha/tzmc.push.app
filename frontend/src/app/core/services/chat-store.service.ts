@@ -114,7 +114,8 @@ export class ChatStoreService {
         lastTimestamp,
         unread,
         isGroup: Boolean(group),
-        pinned
+        pinned,
+        avatarUrl: contact?.upic || null
       });
     }
 
@@ -1315,7 +1316,8 @@ export class ChatStoreService {
         return {
           username,
           displayName: (contact.displayName || username).trim(),
-          phone: contact.phone?.trim() || undefined
+          phone: contact.phone?.trim() || undefined,
+          upic: contact.upic?.trim() || undefined
         } satisfies Contact;
       })
       .filter((contact) => {

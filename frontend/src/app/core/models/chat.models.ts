@@ -6,6 +6,7 @@ export interface Contact {
   username: string;
   displayName: string;
   phone?: string;
+  upic?: string;
 }
 
 export interface ChatGroup {
@@ -42,6 +43,7 @@ export interface ChatListItem {
   unread: number;
   isGroup: boolean;
   pinned: boolean;
+  avatarUrl?: string | null;
 }
 
 export interface IncomingServerMessage {
