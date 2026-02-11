@@ -30,7 +30,7 @@ import {
   ChatMessage,
   DeliveryStatus
 } from '../../core/models/chat.models';
-import { ChatStoreService } from '../../core/services/chat-store.service';
+import { ChatStoreService, IncomingReactionNotice } from '../../core/services/chat-store.service';
 import { CreateGroupDialogComponent } from './dialogs/create-group-dialog.component';
 import { NewChatDialogComponent } from './dialogs/new-chat-dialog.component';
 
@@ -125,7 +125,8 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       (chat) =>
         chat.title.toLowerCase().includes(query) ||
         chat.id.toLowerCase().includes(query) ||
-        chat.subtitle.toLowerCase().includes(query)
+        chat.subtitle.toLowerCase().includes(query) ||
+        String(chat.info || '').toLowerCase().includes(query)
     );
   });
 
@@ -185,6 +186,14 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       document.body.classList.toggle('chat-room-active', shouldLockBodyScroll);
       document.documentElement.classList.toggle('chat-room-active', shouldLockBodyScroll);
     }
+  });
+
+  private readonly reactionToastEffect = effect(() => {
+    const notice = this.store.incomingReactionNotice();
+    if (!notice) return;
+
+    this.showReactionToast(notice);
+    this.store.clearIncomingReactionNotice();
   });
 
   constructor(
@@ -445,6 +454,15 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   reactionTotal(message: ChatMessage): number {
     return Array.isArray(message.reactions) ? message.reactions.length : 0;
+  }
+
+  private showReactionToast(notice: IncomingReactionNotice): void {
+    const text = `${notice.reactorName} הגיב ${notice.emoji}`;
+    const title = notice.groupName ? `${notice.groupName} · ${text}` : text;
+    this.snackBar.open(title, 'סגור', {
+      duration: 2400,
+      verticalPosition: 'top'
+    });
   }
 
   formatTime(timestamp: number): string {

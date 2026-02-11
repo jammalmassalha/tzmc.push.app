@@ -101,7 +101,12 @@
               </span>
 
               <div class="chat-text">
-                <span class="chat-title">{{ chat.title }}</span>
+                <span class="chat-title-row">
+                  <span class="chat-title">{{ chat.title }}</span>
+                  @if (chat.info) {
+                    <span class="chat-info">{{ chat.info }}</span>
+                  }
+                </span>
                 <span class="chat-subtitle">{{ chat.subtitle || 'אין הודעות עדיין' }}</span>
               </div>
             </div>

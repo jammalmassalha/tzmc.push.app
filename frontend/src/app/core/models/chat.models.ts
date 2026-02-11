@@ -11,6 +11,7 @@ export interface MessageReaction {
 export interface Contact {
   username: string;
   displayName: string;
+  info?: string;
   phone?: string;
   upic?: string;
 }
@@ -45,6 +46,7 @@ export interface ChatMessage {
 export interface ChatListItem {
   id: string;
   title: string;
+  info?: string;
   subtitle: string;
   lastTimestamp: number;
   unread: number;

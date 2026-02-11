@@ -122,14 +122,20 @@ export class ChatApiService {
           Object.prototype.hasOwnProperty.call(contact, 'full_name')
         );
         const username = String(contact.username ?? '').trim();
-        const fullName = String(contact.fullName ?? contact.full_name ?? '').trim();
-        const displayName = String(contact.displayName ?? '').trim();
+        const fullNameRaw = String(contact.fullName ?? contact.full_name ?? '').trim();
+        const displayNameRaw = String(contact.displayName ?? '').trim();
+        const fullNameParsed = this.parseNameAndInfo(fullNameRaw);
+        const displayNameParsed = this.parseNameAndInfo(displayNameRaw);
+        const fullName = fullNameParsed.name;
+        const displayName = fullNameParsed.name || displayNameParsed.name;
+        const info = fullNameParsed.info || displayNameParsed.info;
         const phone = String(contact.phone ?? '').trim();
         const upic = String(contact.upic ?? '').trim();
 
         return {
           username,
-          displayName: fullName || displayName,
+          displayName,
+          info,
           phone: phone || undefined,
           upic: upic || undefined,
           hasFullNameField,
@@ -146,6 +152,7 @@ export class ChatApiService {
         return {
           username: contact.username,
           displayName: contact.displayName,
+          info: contact.info,
           phone: contact.phone,
           upic: contact.upic
         } satisfies Contact;
@@ -158,6 +165,29 @@ export class ChatApiService {
         seen.add(key);
         return true;
       });
+  }
+
+  private parseNameAndInfo(value: string): { name: string; info?: string } {
+    const source = String(value || '').trim();
+    if (!source) {
+      return { name: '' };
+    }
+
+    const infoParts: string[] = [];
+    const withoutParentheses = source.replace(/\(([^()]*)\)/g, (_full, group: string) => {
+      const cleanedGroup = String(group || '').replace(/\s+/g, ' ').trim();
+      if (cleanedGroup) {
+        infoParts.push(cleanedGroup);
+      }
+      return ' ';
+    });
+
+    const cleanedName = withoutParentheses.replace(/\s+/g, ' ').trim();
+    const mergedInfo = infoParts.length ? infoParts.join(' | ') : undefined;
+    return {
+      name: cleanedName,
+      info: mergedInfo
+    };
   }
 
   async getGroups(user: string): Promise<ChatGroup[]> {

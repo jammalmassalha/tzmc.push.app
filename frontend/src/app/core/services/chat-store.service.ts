@@ -47,6 +47,14 @@ type BadgeMessage =
   | { action: 'set-app-badge-count'; count: number }
   | { action: 'clear-app-badge' };
 
+export interface IncomingReactionNotice {
+  id: string;
+  chatId: string;
+  groupName: string;
+  reactorName: string;
+  emoji: string;
+}
+
 @Injectable({ providedIn: 'root' })
 export class ChatStoreService {
   readonly currentUser = signal<string | null>(this.readStoredUser());
@@ -59,6 +67,7 @@ export class ChatStoreService {
   readonly uploading = signal(false);
   readonly networkOnline = signal(typeof navigator !== 'undefined' ? navigator.onLine : true);
   readonly lastError = signal<string | null>(null);
+  readonly incomingReactionNotice = signal<IncomingReactionNotice | null>(null);
 
   private readonly messagesByChat = signal<Record<string, ChatMessage[]>>({});
   private stream: EventSource | null = null;
@@ -111,6 +120,7 @@ export class ChatStoreService {
       items.push({
         id: chatId,
         title,
+        info: contact?.info,
         subtitle,
         lastTimestamp,
         unread,
@@ -475,6 +485,10 @@ export class ChatStoreService {
       reactor: currentUser,
       reactorName: reaction.reactorName || currentUser
     });
+  }
+
+  clearIncomingReactionNotice(): void {
+    this.incomingReactionNotice.set(null);
   }
 
   async flushOutbox(): Promise<void> {
@@ -1230,7 +1244,25 @@ export class ChatStoreService {
       reactorName: String(incoming.reactorName ?? '').trim() || this.getDisplayName(reactor)
     };
 
-    this.applyReactionToMessage(groupId, targetMessageId, reaction);
+    const changed = this.applyReactionToMessage(groupId, targetMessageId, reaction);
+    if (!changed) return;
+
+    const currentUser = this.normalizeUser(this.currentUser() ?? '');
+    if (currentUser && reactor === currentUser) {
+      return;
+    }
+
+    const group = this.groups().find((item) => item.id === groupId);
+    const groupName = String(incoming.groupName ?? group?.name ?? groupId).trim() || groupId;
+    const reactorName = reaction.reactorName || this.getDisplayName(reactor);
+
+    this.incomingReactionNotice.set({
+      id: `${groupId}:${targetMessageId}:${reactor}:${emoji}`,
+      chatId: groupId,
+      groupName,
+      reactorName,
+      emoji
+    });
   }
 
   private ensureGroupFromIncoming(incoming: IncomingServerMessage): void {
@@ -1284,13 +1316,13 @@ export class ChatStoreService {
     chatId: string,
     targetMessageId: string,
     reaction: MessageReaction
-  ): void {
+  ): boolean {
     const normalizedChatId = this.normalizeChatId(chatId);
     const normalizedTargetId = String(targetMessageId || '').trim();
     const normalizedReactor = this.normalizeUser(reaction.reactor);
     const normalizedEmoji = String(reaction.emoji || '').trim();
     if (!normalizedChatId || !normalizedTargetId || !normalizedReactor || !normalizedEmoji) {
-      return;
+      return false;
     }
 
     let changed = false;
@@ -1348,6 +1380,7 @@ export class ChatStoreService {
     if (changed) {
       this.schedulePersist();
     }
+    return changed;
   }
 
   private appendMessage(message: ChatMessage): void {
@@ -1462,9 +1495,12 @@ export class ChatStoreService {
     return contacts
       .map((contact) => {
         const username = this.normalizeUser(contact.username);
+        const parsedName = this.extractNameAndInfo(contact.displayName || '');
+        const fallbackInfo = parsedName.info || undefined;
         return {
           username,
-          displayName: (contact.displayName || username).trim(),
+          displayName: (parsedName.name || username).trim(),
+          info: contact.info?.trim() || fallbackInfo,
           phone: contact.phone?.trim() || undefined,
           upic: contact.upic?.trim() || undefined
         } satisfies Contact;
@@ -1474,6 +1510,27 @@ export class ChatStoreService {
         seen.add(contact.username);
         return true;
       });
+  }
+
+  private extractNameAndInfo(value: string): { name: string; info?: string } {
+    const source = String(value || '').trim();
+    if (!source) {
+      return { name: '' };
+    }
+
+    const infoParts: string[] = [];
+    const withoutParentheses = source.replace(/\(([^()]*)\)/g, (_full, group: string) => {
+      const cleanedGroup = String(group || '').replace(/\s+/g, ' ').trim();
+      if (cleanedGroup) {
+        infoParts.push(cleanedGroup);
+      }
+      return ' ';
+    });
+
+    return {
+      name: withoutParentheses.replace(/\s+/g, ' ').trim(),
+      info: infoParts.length ? infoParts.join(' | ') : undefined
+    };
   }
 
   private normalizeGroups(groups: ChatGroup[], fallbackCreator: string): ChatGroup[] {
