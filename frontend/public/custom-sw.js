@@ -216,29 +216,45 @@ self.addEventListener('notificationclick', (event) => {
       : new URL('./', self.registration.scope).toString()
   );
 
-  event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
-      const target = new URL(targetUrl, self.registration.scope);
+  event.waitUntil((async () => {
+    const windowClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const target = new URL(targetUrl, self.registration.scope);
 
-      for (const client of windowClients) {
-        if ('focus' in client) {
-          try {
-            const clientUrl = new URL(client.url);
-            if (clientUrl.origin === target.origin) {
-              client.postMessage({ action: 'navigate-route', url: target.toString() });
-              return client.focus();
-            }
-          } catch (_) {
-            // Ignore malformed client URL and continue.
-          }
+    for (const client of windowClients) {
+      if (!('focus' in client)) {
+        continue;
+      }
+      try {
+        const clientUrl = new URL(client.url);
+        if (clientUrl.origin !== target.origin) {
+          continue;
         }
-      }
 
-      if (clients.openWindow) {
-        return clients.openWindow(target.toString());
-      }
+        client.postMessage({
+          action: 'notification-clicked',
+          url: target.toString(),
+          payload: notificationData
+        });
 
-      return undefined;
-    })
-  );
+        if (typeof client.navigate === 'function') {
+          await client.navigate(target.toString());
+          return client.focus();
+        }
+
+        if (clients.openWindow) {
+          return clients.openWindow(target.toString());
+        }
+
+        return client.focus();
+      } catch (_) {
+        // Ignore malformed client URL and continue.
+      }
+    }
+
+    if (clients.openWindow) {
+      return clients.openWindow(target.toString());
+    }
+
+    return undefined;
+  })());
 });

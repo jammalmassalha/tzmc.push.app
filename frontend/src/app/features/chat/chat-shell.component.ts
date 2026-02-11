@@ -23,7 +23,7 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { Router, ActivatedRoute } from '@angular/router';
-import { startWith } from 'rxjs';
+import { Subscription, startWith } from 'rxjs';
 import {
   ChatGroup,
   ChatListItem,
@@ -195,6 +195,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   private readonly messagePartsCache = new Map<string, ParsedMessageCacheEntry>();
   private readonly scrollBottomThresholdPx = 44;
   private relativeTimeRefreshId: number | null = null;
+  private routeQueryParamsSub: Subscription | null = null;
 
   private readonly autoScrollEffect = effect(() => {
     const activeChatId = this.store.activeChatId();
@@ -262,15 +263,18 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     }, 60_000);
 
     await this.store.initialize();
-    const chatFromUrl = this.route.snapshot.queryParamMap.get('chat');
-    if (chatFromUrl) {
-      this.openChat(chatFromUrl);
-      return;
-    }
+    this.routeQueryParamsSub?.unsubscribe();
+    this.routeQueryParamsSub = this.route.queryParamMap.subscribe((queryParams) => {
+      const chatFromUrl = queryParams.get('chat');
+      if (chatFromUrl) {
+        this.openChat(chatFromUrl);
+        return;
+      }
 
-    if (this.isMobile() && this.store.activeChatId()) {
-      this.showContactsPane.set(false);
-    }
+      if (this.isMobile() && this.store.activeChatId()) {
+        this.showContactsPane.set(false);
+      }
+    });
   }
 
   ngOnDestroy(): void {
@@ -282,6 +286,8 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       window.clearInterval(this.relativeTimeRefreshId);
       this.relativeTimeRefreshId = null;
     }
+    this.routeQueryParamsSub?.unsubscribe();
+    this.routeQueryParamsSub = null;
     if (typeof document !== 'undefined') {
       document.body.classList.remove('chat-room-active');
       document.documentElement.classList.remove('chat-room-active');

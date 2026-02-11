@@ -26,6 +26,7 @@ const STREAM_RETRY_MS = 5000;
 const MAX_PERSISTED_MESSAGES = 2500;
 const PUSH_REGISTER_MIN_INTERVAL_MS = 30000;
 const PUSH_REGISTER_REFRESH_MS = 6 * 60 * 60 * 1000;
+const FOREGROUND_SYNC_MIN_INTERVAL_MS = 4000;
 const HR_CHAT_NAME = 'ציפי';
 const HR_WELCOME_KEY_PREFIX = 'hr_welcome_sent_';
 const HR_STATE_KEY_PREFIX = 'hr_state_';
@@ -86,6 +87,7 @@ export class ChatStoreService {
   private hrActionsCache: Record<string, { at: number; actions: HrActionOption[] }> = {};
   private hrInitInFlight = false;
   private lastAppliedAppBadgeCount = -1;
+  private lastForegroundSyncAt = 0;
   private readonly readReceiptSentByChat = new Map<string, Set<string>>();
   private pushRegisterInFlight = false;
   private lastPushRegisterAttemptAt = 0;
@@ -2028,12 +2030,7 @@ export class ChatStoreService {
     if (!user) return;
     void this.tryRegisterPush(user, { force: true });
     this.connectRealtime(user);
-    void this.flushOutbox();
-    void this.refresh(false);
-    const activeChat = this.activeChatId();
-    if (activeChat) {
-      void this.sendReadReceiptsForChat(activeChat);
-    }
+    this.syncForegroundState({ forceRefresh: true });
   };
 
   private handleOffline = (): void => {
@@ -2042,10 +2039,7 @@ export class ChatStoreService {
 
   private handleWindowFocus = (): void => {
     this.refreshPushRegistrationForCurrentUser(false);
-    const activeChat = this.activeChatId();
-    if (activeChat) {
-      void this.sendReadReceiptsForChat(activeChat);
-    }
+    this.syncForegroundState();
   };
 
   private handleVisibilityChange = (): void => {
@@ -2053,10 +2047,7 @@ export class ChatStoreService {
       return;
     }
     this.refreshPushRegistrationForCurrentUser(false);
-    const activeChat = this.activeChatId();
-    if (activeChat) {
-      void this.sendReadReceiptsForChat(activeChat);
-    }
+    this.syncForegroundState();
   };
 
   private handleServiceWorkerMessage = (event: MessageEvent<unknown>): void => {
@@ -2067,7 +2058,12 @@ export class ChatStoreService {
     if (!eventData || typeof eventData !== 'object') return;
 
     const messageData = eventData as { action?: unknown; payload?: unknown };
-    if (messageData.action !== 'push-payload') return;
+    const action = String(messageData.action ?? '').trim();
+    if (action === 'notification-clicked') {
+      this.syncForegroundState({ forceRefresh: true });
+      return;
+    }
+    if (action !== 'push-payload') return;
 
     const payloadRaw = messageData.payload;
     if (!payloadRaw || typeof payloadRaw !== 'object') return;
@@ -2078,6 +2074,8 @@ export class ChatStoreService {
 
     const payloadType = String(payload['type'] ?? '').trim().toLowerCase();
     if (payloadType !== 'reaction' && payloadType !== 'group-update' && payloadType !== 'read-receipt') {
+      // For regular message pushes, force a near-immediate pull so opened app isn't stale.
+      this.syncForegroundState();
       return;
     }
 
@@ -2114,6 +2112,26 @@ export class ChatStoreService {
 
     this.applyIncomingMessage(incoming);
   };
+
+  private syncForegroundState(options: { forceRefresh?: boolean } = {}): void {
+    const user = this.currentUser();
+    if (!user || !this.networkOnline()) return;
+
+    const forceRefresh = Boolean(options.forceRefresh);
+    const now = Date.now();
+    if (!forceRefresh && now - this.lastForegroundSyncAt < FOREGROUND_SYNC_MIN_INTERVAL_MS) {
+      return;
+    }
+    this.lastForegroundSyncAt = now;
+
+    void this.pullMessages(user);
+    void this.flushOutbox();
+    void this.refresh(forceRefresh);
+    const activeChat = this.activeChatId();
+    if (activeChat) {
+      void this.sendReadReceiptsForChat(activeChat);
+    }
+  }
 
   private syncAppBadge(unreadTotal: number): void {
     if (typeof navigator === 'undefined') return;
