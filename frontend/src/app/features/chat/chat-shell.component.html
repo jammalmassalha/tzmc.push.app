@@ -340,15 +340,42 @@
           }
         </div>
 
+        @if (groupPreview.canManageMembers) {
+          <div class="group-members-manage">
+            <button
+              mat-stroked-button
+              type="button"
+              class="group-members-add-btn"
+              [matMenuTriggerFor]="communityMembersMenu">
+              <mat-icon>person_add</mat-icon>
+              <span>הוסף משתתף</span>
+            </button>
+          </div>
+        }
+
         @if (!groupPreview.members.length) {
           <div class="group-members-empty">אין משתתפים להצגה.</div>
         } @else {
           <div class="group-members-list">
             @for (member of groupPreview.members; track member.username) {
               <div class="group-member-item">
-                <span class="group-member-name">{{ member.displayName }}</span>
-                @if (member.isAdmin) {
-                  <span class="group-member-role">מנהל</span>
+                <div class="group-member-main">
+                  <span class="group-member-name">{{ member.displayName }}</span>
+                  @if (member.info) {
+                    <span class="group-member-info">{{ member.info }}</span>
+                  }
+                  @if (member.isAdmin) {
+                    <span class="group-member-role">מנהל</span>
+                  }
+                </div>
+                @if (canRemoveCommunityMember(groupPreview, member.username)) {
+                  <button
+                    type="button"
+                    class="group-member-remove"
+                    (click)="removeCommunityMember(member.username)"
+                    aria-label="הסר משתתף">
+                    <mat-icon>person_remove</mat-icon>
+                  </button>
                 }
               </div>
             }
@@ -357,4 +384,21 @@
       </div>
     </div>
   }
+
+  <mat-menu #communityMembersMenu="matMenu">
+    @if (!groupMemberAddCandidates().length) {
+      <button mat-menu-item type="button" disabled>
+        <span>אין אנשי קשר זמינים להוספה</span>
+      </button>
+    } @else {
+      @for (candidate of groupMemberAddCandidates(); track candidate.username) {
+        <button mat-menu-item type="button" (click)="addCommunityMember(candidate.username)">
+          <div class="group-add-member-row">
+            <span class="group-add-member-name">{{ candidate.displayName }}</span>
+            <span class="group-add-member-username">{{ candidate.username }}</span>
+          </div>
+        </button>
+      }
+    }
+  </mat-menu>
 </div>

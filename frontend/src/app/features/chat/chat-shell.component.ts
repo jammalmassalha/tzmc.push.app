@@ -52,13 +52,22 @@ interface AvatarPreview {
 }
 
 interface GroupMembersPreview {
+  groupId: string;
   title: string;
   type: 'group' | 'community';
+  canManageMembers: boolean;
   members: Array<{
     username: string;
     displayName: string;
+    info?: string;
     isAdmin: boolean;
   }>;
+}
+
+interface GroupMemberAddCandidate {
+  username: string;
+  displayName: string;
+  info?: string;
 }
 
 interface ReactionBucket {
@@ -146,6 +155,20 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly avatarPreview = signal<AvatarPreview | null>(null);
   readonly reactionTargetMessageId = signal<string | null>(null);
   readonly groupMembersPreview = signal<GroupMembersPreview | null>(null);
+  readonly groupMemberAddCandidates = computed<GroupMemberAddCandidate[]>(() => {
+    const preview = this.groupMembersPreview();
+    if (!preview?.canManageMembers) return [];
+
+    const existingMembers = new Set(preview.members.map((member) => member.username));
+    return this.store.contacts()
+      .filter((contact) => !existingMembers.has(contact.username))
+      .map((contact) => ({
+        username: contact.username,
+        displayName: contact.displayName || contact.username,
+        info: contact.info
+      }))
+      .sort((a, b) => a.displayName.localeCompare(b.displayName, 'he'));
+  });
   readonly stickyMessageDateLabel = computed(() => {
     const timestamp = this.stickyMessageTimestamp();
     return timestamp ? this.formatMessageDateBadge(timestamp) : '';
@@ -381,28 +404,32 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
     const group = this.findGroupById(activeChat.id);
     if (!group) return;
+    this.groupMembersPreview.set(this.buildGroupMembersPreview(group));
+  }
 
-    const contactsByUsername = new Map(
-      this.store.contacts().map((contact) => [contact.username, contact])
-    );
-    const adminUsername = String(group.createdBy || '').trim().toLowerCase();
-    const members = (group.members ?? [])
-      .map((username) => {
-        const normalized = String(username || '').trim().toLowerCase();
-        const contact = contactsByUsername.get(normalized);
-        return {
-          username: normalized,
-          displayName: contact?.displayName || normalized,
-          isAdmin: normalized === adminUsername
-        };
-      })
-      .sort((a, b) => a.displayName.localeCompare(b.displayName, 'he'));
+  async addCommunityMember(username: string): Promise<void> {
+    const preview = this.groupMembersPreview();
+    if (!preview?.canManageMembers) return;
 
-    this.groupMembersPreview.set({
-      title: group.name,
-      type: group.type,
-      members
-    });
+    const normalized = String(username || '').trim().toLowerCase();
+    if (!normalized) return;
+
+    const nextMembers = Array.from(new Set([...preview.members.map((member) => member.username), normalized]));
+    await this.updateCommunityMembers(preview.groupId, nextMembers, 'המשתתף נוסף לקהילה.');
+  }
+
+  async removeCommunityMember(username: string): Promise<void> {
+    const preview = this.groupMembersPreview();
+    if (!preview?.canManageMembers) return;
+
+    const normalized = String(username || '').trim().toLowerCase();
+    const target = preview.members.find((member) => member.username === normalized);
+    if (!target || target.isAdmin) return;
+
+    const nextMembers = preview.members
+      .map((member) => member.username)
+      .filter((memberUsername) => memberUsername !== normalized);
+    await this.updateCommunityMembers(preview.groupId, nextMembers, 'המשתתף הוסר מהקהילה.');
   }
 
   closeGroupMembers(): void {
@@ -412,6 +439,61 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   canShowGroupMembers(): boolean {
     const activeChat = this.store.activeChat();
     return Boolean(activeChat?.isGroup && this.findGroupById(activeChat.id));
+  }
+
+  canRemoveCommunityMember(groupPreview: GroupMembersPreview, username: string): boolean {
+    if (!groupPreview.canManageMembers) return false;
+    const member = groupPreview.members.find((item) => item.username === username);
+    return Boolean(member && !member.isAdmin);
+  }
+
+  private buildGroupMembersPreview(group: ChatGroup): GroupMembersPreview {
+    const contactsByUsername = new Map(
+      this.store.contacts().map((contact) => [contact.username, contact])
+    );
+    const currentUser = String(this.store.currentUser() || '').trim().toLowerCase();
+    const adminUsername = String(group.createdBy || '').trim().toLowerCase();
+    const canManageMembers = group.type === 'community' && currentUser === adminUsername;
+    const members = (group.members ?? [])
+      .map((username) => {
+        const normalized = String(username || '').trim().toLowerCase();
+        const contact = contactsByUsername.get(normalized);
+        return {
+          username: normalized,
+          displayName: contact?.displayName || normalized,
+          info: contact?.info,
+          isAdmin: normalized === adminUsername
+        };
+      })
+      .sort((a, b) => a.displayName.localeCompare(b.displayName, 'he'));
+
+    return {
+      groupId: group.id,
+      title: group.name,
+      type: group.type,
+      canManageMembers,
+      members
+    };
+  }
+
+  private async updateCommunityMembers(
+    groupId: string,
+    nextMembers: string[],
+    successMessage: string
+  ): Promise<void> {
+    try {
+      await this.store.updateCommunityGroupMembers(groupId, nextMembers);
+      this.snackBar.open(successMessage, 'סגור', { duration: 2400 });
+      const refreshed = this.findGroupById(groupId);
+      if (!refreshed) {
+        this.closeGroupMembers();
+        return;
+      }
+      this.groupMembersPreview.set(this.buildGroupMembersPreview(refreshed));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'עדכון חברי קבוצה נכשל';
+      this.snackBar.open(message, 'סגור', { duration: 3200 });
+    }
   }
 
   canReactToMessage(message: ChatMessage): boolean {

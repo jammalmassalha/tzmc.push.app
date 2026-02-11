@@ -6,6 +6,7 @@ import {
   ChatMessage,
   Contact,
   DeliveryStatus,
+  GroupUpdatePayload,
   GroupType,
   IncomingServerMessage,
   MessageReaction,
@@ -387,6 +388,76 @@ export class ChatStoreService {
       groupType: group.type,
       membersToNotify
     } as const;
+
+    if (!this.networkOnline()) {
+      this.queueGroupUpdate(groupUpdatePayload);
+      return;
+    }
+
+    try {
+      await this.api.sendGroupUpdate(groupUpdatePayload);
+    } catch {
+      this.queueGroupUpdate(groupUpdatePayload);
+    }
+  }
+
+  async updateCommunityGroupMembers(groupId: string, nextMembers: string[]): Promise<void> {
+    const user = this.currentUser();
+    if (!user) {
+      throw new Error('יש להתחבר לפני עדכון קבוצה');
+    }
+
+    const normalizedGroupId = this.normalizeChatId(groupId);
+    const group = this.groups().find((item) => item.id === normalizedGroupId);
+    if (!group) {
+      throw new Error('הקבוצה לא נמצאה');
+    }
+    if (group.type !== 'community') {
+      throw new Error('עדכון משתתפים זמין רק לקבוצת קהילה');
+    }
+
+    const normalizedUser = this.normalizeUser(user);
+    const adminUser = this.normalizeUser(group.createdBy);
+    if (normalizedUser !== adminUser) {
+      throw new Error('רק מנהל קבוצה יכול לעדכן משתתפים');
+    }
+
+    const normalizedNextMembers = Array.from(
+      new Set(nextMembers.map((member) => this.normalizeUser(member)).filter(Boolean))
+    );
+    if (!normalizedNextMembers.includes(adminUser)) {
+      normalizedNextMembers.unshift(adminUser);
+    }
+    if (normalizedNextMembers.length < 2) {
+      throw new Error('קבוצת קהילה חייבת לכלול לפחות שני משתתפים');
+    }
+
+    const previousMembers = group.members.map((member) => this.normalizeUser(member)).filter(Boolean);
+    const updatedGroup: ChatGroup = {
+      ...group,
+      members: normalizedNextMembers,
+      updatedAt: Date.now()
+    };
+
+    this.groups.update((groups) =>
+      groups.map((item) => (item.id === updatedGroup.id ? updatedGroup : item))
+    );
+    this.schedulePersist();
+
+    const membersToNotify = Array.from(
+      new Set([...previousMembers, ...updatedGroup.members].map((member) => this.normalizeUser(member)))
+    ).filter((member) => member && member !== normalizedUser);
+    if (!membersToNotify.length) return;
+
+    const groupUpdatePayload: GroupUpdatePayload = {
+      groupId: updatedGroup.id,
+      groupName: updatedGroup.name,
+      groupMembers: updatedGroup.members,
+      groupCreatedBy: updatedGroup.createdBy,
+      groupUpdatedAt: updatedGroup.updatedAt,
+      groupType: updatedGroup.type,
+      membersToNotify
+    };
 
     if (!this.networkOnline()) {
       this.queueGroupUpdate(groupUpdatePayload);
@@ -1169,6 +1240,10 @@ export class ChatStoreService {
       this.applyIncomingReaction(incoming);
       return;
     }
+    if (incomingType === 'group-update') {
+      this.applyIncomingGroupUpdate(incoming);
+      return;
+    }
 
     const sender = this.normalizeUser(incoming.sender ?? '');
     if (!sender) return;
@@ -1220,6 +1295,23 @@ export class ChatStoreService {
       }));
     }
 
+    this.schedulePersist();
+  }
+
+  private applyIncomingGroupUpdate(incoming: IncomingServerMessage): void {
+    const groupId = this.normalizeChatId(incoming.groupId ?? '');
+    if (!groupId || !incoming.groupName) return;
+
+    const currentUser = this.normalizeUser(this.currentUser() ?? '');
+    const members = Array.isArray(incoming.groupMembers)
+      ? incoming.groupMembers.map((member) => this.normalizeUser(member)).filter(Boolean)
+      : [];
+    if (currentUser && members.length && !members.includes(currentUser)) {
+      this.removeGroupLocally(groupId);
+      return;
+    }
+
+    this.ensureGroupFromIncoming(incoming);
     this.schedulePersist();
   }
 
@@ -1381,6 +1473,46 @@ export class ChatStoreService {
       this.schedulePersist();
     }
     return changed;
+  }
+
+  private removeGroupLocally(groupId: string): void {
+    let groupRemoved = false;
+    this.groups.update((groups) => {
+      if (!groups.some((group) => group.id === groupId)) {
+        return groups;
+      }
+      groupRemoved = true;
+      return groups.filter((group) => group.id !== groupId);
+    });
+    if (!groupRemoved) return;
+
+    this.messagesByChat.update((messageMap) => {
+      if (!(groupId in messageMap)) {
+        return messageMap;
+      }
+      const next = { ...messageMap };
+      delete next[groupId];
+      return next;
+    });
+
+    this.unreadByChat.update((map) => {
+      if (!(groupId in map)) {
+        return map;
+      }
+      const next = { ...map };
+      delete next[groupId];
+      return next;
+    });
+
+    if (this.activeChatId() === groupId) {
+      this.activeChatId.set(null);
+      const user = this.currentUser();
+      if (user) {
+        localStorage.removeItem(this.activeChatKey(user));
+      }
+    }
+
+    this.schedulePersist();
   }
 
   private appendMessage(message: ChatMessage): void {
@@ -1731,11 +1863,11 @@ export class ChatStoreService {
     if (payloadUser && payloadUser !== currentUser) return;
 
     const payloadType = String(payload['type'] ?? '').trim().toLowerCase();
-    if (payloadType !== 'reaction') return;
+    if (payloadType !== 'reaction' && payloadType !== 'group-update') return;
 
     const numericGroupUpdatedAt = Number(payload['groupUpdatedAt']);
     const incoming: IncomingServerMessage = {
-      type: 'reaction',
+      type: payloadType,
       messageId: typeof payload['messageId'] === 'string' ? payload['messageId'] : undefined,
       sender: typeof payload['sender'] === 'string' ? payload['sender'] : undefined,
       targetMessageId:

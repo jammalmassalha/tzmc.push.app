@@ -807,6 +807,27 @@ app.post(['/group-update', '/notify/group-update'], async (req, res) => {
             return res.status(400).json({ error: 'Missing group update fields' });
         }
         const groupRecord = upsertGroup({ groupId, groupName, groupMembers, groupCreatedBy, groupUpdatedAt, groupType });
+        const recipientByKey = new Map();
+        membersToNotify.forEach(member => {
+            const rawMember = String(member || '').trim();
+            const memberKey = normalizeUserKey(rawMember);
+            if (!memberKey) return;
+            if (!recipientByKey.has(memberKey)) {
+                recipientByKey.set(memberKey, rawMember);
+            }
+        });
+        const dedupedRecipients = Array.from(recipientByKey.values());
+        if (!dedupedRecipients.length) {
+            return res.json({ status: 'success', details: { success: 0, failed: 0 } });
+        }
+
+        const resolvedGroupMembers = groupRecord && Array.isArray(groupRecord.members)
+            ? groupRecord.members
+            : (Array.isArray(groupMembers) ? groupMembers : []);
+        const resolvedGroupCreatedBy = groupRecord ? groupRecord.createdBy : (groupCreatedBy || null);
+        const resolvedGroupUpdatedAt = groupRecord ? groupRecord.updatedAt : (groupUpdatedAt || Date.now());
+        const resolvedGroupType = normalizeGroupType(groupType || (groupRecord ? groupRecord.type : 'group'));
+        const resolvedGroupName = groupRecord ? groupRecord.name : groupName;
         const messageId = generateMessageId();
         const notificationData = {
             messageId,
@@ -818,14 +839,29 @@ app.post(['/group-update', '/notify/group-update'], async (req, res) => {
             data: {
                 type: 'group-update',
                 groupId,
-                groupName: groupRecord ? groupRecord.name : groupName,
-                groupMembers: Array.isArray(groupMembers) ? groupMembers : [],
-                groupCreatedBy: groupCreatedBy || null,
-                groupUpdatedAt: groupUpdatedAt || Date.now(),
-                groupType: normalizeGroupType(groupType || (groupRecord ? groupRecord.type : 'group'))
+                groupName: resolvedGroupName,
+                groupMembers: resolvedGroupMembers,
+                groupCreatedBy: resolvedGroupCreatedBy,
+                groupUpdatedAt: resolvedGroupUpdatedAt,
+                groupType: resolvedGroupType
             }
         };
-        const result = await sendPushNotificationToUser(membersToNotify, notificationData, groupId, { messageId, skipBadge: true });
+
+        const groupUpdateRecord = {
+            messageId,
+            sender: groupId,
+            type: 'group-update',
+            groupId,
+            groupName: resolvedGroupName,
+            groupMembers: resolvedGroupMembers,
+            groupCreatedBy: resolvedGroupCreatedBy,
+            groupUpdatedAt: resolvedGroupUpdatedAt,
+            groupType: resolvedGroupType,
+            timestamp: Date.now()
+        };
+        addToQueue(dedupedRecipients, groupUpdateRecord);
+
+        const result = await sendPushNotificationToUser(dedupedRecipients, notificationData, groupId, { messageId, skipBadge: true });
         res.json({ status: 'success', details: result });
     } catch (e) {
         console.error('[GROUP UPDATE ERROR]', e);
