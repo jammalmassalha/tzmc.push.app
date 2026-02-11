@@ -24,7 +24,12 @@ import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { Router, ActivatedRoute } from '@angular/router';
 import { startWith } from 'rxjs';
-import { ChatListItem, DeliveryStatus } from '../../core/models/chat.models';
+import {
+  ChatGroup,
+  ChatListItem,
+  ChatMessage,
+  DeliveryStatus
+} from '../../core/models/chat.models';
 import { ChatStoreService } from '../../core/services/chat-store.service';
 import { CreateGroupDialogComponent } from './dialogs/create-group-dialog.component';
 import { NewChatDialogComponent } from './dialogs/new-chat-dialog.component';
@@ -44,6 +49,21 @@ interface AvatarPreview {
   title: string;
   imageUrl: string;
   lqipUrl: string;
+}
+
+interface GroupMembersPreview {
+  title: string;
+  type: 'group' | 'community';
+  members: Array<{
+    username: string;
+    displayName: string;
+    isAdmin: boolean;
+  }>;
+}
+
+interface ReactionBucket {
+  emoji: string;
+  count: number;
 }
 
 @Component({
@@ -119,9 +139,12 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly isBusy = computed(
     () => this.store.loading() || this.store.syncing() || this.store.uploading()
   );
+  readonly reactionEmojis = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
   readonly nowTimestamp = signal(Date.now());
   readonly stickyMessageTimestamp = signal<number | null>(null);
   readonly avatarPreview = signal<AvatarPreview | null>(null);
+  readonly reactionTargetMessageId = signal<string | null>(null);
+  readonly groupMembersPreview = signal<GroupMembersPreview | null>(null);
   readonly stickyMessageDateLabel = computed(() => {
     const timestamp = this.stickyMessageTimestamp();
     return timestamp ? this.formatMessageDateBadge(timestamp) : '';
@@ -341,6 +364,87 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   async logout(): Promise<void> {
     this.store.logout();
     await this.router.navigate(['/setup']);
+  }
+
+  openGroupMembers(): void {
+    const activeChat = this.store.activeChat();
+    if (!activeChat?.isGroup) return;
+
+    const group = this.findGroupById(activeChat.id);
+    if (!group) return;
+
+    const contactsByUsername = new Map(
+      this.store.contacts().map((contact) => [contact.username, contact])
+    );
+    const adminUsername = String(group.createdBy || '').trim().toLowerCase();
+    const members = (group.members ?? [])
+      .map((username) => {
+        const normalized = String(username || '').trim().toLowerCase();
+        const contact = contactsByUsername.get(normalized);
+        return {
+          username: normalized,
+          displayName: contact?.displayName || normalized,
+          isAdmin: normalized === adminUsername
+        };
+      })
+      .sort((a, b) => a.displayName.localeCompare(b.displayName, 'he'));
+
+    this.groupMembersPreview.set({
+      title: group.name,
+      type: group.type,
+      members
+    });
+  }
+
+  closeGroupMembers(): void {
+    this.groupMembersPreview.set(null);
+  }
+
+  canShowGroupMembers(): boolean {
+    const activeChat = this.store.activeChat();
+    return Boolean(activeChat?.isGroup && this.findGroupById(activeChat.id));
+  }
+
+  canReactToMessage(message: ChatMessage): boolean {
+    const activeGroup = this.findActiveGroup();
+    return Boolean(activeGroup && activeGroup.type === 'community' && message.messageId);
+  }
+
+  setReactionTarget(message: ChatMessage): void {
+    if (!this.canReactToMessage(message)) return;
+    this.reactionTargetMessageId.set(message.messageId);
+  }
+
+  async addReaction(emoji: string): Promise<void> {
+    const targetMessageId = this.reactionTargetMessageId();
+    const normalizedEmoji = String(emoji || '').trim();
+    if (!targetMessageId || !normalizedEmoji) return;
+
+    try {
+      await this.store.sendReaction(targetMessageId, normalizedEmoji);
+    } catch {
+      this.snackBar.open('לא ניתן לעדכן תגובה כעת.', 'סגור', { duration: 2500 });
+    } finally {
+      this.reactionTargetMessageId.set(null);
+    }
+  }
+
+  reactionBuckets(message: ChatMessage): ReactionBucket[] {
+    const reactions = Array.isArray(message.reactions) ? message.reactions : [];
+    if (!reactions.length) return [];
+
+    const counts = new Map<string, number>();
+    for (const reaction of reactions) {
+      const emoji = String(reaction?.emoji || '').trim();
+      if (!emoji) continue;
+      counts.set(emoji, (counts.get(emoji) ?? 0) + 1);
+    }
+
+    return Array.from(counts.entries()).map(([emoji, count]) => ({ emoji, count }));
+  }
+
+  reactionTotal(message: ChatMessage): number {
+    return Array.isArray(message.reactions) ? message.reactions.length : 0;
   }
 
   formatTime(timestamp: number): string {
@@ -704,5 +808,17 @@ export class ChatShellComponent implements OnInit, OnDestroy {
         maximumAge: 60000
       });
     });
+  }
+
+  private findActiveGroup(): ChatGroup | null {
+    const activeChat = this.store.activeChat();
+    if (!activeChat?.isGroup) return null;
+    return this.findGroupById(activeChat.id);
+  }
+
+  private findGroupById(groupId: string): ChatGroup | null {
+    const normalized = String(groupId || '').trim().toLowerCase();
+    if (!normalized) return null;
+    return this.store.groups().find((group) => group.id === normalized) ?? null;
   }
 }

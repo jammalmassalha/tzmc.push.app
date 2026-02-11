@@ -879,6 +879,25 @@ app.post(['/reaction', '/notify/reaction'], async (req, res) => {
                 groupType: groupRecord ? groupRecord.type : normalizeGroupType(groupType || 'group')
             }
         };
+
+        const reactionRecord = {
+            messageId: reactionId,
+            sender: reactor || groupId,
+            type: 'reaction',
+            targetMessageId,
+            emoji,
+            reactor,
+            reactorName,
+            timestamp: Date.now(),
+            groupId,
+            groupName: groupRecord ? groupRecord.name : groupName,
+            groupMembers: groupRecord ? groupRecord.members : groupMembers,
+            groupCreatedBy: groupRecord ? groupRecord.createdBy : groupCreatedBy,
+            groupUpdatedAt: groupRecord ? groupRecord.updatedAt : groupUpdatedAt,
+            groupType: groupRecord ? groupRecord.type : normalizeGroupType(groupType || 'group')
+        };
+        addToQueue(membersToNotify, reactionRecord);
+
         const result = await sendPushNotificationToUser(membersToNotify, notificationData, groupId, { messageId: reactionId, skipBadge: true });
         res.json({ status: 'success', details: result });
     } catch (err) {

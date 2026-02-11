@@ -7,6 +7,7 @@ export interface RuntimeConfig {
   notifyReplyUrl: string;
   uploadUrl: string;
   groupUpdateUrl: string;
+  reactionUrl: string;
   groupsUrl: string;
   versionUrl: string;
 }
@@ -37,6 +38,7 @@ export const runtimeConfig: RuntimeConfig = {
   notifyReplyUrl: `${backendOrigin}/notify/reply`,
   uploadUrl: `${backendOrigin}/notify/upload`,
   groupUpdateUrl: `${backendOrigin}/notify/group-update`,
+  reactionUrl: `${backendOrigin}/notify/reaction`,
   groupsUrl: `${backendOrigin}/notify/groups`,
   versionUrl: `${backendOrigin}/notify/version`
 };

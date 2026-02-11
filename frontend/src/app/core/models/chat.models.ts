@@ -2,6 +2,12 @@ export type GroupType = 'group' | 'community';
 
 export type DeliveryStatus = 'pending' | 'sent' | 'queued' | 'failed' | 'delivered';
 
+export interface MessageReaction {
+  emoji: string;
+  reactor: string;
+  reactorName?: string;
+}
+
 export interface Contact {
   username: string;
   displayName: string;
@@ -33,6 +39,7 @@ export interface ChatMessage {
   deliveryStatus: DeliveryStatus;
   groupId?: string | null;
   groupName?: string | null;
+  reactions?: MessageReaction[];
 }
 
 export interface ChatListItem {
@@ -49,6 +56,11 @@ export interface ChatListItem {
 export interface IncomingServerMessage {
   messageId?: string;
   sender?: string;
+  type?: string;
+  targetMessageId?: string;
+  emoji?: string;
+  reactor?: string;
+  reactorName?: string;
   body?: string;
   timestamp?: number;
   imageUrl?: string | null;
@@ -85,6 +97,19 @@ export interface GroupUpdatePayload {
   groupUpdatedAt: number;
   groupType: GroupType;
   membersToNotify: string[];
+}
+
+export interface ReactionPayload {
+  groupId: string;
+  groupName: string;
+  groupMembers: string[];
+  groupCreatedBy: string;
+  groupUpdatedAt: number;
+  groupType: GroupType;
+  targetMessageId: string;
+  emoji: string;
+  reactor: string;
+  reactorName: string;
 }
 
 export interface OutboxDirectItem {

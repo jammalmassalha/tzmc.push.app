@@ -5,6 +5,7 @@ import {
   Contact,
   GroupUpdatePayload,
   IncomingServerMessage,
+  ReactionPayload,
   ReplyPayload
 } from '../models/chat.models';
 
@@ -237,6 +238,22 @@ export class ChatApiService {
 
     if (!response.ok) {
       throw new Error(`Group update failed with ${response.status}`);
+    }
+  }
+
+  async sendReaction(payload: ReactionPayload): Promise<void> {
+    const response = await this.fetchWithRetry(
+      this.config.reactionUrl,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      },
+      { retries: 2, timeoutMs: 10000 }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Reaction update failed with ${response.status}`);
     }
   }
 

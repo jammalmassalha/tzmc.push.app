@@ -133,7 +133,14 @@
             </button>
           }
 
-          <div class="conversation-title">
+          <div
+            class="conversation-title"
+            [class.clickable]="canShowGroupMembers()"
+            (click)="canShowGroupMembers() && openGroupMembers()"
+            [attr.role]="canShowGroupMembers() ? 'button' : null"
+            [attr.tabindex]="canShowGroupMembers() ? '0' : null"
+            (keydown.enter)="canShowGroupMembers() && openGroupMembers()"
+            (keydown.space)="canShowGroupMembers() && openGroupMembers(); $event.preventDefault()">
             <h2>{{ activeChat.title }}</h2>
             <small>{{ activeChat.isGroup ? 'קבוצה' : activeChat.id }}</small>
           </div>
@@ -199,6 +206,30 @@
                     <span>{{ outgoingStatusLabel(message.deliveryStatus) }}</span>
                   }
                 </div>
+
+                @if (reactionBuckets(message).length) {
+                  <div class="message-reactions">
+                    @for (bucket of reactionBuckets(message); track bucket.emoji) {
+                      <span class="reaction-chip">
+                        {{ bucket.count > 1 ? bucket.emoji + ' ' + bucket.count : bucket.emoji }}
+                      </span>
+                    }
+                    <span class="reaction-total">{{ reactionTotal(message) }}</span>
+                  </div>
+                }
+
+                @if (canReactToMessage(message)) {
+                  <div class="message-react-action">
+                    <button
+                      type="button"
+                      class="message-react-btn"
+                      [matMenuTriggerFor]="reactionMenu"
+                      (click)="setReactionTarget(message)"
+                      aria-label="הוסף תגובה">
+                      <span>😊</span>
+                    </button>
+                  </div>
+                }
               </div>
             </article>
           }
@@ -248,6 +279,14 @@
               <span>Share location</span>
             </button>
           </mat-menu>
+
+          <mat-menu #reactionMenu="matMenu">
+            @for (emoji of reactionEmojis; track emoji) {
+              <button mat-menu-item type="button" (click)="addReaction(emoji)">
+                <span class="reaction-menu-emoji">{{ emoji }}</span>
+              </button>
+            }
+          </mat-menu>
         </form>
       } @else {
         <div class="empty-conversation">
@@ -279,6 +318,39 @@
             (error)="onPreviewAvatarLoaded()" />
         </div>
         <div class="avatar-preview-title">{{ avatar.title }}</div>
+      </div>
+    </div>
+  }
+
+  @if (groupMembersPreview(); as groupPreview) {
+    <div class="group-members-backdrop" (click)="closeGroupMembers()">
+      <div class="group-members-dialog" (click)="$event.stopPropagation()">
+        <button type="button" class="group-members-close" (click)="closeGroupMembers()" aria-label="Close">
+          <mat-icon>close</mat-icon>
+        </button>
+        <div class="group-members-title">{{ groupPreview.title }}</div>
+        <div class="group-members-meta">
+          @if (groupPreview.type === 'community') {
+            קבוצת קהילה · רק מנהל שולח הודעות
+          } @else {
+            קבוצה רגילה · כל המשתתפים יכולים לשלוח
+          }
+        </div>
+
+        @if (!groupPreview.members.length) {
+          <div class="group-members-empty">אין משתתפים להצגה.</div>
+        } @else {
+          <div class="group-members-list">
+            @for (member of groupPreview.members; track member.username) {
+              <div class="group-member-item">
+                <span class="group-member-name">{{ member.displayName }}</span>
+                @if (member.isAdmin) {
+                  <span class="group-member-role">מנהל</span>
+                }
+              </div>
+            }
+          </div>
+        }
       </div>
     </div>
   }

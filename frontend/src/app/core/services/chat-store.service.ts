@@ -8,6 +8,7 @@ import {
   DeliveryStatus,
   GroupType,
   IncomingServerMessage,
+  MessageReaction,
   OutboxDirectItem,
   OutboxGroupItem,
   OutboxGroupUpdateItem,
@@ -426,6 +427,51 @@ export class ChatStoreService {
     } finally {
       this.uploading.set(false);
     }
+  }
+
+  async sendReaction(targetMessageId: string, emoji: string): Promise<void> {
+    const currentUser = this.currentUser();
+    const activeChatId = this.activeChatId();
+    if (!currentUser || !activeChatId) {
+      throw new Error('אין צ׳אט פעיל.');
+    }
+
+    const group = this.groups().find((item) => item.id === activeChatId);
+    if (!group || group.type !== 'community') {
+      throw new Error('ניתן להגיב רק בקבוצת קהילה.');
+    }
+
+    const normalizedTargetId = String(targetMessageId || '').trim();
+    const normalizedEmoji = String(emoji || '').trim();
+    if (!normalizedTargetId || !normalizedEmoji) {
+      return;
+    }
+
+    const reaction: MessageReaction = {
+      emoji: normalizedEmoji,
+      reactor: currentUser,
+      reactorName: this.getDisplayName(currentUser)
+    };
+
+    this.applyReactionToMessage(activeChatId, normalizedTargetId, reaction);
+
+    if (!this.networkOnline()) {
+      this.lastError.set('לא ניתן לשלוח תגובה ללא חיבור.');
+      throw new Error('Offline');
+    }
+
+    await this.api.sendReaction({
+      groupId: group.id,
+      groupName: group.name,
+      groupMembers: group.members,
+      groupCreatedBy: group.createdBy,
+      groupUpdatedAt: group.updatedAt,
+      groupType: group.type,
+      targetMessageId: normalizedTargetId,
+      emoji: normalizedEmoji,
+      reactor: currentUser,
+      reactorName: reaction.reactorName || currentUser
+    });
   }
 
   async flushOutbox(): Promise<void> {
@@ -1101,6 +1147,12 @@ export class ChatStoreService {
   }
 
   private applyIncomingMessage(incoming: IncomingServerMessage): void {
+    const incomingType = String(incoming.type ?? '').trim().toLowerCase();
+    if (incomingType === 'reaction') {
+      this.applyIncomingReaction(incoming);
+      return;
+    }
+
     const sender = this.normalizeUser(incoming.sender ?? '');
     if (!sender) return;
 
@@ -1154,6 +1206,30 @@ export class ChatStoreService {
     this.schedulePersist();
   }
 
+  private applyIncomingReaction(incoming: IncomingServerMessage): void {
+    const groupId = this.normalizeChatId(incoming.groupId ?? '');
+    if (!groupId) return;
+
+    if (incoming.groupName) {
+      this.ensureGroupFromIncoming(incoming);
+    }
+
+    const targetMessageId = String(incoming.targetMessageId ?? incoming.messageId ?? '').trim();
+    const emoji = String(incoming.emoji ?? '').trim();
+    const reactor = this.normalizeUser(incoming.reactor ?? incoming.sender ?? '');
+    if (!targetMessageId || !emoji || !reactor) {
+      return;
+    }
+
+    const reaction: MessageReaction = {
+      emoji,
+      reactor,
+      reactorName: String(incoming.reactorName ?? '').trim() || this.getDisplayName(reactor)
+    };
+
+    this.applyReactionToMessage(groupId, targetMessageId, reaction);
+  }
+
   private ensureGroupFromIncoming(incoming: IncomingServerMessage): void {
     if (!incoming.groupId || !incoming.groupName) return;
     const user = this.currentUser();
@@ -1199,6 +1275,76 @@ export class ChatStoreService {
           : group
       );
     });
+  }
+
+  private applyReactionToMessage(
+    chatId: string,
+    targetMessageId: string,
+    reaction: MessageReaction
+  ): void {
+    const normalizedChatId = this.normalizeChatId(chatId);
+    const normalizedTargetId = String(targetMessageId || '').trim();
+    const normalizedReactor = this.normalizeUser(reaction.reactor);
+    const normalizedEmoji = String(reaction.emoji || '').trim();
+    if (!normalizedChatId || !normalizedTargetId || !normalizedReactor || !normalizedEmoji) {
+      return;
+    }
+
+    let changed = false;
+    this.messagesByChat.update((messageMap) => {
+      const list = messageMap[normalizedChatId];
+      if (!list?.length) {
+        return messageMap;
+      }
+
+      const nextList = list.map((message) => {
+        if (message.messageId !== normalizedTargetId) {
+          return message;
+        }
+
+        const reactions = Array.isArray(message.reactions) ? [...message.reactions] : [];
+        const existingIndex = reactions.findIndex(
+          (item) => this.normalizeUser(item.reactor) === normalizedReactor
+        );
+        const nextReaction: MessageReaction = {
+          emoji: normalizedEmoji,
+          reactor: normalizedReactor,
+          reactorName: reaction.reactorName
+        };
+
+        if (existingIndex >= 0) {
+          const current = reactions[existingIndex];
+          if (
+            current.emoji === nextReaction.emoji &&
+            (current.reactorName ?? '') === (nextReaction.reactorName ?? '')
+          ) {
+            return message;
+          }
+          reactions[existingIndex] = nextReaction;
+        } else {
+          reactions.push(nextReaction);
+        }
+
+        changed = true;
+        return {
+          ...message,
+          reactions
+        };
+      });
+
+      if (!changed) {
+        return messageMap;
+      }
+
+      return {
+        ...messageMap,
+        [normalizedChatId]: nextList
+      };
+    });
+
+    if (changed) {
+      this.schedulePersist();
+    }
   }
 
   private appendMessage(message: ChatMessage): void {
