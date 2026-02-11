@@ -266,6 +266,9 @@
         </button>
         <div class="avatar-preview-media" [class.loaded]="previewAvatarLoaded()">
           <div class="avatar-preview-skeleton" aria-hidden="true"></div>
+          @if (avatar.lqipUrl) {
+            <img class="avatar-preview-lqip" [src]="avatar.lqipUrl" alt="" aria-hidden="true" decoding="async" />
+          }
           <img
             class="avatar-preview-image"
             [src]="avatar.imageUrl"

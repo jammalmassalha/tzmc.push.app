@@ -43,6 +43,7 @@ interface ParsedMessageCacheEntry {
 interface AvatarPreview {
   title: string;
   imageUrl: string;
+  lqipUrl: string;
 }
 
 @Component({
@@ -71,6 +72,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   @ViewChild('messagesPanel') messagesPanel?: ElementRef<HTMLDivElement>;
   @ViewChild('fileInput') fileInputRef?: ElementRef<HTMLInputElement>;
   private readonly avatarThumbCache = new Map<string, string>();
+  private readonly avatarLqipCache = new Map<string, string>();
   readonly loadedAvatarUrls = signal<Set<string>>(new Set<string>());
   readonly previewAvatarLoaded = signal(false);
 
@@ -432,7 +434,8 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     this.previewAvatarLoaded.set(false);
     this.avatarPreview.set({
       title: chat.title || chat.id,
-      imageUrl
+      imageUrl,
+      lqipUrl: this.previewAvatarLqip(imageUrl)
     });
   }
 
@@ -456,8 +459,22 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       return cached;
     }
 
-    const optimized = this.optimizeAvatarUrl(original);
+    const optimized = this.optimizeAvatarUrl(original, 128);
     this.avatarThumbCache.set(original, optimized);
+    return optimized;
+  }
+
+  previewAvatarLqip(url: string): string {
+    const original = String(url || '').trim();
+    if (!original) return '';
+
+    const cached = this.avatarLqipCache.get(original);
+    if (cached) {
+      return cached;
+    }
+
+    const optimized = this.optimizeAvatarUrl(original, 40);
+    this.avatarLqipCache.set(original, optimized);
     return optimized;
   }
 
@@ -544,15 +561,16 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     return `${value.getFullYear()}-${value.getMonth()}-${value.getDate()}`;
   }
 
-  private optimizeAvatarUrl(url: string): string {
+  private optimizeAvatarUrl(url: string, size: number): string {
     const value = String(url || '').trim();
     if (!value) return '';
+    const normalizedSize = Math.max(24, Math.min(512, Math.floor(size)));
 
     // Convert Drive file links to native thumbnails to avoid loading huge originals.
     const driveFileMatch = value.match(/drive\.google\.com\/file\/d\/([^/]+)/i);
     if (driveFileMatch?.[1]) {
       const id = encodeURIComponent(driveFileMatch[1]);
-      return `https://drive.google.com/thumbnail?id=${id}&sz=w128-h128`;
+      return `https://drive.google.com/thumbnail?id=${id}&sz=w${normalizedSize}-h${normalizedSize}`;
     }
 
     if (/drive\.google\.com/i.test(value)) {
@@ -560,7 +578,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
         const parsed = new URL(value);
         const id = parsed.searchParams.get('id');
         if (id) {
-          return `https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w128-h128`;
+          return `https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w${normalizedSize}-h${normalizedSize}`;
         }
       } catch {
         // Keep original URL if parsing fails.
@@ -570,9 +588,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     // Common Google profile image hosts support size suffixes like =s96-c.
     if (/googleusercontent\.com/i.test(value)) {
       if (/=s\d+(-c)?$/i.test(value)) {
-        return value.replace(/=s\d+(-c)?$/i, '=s128-c');
+        return value.replace(/=s\d+(-c)?$/i, `=s${normalizedSize}-c`);
       }
-      return `${value}=s128-c`;
+      return `${value}=s${normalizedSize}-c`;
     }
 
     return value;
