@@ -70,6 +70,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   @ViewChild(CdkVirtualScrollViewport) contactsViewport?: CdkVirtualScrollViewport;
   @ViewChild('messagesPanel') messagesPanel?: ElementRef<HTMLDivElement>;
   @ViewChild('fileInput') fileInputRef?: ElementRef<HTMLInputElement>;
+  private readonly avatarThumbCache = new Map<string, string>();
 
   private readonly mobileQuery = window.matchMedia('(max-width: 960px)');
   private readonly onMediaChange = (event: MediaQueryListEvent): void => {
@@ -442,6 +443,20 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     return source.charAt(0).toUpperCase();
   }
 
+  chatAvatarThumb(chat: ChatListItem): string {
+    const original = String(chat.avatarUrl || '').trim();
+    if (!original) return '';
+
+    const cached = this.avatarThumbCache.get(original);
+    if (cached) {
+      return cached;
+    }
+
+    const optimized = this.optimizeAvatarUrl(original);
+    this.avatarThumbCache.set(original, optimized);
+    return optimized;
+  }
+
   getMessageRenderParts(messageId: string, body: string): MessageRenderPart[] {
     const key = messageId || body;
     const cached = this.messagePartsCache.get(key);
@@ -503,6 +518,40 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   private getCalendarDayKey(timestamp: number): string {
     const value = new Date(timestamp);
     return `${value.getFullYear()}-${value.getMonth()}-${value.getDate()}`;
+  }
+
+  private optimizeAvatarUrl(url: string): string {
+    const value = String(url || '').trim();
+    if (!value) return '';
+
+    // Convert Drive file links to native thumbnails to avoid loading huge originals.
+    const driveFileMatch = value.match(/drive\.google\.com\/file\/d\/([^/]+)/i);
+    if (driveFileMatch?.[1]) {
+      const id = encodeURIComponent(driveFileMatch[1]);
+      return `https://drive.google.com/thumbnail?id=${id}&sz=w128-h128`;
+    }
+
+    if (/drive\.google\.com/i.test(value)) {
+      try {
+        const parsed = new URL(value);
+        const id = parsed.searchParams.get('id');
+        if (id) {
+          return `https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w128-h128`;
+        }
+      } catch {
+        // Keep original URL if parsing fails.
+      }
+    }
+
+    // Common Google profile image hosts support size suffixes like =s96-c.
+    if (/googleusercontent\.com/i.test(value)) {
+      if (/=s\d+(-c)?$/i.test(value)) {
+        return value.replace(/=s\d+(-c)?$/i, '=s128-c');
+      }
+      return `${value}=s128-c`;
+    }
+
+    return value;
   }
 
   private updateStickyMessageDateFromViewport(): void {
