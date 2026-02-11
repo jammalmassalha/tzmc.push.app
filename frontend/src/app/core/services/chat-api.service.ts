@@ -309,23 +309,29 @@ export class ChatApiService {
 
   async registerDevice(user: string, subscription: PushSubscription | null, action?: string): Promise<void> {
     const deviceType = this.detectDeviceType();
+    const platform = this.detectPlatform();
     const payload: {
       username: string;
       subscription: PushSubscription | null;
       deviceType: 'Mobile' | 'PC';
       action?: string;
       subscriptionPC?: PushSubscription | null;
+      subscriptionMobile?: PushSubscription | null;
+      platform?: 'iOS' | 'Android' | 'Desktop';
+      userAgent?: string;
     } = {
       username: user.toLowerCase(),
       subscription,
-      deviceType
+      deviceType,
+      action: action || 'subscribe',
+      platform,
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : ''
     };
 
-    if (action) {
-      payload.action = action;
-    }
     if (deviceType === 'PC') {
       payload.subscriptionPC = subscription;
+    } else {
+      payload.subscriptionMobile = subscription;
     }
 
     await this.fetchWithRetry(
@@ -335,7 +341,7 @@ export class ChatApiService {
         mode: 'no-cors',
         body: JSON.stringify(payload)
       },
-      { retries: 1, timeoutMs: 10000 }
+      { retries: 2, timeoutMs: 15000, backoffMs: 700 }
     );
   }
 
@@ -415,6 +421,21 @@ export class ChatApiService {
       ua
     );
     return isMobile ? 'Mobile' : 'PC';
+  }
+
+  private detectPlatform(): 'iOS' | 'Android' | 'Desktop' {
+    if (typeof navigator === 'undefined') {
+      return 'Desktop';
+    }
+
+    const ua = navigator.userAgent;
+    if (/iP(hone|ad|od)/i.test(ua)) {
+      return 'iOS';
+    }
+    if (/Android/i.test(ua)) {
+      return 'Android';
+    }
+    return 'Desktop';
   }
 
   private async fetchWithRetry(

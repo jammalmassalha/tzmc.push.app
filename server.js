@@ -281,7 +281,8 @@ function logNotificationStatus(sender, recipient, messageShort, status, details)
     }, { timeoutMs: 10000, retries: 2 }).catch(err => console.error('[LOG ERROR]', err.message));
 }
 
-async function getSubscriptionFromSheet(usernames) {
+async function getSubscriptionFromSheet(usernames, options = {}) {
+    const forceRefresh = Boolean(options.forceRefresh);
     const cacheKey = buildSubscriptionCacheKey(usernames);
     if (!cacheKey) return [];
 
@@ -290,7 +291,7 @@ async function getSubscriptionFromSheet(usernames) {
 
     const now = Date.now();
     const cached = subscriptionCache.get(cacheKey);
-    if (cached && now - cached.at < SUBSCRIPTION_CACHE_TTL_MS) {
+    if (!forceRefresh && cached && now - cached.at < SUBSCRIPTION_CACHE_TTL_MS) {
         return cached.subscriptions;
     }
 
@@ -479,86 +480,122 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     console.log(`[PUSH] Searching subs for: ${targetUsersArray.join(', ')} from ${finalSender}`);
 
     let rawSubscriptions = await getSubscriptionFromSheet(targetUsersArray);
+    if (!rawSubscriptions || rawSubscriptions.length === 0) {
+        // Force refresh once to avoid stale cache windows (common after iOS resubscribe).
+        rawSubscriptions = await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true });
+    }
 
     if (!rawSubscriptions || rawSubscriptions.length === 0) {
         logNotificationStatus(finalSender, targetUsersArray.join(','), logContent, 'Failed', 'No subscriptions found');
         return { success: 0, failed: 0 };
     }
 
-    // Deduplicate
-    const uniqueSubscriptions = rawSubscriptions.filter((sub, index, self) =>
+    const dedupeSubscriptions = (subscriptions) => subscriptions.filter((sub, index, self) =>
         index === self.findIndex((t) => t.endpoint === sub.endpoint)
     );
 
-    const badgeCountByUser = new Map();
-    const sendResults = await Promise.all(
-        uniqueSubscriptions.map(async (subscription) => {
-            // Increment unread badge once per user, not once per device endpoint.
-            const userKey = normalizeUserKey(subscription.username);
-            let currentCount = unreadCounts[userKey] || 0;
-            if (shouldIncrementBadge) {
-                if (badgeCountByUser.has(userKey)) {
-                    currentCount = badgeCountByUser.get(userKey);
-                } else {
-                    currentCount = currentCount + 1;
-                    unreadCounts[userKey] = currentCount;
-                    badgeCountByUser.set(userKey, currentCount);
+    const sendToSubscriptions = async (subscriptions, allowBadgeIncrement) => {
+        const badgeCountByUser = new Map();
+        return Promise.all(
+            subscriptions.map(async (subscription) => {
+                // Increment unread badge once per user, not once per device endpoint.
+                const userKey = normalizeUserKey(subscription.username);
+                let currentCount = unreadCounts[userKey] || 0;
+                if (shouldIncrementBadge) {
+                    if (allowBadgeIncrement) {
+                        if (badgeCountByUser.has(userKey)) {
+                            currentCount = badgeCountByUser.get(userKey);
+                        } else {
+                            currentCount = currentCount + 1;
+                            unreadCounts[userKey] = currentCount;
+                            badgeCountByUser.set(userKey, currentCount);
+                        }
+                    } else {
+                        currentCount = unreadCounts[userKey] || 0;
+                    }
                 }
-            }
 
-            const clickUrl = `https://www.tzmc.co.il/subscribes/?chat=${encodeURIComponent(finalSender)}&user=${encodeURIComponent(subscription.username)}`;
-            const payloadData = {
-                ...customData,
-                title: msgTitle,
-                body: msgText || 'New Notification',
-                badge: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
-                icon: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
-                requireInteraction: true,
-                image: imageUrl,
-                url: clickUrl,
-                user: subscription.username,
-                sender: finalSender,
-                messageId: messageId
-            };
-            if (shouldIncrementBadge) {
-                payloadData.badgeCount = currentCount;
-            }
-
-            const payload = JSON.stringify({
-                data: {
-                    ...payloadData
-                }
-            });
-
-            try {
-                const pushOptions = {
-                    TTL: 86400,
-                    headers: { 'Urgency': 'high' },
-                    timeout: 15000
+                const clickUrl = `https://www.tzmc.co.il/subscribes/?chat=${encodeURIComponent(finalSender)}&user=${encodeURIComponent(subscription.username)}`;
+                const payloadData = {
+                    ...customData,
+                    title: msgTitle,
+                    body: msgText || 'New Notification',
+                    badge: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
+                    icon: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
+                    requireInteraction: true,
+                    image: imageUrl,
+                    url: clickUrl,
+                    user: subscription.username,
+                    sender: finalSender,
+                    messageId: messageId
                 };
-                await webpush.sendNotification(subscription, payload, pushOptions);
-                return { ok: true, username: subscription.username, badge: currentCount };
-            } catch (err) {
-                const statusCode = err.statusCode || 'N/A';
-                if (statusCode === 404 || statusCode === 410) {
-                    pruneSubscriptionCacheEndpoint(subscription.endpoint);
+                if (shouldIncrementBadge) {
+                    payloadData.badgeCount = currentCount;
                 }
-                return { ok: false, username: subscription.username, statusCode, message: err.message };
-            }
-        })
-    );
+
+                const payload = JSON.stringify({
+                    data: {
+                        ...payloadData
+                    }
+                });
+
+                try {
+                    const pushOptions = {
+                        TTL: 604800,
+                        headers: { 'Urgency': 'high' },
+                        timeout: 15000
+                    };
+                    await webpush.sendNotification(subscription, payload, pushOptions);
+                    return { ok: true, username: subscription.username, badge: currentCount };
+                } catch (err) {
+                    const statusCode = err.statusCode || 'N/A';
+                    if (statusCode === 404 || statusCode === 410) {
+                        pruneSubscriptionCacheEndpoint(subscription.endpoint);
+                    }
+                    return { ok: false, username: subscription.username, statusCode, message: err.message };
+                }
+            })
+        );
+    };
+
+    let uniqueSubscriptions = dedupeSubscriptions(rawSubscriptions);
+    let sendResults = await sendToSubscriptions(uniqueSubscriptions, true);
 
     let successCount = 0;
     let failCount = 0;
     const executionLogs = [];
-    for (const result of sendResults) {
-        if (result.ok) {
-            successCount++;
-            executionLogs.push(`Device (${result.username}): ✅ Delivered (Badge: ${result.badge})`);
-        } else {
-            failCount++;
-            executionLogs.push(`Device (${result.username}): ❌ Failed [${result.statusCode}]`);
-            console.error(`[PUSH FAIL] ${result.username}:`, result.message);
+    const appendResultsToLogs = (results) => {
+        for (const result of results) {
+            if (result.ok) {
+                successCount++;
+                executionLogs.push(`Device (${result.username}): ✅ Delivered (Badge: ${result.badge})`);
+            } else {
+                failCount++;
+                executionLogs.push(`Device (${result.username}): ❌ Failed [${result.statusCode}]`);
+                console.error(`[PUSH FAIL] ${result.username}:`, result.message);
+            }
+        }
+    };
+
+    appendResultsToLogs(sendResults);
+
+    if (successCount === 0) {
+        const cacheKey = buildSubscriptionCacheKey(targetUsersArray);
+        if (cacheKey) {
+            subscriptionCache.delete(cacheKey);
+        }
+
+        const refreshedRawSubscriptions = await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true });
+        const refreshedUniqueSubscriptions = dedupeSubscriptions(refreshedRawSubscriptions || []);
+        if (refreshedUniqueSubscriptions.length) {
+            const existingEndpoints = new Set(uniqueSubscriptions.map((sub) => sub.endpoint));
+            const retryTargets = refreshedUniqueSubscriptions.filter(
+                (sub) => !existingEndpoints.has(sub.endpoint)
+            );
+            const effectiveRetryTargets = retryTargets.length ? retryTargets : refreshedUniqueSubscriptions;
+
+            const retryResults = await sendToSubscriptions(effectiveRetryTargets, false);
+            appendResultsToLogs(retryResults);
         }
     }
 

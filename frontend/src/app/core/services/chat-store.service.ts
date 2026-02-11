@@ -24,6 +24,8 @@ const GROUPS_TTL_MS = 2 * 60 * 1000;
 const POLL_INTERVAL_MS = 15000;
 const STREAM_RETRY_MS = 5000;
 const MAX_PERSISTED_MESSAGES = 2500;
+const PUSH_REGISTER_MIN_INTERVAL_MS = 30000;
+const PUSH_REGISTER_REFRESH_MS = 6 * 60 * 60 * 1000;
 const HR_CHAT_NAME = 'ציפי';
 const HR_WELCOME_KEY_PREFIX = 'hr_welcome_sent_';
 const HR_STATE_KEY_PREFIX = 'hr_state_';
@@ -83,6 +85,8 @@ export class ChatStoreService {
   private hrActionsCache: Record<string, { at: number; actions: HrActionOption[] }> = {};
   private hrInitInFlight = false;
   private lastAppliedAppBadgeCount = -1;
+  private pushRegisterInFlight = false;
+  private lastPushRegisterAttemptAt = 0;
 
   readonly chatItems = computed<ChatListItem[]>(() => {
     const groupsById = new Map(this.groups().map((group) => [group.id, group]));
@@ -174,6 +178,8 @@ export class ChatStoreService {
     if (typeof window !== 'undefined') {
       window.addEventListener('online', this.handleOnline);
       window.addEventListener('offline', this.handleOffline);
+      window.addEventListener('focus', this.handleWindowFocus);
+      document.addEventListener('visibilitychange', this.handleVisibilityChange);
     }
     if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
       navigator.serviceWorker.addEventListener('message', this.handleServiceWorkerMessage);
@@ -192,7 +198,7 @@ export class ChatStoreService {
     this.initializedUser = user;
     await this.refresh(true);
     // Recover silently if a device lost its push subscription.
-    void this.tryRegisterPush(user);
+    void this.tryRegisterPush(user, { force: true });
     this.connectRealtime(user);
     await this.flushOutbox();
 
@@ -235,7 +241,7 @@ export class ChatStoreService {
     this.lastError.set(null);
 
     this.restoreState(user);
-    await this.tryRegisterPush(user);
+    await this.tryRegisterPush(user, { force: true });
     await this.initialize();
   }
 
@@ -1574,25 +1580,78 @@ export class ChatStoreService {
     this.schedulePersist();
   }
 
-  private tryRegisterPush = async (user: string): Promise<void> => {
+  private tryRegisterPush = async (
+    user: string,
+    options: { force?: boolean } = {}
+  ): Promise<void> => {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    if (!user) return;
+    const force = Boolean(options.force);
+    const now = Date.now();
+    if (
+      this.pushRegisterInFlight ||
+      (!force && now - this.lastPushRegisterAttemptAt < PUSH_REGISTER_MIN_INTERVAL_MS)
+    ) {
+      return;
+    }
+    this.lastPushRegisterAttemptAt = now;
+    this.pushRegisterInFlight = true;
 
     try {
-      const permission = await Notification.requestPermission();
+      const permission = Notification.permission === 'granted'
+        ? 'granted'
+        : await Notification.requestPermission();
       if (permission !== 'granted') return;
 
       const registration = await navigator.serviceWorker.ready;
-      const existing = await registration.pushManager.getSubscription();
-      const subscription =
-        existing ??
-        (await registration.pushManager.subscribe({
+      void registration.update().catch(() => undefined);
+
+      const userKey = this.normalizeUser(user);
+      const storedEndpointKey = this.pushEndpointStorageKey(userKey);
+      const storedRegisteredAtKey = this.pushRegisteredAtStorageKey(userKey);
+      const storedEndpoint = this.safeStorageGet(storedEndpointKey);
+      const lastRegisteredAt = Number(this.safeStorageGet(storedRegisteredAtKey) || 0);
+
+      let subscription = await registration.pushManager.getSubscription();
+      const hasValidSubscriptionKeys = Boolean(
+        subscription?.toJSON()?.keys?.p256dh && subscription?.toJSON()?.keys?.auth
+      );
+      const shouldRefreshSubscription = !subscription || !hasValidSubscriptionKeys;
+      if (shouldRefreshSubscription && subscription) {
+        try {
+          await subscription.unsubscribe();
+        } catch {
+          // Ignore unsubscribe failures and continue with subscribe attempt.
+        }
+        subscription = null;
+      }
+
+      if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
           userVisibleOnly: true,
           applicationServerKey: this.urlBase64ToUint8Array(this.api.vapidPublicKey)
-        }));
+        });
+      }
+      if (!subscription) return;
 
-      await this.api.registerDevice(user, subscription);
+      const endpoint = String(subscription.endpoint || '');
+      const endpointChanged = Boolean(endpoint && endpoint !== storedEndpoint);
+      const refreshIntervalMs = this.isIosDevice()
+        ? 60 * 60 * 1000
+        : PUSH_REGISTER_REFRESH_MS;
+      const registrationIsStale =
+        !Number.isFinite(lastRegisteredAt) || now - lastRegisteredAt >= refreshIntervalMs;
+      if (!force && !endpointChanged && !registrationIsStale) {
+        return;
+      }
+
+      await this.api.registerDevice(userKey, subscription);
+      this.safeStorageSet(storedEndpointKey, endpoint);
+      this.safeStorageSet(storedRegisteredAtKey, String(now));
     } catch {
       // Registration is best-effort to keep setup responsive.
+    } finally {
+      this.pushRegisterInFlight = false;
     }
   };
 
@@ -1848,7 +1907,7 @@ export class ChatStoreService {
     this.networkOnline.set(true);
     const user = this.currentUser();
     if (!user) return;
-    void this.tryRegisterPush(user);
+    void this.tryRegisterPush(user, { force: true });
     this.connectRealtime(user);
     void this.flushOutbox();
     void this.refresh(false);
@@ -1856,6 +1915,17 @@ export class ChatStoreService {
 
   private handleOffline = (): void => {
     this.networkOnline.set(false);
+  };
+
+  private handleWindowFocus = (): void => {
+    this.refreshPushRegistrationForCurrentUser(false);
+  };
+
+  private handleVisibilityChange = (): void => {
+    if (typeof document === 'undefined' || document.visibilityState !== 'visible') {
+      return;
+    }
+    this.refreshPushRegistrationForCurrentUser(false);
   };
 
   private handleServiceWorkerMessage = (event: MessageEvent<unknown>): void => {
@@ -1941,5 +2011,40 @@ export class ChatStoreService {
         activeWorker?.postMessage(message);
       })
       .catch(() => undefined);
+  }
+
+  private refreshPushRegistrationForCurrentUser(force: boolean): void {
+    const user = this.currentUser();
+    if (!user) return;
+    void this.tryRegisterPush(user, { force });
+  }
+
+  private pushEndpointStorageKey(user: string): string {
+    return `modern-chat-push-endpoint:${this.normalizeUser(user)}`;
+  }
+
+  private pushRegisteredAtStorageKey(user: string): string {
+    return `modern-chat-push-registered-at:${this.normalizeUser(user)}`;
+  }
+
+  private isIosDevice(): boolean {
+    if (typeof navigator === 'undefined') return false;
+    return /iP(hone|ad|od)/i.test(navigator.userAgent);
+  }
+
+  private safeStorageGet(key: string): string {
+    try {
+      return localStorage.getItem(key) ?? '';
+    } catch {
+      return '';
+    }
+  }
+
+  private safeStorageSet(key: string, value: string): void {
+    try {
+      localStorage.setItem(key, value);
+    } catch {
+      // Ignore storage persistence issues on constrained/private browsers.
+    }
   }
 }
