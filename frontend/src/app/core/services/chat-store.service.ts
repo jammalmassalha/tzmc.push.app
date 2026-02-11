@@ -32,6 +32,7 @@ const HR_STATE_KEY_PREFIX = 'hr_state_';
 const HR_UPLOAD_BASE_URL = 'https://www.tzmc.co.il/notify/uploads/';
 const HR_STEPS_CACHE_TTL_MS = 5 * 60 * 1000;
 const HR_ACTIONS_CACHE_TTL_MS = 5 * 60 * 1000;
+const READ_RECEIPT_BATCH_SIZE = 80;
 
 type HrAwaitingState = 'step' | 'action' | 'free-text';
 
@@ -1102,19 +1103,25 @@ export class ChatStoreService {
       .filter((messageId) => !sentSet.has(messageId));
     if (!messageIds.length) return;
 
-    try {
-      await this.api.sendReadReceipt({
-        reader: this.normalizeUser(user),
-        sender: normalizedChatId,
-        messageIds,
-        readAt: Date.now()
-      });
+    const nextSent = new Set(sentSet);
+    for (let index = 0; index < messageIds.length; index += READ_RECEIPT_BATCH_SIZE) {
+      const batch = messageIds.slice(index, index + READ_RECEIPT_BATCH_SIZE);
+      try {
+        await this.api.sendReadReceipt({
+          reader: this.normalizeUser(user),
+          sender: normalizedChatId,
+          messageIds: batch,
+          readAt: Date.now()
+        });
+        batch.forEach((messageId) => nextSent.add(messageId));
+      } catch {
+        // Best-effort only; next activation/receive/focus will retry unsent batches.
+        break;
+      }
+    }
 
-      const nextSent = new Set(sentSet);
-      messageIds.forEach((messageId) => nextSent.add(messageId));
+    if (nextSent.size !== sentSet.size) {
       this.readReceiptSentByChat.set(normalizedChatId, nextSent);
-    } catch {
-      // Best-effort only; next activation/receive will retry.
     }
   }
 
@@ -1381,7 +1388,10 @@ export class ChatStoreService {
   private applyIncomingReadReceipt(incoming: IncomingServerMessage): void {
     const messageIds = Array.isArray(incoming.messageIds)
       ? incoming.messageIds.map((id) => String(id || '').trim()).filter(Boolean)
-      : [];
+      : String(incoming.messageId ?? '')
+          .split(',')
+          .map((id) => String(id || '').trim())
+          .filter(Boolean);
     if (!messageIds.length) return;
 
     this.markOutgoingMessagesAsRead(messageIds);
@@ -1621,6 +1631,9 @@ export class ChatStoreService {
       for (const [chatId, list] of Object.entries(messageMap)) {
         const updated = list.map((message) => {
           if (message.messageId !== messageId) return message;
+          if (!this.shouldApplyDeliveryStatusTransition(message.deliveryStatus, status)) {
+            return message;
+          }
           changed = true;
           return { ...message, deliveryStatus: status };
         });
@@ -1645,7 +1658,7 @@ export class ChatStoreService {
         const updated = list.map((message) => {
           if (message.direction !== 'outgoing') return message;
           if (!targetIds.has(message.messageId)) return message;
-          if (message.deliveryStatus === 'read' || message.deliveryStatus === 'failed') return message;
+          if (message.deliveryStatus === 'read') return message;
 
           changed = true;
           return { ...message, deliveryStatus: 'read' as DeliveryStatus };
@@ -1659,6 +1672,31 @@ export class ChatStoreService {
     if (changed) {
       this.schedulePersist();
     }
+  }
+
+  private shouldApplyDeliveryStatusTransition(
+    currentStatus: DeliveryStatus,
+    nextStatus: DeliveryStatus
+  ): boolean {
+    if (currentStatus === nextStatus) return false;
+
+    // Never downgrade after read receipt is applied.
+    if (currentStatus === 'read') return false;
+
+    // Failure is only valid while still in unsent states.
+    if (nextStatus === 'failed') {
+      return currentStatus === 'pending' || currentStatus === 'queued';
+    }
+
+    // Don't allow pending/queued to overwrite sent/delivered/read.
+    if (
+      (nextStatus === 'pending' || nextStatus === 'queued') &&
+      (currentStatus === 'sent' || currentStatus === 'delivered')
+    ) {
+      return false;
+    }
+
+    return true;
   }
 
   private tryRegisterPush = async (
@@ -2004,6 +2042,10 @@ export class ChatStoreService {
 
   private handleWindowFocus = (): void => {
     this.refreshPushRegistrationForCurrentUser(false);
+    const activeChat = this.activeChatId();
+    if (activeChat) {
+      void this.sendReadReceiptsForChat(activeChat);
+    }
   };
 
   private handleVisibilityChange = (): void => {
@@ -2011,6 +2053,10 @@ export class ChatStoreService {
       return;
     }
     this.refreshPushRegistrationForCurrentUser(false);
+    const activeChat = this.activeChatId();
+    if (activeChat) {
+      void this.sendReadReceiptsForChat(activeChat);
+    }
   };
 
   private handleServiceWorkerMessage = (event: MessageEvent<unknown>): void => {
@@ -2037,12 +2083,17 @@ export class ChatStoreService {
 
     const numericGroupUpdatedAt = Number(payload['groupUpdatedAt']);
     const numericReadAt = Number(payload['readAt']);
+    const payloadMessageIds = Array.isArray(payload['messageIds'])
+      ? payload['messageIds'].map((id) => String(id || '').trim()).filter(Boolean)
+      : String(payload['messageId'] ?? '')
+          .split(',')
+          .map((id) => String(id || '').trim())
+          .filter(Boolean);
+
     const incoming: IncomingServerMessage = {
       type: payloadType,
       messageId: typeof payload['messageId'] === 'string' ? payload['messageId'] : undefined,
-      messageIds: Array.isArray(payload['messageIds'])
-        ? payload['messageIds'].map((id) => String(id || '').trim()).filter(Boolean)
-        : undefined,
+      messageIds: payloadMessageIds.length ? payloadMessageIds : undefined,
       readAt: Number.isFinite(numericReadAt) ? numericReadAt : undefined,
       sender: typeof payload['sender'] === 'string' ? payload['sender'] : undefined,
       targetMessageId:

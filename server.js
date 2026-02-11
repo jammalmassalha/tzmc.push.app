@@ -1037,18 +1037,42 @@ app.post(['/read', '/notify/read'], async (req, res) => {
             return res.status(400).json({ status: 'error', message: 'Missing fields' });
         }
 
+        const normalizedReader = String(reader).trim();
+        const normalizedSender = String(sender).trim();
+        const uniqueMessageIds = Array.from(
+            new Set(
+                messageIds
+                    .map((id) => String(id || '').trim())
+                    .filter(Boolean)
+            )
+        );
+        if (!normalizedReader || !normalizedSender || uniqueMessageIds.length === 0) {
+            return res.status(400).json({ status: 'error', message: 'Invalid read receipt payload' });
+        }
+
+        const effectiveReadAt = Number(readAt) || Date.now();
+
         const payload = {
             title: '',
             body: { shortText: '', longText: '' },
             data: {
                 type: 'read-receipt',
-                messageIds,
-                readAt: readAt || Date.now(),
-                sender: reader
+                messageIds: uniqueMessageIds,
+                readAt: effectiveReadAt,
+                sender: normalizedReader
             }
         };
 
-        const result = await sendPushNotificationToUser(sender, payload, reader, { skipBadge: true });
+        // Queue as well so polling/SSE can recover if push is delayed/missed.
+        addToQueue(normalizedSender, {
+            type: 'read-receipt',
+            messageIds: uniqueMessageIds,
+            readAt: effectiveReadAt,
+            sender: normalizedReader,
+            timestamp: Date.now()
+        });
+
+        const result = await sendPushNotificationToUser(normalizedSender, payload, normalizedReader, { skipBadge: true });
         res.json({ status: 'ok', details: result });
     } catch (err) {
         console.error('[READ RECEIPT] Failed:', err.message);
