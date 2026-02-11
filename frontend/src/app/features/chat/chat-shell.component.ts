@@ -152,6 +152,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly reactionEmojis = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
   readonly nowTimestamp = signal(Date.now());
   readonly stickyMessageTimestamp = signal<number | null>(null);
+  readonly isMessagesPanelAtBottom = signal(true);
   readonly avatarPreview = signal<AvatarPreview | null>(null);
   readonly reactionTargetMessageId = signal<string | null>(null);
   readonly groupMembersPreview = signal<GroupMembersPreview | null>(null);
@@ -173,14 +174,21 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const timestamp = this.stickyMessageTimestamp();
     return timestamp ? this.formatMessageDateBadge(timestamp) : '';
   });
+  readonly showScrollToBottomButton = computed(
+    () =>
+      Boolean(this.store.activeChatId()) &&
+      this.store.activeMessages().length > 0 &&
+      !this.isMessagesPanelAtBottom()
+  );
   private readonly messagePartsCache = new Map<string, ParsedMessageCacheEntry>();
+  private readonly scrollBottomThresholdPx = 44;
   private relativeTimeRefreshId: number | null = null;
 
   private readonly autoScrollEffect = effect(() => {
     const activeChatId = this.store.activeChatId();
     const size = this.store.activeMessages().length;
     if (!activeChatId || size === 0) return;
-    queueMicrotask(() => this.scrollMessagesToBottom());
+    queueMicrotask(() => this.scrollMessagesToBottom('auto'));
   });
 
   private readonly viewportStabilityEffect = effect(() => {
@@ -195,9 +203,13 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const count = this.store.activeMessages().length;
     if (!activeChatId || count === 0) {
       this.stickyMessageTimestamp.set(null);
+      this.isMessagesPanelAtBottom.set(true);
       return;
     }
-    queueMicrotask(() => this.updateStickyMessageDateFromViewport());
+    queueMicrotask(() => {
+      this.updateStickyMessageDateFromViewport();
+      this.updateMessagesBottomState();
+    });
   });
 
   private readonly bodyScrollLockEffect = effect(() => {
@@ -303,6 +315,11 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   onMessagesPanelScroll(): void {
     this.updateStickyMessageDateFromViewport();
+    this.updateMessagesBottomState();
+  }
+
+  scrollToBottomFromButton(): void {
+    this.scrollMessagesToBottom('smooth');
   }
 
   async onFileSelected(event: Event): Promise<void> {
@@ -736,11 +753,15 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     return chat.id;
   }
 
-  private scrollMessagesToBottom(): void {
+  private scrollMessagesToBottom(behavior: ScrollBehavior = 'auto'): void {
     const panel = this.messagesPanel?.nativeElement;
     if (!panel) return;
-    panel.scrollTop = panel.scrollHeight;
+    panel.scrollTo({
+      top: panel.scrollHeight,
+      behavior
+    });
     this.updateStickyMessageDateFromViewport();
+    this.updateMessagesBottomState();
   }
 
   private updateViewportHeight(): void {
@@ -828,6 +849,17 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (this.stickyMessageTimestamp() !== timestamp) {
       this.stickyMessageTimestamp.set(timestamp);
     }
+  }
+
+  private updateMessagesBottomState(): void {
+    const panel = this.messagesPanel?.nativeElement;
+    if (!panel) {
+      this.isMessagesPanelAtBottom.set(true);
+      return;
+    }
+
+    const distanceFromBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight;
+    this.isMessagesPanelAtBottom.set(distanceFromBottom <= this.scrollBottomThresholdPx);
   }
 
   private parseMessageBody(body: string): MessageRenderPart[] {

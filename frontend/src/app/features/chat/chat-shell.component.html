@@ -238,6 +238,15 @@
           }
         </div>
 
+        <button
+          type="button"
+          class="scroll-bottom-btn"
+          [class.visible]="showScrollToBottomButton()"
+          (click)="scrollToBottomFromButton()"
+          aria-label="גלול להודעה האחרונה">
+          <mat-icon>keyboard_arrow_down</mat-icon>
+        </button>
+
         <form class="composer" (submit)="handleComposerSubmit($event)" novalidate>
           <input
             #fileInput

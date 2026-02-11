@@ -641,6 +641,48 @@ mat-chip:not(.offline) {
   line-height: 1;
 }
 
+.scroll-bottom-btn {
+  position: absolute;
+  z-index: 7;
+  inset-inline-end: 16px;
+  bottom: calc(76px + env(safe-area-inset-bottom));
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(11, 20, 26, 0.12);
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  background: #fff;
+  color: #54656f;
+  box-shadow: 0 5px 14px rgba(11, 20, 26, 0.2);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(10px) scale(0.95);
+  pointer-events: none;
+  transition: opacity 180ms ease, transform 180ms ease, background-color 140ms ease;
+}
+
+.scroll-bottom-btn.visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+.scroll-bottom-btn.visible:hover {
+  background: #f6f8fb;
+}
+
+.scroll-bottom-btn.visible:active {
+  transform: scale(0.96);
+}
+
+.scroll-bottom-btn mat-icon {
+  font-size: 23px;
+  width: 23px;
+  height: 23px;
+  line-height: 23px;
+}
+
 .composer {
   position: relative;
   z-index: 5;
@@ -803,7 +845,8 @@ mat-chip:not(.offline) {
   .attach-btn,
   .composer-input-shell,
   .send-btn,
-  .send-btn mat-icon {
+  .send-btn mat-icon,
+  .scroll-bottom-btn {
     transition: none;
   }
 
@@ -1010,5 +1053,12 @@ mat-chip:not(.offline) {
 
   .message-bubble {
     max-width: 92%;
+  }
+
+  .scroll-bottom-btn {
+    inset-inline-end: 12px;
+    bottom: calc(80px + env(safe-area-inset-bottom));
+    width: 40px;
+    height: 40px;
   }
 }
