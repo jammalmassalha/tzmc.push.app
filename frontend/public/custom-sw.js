@@ -120,7 +120,7 @@ function shouldShowNotification(payload) {
   const type = typeof payload.type === 'string' ? payload.type : '';
 
   // Keep these events silent; app updates from message bus/polling.
-  if (type === 'read-receipt' || type === 'group-update' || type === 'reaction') {
+  if (type === 'read-receipt' || type === 'group-update') {
     return false;
   }
 

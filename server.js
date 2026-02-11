@@ -847,54 +847,81 @@ app.post(['/reaction', '/notify/reaction'], async (req, res) => {
             reactor,
             reactorName
         } = req.body || {};
-        if (!groupId || !targetMessageId || !emoji) {
+        const normalizedTargetMessageId = String(targetMessageId || '').trim();
+        const normalizedEmoji = String(emoji || '').trim();
+        const normalizedReactor = normalizeUserKey(reactor);
+        if (!groupId || !normalizedTargetMessageId || !normalizedEmoji) {
             return res.status(400).json({ error: 'Missing reaction fields' });
         }
+
         const groupRecord = upsertGroup({ groupId, groupName, groupMembers, groupCreatedBy, groupUpdatedAt, groupType });
-        const membersToNotify = groupRecord && Array.isArray(groupRecord.members)
-            ? groupRecord.members
-            : (Array.isArray(groupMembers) ? groupMembers : []);
+        const storedMembers = groupRecord && Array.isArray(groupRecord.members) ? groupRecord.members : [];
+        const providedMembers = Array.isArray(groupMembers) ? groupMembers : [];
+        const recipientByKey = new Map();
+        [...storedMembers, ...providedMembers].forEach(member => {
+            const rawMember = String(member || '').trim();
+            const memberKey = normalizeUserKey(rawMember);
+            if (!memberKey || memberKey === normalizedReactor) return;
+            if (!recipientByKey.has(memberKey)) {
+                recipientByKey.set(memberKey, rawMember);
+            }
+        });
+        const membersToNotify = Array.from(recipientByKey.values());
+
         if (!membersToNotify.length) {
             return res.json({ status: 'success', details: { success: 0, failed: 0 } });
         }
+
         const reactionId = generateMessageId();
+        const resolvedGroupName = (groupRecord && groupRecord.name) || String(groupName || '').trim() || 'קבוצה';
+        const resolvedGroupMembers = groupRecord && Array.isArray(groupRecord.members)
+            ? groupRecord.members
+            : providedMembers;
+        const resolvedGroupCreatedBy = (groupRecord && groupRecord.createdBy) || groupCreatedBy || null;
+        const resolvedGroupUpdatedAt = (groupRecord && groupRecord.updatedAt) || groupUpdatedAt || Date.now();
+        const resolvedGroupType = groupRecord
+            ? groupRecord.type
+            : normalizeGroupType(groupType || 'group');
+        const resolvedReactorName = String(reactorName || reactor || 'משתמש').trim();
+        const reactionText = `${resolvedReactorName} הגיב ${normalizedEmoji}`;
+
         const notificationData = {
             messageId: reactionId,
-            title: '',
+            title: resolvedGroupName || 'תגובה חדשה',
             body: {
-                shortText: '',
-                longText: ''
+                shortText: reactionText,
+                longText: reactionText
             },
             data: {
                 type: 'reaction',
-                targetMessageId,
-                emoji,
-                reactor,
-                reactorName,
+                targetMessageId: normalizedTargetMessageId,
+                emoji: normalizedEmoji,
+                reactor: normalizedReactor || reactor,
+                reactorName: resolvedReactorName,
                 groupId,
-                groupName: groupRecord ? groupRecord.name : groupName,
-                groupMembers: groupRecord ? groupRecord.members : groupMembers,
-                groupCreatedBy: groupRecord ? groupRecord.createdBy : groupCreatedBy,
-                groupUpdatedAt: groupRecord ? groupRecord.updatedAt : groupUpdatedAt,
-                groupType: groupRecord ? groupRecord.type : normalizeGroupType(groupType || 'group')
+                groupName: resolvedGroupName,
+                groupMembers: resolvedGroupMembers,
+                groupCreatedBy: resolvedGroupCreatedBy,
+                groupUpdatedAt: resolvedGroupUpdatedAt,
+                groupType: resolvedGroupType
             }
         };
 
         const reactionRecord = {
             messageId: reactionId,
-            sender: reactor || groupId,
+            sender: groupId,
             type: 'reaction',
-            targetMessageId,
-            emoji,
-            reactor,
-            reactorName,
+            targetMessageId: normalizedTargetMessageId,
+            emoji: normalizedEmoji,
+            reactor: normalizedReactor || reactor,
+            reactorName: resolvedReactorName,
             timestamp: Date.now(),
             groupId,
-            groupName: groupRecord ? groupRecord.name : groupName,
-            groupMembers: groupRecord ? groupRecord.members : groupMembers,
-            groupCreatedBy: groupRecord ? groupRecord.createdBy : groupCreatedBy,
-            groupUpdatedAt: groupRecord ? groupRecord.updatedAt : groupUpdatedAt,
-            groupType: groupRecord ? groupRecord.type : normalizeGroupType(groupType || 'group')
+            groupName: resolvedGroupName,
+            groupMembers: resolvedGroupMembers,
+            groupCreatedBy: resolvedGroupCreatedBy,
+            groupUpdatedAt: resolvedGroupUpdatedAt,
+            groupType: resolvedGroupType
         };
         addToQueue(membersToNotify, reactionRecord);
 
