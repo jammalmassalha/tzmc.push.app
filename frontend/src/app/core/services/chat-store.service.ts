@@ -1670,30 +1670,31 @@ export class ChatStoreService {
     if (!payloadRaw || typeof payloadRaw !== 'object') return;
     const payload = payloadRaw as Record<string, unknown>;
 
-    const payloadUser = this.normalizeUser(String(payload.user ?? ''));
+    const payloadUser = this.normalizeUser(String(payload['user'] ?? ''));
     if (payloadUser && payloadUser !== currentUser) return;
 
-    const payloadType = String(payload.type ?? '').trim().toLowerCase();
+    const payloadType = String(payload['type'] ?? '').trim().toLowerCase();
     if (payloadType !== 'reaction') return;
 
-    const numericGroupUpdatedAt = Number(payload.groupUpdatedAt);
+    const numericGroupUpdatedAt = Number(payload['groupUpdatedAt']);
     const incoming: IncomingServerMessage = {
       type: 'reaction',
-      messageId: typeof payload.messageId === 'string' ? payload.messageId : undefined,
-      sender: typeof payload.sender === 'string' ? payload.sender : undefined,
-      targetMessageId: typeof payload.targetMessageId === 'string' ? payload.targetMessageId : undefined,
-      emoji: typeof payload.emoji === 'string' ? payload.emoji : undefined,
-      reactor: typeof payload.reactor === 'string' ? payload.reactor : undefined,
-      reactorName: typeof payload.reactorName === 'string' ? payload.reactorName : undefined,
-      groupId: typeof payload.groupId === 'string' ? payload.groupId : undefined,
-      groupName: typeof payload.groupName === 'string' ? payload.groupName : undefined,
-      groupMembers: Array.isArray(payload.groupMembers)
-        ? payload.groupMembers.map((member) => String(member || '').trim()).filter(Boolean)
+      messageId: typeof payload['messageId'] === 'string' ? payload['messageId'] : undefined,
+      sender: typeof payload['sender'] === 'string' ? payload['sender'] : undefined,
+      targetMessageId:
+        typeof payload['targetMessageId'] === 'string' ? payload['targetMessageId'] : undefined,
+      emoji: typeof payload['emoji'] === 'string' ? payload['emoji'] : undefined,
+      reactor: typeof payload['reactor'] === 'string' ? payload['reactor'] : undefined,
+      reactorName: typeof payload['reactorName'] === 'string' ? payload['reactorName'] : undefined,
+      groupId: typeof payload['groupId'] === 'string' ? payload['groupId'] : undefined,
+      groupName: typeof payload['groupName'] === 'string' ? payload['groupName'] : undefined,
+      groupMembers: Array.isArray(payload['groupMembers'])
+        ? payload['groupMembers'].map((member) => String(member || '').trim()).filter(Boolean)
         : undefined,
       groupCreatedBy:
-        typeof payload.groupCreatedBy === 'string' ? payload.groupCreatedBy : undefined,
+        typeof payload['groupCreatedBy'] === 'string' ? payload['groupCreatedBy'] : undefined,
       groupUpdatedAt: Number.isFinite(numericGroupUpdatedAt) ? numericGroupUpdatedAt : undefined,
-      groupType: payload.groupType === 'community' ? 'community' : 'group'
+      groupType: payload['groupType'] === 'community' ? 'community' : 'group'
     };
 
     this.applyIncomingMessage(incoming);
