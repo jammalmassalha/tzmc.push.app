@@ -1648,7 +1648,7 @@ export class ChatStoreService {
           if (message.deliveryStatus === 'read' || message.deliveryStatus === 'failed') return message;
 
           changed = true;
-          return { ...message, deliveryStatus: 'read' };
+          return { ...message, deliveryStatus: 'read' as DeliveryStatus };
         });
         next[chatId] = updated;
       }
