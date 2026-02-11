@@ -466,6 +466,8 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     const messageType = String(customData.type || '').trim().toLowerCase();
     const imageUrl = message.image || null;
     const finalSender = senderuser || 'System';
+    const singlePerUser = Boolean(options.singlePerUser || messageType === 'reaction');
+    const allowSecondAttempt = options.allowSecondAttempt !== false && messageType !== 'reaction';
     let msgTitle = message.title || 'Work Alert';
     let msgText = msgBody.shortText || 'New Notification';
     if (messageType === 'reaction') {
@@ -559,6 +561,16 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     };
 
     let uniqueSubscriptions = dedupeSubscriptions(rawSubscriptions);
+    if (singlePerUser) {
+        const oneSubscriptionPerUser = new Map();
+        uniqueSubscriptions.forEach((subscription) => {
+            const userKey = normalizeUserKey(subscription.username);
+            if (!userKey) return;
+            // Keep latest observed subscription per user to prevent duplicate pushes.
+            oneSubscriptionPerUser.set(userKey, subscription);
+        });
+        uniqueSubscriptions = Array.from(oneSubscriptionPerUser.values());
+    }
     let sendResults = await sendToSubscriptions(uniqueSubscriptions, true);
 
     let successCount = 0;
@@ -579,7 +591,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
 
     appendResultsToLogs(sendResults);
 
-    if (successCount === 0) {
+    if (successCount === 0 && allowSecondAttempt) {
         const cacheKey = buildSubscriptionCacheKey(targetUsersArray);
         if (cacheKey) {
             subscriptionCache.delete(cacheKey);
@@ -1005,7 +1017,12 @@ app.post(['/reaction', '/notify/reaction'], async (req, res) => {
         };
         addToQueue(membersToNotify, reactionRecord);
 
-        const result = await sendPushNotificationToUser(membersToNotify, notificationData, groupId, { messageId: reactionId, skipBadge: true });
+        const result = await sendPushNotificationToUser(membersToNotify, notificationData, groupId, {
+            messageId: reactionId,
+            skipBadge: true,
+            singlePerUser: true,
+            allowSecondAttempt: false
+        });
         res.json({ status: 'success', details: result });
     } catch (err) {
         console.error('[REACTION ERROR]', err);
