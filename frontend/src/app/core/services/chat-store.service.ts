@@ -520,8 +520,9 @@ export class ChatStoreService {
       throw new Error('אין צ׳אט פעיל.');
     }
 
-    const group = this.groups().find((item) => item.id === activeChatId);
-    if (!group || group.type !== 'community') {
+    const group = this.groups().find((item) => item.id === activeChatId) ?? null;
+    const isCommunityGroup = group ? group.type === 'community' : !this.canSendToActiveChat();
+    if (!isCommunityGroup) {
       throw new Error('ניתן להגיב רק בקבוצת קהילה.');
     }
 
@@ -537,20 +538,32 @@ export class ChatStoreService {
       reactorName: this.getDisplayName(currentUser)
     };
 
-    this.applyReactionToMessage(activeChatId, normalizedTargetId, reaction);
+    const fallbackGroupId = this.normalizeChatId(activeChatId);
+    if (!fallbackGroupId) {
+      throw new Error('קבוצת יעד לא נמצאה.');
+    }
+    this.applyReactionToMessage(fallbackGroupId, normalizedTargetId, reaction);
 
     if (!this.networkOnline()) {
       this.lastError.set('לא ניתן לשלוח תגובה ללא חיבור.');
       throw new Error('Offline');
     }
 
+    const activeChat = this.activeChat();
+    const groupId = group?.id || fallbackGroupId;
+    const groupName = group?.name || activeChat?.title || groupId;
+    const groupMembers = group?.members ?? [];
+    const groupCreatedBy = group?.createdBy || '';
+    const groupUpdatedAt = group?.updatedAt || Date.now();
+    const groupType: GroupType = group?.type === 'group' ? 'group' : 'community';
+
     await this.api.sendReaction({
-      groupId: group.id,
-      groupName: group.name,
-      groupMembers: group.members,
-      groupCreatedBy: group.createdBy,
-      groupUpdatedAt: group.updatedAt,
-      groupType: group.type,
+      groupId,
+      groupName,
+      groupMembers,
+      groupCreatedBy,
+      groupUpdatedAt,
+      groupType,
       targetMessageId: normalizedTargetId,
       emoji: normalizedEmoji,
       reactor: currentUser,

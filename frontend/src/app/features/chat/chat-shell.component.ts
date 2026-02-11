@@ -529,8 +529,17 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   canReactToMessage(message: ChatMessage): boolean {
+    if (!message.messageId) return false;
+    const activeChat = this.store.activeChat();
+    if (!activeChat?.isGroup) return false;
+
     const activeGroup = this.findActiveGroup();
-    return Boolean(activeGroup && activeGroup.type === 'community' && message.messageId);
+    if (activeGroup) {
+      return activeGroup.type === 'community';
+    }
+
+    // Fallback for non-admin devices where group metadata is temporarily stale.
+    return !this.store.canSendToActiveChat();
   }
 
   setReactionTarget(message: ChatMessage): void {
