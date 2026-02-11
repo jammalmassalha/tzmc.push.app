@@ -1614,7 +1614,7 @@ export class ChatStoreService {
 
       let subscription = await registration.pushManager.getSubscription();
       const hasValidSubscriptionKeys = Boolean(
-        subscription?.toJSON()?.keys?.p256dh && subscription?.toJSON()?.keys?.auth
+        subscription?.toJSON()?.keys?.['p256dh'] && subscription?.toJSON()?.keys?.['auth']
       );
       const shouldRefreshSubscription = !subscription || !hasValidSubscriptionKeys;
       if (shouldRefreshSubscription && subscription) {
