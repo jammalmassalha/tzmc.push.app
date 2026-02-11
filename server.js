@@ -461,10 +461,18 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     
     // 1. Prepare Content
     const msgBody = message.body || {};
-    const logContent = msgBody.shortText || message.data?.type || 'System Notification';
-    const msgTitle = message.title || 'Work Alert';
+    const customData = message.data || {};
+    const messageType = String(customData.type || '').trim().toLowerCase();
     const imageUrl = message.image || null;
     const finalSender = senderuser || 'System';
+    let msgTitle = message.title || 'Work Alert';
+    let msgText = msgBody.shortText || 'New Notification';
+    if (messageType === 'reaction') {
+        const reactionGroupName = String(customData.groupName || message.title || finalSender || '').trim();
+        msgTitle = reactionGroupName || 'Group';
+        msgText = 'new reaction';
+    }
+    const logContent = msgText || messageType || 'System Notification';
     const messageId = options.messageId || message.messageId || generateMessageId();
     const shouldIncrementBadge = !options.skipBadge;
 
@@ -499,11 +507,10 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
             }
 
             const clickUrl = `https://www.tzmc.co.il/subscribes/?chat=${encodeURIComponent(finalSender)}&user=${encodeURIComponent(subscription.username)}`;
-            const customData = message.data || {};
             const payloadData = {
                 ...customData,
                 title: msgTitle,
-                body: msgBody.shortText || 'New Notification',
+                body: msgText || 'New Notification',
                 badge: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
                 icon: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
                 requireInteraction: true,
