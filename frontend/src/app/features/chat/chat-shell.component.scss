@@ -253,27 +253,22 @@ mat-chip:not(.offline) {
 .chat-title {
   font-weight: 600;
   color: #1a1c23;
-}
-
-.chat-title-row {
-  min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  width: 100%;
 }
 
 .chat-info {
-  max-width: 120px;
-  min-height: 18px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  display: inline-flex;
-  align-items: center;
+  width: 100%;
+  min-height: 20px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  display: block;
+  box-sizing: border-box;
   font-size: 11px;
-  line-height: 1;
+  line-height: 1.35;
   color: #4a5ca7;
   background: rgba(74, 92, 167, 0.12);
   border: 1px solid rgba(74, 92, 167, 0.24);
+  text-align: right;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
