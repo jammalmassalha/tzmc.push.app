@@ -75,6 +75,17 @@ interface ReactionBucket {
   count: number;
 }
 
+interface ReactionDetailRow {
+  username: string;
+  displayName: string;
+  emoji: string;
+}
+
+interface ReactionDetailsPreview {
+  groupTitle: string;
+  rows: ReactionDetailRow[];
+}
+
 @Component({
   selector: 'app-chat-shell',
   standalone: true,
@@ -155,6 +166,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly isMessagesPanelAtBottom = signal(true);
   readonly avatarPreview = signal<AvatarPreview | null>(null);
   readonly reactionTargetMessageId = signal<string | null>(null);
+  readonly reactionDetailsPreview = signal<ReactionDetailsPreview | null>(null);
   readonly groupMembersPreview = signal<GroupMembersPreview | null>(null);
   readonly groupMemberAddCandidates = computed<GroupMemberAddCandidate[]>(() => {
     const preview = this.groupMembersPreview();
@@ -277,6 +289,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   openChat(chatId: string): void {
+    this.closeReactionDetails();
     this.store.setActiveChat(chatId);
     if (this.isMobile()) {
       this.showContactsPane.set(false);
@@ -284,6 +297,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   backToList(): void {
+    this.closeReactionDetails();
     this.store.clearLastActiveChat();
     this.showContactsPane.set(true);
     queueMicrotask(() => this.contactsViewport?.checkViewportSize());
@@ -416,6 +430,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   openGroupMembers(): void {
+    this.closeReactionDetails();
     const activeChat = this.store.activeChat();
     if (!activeChat?.isGroup) return;
 
@@ -553,6 +568,61 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   reactionTotal(message: ChatMessage): number {
     return Array.isArray(message.reactions) ? message.reactions.length : 0;
+  }
+
+  canViewReactionDetails(message: ChatMessage): boolean {
+    const activeGroup = this.findActiveGroup();
+    return Boolean(
+      activeGroup &&
+      activeGroup.type === 'community' &&
+      this.store.canSendToActiveChat() &&
+      Array.isArray(message.reactions) &&
+      message.reactions.length
+    );
+  }
+
+  openReactionDetails(message: ChatMessage): void {
+    if (!this.canViewReactionDetails(message)) return;
+
+    const activeChat = this.store.activeChat();
+    const contactsByUsername = new Map(
+      this.store.contacts().map((contact) => [contact.username, contact])
+    );
+    const reactions = Array.isArray(message.reactions) ? message.reactions : [];
+    const rowsByUser = new Map<string, ReactionDetailRow>();
+
+    reactions.forEach((reaction, index) => {
+      const emoji = String(reaction?.emoji || '').trim();
+      if (!emoji) return;
+
+      const normalizedUsername = this.normalizeUsername(reaction?.reactor || '');
+      const fallbackKey = normalizedUsername || `unknown-${index}`;
+      const contact = normalizedUsername ? contactsByUsername.get(normalizedUsername) : null;
+      const displayName =
+        contact?.displayName ||
+        String(reaction?.reactorName || '').trim() ||
+        normalizedUsername ||
+        'משתמש';
+
+      rowsByUser.set(fallbackKey, {
+        username: normalizedUsername || '',
+        displayName,
+        emoji
+      });
+    });
+
+    const rows = Array.from(rowsByUser.values()).sort((a, b) =>
+      a.displayName.localeCompare(b.displayName, 'he')
+    );
+
+    this.reactionDetailsPreview.set({
+      groupTitle: activeChat?.title || 'קבוצה',
+      rows
+    });
+  }
+
+  closeReactionDetails(): void {
+    this.reactionDetailsPreview.set(null);
   }
 
   private showReactionToast(notice: IncomingReactionNotice): void {
@@ -952,5 +1022,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const normalized = String(groupId || '').trim().toLowerCase();
     if (!normalized) return null;
     return this.store.groups().find((group) => group.id === normalized) ?? null;
+  }
+
+  private normalizeUsername(value: string): string {
+    return String(value || '').trim().toLowerCase();
   }
 }

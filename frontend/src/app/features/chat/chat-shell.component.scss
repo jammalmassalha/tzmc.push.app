@@ -610,6 +610,35 @@ mat-chip:not(.offline) {
   color: #677084;
 }
 
+.reaction-details-btn {
+  min-height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(36, 53, 120, 0.09);
+  color: #2b3c79;
+  cursor: pointer;
+}
+
+.reaction-details-btn mat-icon {
+  width: 14px;
+  height: 14px;
+  font-size: 14px;
+  line-height: 14px;
+}
+
+.reaction-details-btn span {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.reaction-details-btn:hover {
+  background: rgba(36, 53, 120, 0.14);
+}
+
 .message-react-action {
   margin-top: 6px;
   display: flex;
@@ -872,6 +901,107 @@ mat-chip:not(.offline) {
   color: #6f7786;
   text-align: center;
   gap: 8px;
+}
+
+.reaction-details-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 41;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(11, 20, 26, 0.6);
+}
+
+.reaction-details-dialog {
+  position: relative;
+  width: min(94vw, 390px);
+  max-height: min(72vh, 560px);
+  display: flex;
+  flex-direction: column;
+  padding: 18px 14px 12px;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 14px 34px rgba(8, 18, 44, 0.22);
+}
+
+.reaction-details-close {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(36, 53, 120, 0.08);
+  color: #26336b;
+  cursor: pointer;
+}
+
+.reaction-details-title {
+  margin-inline-start: 30px;
+  font-size: 18px;
+  font-weight: 700;
+  color: #1e2436;
+  text-align: right;
+}
+
+.reaction-details-meta {
+  margin-top: 4px;
+  color: #5f6982;
+  font-size: 12px;
+  text-align: right;
+}
+
+.reaction-details-empty {
+  margin-top: 12px;
+  color: #5f6982;
+  text-align: center;
+  font-size: 14px;
+}
+
+.reaction-details-list {
+  margin-top: 12px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid rgba(11, 20, 26, 0.08);
+}
+
+.reaction-details-item {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 4px;
+  border-bottom: 1px solid rgba(11, 20, 26, 0.06);
+}
+
+.reaction-details-user-wrap {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.reaction-details-user {
+  color: #1f273d;
+  font-size: 14px;
+}
+
+.reaction-details-username {
+  color: #667084;
+  font-size: 11px;
+  direction: ltr;
+  text-align: left;
+}
+
+.reaction-details-emoji {
+  font-size: 20px;
+  line-height: 1;
 }
 
 .group-members-backdrop {

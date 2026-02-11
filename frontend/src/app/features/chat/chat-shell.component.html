@@ -218,6 +218,16 @@
                       </span>
                     }
                     <span class="reaction-total">{{ reactionTotal(message) }}</span>
+                    @if (canViewReactionDetails(message)) {
+                      <button
+                        type="button"
+                        class="reaction-details-btn"
+                        (click)="openReactionDetails(message)"
+                        aria-label="הצג רשימת מגיבים">
+                        <mat-icon>groups</mat-icon>
+                        <span>מגיבים</span>
+                      </button>
+                    }
                   </div>
                 }
 
@@ -330,6 +340,36 @@
             (error)="onPreviewAvatarLoaded()" />
         </div>
         <div class="avatar-preview-title">{{ avatar.title }}</div>
+      </div>
+    </div>
+  }
+
+  @if (reactionDetailsPreview(); as details) {
+    <div class="reaction-details-backdrop" (click)="closeReactionDetails()">
+      <div class="reaction-details-dialog" (click)="$event.stopPropagation()">
+        <button type="button" class="reaction-details-close" (click)="closeReactionDetails()" aria-label="Close">
+          <mat-icon>close</mat-icon>
+        </button>
+        <div class="reaction-details-title">{{ details.groupTitle }}</div>
+        <div class="reaction-details-meta">תגובות בקבוצה</div>
+
+        @if (!details.rows.length) {
+          <div class="reaction-details-empty">אין תגובות להצגה.</div>
+        } @else {
+          <div class="reaction-details-list">
+            @for (row of details.rows; track row.username + '-' + row.emoji + '-' + $index) {
+              <div class="reaction-details-item">
+                <div class="reaction-details-user-wrap">
+                  <div class="reaction-details-user">{{ row.displayName }}</div>
+                  @if (row.username) {
+                    <div class="reaction-details-username">{{ row.username }}</div>
+                  }
+                </div>
+                <div class="reaction-details-emoji">{{ row.emoji }}</div>
+              </div>
+            }
+          </div>
+        }
       </div>
     </div>
   }
