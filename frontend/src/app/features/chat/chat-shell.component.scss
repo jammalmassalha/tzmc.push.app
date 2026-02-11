@@ -310,11 +310,11 @@ mat-chip:not(.offline) {
 
 .message-row {
   display: flex;
-  justify-content: flex-start;
+  justify-content: flex-end;
 }
 
 .message-row.outgoing {
-  justify-content: flex-end;
+  justify-content: flex-start;
 }
 
 .message-bubble {
