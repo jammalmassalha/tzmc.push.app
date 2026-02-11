@@ -170,6 +170,7 @@ mat-chip:not(.offline) {
 }
 
 .chat-avatar-wrap {
+  position: relative;
   width: 48px;
   height: 48px;
   border-radius: 50%;
@@ -180,6 +181,10 @@ mat-chip:not(.offline) {
   background: #d7ddea;
   color: #3f4d63;
   flex: 0 0 auto;
+}
+
+.chat-avatar-wrap.with-image {
+  background: #dce3ef;
 }
 
 .chat-avatar-wrap.clickable {
@@ -195,6 +200,32 @@ mat-chip:not(.offline) {
   height: 100%;
   object-fit: cover;
   display: block;
+  position: relative;
+  z-index: 1;
+}
+
+.chat-avatar-wrap.with-image .chat-avatar {
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+.chat-avatar-wrap.with-image.loaded .chat-avatar {
+  opacity: 1;
+}
+
+.chat-avatar-skeleton {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: linear-gradient(110deg, #d7dfea 8%, #edf1f7 18%, #d7dfea 33%);
+  background-size: 200% 100%;
+  animation: avatar-shimmer 1.1s linear infinite;
+  z-index: 0;
+  transition: opacity 180ms ease;
+}
+
+.chat-avatar-wrap.with-image.loaded .chat-avatar-skeleton {
+  opacity: 0;
 }
 
 .chat-avatar-fallback {
@@ -304,13 +335,41 @@ mat-chip:not(.offline) {
   cursor: pointer;
 }
 
+.avatar-preview-media {
+  position: relative;
+  width: 100%;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #111b21;
+}
+
+.avatar-preview-skeleton {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, rgba(63, 75, 88, 0.95) 8%, rgba(102, 116, 133, 0.82) 18%, rgba(63, 75, 88, 0.95) 33%);
+  background-size: 200% 100%;
+  animation: avatar-shimmer 1.2s linear infinite;
+  filter: blur(1.2px);
+  transition: opacity 220ms ease;
+}
+
 .avatar-preview-image {
+  position: relative;
+  z-index: 1;
   width: 100%;
   max-height: 72vh;
   object-fit: contain;
-  border-radius: 14px;
   display: block;
-  background: #111b21;
+  opacity: 0;
+  transition: opacity 220ms ease;
+}
+
+.avatar-preview-media.loaded .avatar-preview-image {
+  opacity: 1;
+}
+
+.avatar-preview-media.loaded .avatar-preview-skeleton {
+  opacity: 0;
 }
 
 .avatar-preview-title {
@@ -625,6 +684,15 @@ mat-chip:not(.offline) {
   }
 }
 
+@keyframes avatar-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .attach-btn,
   .composer-input-shell,
@@ -636,6 +704,11 @@ mat-chip:not(.offline) {
   .send-btn[disabled] {
     animation: none;
     opacity: 0.9;
+  }
+
+  .chat-avatar-skeleton,
+  .avatar-preview-skeleton {
+    animation: none;
   }
 }
 

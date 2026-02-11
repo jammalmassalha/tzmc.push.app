@@ -81,15 +81,20 @@
               <span
                 class="chat-avatar-wrap"
                 [class.clickable]="!!chat.avatarUrl"
+                [class.with-image]="!!chat.avatarUrl"
+                [class.loaded]="isAvatarLoaded(chatAvatarThumb(chat))"
                 (click)="openChatAvatar($event, chat)"
                 [attr.aria-label]="chat.avatarUrl ? 'Open profile image' : null">
                 @if (chat.avatarUrl) {
+                  <span class="chat-avatar-skeleton" aria-hidden="true"></span>
                   <img
                     class="chat-avatar"
                     [src]="chatAvatarThumb(chat)"
                     [alt]="chat.title"
                     loading="eager"
-                    decoding="async" />
+                    decoding="async"
+                    (load)="markAvatarLoaded(chatAvatarThumb(chat))"
+                    (error)="markAvatarLoaded(chatAvatarThumb(chat))" />
                 } @else {
                   <span class="chat-avatar-fallback">{{ chatAvatarFallback(chat) }}</span>
                 }
@@ -259,7 +264,17 @@
         <button type="button" class="avatar-preview-close" (click)="closeChatAvatar()" aria-label="Close">
           <mat-icon>close</mat-icon>
         </button>
-        <img class="avatar-preview-image" [src]="avatar.imageUrl" [alt]="avatar.title" loading="eager" decoding="async" />
+        <div class="avatar-preview-media" [class.loaded]="previewAvatarLoaded()">
+          <div class="avatar-preview-skeleton" aria-hidden="true"></div>
+          <img
+            class="avatar-preview-image"
+            [src]="avatar.imageUrl"
+            [alt]="avatar.title"
+            loading="eager"
+            decoding="async"
+            (load)="onPreviewAvatarLoaded()"
+            (error)="onPreviewAvatarLoaded()" />
+        </div>
         <div class="avatar-preview-title">{{ avatar.title }}</div>
       </div>
     </div>

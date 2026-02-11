@@ -71,6 +71,8 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   @ViewChild('messagesPanel') messagesPanel?: ElementRef<HTMLDivElement>;
   @ViewChild('fileInput') fileInputRef?: ElementRef<HTMLInputElement>;
   private readonly avatarThumbCache = new Map<string, string>();
+  readonly loadedAvatarUrls = signal<Set<string>>(new Set<string>());
+  readonly previewAvatarLoaded = signal(false);
 
   private readonly mobileQuery = window.matchMedia('(max-width: 960px)');
   private readonly onMediaChange = (event: MediaQueryListEvent): void => {
@@ -427,6 +429,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const imageUrl = String(chat.avatarUrl || '').trim();
     if (!imageUrl) return;
 
+    this.previewAvatarLoaded.set(false);
     this.avatarPreview.set({
       title: chat.title || chat.id,
       imageUrl
@@ -434,6 +437,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   closeChatAvatar(): void {
+    this.previewAvatarLoaded.set(false);
     this.avatarPreview.set(null);
   }
 
@@ -455,6 +459,26 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const optimized = this.optimizeAvatarUrl(original);
     this.avatarThumbCache.set(original, optimized);
     return optimized;
+  }
+
+  isAvatarLoaded(url: string): boolean {
+    const normalized = String(url || '').trim();
+    if (!normalized) return false;
+    return this.loadedAvatarUrls().has(normalized);
+  }
+
+  markAvatarLoaded(url: string): void {
+    const normalized = String(url || '').trim();
+    if (!normalized) return;
+    if (this.loadedAvatarUrls().has(normalized)) return;
+
+    const next = new Set(this.loadedAvatarUrls());
+    next.add(normalized);
+    this.loadedAvatarUrls.set(next);
+  }
+
+  onPreviewAvatarLoaded(): void {
+    this.previewAvatarLoaded.set(true);
   }
 
   getMessageRenderParts(messageId: string, body: string): MessageRenderPart[] {
