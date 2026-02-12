@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
+import { ChatStoreService } from './core/services/chat-store.service';
 
 @Component({
   selector: 'app-root',
@@ -10,8 +11,9 @@ import { RouterOutlet } from '@angular/router';
 })
 export class App {
   private static readonly MOBILE_CACHE_SESSION_KEY = 'mobile-cache-cleanup-v2';
+  private static readonly STARTUP_SYNC_TIMEOUT_MS = 7000;
 
-  constructor() {
+  constructor(private readonly store: ChatStoreService) {
     void this.clearCachesOnMobileLoad();
   }
 
@@ -25,6 +27,7 @@ export class App {
     }
 
     try {
+      await this.preloadMessagesBeforeCacheCleanup();
       await this.refreshServiceWorkers();
 
       if ('caches' in window) {
@@ -37,6 +40,19 @@ export class App {
     } catch {
       // Keep app startup resilient even if cache cleanup fails.
     }
+  }
+
+  private async preloadMessagesBeforeCacheCleanup(): Promise<void> {
+    if (!this.store.isAuthenticated()) {
+      return;
+    }
+
+    const syncTask = this.store.preloadLatestMessagesBeforeCacheCleanup();
+    const timeoutTask = new Promise<void>((resolve) => {
+      window.setTimeout(resolve, App.STARTUP_SYNC_TIMEOUT_MS);
+    });
+
+    await Promise.race([syncTask, timeoutTask]);
   }
 
   private shouldRunCacheCleanup(): boolean {

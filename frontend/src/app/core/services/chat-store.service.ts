@@ -305,6 +305,29 @@ export class ChatStoreService {
     this.schedulePersist();
   }
 
+  async preloadLatestMessagesBeforeCacheCleanup(): Promise<void> {
+    const user = this.currentUser();
+    if (!user || !this.networkOnline()) return;
+
+    try {
+      await this.pullMessages(user);
+    } catch {
+      // Best-effort pre-sync before cache cleanup.
+    }
+
+    try {
+      await this.refresh(true);
+    } catch {
+      // Best-effort pre-sync before cache cleanup.
+    }
+
+    try {
+      await this.flushOutbox();
+    } catch {
+      // Best-effort pre-sync before cache cleanup.
+    }
+  }
+
   setActiveChat(chatId: string | null): void {
     if (!chatId) {
       this.activeChatId.set(null);
