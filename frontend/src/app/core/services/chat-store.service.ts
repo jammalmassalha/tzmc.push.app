@@ -27,6 +27,7 @@ const MAX_PERSISTED_MESSAGES = 2500;
 const PUSH_REGISTER_MIN_INTERVAL_MS = 30000;
 const PUSH_REGISTER_REFRESH_MS = 6 * 60 * 60 * 1000;
 const FOREGROUND_SYNC_MIN_INTERVAL_MS = 4000;
+const BADGE_RESET_MIN_INTERVAL_MS = 30000;
 const HR_CHAT_NAME = 'ציפי';
 const HR_WELCOME_KEY_PREFIX = 'hr_welcome_sent_';
 const HR_STATE_KEY_PREFIX = 'hr_state_';
@@ -50,7 +51,8 @@ type BadgeCapableNavigator = Navigator & {
 
 type BadgeMessage =
   | { action: 'set-app-badge-count'; count: number }
-  | { action: 'clear-app-badge' };
+  | { action: 'clear-app-badge' }
+  | { action: 'clear-device-attention' };
 
 export interface IncomingReactionNotice {
   id: string;
@@ -87,6 +89,7 @@ export class ChatStoreService {
   private hrActionsCache: Record<string, { at: number; actions: HrActionOption[] }> = {};
   private hrInitInFlight = false;
   private lastAppliedAppBadgeCount = -1;
+  private lastServerBadgeResetAt = 0;
   private lastForegroundSyncAt = 0;
   private readonly readReceiptSentByChat = new Map<string, Set<string>>();
   private pushRegisterInFlight = false;
@@ -201,6 +204,7 @@ export class ChatStoreService {
 
     this.initializedUser = user;
     await this.refresh(true);
+    this.clearDeviceAttention({ resetServerBadge: true });
     // Recover silently if a device lost its push subscription.
     void this.tryRegisterPush(user, { force: true });
     this.connectRealtime(user);
@@ -2051,6 +2055,7 @@ export class ChatStoreService {
     this.networkOnline.set(true);
     const user = this.currentUser();
     if (!user) return;
+    this.clearDeviceAttention({ resetServerBadge: true });
     void this.tryRegisterPush(user, { force: true });
     this.connectRealtime(user);
     this.syncForegroundState({ forceRefresh: true });
@@ -2062,6 +2067,7 @@ export class ChatStoreService {
 
   private handleWindowFocus = (): void => {
     this.refreshPushRegistrationForCurrentUser(false);
+    this.clearDeviceAttention({ resetServerBadge: true });
     this.syncForegroundState();
   };
 
@@ -2070,6 +2076,7 @@ export class ChatStoreService {
       return;
     }
     this.refreshPushRegistrationForCurrentUser(false);
+    this.clearDeviceAttention({ resetServerBadge: true });
     this.syncForegroundState();
   };
 
@@ -2083,6 +2090,7 @@ export class ChatStoreService {
     const messageData = eventData as { action?: unknown; payload?: unknown };
     const action = String(messageData.action ?? '').trim();
     if (action === 'notification-clicked') {
+      this.clearDeviceAttention({ resetServerBadge: true });
       this.syncForegroundState({ forceRefresh: true });
       return;
     }
@@ -2159,6 +2167,11 @@ export class ChatStoreService {
   private syncAppBadge(unreadTotal: number): void {
     if (typeof navigator === 'undefined') return;
 
+    if (this.isAppInForeground()) {
+      this.clearDeviceAttention();
+      return;
+    }
+
     const normalizedUnread = Math.max(0, Math.floor(Number(unreadTotal) || 0));
     if (this.lastAppliedAppBadgeCount === normalizedUnread) {
       return;
@@ -2184,6 +2197,38 @@ export class ChatStoreService {
       return;
     }
     this.postBadgeMessageToServiceWorker({ action: 'clear-app-badge' });
+  }
+
+  private isAppInForeground(): boolean {
+    if (typeof document === 'undefined') return false;
+    return document.visibilityState === 'visible';
+  }
+
+  private clearDeviceAttention(options: { resetServerBadge?: boolean } = {}): void {
+    if (typeof navigator === 'undefined') return;
+
+    const badgeNavigator = navigator as BadgeCapableNavigator;
+    if (typeof badgeNavigator.clearAppBadge === 'function') {
+      void badgeNavigator.clearAppBadge().catch(() => undefined);
+    } else if (typeof badgeNavigator.setAppBadge === 'function') {
+      void badgeNavigator.setAppBadge(0).catch(() => undefined);
+    }
+    this.postBadgeMessageToServiceWorker({ action: 'clear-device-attention' });
+
+    if (!options.resetServerBadge) {
+      return;
+    }
+
+    const user = this.currentUser();
+    if (!user || !this.networkOnline()) {
+      return;
+    }
+    const now = Date.now();
+    if (now - this.lastServerBadgeResetAt < BADGE_RESET_MIN_INTERVAL_MS) {
+      return;
+    }
+    this.lastServerBadgeResetAt = now;
+    void this.api.resetServerBadge(user).catch(() => undefined);
   }
 
   private postBadgeMessageToServiceWorker(message: BadgeMessage): void {

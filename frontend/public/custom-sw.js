@@ -104,6 +104,12 @@ function clearHomeScreenBadgeCount() {
   return Promise.resolve();
 }
 
+function clearVisibleNotifications() {
+  return self.registration.getNotifications().then((items) => {
+    items.forEach((notification) => notification.close());
+  }).catch(() => undefined);
+}
+
 function normalizeBody(payload) {
   if (typeof payload.body === 'string') {
     return payload.body;
@@ -203,6 +209,16 @@ self.addEventListener('message', (event) => {
 
   if (data.action === 'clear-app-badge') {
     event.waitUntil(clearHomeScreenBadgeCount());
+    return;
+  }
+
+  if (data.action === 'clear-device-attention') {
+    event.waitUntil(
+      Promise.all([
+        clearHomeScreenBadgeCount(),
+        clearVisibleNotifications()
+      ])
+    );
   }
 });
 

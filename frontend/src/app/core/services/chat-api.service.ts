@@ -304,6 +304,25 @@ export class ChatApiService {
     }
   }
 
+  async resetServerBadge(user: string): Promise<void> {
+    const normalized = String(user || '').trim().toLowerCase();
+    if (!normalized) return;
+
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/reset-badge`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: normalized })
+      },
+      { retries: 1, timeoutMs: 8000 }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Reset badge failed with ${response.status}`);
+    }
+  }
+
   async uploadFile(file: File, thumbnail?: File | null): Promise<UploadResponse> {
     const formData = new FormData();
     formData.append('file', file, file.name);
