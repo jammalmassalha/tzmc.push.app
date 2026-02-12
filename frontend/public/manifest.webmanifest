@@ -1,9 +1,10 @@
 {
   "name": "מרכז רפואי צפון",
   "short_name": "TZMC",
+  "id": "/subscribes/",
   "display": "standalone",
-  "scope": "./",
-  "start_url": "./",
+  "scope": "/subscribes/",
+  "start_url": "/subscribes/",
   "background_color": "#ffffff",
   "theme_color": "#293B8F",
   "description": "Modern Angular chat client for TZMC notifications and collaboration.",

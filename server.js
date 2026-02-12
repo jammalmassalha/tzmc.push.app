@@ -517,7 +517,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                     }
                 }
 
-                const clickUrl = `https://www.tzmc.co.il/subscribes/?chat=${encodeURIComponent(finalSender)}&user=${encodeURIComponent(subscription.username)}`;
+                const clickUrl = `/subscribes/?chat=${encodeURIComponent(finalSender)}`;
                 const payloadData = {
                     ...customData,
                     title: msgTitle,

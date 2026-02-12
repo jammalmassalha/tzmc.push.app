@@ -15,6 +15,7 @@ export class App {
 
   constructor(private readonly store: ChatStoreService) {
     void this.clearCachesOnMobileLoad();
+    this.bindServiceWorkerWindowContextSync();
   }
 
   private async clearCachesOnMobileLoad(): Promise<void> {
@@ -53,6 +54,52 @@ export class App {
     });
 
     await Promise.race([syncTask, timeoutTask]);
+  }
+
+  private bindServiceWorkerWindowContextSync(): void {
+    if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+      return;
+    }
+    if (!('serviceWorker' in navigator)) {
+      return;
+    }
+
+    const postContext = (): void => {
+      const standalone = this.isStandaloneWindow();
+      const payload = {
+        action: 'register-window-context',
+        standalone,
+        url: window.location.href,
+        at: Date.now()
+      };
+
+      void navigator.serviceWorker.ready
+        .then((registration) => {
+          const worker = registration.active ?? navigator.serviceWorker.controller;
+          worker?.postMessage(payload);
+        })
+        .catch(() => undefined);
+    };
+
+    postContext();
+    window.addEventListener('focus', postContext, { passive: true });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        postContext();
+      }
+    });
+  }
+
+  private isStandaloneWindow(): boolean {
+    if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+      return false;
+    }
+
+    const navigatorWithStandalone = navigator as Navigator & { standalone?: boolean };
+    return Boolean(
+      window.matchMedia?.('(display-mode: standalone)')?.matches ||
+      navigatorWithStandalone.standalone
+    );
   }
 
   private shouldRunCacheCleanup(): boolean {

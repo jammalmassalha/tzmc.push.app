@@ -4,6 +4,8 @@ importScripts('./ngsw-worker.js');
 
 const FALLBACK_TITLE = 'TZMC';
 const FALLBACK_BODY = 'התקבלה הודעה חדשה';
+const CLIENT_CONTEXT_TTL_MS = 10 * 60 * 1000;
+const clientContextById = new Map();
 
 function parsePushPayload(event) {
   if (!event.data) return {};
@@ -155,6 +157,61 @@ function normalizeTargetUrl(rawUrl) {
   }
 }
 
+function buildAppScopedOpenUrl(rawUrl) {
+  try {
+    const scopeUrl = new URL(self.registration.scope);
+    const targetUrl = new URL(rawUrl, scopeUrl);
+    const scopePath = scopeUrl.pathname.endsWith('/') ? scopeUrl.pathname : `${scopeUrl.pathname}/`;
+
+    if (targetUrl.origin !== scopeUrl.origin) {
+      return scopePath;
+    }
+
+    if (!targetUrl.pathname.startsWith(scopePath) && targetUrl.pathname !== scopeUrl.pathname) {
+      return scopePath;
+    }
+
+    return `${targetUrl.pathname}${targetUrl.search}${targetUrl.hash}`;
+  } catch (_) {
+    return new URL('./', self.registration.scope).pathname;
+  }
+}
+
+function pruneClientContextMap(windowClients) {
+  const now = Date.now();
+  const activeIds = new Set(windowClients.map((client) => client.id));
+  for (const [clientId, context] of clientContextById.entries()) {
+    if (!activeIds.has(clientId) || now - Number(context?.at || 0) > CLIENT_CONTEXT_TTL_MS) {
+      clientContextById.delete(clientId);
+    }
+  }
+}
+
+function isStandaloneClient(client) {
+  const context = clientContextById.get(client.id);
+  return Boolean(context && context.standalone);
+}
+
+function pickPreferredClient(windowClients, target) {
+  const sameOrigin = windowClients.filter((client) => {
+    try {
+      return new URL(client.url).origin === target.origin;
+    } catch (_) {
+      return false;
+    }
+  });
+  if (!sameOrigin.length) {
+    return null;
+  }
+
+  const standaloneMatch = sameOrigin.find((client) => isStandaloneClient(client));
+  if (standaloneMatch) {
+    return standaloneMatch;
+  }
+
+  return null;
+}
+
 function broadcastPushPayload(payload) {
   return clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
     windowClients.forEach((client) => {
@@ -202,6 +259,18 @@ self.addEventListener('message', (event) => {
     return;
   }
 
+  if (data.action === 'register-window-context') {
+    const source = event.source;
+    const sourceId = source && typeof source === 'object' && 'id' in source ? String(source.id || '') : '';
+    if (sourceId) {
+      clientContextById.set(sourceId, {
+        standalone: Boolean(data.standalone),
+        at: Date.now()
+      });
+    }
+    return;
+  }
+
   if (data.action === 'set-app-badge-count') {
     event.waitUntil(setHomeScreenBadgeCount(Number(data.count)));
     return;
@@ -234,41 +303,26 @@ self.addEventListener('notificationclick', (event) => {
 
   event.waitUntil((async () => {
     const windowClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+    pruneClientContextMap(windowClients);
     const target = new URL(targetUrl, self.registration.scope);
+    const appScopedOpenUrl = buildAppScopedOpenUrl(target.toString());
 
-    for (const client of windowClients) {
-      if (!('focus' in client)) {
-        continue;
+    const preferredClient = pickPreferredClient(windowClients, target);
+    if (preferredClient) {
+      preferredClient.postMessage({
+        action: 'notification-clicked',
+        url: target.toString(),
+        payload: notificationData
+      });
+
+      if (typeof preferredClient.navigate === 'function') {
+        await preferredClient.navigate(target.toString());
       }
-      try {
-        const clientUrl = new URL(client.url);
-        if (clientUrl.origin !== target.origin) {
-          continue;
-        }
-
-        client.postMessage({
-          action: 'notification-clicked',
-          url: target.toString(),
-          payload: notificationData
-        });
-
-        if (typeof client.navigate === 'function') {
-          await client.navigate(target.toString());
-          return client.focus();
-        }
-
-        if (clients.openWindow) {
-          return clients.openWindow(target.toString());
-        }
-
-        return client.focus();
-      } catch (_) {
-        // Ignore malformed client URL and continue.
-      }
+      return preferredClient.focus();
     }
 
     if (clients.openWindow) {
-      return clients.openWindow(target.toString());
+      return clients.openWindow(appScopedOpenUrl);
     }
 
     return undefined;
