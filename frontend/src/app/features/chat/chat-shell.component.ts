@@ -453,7 +453,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (!normalized) return;
 
     const nextMembers = Array.from(new Set([...preview.members.map((member) => member.username), normalized]));
-    await this.updateCommunityMembers(preview.groupId, nextMembers, 'המשתתף נוסף לקהילה.');
+    await this.updateCommunityMembers(preview.groupId, nextMembers, 'המשתתף נוסף לקבוצה.');
   }
 
   async removeCommunityMember(username: string): Promise<void> {
@@ -467,7 +467,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const nextMembers = preview.members
       .map((member) => member.username)
       .filter((memberUsername) => memberUsername !== normalized);
-    await this.updateCommunityMembers(preview.groupId, nextMembers, 'המשתתף הוסר מהקהילה.');
+    await this.updateCommunityMembers(preview.groupId, nextMembers, 'המשתתף הוסר מהקבוצה.');
   }
 
   closeGroupMembers(): void {
@@ -491,7 +491,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     );
     const currentUser = String(this.store.currentUser() || '').trim().toLowerCase();
     const adminUsername = String(group.createdBy || '').trim().toLowerCase();
-    const canManageMembers = group.type === 'community' && currentUser === adminUsername;
+    const canManageMembers = Boolean(adminUsername && currentUser === adminUsername);
     const members = (group.members ?? [])
       .map((username) => {
         const normalized = String(username || '').trim().toLowerCase();

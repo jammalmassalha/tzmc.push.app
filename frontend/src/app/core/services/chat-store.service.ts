@@ -452,9 +452,6 @@ export class ChatStoreService {
     if (!group) {
       throw new Error('הקבוצה לא נמצאה');
     }
-    if (group.type !== 'community') {
-      throw new Error('עדכון משתתפים זמין רק לקבוצת קהילה');
-    }
 
     const normalizedUser = this.normalizeUser(user);
     const adminUser = this.normalizeUser(group.createdBy);
@@ -469,7 +466,7 @@ export class ChatStoreService {
       normalizedNextMembers.unshift(adminUser);
     }
     if (normalizedNextMembers.length < 2) {
-      throw new Error('קבוצת קהילה חייבת לכלול לפחות שני משתתפים');
+      throw new Error('קבוצה חייבת לכלול לפחות שני משתתפים');
     }
 
     const previousMembers = group.members.map((member) => this.normalizeUser(member)).filter(Boolean);
