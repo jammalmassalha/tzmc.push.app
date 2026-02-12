@@ -709,24 +709,34 @@ export class ChatStoreService {
 
     this.hrInitInFlight = true;
     try {
-      const lastHrMessage = this.getLastHrMessage();
-      if (lastHrMessage?.direction === 'incoming') {
+      if (!this.shouldInitializeHrFlowOnOpen(user)) {
         return;
       }
-
-      const lastOutgoing = this.getLastOutgoingHrMessageBody();
-      if (lastOutgoing === '0') {
-        this.resetHrState(user);
-        await this.startHrFlow({ skipWelcome: this.hasHrWelcomeMessage(user) });
-        return;
-      }
-
-      if (!this.hasHrWelcomeMessage(user)) {
-        await this.startHrFlow();
-      }
+      await this.startHrFlow({ skipWelcome: false });
     } finally {
       this.hrInitInFlight = false;
     }
+  }
+
+  private shouldInitializeHrFlowOnOpen(user: string): boolean {
+    const chatId = this.normalizeChatId(HR_CHAT_NAME);
+    const hrMessages = this.messagesByChat()[chatId] ?? [];
+
+    // Returning users should continue from existing conversation history.
+    if (hrMessages.length > 0) {
+      return false;
+    }
+
+    // If we already have an HR state or welcome marker, this is not first-time.
+    if (this.loadHrState(user)) {
+      return false;
+    }
+
+    if (localStorage.getItem(this.hrWelcomeKey(user))) {
+      return false;
+    }
+
+    return true;
   }
 
   private async handleHrOutgoing(messageBody: string): Promise<boolean> {
@@ -901,24 +911,6 @@ export class ChatStoreService {
         [chatId]: (map[chatId] ?? 0) + 1
       }));
     }
-  }
-
-  private getLastHrMessage(): ChatMessage | null {
-    const chatId = this.normalizeChatId(HR_CHAT_NAME);
-    const messages = this.messagesByChat()[chatId] ?? [];
-    return messages.length ? messages[messages.length - 1] : null;
-  }
-
-  private getLastOutgoingHrMessageBody(): string {
-    const chatId = this.normalizeChatId(HR_CHAT_NAME);
-    const messages = this.messagesByChat()[chatId] ?? [];
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
-      if (message.direction === 'outgoing') {
-        return String(message.body || '').trim();
-      }
-    }
-    return '';
   }
 
   private hrWelcomeKey(user: string): string {
