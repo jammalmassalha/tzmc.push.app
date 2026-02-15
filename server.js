@@ -185,6 +185,10 @@ const subscriptionCache = new Map();
 const AUTH_REFRESH_PUSH_TYPE = 'subscription-auth-refresh';
 const AUTH_REFRESH_PUSH_URGENCY = 'high';
 const AUTH_REFRESH_PUSH_TTL_SECONDS = 300;
+const AUTH_REFRESH_MAX_DISCOVERY_USERS = 500;
+const AUTH_REFRESH_CONTACT_DISCOVERY_CONCURRENCY = 8;
+const AUTH_REFRESH_CONTACT_DISCOVERY_MAX_SEEDS = 120;
+const AUTH_REFRESH_FAILURE_DETAILS_LIMIT = 80;
 let subscriptionAuthRefreshState = {
     running: false,
     lastRunAt: 0,
@@ -278,6 +282,144 @@ function extractSubscriptionsFromSheetResponse(sheetResponseBody) {
     return dedupeSubscriptionsByEndpoint(collected);
 }
 
+function normalizeUserCandidate(rawValue) {
+    const normalized = normalizeUserKey(rawValue);
+    if (!normalized) return '';
+    if (normalized.length > 64) return '';
+    return normalized;
+}
+
+function addUserToSet(targetSet, rawValue) {
+    if (!targetSet) return;
+    const normalized = normalizeUserCandidate(rawValue);
+    if (normalized) {
+        targetSet.add(normalized);
+    }
+}
+
+function parseUsernamesInput(rawValue) {
+    const values = [];
+    if (Array.isArray(rawValue)) {
+        values.push(...rawValue);
+    } else if (typeof rawValue === 'string') {
+        values.push(...rawValue.split(','));
+    } else if (rawValue && typeof rawValue === 'object') {
+        if (Array.isArray(rawValue.users)) {
+            values.push(...rawValue.users);
+        }
+        if (Array.isArray(rawValue.usernames)) {
+            values.push(...rawValue.usernames);
+        }
+    }
+
+    const normalized = new Set();
+    values.forEach((value) => addUserToSet(normalized, value));
+    return Array.from(normalized);
+}
+
+function extractUsernamesFromContactsResponse(payload = {}) {
+    const extracted = new Set();
+    const candidateArrays = [];
+    if (Array.isArray(payload.users)) candidateArrays.push(payload.users);
+    if (Array.isArray(payload.contacts)) candidateArrays.push(payload.contacts);
+    if (Array.isArray(payload.data)) candidateArrays.push(payload.data);
+
+    candidateArrays.forEach((entries) => {
+        entries.forEach((entry) => {
+            if (!entry) return;
+            if (typeof entry === 'string') {
+                addUserToSet(extracted, entry);
+                return;
+            }
+            if (typeof entry !== 'object') return;
+            addUserToSet(extracted, entry.username);
+            addUserToSet(extracted, entry.user);
+            addUserToSet(extracted, entry.phone);
+            addUserToSet(extracted, entry.id);
+        });
+    });
+
+    return Array.from(extracted);
+}
+
+async function fetchContactUsernamesForUser(userKey) {
+    if (!userKey) return [];
+    try {
+        const response = await fetchWithRetry(
+            `${GOOGLE_SHEET_URL}?action=get_contacts&user=${encodeURIComponent(userKey)}`,
+            {},
+            { timeoutMs: 10000, retries: 1, backoffMs: 500 }
+        );
+        if (!response.ok) return [];
+        const payload = await response.json();
+        return extractUsernamesFromContactsResponse(payload);
+    } catch (error) {
+        return [];
+    }
+}
+
+async function discoverAdditionalUsersFromContacts(seedUsersSet) {
+    const discovered = new Set(Array.from(seedUsersSet || []).map(normalizeUserCandidate).filter(Boolean));
+    const seedUsers = Array.from(discovered).slice(0, AUTH_REFRESH_CONTACT_DISCOVERY_MAX_SEEDS);
+    for (let i = 0; i < seedUsers.length; i += AUTH_REFRESH_CONTACT_DISCOVERY_CONCURRENCY) {
+        const batch = seedUsers.slice(i, i + AUTH_REFRESH_CONTACT_DISCOVERY_CONCURRENCY);
+        const batchResults = await Promise.all(
+            batch.map((userKey) => fetchContactUsernamesForUser(userKey))
+        );
+        batchResults.forEach((list) => {
+            list.forEach((userKey) => {
+                if (discovered.size >= AUTH_REFRESH_MAX_DISCOVERY_USERS) return;
+                addUserToSet(discovered, userKey);
+            });
+        });
+        if (discovered.size >= AUTH_REFRESH_MAX_DISCOVERY_USERS) break;
+    }
+    return discovered;
+}
+
+function collectKnownUserSeeds() {
+    const users = new Set();
+
+    Object.keys(unreadCounts || {}).forEach((userKey) => addUserToSet(users, userKey));
+    Object.keys(messageQueue || {}).forEach((userKey) => addUserToSet(users, userKey));
+    Object.values(messageQueue || {}).forEach((messages) => {
+        if (!Array.isArray(messages)) return;
+        messages.forEach((message) => {
+            if (!message || typeof message !== 'object') return;
+            addUserToSet(users, message.user);
+            addUserToSet(users, message.sender);
+            addUserToSet(users, message.recipient);
+            if (Array.isArray(message.groupMembers)) {
+                message.groupMembers.forEach((member) => addUserToSet(users, member));
+            }
+        });
+    });
+
+    Object.values(groups || {}).forEach((group) => {
+        if (!group || typeof group !== 'object') return;
+        addUserToSet(users, group.createdBy);
+        if (Array.isArray(group.members)) {
+            group.members.forEach((member) => addUserToSet(users, member));
+        }
+    });
+
+    for (const cacheKey of subscriptionCache.keys()) {
+        String(cacheKey || '')
+            .split(',')
+            .forEach((userKey) => addUserToSet(users, userKey));
+    }
+    for (const cacheEntry of subscriptionCache.values()) {
+        if (!cacheEntry || !Array.isArray(cacheEntry.subscriptions)) continue;
+        cacheEntry.subscriptions.forEach((subscription) => {
+            if (!subscription || typeof subscription !== 'object') return;
+            addUserToSet(users, subscription.username);
+            addUserToSet(users, subscription.user);
+        });
+    }
+
+    return users;
+}
+
 async function fetchSubscriptionsFromSheetUrl(url) {
     try {
         const response = await fetchWithRetry(
@@ -296,8 +438,11 @@ async function fetchSubscriptionsFromSheetUrl(url) {
     }
 }
 
-async function getAllSubscriptionsForAuthRefresh() {
+async function getAllSubscriptionsForAuthRefresh(options = {}) {
     const collected = [];
+    const discoveredUsers = new Set();
+    const requestedUsers = parseUsernamesInput(options.usernames);
+    requestedUsers.forEach((userKey) => addUserToSet(discoveredUsers, userKey));
 
     const sheetUrls = [
         `${GOOGLE_SHEET_URL}?usernames=${encodeURIComponent('all')}`,
@@ -316,16 +461,21 @@ async function getAllSubscriptionsForAuthRefresh() {
         collectSubscriptionsFromValue(cacheEntry.subscriptions, collected);
     }
 
-    const cachedUsers = new Set();
-    for (const cacheKey of subscriptionCache.keys()) {
-        String(cacheKey || '')
-            .split(',')
-            .map(normalizeUserKey)
-            .filter(Boolean)
-            .forEach((userKey) => cachedUsers.add(userKey));
+    dedupeSubscriptionsByEndpoint(collected).forEach((subscription) => {
+        addUserToSet(discoveredUsers, subscription.username);
+    });
+
+    if (requestedUsers.length === 0) {
+        const localSeeds = collectKnownUserSeeds();
+        localSeeds.forEach((userKey) => addUserToSet(discoveredUsers, userKey));
+
+        if (discoveredUsers.size > 0) {
+            const expandedUsers = await discoverAdditionalUsersFromContacts(discoveredUsers);
+            expandedUsers.forEach((userKey) => addUserToSet(discoveredUsers, userKey));
+        }
     }
 
-    const cacheUsersList = Array.from(cachedUsers);
+    const cacheUsersList = Array.from(discoveredUsers).slice(0, AUTH_REFRESH_MAX_DISCOVERY_USERS);
     const batchSize = 40;
     for (let i = 0; i < cacheUsersList.length; i += batchSize) {
         const batch = cacheUsersList.slice(i, i + batchSize);
@@ -334,7 +484,15 @@ async function getAllSubscriptionsForAuthRefresh() {
         collectSubscriptionsFromValue(batchSubscriptions, collected);
     }
 
-    return dedupeSubscriptionsByEndpoint(collected);
+    const subscriptions = dedupeSubscriptionsByEndpoint(collected);
+    subscriptions.forEach((subscription) => {
+        addUserToSet(discoveredUsers, subscription.username);
+    });
+
+    return {
+        subscriptions,
+        discoveredUsers: Array.from(discoveredUsers)
+    };
 }
 
 async function runSubscriptionAuthRefreshJob(jobContext = {}) {
@@ -351,6 +509,7 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
     const forceResubscribe = jobContext.forceResubscribe !== false;
     const refreshReason = (typeof jobContext.reason === 'string' && jobContext.reason.trim()) || 'manual';
     const initiatedBy = (typeof jobContext.initiatedBy === 'string' && jobContext.initiatedBy.trim()) || 'api';
+    const requestedUsers = parseUsernamesInput(jobContext.usernames);
 
     let resultSummary = {
         requestId,
@@ -359,16 +518,26 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
         requestedBy: initiatedBy,
         reason: refreshReason,
         forceResubscribe,
+        requestedUserCount: requestedUsers.length,
+        discoveredUserCount: 0,
         targeted: 0,
         success: 0,
-        failed: 0
+        failed: 0,
+        failures: []
     };
 
     try {
-        const subscriptions = await getAllSubscriptionsForAuthRefresh();
+        const discoveryResult = await getAllSubscriptionsForAuthRefresh({ usernames: requestedUsers });
+        const subscriptions = Array.isArray(discoveryResult.subscriptions) ? discoveryResult.subscriptions : [];
+        const discoveredUsers = Array.isArray(discoveryResult.discoveredUsers) ? discoveryResult.discoveredUsers : [];
+        resultSummary.discoveredUserCount = discoveredUsers.length;
+        if (discoveredUsers.length) {
+            resultSummary.discoveredUsersSample = discoveredUsers.slice(0, 60);
+        }
         resultSummary.targeted = subscriptions.length;
         if (!subscriptions.length) {
             resultSummary.finishedAt = Date.now();
+            resultSummary.warning = 'No subscriptions discovered for requested scope.';
             subscriptionAuthRefreshState.lastRunAt = resultSummary.finishedAt;
             subscriptionAuthRefreshState.lastResult = resultSummary;
             return resultSummary;
@@ -403,28 +572,63 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
                         timeout: 15000
                     }
                 );
-                return { ok: true };
+                return { ok: true, username: subscription.username, endpoint: subscription.endpoint };
             } catch (error) {
                 const statusCode = error && error.statusCode;
                 if (statusCode === 404 || statusCode === 410) {
                     pruneSubscriptionCacheEndpoint(subscription.endpoint);
                 }
-                return { ok: false, statusCode, endpoint: subscription.endpoint, error: error.message };
+                return {
+                    ok: false,
+                    username: subscription.username,
+                    statusCode,
+                    endpoint: subscription.endpoint,
+                    error: error && error.message ? error.message : 'Unknown push error'
+                };
             }
         }));
 
         resultSummary.success = sendResults.filter((result) => result.ok).length;
         resultSummary.failed = sendResults.length - resultSummary.success;
+        resultSummary.failures = sendResults
+            .filter((result) => !result.ok)
+            .slice(0, AUTH_REFRESH_FAILURE_DETAILS_LIMIT)
+            .map((result) => ({
+                username: result.username || null,
+                statusCode: result.statusCode || null,
+                endpoint: result.endpoint || null,
+                error: result.error || 'Unknown'
+            }));
         resultSummary.finishedAt = Date.now();
 
         const failedDevices = sendResults
             .filter((result) => !result.ok)
             .map((result) => `${result.statusCode || 'N/A'}:${result.endpoint || 'unknown-endpoint'}`);
+        const failureByStatus = sendResults
+            .filter((result) => !result.ok)
+            .reduce((acc, result) => {
+                const key = String(result.statusCode || 'N/A');
+                acc[key] = (acc[key] || 0) + 1;
+                return acc;
+            }, {});
+        resultSummary.failureByStatus = failureByStatus;
+
+        if (resultSummary.success === 0 && resultSummary.failed > 0) {
+            const failedStatusCodes = Object.keys(failureByStatus);
+            if (failedStatusCodes.every((code) => code === '404' || code === '410')) {
+                resultSummary.hint = 'All targeted subscriptions are stale/unsubscribed. Users must open app once to re-register.';
+            } else if (failedStatusCodes.every((code) => code === '401' || code === '403')) {
+                resultSummary.hint = 'Push auth rejected. Check VAPID key consistency between backend and clients.';
+            } else if (failedStatusCodes.includes('400')) {
+                resultSummary.hint = 'Invalid subscription payloads detected. Auth JSON might be corrupted for those devices.';
+            }
+        }
         const statusText = resultSummary.success > 0 ? 'Sent' : 'Failed';
         const logDetails = [
             `requestId=${requestId}`,
             `reason=${refreshReason}`,
             `requestedBy=${initiatedBy}`,
+            `discoveredUsers=${resultSummary.discoveredUserCount}`,
             `targeted=${resultSummary.targeted}`,
             `success=${resultSummary.success}`,
             `failed=${resultSummary.failed}`,
@@ -440,6 +644,7 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
     } catch (error) {
         resultSummary.finishedAt = Date.now();
         resultSummary.failed = resultSummary.targeted || resultSummary.failed || 1;
+        resultSummary.error = error && error.message ? error.message : 'Unknown background refresh error';
         console.error('[AUTH REFRESH] Background refresh failed:', error.message);
     } finally {
         subscriptionAuthRefreshState.running = false;
@@ -896,17 +1101,19 @@ app.post(['/refresh-subscribe-auth', '/notify/refresh-subscribe-auth'], (req, re
     const reason = (req.body && typeof req.body.reason === 'string') ? req.body.reason.trim() : 'manual';
     const initiatedBy = (req.body && typeof req.body.initiatedBy === 'string') ? req.body.initiatedBy.trim() : 'api';
     const forceResubscribe = !(req.body && req.body.forceResubscribe === false);
+    const usernames = parseUsernamesInput(req.body && req.body.usernames);
     res.json({
         status: 'queued',
         requestId,
         reason: reason || 'manual',
-        forceResubscribe
+        forceResubscribe,
+        requestedUserCount: usernames.length
     });
 
-    runSubscriptionAuthRefreshJob({ requestId, reason, initiatedBy, forceResubscribe })
+    runSubscriptionAuthRefreshJob({ requestId, reason, initiatedBy, forceResubscribe, usernames })
         .then((summary) => {
             console.log(
-                `[AUTH REFRESH] Completed ${summary.requestId} | targeted=${summary.targeted} success=${summary.success} failed=${summary.failed}`
+                `[AUTH REFRESH] Completed ${summary.requestId} | discoveredUsers=${summary.discoveredUserCount || 0} targeted=${summary.targeted} success=${summary.success} failed=${summary.failed}`
             );
         })
         .catch((error) => {
