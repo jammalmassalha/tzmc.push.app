@@ -189,6 +189,7 @@ const AUTH_REFRESH_MAX_DISCOVERY_USERS = 500;
 const AUTH_REFRESH_CONTACT_DISCOVERY_CONCURRENCY = 8;
 const AUTH_REFRESH_CONTACT_DISCOVERY_MAX_SEEDS = 120;
 const AUTH_REFRESH_FAILURE_DETAILS_LIMIT = 80;
+const AUTH_REFRESH_STALE_CLEANUP_BATCH_SIZE = 40;
 let subscriptionAuthRefreshState = {
     running: false,
     lastRunAt: 0,
@@ -495,6 +496,69 @@ async function getAllSubscriptionsForAuthRefresh(options = {}) {
     };
 }
 
+async function removeStaleSubscriptionsFromSheet(staleEndpoints = []) {
+    const uniqueEndpoints = Array.from(
+        new Set(
+            (Array.isArray(staleEndpoints) ? staleEndpoints : [])
+                .map((endpoint) => String(endpoint || '').trim())
+                .filter(Boolean)
+        )
+    );
+    if (!uniqueEndpoints.length) {
+        return {
+            requestedEndpoints: 0,
+            clearedSubscriptions: 0,
+            rowsTouched: 0,
+            failedBatches: 0
+        };
+    }
+
+    let clearedSubscriptions = 0;
+    let rowsTouched = 0;
+    let failedBatches = 0;
+
+    for (let i = 0; i < uniqueEndpoints.length; i += AUTH_REFRESH_STALE_CLEANUP_BATCH_SIZE) {
+        const batch = uniqueEndpoints.slice(i, i + AUTH_REFRESH_STALE_CLEANUP_BATCH_SIZE);
+        try {
+            const response = await fetchWithRetry(
+                GOOGLE_SHEET_URL,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'remove_subscriptions_by_endpoint',
+                        endpoints: batch
+                    })
+                },
+                { timeoutMs: 15000, retries: 2, backoffMs: 700 }
+            );
+            if (!response.ok) {
+                failedBatches++;
+                continue;
+            }
+            let payload = null;
+            try {
+                payload = await response.json();
+            } catch (error) {
+                payload = null;
+            }
+            if (payload && payload.result === 'success') {
+                clearedSubscriptions += Number(payload.clearedSubscriptions || 0);
+                rowsTouched += Number(payload.rowsTouched || 0);
+            }
+        } catch (error) {
+            failedBatches++;
+        }
+    }
+
+    return {
+        requestedEndpoints: uniqueEndpoints.length,
+        clearedSubscriptions,
+        rowsTouched,
+        failedBatches
+    };
+}
+
 async function runSubscriptionAuthRefreshJob(jobContext = {}) {
     if (subscriptionAuthRefreshState.running) {
         return {
@@ -613,6 +677,14 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
             }, {});
         resultSummary.failureByStatus = failureByStatus;
 
+        const staleEndpoints = sendResults
+            .filter((result) => !result.ok && (result.statusCode === 404 || result.statusCode === 410))
+            .map((result) => result.endpoint)
+            .filter(Boolean);
+        if (staleEndpoints.length) {
+            resultSummary.staleCleanup = await removeStaleSubscriptionsFromSheet(staleEndpoints);
+        }
+
         if (resultSummary.success === 0 && resultSummary.failed > 0) {
             const failedStatusCodes = Object.keys(failureByStatus);
             if (failedStatusCodes.every((code) => code === '404' || code === '410')) {
@@ -632,6 +704,9 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
             `targeted=${resultSummary.targeted}`,
             `success=${resultSummary.success}`,
             `failed=${resultSummary.failed}`,
+            resultSummary.staleCleanup
+                ? `staleCleanup=${resultSummary.staleCleanup.clearedSubscriptions}/${resultSummary.staleCleanup.requestedEndpoints}`
+                : 'staleCleanup=none',
             failedDevices.length ? `failedEndpoints=${failedDevices.join(',')}` : 'failedEndpoints=none'
         ].join(' | ');
         logNotificationStatus(

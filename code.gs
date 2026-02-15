@@ -57,6 +57,39 @@ function findUserRow(sheet, username) {
   return match ? match.getRow() : null;
 }
 
+function safeParseSubscriptionJson(rawValue) {
+  var text = String(rawValue || '').trim();
+  if (!text) return null;
+  try {
+    var parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (!parsed.endpoint) return null;
+    return parsed;
+  } catch (err) {
+    return null;
+  }
+}
+
+function getSubscriptionEndpointFromJson(rawValue) {
+  var parsed = safeParseSubscriptionJson(rawValue);
+  return parsed && parsed.endpoint ? String(parsed.endpoint).trim() : '';
+}
+
+function normalizeEndpointsInput(rawValue) {
+  var values = [];
+  if (Array.isArray(rawValue)) {
+    values = rawValue;
+  } else if (typeof rawValue === 'string') {
+    values = rawValue.split(',');
+  }
+  var result = {};
+  for (var i = 0; i < values.length; i++) {
+    var endpoint = String(values[i] || '').trim();
+    if (endpoint) result[endpoint] = true;
+  }
+  return result;
+}
+
 function doGet(e) {
   try {
     var spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
@@ -330,11 +363,14 @@ function doGet(e) {
     // 5. GET SUBSCRIPTIONS
     // ======================================================
     var sheet = spreadsheet.getSheetByName('Subscribe');
-    var param = e.parameter.usernames || e.parameter.username;
+    var isAllSubscriptionsAction = action === 'get_all_subscriptions' || action === 'get_subscriptions';
+    var param = isAllSubscriptionsAction ? 'all' : (e.parameter.usernames || e.parameter.username);
 
     if (!param) throw new Error("Usernames parameter is missing.");
 
-    var targetUsers = param.split(',').map(function (u) { return u.trim().toLowerCase(); });
+    var normalizedParam = String(param || '').trim().toLowerCase();
+    var fetchAllUsers = normalizedParam === 'all' || normalizedParam === '*' || normalizedParam === '%' || normalizedParam === 'all_users';
+    var targetUsers = fetchAllUsers ? [] : param.split(',').map(function (u) { return u.trim().toLowerCase(); });
     var targetSet = {};
     targetUsers.forEach(function (u) {
       if (u) targetSet[u] = true;
@@ -350,7 +386,7 @@ function doGet(e) {
       var rowUser = String(data[i][0] || '').trim().toLowerCase(); // Col B
       if (rowUser.charAt(0) === "'") rowUser = rowUser.substring(1);
 
-      if (targetSet[rowUser]) {
+      if (fetchAllUsers || targetSet[rowUser]) {
         // Grab Mobile/Default Sub (Col D / Index 3)
         try {
           var subStr = data[i][2];
@@ -539,36 +575,120 @@ function doPost(e) {
     }
 
     // ======================================================
-    // 4. [REVISED] PWA SUBSCRIPTION (To Sheet: Subscribe)
+    // 4. REMOVE STALE SUBSCRIPTIONS BY ENDPOINT
+    // ======================================================
+    if (data.action === 'remove_subscriptions_by_endpoint') {
+      var subscribeSheet = spreadsheet.getSheetByName('Subscribe');
+      if (!subscribeSheet) return createJSON({ result: 'success', rowsTouched: 0, clearedSubscriptions: 0 });
+
+      var endpointSet = normalizeEndpointsInput(data.endpoints);
+      var endpointKeys = Object.keys(endpointSet);
+      if (endpointKeys.length === 0) {
+        return createJSON({ result: 'success', rowsTouched: 0, clearedSubscriptions: 0, requestedEndpoints: 0 });
+      }
+
+      var subscribeLastRow = getLastDataRow(subscribeSheet);
+      if (!subscribeLastRow) {
+        return createJSON({ result: 'success', rowsTouched: 0, clearedSubscriptions: 0, requestedEndpoints: endpointKeys.length });
+      }
+
+      var subscribeRange = subscribeSheet.getRange(2, 2, subscribeLastRow - 1, 4); // B..E
+      var subscribeValues = subscribeRange.getValues();
+      var rowsTouched = 0;
+      var clearedSubscriptions = 0;
+
+      for (var i = 0; i < subscribeValues.length; i++) {
+        var row = subscribeValues[i];
+        var mobileEndpoint = getSubscriptionEndpointFromJson(row[2]); // Col D
+        var pcEndpoint = getSubscriptionEndpointFromJson(row[3]);     // Col E
+        var rowChanged = false;
+
+        if (mobileEndpoint && endpointSet[mobileEndpoint]) {
+          row[2] = '';
+          rowChanged = true;
+          clearedSubscriptions++;
+        }
+        if (pcEndpoint && endpointSet[pcEndpoint]) {
+          row[3] = '';
+          rowChanged = true;
+          clearedSubscriptions++;
+        }
+
+        if (rowChanged) {
+          row[1] = getSubscriptionEndpointFromJson(row[2]) || getSubscriptionEndpointFromJson(row[3]) || ''; // Col C
+          rowsTouched++;
+        }
+      }
+
+      if (rowsTouched > 0) {
+        subscribeRange.setValues(subscribeValues);
+      }
+
+      return createJSON({
+        result: 'success',
+        rowsTouched: rowsTouched,
+        clearedSubscriptions: clearedSubscriptions,
+        requestedEndpoints: endpointKeys.length
+      });
+    }
+
+    // ======================================================
+    // 5. [REVISED] PWA SUBSCRIPTION (To Sheet: Subscribe)
     // ======================================================
     // Requested Columns: DateTime | RegistrationUser | Push Type | Auth JSON | Auth JSON PC
     var SHEET_NAME = 'Subscribe';
-    var sheet = spreadsheet.getSheetByName(SHEET_NAME);
+    var subscribeSheet = spreadsheet.getSheetByName(SHEET_NAME);
 
-    if (!sheet) {
-      sheet = spreadsheet.insertSheet(SHEET_NAME);
+    if (!subscribeSheet) {
+      subscribeSheet = spreadsheet.insertSheet(SHEET_NAME);
       // Set the NEW Header
-      sheet.appendRow(['DateTime', 'RegistrationUser', 'Push Type', 'Auth JSON', 'Auth JSON PC']);
+      subscribeSheet.appendRow(['DateTime', 'RegistrationUser', 'Push Type', 'Auth JSON', 'Auth JSON PC']);
     }
 
     // --- FIX 1: Normalize the username to ensure it starts with exactly one '0' ---
     var username = normalizePhone(data.username || '');
     // -----------------------------------------------------------------------------
 
-    var subscription = data.subscription;
-
-    // Check for PC subscription data
+    var subscriptionMobile = data.subscriptionMobile || data.subscription_mobile || null;
     var subscriptionPC = data.subscriptionPC || data.subscription_pc || null;
+    var subscription = data.subscription || subscriptionMobile || subscriptionPC;
+    var deviceType = String(data.deviceType || '').trim().toLowerCase();
+    var platform = String(data.platform || '').trim().toLowerCase();
 
     if (!username || !subscription || !subscription.endpoint) {
       throw new Error("Invalid data: Missing Subscription");
     }
 
     var timestamp = new Date();
-    var jsonSub = JSON.stringify(subscription);
-    var jsonSubPC = subscriptionPC ? JSON.stringify(subscriptionPC) : "";
+    var rowIndex = findUserRow(subscribeSheet, username);
+    var existingMobileJson = '';
+    var existingPcJson = '';
+    if (rowIndex > 0) {
+      var existingAuthValues = subscribeSheet.getRange(rowIndex, 4, 1, 2).getValues()[0]; // D..E
+      existingMobileJson = String(existingAuthValues[0] || '').trim();
+      existingPcJson = String(existingAuthValues[1] || '').trim();
+    }
 
-    var rowIndex = findUserRow(sheet, username);
+    var isPcUpdate = deviceType === 'pc' || platform === 'desktop' || Boolean(subscriptionPC && subscriptionPC.endpoint);
+    var nextMobileJson = existingMobileJson;
+    var nextPcJson = existingPcJson;
+
+    if (isPcUpdate) {
+      nextPcJson = JSON.stringify(subscriptionPC || subscription);
+      if (subscriptionMobile && subscriptionMobile.endpoint) {
+        nextMobileJson = JSON.stringify(subscriptionMobile);
+      }
+    } else {
+      nextMobileJson = JSON.stringify(subscriptionMobile || subscription);
+      if (subscriptionPC && subscriptionPC.endpoint) {
+        nextPcJson = JSON.stringify(subscriptionPC);
+      }
+    }
+
+    if (!nextMobileJson && !nextPcJson) {
+      throw new Error("Invalid data: No subscription JSON to save");
+    }
+    var primaryEndpoint = getSubscriptionEndpointFromJson(nextMobileJson) || getSubscriptionEndpointFromJson(nextPcJson) || String(subscription.endpoint || '').trim();
 
     // --- FIX 2: Prepend a single quote (') when saving to sheet ---
     // This forces Google Sheets to treat the number as Text and keep the leading zero.
@@ -576,25 +696,25 @@ function doPost(e) {
 
     if (rowIndex > 0) {
       // UPDATE EXISTING ROW
-      var range = sheet.getRange(rowIndex, 1, 1, 5);
+      var range = subscribeSheet.getRange(rowIndex, 1, 1, 5);
       range.setValues([[
         timestamp,
         formattedUsername, // Uses the version with the single quote
-        subscription.endpoint,
-        jsonSub,
-        jsonSubPC
+        primaryEndpoint,
+        nextMobileJson,
+        nextPcJson
       ]]);
 
       return createJSON({ 'result': 'success', 'action': 'updated' });
 
     } else {
       // CREATE NEW ROW
-      sheet.appendRow([
+      subscribeSheet.appendRow([
         timestamp,
         formattedUsername, // Uses the version with the single quote
-        subscription.endpoint,
-        jsonSub,
-        jsonSubPC
+        primaryEndpoint,
+        nextMobileJson,
+        nextPcJson
       ]);
       return createJSON({ 'result': 'success', 'action': 'created' });
     }
