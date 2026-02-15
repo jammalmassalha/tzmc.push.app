@@ -182,6 +182,14 @@ const normalizeUserKey = (value) => String(value || '').trim().toLowerCase();
 const normalizeGroupType = (value) => (value === 'community' ? 'community' : 'group');
 const SUBSCRIPTION_CACHE_TTL_MS = 2 * 60 * 1000;
 const subscriptionCache = new Map();
+const AUTH_REFRESH_PUSH_TYPE = 'subscription-auth-refresh';
+const AUTH_REFRESH_PUSH_URGENCY = 'high';
+const AUTH_REFRESH_PUSH_TTL_SECONDS = 300;
+let subscriptionAuthRefreshState = {
+    running: false,
+    lastRunAt: 0,
+    lastResult: null
+};
 
 function buildSubscriptionCacheKey(usernames) {
     const values = Array.isArray(usernames) ? usernames : [usernames];
@@ -204,6 +212,242 @@ function pruneSubscriptionCacheEndpoint(endpointToRemove) {
             });
         }
     }
+}
+
+function normalizeSubscriptionRecord(rawSubscription, usernameHint = '') {
+    if (!rawSubscription || typeof rawSubscription !== 'object') return null;
+    const endpoint = typeof rawSubscription.endpoint === 'string' ? rawSubscription.endpoint.trim() : '';
+    const keys = (rawSubscription.keys && typeof rawSubscription.keys === 'object') ? rawSubscription.keys : null;
+    const p256dh = keys && typeof keys.p256dh === 'string' ? keys.p256dh.trim() : '';
+    const auth = keys && typeof keys.auth === 'string' ? keys.auth.trim() : '';
+    if (!endpoint || !p256dh || !auth) return null;
+    const username = normalizeUserKey(
+        rawSubscription.username || rawSubscription.user || usernameHint
+    );
+    return {
+        endpoint,
+        expirationTime: rawSubscription.expirationTime || null,
+        keys: { p256dh, auth },
+        username: username || undefined
+    };
+}
+
+function collectSubscriptionsFromValue(value, sink, usernameHint = '') {
+    if (!value) return;
+    if (Array.isArray(value)) {
+        value.forEach((item) => collectSubscriptionsFromValue(item, sink, usernameHint));
+        return;
+    }
+    if (typeof value !== 'object') return;
+
+    const nextUsernameHint = normalizeUserKey(value.username || value.user || usernameHint);
+    const normalizedRecord = normalizeSubscriptionRecord(value, nextUsernameHint);
+    if (normalizedRecord) {
+        sink.push(normalizedRecord);
+    }
+
+    ['subscription', 'subscriptionPC', 'subscriptionMobile', 'pushSubscription'].forEach((nestedKey) => {
+        if (value[nestedKey]) {
+            collectSubscriptionsFromValue(value[nestedKey], sink, nextUsernameHint);
+        }
+    });
+
+    ['subscriptions', 'devices', 'rows', 'items', 'data', 'users'].forEach((nestedArrayKey) => {
+        if (Array.isArray(value[nestedArrayKey])) {
+            collectSubscriptionsFromValue(value[nestedArrayKey], sink, nextUsernameHint);
+        }
+    });
+}
+
+function dedupeSubscriptionsByEndpoint(rawSubscriptions = []) {
+    const byEndpoint = new Map();
+    rawSubscriptions.forEach((rawSubscription) => {
+        const normalized = normalizeSubscriptionRecord(rawSubscription, rawSubscription && rawSubscription.username);
+        if (!normalized) return;
+        const existing = byEndpoint.get(normalized.endpoint);
+        if (!existing || (!existing.username && normalized.username)) {
+            byEndpoint.set(normalized.endpoint, normalized);
+        }
+    });
+    return Array.from(byEndpoint.values());
+}
+
+function extractSubscriptionsFromSheetResponse(sheetResponseBody) {
+    const collected = [];
+    collectSubscriptionsFromValue(sheetResponseBody, collected);
+    return dedupeSubscriptionsByEndpoint(collected);
+}
+
+async function fetchSubscriptionsFromSheetUrl(url) {
+    try {
+        const response = await fetchWithRetry(
+            url,
+            {},
+            { timeoutMs: 15000, retries: 2, backoffMs: 700 }
+        );
+        if (!response.ok) {
+            return [];
+        }
+        const result = await response.json();
+        return extractSubscriptionsFromSheetResponse(result);
+    } catch (error) {
+        console.warn('[AUTH REFRESH] Failed to load subscriptions from URL:', error.message);
+        return [];
+    }
+}
+
+async function getAllSubscriptionsForAuthRefresh() {
+    const collected = [];
+
+    const sheetUrls = [
+        `${GOOGLE_SHEET_URL}?usernames=${encodeURIComponent('all')}`,
+        `${GOOGLE_SHEET_URL}?action=get_all_subscriptions`,
+        `${GOOGLE_SHEET_URL}?action=get_subscriptions`
+    ];
+    for (const url of sheetUrls) {
+        const fromSheet = await fetchSubscriptionsFromSheetUrl(url);
+        if (fromSheet.length) {
+            collected.push(...fromSheet);
+        }
+    }
+
+    for (const cacheEntry of subscriptionCache.values()) {
+        if (!cacheEntry || !Array.isArray(cacheEntry.subscriptions)) continue;
+        collectSubscriptionsFromValue(cacheEntry.subscriptions, collected);
+    }
+
+    const cachedUsers = new Set();
+    for (const cacheKey of subscriptionCache.keys()) {
+        String(cacheKey || '')
+            .split(',')
+            .map(normalizeUserKey)
+            .filter(Boolean)
+            .forEach((userKey) => cachedUsers.add(userKey));
+    }
+
+    const cacheUsersList = Array.from(cachedUsers);
+    const batchSize = 40;
+    for (let i = 0; i < cacheUsersList.length; i += batchSize) {
+        const batch = cacheUsersList.slice(i, i + batchSize);
+        if (!batch.length) continue;
+        const batchSubscriptions = await getSubscriptionFromSheet(batch, { forceRefresh: true });
+        collectSubscriptionsFromValue(batchSubscriptions, collected);
+    }
+
+    return dedupeSubscriptionsByEndpoint(collected);
+}
+
+async function runSubscriptionAuthRefreshJob(jobContext = {}) {
+    if (subscriptionAuthRefreshState.running) {
+        return {
+            status: 'running',
+            message: 'Auth refresh is already running.'
+        };
+    }
+
+    subscriptionAuthRefreshState.running = true;
+    const startedAt = Date.now();
+    const requestId = jobContext.requestId || generateMessageId();
+    const forceResubscribe = jobContext.forceResubscribe !== false;
+    const refreshReason = (typeof jobContext.reason === 'string' && jobContext.reason.trim()) || 'manual';
+    const initiatedBy = (typeof jobContext.initiatedBy === 'string' && jobContext.initiatedBy.trim()) || 'api';
+
+    let resultSummary = {
+        requestId,
+        startedAt,
+        finishedAt: startedAt,
+        requestedBy: initiatedBy,
+        reason: refreshReason,
+        forceResubscribe,
+        targeted: 0,
+        success: 0,
+        failed: 0
+    };
+
+    try {
+        const subscriptions = await getAllSubscriptionsForAuthRefresh();
+        resultSummary.targeted = subscriptions.length;
+        if (!subscriptions.length) {
+            resultSummary.finishedAt = Date.now();
+            subscriptionAuthRefreshState.lastRunAt = resultSummary.finishedAt;
+            subscriptionAuthRefreshState.lastResult = resultSummary;
+            return resultSummary;
+        }
+
+        const sendResults = await Promise.all(subscriptions.map(async (subscription) => {
+            const pushPayload = JSON.stringify({
+                data: {
+                    type: AUTH_REFRESH_PUSH_TYPE,
+                    title: '',
+                    body: '',
+                    user: subscription.username || '',
+                    url: '/subscribes/',
+                    requireInteraction: false,
+                    skipNotification: true,
+                    forceResubscribe,
+                    reason: refreshReason,
+                    initiatedBy,
+                    requestId,
+                    subscriptionUrl: GOOGLE_SHEET_URL,
+                    vapidPublicKey: vapidKeys.publicKey
+                }
+            });
+
+            try {
+                await webpush.sendNotification(
+                    subscription,
+                    pushPayload,
+                    {
+                        TTL: AUTH_REFRESH_PUSH_TTL_SECONDS,
+                        headers: { Urgency: AUTH_REFRESH_PUSH_URGENCY },
+                        timeout: 15000
+                    }
+                );
+                return { ok: true };
+            } catch (error) {
+                const statusCode = error && error.statusCode;
+                if (statusCode === 404 || statusCode === 410) {
+                    pruneSubscriptionCacheEndpoint(subscription.endpoint);
+                }
+                return { ok: false, statusCode, endpoint: subscription.endpoint, error: error.message };
+            }
+        }));
+
+        resultSummary.success = sendResults.filter((result) => result.ok).length;
+        resultSummary.failed = sendResults.length - resultSummary.success;
+        resultSummary.finishedAt = Date.now();
+
+        const failedDevices = sendResults
+            .filter((result) => !result.ok)
+            .map((result) => `${result.statusCode || 'N/A'}:${result.endpoint || 'unknown-endpoint'}`);
+        const statusText = resultSummary.success > 0 ? 'Sent' : 'Failed';
+        const logDetails = [
+            `requestId=${requestId}`,
+            `reason=${refreshReason}`,
+            `requestedBy=${initiatedBy}`,
+            `targeted=${resultSummary.targeted}`,
+            `success=${resultSummary.success}`,
+            `failed=${resultSummary.failed}`,
+            failedDevices.length ? `failedEndpoints=${failedDevices.join(',')}` : 'failedEndpoints=none'
+        ].join(' | ');
+        logNotificationStatus(
+            'System',
+            'ALL',
+            'Subscription auth refresh',
+            statusText,
+            logDetails
+        );
+    } catch (error) {
+        resultSummary.finishedAt = Date.now();
+        resultSummary.failed = resultSummary.targeted || resultSummary.failed || 1;
+        console.error('[AUTH REFRESH] Background refresh failed:', error.message);
+    } finally {
+        subscriptionAuthRefreshState.running = false;
+        subscriptionAuthRefreshState.lastRunAt = Date.now();
+        subscriptionAuthRefreshState.lastResult = resultSummary;
+    }
+
+    return resultSummary;
 }
 
 function upsertGroup(payload = {}) {
@@ -629,6 +873,45 @@ app.get(['/', '/notify'], (req, res) => {
 app.get(['/version', '/notify/version'], (req, res) => {
     res.set('Cache-Control', 'no-store');
     res.json({ version: SERVER_VERSION, notes: SERVER_RELEASE_NOTES });
+});
+
+app.get(['/refresh-subscribe-auth/status', '/notify/refresh-subscribe-auth/status'], (req, res) => {
+    res.json({
+        running: subscriptionAuthRefreshState.running,
+        lastRunAt: subscriptionAuthRefreshState.lastRunAt || null,
+        lastResult: subscriptionAuthRefreshState.lastResult || null
+    });
+});
+
+app.post(['/refresh-subscribe-auth', '/notify/refresh-subscribe-auth'], (req, res) => {
+    if (subscriptionAuthRefreshState.running) {
+        return res.status(409).json({
+            status: 'running',
+            message: 'Auth refresh is already running.',
+            lastResult: subscriptionAuthRefreshState.lastResult || null
+        });
+    }
+
+    const requestId = generateMessageId();
+    const reason = (req.body && typeof req.body.reason === 'string') ? req.body.reason.trim() : 'manual';
+    const initiatedBy = (req.body && typeof req.body.initiatedBy === 'string') ? req.body.initiatedBy.trim() : 'api';
+    const forceResubscribe = !(req.body && req.body.forceResubscribe === false);
+    res.json({
+        status: 'queued',
+        requestId,
+        reason: reason || 'manual',
+        forceResubscribe
+    });
+
+    runSubscriptionAuthRefreshJob({ requestId, reason, initiatedBy, forceResubscribe })
+        .then((summary) => {
+            console.log(
+                `[AUTH REFRESH] Completed ${summary.requestId} | targeted=${summary.targeted} success=${summary.success} failed=${summary.failed}`
+            );
+        })
+        .catch((error) => {
+            console.error(`[AUTH REFRESH] Failed ${requestId}:`, error.message);
+        });
 });
 
 app.get(['/groups', '/notify/groups'], (req, res) => {

@@ -8,6 +8,9 @@ const STORE_NAME = config.STORE_NAME || 'history';
 const OUTBOX_STORE = config.OUTBOX_STORE || 'outbox';
 const DB_VERSION = config.DB_VERSION || 3;
 const CACHE_NAME = config.CACHE_NAME || 'static-assets-v4';
+const VAPID_PUBLIC_KEY = config.VAPID_PUBLIC_KEY || '';
+const SUBSCRIPTION_URL = config.SUBSCRIPTION_URL || '';
+const AUTH_REFRESH_PUSH_TYPE = 'subscription-auth-refresh';
 
 const ASSETS_TO_CACHE = [
   './',
@@ -141,6 +144,86 @@ const fetchWithRetry = async (url, options = {}, retryOptions = {}) => {
   }
   throw lastError;
 };
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = self.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+function hasValidSubscriptionKeys(subscription) {
+  if (!subscription || typeof subscription.toJSON !== 'function') return false;
+  const json = subscription.toJSON();
+  const keys = json && json.keys ? json.keys : null;
+  return Boolean(keys && keys.p256dh && keys.auth);
+}
+
+function detectWorkerDeviceType() {
+  const ua = (self.navigator && self.navigator.userAgent) ? self.navigator.userAgent : '';
+  const isMobile = /Mobile|Android|iP(hone|od)|IEMobile|BlackBerry|Kindle|Opera M(obi|ini)/i.test(ua);
+  return isMobile ? 'Mobile' : 'PC';
+}
+
+async function refreshSubscriptionAuthInBackground(payload = {}) {
+  const username = String(payload.user || payload.username || '').trim().toLowerCase();
+  if (!username || !SUBSCRIPTION_URL || !VAPID_PUBLIC_KEY) {
+    return false;
+  }
+
+  try {
+    let subscription = await self.registration.pushManager.getSubscription();
+    const forceResubscribe = Boolean(payload.forceResubscribe);
+    const needsResubscribe = forceResubscribe || !subscription || !hasValidSubscriptionKeys(subscription);
+    if (needsResubscribe && subscription) {
+      try {
+        await subscription.unsubscribe();
+      } catch (_) {
+        // Continue with subscribe attempt even when unsubscribe fails.
+      }
+      subscription = null;
+    }
+
+    if (!subscription) {
+      subscription = await self.registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+      });
+    }
+    if (!subscription) {
+      return false;
+    }
+
+    const deviceType = detectWorkerDeviceType();
+    const registerPayload = {
+      username,
+      subscription,
+      action: 'reactivate_silent',
+      reason: 'subscription-auth-refresh',
+      deviceType
+    };
+    if (deviceType === 'PC') {
+      registerPayload.subscriptionPC = subscription;
+    } else {
+      registerPayload.subscriptionMobile = subscription;
+    }
+
+    await fetchWithRetry(SUBSCRIPTION_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(registerPayload)
+    }, { timeoutMs: 15000, retries: 2, backoffMs: 700 });
+    return true;
+  } catch (err) {
+    console.warn('[SW] Subscription auth refresh failed:', err && err.message ? err.message : err);
+    return false;
+  }
+}
 
 async function saveNotificationExplicit(record) {
   try {
@@ -360,6 +443,17 @@ self.addEventListener('push', event => {
       clients.forEach(client => client.postMessage({ action: 'read-receipt', messageIds, readAt, sender: payload.sender }));
     });
     event.waitUntil(Promise.all([updatePromise, notifyPromise]));
+    return;
+  }
+
+  if (payload && payload.type === AUTH_REFRESH_PUSH_TYPE) {
+    const refreshPromise = refreshSubscriptionAuthInBackground(payload);
+    const notifyClientsPromise = self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      clientList.forEach((client) => {
+        client.postMessage({ action: 'refresh-subscription-auth', payload });
+      });
+    });
+    event.waitUntil(Promise.all([refreshPromise, notifyClientsPromise]));
     return;
   }
 

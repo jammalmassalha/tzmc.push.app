@@ -934,6 +934,9 @@ window.addEventListener('load', async () => {
                 if (event.data && event.data.action === 'outbox-updated') {
                     loadAndGroupHistory();
                 }
+                if (event.data && event.data.action === 'refresh-subscription-auth') {
+                    verifyAndReactivate({ force: true, reason: 'push-refresh' });
+                }
                 if (event.data && event.data.action === 'navigate-route') {
                     console.log("iOS Routing via SW Message:", event.data.url);
                     // This changes the page while keeping the PWA wrapper active
@@ -3735,48 +3738,73 @@ function addLongPressEvent(element, callback) {
 // ==========================================================
 // [UPDATED] REACTIVATE (Handles PC vs Mobile)
 // ==========================================================
-async function verifyAndReactivate() {
+async function verifyAndReactivate(options = {}) {
     let user = localStorage.getItem('username');
-    if (!user) return; 
+    if (!user) return false;
     user = user.toLowerCase();
+    const force = Boolean(options.force);
+    const reason = (typeof options.reason === 'string' && options.reason.trim()) || 'auto-reactivate';
     
     if ('serviceWorker' in navigator) {
         try {
             const reg = await navigator.serviceWorker.ready;
             let sub = await reg.pushManager.getSubscription();
+            const hasValidSubscriptionKeys = Boolean(
+                sub?.toJSON()?.keys?.['p256dh'] && sub?.toJSON()?.keys?.['auth']
+            );
+            const shouldRefreshSubscription = force || !sub || !hasValidSubscriptionKeys;
+            if (!shouldRefreshSubscription) {
+                return false;
+            }
+
+            if (sub) {
+                try {
+                    await sub.unsubscribe();
+                } catch (e) {
+                    // Continue with subscribe attempt even if unsubscribe failed.
+                }
+                sub = null;
+            }
 
             if (!sub) {
-                console.log("[Auto-Fix] User logged in but Push missing. Reactivating...");
+                console.log("[Auto-Fix] Refreshing push subscription...");
                 sub = await reg.pushManager.subscribe({
                     userVisibleOnly: true,
                     applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
                 });
-
-                const deviceType = getDeviceType();
-                
-                let payload = {
-                    username: user,
-                    subscription: sub,
-                    action: 'reactivate_silent',
-                    deviceType: deviceType
-                };
-
-                if (deviceType === 'PC') {
-                    payload.subscriptionPC = sub;
-                }
-
-                await fetchWithRetry(SUBSCRIPTION_URL, {
-                    method: 'POST',
-                    mode: 'no-cors',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                }, { timeoutMs: 10000, retries: 2 });
-                console.log("[Auto-Fix] Reactivation sent.");
             }
+            if (!sub) {
+                return false;
+            }
+
+            const deviceType = getDeviceType();
+            
+            let payload = {
+                username: user,
+                subscription: sub,
+                action: 'reactivate_silent',
+                reason: reason,
+                deviceType: deviceType
+            };
+
+            if (deviceType === 'PC') {
+                payload.subscriptionPC = sub;
+            }
+
+            await fetchWithRetry(SUBSCRIPTION_URL, {
+                method: 'POST',
+                mode: 'no-cors',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            }, { timeoutMs: 10000, retries: 2 });
+            console.log(`[Auto-Fix] Reactivation sent (${reason}).`);
+            return true;
         } catch (e) {
             console.error("[Auto-Fix] Failed:", e);
+            return false;
         }
     }
+    return false;
 }
 // --- CALL USER FUNCTION ---
 function callUser(event, phoneNumber) {

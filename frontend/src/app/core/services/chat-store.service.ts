@@ -2093,6 +2093,11 @@ export class ChatStoreService {
     if (payloadUser && payloadUser !== currentUser) return;
 
     const payloadType = String(payload['type'] ?? '').trim().toLowerCase();
+    if (payloadType === 'subscription-auth-refresh') {
+      this.refreshPushRegistrationForCurrentUser(true);
+      this.syncForegroundState({ forceRefresh: true });
+      return;
+    }
     if (payloadType !== 'reaction' && payloadType !== 'group-update' && payloadType !== 'read-receipt') {
       // For regular message pushes, force a near-immediate pull so opened app isn't stale.
       this.syncForegroundState();

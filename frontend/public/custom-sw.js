@@ -5,6 +5,7 @@ importScripts('./ngsw-worker.js');
 const FALLBACK_TITLE = 'TZMC';
 const FALLBACK_BODY = 'התקבלה הודעה חדשה';
 const CLIENT_CONTEXT_TTL_MS = 10 * 60 * 1000;
+const AUTH_REFRESH_PUSH_TYPE = 'subscription-auth-refresh';
 const clientContextById = new Map();
 
 function parsePushPayload(event) {
@@ -122,13 +123,94 @@ function normalizeBody(payload) {
   return '';
 }
 
+function hasValidSubscriptionKeys(subscription) {
+  if (!subscription || typeof subscription.toJSON !== 'function') return false;
+  const json = subscription.toJSON();
+  const keys = json && json.keys ? json.keys : null;
+  return Boolean(keys && keys.p256dh && keys.auth);
+}
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = self.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i += 1) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+function detectWorkerDeviceType() {
+  const ua = (self.navigator && self.navigator.userAgent) ? self.navigator.userAgent : '';
+  const isMobile = /Mobile|Android|iP(hone|od)|IEMobile|BlackBerry|Kindle|Opera M(obi|ini)/i.test(ua);
+  return isMobile ? 'Mobile' : 'PC';
+}
+
+async function refreshSubscriptionAuthInBackground(payload) {
+  const username = typeof payload.user === 'string' ? payload.user.trim().toLowerCase() : '';
+  const subscriptionUrl = typeof payload.subscriptionUrl === 'string' ? payload.subscriptionUrl.trim() : '';
+  const vapidPublicKey = typeof payload.vapidPublicKey === 'string' ? payload.vapidPublicKey.trim() : '';
+  if (!username || !subscriptionUrl || !vapidPublicKey) {
+    return false;
+  }
+
+  try {
+    let subscription = await self.registration.pushManager.getSubscription();
+    const forceResubscribe = Boolean(payload.forceResubscribe);
+    const needsResubscribe = forceResubscribe || !subscription || !hasValidSubscriptionKeys(subscription);
+    if (needsResubscribe && subscription) {
+      try {
+        await subscription.unsubscribe();
+      } catch (_) {
+        // Continue with fresh subscribe attempt.
+      }
+      subscription = null;
+    }
+
+    if (!subscription) {
+      subscription = await self.registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapidPublicKey)
+      });
+    }
+    if (!subscription) {
+      return false;
+    }
+
+    const deviceType = detectWorkerDeviceType();
+    const registerPayload = {
+      username,
+      subscription,
+      action: 'reactivate_silent',
+      reason: 'subscription-auth-refresh',
+      deviceType
+    };
+    if (deviceType === 'PC') {
+      registerPayload.subscriptionPC = subscription;
+    } else {
+      registerPayload.subscriptionMobile = subscription;
+    }
+
+    await fetch(subscriptionUrl, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(registerPayload)
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 function shouldShowNotification(payload) {
   const body = normalizeBody(payload);
   const title = typeof payload.title === 'string' ? payload.title : '';
   const type = typeof payload.type === 'string' ? payload.type : '';
 
   // Keep these events silent; app updates from message bus/polling.
-  if (type === 'read-receipt' || type === 'group-update') {
+  if (type === 'read-receipt' || type === 'group-update' || type === AUTH_REFRESH_PUSH_TYPE) {
     return false;
   }
 
@@ -231,6 +313,9 @@ self.addEventListener('push', (event) => {
   );
 
   const tasks = [broadcastPushPayload(payload)];
+  if (String(payload.type || '').toLowerCase() === AUTH_REFRESH_PUSH_TYPE) {
+    tasks.push(refreshSubscriptionAuthInBackground(payload));
+  }
   if (badgeCount !== null) {
     tasks.push(setHomeScreenBadgeCount(badgeCount));
   }
