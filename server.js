@@ -615,7 +615,9 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
             return resultSummary;
         }
 
+        const authJsonByUser = buildMobileAuthJsonByUser(subscriptions);
         const sendResults = await Promise.all(subscriptions.map(async (subscription) => {
+            const userKey = normalizeUserKey(subscription.username || subscription.user);
             const pushPayload = JSON.stringify({
                 data: {
                     type: AUTH_REFRESH_PUSH_TYPE,
@@ -644,7 +646,12 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
                         timeout: 15000
                     }
                 );
-                return { ok: true, username: subscription.username, endpoint: subscription.endpoint };
+                return {
+                    ok: true,
+                    username: subscription.username || userKey || null,
+                    userKey: userKey || null,
+                    endpoint: subscription.endpoint
+                };
             } catch (error) {
                 const statusCode = error && error.statusCode;
                 if (statusCode === 404 || statusCode === 410) {
@@ -652,7 +659,8 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
                 }
                 return {
                     ok: false,
-                    username: subscription.username,
+                    username: subscription.username || userKey || null,
+                    userKey: userKey || null,
                     statusCode,
                     endpoint: subscription.endpoint,
                     error: error && error.message ? error.message : 'Unknown push error'
@@ -693,6 +701,100 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
             resultSummary.staleCleanup = await removeStaleSubscriptionsFromSheet(staleEndpoints);
         }
 
+        const userSummaryByKey = new Map();
+        sendResults.forEach((result) => {
+            const userKey = normalizeUserKey(result.userKey || result.username);
+            if (!userKey) return;
+            if (!userSummaryByKey.has(userKey)) {
+                userSummaryByKey.set(userKey, {
+                    user: userKey,
+                    targetedDevices: 0,
+                    successDevices: 0,
+                    failedDevices: 0,
+                    failedStatusCodes: {},
+                    failedEndpoints: []
+                });
+            }
+            const userSummary = userSummaryByKey.get(userKey);
+            userSummary.targetedDevices += 1;
+            if (result.ok) {
+                userSummary.successDevices += 1;
+            } else {
+                userSummary.failedDevices += 1;
+                const failedCode = String(result.statusCode || 'N/A');
+                userSummary.failedStatusCodes[failedCode] = (userSummary.failedStatusCodes[failedCode] || 0) + 1;
+                if (result.endpoint) {
+                    userSummary.failedEndpoints.push(result.endpoint);
+                }
+            }
+        });
+
+        const perUserLogEntries = [];
+        const successfulUsersForTouch = [];
+        const perUserLogResults = [];
+        for (const [userKey, userSummary] of userSummaryByKey.entries()) {
+            const userStatus = userSummary.failedDevices === 0
+                ? 'Sent'
+                : (userSummary.successDevices > 0 ? 'Partial' : 'Failed');
+            const userDetails = [
+                `requestId=${requestId}`,
+                `reason=${refreshReason}`,
+                `targetedDevices=${userSummary.targetedDevices}`,
+                `successDevices=${userSummary.successDevices}`,
+                `failedDevices=${userSummary.failedDevices}`,
+                `failedStatus=${Object.keys(userSummary.failedStatusCodes).length ? JSON.stringify(userSummary.failedStatusCodes) : '{}'}`,
+                userSummary.failedEndpoints.length
+                    ? `failedEndpoints=${userSummary.failedEndpoints.join(',')}`
+                    : 'failedEndpoints=none'
+            ].join(' | ');
+            const recipientAuthJson = authJsonByUser.get(userKey) || '';
+            perUserLogEntries.push({
+                recipient: userKey,
+                status: userStatus,
+                details: userDetails,
+                recipientAuthJson
+            });
+            perUserLogResults.push({
+                user: userKey,
+                status: userStatus,
+                targetedDevices: userSummary.targetedDevices,
+                successDevices: userSummary.successDevices,
+                failedDevices: userSummary.failedDevices
+            });
+            if (userSummary.successDevices > 0) {
+                successfulUsersForTouch.push(userKey);
+            }
+        }
+
+        for (let i = 0; i < perUserLogEntries.length; i += AUTH_REFRESH_CONTACT_DISCOVERY_CONCURRENCY) {
+            const logBatch = perUserLogEntries.slice(i, i + AUTH_REFRESH_CONTACT_DISCOVERY_CONCURRENCY);
+            await Promise.all(
+                logBatch.map((entry) => logNotificationStatus(
+                    'System',
+                    entry.recipient,
+                    'Subscription auth refresh',
+                    entry.status,
+                    entry.details,
+                    entry.recipientAuthJson
+                ))
+            );
+        }
+        resultSummary.userResults = perUserLogResults.slice(0, AUTH_REFRESH_FAILURE_DETAILS_LIMIT);
+        resultSummary.userResultCount = perUserLogResults.length;
+
+        if (successfulUsersForTouch.length) {
+            resultSummary.subscriptionDateTimeUpdate = await updateSubscriptionAuthRefreshDateTime(
+                successfulUsersForTouch,
+                requestId
+            );
+        } else {
+            resultSummary.subscriptionDateTimeUpdate = {
+                requestedUsers: 0,
+                updatedRows: 0,
+                missingUsers: []
+            };
+        }
+
         if (resultSummary.success === 0 && resultSummary.failed > 0) {
             const failedStatusCodes = Object.keys(failureByStatus);
             if (failedStatusCodes.every((code) => code === '404' || code === '410')) {
@@ -712,6 +814,10 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
             `targeted=${resultSummary.targeted}`,
             `success=${resultSummary.success}`,
             `failed=${resultSummary.failed}`,
+            `perUserLogs=${resultSummary.userResultCount || 0}`,
+            resultSummary.subscriptionDateTimeUpdate
+                ? `datetimeUpdated=${resultSummary.subscriptionDateTimeUpdate.updatedRows || 0}/${resultSummary.subscriptionDateTimeUpdate.requestedUsers || 0}`
+                : 'datetimeUpdated=0/0',
             resultSummary.staleCleanup
                 ? `staleCleanup=${resultSummary.staleCleanup.clearedSubscriptions}/${resultSummary.staleCleanup.requestedEndpoints}`
                 : 'staleCleanup=none',
@@ -797,6 +903,32 @@ function scheduleStateSave() {
     }, 1000);
 }
 
+function buildMobileAuthJsonByUser(subscriptions = []) {
+    const authJsonByUser = new Map();
+    (Array.isArray(subscriptions) ? subscriptions : []).forEach((subscription) => {
+        if (!subscription || typeof subscription !== 'object') return;
+        const subscriptionType = String(subscription.type || '').trim().toLowerCase();
+        if (subscriptionType === 'pc') return;
+
+        const username = normalizeUserKey(subscription.username || subscription.user);
+        if (!username) return;
+        const endpoint = typeof subscription.endpoint === 'string' ? subscription.endpoint.trim() : '';
+        const keys = subscription.keys && typeof subscription.keys === 'object' ? subscription.keys : null;
+        const p256dh = keys && typeof keys.p256dh === 'string' ? keys.p256dh.trim() : '';
+        const auth = keys && typeof keys.auth === 'string' ? keys.auth.trim() : '';
+        if (!endpoint || !p256dh || !auth) return;
+
+        if (!authJsonByUser.has(username)) {
+            authJsonByUser.set(username, JSON.stringify({
+                endpoint,
+                expirationTime: subscription.expirationTime || null,
+                keys: { p256dh, auth }
+            }));
+        }
+    });
+    return authJsonByUser;
+}
+
 function buildMobileSubscriptionAuthJsonForLog(recipient, subscriptions = []) {
     const recipientUsers = parseUsernamesInput(recipient);
     const recipientSet = new Set(recipientUsers.map(normalizeUserKey).filter(Boolean));
@@ -849,7 +981,7 @@ function buildMobileSubscriptionAuthJsonForLog(recipient, subscriptions = []) {
 
 // Helper: Log status to Google Sheets
 function logNotificationStatus(sender, recipient, messageShort, status, details, recipientAuthJson = '') {
-    fetchWithRetry(GOOGLE_SHEET_URL, {
+    return fetchWithRetry(GOOGLE_SHEET_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -861,7 +993,61 @@ function logNotificationStatus(sender, recipient, messageShort, status, details,
             details: details,
             recipientAuthJson: recipientAuthJson || ''
         })
-    }, { timeoutMs: 10000, retries: 2 }).catch(err => console.error('[LOG ERROR]', err.message));
+    }, { timeoutMs: 10000, retries: 2 }).catch(err => {
+        console.error('[LOG ERROR]', err.message);
+        return null;
+    });
+}
+
+async function updateSubscriptionAuthRefreshDateTime(usernames = [], requestId = '') {
+    const normalizedUsers = parseUsernamesInput(usernames);
+    if (!normalizedUsers.length) {
+        return { updatedRows: 0, missingUsers: [], requestedUsers: 0 };
+    }
+    try {
+        const response = await fetchWithRetry(
+            GOOGLE_SHEET_URL,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'touch_subscription_auth_refresh',
+                    usernames: normalizedUsers,
+                    requestId: requestId || ''
+                })
+            },
+            { timeoutMs: 15000, retries: 2, backoffMs: 700 }
+        );
+        if (!response.ok) {
+            return {
+                updatedRows: 0,
+                missingUsers: normalizedUsers,
+                requestedUsers: normalizedUsers.length,
+                error: `Google Sheet returned ${response.status}`
+            };
+        }
+        const payload = await response.json();
+        if (payload && payload.result === 'success') {
+            return {
+                updatedRows: Number(payload.updatedRows || 0),
+                missingUsers: Array.isArray(payload.missingUsers) ? payload.missingUsers : [],
+                requestedUsers: Number(payload.requestedUsers || normalizedUsers.length)
+            };
+        }
+        return {
+            updatedRows: 0,
+            missingUsers: normalizedUsers,
+            requestedUsers: normalizedUsers.length,
+            error: payload && payload.message ? payload.message : 'Unknown sheet response'
+        };
+    } catch (error) {
+        return {
+            updatedRows: 0,
+            missingUsers: normalizedUsers,
+            requestedUsers: normalizedUsers.length,
+            error: error.message
+        };
+    }
 }
 
 async function getSubscriptionFromSheet(usernames, options = {}) {

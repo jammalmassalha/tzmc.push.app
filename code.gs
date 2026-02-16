@@ -91,11 +91,27 @@ function normalizeEndpointsInput(rawValue) {
 }
 
 function parseRecipientUsernames(recipientRawValue) {
-  var raw = String(recipientRawValue || '').trim();
-  if (!raw) return [];
-  if (raw.toLowerCase() === 'all' || raw === '*') return [];
+  var parts = [];
+  if (Array.isArray(recipientRawValue)) {
+    parts = recipientRawValue;
+  } else if (recipientRawValue && typeof recipientRawValue === 'object') {
+    if (Array.isArray(recipientRawValue.usernames)) {
+      parts = recipientRawValue.usernames;
+    } else if (Array.isArray(recipientRawValue.users)) {
+      parts = recipientRawValue.users;
+    } else {
+      var objectText = String(recipientRawValue || '').trim();
+      if (!objectText) return [];
+      if (objectText.toLowerCase() === 'all' || objectText === '*') return [];
+      parts = objectText.split(',');
+    }
+  } else {
+    var raw = String(recipientRawValue || '').trim();
+    if (!raw) return [];
+    if (raw.toLowerCase() === 'all' || raw === '*') return [];
+    parts = raw.split(',');
+  }
 
-  var parts = raw.split(',');
   var seen = {};
   var users = [];
   for (var i = 0; i < parts.length; i++) {
@@ -649,7 +665,47 @@ function doPost(e) {
     }
 
     // ======================================================
-    // 4. REMOVE STALE SUBSCRIPTIONS BY ENDPOINT
+    // 4. TOUCH SUBSCRIPTION DATETIME ON AUTH REFRESH
+    // ======================================================
+    if (data.action === 'touch_subscription_auth_refresh') {
+      var touchSheet = spreadsheet.getSheetByName('Subscribe');
+      if (!touchSheet) {
+        return createJSON({ result: 'error', message: 'Sheet Subscribe not found' });
+      }
+
+      var touchUsers = parseRecipientUsernames(data.usernames || data.users || data.recipient);
+      if (!touchUsers.length) {
+        return createJSON({ result: 'success', requestedUsers: 0, updatedRows: 0, missingUsers: [] });
+      }
+
+      var touchTimestamp = new Date();
+      var rowsToUpdate = [];
+      var missingUsers = [];
+      for (var i = 0; i < touchUsers.length; i++) {
+        var touchUser = touchUsers[i];
+        var touchRow = findUserRow(touchSheet, touchUser);
+        if (!touchRow) {
+          missingUsers.push(touchUser);
+          continue;
+        }
+        rowsToUpdate.push(touchRow);
+      }
+
+      if (rowsToUpdate.length) {
+        var rangeList = touchSheet.getRangeList(rowsToUpdate.map(function(row) { return 'A' + row; }));
+        rangeList.setValue(touchTimestamp);
+      }
+
+      return createJSON({
+        result: 'success',
+        requestedUsers: touchUsers.length,
+        updatedRows: rowsToUpdate.length,
+        missingUsers: missingUsers
+      });
+    }
+
+    // ======================================================
+    // 5. REMOVE STALE SUBSCRIPTIONS BY ENDPOINT
     // ======================================================
     if (data.action === 'remove_subscriptions_by_endpoint') {
       var subscribeSheet = spreadsheet.getSheetByName('Subscribe');
@@ -707,7 +763,7 @@ function doPost(e) {
     }
 
     // ======================================================
-    // 5. [REVISED] PWA SUBSCRIPTION (To Sheet: Subscribe)
+    // 6. [REVISED] PWA SUBSCRIPTION (To Sheet: Subscribe)
     // ======================================================
     // Requested Columns: DateTime | RegistrationUser | Push Type | Auth JSON | Auth JSON PC
     var SHEET_NAME = 'Subscribe';
