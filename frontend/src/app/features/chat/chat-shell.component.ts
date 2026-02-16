@@ -1030,7 +1030,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const firstUnreadIndex = Math.max(0, messages.length - unreadCount);
     const lastReadIndex = Math.max(0, firstUnreadIndex - 1);
     const targetRow =
-      this.findMessageRowByIndex(lastReadIndex) || this.findMessageRowByIndex(firstUnreadIndex);
+      this.findMessageRowByIndex(firstUnreadIndex) || this.findMessageRowByIndex(lastReadIndex);
     if (!targetRow) {
       if (!options.allowApproximation) {
         return false;
@@ -1049,10 +1049,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       return true;
     }
 
-    const padding = 16;
-    const desiredTop = targetRow.offsetTop + targetRow.offsetHeight - panel.clientHeight + padding;
+    const topPadding = 20;
+    const desiredTop = Math.max(0, targetRow.offsetTop - topPadding);
     panel.scrollTo({
-      top: Math.max(0, desiredTop),
+      top: desiredTop,
       behavior: 'auto'
     });
     this.updateStickyMessageDateFromViewport();

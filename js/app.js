@@ -2998,16 +2998,15 @@ function scrollToLastReadMessage(chatMsgs, firstUnreadIndex = -1) {
     }
     if (unreadIndex < 0) return false;
     const targetIndex = Math.max(unreadIndex - 1, 0);
-    let targetMsg = chatMsgs[targetIndex];
+    let targetMsg = chatMsgs[unreadIndex];
     let targetEl = document.getElementById(getMessageDomId(targetMsg));
     if (!targetEl) {
-        targetMsg = chatMsgs[unreadIndex];
+        targetMsg = chatMsgs[targetIndex];
         targetEl = document.getElementById(getMessageDomId(targetMsg));
     }
     if (!targetEl) return false;
-    const padding = 16;
-    const desiredTop = targetEl.offsetTop + targetEl.offsetHeight - area.clientHeight + padding;
-    area.scrollTop = Math.max(0, desiredTop);
+    const topPadding = 20;
+    area.scrollTop = Math.max(0, targetEl.offsetTop - topPadding);
     return true;
 }
 
