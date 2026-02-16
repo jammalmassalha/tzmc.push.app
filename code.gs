@@ -90,6 +90,75 @@ function normalizeEndpointsInput(rawValue) {
   return result;
 }
 
+function parseRecipientUsernames(recipientRawValue) {
+  var raw = String(recipientRawValue || '').trim();
+  if (!raw) return [];
+  if (raw.toLowerCase() === 'all' || raw === '*') return [];
+
+  var parts = raw.split(',');
+  var seen = {};
+  var users = [];
+  for (var i = 0; i < parts.length; i++) {
+    var normalized = normalizePhone(parts[i]);
+    if (!normalized) continue;
+    if (seen[normalized]) continue;
+    seen[normalized] = true;
+    users.push(normalized);
+  }
+  return users;
+}
+
+function getRecipientAuthJsonForLog(spreadsheet, recipientRawValue) {
+  var users = parseRecipientUsernames(recipientRawValue);
+  if (!users.length) return '';
+
+  var subscribeSheet = spreadsheet.getSheetByName('Subscribe');
+  if (!subscribeSheet) return '';
+
+  var result = [];
+  for (var i = 0; i < users.length; i++) {
+    var user = users[i];
+    var userRow = findUserRow(subscribeSheet, user);
+    if (!userRow) continue;
+    var authValues = subscribeSheet.getRange(userRow, 4, 1, 2).getValues()[0]; // D..E
+    var authJsonMobile = String(authValues[0] || '').trim();
+    var authJsonPc = String(authValues[1] || '').trim();
+    if (!authJsonMobile && !authJsonPc) continue;
+
+    result.push({
+      username: user,
+      authJson: authJsonMobile,
+      authJsonPc: authJsonPc
+    });
+  }
+
+  if (!result.length) return '';
+  if (result.length === 1) {
+    if (result[0].authJson && !result[0].authJsonPc) return result[0].authJson;
+    if (!result[0].authJson && result[0].authJsonPc) return result[0].authJsonPc;
+  }
+  return JSON.stringify(result);
+}
+
+function ensureLogsSheetHasAuthJsonColumn(logsSheet) {
+  var lastCol = Math.max(1, logsSheet.getLastColumn());
+  var headerValues = logsSheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var normalizedHeaders = headerValues.map(function (value) {
+    return String(value || '').trim().toLowerCase();
+  });
+
+  var hasColumn = false;
+  for (var i = 0; i < normalizedHeaders.length; i++) {
+    if (normalizedHeaders[i] === 'recipient auth json' || normalizedHeaders[i] === 'recipientauthjson') {
+      hasColumn = true;
+      break;
+    }
+  }
+  if (!hasColumn) {
+    logsSheet.getRange(1, lastCol + 1).setValue('Recipient Auth JSON');
+  }
+}
+
 function doGet(e) {
   try {
     var spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
@@ -481,8 +550,11 @@ function doPost(e) {
 
       if (!sheet) {
         sheet = spreadsheet.insertSheet('Logs');
-        sheet.appendRow(['Date', 'Recipient', 'Message', 'Status', 'Details', 'Sender']);
+        sheet.appendRow(['Date', 'Recipient', 'Message', 'Status', 'Details', 'Sender', 'Recipient Auth JSON']);
       }
+      ensureLogsSheetHasAuthJsonColumn(sheet);
+
+      var recipientAuthJson = getRecipientAuthJsonForLog(spreadsheet, data.recipient);
 
       sheet.appendRow([
         new Date(),
@@ -490,7 +562,8 @@ function doPost(e) {
         data.sender,
         data.message,
         data.status,
-        data.details
+        data.details,
+        recipientAuthJson
       ]);
       return createJSON({ result: 'success' });
     }
