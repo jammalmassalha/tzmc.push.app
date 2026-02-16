@@ -2,7 +2,7 @@ const vapidKeys = {
     publicKey: "BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk",
     privateKey: "fMQqCaakMboV7LEV57wJhxPAdyppOBRDBjRDVQBxg1s"
 };
-const GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbx4xzP5f41Nnge6Q0S6aMoQUdCsCXeP6ajLswVORrgC5QzfJrEPQBNUYpyzUmdtEF6yjQ/exec';
+const GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbwo4WIOH_68a0UV5ompNXujigGzyGxSoX9yGct3pKv1SWCLAvTouFpGT1f7GekRgf0IBg/exec';
 
 const express = require('express');
 const webpush = require('web-push');
