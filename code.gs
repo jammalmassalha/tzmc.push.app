@@ -120,22 +120,18 @@ function getRecipientAuthJsonForLog(spreadsheet, recipientRawValue) {
     var user = users[i];
     var userRow = findUserRow(subscribeSheet, user);
     if (!userRow) continue;
-    var authValues = subscribeSheet.getRange(userRow, 4, 1, 2).getValues()[0]; // D..E
-    var authJsonMobile = String(authValues[0] || '').trim();
-    var authJsonPc = String(authValues[1] || '').trim();
-    if (!authJsonMobile && !authJsonPc) continue;
+    var authJsonMobile = String(subscribeSheet.getRange(userRow, 4).getValue() || '').trim(); // D only
+    if (!authJsonMobile) continue;
 
     result.push({
       username: user,
-      authJson: authJsonMobile,
-      authJsonPc: authJsonPc
+      authJson: authJsonMobile
     });
   }
 
   if (!result.length) return '';
   if (result.length === 1) {
-    if (result[0].authJson && !result[0].authJsonPc) return result[0].authJson;
-    if (!result[0].authJson && result[0].authJsonPc) return result[0].authJsonPc;
+    return result[0].authJson;
   }
   return JSON.stringify(result);
 }
