@@ -168,6 +168,8 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly reactionTargetMessageId = signal<string | null>(null);
   readonly reactionDetailsPreview = signal<ReactionDetailsPreview | null>(null);
   readonly groupMembersPreview = signal<GroupMembersPreview | null>(null);
+  readonly groupMemberAddOpen = signal(false);
+  readonly groupMemberAddSearchTerm = signal('');
   readonly groupMemberAddCandidates = computed<GroupMemberAddCandidate[]>(() => {
     const preview = this.groupMembersPreview();
     if (!preview?.canManageMembers) return [];
@@ -181,6 +183,16 @@ export class ChatShellComponent implements OnInit, OnDestroy {
         info: contact.info
       }))
       .sort((a, b) => a.displayName.localeCompare(b.displayName, 'he'));
+  });
+  readonly filteredGroupMemberAddCandidates = computed<GroupMemberAddCandidate[]>(() => {
+    const query = this.groupMemberAddSearchTerm().trim().toLowerCase();
+    const candidates = this.groupMemberAddCandidates();
+    if (!query) return candidates;
+    return candidates.filter((candidate) =>
+      candidate.displayName.toLowerCase().includes(query) ||
+      candidate.username.toLowerCase().includes(query) ||
+      String(candidate.info || '').toLowerCase().includes(query)
+    );
   });
   readonly stickyMessageDateLabel = computed(() => {
     const timestamp = this.stickyMessageTimestamp();
@@ -448,6 +460,8 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
     const group = this.findGroupById(activeChat.id);
     if (!group) return;
+    this.groupMemberAddOpen.set(false);
+    this.groupMemberAddSearchTerm.set('');
     this.groupMembersPreview.set(this.buildGroupMembersPreview(group));
   }
 
@@ -460,6 +474,8 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
     const nextMembers = Array.from(new Set([...preview.members.map((member) => member.username), normalized]));
     await this.updateCommunityMembers(preview.groupId, nextMembers, 'המשתתף נוסף לקבוצה.');
+    this.groupMemberAddSearchTerm.set('');
+    this.groupMemberAddOpen.set(false);
   }
 
   async removeCommunityMember(username: string): Promise<void> {
@@ -477,7 +493,22 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   closeGroupMembers(): void {
+    this.groupMemberAddOpen.set(false);
+    this.groupMemberAddSearchTerm.set('');
     this.groupMembersPreview.set(null);
+  }
+
+  toggleGroupMemberAddPanel(): void {
+    const nextState = !this.groupMemberAddOpen();
+    this.groupMemberAddOpen.set(nextState);
+    if (!nextState) {
+      this.groupMemberAddSearchTerm.set('');
+    }
+  }
+
+  onGroupMemberSearchInput(event: Event): void {
+    const target = event.target as HTMLInputElement | null;
+    this.groupMemberAddSearchTerm.set(String(target?.value || ''));
   }
 
   canShowGroupMembers(): boolean {
