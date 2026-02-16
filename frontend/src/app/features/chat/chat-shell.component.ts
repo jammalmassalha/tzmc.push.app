@@ -30,7 +30,11 @@ import {
   ChatMessage,
   DeliveryStatus
 } from '../../core/models/chat.models';
-import { ChatStoreService, IncomingReactionNotice } from '../../core/services/chat-store.service';
+import {
+  ActivatedChatMeta,
+  ChatStoreService,
+  IncomingReactionNotice
+} from '../../core/services/chat-store.service';
 import { CreateGroupDialogComponent } from './dialogs/create-group-dialog.component';
 import { NewChatDialogComponent } from './dialogs/new-chat-dialog.component';
 
@@ -206,14 +210,37 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   );
   private readonly messagePartsCache = new Map<string, ParsedMessageCacheEntry>();
   private readonly scrollBottomThresholdPx = 44;
+  private lastAutoScrollChatId: string | null = null;
+  private lastAutoScrollMessageCount = 0;
   private relativeTimeRefreshId: number | null = null;
   private routeQueryParamsSub: Subscription | null = null;
 
   private readonly autoScrollEffect = effect(() => {
     const activeChatId = this.store.activeChatId();
     const size = this.store.activeMessages().length;
-    if (!activeChatId || size === 0) return;
-    queueMicrotask(() => this.scrollMessagesToBottom('auto'));
+    const activationMeta = this.store.lastActivatedChatMeta();
+    if (!activeChatId || size === 0) {
+      this.lastAutoScrollChatId = activeChatId;
+      this.lastAutoScrollMessageCount = size;
+      return;
+    }
+
+    const chatChanged = this.lastAutoScrollChatId !== activeChatId;
+    const messageCountIncreased = size > this.lastAutoScrollMessageCount;
+    const wasAtBottom = this.isMessagesPanelAtBottom();
+
+    this.lastAutoScrollChatId = activeChatId;
+    this.lastAutoScrollMessageCount = size;
+
+    if (chatChanged) {
+      const unreadBeforeOpen = this.resolveUnreadBeforeOpen(activeChatId, activationMeta);
+      queueMicrotask(() => this.scrollToLastReadBoundary(unreadBeforeOpen));
+      return;
+    }
+
+    if (messageCountIncreased && wasAtBottom) {
+      queueMicrotask(() => this.scrollMessagesToBottom('auto'));
+    }
   });
 
   private readonly viewportStabilityEffect = effect(() => {
@@ -910,6 +937,56 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     });
     this.updateStickyMessageDateFromViewport();
     this.updateMessagesBottomState();
+  }
+
+  private resolveUnreadBeforeOpen(
+    activeChatId: string,
+    activationMeta: ActivatedChatMeta | null
+  ): number {
+    if (!activationMeta || activationMeta.chatId !== activeChatId) {
+      return 0;
+    }
+    const unread = Number(activationMeta.unreadBeforeOpen || 0);
+    return Number.isFinite(unread) ? Math.max(0, Math.floor(unread)) : 0;
+  }
+
+  private scrollToLastReadBoundary(unreadBeforeOpen: number): void {
+    const panel = this.messagesPanel?.nativeElement;
+    const messages = this.store.activeMessages();
+    if (!panel || !messages.length) return;
+
+    const unreadCount = Math.min(
+      messages.length,
+      Math.max(0, Math.floor(Number(unreadBeforeOpen) || 0))
+    );
+    if (unreadCount <= 0) {
+      this.scrollMessagesToBottom('auto');
+      return;
+    }
+
+    const firstUnreadIndex = Math.max(0, messages.length - unreadCount);
+    const lastReadIndex = Math.max(0, firstUnreadIndex - 1);
+    const targetRow =
+      this.findMessageRowByIndex(lastReadIndex) || this.findMessageRowByIndex(firstUnreadIndex);
+    if (!targetRow) {
+      this.scrollMessagesToBottom('auto');
+      return;
+    }
+
+    const padding = 16;
+    const desiredTop = targetRow.offsetTop + targetRow.offsetHeight - panel.clientHeight + padding;
+    panel.scrollTo({
+      top: Math.max(0, desiredTop),
+      behavior: 'auto'
+    });
+    this.updateStickyMessageDateFromViewport();
+    this.updateMessagesBottomState();
+  }
+
+  private findMessageRowByIndex(messageIndex: number): HTMLElement | null {
+    const panel = this.messagesPanel?.nativeElement;
+    if (!panel || !Number.isFinite(messageIndex) || messageIndex < 0) return null;
+    return panel.querySelector<HTMLElement>(`.message-row[data-message-index="${messageIndex}"]`);
   }
 
   private updateViewportHeight(): void {

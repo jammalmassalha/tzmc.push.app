@@ -62,12 +62,19 @@ export interface IncomingReactionNotice {
   emoji: string;
 }
 
+export interface ActivatedChatMeta {
+  chatId: string;
+  unreadBeforeOpen: number;
+  activatedAt: number;
+}
+
 @Injectable({ providedIn: 'root' })
 export class ChatStoreService {
   readonly currentUser = signal<string | null>(this.readStoredUser());
   readonly contacts = signal<Contact[]>([]);
   readonly groups = signal<ChatGroup[]>([]);
   readonly activeChatId = signal<string | null>(null);
+  readonly lastActivatedChatMeta = signal<ActivatedChatMeta | null>(null);
   readonly unreadByChat = signal<Record<string, number>>({});
   readonly loading = signal(false);
   readonly syncing = signal(false);
@@ -335,10 +342,17 @@ export class ChatStoreService {
   setActiveChat(chatId: string | null): void {
     if (!chatId) {
       this.activeChatId.set(null);
+      this.lastActivatedChatMeta.set(null);
       return;
     }
 
     const normalized = this.normalizeChatId(chatId);
+    const unreadBeforeOpen = Math.max(0, Math.floor(Number(this.unreadByChat()[normalized] ?? 0)));
+    this.lastActivatedChatMeta.set({
+      chatId: normalized,
+      unreadBeforeOpen,
+      activatedAt: Date.now()
+    });
     this.activeChatId.set(normalized);
     const user = this.currentUser();
     if (user) {
