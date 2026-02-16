@@ -550,7 +550,12 @@ function doPost(e) {
       }
       ensureLogsSheetHasAuthJsonColumn(sheet);
 
-      var recipientAuthJson = getRecipientAuthJsonForLog(spreadsheet, data.recipient);
+      // Primary source: value provided by backend server payload.
+      // Fallback keeps compatibility for older senders that don't send recipientAuthJson yet.
+      var recipientAuthJson = String(data.recipientAuthJson || '').trim();
+      if (!recipientAuthJson) {
+        recipientAuthJson = getRecipientAuthJsonForLog(spreadsheet, data.recipient);
+      }
 
       sheet.appendRow([
         new Date(),
