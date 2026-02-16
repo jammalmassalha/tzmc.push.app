@@ -92,13 +92,22 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 // --- 2. STORAGE CONFIG ---
+// --- 2. STORAGE CONFIG ---
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadDir),
-    filename: (req, file, cb) => {
-        const ext = path.extname(file.originalname);
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + ext);
+  destination: (req, file, cb) => cb(null, uploadDir),
+  filename: (req, file, cb) => {
+    const originalName = file.originalname;
+    const ext = path.extname(originalName);
+
+    if (originalName && originalName.trim() !== '') {
+      // ✅ Use filename sent by client
+      cb(null, originalName);
+    } else {
+      // 🔁 Fallback to unique name
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+      cb(null, uniqueSuffix + ext);
     }
+  }
 });
 const upload = multer({ storage: storage });
 const uploadFields = upload.fields([{ name: 'file', maxCount: 1 }, { name: 'thumbnail', maxCount: 1 }]);
