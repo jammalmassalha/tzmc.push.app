@@ -48,11 +48,20 @@
           <mat-icon class="search-icon">search</mat-icon>
           <input
             class="search-input"
-            type="search"
+            type="text"
             [formControl]="searchControl"
             placeholder="חיפוש או פתיחת צ׳אט חדש"
             aria-label="חיפוש צ׳אטים"
             autocomplete="off" />
+          @if (searchControl.value.length > 0) {
+            <button
+              type="button"
+              class="search-clear-btn"
+              (click)="clearChatSearch(); $event.preventDefault(); $event.stopPropagation()"
+              aria-label="נקה חיפוש">
+              <mat-icon>close</mat-icon>
+            </button>
+          }
         </label>
 
         <div class="contacts-actions">
@@ -414,12 +423,21 @@
                 <mat-icon class="group-member-add-search-icon">search</mat-icon>
                 <input
                   class="group-member-add-search-input"
-                  type="search"
+                  type="text"
                   [value]="groupMemberAddSearchTerm()"
                   (input)="onGroupMemberSearchInput($event)"
                   placeholder="חיפוש איש קשר להוספה"
                   aria-label="חיפוש איש קשר להוספה"
                   autocomplete="off" />
+                @if (groupMemberAddSearchTerm().length > 0) {
+                  <button
+                    type="button"
+                    class="group-member-add-search-clear"
+                    (click)="clearGroupMemberSearch(); $event.preventDefault(); $event.stopPropagation()"
+                    aria-label="נקה חיפוש אנשי קשר">
+                    <mat-icon>close</mat-icon>
+                  </button>
+                }
               </label>
 
               @if (!filteredGroupMemberAddCandidates().length) {

@@ -453,6 +453,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     await this.router.navigate(['/setup']);
   }
 
+  clearChatSearch(): void {
+    this.searchControl.setValue('');
+  }
+
   openGroupMembers(): void {
     this.closeReactionDetails();
     const activeChat = this.store.activeChat();
@@ -509,6 +513,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   onGroupMemberSearchInput(event: Event): void {
     const target = event.target as HTMLInputElement | null;
     this.groupMemberAddSearchTerm.set(String(target?.value || ''));
+  }
+
+  clearGroupMemberSearch(): void {
+    this.groupMemberAddSearchTerm.set('');
   }
 
   canShowGroupMembers(): boolean {

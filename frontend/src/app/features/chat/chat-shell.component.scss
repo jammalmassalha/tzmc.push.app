@@ -118,8 +118,6 @@ mat-chip:not(.offline) {
   direction: rtl;
   text-align: right;
   font-family: inherit;
-  -webkit-appearance: searchfield;
-  appearance: auto;
 }
 
 .search-input::placeholder {
@@ -127,12 +125,28 @@ mat-chip:not(.offline) {
   opacity: 1;
 }
 
-.search-input::-webkit-search-cancel-button,
-.group-member-add-search-input::-webkit-search-cancel-button {
-  -webkit-appearance: searchfield-cancel-button;
-  appearance: auto;
-  display: block;
+.search-clear-btn {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  background: rgba(11, 20, 26, 0.08);
+  color: #526173;
   cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.search-clear-btn:hover {
+  background: rgba(11, 20, 26, 0.14);
+}
+
+.search-clear-btn mat-icon {
+  width: 14px;
+  height: 14px;
+  font-size: 14px;
+  line-height: 14px;
 }
 
 .contacts-actions {
@@ -1141,13 +1155,35 @@ mat-chip:not(.offline) {
   direction: rtl;
   text-align: right;
   font-family: inherit;
-  -webkit-appearance: searchfield;
-  appearance: auto;
 }
 
 .group-member-add-search-input::placeholder {
   color: #667781;
   opacity: 1;
+}
+
+.group-member-add-search-clear {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  background: rgba(11, 20, 26, 0.08);
+  color: #516074;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.group-member-add-search-clear:hover {
+  background: rgba(11, 20, 26, 0.14);
+}
+
+.group-member-add-search-clear mat-icon {
+  width: 13px;
+  height: 13px;
+  font-size: 13px;
+  line-height: 13px;
 }
 
 .group-member-add-empty {
