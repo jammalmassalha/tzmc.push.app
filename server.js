@@ -1698,7 +1698,8 @@ app.all(['/subscription', '/notify/subscription'], express.text({ type: '*/*', l
             invalidateSubscriptionCacheForUsers([payload.username]);
             return res.json({ result: 'success', action: saved.action || 'updated' });
         }
-        return res.status(503).json({ result: 'error', message: saved.error || 'Failed to save subscription.' });
+        console.warn('[SUBSCRIPTION] DB save failed, proxying to sheet:', saved.error || 'unknown error');
+        return proxySubscriptionPostToSheet(payload, res);
     }
 
     if (postAction === 'remove_subscriptions_by_endpoint') {
