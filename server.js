@@ -797,8 +797,58 @@ function scheduleStateSave() {
     }, 1000);
 }
 
+function buildMobileSubscriptionAuthJsonForLog(recipient, subscriptions = []) {
+    const recipientUsers = parseUsernamesInput(recipient);
+    const recipientSet = new Set(recipientUsers.map(normalizeUserKey).filter(Boolean));
+    const authByUser = new Map();
+
+    (Array.isArray(subscriptions) ? subscriptions : []).forEach((subscription) => {
+        if (!subscription || typeof subscription !== 'object') return;
+        const subscriptionType = String(subscription.type || '').trim().toLowerCase();
+        if (subscriptionType === 'pc') return;
+
+        const username = normalizeUserKey(subscription.username || subscription.user);
+        if (recipientSet.size && username && !recipientSet.has(username)) return;
+
+        const endpoint = typeof subscription.endpoint === 'string' ? subscription.endpoint.trim() : '';
+        const keys = subscription.keys && typeof subscription.keys === 'object' ? subscription.keys : null;
+        const p256dh = keys && typeof keys.p256dh === 'string' ? keys.p256dh.trim() : '';
+        const auth = keys && typeof keys.auth === 'string' ? keys.auth.trim() : '';
+        if (!endpoint || !p256dh || !auth) return;
+
+        const mobileAuthJson = {
+            endpoint,
+            expirationTime: subscription.expirationTime || null,
+            keys: { p256dh, auth }
+        };
+        const mapKey = username || '';
+        if (!authByUser.has(mapKey)) {
+            authByUser.set(mapKey, mobileAuthJson);
+        }
+    });
+
+    if (!authByUser.size) return '';
+    if (recipientSet.size <= 1) {
+        const directKey = recipientUsers.length ? normalizeUserKey(recipientUsers[0]) : '';
+        const directMatch = directKey ? authByUser.get(directKey) : null;
+        const fallback = directMatch || authByUser.values().next().value;
+        return fallback ? JSON.stringify(fallback) : '';
+    }
+
+    const merged = [];
+    for (const [username, authJson] of authByUser.entries()) {
+        if (!username || !authJson) continue;
+        merged.push({ username, authJson });
+    }
+    if (!merged.length) {
+        const fallback = authByUser.values().next().value;
+        return fallback ? JSON.stringify(fallback) : '';
+    }
+    return JSON.stringify(merged);
+}
+
 // Helper: Log status to Google Sheets
-function logNotificationStatus(sender, recipient, messageShort, status, details) {
+function logNotificationStatus(sender, recipient, messageShort, status, details, recipientAuthJson = '') {
     fetchWithRetry(GOOGLE_SHEET_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -808,7 +858,8 @@ function logNotificationStatus(sender, recipient, messageShort, status, details)
             recipient: recipient,
             message: messageShort,
             status: status,
-            details: details
+            details: details,
+            recipientAuthJson: recipientAuthJson || ''
         })
     }, { timeoutMs: 10000, retries: 2 }).catch(err => console.error('[LOG ERROR]', err.message));
 }
@@ -1018,9 +1069,20 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         // Force refresh once to avoid stale cache windows (common after iOS resubscribe).
         rawSubscriptions = await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true });
     }
+    const recipientAuthJsonForLog = buildMobileSubscriptionAuthJsonForLog(
+        targetUsersArray.join(','),
+        rawSubscriptions || []
+    );
 
     if (!rawSubscriptions || rawSubscriptions.length === 0) {
-        logNotificationStatus(finalSender, targetUsersArray.join(','), logContent, 'Failed', 'No subscriptions found');
+        logNotificationStatus(
+            finalSender,
+            targetUsersArray.join(','),
+            logContent,
+            'Failed',
+            'No subscriptions found',
+            recipientAuthJsonForLog
+        );
         return { success: 0, failed: 0 };
     }
 
@@ -1148,7 +1210,14 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     // Log to Sheet
     const fullReport = executionLogs.join('\n');
     let finalStatus = successCount > 0 ? 'Sent' : 'Failed';
-    logNotificationStatus(finalSender, targetUsersArray.join(','), logContent, finalStatus, fullReport);
+    logNotificationStatus(
+        finalSender,
+        targetUsersArray.join(','),
+        logContent,
+        finalStatus,
+        fullReport,
+        recipientAuthJsonForLog
+    );
 
     return { success: successCount, failed: failCount };
 }
