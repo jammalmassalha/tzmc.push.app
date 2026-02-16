@@ -2,7 +2,7 @@ const vapidKeys = {
     publicKey: "BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk",
     privateKey: "fMQqCaakMboV7LEV57wJhxPAdyppOBRDBjRDVQBxg1s"
 };
-const GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbxTzd4oEqs_3vGEObKpFUPcDjQbjuiOiFKDjUm6Kvvh2zsdzhu7zGrcewnuWrtEExbC/exec';
+const GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbwO3GLm31Bx2Yen_6dTIlK2argT9Vc7O8wR4YHvdFRw-6m0uOOlq5KhAA14LrVJW6UeIQ/exec';
 
 const express = require('express');
 const webpush = require('web-push');
@@ -13,12 +13,6 @@ const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
 const crypto = require('crypto');
-let mysql = null;
-try {
-    mysql = require('mysql2/promise');
-} catch (err) {
-    console.warn('[DB] mysql2/promise module not found. Subscription DB mode disabled until installed.');
-}
 
 // --- 1. SETUP UPLOADS FOLDER ---
 const uploadDir = path.join(__dirname, 'uploads');
@@ -91,7 +85,6 @@ if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir);
 }
 
-// --- 2. STORAGE CONFIG ---
 // --- 2. STORAGE CONFIG ---
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
@@ -205,28 +198,6 @@ const AUTH_REFRESH_CONTACT_DISCOVERY_CONCURRENCY = 8;
 const AUTH_REFRESH_CONTACT_DISCOVERY_MAX_SEEDS = 120;
 const AUTH_REFRESH_FAILURE_DETAILS_LIMIT = 80;
 const AUTH_REFRESH_STALE_CLEANUP_BATCH_SIZE = 40;
-const SUBSCRIPTION_DB_NAME = process.env.SUBSCRIPTION_DB_NAME || process.env.MYSQL_DATABASE || 'jmassalh_subscribes';
-const SUBSCRIPTION_DB_TABLE = process.env.SUBSCRIPTION_DB_TABLE || 'Subscribe';
-const SUBSCRIPTION_SYNC_URL = process.env.SUBSCRIPTION_SYNC_URL || 'https://www.tzmc.co.il/notify/subscription';
-const SUBSCRIPTION_PROXY_GET_ACTIONS = new Set([
-    'get_contacts',
-    'get_departments',
-    'get_actions',
-    'get_hr_steps',
-    'get_hr_steps_action',
-    'check_auth',
-    'check_queue'
-]);
-const SUBSCRIPTION_PROXY_POST_ACTIONS = new Set([
-    'save_log',
-    'backup_chats',
-    'bot_support_register',
-    'save_reply'
-]);
-const SUBSCRIPTION_TABLE_META_TTL_MS = 5 * 60 * 1000;
-let subscriptionDbPool = null;
-let subscriptionDbMeta = null;
-let subscriptionDbMetaAt = 0;
 let subscriptionAuthRefreshState = {
     running: false,
     lastRunAt: 0,
@@ -353,459 +324,6 @@ function parseUsernamesInput(rawValue) {
     const normalized = new Set();
     values.forEach((value) => addUserToSet(normalized, value));
     return Array.from(normalized);
-}
-
-function quoteSqlIdentifier(identifier) {
-    return `\`${String(identifier || '').replace(/`/g, '``')}\``;
-}
-
-function normalizeStoredUsername(value) {
-    let text = String(value || '').trim();
-    if (text.startsWith("'")) {
-        text = text.slice(1);
-    }
-    return normalizeUserKey(text);
-}
-
-function parseSubscriptionJsonValue(value) {
-    if (!value) return null;
-    if (typeof value === 'object') {
-        return value;
-    }
-    if (typeof value !== 'string') return null;
-    const text = value.trim();
-    if (!text) return null;
-    try {
-        return JSON.parse(text);
-    } catch (error) {
-        return null;
-    }
-}
-
-function extractSubscriptionEndpoint(value) {
-    const parsed = parseSubscriptionJsonValue(value);
-    if (!parsed || typeof parsed !== 'object') return '';
-    return typeof parsed.endpoint === 'string' ? parsed.endpoint.trim() : '';
-}
-
-function pickColumnByCandidates(columns = [], candidates = []) {
-    const byLower = new Map(columns.map((column) => [String(column || '').toLowerCase(), column]));
-    for (const candidate of candidates) {
-        const match = byLower.get(String(candidate || '').toLowerCase());
-        if (match) return match;
-    }
-    return null;
-}
-
-async function getSubscriptionDbPool() {
-    if (!mysql) return null;
-    if (subscriptionDbPool) return subscriptionDbPool;
-
-    const host = process.env.SUBSCRIPTION_DB_HOST || process.env.MYSQL_HOST;
-    const port = Number(process.env.SUBSCRIPTION_DB_PORT || process.env.MYSQL_PORT || 3306);
-    const user = process.env.SUBSCRIPTION_DB_USER || process.env.MYSQL_USER;
-    const password = process.env.SUBSCRIPTION_DB_PASSWORD || process.env.MYSQL_PASSWORD;
-    if (!host || !user) {
-        return null;
-    }
-
-    subscriptionDbPool = mysql.createPool({
-        host,
-        port,
-        user,
-        password,
-        database: SUBSCRIPTION_DB_NAME,
-        waitForConnections: true,
-        connectionLimit: 8,
-        queueLimit: 0,
-        charset: 'utf8mb4'
-    });
-    return subscriptionDbPool;
-}
-
-async function getSubscriptionDbMeta(forceRefresh = false) {
-    const now = Date.now();
-    if (!forceRefresh && subscriptionDbMeta && now - subscriptionDbMetaAt < SUBSCRIPTION_TABLE_META_TTL_MS) {
-        return subscriptionDbMeta;
-    }
-
-    const pool = await getSubscriptionDbPool();
-    if (!pool) return null;
-    try {
-        const [rows] = await pool.query(`SHOW COLUMNS FROM ${quoteSqlIdentifier(SUBSCRIPTION_DB_TABLE)}`);
-        const columns = Array.isArray(rows) ? rows.map((row) => String(row.Field || '').trim()).filter(Boolean) : [];
-        if (!columns.length) return null;
-
-        const userColumn = pickColumnByCandidates(columns, [
-            'registration_user',
-            'RegistrationUser',
-            'Registration User',
-            'username',
-            'user',
-            'phone'
-        ]);
-        const pushTypeColumn = pickColumnByCandidates(columns, [
-            'push_type',
-            'Push Type',
-            'PushType',
-            'endpoint'
-        ]);
-        const mobileAuthColumn = pickColumnByCandidates(columns, [
-            'auth_json',
-            'Auth JSON',
-            'AuthJSON',
-            'subscription',
-            'subscription_mobile'
-        ]);
-        const pcAuthColumn = pickColumnByCandidates(columns, [
-            'auth_json_pc',
-            'Auth JSON PC',
-            'AuthJSONPC',
-            'subscription_pc',
-            'subscriptionPC'
-        ]);
-        const updatedAtColumn = pickColumnByCandidates(columns, [
-            'updated_at',
-            'DateTime',
-            'date_time',
-            'created_at',
-            'timestamp'
-        ]);
-        if (!userColumn || (!mobileAuthColumn && !pcAuthColumn)) {
-            return null;
-        }
-
-        subscriptionDbMeta = {
-            table: SUBSCRIPTION_DB_TABLE,
-            columns,
-            userColumn,
-            pushTypeColumn,
-            mobileAuthColumn,
-            pcAuthColumn,
-            updatedAtColumn
-        };
-        subscriptionDbMetaAt = now;
-        return subscriptionDbMeta;
-    } catch (error) {
-        console.warn('[DB] Failed to load subscription table metadata:', error.message);
-        subscriptionDbMeta = null;
-        subscriptionDbMetaAt = now;
-        return null;
-    }
-}
-
-async function querySubscriptionRowsFromDb() {
-    const meta = await getSubscriptionDbMeta();
-    const pool = await getSubscriptionDbPool();
-    if (!meta || !pool) return null;
-    const selectColumns = [meta.userColumn, meta.mobileAuthColumn, meta.pcAuthColumn]
-        .filter(Boolean)
-        .map((column) => quoteSqlIdentifier(column))
-        .join(', ');
-    try {
-        const [rows] = await pool.query(
-            `SELECT ${selectColumns} FROM ${quoteSqlIdentifier(meta.table)}`
-        );
-        return { rows: Array.isArray(rows) ? rows : [], meta };
-    } catch (error) {
-        console.warn('[DB] Failed to query subscription rows:', error.message);
-        return null;
-    }
-}
-
-function mapDbRowToSubscriptions(row, meta) {
-    if (!row || !meta) return [];
-    const username = normalizeStoredUsername(row[meta.userColumn]);
-    const subscriptions = [];
-    if (meta.mobileAuthColumn) {
-        const mobileSubscription = parseSubscriptionJsonValue(row[meta.mobileAuthColumn]);
-        if (mobileSubscription && typeof mobileSubscription === 'object') {
-            subscriptions.push({
-                ...mobileSubscription,
-                username: username || mobileSubscription.username
-            });
-        }
-    }
-    if (meta.pcAuthColumn) {
-        const pcSubscription = parseSubscriptionJsonValue(row[meta.pcAuthColumn]);
-        if (pcSubscription && typeof pcSubscription === 'object') {
-            subscriptions.push({
-                ...pcSubscription,
-                username: username || pcSubscription.username
-            });
-        }
-    }
-    return subscriptions;
-}
-
-async function getSubscriptionsFromDb(usernames = [], options = {}) {
-    const dbRowsResult = await querySubscriptionRowsFromDb();
-    if (!dbRowsResult) return null;
-
-    const targetUsers = new Set(parseUsernamesInput(usernames));
-    const fetchAll = Boolean(options.fetchAll || targetUsers.size === 0);
-    const collected = [];
-    dbRowsResult.rows.forEach((row) => {
-        const rowUser = normalizeStoredUsername(row[dbRowsResult.meta.userColumn]);
-        if (!fetchAll && rowUser && !targetUsers.has(rowUser)) {
-            return;
-        }
-        collected.push(...mapDbRowToSubscriptions(row, dbRowsResult.meta));
-    });
-
-    return dedupeSubscriptionsByEndpoint(collected);
-}
-
-async function saveSubscriptionToDb(payload = {}) {
-    const pool = await getSubscriptionDbPool();
-    const meta = await getSubscriptionDbMeta();
-    if (!pool || !meta) {
-        return { ok: false, error: 'Subscription DB is unavailable.' };
-    }
-
-    const username = normalizeUserKey(payload.username);
-    const fallbackSubscription = payload.subscription || payload.subscriptionMobile || payload.subscriptionPC;
-    if (!username || !fallbackSubscription || !fallbackSubscription.endpoint) {
-        return { ok: false, error: 'Missing username or subscription endpoint.' };
-    }
-
-    const deviceType = String(payload.deviceType || '').trim().toLowerCase();
-    const platform = String(payload.platform || '').trim().toLowerCase();
-    const isPcUpdate = deviceType === 'pc' || platform === 'desktop' || Boolean(
-        payload.subscriptionPC && payload.subscriptionPC.endpoint
-    );
-    const incomingMobile = parseSubscriptionJsonValue(
-        payload.subscriptionMobile || (isPcUpdate ? null : payload.subscription)
-    );
-    const incomingPc = parseSubscriptionJsonValue(
-        payload.subscriptionPC || (isPcUpdate ? payload.subscription : null)
-    );
-
-    const whereQuery = `SELECT ${[meta.userColumn, meta.mobileAuthColumn, meta.pcAuthColumn]
-        .filter(Boolean)
-        .map((column) => quoteSqlIdentifier(column))
-        .join(', ')} FROM ${quoteSqlIdentifier(meta.table)} WHERE ${quoteSqlIdentifier(meta.userColumn)} IN (?, ?) LIMIT 1`;
-
-    let existingRow = null;
-    try {
-        const [existingRows] = await pool.query(whereQuery, [username, `'${username}`]);
-        existingRow = Array.isArray(existingRows) && existingRows.length ? existingRows[0] : null;
-    } catch (error) {
-        return { ok: false, error: `Failed to load existing subscription row: ${error.message}` };
-    }
-
-    const existingMobile = existingRow && meta.mobileAuthColumn
-        ? parseSubscriptionJsonValue(existingRow[meta.mobileAuthColumn])
-        : null;
-    const existingPc = existingRow && meta.pcAuthColumn
-        ? parseSubscriptionJsonValue(existingRow[meta.pcAuthColumn])
-        : null;
-
-    let nextMobile = existingMobile;
-    let nextPc = existingPc;
-    if (incomingMobile && incomingMobile.endpoint) {
-        nextMobile = incomingMobile;
-    }
-    if (incomingPc && incomingPc.endpoint) {
-        nextPc = incomingPc;
-    }
-    if (!incomingMobile && !incomingPc) {
-        if (isPcUpdate) {
-            nextPc = parseSubscriptionJsonValue(payload.subscription) || nextPc;
-        } else {
-            nextMobile = parseSubscriptionJsonValue(payload.subscription) || nextMobile;
-        }
-    }
-
-    const primaryEndpoint = extractSubscriptionEndpoint(nextMobile) || extractSubscriptionEndpoint(nextPc) || String(fallbackSubscription.endpoint || '').trim();
-    if (!primaryEndpoint) {
-        return { ok: false, error: 'No endpoint available after merge.' };
-    }
-
-    const updateColumns = [];
-    const updateValues = [];
-    updateColumns.push(`${quoteSqlIdentifier(meta.userColumn)} = ?`);
-    updateValues.push(username);
-    if (meta.pushTypeColumn) {
-        updateColumns.push(`${quoteSqlIdentifier(meta.pushTypeColumn)} = ?`);
-        updateValues.push(primaryEndpoint);
-    }
-    if (meta.mobileAuthColumn) {
-        updateColumns.push(`${quoteSqlIdentifier(meta.mobileAuthColumn)} = ?`);
-        updateValues.push(nextMobile ? JSON.stringify(nextMobile) : '');
-    }
-    if (meta.pcAuthColumn) {
-        updateColumns.push(`${quoteSqlIdentifier(meta.pcAuthColumn)} = ?`);
-        updateValues.push(nextPc ? JSON.stringify(nextPc) : '');
-    }
-    if (meta.updatedAtColumn) {
-        updateColumns.push(`${quoteSqlIdentifier(meta.updatedAtColumn)} = ?`);
-        updateValues.push(new Date());
-    }
-
-    try {
-        if (existingRow) {
-            const sql = `UPDATE ${quoteSqlIdentifier(meta.table)} SET ${updateColumns.join(', ')} WHERE ${quoteSqlIdentifier(meta.userColumn)} IN (?, ?)`;
-            await pool.query(sql, [...updateValues, username, `'${username}`]);
-            return { ok: true, action: 'updated' };
-        }
-
-        const insertColumns = updateColumns.map((entry) => entry.split(' = ')[0]);
-        const placeholders = insertColumns.map(() => '?').join(', ');
-        const sql = `INSERT INTO ${quoteSqlIdentifier(meta.table)} (${insertColumns.join(', ')}) VALUES (${placeholders})`;
-        await pool.query(sql, updateValues);
-        return { ok: true, action: 'created' };
-    } catch (error) {
-        return { ok: false, error: `Failed to save subscription: ${error.message}` };
-    }
-}
-
-async function removeStaleSubscriptionsFromDb(staleEndpoints = []) {
-    const endpointSet = new Set(
-        (Array.isArray(staleEndpoints) ? staleEndpoints : [])
-            .map((endpoint) => String(endpoint || '').trim())
-            .filter(Boolean)
-    );
-    if (!endpointSet.size) {
-        return {
-            requestedEndpoints: 0,
-            clearedSubscriptions: 0,
-            rowsTouched: 0,
-            failedBatches: 0
-        };
-    }
-
-    const pool = await getSubscriptionDbPool();
-    const meta = await getSubscriptionDbMeta();
-    if (!pool || !meta) return null;
-
-    const rowsResult = await querySubscriptionRowsFromDb();
-    if (!rowsResult) return null;
-
-    let rowsTouched = 0;
-    let clearedSubscriptions = 0;
-    for (const row of rowsResult.rows) {
-        const username = normalizeStoredUsername(row[meta.userColumn]);
-        if (!username) continue;
-        const existingMobile = meta.mobileAuthColumn ? parseSubscriptionJsonValue(row[meta.mobileAuthColumn]) : null;
-        const existingPc = meta.pcAuthColumn ? parseSubscriptionJsonValue(row[meta.pcAuthColumn]) : null;
-        let nextMobile = existingMobile;
-        let nextPc = existingPc;
-        let changed = false;
-
-        const mobileEndpoint = extractSubscriptionEndpoint(existingMobile);
-        if (mobileEndpoint && endpointSet.has(mobileEndpoint)) {
-            nextMobile = null;
-            changed = true;
-            clearedSubscriptions++;
-        }
-        const pcEndpoint = extractSubscriptionEndpoint(existingPc);
-        if (pcEndpoint && endpointSet.has(pcEndpoint)) {
-            nextPc = null;
-            changed = true;
-            clearedSubscriptions++;
-        }
-        if (!changed) continue;
-
-        const primaryEndpoint = extractSubscriptionEndpoint(nextMobile) || extractSubscriptionEndpoint(nextPc) || '';
-        const updateColumns = [];
-        const updateValues = [];
-        if (meta.pushTypeColumn) {
-            updateColumns.push(`${quoteSqlIdentifier(meta.pushTypeColumn)} = ?`);
-            updateValues.push(primaryEndpoint);
-        }
-        if (meta.mobileAuthColumn) {
-            updateColumns.push(`${quoteSqlIdentifier(meta.mobileAuthColumn)} = ?`);
-            updateValues.push(nextMobile ? JSON.stringify(nextMobile) : '');
-        }
-        if (meta.pcAuthColumn) {
-            updateColumns.push(`${quoteSqlIdentifier(meta.pcAuthColumn)} = ?`);
-            updateValues.push(nextPc ? JSON.stringify(nextPc) : '');
-        }
-        if (meta.updatedAtColumn) {
-            updateColumns.push(`${quoteSqlIdentifier(meta.updatedAtColumn)} = ?`);
-            updateValues.push(new Date());
-        }
-        if (!updateColumns.length) continue;
-
-        const sql = `UPDATE ${quoteSqlIdentifier(meta.table)} SET ${updateColumns.join(', ')} WHERE ${quoteSqlIdentifier(meta.userColumn)} IN (?, ?)`;
-        await pool.query(sql, [...updateValues, username, `'${username}`]);
-        rowsTouched++;
-    }
-
-    return {
-        requestedEndpoints: endpointSet.size,
-        clearedSubscriptions,
-        rowsTouched,
-        failedBatches: 0
-    };
-}
-
-function invalidateSubscriptionCacheForUsers(usernames = []) {
-    const targetUsers = new Set(parseUsernamesInput(usernames));
-    if (!targetUsers.size) return;
-    for (const cacheKey of subscriptionCache.keys()) {
-        const keyUsers = cacheKey.split(',').map(normalizeUserKey).filter(Boolean);
-        if (keyUsers.some((userKey) => targetUsers.has(userKey))) {
-            subscriptionCache.delete(cacheKey);
-        }
-    }
-}
-
-function parseSubscriptionRequestBody(req) {
-    if (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) {
-        return req.body;
-    }
-    if (typeof req.body === 'string' && req.body.trim()) {
-        try {
-            return JSON.parse(req.body);
-        } catch (error) {
-            return {};
-        }
-    }
-    return {};
-}
-
-async function proxySubscriptionGetToSheet(req, res) {
-    const params = new URLSearchParams();
-    Object.entries(req.query || {}).forEach(([key, value]) => {
-        if (value === undefined || value === null) return;
-        if (Array.isArray(value)) {
-            value.forEach((item) => params.append(key, String(item)));
-        } else {
-            params.append(key, String(value));
-        }
-    });
-    const url = `${GOOGLE_SHEET_URL}${params.toString() ? `?${params.toString()}` : ''}`;
-    try {
-        const response = await fetchWithRetry(url, {}, { timeoutMs: 15000, retries: 2, backoffMs: 700 });
-        const responseText = await response.text();
-        res.status(response.status);
-        res.set('Content-Type', response.headers.get('content-type') || 'application/json; charset=utf-8');
-        res.send(responseText);
-    } catch (error) {
-        res.status(502).json({ result: 'error', message: error.message });
-    }
-}
-
-async function proxySubscriptionPostToSheet(payload, res) {
-    try {
-        const response = await fetchWithRetry(
-            GOOGLE_SHEET_URL,
-            {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload || {})
-            },
-            { timeoutMs: 15000, retries: 2, backoffMs: 700 }
-        );
-        const responseText = await response.text();
-        res.status(response.status);
-        res.set('Content-Type', response.headers.get('content-type') || 'application/json; charset=utf-8');
-        res.send(responseText);
-    } catch (error) {
-        res.status(502).json({ result: 'error', message: error.message });
-    }
 }
 
 function extractUsernamesFromContactsResponse(payload = {}) {
@@ -935,24 +453,15 @@ async function getAllSubscriptionsForAuthRefresh(options = {}) {
     const requestedUsers = parseUsernamesInput(options.usernames);
     requestedUsers.forEach((userKey) => addUserToSet(discoveredUsers, userKey));
 
-    const dbSubscriptions = await getSubscriptionsFromDb(
-        requestedUsers,
-        { fetchAll: requestedUsers.length === 0 }
-    );
-    const usingDbSource = Array.isArray(dbSubscriptions);
-    if (usingDbSource) {
-        collected.push(...dbSubscriptions);
-    } else {
-        const sheetUrls = [
-            `${GOOGLE_SHEET_URL}?usernames=${encodeURIComponent('all')}`,
-            `${GOOGLE_SHEET_URL}?action=get_all_subscriptions`,
-            `${GOOGLE_SHEET_URL}?action=get_subscriptions`
-        ];
-        for (const url of sheetUrls) {
-            const fromSheet = await fetchSubscriptionsFromSheetUrl(url);
-            if (fromSheet.length) {
-                collected.push(...fromSheet);
-            }
+    const sheetUrls = [
+        `${GOOGLE_SHEET_URL}?usernames=${encodeURIComponent('all')}`,
+        `${GOOGLE_SHEET_URL}?action=get_all_subscriptions`,
+        `${GOOGLE_SHEET_URL}?action=get_subscriptions`
+    ];
+    for (const url of sheetUrls) {
+        const fromSheet = await fetchSubscriptionsFromSheetUrl(url);
+        if (fromSheet.length) {
+            collected.push(...fromSheet);
         }
     }
 
@@ -965,7 +474,7 @@ async function getAllSubscriptionsForAuthRefresh(options = {}) {
         addUserToSet(discoveredUsers, subscription.username);
     });
 
-    if (!usingDbSource && requestedUsers.length === 0) {
+    if (requestedUsers.length === 0) {
         const localSeeds = collectKnownUserSeeds();
         localSeeds.forEach((userKey) => addUserToSet(discoveredUsers, userKey));
 
@@ -975,15 +484,13 @@ async function getAllSubscriptionsForAuthRefresh(options = {}) {
         }
     }
 
-    if (!usingDbSource) {
-        const cacheUsersList = Array.from(discoveredUsers).slice(0, AUTH_REFRESH_MAX_DISCOVERY_USERS);
-        const batchSize = 40;
-        for (let i = 0; i < cacheUsersList.length; i += batchSize) {
-            const batch = cacheUsersList.slice(i, i + batchSize);
-            if (!batch.length) continue;
-            const batchSubscriptions = await getSubscriptionFromSheet(batch, { forceRefresh: true });
-            collectSubscriptionsFromValue(batchSubscriptions, collected);
-        }
+    const cacheUsersList = Array.from(discoveredUsers).slice(0, AUTH_REFRESH_MAX_DISCOVERY_USERS);
+    const batchSize = 40;
+    for (let i = 0; i < cacheUsersList.length; i += batchSize) {
+        const batch = cacheUsersList.slice(i, i + batchSize);
+        if (!batch.length) continue;
+        const batchSubscriptions = await getSubscriptionFromSheet(batch, { forceRefresh: true });
+        collectSubscriptionsFromValue(batchSubscriptions, collected);
     }
 
     const subscriptions = dedupeSubscriptionsByEndpoint(collected);
@@ -1012,11 +519,6 @@ async function removeStaleSubscriptionsFromSheet(staleEndpoints = []) {
             rowsTouched: 0,
             failedBatches: 0
         };
-    }
-
-    const dbCleanup = await removeStaleSubscriptionsFromDb(uniqueEndpoints);
-    if (dbCleanup) {
-        return dbCleanup;
     }
 
     let clearedSubscriptions = 0;
@@ -1127,7 +629,7 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
                     reason: refreshReason,
                     initiatedBy,
                     requestId,
-                    subscriptionUrl: SUBSCRIPTION_SYNC_URL,
+                    subscriptionUrl: GOOGLE_SHEET_URL,
                     vapidPublicKey: vapidKeys.publicKey
                 }
             });
@@ -1323,13 +825,6 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
     const cached = subscriptionCache.get(cacheKey);
     if (!forceRefresh && cached && now - cached.at < SUBSCRIPTION_CACHE_TTL_MS) {
         return cached.subscriptions;
-    }
-
-    const targetUsers = parseUsernamesInput(usernames);
-    const dbSubscriptions = await getSubscriptionsFromDb(targetUsers, { fetchAll: targetUsers.length === 0 });
-    if (Array.isArray(dbSubscriptions)) {
-        subscriptionCache.set(cacheKey, { at: now, subscriptions: dbSubscriptions });
-        return dbSubscriptions;
     }
 
     try {
@@ -1666,62 +1161,6 @@ app.get(['/', '/notify'], (req, res) => {
 app.get(['/version', '/notify/version'], (req, res) => {
     res.set('Cache-Control', 'no-store');
     res.json({ version: SERVER_VERSION, notes: SERVER_RELEASE_NOTES });
-});
-
-app.all(['/subscription', '/notify/subscription'], express.text({ type: '*/*', limit: '2mb' }), async (req, res) => {
-    const action = String((req.query && req.query.action) || '').trim().toLowerCase();
-    if (req.method === 'GET') {
-        const shouldFetchFromDb = Boolean(
-            req.query.usernames ||
-            req.query.username ||
-            action === 'get_all_subscriptions' ||
-            action === 'get_subscriptions'
-        );
-        if (shouldFetchFromDb) {
-            const usernamesInput = action === 'get_all_subscriptions' || action === 'get_subscriptions'
-                ? 'all'
-                : (req.query.usernames || req.query.username);
-            const usernames = parseUsernamesInput(usernamesInput);
-            const dbSubscriptions = await getSubscriptionsFromDb(usernames, { fetchAll: usernames.length === 0 });
-            if (Array.isArray(dbSubscriptions)) {
-                return res.json({ result: 'success', subscriptions: dbSubscriptions });
-            }
-            return proxySubscriptionGetToSheet(req, res);
-        }
-
-        if (action && SUBSCRIPTION_PROXY_GET_ACTIONS.has(action)) {
-            return proxySubscriptionGetToSheet(req, res);
-        }
-
-        if (action) {
-            return proxySubscriptionGetToSheet(req, res);
-        }
-        return res.status(400).json({ result: 'error', message: 'Missing action or usernames parameter.' });
-    }
-
-    const payload = parseSubscriptionRequestBody(req);
-    const postAction = String(payload.action || '').trim().toLowerCase();
-    if (!postAction || postAction === 'subscribe' || postAction === 'reactivate_silent') {
-        const saved = await saveSubscriptionToDb(payload);
-        if (saved.ok) {
-            invalidateSubscriptionCacheForUsers([payload.username]);
-            return res.json({ result: 'success', action: saved.action || 'updated' });
-        }
-        console.warn('[SUBSCRIPTION] DB save failed, proxying to sheet:', saved.error || 'unknown error');
-        return proxySubscriptionPostToSheet(payload, res);
-    }
-
-    if (postAction === 'remove_subscriptions_by_endpoint') {
-        const cleanup = await removeStaleSubscriptionsFromDb(payload.endpoints);
-        if (cleanup) {
-            return res.json({ result: 'success', ...cleanup });
-        }
-    }
-
-    if (SUBSCRIPTION_PROXY_POST_ACTIONS.has(postAction) || postAction) {
-        return proxySubscriptionPostToSheet(payload, res);
-    }
-    return res.status(400).json({ result: 'error', message: 'Missing post action.' });
 });
 
 app.get(['/refresh-subscribe-auth/status', '/notify/refresh-subscribe-auth/status'], (req, res) => {
