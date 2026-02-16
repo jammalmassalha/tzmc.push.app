@@ -211,6 +211,12 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     queueMicrotask(() => this.contactsViewport?.checkViewportSize());
   });
 
+  private readonly mobileActiveChatPaneEffect = effect(() => {
+    if (!this.isMobile()) return;
+    if (!this.store.activeChatId()) return;
+    this.showContactsPane.set(false);
+  });
+
   private readonly stickyDateViewportEffect = effect(() => {
     const activeChatId = this.store.activeChatId();
     const count = this.store.activeMessages().length;

@@ -2076,10 +2076,14 @@ export class ChatStoreService {
     const eventData = event.data;
     if (!eventData || typeof eventData !== 'object') return;
 
-    const messageData = eventData as { action?: unknown; payload?: unknown };
+    const messageData = eventData as { action?: unknown; payload?: unknown; url?: unknown; chat?: unknown };
     const action = String(messageData.action ?? '').trim();
     if (action === 'notification-clicked') {
       this.clearDeviceAttention({ resetServerBadge: true });
+      const clickedChatId = this.resolveNotificationChatId(messageData, currentUser);
+      if (clickedChatId) {
+        this.setActiveChat(clickedChatId);
+      }
       this.syncForegroundState({ forceRefresh: true });
       return;
     }
@@ -2137,6 +2141,52 @@ export class ChatStoreService {
 
     this.applyIncomingMessage(incoming);
   };
+
+  private resolveNotificationChatId(
+    messageData: { url?: unknown; chat?: unknown; payload?: unknown },
+    currentUser: string
+  ): string | null {
+    const candidates: string[] = [];
+
+    if (typeof messageData.chat === 'string' && messageData.chat.trim()) {
+      candidates.push(messageData.chat.trim());
+    }
+
+    if (typeof messageData.url === 'string' && messageData.url.trim()) {
+      try {
+        const parsed = new URL(
+          messageData.url.trim(),
+          typeof window !== 'undefined' ? window.location.origin : 'https://www.tzmc.co.il'
+        );
+        const chatFromUrl = String(parsed.searchParams.get('chat') || '').trim();
+        if (chatFromUrl) {
+          candidates.push(chatFromUrl);
+        }
+      } catch {
+        // Ignore malformed route URLs from external notifications.
+      }
+    }
+
+    const payload = messageData.payload && typeof messageData.payload === 'object'
+      ? (messageData.payload as Record<string, unknown>)
+      : null;
+    if (payload) {
+      ['chat', 'groupId', 'sender'].forEach((key) => {
+        const value = payload[key];
+        if (typeof value === 'string' && value.trim()) {
+          candidates.push(value.trim());
+        }
+      });
+    }
+
+    for (const candidate of candidates) {
+      const normalized = this.normalizeChatId(candidate);
+      if (!normalized) continue;
+      if (normalized === currentUser) continue;
+      return normalized;
+    }
+    return null;
+  }
 
   private syncForegroundState(options: { forceRefresh?: boolean } = {}): void {
     const user = this.currentUser();

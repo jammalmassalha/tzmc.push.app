@@ -611,15 +611,44 @@ self.addEventListener('notificationclick', event => {
   }
 
   const logClickPromise = Promise.resolve();;
+  const routeChat = String(data.chat || data.groupId || data.sender || '').trim();
+  let normalizedUrlToOpen = 'https://www.tzmc.co.il/subscribes/';
+  try {
+      normalizedUrlToOpen = new URL(urlToOpen, self.registration.scope).toString();
+  } catch (err) {
+      normalizedUrlToOpen = 'https://www.tzmc.co.il/subscribes/';
+  }
   const openAppPromise = clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clientList => {
       for (const client of clientList) {
           if (client.url.indexOf('tzmc.co.il/subscribes') > -1 && 'focus' in client) {
-              return client.focus().then(focusedClient => {
-                  if (focusedClient) focusedClient.postMessage({ action: 'navigate-route', url: urlToOpen });
-              });
+              const postNavigateMessage = (focusedClient) => {
+                  if (focusedClient) {
+                      focusedClient.postMessage({
+                          action: 'navigate-route',
+                          url: normalizedUrlToOpen,
+                          chat: routeChat || null,
+                          sender: data.sender || null,
+                          messageId: data.messageId || null
+                      });
+                  }
+                  return focusedClient;
+              };
+              if (typeof client.navigate === 'function') {
+                  return client.navigate(normalizedUrlToOpen)
+                      .then((navigatedClient) => {
+                          const clientToFocus = navigatedClient || client;
+                          if (clientToFocus && typeof clientToFocus.focus === 'function') {
+                              return clientToFocus.focus();
+                          }
+                          return client.focus();
+                      })
+                      .then(postNavigateMessage)
+                      .catch(() => client.focus().then(postNavigateMessage));
+              }
+              return client.focus().then(postNavigateMessage);
           }
       }
-      if (clients.openWindow) return clients.openWindow(urlToOpen);
+      if (clients.openWindow) return clients.openWindow(normalizedUrlToOpen);
   });
 
   event.waitUntil(Promise.all([logClickPromise, openAppPromise]));

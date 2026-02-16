@@ -878,6 +878,48 @@ function formatMessageText(text) {
     });
 }
 
+function extractChatIdFromNotificationUrl(rawUrl) {
+    if (!rawUrl || typeof rawUrl !== 'string') return '';
+    try {
+        const parsedUrl = new URL(rawUrl, window.location.href);
+        return String(parsedUrl.searchParams.get('chat') || '').trim();
+    } catch (e) {
+        return '';
+    }
+}
+
+function handleNotificationNavigation(routePayload) {
+    const payload = (routePayload && typeof routePayload === 'object')
+        ? routePayload
+        : { url: routePayload };
+    const targetUrl = typeof payload.url === 'string' ? payload.url : '';
+    const chatFromUrl = extractChatIdFromNotificationUrl(targetUrl);
+    const fallbackChat = String(payload.chat || payload.sender || '').trim();
+    const chatTarget = chatFromUrl || fallbackChat;
+
+    if (!chatTarget) return false;
+    const knownUser = localStorage.getItem('username');
+    if (!knownUser) return false;
+
+    try {
+        if (targetUrl) {
+            const parsedUrl = new URL(targetUrl, window.location.href);
+            const chatParam = String(parsedUrl.searchParams.get('chat') || '').trim();
+            if (chatParam) {
+                const currentUrl = new URL(window.location.href);
+                currentUrl.searchParams.set('chat', chatParam);
+                window.history.replaceState({}, '', currentUrl.toString());
+            }
+        }
+    } catch (e) {
+        // Ignore URL parse failures and continue with chat-open fallback.
+    }
+
+    showChatRoom(chatTarget);
+    loadAndGroupHistory();
+    return true;
+}
+
 // --- INIT ---
 window.addEventListener('load', async () => {
     const savedUser = localStorage.getItem('username');
@@ -939,8 +981,11 @@ window.addEventListener('load', async () => {
                 }
                 if (event.data && event.data.action === 'navigate-route') {
                     console.log("iOS Routing via SW Message:", event.data.url);
-                    // This changes the page while keeping the PWA wrapper active
-                    window.location.href = event.data.url;
+                    const handledInApp = handleNotificationNavigation(event.data);
+                    if (!handledInApp && event.data.url) {
+                        // Fallback: hard navigate when in-app route update isn't possible.
+                        window.location.href = event.data.url;
+                    }
                 }
                 if (event.data && event.data.action === 'group-update') {
                     const record = event.data.record || event.data;

@@ -391,12 +391,20 @@ self.addEventListener('notificationclick', (event) => {
     pruneClientContextMap(windowClients);
     const target = new URL(targetUrl, self.registration.scope);
     const appScopedOpenUrl = buildAppScopedOpenUrl(target.toString());
+    const chatHint = String(
+      target.searchParams.get('chat') ||
+      notificationData.chat ||
+      notificationData.groupId ||
+      notificationData.sender ||
+      ''
+    ).trim();
 
     const preferredClient = pickPreferredClient(windowClients, target);
     if (preferredClient) {
       preferredClient.postMessage({
         action: 'notification-clicked',
         url: target.toString(),
+        chat: chatHint || null,
         payload: notificationData
       });
 
