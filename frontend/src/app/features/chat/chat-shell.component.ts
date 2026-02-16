@@ -212,6 +212,8 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   private readonly scrollBottomThresholdPx = 44;
   private lastAutoScrollChatId: string | null = null;
   private lastAutoScrollMessageCount = 0;
+  private pendingOpenScroll: { chatId: string; unreadBeforeOpen: number } | null = null;
+  private openBoundaryScrollRafId: number | null = null;
   private relativeTimeRefreshId: number | null = null;
   private routeQueryParamsSub: Subscription | null = null;
 
@@ -220,6 +222,11 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const size = this.store.activeMessages().length;
     const activationMeta = this.store.lastActivatedChatMeta();
     if (!activeChatId || size === 0) {
+      this.pendingOpenScroll = null;
+      if (this.openBoundaryScrollRafId !== null) {
+        window.cancelAnimationFrame(this.openBoundaryScrollRafId);
+        this.openBoundaryScrollRafId = null;
+      }
       this.lastAutoScrollChatId = activeChatId;
       this.lastAutoScrollMessageCount = size;
       return;
@@ -234,7 +241,15 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
     if (chatChanged) {
       const unreadBeforeOpen = this.resolveUnreadBeforeOpen(activeChatId, activationMeta);
-      queueMicrotask(() => this.scrollToLastReadBoundary(unreadBeforeOpen));
+      this.pendingOpenScroll = {
+        chatId: activeChatId,
+        unreadBeforeOpen
+      };
+      queueMicrotask(() => this.scheduleOpenBoundaryScroll());
+      return;
+    }
+
+    if (this.pendingOpenScroll && this.pendingOpenScroll.chatId === activeChatId) {
       return;
     }
 
@@ -330,6 +345,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (this.relativeTimeRefreshId !== null) {
       window.clearInterval(this.relativeTimeRefreshId);
       this.relativeTimeRefreshId = null;
+    }
+    if (this.openBoundaryScrollRafId !== null) {
+      window.cancelAnimationFrame(this.openBoundaryScrollRafId);
+      this.openBoundaryScrollRafId = null;
     }
     this.routeQueryParamsSub?.unsubscribe();
     this.routeQueryParamsSub = null;
@@ -950,10 +969,54 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     return Number.isFinite(unread) ? Math.max(0, Math.floor(unread)) : 0;
   }
 
-  private scrollToLastReadBoundary(unreadBeforeOpen: number): void {
+  private scheduleOpenBoundaryScroll(): void {
+    const pending = this.pendingOpenScroll;
+    if (!pending) return;
+    if (this.openBoundaryScrollRafId !== null) {
+      window.cancelAnimationFrame(this.openBoundaryScrollRafId);
+      this.openBoundaryScrollRafId = null;
+    }
+
+    let attempts = 0;
+    const runAttempt = () => {
+      const latest = this.pendingOpenScroll;
+      const activeChatId = this.store.activeChatId();
+      if (!latest || latest.chatId !== activeChatId) {
+        this.pendingOpenScroll = null;
+        this.openBoundaryScrollRafId = null;
+        return;
+      }
+
+      attempts += 1;
+      const allowApproximation = attempts >= 6;
+      const anchored = this.scrollToLastReadBoundary(latest.unreadBeforeOpen, {
+        allowApproximation
+      });
+      if (anchored) {
+        this.pendingOpenScroll = null;
+        this.openBoundaryScrollRafId = null;
+        return;
+      }
+
+      if (attempts >= 8) {
+        this.pendingOpenScroll = null;
+        this.openBoundaryScrollRafId = null;
+        return;
+      }
+
+      this.openBoundaryScrollRafId = window.requestAnimationFrame(runAttempt);
+    };
+
+    this.openBoundaryScrollRafId = window.requestAnimationFrame(runAttempt);
+  }
+
+  private scrollToLastReadBoundary(
+    unreadBeforeOpen: number,
+    options: { allowApproximation?: boolean } = {}
+  ): boolean {
     const panel = this.messagesPanel?.nativeElement;
     const messages = this.store.activeMessages();
-    if (!panel || !messages.length) return;
+    if (!panel || !messages.length) return false;
 
     const unreadCount = Math.min(
       messages.length,
@@ -961,7 +1024,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     );
     if (unreadCount <= 0) {
       this.scrollMessagesToBottom('auto');
-      return;
+      return true;
     }
 
     const firstUnreadIndex = Math.max(0, messages.length - unreadCount);
@@ -969,8 +1032,21 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const targetRow =
       this.findMessageRowByIndex(lastReadIndex) || this.findMessageRowByIndex(firstUnreadIndex);
     if (!targetRow) {
-      this.scrollMessagesToBottom('auto');
-      return;
+      if (!options.allowApproximation) {
+        return false;
+      }
+      const ratio = Math.min(1, Math.max(0, firstUnreadIndex / Math.max(1, messages.length)));
+      const estimatedTop = Math.max(
+        0,
+        Math.round(panel.scrollHeight * ratio - panel.clientHeight * 0.45)
+      );
+      panel.scrollTo({
+        top: estimatedTop,
+        behavior: 'auto'
+      });
+      this.updateStickyMessageDateFromViewport();
+      this.updateMessagesBottomState();
+      return true;
     }
 
     const padding = 16;
@@ -981,6 +1057,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     });
     this.updateStickyMessageDateFromViewport();
     this.updateMessagesBottomState();
+    return true;
   }
 
   private findMessageRowByIndex(messageIndex: number): HTMLElement | null {
