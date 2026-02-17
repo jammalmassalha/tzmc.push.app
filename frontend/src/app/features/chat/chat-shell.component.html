@@ -50,6 +50,7 @@
             class="search-input"
             type="text"
             [formControl]="searchControl"
+            (focus)="handleTextInputFocus()"
             placeholder="חיפוש או פתיחת צ׳אט חדש"
             aria-label="חיפוש צ׳אטים"
             autocomplete="off" />
@@ -305,6 +306,7 @@
               class="composer-textarea"
               rows="1"
               [formControl]="messageControl"
+              (focus)="handleTextInputFocus()"
               [placeholder]="composerPlaceholder()"></textarea>
             <button
               type="button"
@@ -461,6 +463,7 @@
                   type="text"
                   [value]="groupMemberAddSearchTerm()"
                   (input)="onGroupMemberSearchInput($event)"
+                  (focus)="handleTextInputFocus()"
                   placeholder="חיפוש איש קשר להוספה"
                   aria-label="חיפוש איש קשר להוספה"
                   autocomplete="off" />

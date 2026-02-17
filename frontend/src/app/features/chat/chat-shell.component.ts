@@ -126,7 +126,28 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     this.isMobile.set(event.matches);
     this.showContactsPane.set(!event.matches || !this.store.activeChatId());
   };
-  private readonly onViewportResize = (): void => this.updateViewportHeight();
+  private readonly onViewportResize = (): void => {
+    this.updateViewportHeight();
+    if (!this.shouldApplyIosKeyboardWorkaround()) return;
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement && this.isEditableElement(activeElement)) {
+      this.resetIosViewportPosition();
+    }
+  };
+  private readonly onDocumentFocusIn = (event: FocusEvent): void => {
+    if (!this.shouldApplyIosKeyboardWorkaround()) return;
+    const target = event.target;
+    if (!(target instanceof HTMLElement) || !this.isEditableElement(target)) {
+      return;
+    }
+    this.resetIosViewportPosition();
+    window.setTimeout(() => this.resetIosViewportPosition(), 90);
+    window.setTimeout(() => this.resetIosViewportPosition(), 220);
+  };
+  private readonly onDocumentFocusOut = (): void => {
+    if (!this.shouldApplyIosKeyboardWorkaround()) return;
+    window.setTimeout(() => this.resetIosViewportPosition(), 100);
+  };
 
   readonly searchControl = new FormControl('', { nonNullable: true });
   readonly messageControl = new FormControl('', { nonNullable: true });
@@ -319,6 +340,8 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     window.addEventListener('resize', this.onViewportResize, { passive: true });
     window.visualViewport?.addEventListener('resize', this.onViewportResize);
     window.visualViewport?.addEventListener('scroll', this.onViewportResize);
+    document.addEventListener('focusin', this.onDocumentFocusIn, true);
+    document.addEventListener('focusout', this.onDocumentFocusOut, true);
     this.updateViewportHeight();
     this.relativeTimeRefreshId = window.setInterval(() => {
       this.nowTimestamp.set(Date.now());
@@ -344,6 +367,8 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     window.removeEventListener('resize', this.onViewportResize);
     window.visualViewport?.removeEventListener('resize', this.onViewportResize);
     window.visualViewport?.removeEventListener('scroll', this.onViewportResize);
+    document.removeEventListener('focusin', this.onDocumentFocusIn, true);
+    document.removeEventListener('focusout', this.onDocumentFocusOut, true);
     if (this.relativeTimeRefreshId !== null) {
       window.clearInterval(this.relativeTimeRefreshId);
       this.relativeTimeRefreshId = null;
@@ -402,6 +427,13 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   onMessagesPanelScroll(): void {
     this.updateStickyMessageDateFromViewport();
     this.updateMessagesBottomState();
+  }
+
+  handleTextInputFocus(): void {
+    if (!this.shouldApplyIosKeyboardWorkaround()) return;
+    this.resetIosViewportPosition();
+    window.setTimeout(() => this.resetIosViewportPosition(), 90);
+    window.setTimeout(() => this.resetIosViewportPosition(), 220);
   }
 
   scrollToBottomFromButton(): void {
@@ -1128,6 +1160,26 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       : 0;
     document.documentElement.style.setProperty('--app-height', `${Math.round(viewportHeight)}px`);
     document.documentElement.style.setProperty('--app-viewport-offset-top', `${viewportOffsetTop}px`);
+  }
+
+  private shouldApplyIosKeyboardWorkaround(): boolean {
+    if (typeof navigator === 'undefined') return false;
+    const ua = navigator.userAgent || '';
+    const isIPhoneFamily = /iP(hone|od|ad)/i.test(ua);
+    const isIpadOsDesktopUA = /Macintosh/i.test(ua) && navigator.maxTouchPoints > 1;
+    return isIPhoneFamily || isIpadOsDesktopUA;
+  }
+
+  private isEditableElement(element: HTMLElement): boolean {
+    const tagName = element.tagName;
+    return tagName === 'INPUT' || tagName === 'TEXTAREA' || element.isContentEditable;
+  }
+
+  private resetIosViewportPosition(): void {
+    window.scrollTo(0, 0);
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+    this.updateViewportHeight();
   }
 
   private isSameCalendarDay(a: Date, b: Date): boolean {

@@ -26,6 +26,7 @@ window.onerror = function(msg, url, line) {
 const config = window.APP_CONFIG || {};
 const t = (key, vars) => (window.I18N && typeof window.I18N.t === 'function' ? window.I18N.t(key, vars) : key);
 const fetchWithRetry = window.fetchWithRetry ? window.fetchWithRetry : fetch;
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
 
 function updateAppHeight() {
     const vv = window.visualViewport;
@@ -35,14 +36,41 @@ function updateAppHeight() {
     document.documentElement.style.setProperty('--app-viewport-offset-top', `${Math.round(offsetTop)}px`);
 }
 
+function forceIOSViewportReset() {
+    if (!isIOS) return;
+    window.scrollTo(0, 0);
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+    updateAppHeight();
+}
+
+function handleIOSInputFocus(event) {
+    if (!isIOS) return;
+    const target = event && event.target ? event.target : null;
+    if (!target || !(target instanceof HTMLElement)) return;
+    const tagName = target.tagName;
+    const isEditable = tagName === 'INPUT' || tagName === 'TEXTAREA' || target.isContentEditable;
+    if (!isEditable) return;
+
+    forceIOSViewportReset();
+    setTimeout(forceIOSViewportReset, 80);
+    setTimeout(forceIOSViewportReset, 220);
+}
+
 updateAppHeight();
 window.addEventListener('resize', updateAppHeight);
 if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', updateAppHeight);
     window.visualViewport.addEventListener('scroll', updateAppHeight);
 }
-document.addEventListener('focusin', updateAppHeight);
-document.addEventListener('focusout', () => setTimeout(updateAppHeight, 60));
+document.addEventListener('focusin', (event) => {
+    updateAppHeight();
+    handleIOSInputFocus(event);
+});
+document.addEventListener('focusout', () => setTimeout(() => {
+    updateAppHeight();
+    forceIOSViewportReset();
+}, 80));
 
 function updateFooterOffset() {
     const footer = document.querySelector('.chat-footer');
@@ -66,7 +94,6 @@ function updateHeaderOffset() {
     }
 }
 
-const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
 if (isIOS) {
     document.body.classList.add('ios');
 }
@@ -1171,6 +1198,7 @@ window.addEventListener('load', async () => {
     chatInput.addEventListener('focus', function() {
         // Small delay to allow keyboard to fully open
         setTimeout(() => {
+            forceIOSViewportReset();
             if (shouldAutoScroll) {
                 scrollToBottom();
             }
