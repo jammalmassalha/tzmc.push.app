@@ -23,7 +23,7 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { Router, ActivatedRoute } from '@angular/router';
-import { Subscription, startWith } from 'rxjs';
+import { Subscription, firstValueFrom, startWith } from 'rxjs';
 import {
   ChatGroup,
   ChatListItem,
@@ -37,6 +37,7 @@ import {
 } from '../../core/services/chat-store.service';
 import { CreateGroupDialogComponent } from './dialogs/create-group-dialog.component';
 import { NewChatDialogComponent } from './dialogs/new-chat-dialog.component';
+import { ConfirmMessageActionDialogComponent } from './dialogs/confirm-message-action-dialog.component';
 
 type MessageRenderPart =
   | { kind: 'text'; text: string }
@@ -447,12 +448,22 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (editingTarget) {
       const trimmed = content.trim();
       if (!trimmed) return;
+      const editingMessageId = editingTarget.messageId;
+
+      // Optimistic UX: close edit mode immediately so user feels instant submit.
+      this.clearComposerEditState();
 
       try {
-        await this.store.editSentMessageForEveryone(editingTarget.messageId, trimmed);
+        await this.store.editSentMessageForEveryone(editingMessageId, trimmed);
         this.snackBar.open('ההודעה נערכה.', 'סגור', { duration: 2200 });
-        this.clearComposerEditState();
       } catch (error) {
+        const latest = this.store
+          .activeMessages()
+          .find((message) => message.messageId === editingMessageId && message.direction === 'outgoing');
+        if (latest && !latest.deletedAt) {
+          this.editingMessageTarget.set(latest);
+          this.messageControl.setValue(trimmed);
+        }
         const message = error instanceof Error ? error.message : 'עריכת ההודעה נכשלה';
         this.snackBar.open(message, 'סגור', { duration: 3000 });
       }
@@ -1099,19 +1110,31 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       return;
     }
 
-    const confirmed = window.confirm('למחוק הודעה זו אצל כולם?');
+    const dialogRef = this.dialog.open(ConfirmMessageActionDialogComponent, {
+      width: '360px',
+      data: {
+        title: 'מחיקת הודעה',
+        message: 'האם למחוק הודעה זו אצל כולם?',
+        confirmLabel: 'מחק אצל כולם',
+        cancelLabel: 'ביטול',
+        confirmColor: 'warn'
+      }
+    });
+    const confirmed = await firstValueFrom(dialogRef.afterClosed());
     if (!confirmed) {
       return;
     }
 
     try {
       await this.store.deleteSentMessageForEveryone(target.messageId);
-      if (this.editingMessageTarget()?.messageId === target.messageId) {
+      if (this.editingMessageTarget()?.messageId === target.messageId || this.isMessageDeleted(target)) {
         this.clearComposerEditState();
       }
       this.snackBar.open('ההודעה נמחקה אצל כולם.', 'סגור', { duration: 2400 });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'מחיקת ההודעה נכשלה';
+      const message = error instanceof Error
+        ? `ההודעה נמחקה מקומית. ייתכן שהמחיקה אצל כולם נכשלה: ${error.message}`
+        : 'ההודעה נמחקה מקומית אך ייתכן שלא נמחקה אצל כולם.';
       this.snackBar.open(message, 'סגור', { duration: 3200 });
     }
   }

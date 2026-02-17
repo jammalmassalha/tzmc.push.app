@@ -47,6 +47,14 @@ interface HrConversationState {
   actions: HrActionOption[];
 }
 
+interface MessageActionSnapshot {
+  body: string;
+  imageUrl?: string | null;
+  thumbnailUrl?: string | null;
+  editedAt?: number | null;
+  deletedAt?: number | null;
+}
+
 type BadgeCapableNavigator = Navigator & {
   setAppBadge?: (count?: number) => Promise<void>;
   clearAppBadge?: () => Promise<void>;
@@ -550,7 +558,7 @@ export class ChatStoreService {
       throw new Error('לא ניתן לערוך הודעה ללא חיבור');
     }
 
-    const target = this.findOutgoingMessageForAction(normalizedMessageId, user);
+    const target = this.findOutgoingMessageForAction(normalizedMessageId);
     if (!target) {
       throw new Error('לא נמצאה הודעה לעריכה');
     }
@@ -589,8 +597,22 @@ export class ChatStoreService {
       groupType: group?.type
     };
 
-    await this.api.editMessageForEveryone(payload);
-    this.applyMessageEditLocally(normalizedMessageId, trimmedBody, editTimestamp);
+    const snapshot: MessageActionSnapshot = {
+      body: target.message.body,
+      editedAt: target.message.editedAt ?? null,
+      deletedAt: target.message.deletedAt ?? null
+    };
+    const optimisticApplied = this.applyMessageEditLocally(normalizedMessageId, trimmedBody, editTimestamp);
+    if (!optimisticApplied) {
+      return;
+    }
+
+    try {
+      await this.api.editMessageForEveryone(payload);
+    } catch (error) {
+      this.restoreMessageSnapshotLocally(normalizedMessageId, snapshot);
+      throw error;
+    }
   }
 
   async deleteSentMessageForEveryone(messageId: string): Promise<void> {
@@ -607,7 +629,7 @@ export class ChatStoreService {
       throw new Error('לא ניתן למחוק הודעה ללא חיבור');
     }
 
-    const target = this.findOutgoingMessageForAction(normalizedMessageId, user);
+    const target = this.findOutgoingMessageForAction(normalizedMessageId);
     if (!target) {
       throw new Error('לא נמצאה הודעה למחיקה');
     }
@@ -640,8 +662,12 @@ export class ChatStoreService {
       groupType: group?.type
     };
 
+    const optimisticApplied = this.applyMessageDeleteLocally(normalizedMessageId, deleteTimestamp);
+    if (!optimisticApplied) {
+      return;
+    }
+
     await this.api.deleteMessageForEveryone(payload);
-    this.applyMessageDeleteLocally(normalizedMessageId, deleteTimestamp);
   }
 
   async sendFile(file: File): Promise<void> {
@@ -1787,27 +1813,53 @@ export class ChatStoreService {
     this.schedulePersist();
   }
 
-  private findOutgoingMessageForAction(
-    messageId: string,
-    currentUser: string
-  ): { chatId: string; message: ChatMessage } | null {
+  private findOutgoingMessageForAction(messageId: string): { chatId: string; message: ChatMessage } | null {
     const normalizedId = String(messageId || '').trim();
-    const normalizedUser = this.normalizeUser(currentUser);
-    if (!normalizedId || !normalizedUser) return null;
+    if (!normalizedId) return null;
 
     const messageMap = this.messagesByChat();
     for (const [chatId, list] of Object.entries(messageMap)) {
       const message = list.find(
-        (item) =>
-          item.messageId === normalizedId &&
-          item.direction === 'outgoing' &&
-          this.normalizeUser(item.sender) === normalizedUser
+        (item) => item.messageId === normalizedId && item.direction === 'outgoing'
       );
       if (message) {
         return { chatId, message };
       }
     }
     return null;
+  }
+
+  private restoreMessageSnapshotLocally(messageId: string, snapshot: MessageActionSnapshot): boolean {
+    const normalizedId = String(messageId || '').trim();
+    if (!normalizedId) return false;
+
+    let changed = false;
+    this.messagesByChat.update((messageMap) => {
+      const nextMap: Record<string, ChatMessage[]> = {};
+      for (const [chatId, list] of Object.entries(messageMap)) {
+        const nextList = list.map((message) => {
+          if (message.messageId !== normalizedId) {
+            return message;
+          }
+          changed = true;
+          return {
+            ...message,
+            body: snapshot.body,
+            imageUrl: snapshot.imageUrl ?? null,
+            thumbnailUrl: snapshot.thumbnailUrl ?? null,
+            editedAt: snapshot.editedAt ?? null,
+            deletedAt: snapshot.deletedAt ?? null
+          };
+        });
+        nextMap[chatId] = nextList;
+      }
+      return changed ? nextMap : messageMap;
+    });
+
+    if (changed) {
+      this.schedulePersist();
+    }
+    return changed;
   }
 
   private applyMessageEditLocally(messageId: string, body: string, editedAt: number): boolean {
