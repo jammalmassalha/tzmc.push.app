@@ -28,15 +28,21 @@ const t = (key, vars) => (window.I18N && typeof window.I18N.t === 'function' ? w
 const fetchWithRetry = window.fetchWithRetry ? window.fetchWithRetry : fetch;
 
 function updateAppHeight() {
-    const height = window.visualViewport ? window.visualViewport.height : window.innerHeight;
-    document.documentElement.style.setProperty('--app-height', `${height}px`);
+    const vv = window.visualViewport;
+    const height = vv ? vv.height : window.innerHeight;
+    const offsetTop = vv ? Math.max(0, vv.offsetTop || 0) : 0;
+    document.documentElement.style.setProperty('--app-height', `${Math.round(height)}px`);
+    document.documentElement.style.setProperty('--app-viewport-offset-top', `${Math.round(offsetTop)}px`);
 }
 
 updateAppHeight();
 window.addEventListener('resize', updateAppHeight);
 if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', updateAppHeight);
+    window.visualViewport.addEventListener('scroll', updateAppHeight);
 }
+document.addEventListener('focusin', updateAppHeight);
+document.addEventListener('focusout', () => setTimeout(updateAppHeight, 60));
 
 function updateFooterOffset() {
     const footer = document.querySelector('.chat-footer');

@@ -1123,7 +1123,11 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const viewportHeight = shouldUseVisualViewport
       ? (visualViewport?.height ?? window.innerHeight)
       : window.innerHeight;
+    const viewportOffsetTop = shouldUseVisualViewport
+      ? Math.max(0, Math.round(visualViewport?.offsetTop ?? 0))
+      : 0;
     document.documentElement.style.setProperty('--app-height', `${Math.round(viewportHeight)}px`);
+    document.documentElement.style.setProperty('--app-viewport-offset-top', `${viewportOffsetTop}px`);
   }
 
   private isSameCalendarDay(a: Date, b: Date): boolean {
