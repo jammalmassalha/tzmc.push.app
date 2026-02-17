@@ -210,6 +210,9 @@ const AUTH_REFRESH_SCHEDULER_INITIAL_DELAY_MS = Math.max(
 const AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE = String(
     process.env.AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE || ''
 ).trim().toLowerCase() === 'true';
+const AUTH_REFRESH_SCHEDULER_DEVICE_TYPES = String(
+    process.env.AUTH_REFRESH_SCHEDULER_DEVICE_TYPES || 'pc'
+).trim();
 let subscriptionAuthRefreshState = {
     running: false,
     lastRunAt: 0,
@@ -240,7 +243,32 @@ function pruneSubscriptionCacheEndpoint(endpointToRemove) {
     }
 }
 
-function normalizeSubscriptionRecord(rawSubscription, usernameHint = '') {
+function normalizeSubscriptionType(rawValue) {
+    const normalized = String(rawValue || '').trim().toLowerCase();
+    if (!normalized) return '';
+    if (normalized === 'pc' || normalized === 'desktop' || normalized === 'web') return 'pc';
+    if (normalized === 'mobile' || normalized === 'ios' || normalized === 'android') return 'mobile';
+    return '';
+}
+
+function parseSubscriptionDeviceTypesInput(rawValue) {
+    const values = [];
+    if (Array.isArray(rawValue)) {
+        values.push(...rawValue);
+    } else if (typeof rawValue === 'string') {
+        values.push(...rawValue.split(','));
+    }
+    const allowed = new Set();
+    values.forEach((value) => {
+        const normalized = normalizeSubscriptionType(value);
+        if (normalized) {
+            allowed.add(normalized);
+        }
+    });
+    return Array.from(allowed);
+}
+
+function normalizeSubscriptionRecord(rawSubscription, usernameHint = '', subscriptionTypeHint = '') {
     if (!rawSubscription || typeof rawSubscription !== 'object') return null;
     const endpoint = typeof rawSubscription.endpoint === 'string' ? rawSubscription.endpoint.trim() : '';
     const keys = (rawSubscription.keys && typeof rawSubscription.keys === 'object') ? rawSubscription.keys : null;
@@ -250,37 +278,48 @@ function normalizeSubscriptionRecord(rawSubscription, usernameHint = '') {
     const username = normalizeUserKey(
         rawSubscription.username || rawSubscription.user || usernameHint
     );
+    const type = normalizeSubscriptionType(
+        rawSubscription.type || rawSubscription.deviceType || subscriptionTypeHint
+    );
     return {
         endpoint,
         expirationTime: rawSubscription.expirationTime || null,
         keys: { p256dh, auth },
-        username: username || undefined
+        username: username || undefined,
+        type: type || undefined
     };
 }
 
-function collectSubscriptionsFromValue(value, sink, usernameHint = '') {
+function collectSubscriptionsFromValue(value, sink, usernameHint = '', subscriptionTypeHint = '') {
     if (!value) return;
     if (Array.isArray(value)) {
-        value.forEach((item) => collectSubscriptionsFromValue(item, sink, usernameHint));
+        value.forEach((item) => collectSubscriptionsFromValue(item, sink, usernameHint, subscriptionTypeHint));
         return;
     }
     if (typeof value !== 'object') return;
 
     const nextUsernameHint = normalizeUserKey(value.username || value.user || usernameHint);
-    const normalizedRecord = normalizeSubscriptionRecord(value, nextUsernameHint);
+    const nextTypeHint = normalizeSubscriptionType(value.type || value.deviceType || subscriptionTypeHint);
+    const normalizedRecord = normalizeSubscriptionRecord(value, nextUsernameHint, nextTypeHint);
     if (normalizedRecord) {
         sink.push(normalizedRecord);
     }
 
     ['subscription', 'subscriptionPC', 'subscriptionMobile', 'pushSubscription'].forEach((nestedKey) => {
         if (value[nestedKey]) {
-            collectSubscriptionsFromValue(value[nestedKey], sink, nextUsernameHint);
+            let nestedTypeHint = nextTypeHint;
+            if (nestedKey === 'subscriptionPC') {
+                nestedTypeHint = 'pc';
+            } else if (nestedKey === 'subscriptionMobile') {
+                nestedTypeHint = 'mobile';
+            }
+            collectSubscriptionsFromValue(value[nestedKey], sink, nextUsernameHint, nestedTypeHint);
         }
     });
 
     ['subscriptions', 'devices', 'rows', 'items', 'data', 'users'].forEach((nestedArrayKey) => {
         if (Array.isArray(value[nestedArrayKey])) {
-            collectSubscriptionsFromValue(value[nestedArrayKey], sink, nextUsernameHint);
+            collectSubscriptionsFromValue(value[nestedArrayKey], sink, nextUsernameHint, nextTypeHint);
         }
     });
 }
@@ -288,10 +327,14 @@ function collectSubscriptionsFromValue(value, sink, usernameHint = '') {
 function dedupeSubscriptionsByEndpoint(rawSubscriptions = []) {
     const byEndpoint = new Map();
     rawSubscriptions.forEach((rawSubscription) => {
-        const normalized = normalizeSubscriptionRecord(rawSubscription, rawSubscription && rawSubscription.username);
+        const normalized = normalizeSubscriptionRecord(
+            rawSubscription,
+            rawSubscription && rawSubscription.username,
+            rawSubscription && rawSubscription.type
+        );
         if (!normalized) return;
         const existing = byEndpoint.get(normalized.endpoint);
-        if (!existing || (!existing.username && normalized.username)) {
+        if (!existing || (!existing.username && normalized.username) || (!existing.type && normalized.type)) {
             byEndpoint.set(normalized.endpoint, normalized);
         }
     });
@@ -595,6 +638,8 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
     const refreshReason = (typeof jobContext.reason === 'string' && jobContext.reason.trim()) || 'manual';
     const initiatedBy = (typeof jobContext.initiatedBy === 'string' && jobContext.initiatedBy.trim()) || 'api';
     const requestedUsers = parseUsernamesInput(jobContext.usernames);
+    const requestedDeviceTypes = parseSubscriptionDeviceTypesInput(jobContext.deviceTypes || jobContext.deviceType);
+    const allowStaleCleanup = jobContext.allowStaleCleanup !== false;
 
     let resultSummary = {
         requestId,
@@ -604,6 +649,7 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
         reason: refreshReason,
         forceResubscribe,
         requestedUserCount: requestedUsers.length,
+        requestedDeviceTypes,
         discoveredUserCount: 0,
         targeted: 0,
         success: 0,
@@ -613,7 +659,12 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
 
     try {
         const discoveryResult = await getAllSubscriptionsForAuthRefresh({ usernames: requestedUsers });
-        const subscriptions = Array.isArray(discoveryResult.subscriptions) ? discoveryResult.subscriptions : [];
+        const allDiscoveredSubscriptions = Array.isArray(discoveryResult.subscriptions) ? discoveryResult.subscriptions : [];
+        const subscriptions = requestedDeviceTypes.length
+            ? allDiscoveredSubscriptions.filter((subscription) =>
+                requestedDeviceTypes.includes(normalizeSubscriptionType(subscription && subscription.type))
+            )
+            : allDiscoveredSubscriptions;
         const discoveredUsers = Array.isArray(discoveryResult.discoveredUsers) ? discoveryResult.discoveredUsers : [];
         resultSummary.discoveredUserCount = discoveredUsers.length;
         if (discoveredUsers.length) {
@@ -667,7 +718,7 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
                 };
             } catch (error) {
                 const statusCode = error && error.statusCode;
-                if (statusCode === 404 || statusCode === 410) {
+                if (allowStaleCleanup && (statusCode === 404 || statusCode === 410)) {
                     pruneSubscriptionCacheEndpoint(subscription.endpoint);
                 }
                 return {
@@ -710,7 +761,7 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
             .filter((result) => !result.ok && (result.statusCode === 404 || result.statusCode === 410))
             .map((result) => result.endpoint)
             .filter(Boolean);
-        if (staleEndpoints.length) {
+        if (allowStaleCleanup && staleEndpoints.length) {
             resultSummary.staleCleanup = await removeStaleSubscriptionsFromSheet(staleEndpoints);
         }
 
@@ -873,7 +924,9 @@ function startSubscriptionAuthRefreshScheduler() {
             requestId: generateMessageId(),
             reason: 'scheduled-keepalive',
             initiatedBy: 'scheduler',
-            forceResubscribe: AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE
+            forceResubscribe: AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE,
+            deviceTypes: AUTH_REFRESH_SCHEDULER_DEVICE_TYPES,
+            allowStaleCleanup: false
         })
             .then((summary) => {
                 if (!summary || summary.status === 'running') {
@@ -897,7 +950,7 @@ function startSubscriptionAuthRefreshScheduler() {
     }, AUTH_REFRESH_SCHEDULER_INITIAL_DELAY_MS);
 
     console.log(
-        `[AUTH REFRESH] Scheduler armed | initialDelay=${AUTH_REFRESH_SCHEDULER_INITIAL_DELAY_MS}ms | interval=${AUTH_REFRESH_SCHEDULER_INTERVAL_MS}ms | forceResubscribe=${AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE}`
+        `[AUTH REFRESH] Scheduler armed | initialDelay=${AUTH_REFRESH_SCHEDULER_INITIAL_DELAY_MS}ms | interval=${AUTH_REFRESH_SCHEDULER_INTERVAL_MS}ms | deviceTypes=${AUTH_REFRESH_SCHEDULER_DEVICE_TYPES || 'all'} | forceResubscribe=${AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE}`
     );
 }
 
