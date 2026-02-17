@@ -1558,6 +1558,10 @@ mat-chip:not(.offline) {
     border-radius: 12px;
   }
 
+  .conversation-pane {
+    touch-action: pan-y;
+  }
+
   .message-bubble {
     max-width: 92%;
   }

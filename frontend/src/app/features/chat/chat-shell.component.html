@@ -132,7 +132,13 @@
       }
     </aside>
 
-    <section class="conversation-pane" [class.hidden-mobile]="isMobile() && showContactsPane()">
+    <section
+      class="conversation-pane"
+      [class.hidden-mobile]="isMobile() && showContactsPane()"
+      (touchstart)="onConversationTouchStart($event)"
+      (touchmove)="onConversationTouchMove($event)"
+      (touchend)="onConversationTouchEnd($event)"
+      (touchcancel)="onConversationTouchCancel()">
       @if (store.activeChat(); as activeChat) {
         <header class="conversation-header">
           @if (isMobile()) {

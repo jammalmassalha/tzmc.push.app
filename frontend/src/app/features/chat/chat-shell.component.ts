@@ -239,6 +239,16 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   );
   private readonly messagePartsCache = new Map<string, ParsedMessageCacheEntry>();
   private readonly scrollBottomThresholdPx = 44;
+  private readonly conversationSwipeMinDistancePx = 80;
+  private readonly conversationSwipeMaxDurationMs = 800;
+  private readonly conversationSwipeHorizontalBias = 1.35;
+  private readonly conversationSwipeCancelVerticalDeltaPx = 24;
+  private conversationSwipeStartX: number | null = null;
+  private conversationSwipeStartY: number | null = null;
+  private conversationSwipeLastX: number | null = null;
+  private conversationSwipeLastY: number | null = null;
+  private conversationSwipeStartedAt: number | null = null;
+  private conversationSwipeTracking = false;
   private lastAutoScrollChatId: string | null = null;
   private lastAutoScrollMessageCount = 0;
   private pendingOpenScroll: { chatId: string; unreadBeforeOpen: number } | null = null;
@@ -415,6 +425,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   openChat(chatId: string): void {
+    this.resetConversationSwipeGesture();
     this.clearComposerEditState();
     this.messageActionTarget.set(null);
     this.closeReactionDetails();
@@ -425,6 +436,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   backToList(): void {
+    this.resetConversationSwipeGesture();
     this.clearComposerEditState();
     this.messageActionTarget.set(null);
     this.closeReactionDetails();
@@ -498,6 +510,96 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   onMessagesPanelScroll(): void {
     this.updateStickyMessageDateFromViewport();
     this.updateMessagesBottomState();
+  }
+
+  onConversationTouchStart(event: TouchEvent): void {
+    if (!this.shouldEnableConversationSwipe(event)) {
+      this.resetConversationSwipeGesture();
+      return;
+    }
+
+    const touch = event.touches[0];
+    this.conversationSwipeStartX = touch.clientX;
+    this.conversationSwipeStartY = touch.clientY;
+    this.conversationSwipeLastX = touch.clientX;
+    this.conversationSwipeLastY = touch.clientY;
+    this.conversationSwipeStartedAt = Date.now();
+    this.conversationSwipeTracking = true;
+  }
+
+  onConversationTouchMove(event: TouchEvent): void {
+    if (!this.conversationSwipeTracking || event.touches.length !== 1) {
+      this.resetConversationSwipeGesture();
+      return;
+    }
+
+    const touch = event.touches[0];
+    this.conversationSwipeLastX = touch.clientX;
+    this.conversationSwipeLastY = touch.clientY;
+
+    const startX = this.conversationSwipeStartX ?? touch.clientX;
+    const startY = this.conversationSwipeStartY ?? touch.clientY;
+    const deltaX = touch.clientX - startX;
+    const deltaY = touch.clientY - startY;
+    const horizontalDistance = Math.abs(deltaX);
+    const verticalDistance = Math.abs(deltaY);
+
+    if (
+      verticalDistance >= this.conversationSwipeCancelVerticalDeltaPx &&
+      verticalDistance > horizontalDistance * this.conversationSwipeHorizontalBias
+    ) {
+      // Preserve normal vertical message scrolling and avoid accidental back navigation.
+      this.resetConversationSwipeGesture();
+    }
+  }
+
+  onConversationTouchEnd(event: TouchEvent): void {
+    if (!this.conversationSwipeTracking) {
+      this.resetConversationSwipeGesture();
+      return;
+    }
+
+    const fallbackX = this.conversationSwipeLastX ?? this.conversationSwipeStartX;
+    const fallbackY = this.conversationSwipeLastY ?? this.conversationSwipeStartY;
+    const changedTouch = event.changedTouches?.[0];
+    const endX = changedTouch ? changedTouch.clientX : fallbackX;
+    const endY = changedTouch ? changedTouch.clientY : fallbackY;
+    const startX = this.conversationSwipeStartX;
+    const startY = this.conversationSwipeStartY;
+    const startedAt = this.conversationSwipeStartedAt;
+
+    this.resetConversationSwipeGesture();
+
+    if (
+      startX === null ||
+      startY === null ||
+      endX === null ||
+      endY === null ||
+      startedAt === null ||
+      !this.isMobile() ||
+      !this.store.activeChatId() ||
+      this.showContactsPane()
+    ) {
+      return;
+    }
+
+    const deltaX = endX - startX;
+    const deltaY = endY - startY;
+    const horizontalDistance = Math.abs(deltaX);
+    const verticalDistance = Math.abs(deltaY);
+    const elapsed = Date.now() - startedAt;
+    const isHorizontalSwipe =
+      horizontalDistance >= this.conversationSwipeMinDistancePx &&
+      horizontalDistance > verticalDistance * this.conversationSwipeHorizontalBias &&
+      elapsed <= this.conversationSwipeMaxDurationMs;
+
+    if (isHorizontalSwipe) {
+      this.backToList();
+    }
+  }
+
+  onConversationTouchCancel(): void {
+    this.resetConversationSwipeGesture();
   }
 
   handleTextInputFocus(): void {
@@ -1631,6 +1733,36 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   private normalizeUsername(value: string): string {
     return String(value || '').trim().toLowerCase();
+  }
+
+  private shouldEnableConversationSwipe(event: TouchEvent): boolean {
+    if (!this.isMobile()) return false;
+    if (!this.store.activeChatId()) return false;
+    if (this.showContactsPane()) return false;
+    if (event.touches.length !== 1) return false;
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return true;
+    }
+    return !this.shouldIgnoreConversationSwipeTarget(target);
+  }
+
+  private shouldIgnoreConversationSwipeTarget(target: HTMLElement): boolean {
+    return Boolean(
+      target.closest(
+        'textarea, input, select, button, a, [role="button"], [mat-menu-item], [contenteditable="true"]'
+      )
+    );
+  }
+
+  private resetConversationSwipeGesture(): void {
+    this.conversationSwipeStartX = null;
+    this.conversationSwipeStartY = null;
+    this.conversationSwipeLastX = null;
+    this.conversationSwipeLastY = null;
+    this.conversationSwipeStartedAt = null;
+    this.conversationSwipeTracking = false;
   }
 
   private clearComposerEditState(options: { clearComposer?: boolean } = {}): void {
