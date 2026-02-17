@@ -606,11 +606,36 @@ mat-chip:not(.offline) {
   cursor: pointer;
 }
 
+.message-action-btn:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+
+.message-action-btn.pending {
+  background: rgba(11, 20, 26, 0.12);
+}
+
 .message-action-btn mat-icon {
   width: 18px;
   height: 18px;
   font-size: 18px;
   line-height: 18px;
+}
+
+.message-action-spinner,
+.message-action-menu-spinner {
+  --mdc-circular-progress-active-indicator-color: currentColor;
+}
+
+.message-action-spinner {
+  width: 16px !important;
+  height: 16px !important;
+}
+
+.message-action-menu-spinner {
+  width: 16px !important;
+  height: 16px !important;
+  margin-inline-end: 16px;
 }
 
 .message-image-btn {

@@ -197,10 +197,16 @@
                     <button
                       type="button"
                       class="message-action-btn"
+                      [class.pending]="isMessageActionPending(message)"
                       [matMenuTriggerFor]="messageActionsMenu"
+                      [disabled]="isMessageActionPending(message)"
                       (click)="setMessageActionTarget(message)"
                       aria-label="פעולות הודעה">
-                      <mat-icon>more_horiz</mat-icon>
+                      @if (isMessageActionPending(message)) {
+                        <mat-spinner class="message-action-spinner" diameter="16"></mat-spinner>
+                      } @else {
+                        <mat-icon>more_horiz</mat-icon>
+                      }
                     </button>
                   </div>
                 }
@@ -384,13 +390,25 @@
               <button
                 mat-menu-item
                 type="button"
-                [disabled]="!canEditOutgoingMessage(targetMessage)"
+                [disabled]="!canEditOutgoingMessage(targetMessage) || isMessageActionPending(targetMessage)"
                 (click)="startEditingSelectedMessage()">
-                <mat-icon>edit</mat-icon>
+                @if (isMessageActionPending(targetMessage)) {
+                  <mat-spinner class="message-action-menu-spinner" diameter="16"></mat-spinner>
+                } @else {
+                  <mat-icon>edit</mat-icon>
+                }
                 <span>ערוך</span>
               </button>
-              <button mat-menu-item type="button" (click)="deleteSelectedMessageForEveryone()">
-                <mat-icon>delete</mat-icon>
+              <button
+                mat-menu-item
+                type="button"
+                [disabled]="isMessageActionPending(targetMessage)"
+                (click)="deleteSelectedMessageForEveryone()">
+                @if (isMessageActionPending(targetMessage)) {
+                  <mat-spinner class="message-action-menu-spinner" diameter="16"></mat-spinner>
+                } @else {
+                  <mat-icon>delete</mat-icon>
+                }
                 <span>מחק אצל כולם</span>
               </button>
             }

@@ -20,6 +20,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatMenuModule } from '@angular/material/menu';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { Router, ActivatedRoute } from '@angular/router';
@@ -107,6 +108,7 @@ interface ReactionDetailsPreview {
     MatMenuModule,
     MatToolbarModule,
     MatProgressBarModule,
+    MatProgressSpinnerModule,
     MatChipsModule,
     MatSnackBarModule
   ],
@@ -195,6 +197,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly reactionTargetMessageId = signal<string | null>(null);
   readonly messageActionTarget = signal<ChatMessage | null>(null);
   readonly editingMessageTarget = signal<ChatMessage | null>(null);
+  readonly pendingMessageActionIds = signal<Set<string>>(new Set<string>());
   readonly reactionDetailsPreview = signal<ReactionDetailsPreview | null>(null);
   readonly phoneActionTarget = signal<{ display: string; phone: string } | null>(null);
   readonly groupMembersPreview = signal<GroupMembersPreview | null>(null);
@@ -449,6 +452,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       const trimmed = content.trim();
       if (!trimmed) return;
       const editingMessageId = editingTarget.messageId;
+      if (this.isMessageActionPendingById(editingMessageId)) {
+        return;
+      }
+      this.setMessageActionPending(editingMessageId, true);
 
       // Optimistic UX: close edit mode immediately so user feels instant submit.
       this.clearComposerEditState();
@@ -466,6 +473,8 @@ export class ChatShellComponent implements OnInit, OnDestroy {
         }
         const message = error instanceof Error ? error.message : 'עריכת ההודעה נכשלה';
         this.snackBar.open(message, 'סגור', { duration: 3000 });
+      } finally {
+        this.setMessageActionPending(editingMessageId, false);
       }
       return;
     }
@@ -1072,6 +1081,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     );
   }
 
+  isMessageActionPending(message: ChatMessage): boolean {
+    return this.isMessageActionPendingById(message.messageId);
+  }
+
   canEditOutgoingMessage(message: ChatMessage): boolean {
     if (!this.canManageOutgoingMessage(message)) return false;
     if (message.imageUrl) return false;
@@ -1096,6 +1109,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       this.clearComposerEditState();
       return;
     }
+    if (this.isMessageActionPendingById(target.messageId)) {
+      return;
+    }
     this.editingMessageTarget.set(target);
     this.messageControl.setValue(target.body || '');
   }
@@ -1107,6 +1123,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   async deleteSelectedMessageForEveryone(): Promise<void> {
     const target = this.messageActionTarget();
     if (!target || !this.canManageOutgoingMessage(target)) {
+      return;
+    }
+    const targetMessageId = target.messageId;
+    if (this.isMessageActionPendingById(targetMessageId)) {
       return;
     }
 
@@ -1125,9 +1145,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       return;
     }
 
+    this.setMessageActionPending(targetMessageId, true);
     try {
-      await this.store.deleteSentMessageForEveryone(target.messageId);
-      if (this.editingMessageTarget()?.messageId === target.messageId || this.isMessageDeleted(target)) {
+      await this.store.deleteSentMessageForEveryone(targetMessageId);
+      if (this.editingMessageTarget()?.messageId === targetMessageId || this.isMessageDeleted(target)) {
         this.clearComposerEditState();
       }
       this.snackBar.open('ההודעה נמחקה אצל כולם.', 'סגור', { duration: 2400 });
@@ -1136,6 +1157,8 @@ export class ChatShellComponent implements OnInit, OnDestroy {
         ? `ההודעה נמחקה מקומית. ייתכן שהמחיקה אצל כולם נכשלה: ${error.message}`
         : 'ההודעה נמחקה מקומית אך ייתכן שלא נמחקה אצל כולם.';
       this.snackBar.open(message, 'סגור', { duration: 3200 });
+    } finally {
+      this.setMessageActionPending(targetMessageId, false);
     }
   }
 
@@ -1611,5 +1634,24 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (options.clearComposer !== false) {
       this.messageControl.setValue('');
     }
+  }
+
+  private isMessageActionPendingById(messageId: string): boolean {
+    const normalizedId = String(messageId || '').trim();
+    if (!normalizedId) return false;
+    return this.pendingMessageActionIds().has(normalizedId);
+  }
+
+  private setMessageActionPending(messageId: string, pending: boolean): void {
+    const normalizedId = String(messageId || '').trim();
+    if (!normalizedId) return;
+
+    const next = new Set(this.pendingMessageActionIds());
+    if (pending) {
+      next.add(normalizedId);
+    } else {
+      next.delete(normalizedId);
+    }
+    this.pendingMessageActionIds.set(next);
   }
 }
