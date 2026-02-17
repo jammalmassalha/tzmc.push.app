@@ -1005,6 +1005,7 @@ window.addEventListener('load', async () => {
             const urlParams = new URLSearchParams(window.location.search);
             const userParam = urlParams.get('user');
             if(userParam) localStorage.setItem('username', userParam);
+            postServiceWorkerPushContext({ username: userParam || localStorage.getItem('username') || '' });
             
         } catch (e) { console.error("SW Error:", e); }
     }
@@ -1074,6 +1075,7 @@ window.addEventListener('load', async () => {
     }
     if (savedUser || userParam) {
         currentUserContext = savedUser || userParam;
+        postServiceWorkerPushContext({ username: currentUserContext });
         
         loadLocalContacts();
         loadLocalGroups();
@@ -3376,6 +3378,35 @@ function requestOutboxFlush() {
     }
 }
 
+function postServiceWorkerPushContext(options = {}) {
+    if (!('serviceWorker' in navigator)) return;
+    const fallbackUser = localStorage.getItem('username') || currentUserContext || '';
+    const username = String(options.username || fallbackUser || '').trim().toLowerCase();
+    if (!username) return;
+
+    const navigatorWithStandalone = navigator;
+    const payload = {
+        action: 'register-window-context',
+        username,
+        subscriptionUrl: SUBSCRIPTION_URL,
+        vapidPublicKey: VAPID_PUBLIC_KEY,
+        standalone: Boolean(
+            window.matchMedia && window.matchMedia('(display-mode: standalone)').matches
+        ) || Boolean(navigatorWithStandalone.standalone),
+        url: window.location.href,
+        at: Date.now()
+    };
+
+    navigator.serviceWorker.ready
+        .then((registration) => {
+            const worker = registration.active || navigator.serviceWorker.controller;
+            if (worker && typeof worker.postMessage === 'function') {
+                worker.postMessage(payload);
+            }
+        })
+        .catch(() => undefined);
+}
+
 
 // --- BADGE MANAGEMENT ---
 function clearAppBadge() {
@@ -3469,6 +3500,7 @@ document.getElementById('subscribeButton').addEventListener('click', async () =>
         scheduleStatusCheck(user, sub);
         localStorage.setItem('username', user);
         currentUserContext = user;
+        postServiceWorkerPushContext({ username: user });
         showContacts();
         fetchUsersFromSheet();
     } catch (e) {
@@ -3841,6 +3873,7 @@ async function verifyAndReactivate(options = {}) {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             }, { timeoutMs: 10000, retries: 2 });
+            postServiceWorkerPushContext({ username: user });
             console.log(`[Auto-Fix] Reactivation sent (${reason}).`);
             return true;
         } catch (e) {

@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 import { ChatStoreService } from './core/services/chat-store.service';
+import { runtimeConfig } from './core/config/runtime-config';
 
 @Component({
   selector: 'app-root',
@@ -66,9 +67,19 @@ export class App {
 
     const postContext = (): void => {
       const standalone = this.isStandaloneWindow();
+      const username = String(
+        this.store.currentUser() ||
+        (typeof localStorage !== 'undefined' ? localStorage.getItem('username') : '') ||
+        ''
+      )
+        .trim()
+        .toLowerCase();
       const payload = {
         action: 'register-window-context',
         standalone,
+        username,
+        subscriptionUrl: runtimeConfig.subscriptionUrl,
+        vapidPublicKey: runtimeConfig.vapidPublicKey,
         url: window.location.href,
         at: Date.now()
       };

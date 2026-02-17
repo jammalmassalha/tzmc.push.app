@@ -11,6 +11,8 @@ const CACHE_NAME = config.CACHE_NAME || 'static-assets-v4';
 const VAPID_PUBLIC_KEY = config.VAPID_PUBLIC_KEY || '';
 const SUBSCRIPTION_URL = config.SUBSCRIPTION_URL || '';
 const AUTH_REFRESH_PUSH_TYPE = 'subscription-auth-refresh';
+const SW_CONTEXT_CACHE = 'sw-runtime-context-v1';
+const SW_CONTEXT_KEY = new URL('./__sw_runtime_context__', self.registration.scope).toString();
 
 const ASSETS_TO_CACHE = [
   './',
@@ -169,6 +171,102 @@ function detectWorkerDeviceType() {
   return isMobile ? 'Mobile' : 'PC';
 }
 
+function normalizeUsername(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+async function readSwRuntimeContext() {
+  try {
+    const cache = await caches.open(SW_CONTEXT_CACHE);
+    const response = await cache.match(SW_CONTEXT_KEY);
+    if (!response) return {};
+    const payload = await response.json();
+    if (!payload || typeof payload !== 'object') return {};
+    return payload;
+  } catch (_) {
+    return {};
+  }
+}
+
+async function persistSwRuntimeContext(partial = {}) {
+  const username = normalizeUsername(partial.username);
+  if (!username) return false;
+
+  try {
+    const previous = await readSwRuntimeContext();
+    const next = {
+      ...previous,
+      username,
+      at: Date.now()
+    };
+    const cache = await caches.open(SW_CONTEXT_CACHE);
+    await cache.put(
+      SW_CONTEXT_KEY,
+      new Response(JSON.stringify(next), {
+        headers: { 'Content-Type': 'application/json' }
+      })
+    );
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function registerSubscriptionAfterChange(newSubscription = null) {
+  if (!SUBSCRIPTION_URL || !VAPID_PUBLIC_KEY) {
+    return false;
+  }
+
+  const context = await readSwRuntimeContext();
+  const username = normalizeUsername(context.username);
+  if (!username) {
+    return false;
+  }
+
+  try {
+    let subscription = newSubscription;
+    if (!subscription || !hasValidSubscriptionKeys(subscription)) {
+      subscription = await self.registration.pushManager.getSubscription();
+    }
+    if (!subscription || !hasValidSubscriptionKeys(subscription)) {
+      subscription = await self.registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+      });
+    }
+    if (!subscription) {
+      return false;
+    }
+
+    const deviceType = detectWorkerDeviceType();
+    const registerPayload = {
+      username,
+      subscription,
+      action: 'reactivate_silent',
+      reason: 'pushsubscriptionchange',
+      deviceType
+    };
+    if (deviceType === 'PC') {
+      registerPayload.subscriptionPC = subscription;
+    } else {
+      registerPayload.subscriptionMobile = subscription;
+    }
+
+    await fetchWithRetry(SUBSCRIPTION_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(registerPayload)
+    }, { timeoutMs: 15000, retries: 2, backoffMs: 700 });
+
+    await persistSwRuntimeContext({ username });
+    return true;
+  } catch (err) {
+    console.warn('[SW] pushsubscriptionchange recovery failed:', err && err.message ? err.message : err);
+    return false;
+  }
+}
+
 async function refreshSubscriptionAuthInBackground(payload = {}) {
   const username = String(payload.user || payload.username || '').trim().toLowerCase();
   if (!username || !SUBSCRIPTION_URL || !VAPID_PUBLIC_KEY) {
@@ -176,6 +274,7 @@ async function refreshSubscriptionAuthInBackground(payload = {}) {
   }
 
   try {
+    await persistSwRuntimeContext({ username });
     let subscription = await self.registration.pushManager.getSubscription();
     const forceResubscribe = Boolean(payload.forceResubscribe);
     const needsResubscribe = forceResubscribe || !subscription || !hasValidSubscriptionKeys(subscription);
@@ -432,7 +531,9 @@ self.addEventListener('push', event => {
 
   // Normalize Payload
   const payload = rawData.data || rawData; 
-  const user = payload.user || rawData.notification?.username || 'Unknown';
+  const username = normalizeUsername(payload.user || payload.username || rawData.notification?.username || '');
+  const user = username || 'Unknown';
+  const persistContextPromise = persistSwRuntimeContext({ username });
   const messageId = payload.messageId || payload.message_id || payload.id || generateMessageId();
 
   if (payload && payload.type === 'read-receipt') {
@@ -442,7 +543,7 @@ self.addEventListener('push', event => {
     const notifyPromise = self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
       clients.forEach(client => client.postMessage({ action: 'read-receipt', messageIds, readAt, sender: payload.sender }));
     });
-    event.waitUntil(Promise.all([updatePromise, notifyPromise]));
+    event.waitUntil(Promise.all([persistContextPromise, updatePromise, notifyPromise]));
     return;
   }
 
@@ -453,7 +554,7 @@ self.addEventListener('push', event => {
         client.postMessage({ action: 'refresh-subscription-auth', payload });
       });
     });
-    event.waitUntil(Promise.all([refreshPromise, notifyClientsPromise]));
+    event.waitUntil(Promise.all([persistContextPromise, refreshPromise, notifyClientsPromise]));
     return;
   }
 
@@ -501,7 +602,7 @@ self.addEventListener('push', event => {
               request.onerror = (e) => reject(e);
           }).catch(reject);
       });
-      event.waitUntil(Promise.all([deletePromise, logPromise]));
+      event.waitUntil(Promise.all([persistContextPromise, deletePromise, logPromise]));
       return; 
   }
 
@@ -555,6 +656,7 @@ self.addEventListener('push', event => {
 
      event.waitUntil(
         Promise.all([
+            persistContextPromise,
             badgePromise,
             notificationPromise,
             savePromise,
@@ -656,10 +758,23 @@ self.addEventListener('notificationclick', event => {
 
 self.addEventListener('message', (event) => {
   if (!event.data) return;
+  if (event.data.action === 'register-window-context') {
+    const username = normalizeUsername(event.data.username || event.data.user || '');
+    const persistPromise = persistSwRuntimeContext({ username });
+    if (typeof event.waitUntil === 'function') {
+      event.waitUntil(persistPromise);
+    }
+    return;
+  }
   if (event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();
   }
   if (event.data.action === 'flush-outbox') {
     event.waitUntil(flushOutbox());
   }
+});
+
+self.addEventListener('pushsubscriptionchange', (event) => {
+  const nextSubscription = event && event.newSubscription ? event.newSubscription : null;
+  event.waitUntil(registerSubscriptionAfterChange(nextSubscription));
 });

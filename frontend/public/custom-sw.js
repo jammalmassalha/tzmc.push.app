@@ -6,6 +6,8 @@ const FALLBACK_TITLE = 'TZMC';
 const FALLBACK_BODY = 'התקבלה הודעה חדשה';
 const CLIENT_CONTEXT_TTL_MS = 10 * 60 * 1000;
 const AUTH_REFRESH_PUSH_TYPE = 'subscription-auth-refresh';
+const SW_SUBSCRIPTION_CONTEXT_CACHE = 'tzmc-sw-subscription-context-v1';
+const SW_SUBSCRIPTION_CONTEXT_KEY = new URL('./__subscription_context__', self.registration.scope).toString();
 const clientContextById = new Map();
 
 function parsePushPayload(event) {
@@ -147,6 +149,117 @@ function detectWorkerDeviceType() {
   return isMobile ? 'Mobile' : 'PC';
 }
 
+function normalizeUsername(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+async function readSubscriptionContext() {
+  try {
+    const cache = await caches.open(SW_SUBSCRIPTION_CONTEXT_CACHE);
+    const response = await cache.match(SW_SUBSCRIPTION_CONTEXT_KEY);
+    if (!response) return {};
+    const payload = await response.json();
+    if (!payload || typeof payload !== 'object') return {};
+    return payload;
+  } catch (_) {
+    return {};
+  }
+}
+
+async function persistSubscriptionContext(partial = {}) {
+  const username = normalizeUsername(partial.username);
+  const subscriptionUrl = typeof partial.subscriptionUrl === 'string' ? partial.subscriptionUrl.trim() : '';
+  const vapidPublicKey = typeof partial.vapidPublicKey === 'string' ? partial.vapidPublicKey.trim() : '';
+
+  if (!username && !subscriptionUrl && !vapidPublicKey) {
+    return false;
+  }
+
+  try {
+    const previous = await readSubscriptionContext();
+    const next = {
+      ...previous,
+      at: Date.now()
+    };
+    if (username) {
+      next.username = username;
+    }
+    if (subscriptionUrl) {
+      next.subscriptionUrl = subscriptionUrl;
+    }
+    if (vapidPublicKey) {
+      next.vapidPublicKey = vapidPublicKey;
+    }
+
+    const cache = await caches.open(SW_SUBSCRIPTION_CONTEXT_CACHE);
+    await cache.put(
+      SW_SUBSCRIPTION_CONTEXT_KEY,
+      new Response(JSON.stringify(next), {
+        headers: { 'Content-Type': 'application/json' }
+      })
+    );
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function registerSubscriptionFromStoredContext(newSubscription = null, reason = 'pushsubscriptionchange') {
+  const context = await readSubscriptionContext();
+  const username = normalizeUsername(context.username);
+  const subscriptionUrl = typeof context.subscriptionUrl === 'string' ? context.subscriptionUrl.trim() : '';
+  const vapidPublicKey = typeof context.vapidPublicKey === 'string' ? context.vapidPublicKey.trim() : '';
+  if (!username || !subscriptionUrl || !vapidPublicKey) {
+    return false;
+  }
+
+  try {
+    let subscription = newSubscription;
+    if (!subscription || !hasValidSubscriptionKeys(subscription)) {
+      subscription = await self.registration.pushManager.getSubscription();
+    }
+    if (!subscription || !hasValidSubscriptionKeys(subscription)) {
+      subscription = await self.registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapidPublicKey)
+      });
+    }
+    if (!subscription) {
+      return false;
+    }
+
+    const deviceType = detectWorkerDeviceType();
+    const registerPayload = {
+      username,
+      subscription,
+      action: 'reactivate_silent',
+      reason,
+      deviceType
+    };
+    if (deviceType === 'PC') {
+      registerPayload.subscriptionPC = subscription;
+    } else {
+      registerPayload.subscriptionMobile = subscription;
+    }
+
+    await fetch(subscriptionUrl, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(registerPayload)
+    });
+
+    await persistSubscriptionContext({
+      username,
+      subscriptionUrl,
+      vapidPublicKey
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 async function refreshSubscriptionAuthInBackground(payload) {
   const username = typeof payload.user === 'string' ? payload.user.trim().toLowerCase() : '';
   const subscriptionUrl = typeof payload.subscriptionUrl === 'string' ? payload.subscriptionUrl.trim() : '';
@@ -156,6 +269,11 @@ async function refreshSubscriptionAuthInBackground(payload) {
   }
 
   try {
+    await persistSubscriptionContext({
+      username,
+      subscriptionUrl,
+      vapidPublicKey
+    });
     let subscription = await self.registration.pushManager.getSubscription();
     const forceResubscribe = Boolean(payload.forceResubscribe);
     const needsResubscribe = forceResubscribe || !subscription || !hasValidSubscriptionKeys(subscription);
@@ -312,7 +430,14 @@ self.addEventListener('push', (event) => {
     typeof payload.url === 'string' && payload.url ? payload.url : new URL('./', self.registration.scope).toString()
   );
 
-  const tasks = [broadcastPushPayload(payload)];
+  const tasks = [
+    broadcastPushPayload(payload),
+    persistSubscriptionContext({
+      username: payload.user || payload.username || '',
+      subscriptionUrl: payload.subscriptionUrl || '',
+      vapidPublicKey: payload.vapidPublicKey || ''
+    })
+  ];
   if (String(payload.type || '').toLowerCase() === AUTH_REFRESH_PUSH_TYPE) {
     tasks.push(refreshSubscriptionAuthInBackground(payload));
   }
@@ -353,6 +478,14 @@ self.addEventListener('message', (event) => {
         at: Date.now()
       });
     }
+    const persistPromise = persistSubscriptionContext({
+      username: data.username || data.user || '',
+      subscriptionUrl: data.subscriptionUrl || '',
+      vapidPublicKey: data.vapidPublicKey || ''
+    });
+    if (typeof event.waitUntil === 'function') {
+      event.waitUntil(persistPromise);
+    }
     return;
   }
 
@@ -374,6 +507,11 @@ self.addEventListener('message', (event) => {
       ])
     );
   }
+});
+
+self.addEventListener('pushsubscriptionchange', (event) => {
+  const nextSubscription = event && event.newSubscription ? event.newSubscription : null;
+  event.waitUntil(registerSubscriptionFromStoredContext(nextSubscription, 'pushsubscriptionchange'));
 });
 
 self.addEventListener('notificationclick', (event) => {
