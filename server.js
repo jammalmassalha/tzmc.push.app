@@ -201,7 +201,7 @@ const AUTH_REFRESH_STALE_CLEANUP_BATCH_SIZE = 40;
 const AUTH_REFRESH_SCHEDULER_ENABLED = String(process.env.AUTH_REFRESH_SCHEDULER_ENABLED || 'true').trim().toLowerCase() !== 'false';
 const AUTH_REFRESH_SCHEDULER_INTERVAL_MS = Math.max(
     2 * 60 * 1000,
-    Number(process.env.AUTH_REFRESH_SCHEDULER_INTERVAL_MS) || 8 * 60 * 1000
+    Number(process.env.AUTH_REFRESH_SCHEDULER_INTERVAL_MS) || 5 * 60 * 1000
 );
 const AUTH_REFRESH_SCHEDULER_INITIAL_DELAY_MS = Math.max(
     5000,
