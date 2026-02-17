@@ -11,7 +11,7 @@ import { runtimeConfig } from './core/config/runtime-config';
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class App {
-  private static readonly MOBILE_CACHE_SESSION_KEY = 'mobile-cache-cleanup-v2';
+  private static readonly MOBILE_CACHE_SESSION_KEY = 'mobile-cache-cleanup-v4';
   private static readonly STARTUP_SYNC_TIMEOUT_MS = 7000;
 
   constructor(private readonly store: ChatStoreService) {

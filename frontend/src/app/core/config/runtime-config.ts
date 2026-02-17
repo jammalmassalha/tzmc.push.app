@@ -34,7 +34,7 @@ export const runtimeConfig: RuntimeConfig = {
   storeName: 'history',
   outboxStore: 'outbox',
   vapidPublicKey: 'BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk',
-  subscriptionUrl: 'https://script.google.com/macros/s/AKfycbz3GUA0gi9YowpIqwxu_Bh1z-os2_SwHv7m8aRC7K4LXX4bBtn-mB9MWWkHQYJ_QSryww/exec',
+  subscriptionUrl: 'https://script.google.com/macros/s/AKfycbwo4WIOH_68a0UV5ompNXujigGzyGxSoX9yGct3pKv1SWCLAvTouFpGT1f7GekRgf0IBg/exec',
   notifyReplyUrl: `${backendOrigin}/notify/reply`,
   uploadUrl: `${backendOrigin}/notify/upload`,
   groupUpdateUrl: `${backendOrigin}/notify/group-update`,
