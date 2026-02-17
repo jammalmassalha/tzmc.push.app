@@ -216,7 +216,7 @@ const AUTH_REFRESH_SCHEDULER_DEVICE_TYPES = String(
 const MOBILE_REREGISTER_PUSH_TYPE = 'mobile-re-register-prompt';
 const MOBILE_REREGISTER_DEFAULT_CAMPAIGN_ID = 'mobile-reregister-temp-v1';
 const MOBILE_REREGISTER_DEFAULT_TITLE = 'Reconnect notifications';
-const MOBILE_REREGISTER_DEFAULT_BODY = 'Open TZMC once to restore notifications on this phone.';
+const MOBILE_REREGISTER_DEFAULT_BODY = 'Open TZMC once to restore notifications on this device.';
 const MOBILE_REREGISTER_DEFAULT_URL = '/subscribes/';
 const MOBILE_REREGISTER_PUSH_URGENCY = 'high';
 const MOBILE_REREGISTER_PUSH_TTL_SECONDS = 24 * 60 * 60;
@@ -232,7 +232,7 @@ let mobileReregisterCampaignState = {
     running: false,
     lastRunAt: 0,
     lastResult: null,
-    sentUsersByCampaign: new Map()
+    sentTargetsByCampaign: new Map()
 };
 
 function buildSubscriptionCacheKey(usernames) {
@@ -275,6 +275,12 @@ function parseSubscriptionDeviceTypesInput(rawValue) {
     }
     const allowed = new Set();
     values.forEach((value) => {
+        const normalizedText = String(value || '').trim().toLowerCase();
+        if (normalizedText === 'all' || normalizedText === '*' || normalizedText === '%') {
+            allowed.add('mobile');
+            allowed.add('pc');
+            return;
+        }
         const normalized = normalizeSubscriptionType(value);
         if (normalized) {
             allowed.add(normalized);
@@ -313,9 +319,9 @@ function parsePositiveInteger(rawValue, fallbackValue = 0) {
     return Math.floor(parsed);
 }
 
-function getCampaignSentUsersSet(campaignId) {
+function getCampaignSentTargetsSet(campaignId) {
     const safeCampaignId = sanitizeCampaignId(campaignId);
-    const stateMap = mobileReregisterCampaignState.sentUsersByCampaign;
+    const stateMap = mobileReregisterCampaignState.sentTargetsByCampaign;
     if (!stateMap.has(safeCampaignId)) {
         stateMap.set(safeCampaignId, new Set());
     }
@@ -329,12 +335,12 @@ function getCampaignSentUsersSet(campaignId) {
 
 function getCampaignSentCount(campaignId) {
     const safeCampaignId = sanitizeCampaignId(campaignId);
-    const sentSet = mobileReregisterCampaignState.sentUsersByCampaign.get(safeCampaignId);
+    const sentSet = mobileReregisterCampaignState.sentTargetsByCampaign.get(safeCampaignId);
     return sentSet ? sentSet.size : 0;
 }
 
 function listTrackedCampaigns(limit = 20) {
-    return Array.from(mobileReregisterCampaignState.sentUsersByCampaign.keys()).slice(-limit);
+    return Array.from(mobileReregisterCampaignState.sentTargetsByCampaign.keys()).slice(-limit);
 }
 
 function normalizeSubscriptionRecord(rawSubscription, usernameHint = '', subscriptionTypeHint = '') {
@@ -1036,6 +1042,8 @@ async function runMobileReregisterPromptCampaign(jobContext = {}) {
     const requestId = jobContext.requestId || generateMessageId();
     const campaignId = sanitizeCampaignId(jobContext.campaignId);
     const requestedUsers = parseUsernamesInput(jobContext.usernames);
+    const requestedDeviceTypes = parseSubscriptionDeviceTypesInput(jobContext.deviceTypes || jobContext.deviceType);
+    const effectiveDeviceTypes = requestedDeviceTypes.length ? requestedDeviceTypes : ['mobile', 'pc'];
     const oneTime = parseBooleanInput(jobContext.oneTime, true);
     const force = parseBooleanInput(jobContext.force, false);
     const requireInteraction = parseBooleanInput(jobContext.requireInteraction, true);
@@ -1056,10 +1064,11 @@ async function runMobileReregisterPromptCampaign(jobContext = {}) {
         startedAt,
         finishedAt: startedAt,
         requestedUserCount: requestedUsers.length,
+        requestedDeviceTypes: effectiveDeviceTypes,
         oneTime,
         force,
         discoveredUserCount: 0,
-        discoveredMobileSubscriptions: 0,
+        discoveredSubscriptions: 0,
         targetCandidates: 0,
         targeted: 0,
         skippedAlreadySent: 0,
@@ -1076,41 +1085,44 @@ async function runMobileReregisterPromptCampaign(jobContext = {}) {
         const allDiscoveredSubscriptions = Array.isArray(discoveryResult.subscriptions)
             ? discoveryResult.subscriptions
             : [];
-        const mobileSubscriptions = allDiscoveredSubscriptions
-            .filter((subscription) => normalizeSubscriptionType(subscription && subscription.type) === 'mobile');
+        const includeUnknownType = effectiveDeviceTypes.includes('mobile') && effectiveDeviceTypes.includes('pc');
+        const filteredSubscriptions = allDiscoveredSubscriptions
+            .filter((subscription) => {
+                const subscriptionType = normalizeSubscriptionType(subscription && subscription.type);
+                if (!subscriptionType) return includeUnknownType;
+                return effectiveDeviceTypes.includes(subscriptionType);
+            });
         summary.discoveredUserCount = discoveredUsers.length;
-        summary.discoveredMobileSubscriptions = mobileSubscriptions.length;
+        summary.discoveredSubscriptions = filteredSubscriptions.length;
 
-        if (!mobileSubscriptions.length) {
+        if (!filteredSubscriptions.length) {
             summary.finishedAt = Date.now();
-            summary.warning = 'No mobile subscriptions discovered for requested scope.';
+            summary.warning = 'No subscriptions discovered for requested device scope.';
             mobileReregisterCampaignState.lastRunAt = summary.finishedAt;
             mobileReregisterCampaignState.lastResult = summary;
             return summary;
         }
 
-        const byUser = new Map();
-        mobileSubscriptions.forEach((subscription) => {
-            const userKey = normalizeUserKey(subscription && (subscription.username || subscription.user));
-            if (!userKey) return;
-            byUser.set(userKey, { ...subscription, username: userKey, type: 'mobile' });
-        });
-
-        const targetCandidates = Array.from(byUser.values());
+        const targetCandidates = dedupeSubscriptionsByEndpoint(filteredSubscriptions);
         summary.targetCandidates = targetCandidates.length;
-        const sentUsersSet = getCampaignSentUsersSet(campaignId);
+        const sentTargetsSet = getCampaignSentTargetsSet(campaignId);
         const targets = [];
         targetCandidates.forEach((subscription) => {
+            const endpoint = typeof subscription.endpoint === 'string' ? subscription.endpoint.trim() : '';
             const userKey = normalizeUserKey(subscription && (subscription.username || subscription.user));
+            if (!endpoint) {
+                summary.skippedMissingUser += 1;
+                return;
+            }
             if (!userKey) {
                 summary.skippedMissingUser += 1;
                 return;
             }
-            if (oneTime && !force && sentUsersSet.has(userKey)) {
+            if (oneTime && !force && sentTargetsSet.has(endpoint)) {
                 summary.skippedAlreadySent += 1;
                 return;
             }
-            targets.push({ ...subscription, username: userKey });
+            targets.push({ ...subscription, username: userKey, endpoint });
         });
 
         if (maxTargets > 0 && targets.length > maxTargets) {
@@ -1121,13 +1133,14 @@ async function runMobileReregisterPromptCampaign(jobContext = {}) {
 
         if (!targets.length) {
             summary.finishedAt = Date.now();
-            summary.warning = 'No eligible mobile subscriptions after one-time filters.';
+            summary.warning = 'No eligible subscriptions after one-time filters.';
             mobileReregisterCampaignState.lastRunAt = summary.finishedAt;
             mobileReregisterCampaignState.lastResult = summary;
             return summary;
         }
 
         const deliveredUsers = new Set();
+        const deliveredEndpoints = new Set();
         const failures = [];
 
         for (let i = 0; i < targets.length; i += MOBILE_REREGISTER_SEND_CONCURRENCY) {
@@ -1160,7 +1173,8 @@ async function runMobileReregisterPromptCampaign(jobContext = {}) {
                     );
                     return {
                         ok: true,
-                        user: subscription.username
+                        user: subscription.username,
+                        endpoint: subscription.endpoint
                     };
                 } catch (error) {
                     return {
@@ -1176,6 +1190,9 @@ async function runMobileReregisterPromptCampaign(jobContext = {}) {
                 if (result.ok) {
                     summary.success += 1;
                     deliveredUsers.add(normalizeUserKey(result.user));
+                    if (result.endpoint) {
+                        deliveredEndpoints.add(result.endpoint);
+                    }
                 } else {
                     summary.failed += 1;
                     failures.push({
@@ -1191,12 +1208,12 @@ async function runMobileReregisterPromptCampaign(jobContext = {}) {
             .slice(0, AUTH_REFRESH_FAILURE_DETAILS_LIMIT)
             .forEach((failure) => summary.failures.push(failure));
 
-        deliveredUsers.forEach((userKey) => {
-            if (userKey) sentUsersSet.add(userKey);
+        deliveredEndpoints.forEach((endpoint) => {
+            if (endpoint) sentTargetsSet.add(endpoint);
         });
         summary.finishedAt = Date.now();
         summary.sentUsersSample = Array.from(deliveredUsers).slice(0, 120);
-        summary.sentUsersCountForCampaign = getCampaignSentCount(campaignId);
+        summary.sentTargetsCountForCampaign = getCampaignSentCount(campaignId);
 
         const detailParts = [
             `requestId=${requestId}`,
@@ -1207,15 +1224,16 @@ async function runMobileReregisterPromptCampaign(jobContext = {}) {
             `failed=${summary.failed}`,
             `skippedAlreadySent=${summary.skippedAlreadySent}`,
             `skippedByLimit=${summary.skippedByLimit}`,
+            `deviceTypes=${effectiveDeviceTypes.join(',')}`,
             `oneTime=${oneTime}`,
             `force=${force}`,
-            `campaignSentUsers=${summary.sentUsersCountForCampaign}`
+            `campaignSentTargets=${summary.sentTargetsCountForCampaign}`
         ];
         const statusText = summary.success > 0 ? 'Sent' : 'Failed';
         logNotificationStatus(
             'System',
             requestedUsers.length ? requestedUsers.join(',') : 'ALL',
-            'Mobile re-register prompt campaign',
+            'Device re-register prompt campaign',
             statusText,
             detailParts.join(' | ')
         );
@@ -1867,7 +1885,7 @@ app.post(['/refresh-subscribe-auth', '/notify/refresh-subscribe-auth'], (req, re
         });
 });
 
-// Temporary ops endpoint: one-time visible mobile prompt campaign to recover devices
+// Temporary ops endpoint: one-time visible device prompt campaign to recover devices
 // that stopped receiving pushes until users reopen the app.
 app.get(['/mobile-reregister-campaign/status', '/notify/mobile-reregister-campaign/status'], (req, res) => {
     const campaignIdQuery = (req.query && typeof req.query.campaignId === 'string')
@@ -1878,7 +1896,8 @@ app.get(['/mobile-reregister-campaign/status', '/notify/mobile-reregister-campai
         lastRunAt: mobileReregisterCampaignState.lastRunAt || null,
         lastResult: mobileReregisterCampaignState.lastResult || null,
         campaignId: campaignIdQuery || null,
-        campaignSentUsers: campaignIdQuery ? getCampaignSentCount(campaignIdQuery) : null,
+        campaignSentTargets: campaignIdQuery ? getCampaignSentCount(campaignIdQuery) : null,
+        campaignSentUsers: campaignIdQuery ? getCampaignSentCount(campaignIdQuery) : null, // Legacy alias
         trackedCampaigns: listTrackedCampaigns(20)
     });
 });
@@ -1898,6 +1917,8 @@ app.post(['/mobile-reregister-campaign', '/notify/mobile-reregister-campaign'], 
     const usernames = parseUsernamesInput(payload.usernames);
     const oneTime = payload.oneTime === undefined ? true : parseBooleanInput(payload.oneTime, true);
     const force = parseBooleanInput(payload.force, false);
+    const requestedDeviceTypes = parseSubscriptionDeviceTypesInput(payload.deviceTypes || payload.deviceType);
+    const deviceTypes = requestedDeviceTypes.length ? requestedDeviceTypes : ['mobile', 'pc'];
     const requireInteraction = payload.requireInteraction === undefined
         ? true
         : parseBooleanInput(payload.requireInteraction, true);
@@ -1911,6 +1932,7 @@ app.post(['/mobile-reregister-campaign', '/notify/mobile-reregister-campaign'], 
         requestId,
         campaignId,
         requestedUserCount: usernames.length,
+        deviceTypes,
         oneTime,
         force,
         maxTargets
@@ -1920,6 +1942,7 @@ app.post(['/mobile-reregister-campaign', '/notify/mobile-reregister-campaign'], 
         requestId,
         campaignId,
         usernames,
+        deviceTypes,
         oneTime,
         force,
         requireInteraction,
