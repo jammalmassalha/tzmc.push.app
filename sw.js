@@ -11,7 +11,7 @@ const CACHE_NAME = config.CACHE_NAME || 'static-assets-v4';
 const VAPID_PUBLIC_KEY = config.VAPID_PUBLIC_KEY || '';
 const SUBSCRIPTION_URL = config.SUBSCRIPTION_URL || '';
 const AUTH_REFRESH_PUSH_TYPE = 'subscription-auth-refresh';
-const SW_CONTEXT_CACHE = 'sw-runtime-context-v1';
+const SW_CONTEXT_CACHE = 'sw-runtime-context-v5';
 const SW_CONTEXT_KEY = new URL('./__sw_runtime_context__', self.registration.scope).toString();
 let lastKnownPushUser = '';
 
