@@ -1245,15 +1245,19 @@ export class ChatStoreService {
     this.stopRealtime();
     this.startPolling(user);
 
-    if (!this.networkOnline()) {
+    if (!this.isNetworkReachable()) {
       return;
     }
 
     try {
       this.stream = this.api.createMessageStream(user);
-      this.stream.onmessage = (event: MessageEvent<string>) => {
+      this.stream.addEventListener('message', (event: MessageEvent<string>) => {
         this.handleIncomingPayload(event.data);
-      };
+      });
+      this.stream.addEventListener('connected', () => {
+        // Immediately pull queued messages after stream handshake.
+        void this.pullMessages(user);
+      });
 
       this.stream.onerror = () => {
         this.stopStreamOnly();
@@ -1306,7 +1310,7 @@ export class ChatStoreService {
   }
 
   private async pullMessages(user: string): Promise<void> {
-    if (this.pullInFlight || !this.networkOnline()) return;
+    if (this.pullInFlight || !this.isNetworkReachable()) return;
     if (this.currentUser() !== user) return;
 
     this.pullInFlight = true;
@@ -2068,6 +2072,18 @@ export class ChatStoreService {
     this.networkOnline.set(false);
   };
 
+  private isNetworkReachable(): boolean {
+    if (this.networkOnline()) {
+      return true;
+    }
+    if (typeof navigator !== 'undefined' && navigator.onLine) {
+      // Recover from stale offline events where online never fires.
+      this.networkOnline.set(true);
+      return true;
+    }
+    return false;
+  }
+
   private handleWindowFocus = (): void => {
     this.refreshPushRegistrationForCurrentUser(false);
     this.clearDeviceAttention({ resetServerBadge: true });
@@ -2204,7 +2220,7 @@ export class ChatStoreService {
 
   private syncForegroundState(options: { forceRefresh?: boolean } = {}): void {
     const user = this.currentUser();
-    if (!user || !this.networkOnline()) return;
+    if (!user || !this.isNetworkReachable()) return;
 
     const forceRefresh = Boolean(options.forceRefresh);
     const now = Date.now();
