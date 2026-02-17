@@ -213,12 +213,27 @@ const AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE = String(
 const AUTH_REFRESH_SCHEDULER_DEVICE_TYPES = String(
     process.env.AUTH_REFRESH_SCHEDULER_DEVICE_TYPES || 'pc'
 ).trim();
+const MOBILE_REREGISTER_PUSH_TYPE = 'mobile-re-register-prompt';
+const MOBILE_REREGISTER_DEFAULT_CAMPAIGN_ID = 'mobile-reregister-temp-v1';
+const MOBILE_REREGISTER_DEFAULT_TITLE = 'Reconnect notifications';
+const MOBILE_REREGISTER_DEFAULT_BODY = 'Open TZMC once to restore notifications on this phone.';
+const MOBILE_REREGISTER_DEFAULT_URL = '/subscribes/';
+const MOBILE_REREGISTER_PUSH_URGENCY = 'high';
+const MOBILE_REREGISTER_PUSH_TTL_SECONDS = 24 * 60 * 60;
+const MOBILE_REREGISTER_SEND_CONCURRENCY = 20;
+const MOBILE_REREGISTER_MAX_TRACKED_CAMPAIGNS = 20;
 let subscriptionAuthRefreshState = {
     running: false,
     lastRunAt: 0,
     lastResult: null
 };
 let authRefreshSchedulerStarted = false;
+let mobileReregisterCampaignState = {
+    running: false,
+    lastRunAt: 0,
+    lastResult: null,
+    sentUsersByCampaign: new Map()
+};
 
 function buildSubscriptionCacheKey(usernames) {
     const values = Array.isArray(usernames) ? usernames : [usernames];
@@ -266,6 +281,60 @@ function parseSubscriptionDeviceTypesInput(rawValue) {
         }
     });
     return Array.from(allowed);
+}
+
+function sanitizeCampaignId(rawValue) {
+    const source = String(rawValue || '').trim().toLowerCase();
+    if (!source) {
+        return MOBILE_REREGISTER_DEFAULT_CAMPAIGN_ID;
+    }
+    const normalized = source
+        .replace(/[^a-z0-9._:-]+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 80);
+    return normalized || MOBILE_REREGISTER_DEFAULT_CAMPAIGN_ID;
+}
+
+function parseBooleanInput(rawValue, defaultValue = false) {
+    if (typeof rawValue === 'boolean') return rawValue;
+    if (typeof rawValue === 'number') return rawValue !== 0;
+    if (typeof rawValue !== 'string') return defaultValue;
+    const normalized = rawValue.trim().toLowerCase();
+    if (!normalized) return defaultValue;
+    if (normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'y') return true;
+    if (normalized === 'false' || normalized === '0' || normalized === 'no' || normalized === 'n') return false;
+    return defaultValue;
+}
+
+function parsePositiveInteger(rawValue, fallbackValue = 0) {
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed) || parsed <= 0) return fallbackValue;
+    return Math.floor(parsed);
+}
+
+function getCampaignSentUsersSet(campaignId) {
+    const safeCampaignId = sanitizeCampaignId(campaignId);
+    const stateMap = mobileReregisterCampaignState.sentUsersByCampaign;
+    if (!stateMap.has(safeCampaignId)) {
+        stateMap.set(safeCampaignId, new Set());
+    }
+    while (stateMap.size > MOBILE_REREGISTER_MAX_TRACKED_CAMPAIGNS) {
+        const oldestKey = stateMap.keys().next().value;
+        if (!oldestKey) break;
+        stateMap.delete(oldestKey);
+    }
+    return stateMap.get(safeCampaignId);
+}
+
+function getCampaignSentCount(campaignId) {
+    const safeCampaignId = sanitizeCampaignId(campaignId);
+    const sentSet = mobileReregisterCampaignState.sentUsersByCampaign.get(safeCampaignId);
+    return sentSet ? sentSet.size : 0;
+}
+
+function listTrackedCampaigns(limit = 20) {
+    return Array.from(mobileReregisterCampaignState.sentUsersByCampaign.keys()).slice(-limit);
 }
 
 function normalizeSubscriptionRecord(rawSubscription, usernameHint = '', subscriptionTypeHint = '') {
@@ -954,6 +1023,216 @@ function startSubscriptionAuthRefreshScheduler() {
     );
 }
 
+async function runMobileReregisterPromptCampaign(jobContext = {}) {
+    if (mobileReregisterCampaignState.running) {
+        return {
+            status: 'running',
+            message: 'Mobile re-register prompt campaign is already running.'
+        };
+    }
+
+    mobileReregisterCampaignState.running = true;
+    const startedAt = Date.now();
+    const requestId = jobContext.requestId || generateMessageId();
+    const campaignId = sanitizeCampaignId(jobContext.campaignId);
+    const requestedUsers = parseUsernamesInput(jobContext.usernames);
+    const oneTime = parseBooleanInput(jobContext.oneTime, true);
+    const force = parseBooleanInput(jobContext.force, false);
+    const requireInteraction = parseBooleanInput(jobContext.requireInteraction, true);
+    const maxTargets = parsePositiveInteger(jobContext.maxTargets, 0);
+    const title = (typeof jobContext.title === 'string' && jobContext.title.trim())
+        ? jobContext.title.trim()
+        : MOBILE_REREGISTER_DEFAULT_TITLE;
+    const body = (typeof jobContext.body === 'string' && jobContext.body.trim())
+        ? jobContext.body.trim()
+        : MOBILE_REREGISTER_DEFAULT_BODY;
+    const url = (typeof jobContext.url === 'string' && jobContext.url.trim())
+        ? jobContext.url.trim()
+        : MOBILE_REREGISTER_DEFAULT_URL;
+
+    let summary = {
+        requestId,
+        campaignId,
+        startedAt,
+        finishedAt: startedAt,
+        requestedUserCount: requestedUsers.length,
+        oneTime,
+        force,
+        discoveredUserCount: 0,
+        discoveredMobileSubscriptions: 0,
+        targetCandidates: 0,
+        targeted: 0,
+        skippedAlreadySent: 0,
+        skippedMissingUser: 0,
+        skippedByLimit: 0,
+        success: 0,
+        failed: 0,
+        failures: []
+    };
+
+    try {
+        const discoveryResult = await getAllSubscriptionsForAuthRefresh({ usernames: requestedUsers });
+        const discoveredUsers = Array.isArray(discoveryResult.discoveredUsers) ? discoveryResult.discoveredUsers : [];
+        const allDiscoveredSubscriptions = Array.isArray(discoveryResult.subscriptions)
+            ? discoveryResult.subscriptions
+            : [];
+        const mobileSubscriptions = allDiscoveredSubscriptions
+            .filter((subscription) => normalizeSubscriptionType(subscription && subscription.type) === 'mobile');
+        summary.discoveredUserCount = discoveredUsers.length;
+        summary.discoveredMobileSubscriptions = mobileSubscriptions.length;
+
+        if (!mobileSubscriptions.length) {
+            summary.finishedAt = Date.now();
+            summary.warning = 'No mobile subscriptions discovered for requested scope.';
+            mobileReregisterCampaignState.lastRunAt = summary.finishedAt;
+            mobileReregisterCampaignState.lastResult = summary;
+            return summary;
+        }
+
+        const byUser = new Map();
+        mobileSubscriptions.forEach((subscription) => {
+            const userKey = normalizeUserKey(subscription && (subscription.username || subscription.user));
+            if (!userKey) return;
+            byUser.set(userKey, { ...subscription, username: userKey, type: 'mobile' });
+        });
+
+        const targetCandidates = Array.from(byUser.values());
+        summary.targetCandidates = targetCandidates.length;
+        const sentUsersSet = getCampaignSentUsersSet(campaignId);
+        const targets = [];
+        targetCandidates.forEach((subscription) => {
+            const userKey = normalizeUserKey(subscription && (subscription.username || subscription.user));
+            if (!userKey) {
+                summary.skippedMissingUser += 1;
+                return;
+            }
+            if (oneTime && !force && sentUsersSet.has(userKey)) {
+                summary.skippedAlreadySent += 1;
+                return;
+            }
+            targets.push({ ...subscription, username: userKey });
+        });
+
+        if (maxTargets > 0 && targets.length > maxTargets) {
+            summary.skippedByLimit = targets.length - maxTargets;
+            targets.length = maxTargets;
+        }
+        summary.targeted = targets.length;
+
+        if (!targets.length) {
+            summary.finishedAt = Date.now();
+            summary.warning = 'No eligible mobile subscriptions after one-time filters.';
+            mobileReregisterCampaignState.lastRunAt = summary.finishedAt;
+            mobileReregisterCampaignState.lastResult = summary;
+            return summary;
+        }
+
+        const deliveredUsers = new Set();
+        const failures = [];
+
+        for (let i = 0; i < targets.length; i += MOBILE_REREGISTER_SEND_CONCURRENCY) {
+            const batch = targets.slice(i, i + MOBILE_REREGISTER_SEND_CONCURRENCY);
+            const batchResults = await Promise.all(batch.map(async (subscription) => {
+                const pushPayload = JSON.stringify({
+                    data: {
+                        type: MOBILE_REREGISTER_PUSH_TYPE,
+                        title,
+                        body,
+                        user: subscription.username || '',
+                        url,
+                        requireInteraction,
+                        skipNotification: false,
+                        campaignId,
+                        sender: 'System',
+                        messageId: requestId
+                    }
+                });
+
+                try {
+                    await webpush.sendNotification(
+                        subscription,
+                        pushPayload,
+                        {
+                            TTL: MOBILE_REREGISTER_PUSH_TTL_SECONDS,
+                            headers: { Urgency: MOBILE_REREGISTER_PUSH_URGENCY },
+                            timeout: 15000
+                        }
+                    );
+                    return {
+                        ok: true,
+                        user: subscription.username
+                    };
+                } catch (error) {
+                    return {
+                        ok: false,
+                        user: subscription.username,
+                        statusCode: error && error.statusCode ? error.statusCode : null,
+                        error: error && error.message ? error.message : 'Unknown push error'
+                    };
+                }
+            }));
+
+            batchResults.forEach((result) => {
+                if (result.ok) {
+                    summary.success += 1;
+                    deliveredUsers.add(normalizeUserKey(result.user));
+                } else {
+                    summary.failed += 1;
+                    failures.push({
+                        user: result.user || null,
+                        statusCode: result.statusCode || null,
+                        error: result.error || 'Unknown'
+                    });
+                }
+            });
+        }
+
+        failures
+            .slice(0, AUTH_REFRESH_FAILURE_DETAILS_LIMIT)
+            .forEach((failure) => summary.failures.push(failure));
+
+        deliveredUsers.forEach((userKey) => {
+            if (userKey) sentUsersSet.add(userKey);
+        });
+        summary.finishedAt = Date.now();
+        summary.sentUsersSample = Array.from(deliveredUsers).slice(0, 120);
+        summary.sentUsersCountForCampaign = getCampaignSentCount(campaignId);
+
+        const detailParts = [
+            `requestId=${requestId}`,
+            `campaignId=${campaignId}`,
+            `requestedUserCount=${summary.requestedUserCount}`,
+            `targeted=${summary.targeted}`,
+            `success=${summary.success}`,
+            `failed=${summary.failed}`,
+            `skippedAlreadySent=${summary.skippedAlreadySent}`,
+            `skippedByLimit=${summary.skippedByLimit}`,
+            `oneTime=${oneTime}`,
+            `force=${force}`,
+            `campaignSentUsers=${summary.sentUsersCountForCampaign}`
+        ];
+        const statusText = summary.success > 0 ? 'Sent' : 'Failed';
+        logNotificationStatus(
+            'System',
+            requestedUsers.length ? requestedUsers.join(',') : 'ALL',
+            'Mobile re-register prompt campaign',
+            statusText,
+            detailParts.join(' | ')
+        );
+    } catch (error) {
+        summary.finishedAt = Date.now();
+        summary.error = error && error.message ? error.message : 'Unknown campaign error';
+        summary.failed = summary.targeted || summary.failed || 1;
+        console.error('[MOBILE REREGISTER] Campaign failed:', summary.error);
+    } finally {
+        mobileReregisterCampaignState.running = false;
+        mobileReregisterCampaignState.lastRunAt = Date.now();
+        mobileReregisterCampaignState.lastResult = summary;
+    }
+
+    return summary;
+}
+
 function upsertGroup(payload = {}) {
     const groupId = payload.groupId;
     const groupName = typeof payload.groupName === 'string' ? payload.groupName.trim() : payload.groupName;
@@ -1585,6 +1864,77 @@ app.post(['/refresh-subscribe-auth', '/notify/refresh-subscribe-auth'], (req, re
         })
         .catch((error) => {
             console.error(`[AUTH REFRESH] Failed ${requestId}:`, error.message);
+        });
+});
+
+// Temporary ops endpoint: one-time visible mobile prompt campaign to recover devices
+// that stopped receiving pushes until users reopen the app.
+app.get(['/mobile-reregister-campaign/status', '/notify/mobile-reregister-campaign/status'], (req, res) => {
+    const campaignIdQuery = (req.query && typeof req.query.campaignId === 'string')
+        ? sanitizeCampaignId(req.query.campaignId)
+        : '';
+    res.json({
+        running: mobileReregisterCampaignState.running,
+        lastRunAt: mobileReregisterCampaignState.lastRunAt || null,
+        lastResult: mobileReregisterCampaignState.lastResult || null,
+        campaignId: campaignIdQuery || null,
+        campaignSentUsers: campaignIdQuery ? getCampaignSentCount(campaignIdQuery) : null,
+        trackedCampaigns: listTrackedCampaigns(20)
+    });
+});
+
+app.post(['/mobile-reregister-campaign', '/notify/mobile-reregister-campaign'], (req, res) => {
+    if (mobileReregisterCampaignState.running) {
+        return res.status(409).json({
+            status: 'running',
+            message: 'Mobile re-register prompt campaign is already running.',
+            lastResult: mobileReregisterCampaignState.lastResult || null
+        });
+    }
+
+    const payload = req.body && typeof req.body === 'object' ? req.body : {};
+    const requestId = generateMessageId();
+    const campaignId = sanitizeCampaignId(payload.campaignId);
+    const usernames = parseUsernamesInput(payload.usernames);
+    const oneTime = payload.oneTime === undefined ? true : parseBooleanInput(payload.oneTime, true);
+    const force = parseBooleanInput(payload.force, false);
+    const requireInteraction = payload.requireInteraction === undefined
+        ? true
+        : parseBooleanInput(payload.requireInteraction, true);
+    const maxTargets = parsePositiveInteger(payload.maxTargets, 0);
+    const title = typeof payload.title === 'string' ? payload.title.trim() : '';
+    const body = typeof payload.body === 'string' ? payload.body.trim() : '';
+    const url = typeof payload.url === 'string' ? payload.url.trim() : '';
+
+    res.json({
+        status: 'queued',
+        requestId,
+        campaignId,
+        requestedUserCount: usernames.length,
+        oneTime,
+        force,
+        maxTargets
+    });
+
+    runMobileReregisterPromptCampaign({
+        requestId,
+        campaignId,
+        usernames,
+        oneTime,
+        force,
+        requireInteraction,
+        maxTargets,
+        title,
+        body,
+        url
+    })
+        .then((summary) => {
+            console.log(
+                `[MOBILE REREGISTER] Completed ${summary.requestId || requestId} | campaign=${summary.campaignId || campaignId} targeted=${summary.targeted || 0} success=${summary.success || 0} failed=${summary.failed || 0}`
+            );
+        })
+        .catch((error) => {
+            console.error(`[MOBILE REREGISTER] Failed ${requestId}:`, error && error.message ? error.message : error);
         });
 });
 
