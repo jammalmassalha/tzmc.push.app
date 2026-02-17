@@ -692,6 +692,15 @@ mat-chip:not(.offline) {
   padding: 1px 6px;
 }
 
+.message-syncing-label {
+  color: #4d6ccf;
+  font-size: 10px;
+  border: 1px solid rgba(77, 108, 207, 0.3);
+  border-radius: 999px;
+  padding: 1px 6px;
+  background: rgba(77, 108, 207, 0.08);
+}
+
 .message-status {
   display: inline-flex;
   align-items: center;

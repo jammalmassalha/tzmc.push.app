@@ -256,6 +256,9 @@
                   @if (isMessageEdited(message)) {
                     <span class="message-edited-label">נערך</span>
                   }
+                  @if (isMessageActionSyncing(message)) {
+                    <span class="message-syncing-label">מסנכרן...</span>
+                  }
                   @if (message.direction === 'outgoing') {
                     <span
                       class="message-status"

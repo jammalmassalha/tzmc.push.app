@@ -1103,6 +1103,11 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     return Boolean(message.deletedAt);
   }
 
+  isMessageActionSyncing(message: ChatMessage): boolean {
+    if (!this.isMessageActionPending(message)) return false;
+    return this.isMessageEdited(message) || this.isMessageDeleted(message);
+  }
+
   startEditingSelectedMessage(): void {
     const target = this.messageActionTarget();
     if (!target || !this.canEditOutgoingMessage(target)) {
