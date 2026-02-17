@@ -1266,7 +1266,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const source = String(text || '');
     if (!source) return;
 
-    const phoneRegex = /(?:\+?\d[\d\s().-]{6,}\d)/g;
+    const phoneRegex = /(?:\+97205\d{8}|\+9725\d{8}|05\d{8})/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = phoneRegex.exec(source)) !== null) {
@@ -1274,6 +1274,16 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       const rawMatch = match[0];
       if (start > lastIndex) {
         parts.push({ kind: 'text', text: source.slice(lastIndex, start) });
+      }
+
+      const prevChar = start > 0 ? source.charAt(start - 1) : '';
+      const nextChar = source.charAt(start + rawMatch.length);
+      const hasValidBoundaryBefore = !prevChar || !/[0-9+]/.test(prevChar);
+      const hasValidBoundaryAfter = !nextChar || !/[0-9]/.test(nextChar);
+      if (!hasValidBoundaryBefore || !hasValidBoundaryAfter) {
+        parts.push({ kind: 'text', text: rawMatch });
+        lastIndex = start + rawMatch.length;
+        continue;
       }
 
       const { cleanPhone, trailingText } = this.stripTrailingPhonePunctuation(rawMatch);
@@ -1333,17 +1343,12 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   private normalizePhoneForAction(value: string): string {
-    const source = String(value || '').trim();
+    const source = String(value || '').trim().replace(/\s+/g, '');
     if (!source) return '';
-    if (/^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/.test(source)) return '';
-
-    const hasLeadingPlus = source.startsWith('+');
-    const digits = source.replace(/\D/g, '');
-    if (!digits || digits.length < 7 || digits.length > 15) {
-      return '';
-    }
-    if (/^0+$/.test(digits)) return '';
-    return hasLeadingPlus ? `+${digits}` : digits;
+    if (/^05\d{8}$/.test(source)) return source;
+    if (/^\+9725\d{8}$/.test(source)) return source;
+    if (/^\+97205\d{8}$/.test(source)) return source;
+    return '';
   }
 
   private async copyTextToClipboard(text: string): Promise<boolean> {

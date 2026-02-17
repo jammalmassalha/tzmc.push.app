@@ -807,14 +807,12 @@ function stripGroupMessagePrefix(text, senderName) {
 }
 
 function normalizeCallablePhone(value) {
-    const source = String(value || '').trim();
+    const source = String(value || '').trim().replace(/\s+/g, '');
     if (!source) return '';
-    if (/^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/.test(source)) return '';
-    const hasLeadingPlus = source.startsWith('+');
-    const digits = source.replace(/\D/g, '');
-    if (!digits || digits.length < 7 || digits.length > 15) return '';
-    if (/^0+$/.test(digits)) return '';
-    return hasLeadingPlus ? `+${digits}` : digits;
+    if (/^05\d{8}$/.test(source)) return source;
+    if (/^\+9725\d{8}$/.test(source)) return source;
+    if (/^\+97205\d{8}$/.test(source)) return source;
+    return '';
 }
 
 function escapeHtmlAttr(value) {
@@ -828,13 +826,11 @@ function escapeHtmlAttr(value) {
 function linkifyPhoneNumbersInText(text) {
     const source = String(text || '');
     if (!source) return source;
-    const phoneRegex = /(?:\+?\d[\d\s().-]{6,}\d)/g;
-    return source.replace(phoneRegex, (rawMatch) => {
-        const match = String(rawMatch || '');
-        const phone = normalizeCallablePhone(match);
-        if (!phone) return match;
-        const display = match.trim();
-        return `<button type="button" class="msg-phone-link" data-phone="${escapeHtmlAttr(phone)}">${display}</button>`;
+    const phoneRegex = /(^|[^0-9+])(\+97205\d{8}|\+9725\d{8}|05\d{8})(?!\d)/g;
+    return source.replace(phoneRegex, (fullMatch, prefix, phoneMatch) => {
+        const phone = normalizeCallablePhone(phoneMatch);
+        if (!phone) return fullMatch;
+        return `${prefix}<button type="button" class="msg-phone-link" data-phone="${escapeHtmlAttr(phone)}">${phoneMatch}</button>`;
     });
 }
 
@@ -1502,14 +1498,9 @@ function showChatRoom(senderName) {
             callBtn.href = '#';
             callBtn.style.display = 'none';
         } else {
-            // 1. Check if the senderName looks like a phone number 
-            // (removes non-digits to check length)
-            const cleanNumber = senderName.replace(/[^0-9]/g, '');
-
-            // 2. Toggle Visibility
-            // If it has at least 3 digits and is NOT a system user, show the button
-            if (cleanNumber.length > 3 && !isSystemSenderName(senderName)) {
-                callBtn.href = `tel:${senderName}`; // Set the phone number
+            const callablePhone = normalizeCallablePhone(senderName);
+            if (callablePhone && !isSystemSenderName(senderName)) {
+                callBtn.href = `tel:${callablePhone}`;
                 callBtn.style.display = 'block';    // Show the button
             } else {
                 callBtn.href = '#';
@@ -4009,8 +4000,8 @@ function callUser(event, phoneNumber) {
 
     // 3. Check if it's a valid number (basic check)
     // Assuming 'phoneNumber' is the username like '054...'
-    const normalized = normalizePhoneInput(phoneNumber);
-    if (!normalized || !isValidPhoneNumber(normalized)) {
+    const normalized = normalizeCallablePhone(phoneNumber);
+    if (!normalized) {
         showToast(t('call_invalid_number'), 'error');
         return;
     }
