@@ -939,6 +939,20 @@ body.ios .chat-container {
     text-decoration: underline;
     word-break: break-all;
 }
+
+.msg-phone-link {
+    border: 0;
+    background: transparent;
+    padding: 0;
+    margin: 0;
+    color: #1f4fc4;
+    text-decoration: underline;
+    cursor: pointer;
+    font: inherit;
+    line-height: inherit;
+    direction: ltr;
+    text-align: right;
+}
 .msg-file-link {
     color: #027eb5;
     text-decoration: underline;

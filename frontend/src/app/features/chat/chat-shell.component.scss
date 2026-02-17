@@ -464,6 +464,8 @@ mat-chip:not(.offline) {
 
 .conversation-title {
   text-align: right;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .conversation-title.clickable {
@@ -486,6 +488,11 @@ mat-chip:not(.offline) {
 
 .conversation-title small {
   color: #6f788a;
+}
+
+.conversation-call-btn {
+  flex: 0 0 auto;
+  color: #2a3f86;
 }
 
 .messages-panel {
@@ -596,6 +603,20 @@ mat-chip:not(.offline) {
   color: #1f4fc4;
   text-decoration: none;
   word-break: break-word;
+}
+
+.message-phone {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  color: #1f4fc4;
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+  line-height: inherit;
+  text-align: right;
+  direction: ltr;
 }
 
 .message-meta {
@@ -1048,6 +1069,85 @@ mat-chip:not(.offline) {
 .reaction-details-emoji {
   font-size: 20px;
   line-height: 1;
+}
+
+.phone-action-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 42;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(11, 20, 26, 0.62);
+}
+
+.phone-action-dialog {
+  position: relative;
+  width: min(92vw, 340px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 16px 14px;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 14px 34px rgba(8, 18, 44, 0.22);
+  text-align: right;
+  direction: rtl;
+}
+
+.phone-action-close {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(36, 53, 120, 0.08);
+  color: #26336b;
+  cursor: pointer;
+}
+
+.phone-action-title {
+  margin-inline-start: 34px;
+  font-size: 16px;
+  font-weight: 700;
+  color: #1f273d;
+}
+
+.phone-action-number {
+  direction: ltr;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 600;
+  color: #2f4fb0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #f3f6ff;
+}
+
+.phone-action-buttons {
+  display: grid;
+  gap: 8px;
+}
+
+.phone-action-btn {
+  min-height: 40px;
+  border: 1px solid #d5dced;
+  border-radius: 10px;
+  background: #fff;
+  color: #203e8f;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.phone-action-btn.primary {
+  background: #2f56b7;
+  border-color: #2f56b7;
+  color: #fff;
 }
 
 .group-members-backdrop {

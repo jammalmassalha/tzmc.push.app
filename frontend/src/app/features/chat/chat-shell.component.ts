@@ -42,6 +42,7 @@ type MessageRenderPart =
   | { kind: 'text'; text: string }
   | { kind: 'link'; url: string; label: string }
   | { kind: 'location'; url: string; label: string }
+  | { kind: 'phone'; display: string; phone: string }
   | { kind: 'image'; url: string };
 
 interface ParsedMessageCacheEntry {
@@ -171,6 +172,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly avatarPreview = signal<AvatarPreview | null>(null);
   readonly reactionTargetMessageId = signal<string | null>(null);
   readonly reactionDetailsPreview = signal<ReactionDetailsPreview | null>(null);
+  readonly phoneActionTarget = signal<{ display: string; phone: string } | null>(null);
   readonly groupMembersPreview = signal<GroupMembersPreview | null>(null);
   readonly groupMemberAddOpen = signal(false);
   readonly groupMemberAddSearchTerm = signal('');
@@ -912,6 +914,55 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     window.open(url, '_blank', 'noopener,noreferrer');
   }
 
+  canCallActiveChat(): boolean {
+    const activeChat = this.store.activeChat();
+    if (!activeChat || activeChat.isGroup) return false;
+    return Boolean(this.normalizePhoneForAction(activeChat.id));
+  }
+
+  startCallToActiveChat(): void {
+    const activeChat = this.store.activeChat();
+    if (!activeChat || activeChat.isGroup) return;
+    const phone = this.normalizePhoneForAction(activeChat.id);
+    if (!phone) {
+      this.snackBar.open('לא נמצא מספר טלפון תקין לחיוג.', 'סגור', { duration: 2400 });
+      return;
+    }
+    window.location.href = `tel:${phone}`;
+  }
+
+  openPhoneActions(part: { display: string; phone: string }): void {
+    const normalized = this.normalizePhoneForAction(part.phone || part.display);
+    if (!normalized) return;
+    this.phoneActionTarget.set({
+      display: String(part.display || normalized),
+      phone: normalized
+    });
+  }
+
+  closePhoneActions(): void {
+    this.phoneActionTarget.set(null);
+  }
+
+  async copyPhoneTarget(): Promise<void> {
+    const target = this.phoneActionTarget();
+    if (!target?.phone) return;
+    const copied = await this.copyTextToClipboard(target.phone);
+    this.snackBar.open(copied ? 'המספר הועתק.' : 'לא ניתן להעתיק את המספר.', 'סגור', {
+      duration: 2000
+    });
+    if (copied) {
+      this.closePhoneActions();
+    }
+  }
+
+  callPhoneTarget(): void {
+    const target = this.phoneActionTarget();
+    if (!target?.phone) return;
+    window.location.href = `tel:${target.phone}`;
+    this.closePhoneActions();
+  }
+
   outgoingStatusLabel(status: DeliveryStatus): string {
     switch (status) {
       case 'queued':
@@ -1180,7 +1231,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       const rawMatch = match[0];
 
       if (start > lastIndex) {
-        parts.push({ kind: 'text', text: value.slice(lastIndex, start) });
+        this.appendTextAndPhoneParts(parts, value.slice(lastIndex, start));
       }
 
       const { cleanUrl, trailingText } = this.stripTrailingPunctuation(rawMatch);
@@ -1194,21 +1245,68 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       }
 
       if (trailingText) {
-        parts.push({ kind: 'text', text: trailingText });
+        this.appendTextAndPhoneParts(parts, trailingText);
       }
 
       lastIndex = start + rawMatch.length;
     }
 
     if (lastIndex < value.length) {
-      parts.push({ kind: 'text', text: value.slice(lastIndex) });
+      this.appendTextAndPhoneParts(parts, value.slice(lastIndex));
     }
 
     if (!parts.length) {
-      parts.push({ kind: 'text', text: value });
+      this.appendTextAndPhoneParts(parts, value);
     }
 
     return parts;
+  }
+
+  private appendTextAndPhoneParts(parts: MessageRenderPart[], text: string): void {
+    const source = String(text || '');
+    if (!source) return;
+
+    const phoneRegex = /(?:\+?\d[\d\s().-]{6,}\d)/g;
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = phoneRegex.exec(source)) !== null) {
+      const start = match.index;
+      const rawMatch = match[0];
+      if (start > lastIndex) {
+        parts.push({ kind: 'text', text: source.slice(lastIndex, start) });
+      }
+
+      const { cleanPhone, trailingText } = this.stripTrailingPhonePunctuation(rawMatch);
+      const normalizedPhone = this.normalizePhoneForAction(cleanPhone);
+      if (normalizedPhone) {
+        parts.push({
+          kind: 'phone',
+          display: cleanPhone,
+          phone: normalizedPhone
+        });
+      } else {
+        parts.push({ kind: 'text', text: cleanPhone });
+      }
+
+      if (trailingText) {
+        parts.push({ kind: 'text', text: trailingText });
+      }
+      lastIndex = start + rawMatch.length;
+    }
+
+    if (lastIndex < source.length) {
+      parts.push({ kind: 'text', text: source.slice(lastIndex) });
+    }
+  }
+
+  private stripTrailingPhonePunctuation(phone: string): { cleanPhone: string; trailingText: string } {
+    let cleanPhone = String(phone || '');
+    let trailingText = '';
+    while (/[),.!?;:]$/.test(cleanPhone)) {
+      trailingText = `${cleanPhone.slice(-1)}${trailingText}`;
+      cleanPhone = cleanPhone.slice(0, -1);
+    }
+    return { cleanPhone, trailingText };
   }
 
   private stripTrailingPunctuation(url: string): { cleanUrl: string; trailingText: string } {
@@ -1232,6 +1330,48 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       lower.includes('google.com/maps') ||
       lower.includes('maps.app.goo.gl')
     );
+  }
+
+  private normalizePhoneForAction(value: string): string {
+    const source = String(value || '').trim();
+    if (!source) return '';
+    if (/^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/.test(source)) return '';
+
+    const hasLeadingPlus = source.startsWith('+');
+    const digits = source.replace(/\D/g, '');
+    if (!digits || digits.length < 7 || digits.length > 15) {
+      return '';
+    }
+    if (/^0+$/.test(digits)) return '';
+    return hasLeadingPlus ? `+${digits}` : digits;
+  }
+
+  private async copyTextToClipboard(text: string): Promise<boolean> {
+    const value = String(text || '').trim();
+    if (!value) return false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch {
+      // Fallback below.
+    }
+
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = value;
+      textarea.setAttribute('readonly', 'true');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      const copied = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      return copied;
+    } catch {
+      return false;
+    }
   }
 
   private getCurrentPosition(): Promise<GeolocationPosition> {

@@ -497,13 +497,23 @@ function releaseFocus(modal) {
     }
 }
 
-function showConfirm(message) {
+function showConfirm(message, options = {}) {
     return new Promise((resolve) => {
         if (!confirmModal || !confirmModalConfirm || !confirmModalCancel || !confirmModalMessage) {
             resolve(false);
             return;
         }
+        const originalConfirmLabel = confirmModalConfirm.textContent || 'כן';
+        const originalCancelLabel = confirmModalCancel.textContent || 'לא';
+        const confirmLabel = typeof options.confirmLabel === 'string' && options.confirmLabel.trim()
+            ? options.confirmLabel.trim()
+            : originalConfirmLabel;
+        const cancelLabel = typeof options.cancelLabel === 'string' && options.cancelLabel.trim()
+            ? options.cancelLabel.trim()
+            : originalCancelLabel;
         confirmModalMessage.textContent = message;
+        confirmModalConfirm.textContent = confirmLabel;
+        confirmModalCancel.textContent = cancelLabel;
         const onConfirm = () => {
             cleanup();
             resolve(true);
@@ -515,6 +525,8 @@ function showConfirm(message) {
         const cleanup = () => {
             confirmModalConfirm.removeEventListener('click', onConfirm);
             confirmModalCancel.removeEventListener('click', onCancel);
+            confirmModalConfirm.textContent = originalConfirmLabel;
+            confirmModalCancel.textContent = originalCancelLabel;
             closeModal(confirmModal);
         };
         confirmModalConfirm.addEventListener('click', onConfirm);
@@ -794,6 +806,100 @@ function stripGroupMessagePrefix(text, senderName) {
     return text;
 }
 
+function normalizeCallablePhone(value) {
+    const source = String(value || '').trim();
+    if (!source) return '';
+    if (/^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/.test(source)) return '';
+    const hasLeadingPlus = source.startsWith('+');
+    const digits = source.replace(/\D/g, '');
+    if (!digits || digits.length < 7 || digits.length > 15) return '';
+    if (/^0+$/.test(digits)) return '';
+    return hasLeadingPlus ? `+${digits}` : digits;
+}
+
+function escapeHtmlAttr(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function linkifyPhoneNumbersInText(text) {
+    const source = String(text || '');
+    if (!source) return source;
+    const phoneRegex = /(?:\+?\d[\d\s().-]{6,}\d)/g;
+    return source.replace(phoneRegex, (rawMatch) => {
+        const match = String(rawMatch || '');
+        const phone = normalizeCallablePhone(match);
+        if (!phone) return match;
+        const display = match.trim();
+        return `<button type="button" class="msg-phone-link" data-phone="${escapeHtmlAttr(phone)}">${display}</button>`;
+    });
+}
+
+function linkifyPhoneNumbersInHtml(html) {
+    const value = String(html || '');
+    if (!value) return value;
+    const parts = value.split(/(<[^>]+>)/g);
+    return parts
+        .map((part) => {
+            if (!part || part.startsWith('<')) return part;
+            return linkifyPhoneNumbersInText(part);
+        })
+        .join('');
+}
+
+async function copyTextToClipboard(value) {
+    const text = String(value || '').trim();
+    if (!text) return false;
+    try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+            await navigator.clipboard.writeText(text);
+            return true;
+        }
+    } catch (err) {
+        // fallback below
+    }
+    try {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', 'true');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand('copy');
+        document.body.removeChild(textarea);
+        return copied;
+    } catch (err) {
+        return false;
+    }
+}
+
+async function showPhoneActionDialog(phoneRawValue) {
+    const phone = normalizeCallablePhone(phoneRawValue);
+    if (!phone) {
+        showToast('לא נמצא מספר טלפון תקין.', 'error');
+        return;
+    }
+
+    const shouldCallNow = await showConfirm(
+        `בחר פעולה עבור המספר:\n${phone}`,
+        {
+            confirmLabel: 'חייג עכשיו',
+            cancelLabel: 'העתק מספר'
+        }
+    );
+    if (shouldCallNow) {
+        window.location.href = `tel:${phone}`;
+        return;
+    }
+
+    const copied = await copyTextToClipboard(phone);
+    showToast(copied ? 'המספר הועתק.' : 'לא ניתן להעתיק את המספר.', copied ? 'success' : 'error');
+}
+
 function formatMessageText(text) {
     if (!text) return '';
     let processedText = text;
@@ -820,7 +926,7 @@ function formatMessageText(text) {
 
     // --- 2. STANDARD URL DETECTION ---
     const urlRegex = /(https?:\/\/[^\s]+)/g;
-    return processedText.replace(urlRegex, function(url) {
+    const withLinks = processedText.replace(urlRegex, function(url) {
         const cleanUrl = url.trim();
         const lowerUrl = cleanUrl.toLowerCase();
 
@@ -876,6 +982,7 @@ function formatMessageText(text) {
         // F. DEFAULT LINK
         return `<a href="${cleanUrl}" target="_blank" class="msg-link-default">${cleanUrl}</a>`;
     });
+    return linkifyPhoneNumbersInHtml(withLinks);
 }
 
 function extractChatIdFromNotificationUrl(rawUrl) {
@@ -1036,6 +1143,13 @@ window.addEventListener('load', async () => {
         });
         messagesArea.addEventListener('click', (event) => {
             const target = event.target;
+            const phoneTarget = target && target.closest ? target.closest('.msg-phone-link') : null;
+            if (phoneTarget && phoneTarget.dataset && phoneTarget.dataset.phone) {
+                event.preventDefault();
+                event.stopPropagation();
+                showPhoneActionDialog(phoneTarget.dataset.phone);
+                return;
+            }
             if (target && target.classList && target.classList.contains('msg-image')) {
                 const url = target.dataset.openUrl || target.dataset.full || target.src;
                 if (url) window.open(url, '_blank');

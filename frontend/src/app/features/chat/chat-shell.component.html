@@ -156,6 +156,17 @@
             <h2>{{ activeChat.title }}</h2>
             <small>{{ activeChat.isGroup ? 'קבוצה' : activeChat.id }}</small>
           </div>
+
+          @if (canCallActiveChat()) {
+            <button
+              mat-icon-button
+              type="button"
+              class="conversation-call-btn"
+              (click)="startCallToActiveChat()"
+              aria-label="חייג">
+              <mat-icon>call</mat-icon>
+            </button>
+          }
         </header>
 
         <div #messagesPanel class="messages-panel" (scroll)="onMessagesPanelScroll()">
@@ -195,6 +206,14 @@
                     @for (part of getMessageRenderParts(message.messageId, message.body); track $index) {
                       @if (part.kind === 'text') {
                         <span class="message-text">{{ part.text }}</span>
+                      } @else if (part.kind === 'phone') {
+                        <button
+                          type="button"
+                          class="message-phone"
+                          (click)="openPhoneActions(part)"
+                          aria-label="פעולות מספר טלפון">
+                          {{ part.display }}
+                        </button>
                       } @else if (part.kind === 'image') {
                         <button
                           type="button"
@@ -386,6 +405,22 @@
             }
           </div>
         }
+      </div>
+    </div>
+  }
+
+  @if (phoneActionTarget(); as phoneTarget) {
+    <div class="phone-action-backdrop" (click)="closePhoneActions()">
+      <div class="phone-action-dialog" (click)="$event.stopPropagation()">
+        <button type="button" class="phone-action-close" (click)="closePhoneActions()" aria-label="Close">
+          <mat-icon>close</mat-icon>
+        </button>
+        <div class="phone-action-title">מספר טלפון</div>
+        <div class="phone-action-number">{{ phoneTarget.display }}</div>
+        <div class="phone-action-buttons">
+          <button type="button" class="phone-action-btn" (click)="copyPhoneTarget()">העתק מספר</button>
+          <button type="button" class="phone-action-btn primary" (click)="callPhoneTarget()">חייג עכשיו</button>
+        </div>
       </div>
     </div>
   }
