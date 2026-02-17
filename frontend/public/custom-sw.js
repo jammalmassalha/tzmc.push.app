@@ -6,7 +6,7 @@ const FALLBACK_TITLE = 'TZMC';
 const FALLBACK_BODY = 'התקבלה הודעה חדשה';
 const CLIENT_CONTEXT_TTL_MS = 10 * 60 * 1000;
 const AUTH_REFRESH_PUSH_TYPE = 'subscription-auth-refresh';
-const SW_SUBSCRIPTION_CONTEXT_CACHE = 'tzmc-sw-subscription-context-v5';
+const SW_SUBSCRIPTION_CONTEXT_CACHE = 'tzmc-sw-subscription-context-v6';
 const SW_SUBSCRIPTION_CONTEXT_KEY = new URL('./__subscription_context__', self.registration.scope).toString();
 const clientContextById = new Map();
 

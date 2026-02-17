@@ -7,11 +7,11 @@ const DB_NAME = config.DB_NAME || 'PushNotificationsDB';
 const STORE_NAME = config.STORE_NAME || 'history';
 const OUTBOX_STORE = config.OUTBOX_STORE || 'outbox';
 const DB_VERSION = config.DB_VERSION || 3;
-const CACHE_NAME = config.CACHE_NAME || 'static-assets-v4';
+const CACHE_NAME = config.CACHE_NAME || 'static-assets-v6';
 const VAPID_PUBLIC_KEY = config.VAPID_PUBLIC_KEY || '';
 const SUBSCRIPTION_URL = config.SUBSCRIPTION_URL || '';
 const AUTH_REFRESH_PUSH_TYPE = 'subscription-auth-refresh';
-const SW_CONTEXT_CACHE = 'sw-runtime-context-v5';
+const SW_CONTEXT_CACHE = 'sw-runtime-context-v6';
 const SW_CONTEXT_KEY = new URL('./__sw_runtime_context__', self.registration.scope).toString();
 let lastKnownPushUser = '';
 
