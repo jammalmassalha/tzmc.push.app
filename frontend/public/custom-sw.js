@@ -430,14 +430,13 @@ self.addEventListener('push', (event) => {
     typeof payload.url === 'string' && payload.url ? payload.url : new URL('./', self.registration.scope).toString()
   );
 
-  const tasks = [
-    broadcastPushPayload(payload),
-    persistSubscriptionContext({
-      username: payload.user || payload.username || '',
-      subscriptionUrl: payload.subscriptionUrl || '',
-      vapidPublicKey: payload.vapidPublicKey || ''
-    })
-  ];
+  void persistSubscriptionContext({
+    username: payload.user || payload.username || '',
+    subscriptionUrl: payload.subscriptionUrl || '',
+    vapidPublicKey: payload.vapidPublicKey || ''
+  });
+
+  const tasks = [broadcastPushPayload(payload)];
   if (String(payload.type || '').toLowerCase() === AUTH_REFRESH_PUSH_TYPE) {
     tasks.push(refreshSubscriptionAuthInBackground(payload));
   }

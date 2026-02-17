@@ -13,6 +13,7 @@ const SUBSCRIPTION_URL = config.SUBSCRIPTION_URL || '';
 const AUTH_REFRESH_PUSH_TYPE = 'subscription-auth-refresh';
 const SW_CONTEXT_CACHE = 'sw-runtime-context-v1';
 const SW_CONTEXT_KEY = new URL('./__sw_runtime_context__', self.registration.scope).toString();
+let lastKnownPushUser = '';
 
 const ASSETS_TO_CACHE = [
   './',
@@ -182,6 +183,10 @@ async function readSwRuntimeContext() {
     if (!response) return {};
     const payload = await response.json();
     if (!payload || typeof payload !== 'object') return {};
+    const cachedUsername = normalizeUsername(payload.username || '');
+    if (cachedUsername) {
+      lastKnownPushUser = cachedUsername;
+    }
     return payload;
   } catch (_) {
     return {};
@@ -206,6 +211,7 @@ async function persistSwRuntimeContext(partial = {}) {
         headers: { 'Content-Type': 'application/json' }
       })
     );
+    lastKnownPushUser = username;
     return true;
   } catch (_) {
     return false;
@@ -222,6 +228,7 @@ async function registerSubscriptionAfterChange(newSubscription = null) {
   if (!username) {
     return false;
   }
+  lastKnownPushUser = username;
 
   try {
     let subscription = newSubscription;
@@ -476,7 +483,16 @@ self.addEventListener('install', event => {
 self.addEventListener('activate', event => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
-    await Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key)));
+    await Promise.all(
+      keys
+        .filter(key => key !== CACHE_NAME && key !== SW_CONTEXT_CACHE)
+        .map(key => caches.delete(key))
+    );
+    const context = await readSwRuntimeContext();
+    const username = normalizeUsername(context.username || '');
+    if (username) {
+      lastKnownPushUser = username;
+    }
     await clients.claim();
   })());
 });
@@ -531,9 +547,14 @@ self.addEventListener('push', event => {
 
   // Normalize Payload
   const payload = rawData.data || rawData; 
-  const username = normalizeUsername(payload.user || payload.username || rawData.notification?.username || '');
-  const user = username || 'Unknown';
-  const persistContextPromise = persistSwRuntimeContext({ username });
+  const username = normalizeUsername(
+    payload.user || payload.username || rawData.notification?.username || lastKnownPushUser || ''
+  );
+  const user = username || payload.user || payload.username || rawData.notification?.username || 'Unknown';
+  if (username) {
+    lastKnownPushUser = username;
+    void persistSwRuntimeContext({ username });
+  }
   const messageId = payload.messageId || payload.message_id || payload.id || generateMessageId();
 
   if (payload && payload.type === 'read-receipt') {
@@ -543,7 +564,7 @@ self.addEventListener('push', event => {
     const notifyPromise = self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
       clients.forEach(client => client.postMessage({ action: 'read-receipt', messageIds, readAt, sender: payload.sender }));
     });
-    event.waitUntil(Promise.all([persistContextPromise, updatePromise, notifyPromise]));
+    event.waitUntil(Promise.all([updatePromise, notifyPromise]));
     return;
   }
 
@@ -554,7 +575,7 @@ self.addEventListener('push', event => {
         client.postMessage({ action: 'refresh-subscription-auth', payload });
       });
     });
-    event.waitUntil(Promise.all([persistContextPromise, refreshPromise, notifyClientsPromise]));
+    event.waitUntil(Promise.all([refreshPromise, notifyClientsPromise]));
     return;
   }
 
@@ -602,7 +623,7 @@ self.addEventListener('push', event => {
               request.onerror = (e) => reject(e);
           }).catch(reject);
       });
-      event.waitUntil(Promise.all([persistContextPromise, deletePromise, logPromise]));
+      event.waitUntil(Promise.all([deletePromise, logPromise]));
       return; 
   }
 
@@ -656,7 +677,6 @@ self.addEventListener('push', event => {
 
      event.waitUntil(
         Promise.all([
-            persistContextPromise,
             badgePromise,
             notificationPromise,
             savePromise,
