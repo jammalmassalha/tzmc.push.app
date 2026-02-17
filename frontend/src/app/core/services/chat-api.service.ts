@@ -3,6 +3,8 @@ import { getNotifyBaseUrl, runtimeConfig } from '../config/runtime-config';
 import {
   ChatGroup,
   Contact,
+  DeleteMessagePayload,
+  EditMessagePayload,
   GroupUpdatePayload,
   IncomingServerMessage,
   ReadReceiptPayload,
@@ -301,6 +303,38 @@ export class ChatApiService {
 
     if (!response.ok) {
       throw new Error(`Read receipt failed with ${response.status}`);
+    }
+  }
+
+  async editMessageForEveryone(payload: EditMessagePayload): Promise<void> {
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/edit`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      },
+      { retries: 2, timeoutMs: 10000 }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Edit message failed with ${response.status}`);
+    }
+  }
+
+  async deleteMessageForEveryone(payload: DeleteMessagePayload): Promise<void> {
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/delete`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      },
+      { retries: 2, timeoutMs: 10000 }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Delete message failed with ${response.status}`);
     }
   }
 

@@ -1546,30 +1546,171 @@ app.post(['/backup', '/notify/backup'], (req, res) => {
         if (!res.headersSent) res.status(500).json({ error: e.message });
     }
 });
-// --- DELETE MESSAGE ENDPOINT ---
+// --- MESSAGE ACTION ENDPOINTS (EDIT / DELETE FOR EVERYONE) ---
 app.post(['/delete', '/notify/delete'], async (req, res) => {
     try {
-        const { timestamp, sender, recipient, messageId } = req.body;
-        console.log(`[DELETE] Request from ${sender} to remove msg ${timestamp}`);
+        const body = req.body || {};
+        const sender = normalizeUserKey(body.sender || body.user);
+        const messageId = String(body.messageId || '').trim();
+        const deletedAtRaw = Number(body.deletedAt || body.timestamp || Date.now());
+        const deletedAt = Number.isFinite(deletedAtRaw) ? deletedAtRaw : Date.now();
+        const groupId = body.groupId ? normalizeUserKey(body.groupId) : '';
+        const groupRecord = groupId ? groups[groupId] : null;
 
-        // Send Silent Push to Recipient
-        // We use a specific 'delete-action' type so the phone handles it in background
-        const payload = JSON.stringify({
+        if (!sender || !messageId) {
+            return res.status(400).json({ error: 'Missing sender or messageId' });
+        }
+
+        const recipientsFromPayload = parseUsernamesInput(
+            body.recipients || body.membersToNotify || body.recipient
+        );
+        const fallbackGroupRecipients = groupRecord && Array.isArray(groupRecord.members)
+            ? groupRecord.members.map(normalizeUserKey)
+            : [];
+        let recipients = recipientsFromPayload.length ? recipientsFromPayload : fallbackGroupRecipients;
+        recipients = Array.from(new Set(recipients.map(normalizeUserKey).filter(Boolean)))
+            .filter((recipientUser) => recipientUser !== sender);
+
+        if (!recipients.length) {
+            return res.json({ status: 'success', details: { success: 0, failed: 0 } });
+        }
+
+        const resolvedGroupName = (typeof body.groupName === 'string' && body.groupName.trim())
+            ? body.groupName.trim()
+            : (groupRecord ? groupRecord.name : null);
+        const resolvedGroupMembers = Array.isArray(body.groupMembers) && body.groupMembers.length
+            ? body.groupMembers.map(normalizeUserKey).filter(Boolean)
+            : (groupRecord && Array.isArray(groupRecord.members)
+                ? groupRecord.members.map(normalizeUserKey).filter(Boolean)
+                : null);
+        const resolvedGroupCreatedBy = body.groupCreatedBy
+            ? normalizeUserKey(body.groupCreatedBy)
+            : (groupRecord ? normalizeUserKey(groupRecord.createdBy) : null);
+        const resolvedGroupUpdatedAt = Number(body.groupUpdatedAt || (groupRecord ? groupRecord.updatedAt : deletedAt));
+        const resolvedGroupType = normalizeGroupType(body.groupType || (groupRecord ? groupRecord.type : 'group'));
+
+        const actionRecord = {
+            type: 'delete-action',
+            messageId,
+            sender,
+            deletedAt,
+            timestamp: Date.now(),
+            groupId: groupId || null,
+            groupName: resolvedGroupName || null,
+            groupMembers: resolvedGroupMembers,
+            groupCreatedBy: resolvedGroupCreatedBy || null,
+            groupUpdatedAt: Number.isFinite(resolvedGroupUpdatedAt) ? resolvedGroupUpdatedAt : deletedAt,
+            groupType: resolvedGroupType
+        };
+        addToQueue(recipients, actionRecord);
+
+        const notificationPayload = {
+            messageId,
+            title: '',
+            body: {
+                shortText: '',
+                longText: ''
+            },
             data: {
-                type: 'delete-action',
-                timestamp: timestamp,
-                sender: sender,
-                messageId: messageId || null
+                ...actionRecord,
+                skipNotification: true
             }
-        });
+        };
+        const result = await sendPushNotificationToUser(
+            recipients,
+            notificationPayload,
+            groupId || sender,
+            { messageId, skipBadge: true }
+        );
 
-        // Send to the recipient using your existing logic
-        await sendPushNotificationToUser(recipient, JSON.parse(payload), sender);
-        
-        res.json({ status: 'success' });
-
+        res.json({ status: 'success', details: result });
     } catch (e) {
         console.error('[DELETE ERROR]', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post(['/edit', '/notify/edit'], async (req, res) => {
+    try {
+        const body = req.body || {};
+        const sender = normalizeUserKey(body.sender || body.user);
+        const messageId = String(body.messageId || '').trim();
+        const editedBody = String(body.body || body.editedBody || '').trim();
+        const editedAtRaw = Number(body.editedAt || body.timestamp || Date.now());
+        const editedAt = Number.isFinite(editedAtRaw) ? editedAtRaw : Date.now();
+        const groupId = body.groupId ? normalizeUserKey(body.groupId) : '';
+        const groupRecord = groupId ? groups[groupId] : null;
+
+        if (!sender || !messageId || !editedBody) {
+            return res.status(400).json({ error: 'Missing sender, messageId or body' });
+        }
+
+        const recipientsFromPayload = parseUsernamesInput(
+            body.recipients || body.membersToNotify || body.recipient
+        );
+        const fallbackGroupRecipients = groupRecord && Array.isArray(groupRecord.members)
+            ? groupRecord.members.map(normalizeUserKey)
+            : [];
+        let recipients = recipientsFromPayload.length ? recipientsFromPayload : fallbackGroupRecipients;
+        recipients = Array.from(new Set(recipients.map(normalizeUserKey).filter(Boolean)))
+            .filter((recipientUser) => recipientUser !== sender);
+
+        if (!recipients.length) {
+            return res.json({ status: 'success', details: { success: 0, failed: 0 } });
+        }
+
+        const resolvedGroupName = (typeof body.groupName === 'string' && body.groupName.trim())
+            ? body.groupName.trim()
+            : (groupRecord ? groupRecord.name : null);
+        const resolvedGroupMembers = Array.isArray(body.groupMembers) && body.groupMembers.length
+            ? body.groupMembers.map(normalizeUserKey).filter(Boolean)
+            : (groupRecord && Array.isArray(groupRecord.members)
+                ? groupRecord.members.map(normalizeUserKey).filter(Boolean)
+                : null);
+        const resolvedGroupCreatedBy = body.groupCreatedBy
+            ? normalizeUserKey(body.groupCreatedBy)
+            : (groupRecord ? normalizeUserKey(groupRecord.createdBy) : null);
+        const resolvedGroupUpdatedAt = Number(body.groupUpdatedAt || (groupRecord ? groupRecord.updatedAt : editedAt));
+        const resolvedGroupType = normalizeGroupType(body.groupType || (groupRecord ? groupRecord.type : 'group'));
+
+        const actionRecord = {
+            type: 'edit-action',
+            messageId,
+            sender,
+            body: editedBody,
+            editedAt,
+            timestamp: Date.now(),
+            groupId: groupId || null,
+            groupName: resolvedGroupName || null,
+            groupMembers: resolvedGroupMembers,
+            groupCreatedBy: resolvedGroupCreatedBy || null,
+            groupUpdatedAt: Number.isFinite(resolvedGroupUpdatedAt) ? resolvedGroupUpdatedAt : editedAt,
+            groupType: resolvedGroupType
+        };
+        addToQueue(recipients, actionRecord);
+
+        const notificationPayload = {
+            messageId,
+            title: '',
+            body: {
+                shortText: '',
+                longText: ''
+            },
+            data: {
+                ...actionRecord,
+                skipNotification: true
+            }
+        };
+        const result = await sendPushNotificationToUser(
+            recipients,
+            notificationPayload,
+            groupId || sender,
+            { messageId, skipBadge: true }
+        );
+
+        res.json({ status: 'success', details: result });
+    } catch (e) {
+        console.error('[EDIT ERROR]', e);
         res.status(500).json({ error: e.message });
     }
 });

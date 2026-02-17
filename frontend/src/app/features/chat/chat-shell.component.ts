@@ -192,6 +192,8 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly isMessagesPanelAtBottom = signal(true);
   readonly avatarPreview = signal<AvatarPreview | null>(null);
   readonly reactionTargetMessageId = signal<string | null>(null);
+  readonly messageActionTarget = signal<ChatMessage | null>(null);
+  readonly editingMessageTarget = signal<ChatMessage | null>(null);
   readonly reactionDetailsPreview = signal<ReactionDetailsPreview | null>(null);
   readonly phoneActionTarget = signal<{ display: string; phone: string } | null>(null);
   readonly groupMembersPreview = signal<GroupMembersPreview | null>(null);
@@ -327,6 +329,29 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     this.store.clearIncomingReactionNotice();
   });
 
+  private readonly editingMessageGuardEffect = effect(() => {
+    const editing = this.editingMessageTarget();
+    if (!editing) return;
+
+    const activeChatId = this.store.activeChatId();
+    if (!activeChatId || activeChatId !== editing.chatId) {
+      this.clearComposerEditState();
+      return;
+    }
+
+    const latest = this.store
+      .activeMessages()
+      .find((message) => message.messageId === editing.messageId);
+    if (!latest || latest.direction !== 'outgoing' || latest.deletedAt) {
+      this.clearComposerEditState();
+      return;
+    }
+
+    if (latest !== editing) {
+      this.editingMessageTarget.set(latest);
+    }
+  });
+
   constructor(
     readonly store: ChatStoreService,
     private readonly dialog: MatDialog,
@@ -386,6 +411,8 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   openChat(chatId: string): void {
+    this.clearComposerEditState();
+    this.messageActionTarget.set(null);
     this.closeReactionDetails();
     this.store.setActiveChat(chatId);
     if (this.isMobile()) {
@@ -394,6 +421,8 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   backToList(): void {
+    this.clearComposerEditState();
+    this.messageActionTarget.set(null);
     this.closeReactionDetails();
     this.store.clearLastActiveChat();
     this.showContactsPane.set(true);
@@ -414,8 +443,30 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (!this.canSendMessage()) return;
 
     const content = this.messageControl.value;
+    const editingTarget = this.editingMessageTarget();
+    if (editingTarget) {
+      const trimmed = content.trim();
+      if (!trimmed) return;
+
+      try {
+        await this.store.editSentMessageForEveryone(editingTarget.messageId, trimmed);
+        this.snackBar.open('ההודעה נערכה.', 'סגור', { duration: 2200 });
+        this.clearComposerEditState();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'עריכת ההודעה נכשלה';
+        this.snackBar.open(message, 'סגור', { duration: 3000 });
+      }
+      return;
+    }
+
     this.messageControl.setValue('');
-    await this.store.sendTextMessage(content);
+    try {
+      await this.store.sendTextMessage(content);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'שליחת ההודעה נכשלה';
+      this.snackBar.open(message, 'סגור', { duration: 3000 });
+      this.messageControl.setValue(content);
+    }
   }
 
   async handleComposerSubmit(event: SubmitEvent): Promise<void> {
@@ -995,6 +1046,76 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     this.closePhoneActions();
   }
 
+  setMessageActionTarget(message: ChatMessage): void {
+    this.messageActionTarget.set(message);
+  }
+
+  canManageOutgoingMessage(message: ChatMessage): boolean {
+    if (message.direction !== 'outgoing') return false;
+    if (!message.messageId) return false;
+    if (message.deletedAt) return false;
+    return (
+      message.deliveryStatus === 'sent' ||
+      message.deliveryStatus === 'delivered' ||
+      message.deliveryStatus === 'read'
+    );
+  }
+
+  canEditOutgoingMessage(message: ChatMessage): boolean {
+    if (!this.canManageOutgoingMessage(message)) return false;
+    if (message.imageUrl) return false;
+    return Boolean(String(message.body || '').trim());
+  }
+
+  isEditingMessage(message: ChatMessage): boolean {
+    return this.editingMessageTarget()?.messageId === message.messageId;
+  }
+
+  isMessageEdited(message: ChatMessage): boolean {
+    return !message.deletedAt && Boolean(message.editedAt);
+  }
+
+  isMessageDeleted(message: ChatMessage): boolean {
+    return Boolean(message.deletedAt);
+  }
+
+  startEditingSelectedMessage(): void {
+    const target = this.messageActionTarget();
+    if (!target || !this.canEditOutgoingMessage(target)) {
+      this.clearComposerEditState();
+      return;
+    }
+    this.editingMessageTarget.set(target);
+    this.messageControl.setValue(target.body || '');
+  }
+
+  cancelEditingMessage(): void {
+    this.clearComposerEditState();
+  }
+
+  async deleteSelectedMessageForEveryone(): Promise<void> {
+    const target = this.messageActionTarget();
+    if (!target || !this.canManageOutgoingMessage(target)) {
+      return;
+    }
+
+    const confirmed = window.confirm('למחוק הודעה זו אצל כולם?');
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      await this.store.deleteSentMessageForEveryone(target.messageId);
+      if (this.editingMessageTarget()?.messageId === target.messageId) {
+        this.clearComposerEditState();
+      }
+      this.snackBar.open('ההודעה נמחקה אצל כולם.', 'סגור', { duration: 2400 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'מחיקת ההודעה נכשלה';
+      this.snackBar.open(message, 'סגור', { duration: 3200 });
+    }
+  }
+
   outgoingStatusLabel(status: DeliveryStatus): string {
     switch (status) {
       case 'queued':
@@ -1459,5 +1580,13 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   private normalizeUsername(value: string): string {
     return String(value || '').trim().toLowerCase();
+  }
+
+  private clearComposerEditState(options: { clearComposer?: boolean } = {}): void {
+    this.editingMessageTarget.set(null);
+    this.messageActionTarget.set(null);
+    if (options.clearComposer !== false) {
+      this.messageControl.setValue('');
+    }
   }
 }

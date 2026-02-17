@@ -364,9 +364,20 @@ function shouldShowNotification(payload) {
   const body = normalizeBody(payload);
   const title = typeof payload.title === 'string' ? payload.title : '';
   const type = typeof payload.type === 'string' ? payload.type : '';
+  const skipNotification = Boolean(payload && payload.skipNotification);
+
+  if (skipNotification) {
+    return false;
+  }
 
   // Keep these events silent; app updates from message bus/polling.
-  if (type === 'read-receipt' || type === 'group-update' || type === AUTH_REFRESH_PUSH_TYPE) {
+  if (
+    type === 'read-receipt' ||
+    type === 'group-update' ||
+    type === 'delete-action' ||
+    type === 'edit-action' ||
+    type === AUTH_REFRESH_PUSH_TYPE
+  ) {
     return false;
   }
 

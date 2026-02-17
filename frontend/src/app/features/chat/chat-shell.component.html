@@ -187,9 +187,22 @@
               class="message-row"
               [class.outgoing]="message.direction === 'outgoing'"
               [attr.data-message-index]="index">
-              <div class="message-bubble">
+              <div class="message-bubble" [class.deleted]="isMessageDeleted(message)">
                 @if (message.direction === 'incoming' && message.groupId) {
                   <div class="message-sender">{{ message.senderDisplayName || message.sender }}</div>
+                }
+
+                @if (canManageOutgoingMessage(message)) {
+                  <div class="message-actions">
+                    <button
+                      type="button"
+                      class="message-action-btn"
+                      [matMenuTriggerFor]="messageActionsMenu"
+                      (click)="setMessageActionTarget(message)"
+                      aria-label="פעולות הודעה">
+                      <mat-icon>more_horiz</mat-icon>
+                    </button>
+                  </div>
                 }
 
                 @if (message.imageUrl) {
@@ -234,6 +247,9 @@
 
                 <div class="message-meta">
                   <span>{{ formatTime(message.timestamp) }}</span>
+                  @if (isMessageEdited(message)) {
+                    <span class="message-edited-label">נערך</span>
+                  }
                   @if (message.direction === 'outgoing') {
                     <span
                       class="message-status"
@@ -293,6 +309,22 @@
           <mat-icon>keyboard_arrow_down</mat-icon>
         </button>
 
+        @if (editingMessageTarget(); as editingMessage) {
+          <div class="composer-edit-banner">
+            <div class="composer-edit-text">
+              <span class="composer-edit-title">עריכת הודעה</span>
+              <span class="composer-edit-preview">{{ editingMessage.body }}</span>
+            </div>
+            <button
+              type="button"
+              class="composer-edit-cancel"
+              (click)="cancelEditingMessage()"
+              aria-label="בטל עריכה">
+              <mat-icon>close</mat-icon>
+            </button>
+          </div>
+        }
+
         <form class="composer" (submit)="handleComposerSubmit($event)" novalidate>
           <input
             #fileInput
@@ -343,6 +375,23 @@
             @for (emoji of reactionEmojis; track emoji) {
               <button mat-menu-item type="button" (click)="addReaction(emoji)">
                 <span class="reaction-menu-emoji">{{ emoji }}</span>
+              </button>
+            }
+          </mat-menu>
+
+          <mat-menu #messageActionsMenu="matMenu">
+            @if (messageActionTarget(); as targetMessage) {
+              <button
+                mat-menu-item
+                type="button"
+                [disabled]="!canEditOutgoingMessage(targetMessage)"
+                (click)="startEditingSelectedMessage()">
+                <mat-icon>edit</mat-icon>
+                <span>ערוך</span>
+              </button>
+              <button mat-menu-item type="button" (click)="deleteSelectedMessageForEveryone()">
+                <mat-icon>delete</mat-icon>
+                <span>מחק אצל כולם</span>
               </button>
             }
           </mat-menu>

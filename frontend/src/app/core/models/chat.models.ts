@@ -41,6 +41,8 @@ export interface ChatMessage {
   groupId?: string | null;
   groupName?: string | null;
   reactions?: MessageReaction[];
+  editedAt?: number | null;
+  deletedAt?: number | null;
 }
 
 export interface ChatListItem {
@@ -59,6 +61,8 @@ export interface IncomingServerMessage {
   messageId?: string;
   sender?: string;
   type?: string;
+  editedAt?: number;
+  deletedAt?: number;
   messageIds?: string[];
   readAt?: number;
   targetMessageId?: string;
@@ -121,6 +125,37 @@ export interface ReadReceiptPayload {
   sender: string;
   messageIds: string[];
   readAt: number;
+}
+
+export interface EditMessagePayload {
+  sender: string;
+  messageId: string;
+  body: string;
+  editedAt: number;
+  timestamp?: number;
+  recipient?: string;
+  recipients?: string[];
+  groupId?: string;
+  groupName?: string;
+  groupMembers?: string[];
+  groupCreatedBy?: string;
+  groupUpdatedAt?: number;
+  groupType?: GroupType;
+}
+
+export interface DeleteMessagePayload {
+  sender: string;
+  messageId: string;
+  deletedAt: number;
+  timestamp?: number;
+  recipient?: string;
+  recipients?: string[];
+  groupId?: string;
+  groupName?: string;
+  groupMembers?: string[];
+  groupCreatedBy?: string;
+  groupUpdatedAt?: number;
+  groupType?: GroupType;
 }
 
 export interface OutboxDirectItem {

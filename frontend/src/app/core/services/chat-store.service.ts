@@ -4,8 +4,10 @@ import {
   ChatGroup,
   ChatListItem,
   ChatMessage,
+  DeleteMessagePayload,
   Contact,
   DeliveryStatus,
+  EditMessagePayload,
   GroupUpdatePayload,
   GroupType,
   IncomingServerMessage,
@@ -35,6 +37,7 @@ const HR_UPLOAD_BASE_URL = 'https://www.tzmc.co.il/notify/uploads/';
 const HR_STEPS_CACHE_TTL_MS = 5 * 60 * 1000;
 const HR_ACTIONS_CACHE_TTL_MS = 5 * 60 * 1000;
 const READ_RECEIPT_BATCH_SIZE = 80;
+const DELETED_MESSAGE_PLACEHOLDER = '🚫 הודעה זו נמחקה';
 
 type HrAwaitingState = 'step' | 'action' | 'free-text';
 
@@ -532,6 +535,115 @@ export class ChatStoreService {
     });
   }
 
+  async editSentMessageForEveryone(messageId: string, nextBody: string): Promise<void> {
+    const user = this.currentUser();
+    if (!user) {
+      throw new Error('יש להתחבר לפני עריכת הודעה');
+    }
+
+    const normalizedMessageId = String(messageId || '').trim();
+    const trimmedBody = String(nextBody || '').trim();
+    if (!normalizedMessageId || !trimmedBody) {
+      throw new Error('תוכן העריכה חסר');
+    }
+    if (!this.isNetworkReachable()) {
+      throw new Error('לא ניתן לערוך הודעה ללא חיבור');
+    }
+
+    const target = this.findOutgoingMessageForAction(normalizedMessageId, user);
+    if (!target) {
+      throw new Error('לא נמצאה הודעה לעריכה');
+    }
+    if (target.message.deletedAt) {
+      throw new Error('לא ניתן לערוך הודעה שנמחקה');
+    }
+
+    const currentBody = String(target.message.body || '').trim();
+    if (trimmedBody === currentBody) {
+      return;
+    }
+
+    const editTimestamp = Date.now();
+    const normalizedUser = this.normalizeUser(user);
+    const group = target.message.groupId
+      ? this.groups().find((item) => item.id === this.normalizeChatId(target.message.groupId ?? '')) ?? null
+      : null;
+    const recipients = group
+      ? group.members
+          .map((member) => this.normalizeUser(member))
+          .filter((member) => Boolean(member && member !== normalizedUser))
+      : [this.normalizeUser(target.message.chatId)].filter(Boolean);
+    const payload: EditMessagePayload = {
+      sender: normalizedUser,
+      messageId: normalizedMessageId,
+      body: trimmedBody,
+      editedAt: editTimestamp,
+      timestamp: Number(target.message.timestamp || Date.now()),
+      recipients,
+      recipient: recipients.length === 1 ? recipients[0] : undefined,
+      groupId: group?.id || target.message.groupId || undefined,
+      groupName: group?.name || target.message.groupName || undefined,
+      groupMembers: group?.members,
+      groupCreatedBy: group?.createdBy,
+      groupUpdatedAt: group?.updatedAt,
+      groupType: group?.type
+    };
+
+    await this.api.editMessageForEveryone(payload);
+    this.applyMessageEditLocally(normalizedMessageId, trimmedBody, editTimestamp);
+  }
+
+  async deleteSentMessageForEveryone(messageId: string): Promise<void> {
+    const user = this.currentUser();
+    if (!user) {
+      throw new Error('יש להתחבר לפני מחיקת הודעה');
+    }
+
+    const normalizedMessageId = String(messageId || '').trim();
+    if (!normalizedMessageId) {
+      throw new Error('מזהה הודעה חסר');
+    }
+    if (!this.isNetworkReachable()) {
+      throw new Error('לא ניתן למחוק הודעה ללא חיבור');
+    }
+
+    const target = this.findOutgoingMessageForAction(normalizedMessageId, user);
+    if (!target) {
+      throw new Error('לא נמצאה הודעה למחיקה');
+    }
+    if (target.message.deletedAt) {
+      return;
+    }
+
+    const deleteTimestamp = Date.now();
+    const normalizedUser = this.normalizeUser(user);
+    const group = target.message.groupId
+      ? this.groups().find((item) => item.id === this.normalizeChatId(target.message.groupId ?? '')) ?? null
+      : null;
+    const recipients = group
+      ? group.members
+          .map((member) => this.normalizeUser(member))
+          .filter((member) => Boolean(member && member !== normalizedUser))
+      : [this.normalizeUser(target.message.chatId)].filter(Boolean);
+    const payload: DeleteMessagePayload = {
+      sender: normalizedUser,
+      messageId: normalizedMessageId,
+      deletedAt: deleteTimestamp,
+      timestamp: Number(target.message.timestamp || Date.now()),
+      recipients,
+      recipient: recipients.length === 1 ? recipients[0] : undefined,
+      groupId: group?.id || target.message.groupId || undefined,
+      groupName: group?.name || target.message.groupName || undefined,
+      groupMembers: group?.members,
+      groupCreatedBy: group?.createdBy,
+      groupUpdatedAt: group?.updatedAt,
+      groupType: group?.type
+    };
+
+    await this.api.deleteMessageForEveryone(payload);
+    this.applyMessageDeleteLocally(normalizedMessageId, deleteTimestamp);
+  }
+
   async sendFile(file: File): Promise<void> {
     if (!file) return;
 
@@ -1006,7 +1118,9 @@ export class ChatStoreService {
       timestamp: Date.now(),
       deliveryStatus: this.networkOnline() ? 'pending' : 'queued',
       groupId: group?.id ?? null,
-      groupName: group?.name ?? null
+      groupName: group?.name ?? null,
+      editedAt: null,
+      deletedAt: null
     };
 
     this.appendMessage(newMessage);
@@ -1337,6 +1451,14 @@ export class ChatStoreService {
 
   private applyIncomingMessage(incoming: IncomingServerMessage): void {
     const incomingType = String(incoming.type ?? '').trim().toLowerCase();
+    if (incomingType === 'delete-action') {
+      this.applyIncomingDeleteAction(incoming);
+      return;
+    }
+    if (incomingType === 'edit-action') {
+      this.applyIncomingEditAction(incoming);
+      return;
+    }
     if (incomingType === 'reaction') {
       this.applyIncomingReaction(incoming);
       return;
@@ -1383,7 +1505,9 @@ export class ChatStoreService {
       timestamp: Number(incoming.timestamp ?? Date.now()),
       deliveryStatus: 'delivered',
       groupId: incoming.groupId ? this.normalizeChatId(incoming.groupId) : null,
-      groupName: incoming.groupName ?? null
+      groupName: incoming.groupName ?? null,
+      editedAt: Number.isFinite(Number(incoming.editedAt)) ? Number(incoming.editedAt) : null,
+      deletedAt: Number.isFinite(Number(incoming.deletedAt)) ? Number(incoming.deletedAt) : null
     };
 
     this.appendMessage(record);
@@ -1431,6 +1555,36 @@ export class ChatStoreService {
     if (!messageIds.length) return;
 
     this.markOutgoingMessagesAsRead(messageIds);
+  }
+
+  private applyIncomingEditAction(incoming: IncomingServerMessage): void {
+    const messageId = String(incoming.messageId ?? '').trim();
+    const body = String(incoming.body ?? '').trim();
+    if (!messageId || !body) return;
+
+    const editedAtValue = Number(incoming.editedAt ?? incoming.timestamp ?? Date.now());
+    const editedAt = Number.isFinite(editedAtValue) ? editedAtValue : Date.now();
+    this.applyMessageEditLocally(messageId, body, editedAt);
+  }
+
+  private applyIncomingDeleteAction(incoming: IncomingServerMessage): void {
+    const messageIds = Array.isArray(incoming.messageIds)
+      ? incoming.messageIds.map((id) => String(id || '').trim()).filter(Boolean)
+      : String(incoming.messageId ?? '')
+          .split(',')
+          .map((id) => String(id || '').trim())
+          .filter(Boolean);
+    if (!messageIds.length) return;
+
+    const deletedAtValue = Number(incoming.deletedAt ?? incoming.timestamp ?? Date.now());
+    const deletedAt = Number.isFinite(deletedAtValue) ? deletedAtValue : Date.now();
+    let changed = false;
+    messageIds.forEach((messageId) => {
+      changed = this.applyMessageDeleteLocally(messageId, deletedAt, { skipPersist: true }) || changed;
+    });
+    if (changed) {
+      this.schedulePersist();
+    }
   }
 
   private applyIncomingReaction(incoming: IncomingServerMessage): void {
@@ -1631,6 +1785,106 @@ export class ChatStoreService {
     }
 
     this.schedulePersist();
+  }
+
+  private findOutgoingMessageForAction(
+    messageId: string,
+    currentUser: string
+  ): { chatId: string; message: ChatMessage } | null {
+    const normalizedId = String(messageId || '').trim();
+    const normalizedUser = this.normalizeUser(currentUser);
+    if (!normalizedId || !normalizedUser) return null;
+
+    const messageMap = this.messagesByChat();
+    for (const [chatId, list] of Object.entries(messageMap)) {
+      const message = list.find(
+        (item) =>
+          item.messageId === normalizedId &&
+          item.direction === 'outgoing' &&
+          this.normalizeUser(item.sender) === normalizedUser
+      );
+      if (message) {
+        return { chatId, message };
+      }
+    }
+    return null;
+  }
+
+  private applyMessageEditLocally(messageId: string, body: string, editedAt: number): boolean {
+    const normalizedId = String(messageId || '').trim();
+    const nextBody = String(body || '').trim();
+    if (!normalizedId || !nextBody) return false;
+
+    let changed = false;
+    this.messagesByChat.update((messageMap) => {
+      const nextMap: Record<string, ChatMessage[]> = {};
+      for (const [chatId, list] of Object.entries(messageMap)) {
+        const nextList = list.map((message) => {
+          if (message.messageId !== normalizedId) {
+            return message;
+          }
+          if (message.deletedAt) {
+            return message;
+          }
+          if (String(message.body || '') === nextBody) {
+            return message;
+          }
+          changed = true;
+          return {
+            ...message,
+            body: nextBody,
+            editedAt
+          };
+        });
+        nextMap[chatId] = nextList;
+      }
+      return changed ? nextMap : messageMap;
+    });
+
+    if (changed) {
+      this.schedulePersist();
+    }
+    return changed;
+  }
+
+  private applyMessageDeleteLocally(
+    messageId: string,
+    deletedAt: number,
+    options: { skipPersist?: boolean } = {}
+  ): boolean {
+    const normalizedId = String(messageId || '').trim();
+    if (!normalizedId) return false;
+
+    let changed = false;
+    this.messagesByChat.update((messageMap) => {
+      const nextMap: Record<string, ChatMessage[]> = {};
+      for (const [chatId, list] of Object.entries(messageMap)) {
+        const nextList = list.map((message) => {
+          if (message.messageId !== normalizedId) {
+            return message;
+          }
+          if (message.deletedAt) {
+            return message;
+          }
+          changed = true;
+          return {
+            ...message,
+            body: DELETED_MESSAGE_PLACEHOLDER,
+            imageUrl: null,
+            thumbnailUrl: null,
+            editedAt: null,
+            deletedAt
+          };
+        });
+        nextMap[chatId] = nextList;
+      }
+      return changed ? nextMap : messageMap;
+    });
+
+    if (changed && !options.skipPersist) {
+      this.schedulePersist();
+    }
+    return changed;
   }
 
   private appendMessage(message: ChatMessage): void {
@@ -1966,7 +2220,9 @@ export class ChatStoreService {
           body: String(record.body ?? ''),
           timestamp: Number(record.timestamp ?? Date.now()),
           direction: record.direction === 'incoming' ? 'incoming' : 'outgoing',
-          deliveryStatus: record.deliveryStatus ?? 'sent'
+          deliveryStatus: record.deliveryStatus ?? 'sent',
+          editedAt: Number.isFinite(Number(record.editedAt)) ? Number(record.editedAt) : null,
+          deletedAt: Number.isFinite(Number(record.deletedAt)) ? Number(record.deletedAt) : null
         };
 
         if (!messageMap[chatId]) {
