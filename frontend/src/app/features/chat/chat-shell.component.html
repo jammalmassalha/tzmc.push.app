@@ -37,10 +37,6 @@
     </button>
   </mat-menu>
 
-  @if (isBusy()) {
-    <mat-progress-bar class="app-progress" mode="indeterminate"></mat-progress-bar>
-  }
-
   <div class="chat-layout">
     <aside class="contacts-pane" [class.hidden-mobile]="isMobile() && !showContactsPane()">
       <div class="contacts-toolbar">

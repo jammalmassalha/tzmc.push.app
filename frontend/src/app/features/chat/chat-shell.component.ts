@@ -19,7 +19,6 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatMenuModule } from '@angular/material/menu';
-import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatToolbarModule } from '@angular/material/toolbar';
@@ -107,7 +106,6 @@ interface ReactionDetailsPreview {
     MatIconModule,
     MatMenuModule,
     MatToolbarModule,
-    MatProgressBarModule,
     MatProgressSpinnerModule,
     MatChipsModule,
     MatSnackBarModule
@@ -186,9 +184,6 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     return this.store.canSendToActiveChat() ? 'הקלד הודעה' : 'רק מנהל יכול לשלוח בקבוצת קהילה';
   });
 
-  readonly isBusy = computed(
-    () => this.store.loading() || this.store.syncing() || this.store.uploading()
-  );
   readonly reactionEmojis = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
   readonly nowTimestamp = signal(Date.now());
   readonly stickyMessageTimestamp = signal<number | null>(null);
