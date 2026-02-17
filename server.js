@@ -2,7 +2,7 @@ const vapidKeys = {
     publicKey: "BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk",
     privateKey: "fMQqCaakMboV7LEV57wJhxPAdyppOBRDBjRDVQBxg1s"
 };
-const GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbxTzd4oEqs_3vGEObKpFUPcDjQbjuiOiFKDjUm6Kvvh2zsdzhu7zGrcewnuWrtEExbC/exec';
+const GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbwo4WIOH_68a0UV5ompNXujigGzyGxSoX9yGct3pKv1SWCLAvTouFpGT1f7GekRgf0IBg/exec';
 
 const express = require('express');
 const webpush = require('web-push');
@@ -65,7 +65,14 @@ app.use(bodyParser.json());
 app.use(cors({
     origin: '*', 
     methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'Cache-Control',
+        'Pragma',
+        'Last-Event-ID',
+        'X-Requested-With'
+    ]
 }));
 
 app.options('*', cors());
@@ -80,12 +87,20 @@ if (!fs.existsSync(uploadDir)) {
 
 // --- 2. STORAGE CONFIG ---
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadDir),
-    filename: (req, file, cb) => {
-        const ext = path.extname(file.originalname);
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + ext);
+  destination: (req, file, cb) => cb(null, uploadDir),
+  filename: (req, file, cb) => {
+    const originalName = file.originalname;
+    const ext = path.extname(originalName);
+
+    if (originalName && originalName.trim() !== '') {
+      // ✅ Use filename sent by client
+      cb(null, originalName);
+    } else {
+      // 🔁 Fallback to unique name
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+      cb(null, uniqueSuffix + ext);
     }
+  }
 });
 const upload = multer({ storage: storage });
 const uploadFields = upload.fields([{ name: 'file', maxCount: 1 }, { name: 'thumbnail', maxCount: 1 }]);
@@ -173,6 +188,661 @@ const fetchWithRetry = async (url, options = {}, retryOptions = {}) => {
 
 const normalizeUserKey = (value) => String(value || '').trim().toLowerCase();
 const normalizeGroupType = (value) => (value === 'community' ? 'community' : 'group');
+const SUBSCRIPTION_CACHE_TTL_MS = 2 * 60 * 1000;
+const subscriptionCache = new Map();
+const AUTH_REFRESH_PUSH_TYPE = 'subscription-auth-refresh';
+const AUTH_REFRESH_PUSH_URGENCY = 'high';
+const AUTH_REFRESH_PUSH_TTL_SECONDS = 300;
+const AUTH_REFRESH_MAX_DISCOVERY_USERS = 500;
+const AUTH_REFRESH_CONTACT_DISCOVERY_CONCURRENCY = 8;
+const AUTH_REFRESH_CONTACT_DISCOVERY_MAX_SEEDS = 120;
+const AUTH_REFRESH_FAILURE_DETAILS_LIMIT = 80;
+const AUTH_REFRESH_STALE_CLEANUP_BATCH_SIZE = 40;
+let subscriptionAuthRefreshState = {
+    running: false,
+    lastRunAt: 0,
+    lastResult: null
+};
+
+function buildSubscriptionCacheKey(usernames) {
+    const values = Array.isArray(usernames) ? usernames : [usernames];
+    const normalized = Array.from(
+        new Set(values.map(normalizeUserKey).filter(Boolean))
+    ).sort();
+    return normalized.join(',');
+}
+
+function pruneSubscriptionCacheEndpoint(endpointToRemove) {
+    if (!endpointToRemove) return;
+    for (const [cacheKey, cacheEntry] of subscriptionCache.entries()) {
+        const filtered = (cacheEntry.subscriptions || []).filter(
+            (subscription) => subscription && subscription.endpoint !== endpointToRemove
+        );
+        if (filtered.length !== (cacheEntry.subscriptions || []).length) {
+            subscriptionCache.set(cacheKey, {
+                at: cacheEntry.at,
+                subscriptions: filtered
+            });
+        }
+    }
+}
+
+function normalizeSubscriptionRecord(rawSubscription, usernameHint = '') {
+    if (!rawSubscription || typeof rawSubscription !== 'object') return null;
+    const endpoint = typeof rawSubscription.endpoint === 'string' ? rawSubscription.endpoint.trim() : '';
+    const keys = (rawSubscription.keys && typeof rawSubscription.keys === 'object') ? rawSubscription.keys : null;
+    const p256dh = keys && typeof keys.p256dh === 'string' ? keys.p256dh.trim() : '';
+    const auth = keys && typeof keys.auth === 'string' ? keys.auth.trim() : '';
+    if (!endpoint || !p256dh || !auth) return null;
+    const username = normalizeUserKey(
+        rawSubscription.username || rawSubscription.user || usernameHint
+    );
+    return {
+        endpoint,
+        expirationTime: rawSubscription.expirationTime || null,
+        keys: { p256dh, auth },
+        username: username || undefined
+    };
+}
+
+function collectSubscriptionsFromValue(value, sink, usernameHint = '') {
+    if (!value) return;
+    if (Array.isArray(value)) {
+        value.forEach((item) => collectSubscriptionsFromValue(item, sink, usernameHint));
+        return;
+    }
+    if (typeof value !== 'object') return;
+
+    const nextUsernameHint = normalizeUserKey(value.username || value.user || usernameHint);
+    const normalizedRecord = normalizeSubscriptionRecord(value, nextUsernameHint);
+    if (normalizedRecord) {
+        sink.push(normalizedRecord);
+    }
+
+    ['subscription', 'subscriptionPC', 'subscriptionMobile', 'pushSubscription'].forEach((nestedKey) => {
+        if (value[nestedKey]) {
+            collectSubscriptionsFromValue(value[nestedKey], sink, nextUsernameHint);
+        }
+    });
+
+    ['subscriptions', 'devices', 'rows', 'items', 'data', 'users'].forEach((nestedArrayKey) => {
+        if (Array.isArray(value[nestedArrayKey])) {
+            collectSubscriptionsFromValue(value[nestedArrayKey], sink, nextUsernameHint);
+        }
+    });
+}
+
+function dedupeSubscriptionsByEndpoint(rawSubscriptions = []) {
+    const byEndpoint = new Map();
+    rawSubscriptions.forEach((rawSubscription) => {
+        const normalized = normalizeSubscriptionRecord(rawSubscription, rawSubscription && rawSubscription.username);
+        if (!normalized) return;
+        const existing = byEndpoint.get(normalized.endpoint);
+        if (!existing || (!existing.username && normalized.username)) {
+            byEndpoint.set(normalized.endpoint, normalized);
+        }
+    });
+    return Array.from(byEndpoint.values());
+}
+
+function extractSubscriptionsFromSheetResponse(sheetResponseBody) {
+    const collected = [];
+    collectSubscriptionsFromValue(sheetResponseBody, collected);
+    return dedupeSubscriptionsByEndpoint(collected);
+}
+
+function normalizeUserCandidate(rawValue) {
+    const normalized = normalizeUserKey(rawValue);
+    if (!normalized) return '';
+    if (normalized.length > 64) return '';
+    return normalized;
+}
+
+function addUserToSet(targetSet, rawValue) {
+    if (!targetSet) return;
+    const normalized = normalizeUserCandidate(rawValue);
+    if (normalized) {
+        targetSet.add(normalized);
+    }
+}
+
+function parseUsernamesInput(rawValue) {
+    const values = [];
+    if (Array.isArray(rawValue)) {
+        values.push(...rawValue);
+    } else if (typeof rawValue === 'string') {
+        values.push(...rawValue.split(','));
+    } else if (rawValue && typeof rawValue === 'object') {
+        if (Array.isArray(rawValue.users)) {
+            values.push(...rawValue.users);
+        }
+        if (Array.isArray(rawValue.usernames)) {
+            values.push(...rawValue.usernames);
+        }
+    }
+
+    const normalized = new Set();
+    values.forEach((value) => addUserToSet(normalized, value));
+    return Array.from(normalized);
+}
+
+function extractUsernamesFromContactsResponse(payload = {}) {
+    const extracted = new Set();
+    const candidateArrays = [];
+    if (Array.isArray(payload.users)) candidateArrays.push(payload.users);
+    if (Array.isArray(payload.contacts)) candidateArrays.push(payload.contacts);
+    if (Array.isArray(payload.data)) candidateArrays.push(payload.data);
+
+    candidateArrays.forEach((entries) => {
+        entries.forEach((entry) => {
+            if (!entry) return;
+            if (typeof entry === 'string') {
+                addUserToSet(extracted, entry);
+                return;
+            }
+            if (typeof entry !== 'object') return;
+            addUserToSet(extracted, entry.username);
+            addUserToSet(extracted, entry.user);
+            addUserToSet(extracted, entry.phone);
+            addUserToSet(extracted, entry.id);
+        });
+    });
+
+    return Array.from(extracted);
+}
+
+async function fetchContactUsernamesForUser(userKey) {
+    if (!userKey) return [];
+    try {
+        const response = await fetchWithRetry(
+            `${GOOGLE_SHEET_URL}?action=get_contacts&user=${encodeURIComponent(userKey)}`,
+            {},
+            { timeoutMs: 10000, retries: 1, backoffMs: 500 }
+        );
+        if (!response.ok) return [];
+        const payload = await response.json();
+        return extractUsernamesFromContactsResponse(payload);
+    } catch (error) {
+        return [];
+    }
+}
+
+async function discoverAdditionalUsersFromContacts(seedUsersSet) {
+    const discovered = new Set(Array.from(seedUsersSet || []).map(normalizeUserCandidate).filter(Boolean));
+    const seedUsers = Array.from(discovered).slice(0, AUTH_REFRESH_CONTACT_DISCOVERY_MAX_SEEDS);
+    for (let i = 0; i < seedUsers.length; i += AUTH_REFRESH_CONTACT_DISCOVERY_CONCURRENCY) {
+        const batch = seedUsers.slice(i, i + AUTH_REFRESH_CONTACT_DISCOVERY_CONCURRENCY);
+        const batchResults = await Promise.all(
+            batch.map((userKey) => fetchContactUsernamesForUser(userKey))
+        );
+        batchResults.forEach((list) => {
+            list.forEach((userKey) => {
+                if (discovered.size >= AUTH_REFRESH_MAX_DISCOVERY_USERS) return;
+                addUserToSet(discovered, userKey);
+            });
+        });
+        if (discovered.size >= AUTH_REFRESH_MAX_DISCOVERY_USERS) break;
+    }
+    return discovered;
+}
+
+function collectKnownUserSeeds() {
+    const users = new Set();
+
+    Object.keys(unreadCounts || {}).forEach((userKey) => addUserToSet(users, userKey));
+    Object.keys(messageQueue || {}).forEach((userKey) => addUserToSet(users, userKey));
+    Object.values(messageQueue || {}).forEach((messages) => {
+        if (!Array.isArray(messages)) return;
+        messages.forEach((message) => {
+            if (!message || typeof message !== 'object') return;
+            addUserToSet(users, message.user);
+            addUserToSet(users, message.sender);
+            addUserToSet(users, message.recipient);
+            if (Array.isArray(message.groupMembers)) {
+                message.groupMembers.forEach((member) => addUserToSet(users, member));
+            }
+        });
+    });
+
+    Object.values(groups || {}).forEach((group) => {
+        if (!group || typeof group !== 'object') return;
+        addUserToSet(users, group.createdBy);
+        if (Array.isArray(group.members)) {
+            group.members.forEach((member) => addUserToSet(users, member));
+        }
+    });
+
+    for (const cacheKey of subscriptionCache.keys()) {
+        String(cacheKey || '')
+            .split(',')
+            .forEach((userKey) => addUserToSet(users, userKey));
+    }
+    for (const cacheEntry of subscriptionCache.values()) {
+        if (!cacheEntry || !Array.isArray(cacheEntry.subscriptions)) continue;
+        cacheEntry.subscriptions.forEach((subscription) => {
+            if (!subscription || typeof subscription !== 'object') return;
+            addUserToSet(users, subscription.username);
+            addUserToSet(users, subscription.user);
+        });
+    }
+
+    return users;
+}
+
+async function fetchSubscriptionsFromSheetUrl(url) {
+    try {
+        const response = await fetchWithRetry(
+            url,
+            {},
+            { timeoutMs: 15000, retries: 2, backoffMs: 700 }
+        );
+        if (!response.ok) {
+            return [];
+        }
+        const result = await response.json();
+        return extractSubscriptionsFromSheetResponse(result);
+    } catch (error) {
+        console.warn('[AUTH REFRESH] Failed to load subscriptions from URL:', error.message);
+        return [];
+    }
+}
+
+async function getAllSubscriptionsForAuthRefresh(options = {}) {
+    const collected = [];
+    const discoveredUsers = new Set();
+    const requestedUsers = parseUsernamesInput(options.usernames);
+    requestedUsers.forEach((userKey) => addUserToSet(discoveredUsers, userKey));
+
+    const sheetUrls = [
+        `${GOOGLE_SHEET_URL}?usernames=${encodeURIComponent('all')}`,
+        `${GOOGLE_SHEET_URL}?action=get_all_subscriptions`,
+        `${GOOGLE_SHEET_URL}?action=get_subscriptions`
+    ];
+    for (const url of sheetUrls) {
+        const fromSheet = await fetchSubscriptionsFromSheetUrl(url);
+        if (fromSheet.length) {
+            collected.push(...fromSheet);
+        }
+    }
+
+    for (const cacheEntry of subscriptionCache.values()) {
+        if (!cacheEntry || !Array.isArray(cacheEntry.subscriptions)) continue;
+        collectSubscriptionsFromValue(cacheEntry.subscriptions, collected);
+    }
+
+    dedupeSubscriptionsByEndpoint(collected).forEach((subscription) => {
+        addUserToSet(discoveredUsers, subscription.username);
+    });
+
+    if (requestedUsers.length === 0) {
+        const localSeeds = collectKnownUserSeeds();
+        localSeeds.forEach((userKey) => addUserToSet(discoveredUsers, userKey));
+
+        if (discoveredUsers.size > 0) {
+            const expandedUsers = await discoverAdditionalUsersFromContacts(discoveredUsers);
+            expandedUsers.forEach((userKey) => addUserToSet(discoveredUsers, userKey));
+        }
+    }
+
+    const cacheUsersList = Array.from(discoveredUsers).slice(0, AUTH_REFRESH_MAX_DISCOVERY_USERS);
+    const batchSize = 40;
+    for (let i = 0; i < cacheUsersList.length; i += batchSize) {
+        const batch = cacheUsersList.slice(i, i + batchSize);
+        if (!batch.length) continue;
+        const batchSubscriptions = await getSubscriptionFromSheet(batch, { forceRefresh: true });
+        collectSubscriptionsFromValue(batchSubscriptions, collected);
+    }
+
+    const subscriptions = dedupeSubscriptionsByEndpoint(collected);
+    subscriptions.forEach((subscription) => {
+        addUserToSet(discoveredUsers, subscription.username);
+    });
+
+    return {
+        subscriptions,
+        discoveredUsers: Array.from(discoveredUsers)
+    };
+}
+
+async function removeStaleSubscriptionsFromSheet(staleEndpoints = []) {
+    const uniqueEndpoints = Array.from(
+        new Set(
+            (Array.isArray(staleEndpoints) ? staleEndpoints : [])
+                .map((endpoint) => String(endpoint || '').trim())
+                .filter(Boolean)
+        )
+    );
+    if (!uniqueEndpoints.length) {
+        return {
+            requestedEndpoints: 0,
+            clearedSubscriptions: 0,
+            rowsTouched: 0,
+            failedBatches: 0
+        };
+    }
+
+    let clearedSubscriptions = 0;
+    let rowsTouched = 0;
+    let failedBatches = 0;
+
+    for (let i = 0; i < uniqueEndpoints.length; i += AUTH_REFRESH_STALE_CLEANUP_BATCH_SIZE) {
+        const batch = uniqueEndpoints.slice(i, i + AUTH_REFRESH_STALE_CLEANUP_BATCH_SIZE);
+        try {
+            const response = await fetchWithRetry(
+                GOOGLE_SHEET_URL,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'remove_subscriptions_by_endpoint',
+                        endpoints: batch
+                    })
+                },
+                { timeoutMs: 15000, retries: 2, backoffMs: 700 }
+            );
+            if (!response.ok) {
+                failedBatches++;
+                continue;
+            }
+            let payload = null;
+            try {
+                payload = await response.json();
+            } catch (error) {
+                payload = null;
+            }
+            if (payload && payload.result === 'success') {
+                clearedSubscriptions += Number(payload.clearedSubscriptions || 0);
+                rowsTouched += Number(payload.rowsTouched || 0);
+            }
+        } catch (error) {
+            failedBatches++;
+        }
+    }
+
+    return {
+        requestedEndpoints: uniqueEndpoints.length,
+        clearedSubscriptions,
+        rowsTouched,
+        failedBatches
+    };
+}
+
+async function runSubscriptionAuthRefreshJob(jobContext = {}) {
+    if (subscriptionAuthRefreshState.running) {
+        return {
+            status: 'running',
+            message: 'Auth refresh is already running.'
+        };
+    }
+
+    subscriptionAuthRefreshState.running = true;
+    const startedAt = Date.now();
+    const requestId = jobContext.requestId || generateMessageId();
+    const forceResubscribe = jobContext.forceResubscribe !== false;
+    const refreshReason = (typeof jobContext.reason === 'string' && jobContext.reason.trim()) || 'manual';
+    const initiatedBy = (typeof jobContext.initiatedBy === 'string' && jobContext.initiatedBy.trim()) || 'api';
+    const requestedUsers = parseUsernamesInput(jobContext.usernames);
+
+    let resultSummary = {
+        requestId,
+        startedAt,
+        finishedAt: startedAt,
+        requestedBy: initiatedBy,
+        reason: refreshReason,
+        forceResubscribe,
+        requestedUserCount: requestedUsers.length,
+        discoveredUserCount: 0,
+        targeted: 0,
+        success: 0,
+        failed: 0,
+        failures: []
+    };
+
+    try {
+        const discoveryResult = await getAllSubscriptionsForAuthRefresh({ usernames: requestedUsers });
+        const subscriptions = Array.isArray(discoveryResult.subscriptions) ? discoveryResult.subscriptions : [];
+        const discoveredUsers = Array.isArray(discoveryResult.discoveredUsers) ? discoveryResult.discoveredUsers : [];
+        resultSummary.discoveredUserCount = discoveredUsers.length;
+        if (discoveredUsers.length) {
+            resultSummary.discoveredUsersSample = discoveredUsers.slice(0, 60);
+        }
+        resultSummary.targeted = subscriptions.length;
+        if (!subscriptions.length) {
+            resultSummary.finishedAt = Date.now();
+            resultSummary.warning = 'No subscriptions discovered for requested scope.';
+            subscriptionAuthRefreshState.lastRunAt = resultSummary.finishedAt;
+            subscriptionAuthRefreshState.lastResult = resultSummary;
+            return resultSummary;
+        }
+
+        const authJsonByUser = buildMobileAuthJsonByUser(subscriptions);
+        const sendResults = await Promise.all(subscriptions.map(async (subscription) => {
+            const userKey = normalizeUserKey(subscription.username || subscription.user);
+            const pushPayload = JSON.stringify({
+                data: {
+                    type: AUTH_REFRESH_PUSH_TYPE,
+                    title: '',
+                    body: '',
+                    user: subscription.username || '',
+                    url: '/subscribes/',
+                    requireInteraction: false,
+                    skipNotification: true,
+                    forceResubscribe,
+                    reason: refreshReason,
+                    initiatedBy,
+                    requestId,
+                    subscriptionUrl: GOOGLE_SHEET_URL,
+                    vapidPublicKey: vapidKeys.publicKey
+                }
+            });
+
+            try {
+                await webpush.sendNotification(
+                    subscription,
+                    pushPayload,
+                    {
+                        TTL: AUTH_REFRESH_PUSH_TTL_SECONDS,
+                        headers: { Urgency: AUTH_REFRESH_PUSH_URGENCY },
+                        timeout: 15000
+                    }
+                );
+                return {
+                    ok: true,
+                    username: subscription.username || userKey || null,
+                    userKey: userKey || null,
+                    endpoint: subscription.endpoint
+                };
+            } catch (error) {
+                const statusCode = error && error.statusCode;
+                if (statusCode === 404 || statusCode === 410) {
+                    pruneSubscriptionCacheEndpoint(subscription.endpoint);
+                }
+                return {
+                    ok: false,
+                    username: subscription.username || userKey || null,
+                    userKey: userKey || null,
+                    statusCode,
+                    endpoint: subscription.endpoint,
+                    error: error && error.message ? error.message : 'Unknown push error'
+                };
+            }
+        }));
+
+        resultSummary.success = sendResults.filter((result) => result.ok).length;
+        resultSummary.failed = sendResults.length - resultSummary.success;
+        resultSummary.failures = sendResults
+            .filter((result) => !result.ok)
+            .slice(0, AUTH_REFRESH_FAILURE_DETAILS_LIMIT)
+            .map((result) => ({
+                username: result.username || null,
+                statusCode: result.statusCode || null,
+                endpoint: result.endpoint || null,
+                error: result.error || 'Unknown'
+            }));
+        resultSummary.finishedAt = Date.now();
+
+        const failedDevices = sendResults
+            .filter((result) => !result.ok)
+            .map((result) => `${result.statusCode || 'N/A'}:${result.endpoint || 'unknown-endpoint'}`);
+        const failureByStatus = sendResults
+            .filter((result) => !result.ok)
+            .reduce((acc, result) => {
+                const key = String(result.statusCode || 'N/A');
+                acc[key] = (acc[key] || 0) + 1;
+                return acc;
+            }, {});
+        resultSummary.failureByStatus = failureByStatus;
+
+        const staleEndpoints = sendResults
+            .filter((result) => !result.ok && (result.statusCode === 404 || result.statusCode === 410))
+            .map((result) => result.endpoint)
+            .filter(Boolean);
+        if (staleEndpoints.length) {
+            resultSummary.staleCleanup = await removeStaleSubscriptionsFromSheet(staleEndpoints);
+        }
+
+        const userSummaryByKey = new Map();
+        sendResults.forEach((result) => {
+            const userKey = normalizeUserKey(result.userKey || result.username);
+            if (!userKey) return;
+            if (!userSummaryByKey.has(userKey)) {
+                userSummaryByKey.set(userKey, {
+                    user: userKey,
+                    targetedDevices: 0,
+                    successDevices: 0,
+                    failedDevices: 0,
+                    failedStatusCodes: {},
+                    failedEndpoints: []
+                });
+            }
+            const userSummary = userSummaryByKey.get(userKey);
+            userSummary.targetedDevices += 1;
+            if (result.ok) {
+                userSummary.successDevices += 1;
+            } else {
+                userSummary.failedDevices += 1;
+                const failedCode = String(result.statusCode || 'N/A');
+                userSummary.failedStatusCodes[failedCode] = (userSummary.failedStatusCodes[failedCode] || 0) + 1;
+                if (result.endpoint) {
+                    userSummary.failedEndpoints.push(result.endpoint);
+                }
+            }
+        });
+
+        const perUserLogEntries = [];
+        const successfulUsersForTouch = [];
+        const perUserLogResults = [];
+        for (const [userKey, userSummary] of userSummaryByKey.entries()) {
+            const userStatus = userSummary.failedDevices === 0
+                ? 'Sent'
+                : (userSummary.successDevices > 0 ? 'Partial' : 'Failed');
+            const userDetails = [
+                `requestId=${requestId}`,
+                `reason=${refreshReason}`,
+                `targetedDevices=${userSummary.targetedDevices}`,
+                `successDevices=${userSummary.successDevices}`,
+                `failedDevices=${userSummary.failedDevices}`,
+                `failedStatus=${Object.keys(userSummary.failedStatusCodes).length ? JSON.stringify(userSummary.failedStatusCodes) : '{}'}`,
+                userSummary.failedEndpoints.length
+                    ? `failedEndpoints=${userSummary.failedEndpoints.join(',')}`
+                    : 'failedEndpoints=none'
+            ].join(' | ');
+            const recipientAuthJson = authJsonByUser.get(userKey) || '';
+            perUserLogEntries.push({
+                recipient: userKey,
+                status: userStatus,
+                details: userDetails,
+                recipientAuthJson
+            });
+            perUserLogResults.push({
+                user: userKey,
+                status: userStatus,
+                targetedDevices: userSummary.targetedDevices,
+                successDevices: userSummary.successDevices,
+                failedDevices: userSummary.failedDevices
+            });
+            if (userSummary.successDevices > 0) {
+                successfulUsersForTouch.push(userKey);
+            }
+        }
+
+        for (let i = 0; i < perUserLogEntries.length; i += AUTH_REFRESH_CONTACT_DISCOVERY_CONCURRENCY) {
+            const logBatch = perUserLogEntries.slice(i, i + AUTH_REFRESH_CONTACT_DISCOVERY_CONCURRENCY);
+            await Promise.all(
+                logBatch.map((entry) => logNotificationStatus(
+                    'System',
+                    entry.recipient,
+                    'Subscription auth refresh',
+                    entry.status,
+                    entry.details,
+                    entry.recipientAuthJson
+                ))
+            );
+        }
+        resultSummary.userResults = perUserLogResults.slice(0, AUTH_REFRESH_FAILURE_DETAILS_LIMIT);
+        resultSummary.userResultCount = perUserLogResults.length;
+
+        if (successfulUsersForTouch.length) {
+            resultSummary.subscriptionDateTimeUpdate = await updateSubscriptionAuthRefreshDateTime(
+                successfulUsersForTouch,
+                requestId
+            );
+        } else {
+            resultSummary.subscriptionDateTimeUpdate = {
+                requestedUsers: 0,
+                updatedRows: 0,
+                missingUsers: []
+            };
+        }
+
+        if (resultSummary.success === 0 && resultSummary.failed > 0) {
+            const failedStatusCodes = Object.keys(failureByStatus);
+            if (failedStatusCodes.every((code) => code === '404' || code === '410')) {
+                resultSummary.hint = 'All targeted subscriptions are stale/unsubscribed. Users must open app once to re-register.';
+            } else if (failedStatusCodes.every((code) => code === '401' || code === '403')) {
+                resultSummary.hint = 'Push auth rejected. Check VAPID key consistency between backend and clients.';
+            } else if (failedStatusCodes.includes('400')) {
+                resultSummary.hint = 'Invalid subscription payloads detected. Auth JSON might be corrupted for those devices.';
+            }
+        }
+        const statusText = resultSummary.success > 0 ? 'Sent' : 'Failed';
+        const logDetails = [
+            `requestId=${requestId}`,
+            `reason=${refreshReason}`,
+            `requestedBy=${initiatedBy}`,
+            `discoveredUsers=${resultSummary.discoveredUserCount}`,
+            `targeted=${resultSummary.targeted}`,
+            `success=${resultSummary.success}`,
+            `failed=${resultSummary.failed}`,
+            `perUserLogs=${resultSummary.userResultCount || 0}`,
+            resultSummary.subscriptionDateTimeUpdate
+                ? `datetimeUpdated=${resultSummary.subscriptionDateTimeUpdate.updatedRows || 0}/${resultSummary.subscriptionDateTimeUpdate.requestedUsers || 0}`
+                : 'datetimeUpdated=0/0',
+            resultSummary.staleCleanup
+                ? `staleCleanup=${resultSummary.staleCleanup.clearedSubscriptions}/${resultSummary.staleCleanup.requestedEndpoints}`
+                : 'staleCleanup=none',
+            failedDevices.length ? `failedEndpoints=${failedDevices.join(',')}` : 'failedEndpoints=none'
+        ].join(' | ');
+        logNotificationStatus(
+            'System',
+            'ALL',
+            'Subscription auth refresh',
+            statusText,
+            logDetails
+        );
+    } catch (error) {
+        resultSummary.finishedAt = Date.now();
+        resultSummary.failed = resultSummary.targeted || resultSummary.failed || 1;
+        resultSummary.error = error && error.message ? error.message : 'Unknown background refresh error';
+        console.error('[AUTH REFRESH] Background refresh failed:', error.message);
+    } finally {
+        subscriptionAuthRefreshState.running = false;
+        subscriptionAuthRefreshState.lastRunAt = Date.now();
+        subscriptionAuthRefreshState.lastResult = resultSummary;
+    }
+
+    return resultSummary;
+}
 
 function upsertGroup(payload = {}) {
     const groupId = payload.groupId;
@@ -233,9 +903,85 @@ function scheduleStateSave() {
     }, 1000);
 }
 
+function buildMobileAuthJsonByUser(subscriptions = []) {
+    const authJsonByUser = new Map();
+    (Array.isArray(subscriptions) ? subscriptions : []).forEach((subscription) => {
+        if (!subscription || typeof subscription !== 'object') return;
+        const subscriptionType = String(subscription.type || '').trim().toLowerCase();
+        if (subscriptionType === 'pc') return;
+
+        const username = normalizeUserKey(subscription.username || subscription.user);
+        if (!username) return;
+        const endpoint = typeof subscription.endpoint === 'string' ? subscription.endpoint.trim() : '';
+        const keys = subscription.keys && typeof subscription.keys === 'object' ? subscription.keys : null;
+        const p256dh = keys && typeof keys.p256dh === 'string' ? keys.p256dh.trim() : '';
+        const auth = keys && typeof keys.auth === 'string' ? keys.auth.trim() : '';
+        if (!endpoint || !p256dh || !auth) return;
+
+        if (!authJsonByUser.has(username)) {
+            authJsonByUser.set(username, JSON.stringify({
+                endpoint,
+                expirationTime: subscription.expirationTime || null,
+                keys: { p256dh, auth }
+            }));
+        }
+    });
+    return authJsonByUser;
+}
+
+function buildMobileSubscriptionAuthJsonForLog(recipient, subscriptions = []) {
+    const recipientUsers = parseUsernamesInput(recipient);
+    const recipientSet = new Set(recipientUsers.map(normalizeUserKey).filter(Boolean));
+    const authByUser = new Map();
+
+    (Array.isArray(subscriptions) ? subscriptions : []).forEach((subscription) => {
+        if (!subscription || typeof subscription !== 'object') return;
+        const subscriptionType = String(subscription.type || '').trim().toLowerCase();
+        if (subscriptionType === 'pc') return;
+
+        const username = normalizeUserKey(subscription.username || subscription.user);
+        if (recipientSet.size && username && !recipientSet.has(username)) return;
+
+        const endpoint = typeof subscription.endpoint === 'string' ? subscription.endpoint.trim() : '';
+        const keys = subscription.keys && typeof subscription.keys === 'object' ? subscription.keys : null;
+        const p256dh = keys && typeof keys.p256dh === 'string' ? keys.p256dh.trim() : '';
+        const auth = keys && typeof keys.auth === 'string' ? keys.auth.trim() : '';
+        if (!endpoint || !p256dh || !auth) return;
+
+        const mobileAuthJson = {
+            endpoint,
+            expirationTime: subscription.expirationTime || null,
+            keys: { p256dh, auth }
+        };
+        const mapKey = username || '';
+        if (!authByUser.has(mapKey)) {
+            authByUser.set(mapKey, mobileAuthJson);
+        }
+    });
+
+    if (!authByUser.size) return '';
+    if (recipientSet.size <= 1) {
+        const directKey = recipientUsers.length ? normalizeUserKey(recipientUsers[0]) : '';
+        const directMatch = directKey ? authByUser.get(directKey) : null;
+        const fallback = directMatch || authByUser.values().next().value;
+        return fallback ? JSON.stringify(fallback) : '';
+    }
+
+    const merged = [];
+    for (const [username, authJson] of authByUser.entries()) {
+        if (!username || !authJson) continue;
+        merged.push({ username, authJson });
+    }
+    if (!merged.length) {
+        const fallback = authByUser.values().next().value;
+        return fallback ? JSON.stringify(fallback) : '';
+    }
+    return JSON.stringify(merged);
+}
+
 // Helper: Log status to Google Sheets
-function logNotificationStatus(sender, recipient, messageShort, status, details) {
-    fetchWithRetry(GOOGLE_SHEET_URL, {
+function logNotificationStatus(sender, recipient, messageShort, status, details, recipientAuthJson = '') {
+    return fetchWithRetry(GOOGLE_SHEET_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -244,24 +990,96 @@ function logNotificationStatus(sender, recipient, messageShort, status, details)
             recipient: recipient,
             message: messageShort,
             status: status,
-            details: details
+            details: details,
+            recipientAuthJson: recipientAuthJson || ''
         })
-    }, { timeoutMs: 10000, retries: 2 }).catch(err => console.error('[LOG ERROR]', err.message));
+    }, { timeoutMs: 10000, retries: 2 }).catch(err => {
+        console.error('[LOG ERROR]', err.message);
+        return null;
+    });
 }
 
-async function getSubscriptionFromSheet(usernames) {
-    if (!usernames || usernames.length === 0) return [];
-    const userListString = Array.isArray(usernames) ? usernames.join(',') : usernames;
+async function updateSubscriptionAuthRefreshDateTime(usernames = [], requestId = '') {
+    const normalizedUsers = parseUsernamesInput(usernames);
+    if (!normalizedUsers.length) {
+        return { updatedRows: 0, missingUsers: [], requestedUsers: 0 };
+    }
     try {
-        const response = await fetchWithRetry(`${GOOGLE_SHEET_URL}?usernames=${encodeURIComponent(userListString)}`, {}, { timeoutMs: 10000, retries: 2 });
-        const result = await response.json();
-        if (result.result === 'success' && Array.isArray(result.subscriptions)) {
-            return result.subscriptions;
+        const response = await fetchWithRetry(
+            GOOGLE_SHEET_URL,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'touch_subscription_auth_refresh',
+                    usernames: normalizedUsers,
+                    requestId: requestId || ''
+                })
+            },
+            { timeoutMs: 15000, retries: 2, backoffMs: 700 }
+        );
+        if (!response.ok) {
+            return {
+                updatedRows: 0,
+                missingUsers: normalizedUsers,
+                requestedUsers: normalizedUsers.length,
+                error: `Google Sheet returned ${response.status}`
+            };
         }
-        return [];
+        const payload = await response.json();
+        if (payload && payload.result === 'success') {
+            return {
+                updatedRows: Number(payload.updatedRows || 0),
+                missingUsers: Array.isArray(payload.missingUsers) ? payload.missingUsers : [],
+                requestedUsers: Number(payload.requestedUsers || normalizedUsers.length)
+            };
+        }
+        return {
+            updatedRows: 0,
+            missingUsers: normalizedUsers,
+            requestedUsers: normalizedUsers.length,
+            error: payload && payload.message ? payload.message : 'Unknown sheet response'
+        };
+    } catch (error) {
+        return {
+            updatedRows: 0,
+            missingUsers: normalizedUsers,
+            requestedUsers: normalizedUsers.length,
+            error: error.message
+        };
+    }
+}
+
+async function getSubscriptionFromSheet(usernames, options = {}) {
+    const forceRefresh = Boolean(options.forceRefresh);
+    const cacheKey = buildSubscriptionCacheKey(usernames);
+    if (!cacheKey) return [];
+
+    const requestUserList = Array.isArray(usernames) ? usernames.join(',') : String(usernames || '').trim();
+    if (!requestUserList) return [];
+
+    const now = Date.now();
+    const cached = subscriptionCache.get(cacheKey);
+    if (!forceRefresh && cached && now - cached.at < SUBSCRIPTION_CACHE_TTL_MS) {
+        return cached.subscriptions;
+    }
+
+    try {
+        const response = await fetchWithRetry(
+            `${GOOGLE_SHEET_URL}?usernames=${encodeURIComponent(requestUserList)}`,
+            {},
+            { timeoutMs: 12000, retries: 2, backoffMs: 500 }
+        );
+        const result = await response.json();
+        if (Array.isArray(result.subscriptions)) {
+            const subscriptions = result.subscriptions.filter(Boolean);
+            subscriptionCache.set(cacheKey, { at: now, subscriptions });
+            return subscriptions;
+        }
+        return cached ? cached.subscriptions : [];
     } catch (error) {
         console.error('Network Error fetching from Google Sheet:', error);
-        return [];
+        return cached ? cached.subscriptions : [];
     }
 }
 // --- RESET BADGE ENDPOINT ---
@@ -413,84 +1231,164 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     
     // 1. Prepare Content
     const msgBody = message.body || {};
-    const logContent = msgBody.shortText || message.data?.type || 'System Notification';
-    const msgTitle = message.title || 'Work Alert';
+    const customData = message.data || {};
+    const messageType = String(customData.type || '').trim().toLowerCase();
     const imageUrl = message.image || null;
     const finalSender = senderuser || 'System';
+    const singlePerUser = Boolean(options.singlePerUser || messageType === 'reaction');
+    const allowSecondAttempt = options.allowSecondAttempt !== false && messageType !== 'reaction';
+    let msgTitle = message.title || 'Work Alert';
+    let msgText = msgBody.shortText || 'New Notification';
+    if (messageType === 'reaction') {
+        const reactionGroupName = String(customData.groupName || message.title || finalSender || '').trim();
+        msgTitle = reactionGroupName || 'Group';
+        msgText = 'new reaction';
+    }
+    const logContent = msgText || messageType || 'System Notification';
     const messageId = options.messageId || message.messageId || generateMessageId();
     const shouldIncrementBadge = !options.skipBadge;
 
     console.log(`[PUSH] Searching subs for: ${targetUsersArray.join(', ')} from ${finalSender}`);
 
     let rawSubscriptions = await getSubscriptionFromSheet(targetUsersArray);
+    if (!rawSubscriptions || rawSubscriptions.length === 0) {
+        // Force refresh once to avoid stale cache windows (common after iOS resubscribe).
+        rawSubscriptions = await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true });
+    }
+    const recipientAuthJsonForLog = buildMobileSubscriptionAuthJsonForLog(
+        targetUsersArray.join(','),
+        rawSubscriptions || []
+    );
 
     if (!rawSubscriptions || rawSubscriptions.length === 0) {
-        logNotificationStatus(finalSender, targetUsersArray.join(','), logContent, 'Failed', 'No subscriptions found');
+        logNotificationStatus(
+            finalSender,
+            targetUsersArray.join(','),
+            logContent,
+            'Failed',
+            'No subscriptions found',
+            recipientAuthJsonForLog
+        );
         return { success: 0, failed: 0 };
     }
 
-    // Deduplicate
-    const uniqueSubscriptions = rawSubscriptions.filter((sub, index, self) =>
+    const dedupeSubscriptions = (subscriptions) => subscriptions.filter((sub, index, self) =>
         index === self.findIndex((t) => t.endpoint === sub.endpoint)
     );
 
+    const sendToSubscriptions = async (subscriptions, allowBadgeIncrement) => {
+        const badgeCountByUser = new Map();
+        return Promise.all(
+            subscriptions.map(async (subscription) => {
+                // Increment unread badge once per user, not once per device endpoint.
+                const userKey = normalizeUserKey(subscription.username);
+                let currentCount = unreadCounts[userKey] || 0;
+                if (shouldIncrementBadge) {
+                    if (allowBadgeIncrement) {
+                        if (badgeCountByUser.has(userKey)) {
+                            currentCount = badgeCountByUser.get(userKey);
+                        } else {
+                            currentCount = currentCount + 1;
+                            unreadCounts[userKey] = currentCount;
+                            badgeCountByUser.set(userKey, currentCount);
+                        }
+                    } else {
+                        currentCount = unreadCounts[userKey] || 0;
+                    }
+                }
+
+                const clickUrl = `/subscribes/?chat=${encodeURIComponent(finalSender)}`;
+                const payloadData = {
+                    ...customData,
+                    title: msgTitle,
+                    body: msgText || 'New Notification',
+                    badge: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
+                    icon: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
+                    requireInteraction: true,
+                    image: imageUrl,
+                    url: clickUrl,
+                    user: subscription.username,
+                    sender: finalSender,
+                    messageId: messageId
+                };
+                if (shouldIncrementBadge) {
+                    payloadData.badgeCount = currentCount;
+                }
+
+                const payload = JSON.stringify({
+                    data: {
+                        ...payloadData
+                    }
+                });
+
+                try {
+                    const pushOptions = {
+                        TTL: 604800,
+                        headers: { 'Urgency': 'high' },
+                        timeout: 15000
+                    };
+                    await webpush.sendNotification(subscription, payload, pushOptions);
+                    return { ok: true, username: subscription.username, badge: currentCount };
+                } catch (err) {
+                    const statusCode = err.statusCode || 'N/A';
+                    if (statusCode === 404 || statusCode === 410) {
+                        pruneSubscriptionCacheEndpoint(subscription.endpoint);
+                    }
+                    return { ok: false, username: subscription.username, statusCode, message: err.message };
+                }
+            })
+        );
+    };
+
+    let uniqueSubscriptions = dedupeSubscriptions(rawSubscriptions);
+    if (singlePerUser) {
+        const oneSubscriptionPerUser = new Map();
+        uniqueSubscriptions.forEach((subscription) => {
+            const userKey = normalizeUserKey(subscription.username);
+            if (!userKey) return;
+            // Keep latest observed subscription per user to prevent duplicate pushes.
+            oneSubscriptionPerUser.set(userKey, subscription);
+        });
+        uniqueSubscriptions = Array.from(oneSubscriptionPerUser.values());
+    }
+    let sendResults = await sendToSubscriptions(uniqueSubscriptions, true);
+
     let successCount = 0;
     let failCount = 0;
-    let executionLogs = [];
-
-    for (const subscription of uniqueSubscriptions) {
-        
-        // 2. Increment Badge (Server Memory)
-        const userKey = String(subscription.username).trim().toLowerCase();
-        let currentCount = unreadCounts[userKey] || 0;
-        if (shouldIncrementBadge) {
-            currentCount = currentCount + 1;
-            unreadCounts[userKey] = currentCount;
-        }
-
-        const clickUrl = `https://www.tzmc.co.il/subscribes/?chat=${encodeURIComponent(finalSender)}&user=${encodeURIComponent(subscription.username)}`;
-        const customData = message.data || {};
-
-        // 3. [CRITICAL CHANGE] Rename keys to prevent collision
-        const payloadData = {
-            ...customData,
-            title: msgTitle,
-            body: msgBody.shortText || 'New Notification',
-            badge: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png', 
-            icon: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
-            requireInteraction: true,
-            image: imageUrl,
-            url: clickUrl,
-            user: subscription.username,
-            sender: finalSender,
-            messageId: messageId
-        };
-        if (shouldIncrementBadge) {
-            payloadData.badgeCount = currentCount;
-        }
-
-        const payload = JSON.stringify({
-            data: {
-                ...payloadData
+    const executionLogs = [];
+    const appendResultsToLogs = (results) => {
+        for (const result of results) {
+            if (result.ok) {
+                successCount++;
+                executionLogs.push(`Device (${result.username}): ✅ Delivered (Badge: ${result.badge})`);
+            } else {
+                failCount++;
+                executionLogs.push(`Device (${result.username}): ❌ Failed [${result.statusCode}]`);
+                console.error(`[PUSH FAIL] ${result.username}:`, result.message);
             }
-        });
-
-        try {
-            const options = {
-                TTL: 86400,
-                headers: { 'Urgency': 'high' }
-            };
-        
-            await webpush.sendNotification(subscription, payload, options);
-            successCount++;
-            executionLogs.push(`Device (${subscription.username}): ✅ Delivered (Badge: ${currentCount})`);
-        } catch (err) {
-            failCount++;
-            const statusCode = err.statusCode || 'N/A';
-            executionLogs.push(`Device (${subscription.username}): ❌ Failed [${statusCode}]`);
-            console.error(`[PUSH FAIL] ${subscription.username}:`, err.message);
         }
-        await sleep(40); 
+    };
+
+    appendResultsToLogs(sendResults);
+
+    if (successCount === 0 && allowSecondAttempt) {
+        const cacheKey = buildSubscriptionCacheKey(targetUsersArray);
+        if (cacheKey) {
+            subscriptionCache.delete(cacheKey);
+        }
+
+        const refreshedRawSubscriptions = await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true });
+        const refreshedUniqueSubscriptions = dedupeSubscriptions(refreshedRawSubscriptions || []);
+        if (refreshedUniqueSubscriptions.length) {
+            const existingEndpoints = new Set(uniqueSubscriptions.map((sub) => sub.endpoint));
+            const retryTargets = refreshedUniqueSubscriptions.filter(
+                (sub) => !existingEndpoints.has(sub.endpoint)
+            );
+            const effectiveRetryTargets = retryTargets.length ? retryTargets : refreshedUniqueSubscriptions;
+
+            const retryResults = await sendToSubscriptions(effectiveRetryTargets, false);
+            appendResultsToLogs(retryResults);
+        }
     }
 
     scheduleStateSave();
@@ -498,7 +1396,14 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     // Log to Sheet
     const fullReport = executionLogs.join('\n');
     let finalStatus = successCount > 0 ? 'Sent' : 'Failed';
-    logNotificationStatus(finalSender, targetUsersArray.join(','), logContent, finalStatus, fullReport);
+    logNotificationStatus(
+        finalSender,
+        targetUsersArray.join(','),
+        logContent,
+        finalStatus,
+        fullReport,
+        recipientAuthJsonForLog
+    );
 
     return { success: successCount, failed: failCount };
 }
@@ -511,6 +1416,47 @@ app.get(['/', '/notify'], (req, res) => {
 app.get(['/version', '/notify/version'], (req, res) => {
     res.set('Cache-Control', 'no-store');
     res.json({ version: SERVER_VERSION, notes: SERVER_RELEASE_NOTES });
+});
+
+app.get(['/refresh-subscribe-auth/status', '/notify/refresh-subscribe-auth/status'], (req, res) => {
+    res.json({
+        running: subscriptionAuthRefreshState.running,
+        lastRunAt: subscriptionAuthRefreshState.lastRunAt || null,
+        lastResult: subscriptionAuthRefreshState.lastResult || null
+    });
+});
+
+app.post(['/refresh-subscribe-auth', '/notify/refresh-subscribe-auth'], (req, res) => {
+    if (subscriptionAuthRefreshState.running) {
+        return res.status(409).json({
+            status: 'running',
+            message: 'Auth refresh is already running.',
+            lastResult: subscriptionAuthRefreshState.lastResult || null
+        });
+    }
+
+    const requestId = generateMessageId();
+    const reason = (req.body && typeof req.body.reason === 'string') ? req.body.reason.trim() : 'manual';
+    const initiatedBy = (req.body && typeof req.body.initiatedBy === 'string') ? req.body.initiatedBy.trim() : 'api';
+    const forceResubscribe = !(req.body && req.body.forceResubscribe === false);
+    const usernames = parseUsernamesInput(req.body && req.body.usernames);
+    res.json({
+        status: 'queued',
+        requestId,
+        reason: reason || 'manual',
+        forceResubscribe,
+        requestedUserCount: usernames.length
+    });
+
+    runSubscriptionAuthRefreshJob({ requestId, reason, initiatedBy, forceResubscribe, usernames })
+        .then((summary) => {
+            console.log(
+                `[AUTH REFRESH] Completed ${summary.requestId} | discoveredUsers=${summary.discoveredUserCount || 0} targeted=${summary.targeted} success=${summary.success} failed=${summary.failed}`
+            );
+        })
+        .catch((error) => {
+            console.error(`[AUTH REFRESH] Failed ${requestId}:`, error.message);
+        });
 });
 
 app.get(['/groups', '/notify/groups'], (req, res) => {
@@ -557,22 +1503,35 @@ app.get(['/stream', '/notify/stream'], (req, res) => {
     }
 
     res.set({
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive'
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, Cache-Control, Pragma, Last-Event-ID'
     });
-    res.flushHeaders();
+    req.socket.setTimeout(0);
+    res.setTimeout(0);
+    if (typeof res.flushHeaders === 'function') {
+        res.flushHeaders();
+    }
     res.write(`event: connected\ndata: ${JSON.stringify({ user })}\n\n`);
+    if (typeof res.flush === 'function') {
+        res.flush();
+    }
 
     const existing = sseClients.get(user) || new Set();
     existing.add(res);
     sseClients.set(user, existing);
 
     const keepAlive = setInterval(() => {
-        res.write(': keep-alive\n\n');
-    }, 25000);
+        res.write(`event: ping\ndata: ${Date.now()}\n\n`);
+        if (typeof res.flush === 'function') {
+            res.flush();
+        }
+    }, 15000);
 
-    req.on('close', () => {
+    const cleanup = () => {
         clearInterval(keepAlive);
         const set = sseClients.get(user);
         if (set) {
@@ -581,7 +1540,10 @@ app.get(['/stream', '/notify/stream'], (req, res) => {
                 sseClients.delete(user);
             }
         }
-    });
+    };
+
+    req.on('close', cleanup);
+    req.on('error', cleanup);
 });
 
 app.post(['/upload', '/notify/upload'], uploadFields, (req, res) => {
@@ -729,6 +1691,27 @@ app.post(['/group-update', '/notify/group-update'], async (req, res) => {
             return res.status(400).json({ error: 'Missing group update fields' });
         }
         const groupRecord = upsertGroup({ groupId, groupName, groupMembers, groupCreatedBy, groupUpdatedAt, groupType });
+        const recipientByKey = new Map();
+        membersToNotify.forEach(member => {
+            const rawMember = String(member || '').trim();
+            const memberKey = normalizeUserKey(rawMember);
+            if (!memberKey) return;
+            if (!recipientByKey.has(memberKey)) {
+                recipientByKey.set(memberKey, rawMember);
+            }
+        });
+        const dedupedRecipients = Array.from(recipientByKey.values());
+        if (!dedupedRecipients.length) {
+            return res.json({ status: 'success', details: { success: 0, failed: 0 } });
+        }
+
+        const resolvedGroupMembers = groupRecord && Array.isArray(groupRecord.members)
+            ? groupRecord.members
+            : (Array.isArray(groupMembers) ? groupMembers : []);
+        const resolvedGroupCreatedBy = groupRecord ? groupRecord.createdBy : (groupCreatedBy || null);
+        const resolvedGroupUpdatedAt = groupRecord ? groupRecord.updatedAt : (groupUpdatedAt || Date.now());
+        const resolvedGroupType = normalizeGroupType(groupType || (groupRecord ? groupRecord.type : 'group'));
+        const resolvedGroupName = groupRecord ? groupRecord.name : groupName;
         const messageId = generateMessageId();
         const notificationData = {
             messageId,
@@ -740,14 +1723,29 @@ app.post(['/group-update', '/notify/group-update'], async (req, res) => {
             data: {
                 type: 'group-update',
                 groupId,
-                groupName: groupRecord ? groupRecord.name : groupName,
-                groupMembers: Array.isArray(groupMembers) ? groupMembers : [],
-                groupCreatedBy: groupCreatedBy || null,
-                groupUpdatedAt: groupUpdatedAt || Date.now(),
-                groupType: normalizeGroupType(groupType || (groupRecord ? groupRecord.type : 'group'))
+                groupName: resolvedGroupName,
+                groupMembers: resolvedGroupMembers,
+                groupCreatedBy: resolvedGroupCreatedBy,
+                groupUpdatedAt: resolvedGroupUpdatedAt,
+                groupType: resolvedGroupType
             }
         };
-        const result = await sendPushNotificationToUser(membersToNotify, notificationData, groupId, { messageId, skipBadge: true });
+
+        const groupUpdateRecord = {
+            messageId,
+            sender: groupId,
+            type: 'group-update',
+            groupId,
+            groupName: resolvedGroupName,
+            groupMembers: resolvedGroupMembers,
+            groupCreatedBy: resolvedGroupCreatedBy,
+            groupUpdatedAt: resolvedGroupUpdatedAt,
+            groupType: resolvedGroupType,
+            timestamp: Date.now()
+        };
+        addToQueue(dedupedRecipients, groupUpdateRecord);
+
+        const result = await sendPushNotificationToUser(dedupedRecipients, notificationData, groupId, { messageId, skipBadge: true });
         res.json({ status: 'success', details: result });
     } catch (e) {
         console.error('[GROUP UPDATE ERROR]', e);
@@ -769,39 +1767,90 @@ app.post(['/reaction', '/notify/reaction'], async (req, res) => {
             reactor,
             reactorName
         } = req.body || {};
-        if (!groupId || !targetMessageId || !emoji) {
+        const normalizedTargetMessageId = String(targetMessageId || '').trim();
+        const normalizedEmoji = String(emoji || '').trim();
+        const normalizedReactor = normalizeUserKey(reactor);
+        if (!groupId || !normalizedTargetMessageId || !normalizedEmoji) {
             return res.status(400).json({ error: 'Missing reaction fields' });
         }
+
         const groupRecord = upsertGroup({ groupId, groupName, groupMembers, groupCreatedBy, groupUpdatedAt, groupType });
-        const membersToNotify = groupRecord && Array.isArray(groupRecord.members)
-            ? groupRecord.members
-            : (Array.isArray(groupMembers) ? groupMembers : []);
+        const storedMembers = groupRecord && Array.isArray(groupRecord.members) ? groupRecord.members : [];
+        const providedMembers = Array.isArray(groupMembers) ? groupMembers : [];
+        const recipientByKey = new Map();
+        [...storedMembers, ...providedMembers].forEach(member => {
+            const rawMember = String(member || '').trim();
+            const memberKey = normalizeUserKey(rawMember);
+            if (!memberKey || memberKey === normalizedReactor) return;
+            if (!recipientByKey.has(memberKey)) {
+                recipientByKey.set(memberKey, rawMember);
+            }
+        });
+        const membersToNotify = Array.from(recipientByKey.values());
+
         if (!membersToNotify.length) {
             return res.json({ status: 'success', details: { success: 0, failed: 0 } });
         }
+
         const reactionId = generateMessageId();
+        const resolvedGroupName = (groupRecord && groupRecord.name) || String(groupName || '').trim() || 'קבוצה';
+        const resolvedGroupMembers = groupRecord && Array.isArray(groupRecord.members)
+            ? groupRecord.members
+            : providedMembers;
+        const resolvedGroupCreatedBy = (groupRecord && groupRecord.createdBy) || groupCreatedBy || null;
+        const resolvedGroupUpdatedAt = (groupRecord && groupRecord.updatedAt) || groupUpdatedAt || Date.now();
+        const resolvedGroupType = groupRecord
+            ? groupRecord.type
+            : normalizeGroupType(groupType || 'group');
+        const resolvedReactorName = String(reactorName || reactor || 'משתמש').trim();
+        const reactionText = `${resolvedReactorName} הגיב ${normalizedEmoji}`;
+
         const notificationData = {
             messageId: reactionId,
-            title: '',
+            title: resolvedGroupName || 'תגובה חדשה',
             body: {
-                shortText: '',
-                longText: ''
+                shortText: reactionText,
+                longText: reactionText
             },
             data: {
                 type: 'reaction',
-                targetMessageId,
-                emoji,
-                reactor,
-                reactorName,
+                targetMessageId: normalizedTargetMessageId,
+                emoji: normalizedEmoji,
+                reactor: normalizedReactor || reactor,
+                reactorName: resolvedReactorName,
                 groupId,
-                groupName: groupRecord ? groupRecord.name : groupName,
-                groupMembers: groupRecord ? groupRecord.members : groupMembers,
-                groupCreatedBy: groupRecord ? groupRecord.createdBy : groupCreatedBy,
-                groupUpdatedAt: groupRecord ? groupRecord.updatedAt : groupUpdatedAt,
-                groupType: groupRecord ? groupRecord.type : normalizeGroupType(groupType || 'group')
+                groupName: resolvedGroupName,
+                groupMembers: resolvedGroupMembers,
+                groupCreatedBy: resolvedGroupCreatedBy,
+                groupUpdatedAt: resolvedGroupUpdatedAt,
+                groupType: resolvedGroupType
             }
         };
-        const result = await sendPushNotificationToUser(membersToNotify, notificationData, groupId, { messageId: reactionId, skipBadge: true });
+
+        const reactionRecord = {
+            messageId: reactionId,
+            sender: groupId,
+            type: 'reaction',
+            targetMessageId: normalizedTargetMessageId,
+            emoji: normalizedEmoji,
+            reactor: normalizedReactor || reactor,
+            reactorName: resolvedReactorName,
+            timestamp: Date.now(),
+            groupId,
+            groupName: resolvedGroupName,
+            groupMembers: resolvedGroupMembers,
+            groupCreatedBy: resolvedGroupCreatedBy,
+            groupUpdatedAt: resolvedGroupUpdatedAt,
+            groupType: resolvedGroupType
+        };
+        addToQueue(membersToNotify, reactionRecord);
+
+        const result = await sendPushNotificationToUser(membersToNotify, notificationData, groupId, {
+            messageId: reactionId,
+            skipBadge: true,
+            singlePerUser: true,
+            allowSecondAttempt: false
+        });
         res.json({ status: 'success', details: result });
     } catch (err) {
         console.error('[REACTION ERROR]', err);
@@ -816,18 +1865,42 @@ app.post(['/read', '/notify/read'], async (req, res) => {
             return res.status(400).json({ status: 'error', message: 'Missing fields' });
         }
 
+        const normalizedReader = String(reader).trim();
+        const normalizedSender = String(sender).trim();
+        const uniqueMessageIds = Array.from(
+            new Set(
+                messageIds
+                    .map((id) => String(id || '').trim())
+                    .filter(Boolean)
+            )
+        );
+        if (!normalizedReader || !normalizedSender || uniqueMessageIds.length === 0) {
+            return res.status(400).json({ status: 'error', message: 'Invalid read receipt payload' });
+        }
+
+        const effectiveReadAt = Number(readAt) || Date.now();
+
         const payload = {
             title: '',
             body: { shortText: '', longText: '' },
             data: {
                 type: 'read-receipt',
-                messageIds,
-                readAt: readAt || Date.now(),
-                sender: reader
+                messageIds: uniqueMessageIds,
+                readAt: effectiveReadAt,
+                sender: normalizedReader
             }
         };
 
-        const result = await sendPushNotificationToUser(sender, payload, reader, { skipBadge: true });
+        // Queue as well so polling/SSE can recover if push is delayed/missed.
+        addToQueue(normalizedSender, {
+            type: 'read-receipt',
+            messageIds: uniqueMessageIds,
+            readAt: effectiveReadAt,
+            sender: normalizedReader,
+            timestamp: Date.now()
+        });
+
+        const result = await sendPushNotificationToUser(normalizedSender, payload, normalizedReader, { skipBadge: true });
         res.json({ status: 'ok', details: result });
     } catch (err) {
         console.error('[READ RECEIPT] Failed:', err.message);

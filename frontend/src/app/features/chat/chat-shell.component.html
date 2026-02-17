@@ -1,0 +1,533 @@
+<div class="chat-root">
+  <mat-toolbar class="app-toolbar">
+    <div class="brand">
+      <mat-icon>forum</mat-icon>
+      <span>מרכז רפואי צפון</span>
+    </div>
+
+    <span class="spacer"></span>
+
+    <mat-chip-set>
+      <mat-chip [class.offline]="!store.networkOnline()">
+        {{ store.networkOnline() ? 'מקוון' : 'לא מחובר' }}
+      </mat-chip>
+    </mat-chip-set>
+
+    <button mat-icon-button type="button" [matMenuTriggerFor]="mainMenu" aria-label="תפריט">
+      <mat-icon>more_vert</mat-icon>
+    </button>
+  </mat-toolbar>
+
+  <mat-menu #mainMenu="matMenu">
+    <button mat-menu-item type="button" (click)="refresh()">
+      <mat-icon>refresh</mat-icon>
+      <span>רענון</span>
+    </button>
+    <button mat-menu-item type="button" (click)="flushOutbox()">
+      <mat-icon>sync</mat-icon>
+      <span>סנכרון הודעות</span>
+    </button>
+    <button mat-menu-item type="button" (click)="openCreateGroupDialog()">
+      <mat-icon>group_add</mat-icon>
+      <span>קבוצה חדשה</span>
+    </button>
+    <button mat-menu-item type="button" (click)="logout()">
+      <mat-icon>logout</mat-icon>
+      <span>התנתקות</span>
+    </button>
+  </mat-menu>
+
+  @if (isBusy()) {
+    <mat-progress-bar class="app-progress" mode="indeterminate"></mat-progress-bar>
+  }
+
+  <div class="chat-layout">
+    <aside class="contacts-pane" [class.hidden-mobile]="isMobile() && !showContactsPane()">
+      <div class="contacts-toolbar">
+        <label class="search-shell">
+          <mat-icon class="search-icon">search</mat-icon>
+          <input
+            class="search-input"
+            type="text"
+            [formControl]="searchControl"
+            (focus)="handleTextInputFocus()"
+            placeholder="חיפוש או פתיחת צ׳אט חדש"
+            aria-label="חיפוש צ׳אטים"
+            autocomplete="off" />
+          @if (searchControl.value.length > 0) {
+            <button
+              type="button"
+              class="search-clear-btn"
+              (click)="clearChatSearch(); $event.preventDefault(); $event.stopPropagation()"
+              aria-label="נקה חיפוש">
+              <mat-icon>close</mat-icon>
+            </button>
+          }
+        </label>
+
+        <div class="contacts-actions">
+          <button mat-stroked-button type="button" (click)="openNewChatDialog()">
+            <mat-icon>chat</mat-icon>
+            <span>צ'אט חדש</span>
+          </button>
+          <button mat-stroked-button type="button" (click)="openCreateGroupDialog()">
+            <mat-icon>groups</mat-icon>
+            <span>קבוצה</span>
+          </button>
+        </div>
+      </div>
+
+      @if (!filteredChats().length) {
+        <div class="empty-chat-list">אין צ׳אטים פעילים. צור צ׳אט חדש כדי להתחיל.</div>
+      } @else {
+        <cdk-virtual-scroll-viewport class="contacts-viewport" [itemSize]="84" [minBufferPx]="336" [maxBufferPx]="840">
+          <button
+            type="button"
+            class="chat-item"
+            *cdkVirtualFor="let chat of filteredChats(); trackBy: trackByChatId"
+            [class.active]="store.activeChatId() === chat.id"
+            (click)="openChat(chat.id)">
+            <div class="chat-item-main">
+              <span
+                class="chat-avatar-wrap"
+                [class.clickable]="!!chat.avatarUrl"
+                [class.with-image]="!!chat.avatarUrl"
+                [class.loaded]="isAvatarLoaded(chatAvatarThumb(chat))"
+                (click)="openChatAvatar($event, chat)"
+                [attr.aria-label]="chat.avatarUrl ? 'Open profile image' : null">
+                @if (chat.avatarUrl) {
+                  <span class="chat-avatar-skeleton" aria-hidden="true"></span>
+                  <img
+                    class="chat-avatar"
+                    [src]="chatAvatarThumb(chat)"
+                    [alt]="chat.title"
+                    loading="eager"
+                    decoding="async"
+                    (load)="markAvatarLoaded(chatAvatarThumb(chat))"
+                    (error)="markAvatarLoaded(chatAvatarThumb(chat))" />
+                } @else {
+                  <span class="chat-avatar-fallback">{{ chatAvatarFallback(chat) }}</span>
+                }
+              </span>
+
+              <div class="chat-text">
+                <span class="chat-title">{{ chat.title }}</span>
+                @if (chat.info) {
+                  <span class="chat-info">{{ chat.info }}</span>
+                }
+                <span class="chat-subtitle">{{ chat.subtitle || 'אין הודעות עדיין' }}</span>
+              </div>
+            </div>
+
+            <div class="chat-meta">
+              @if (chat.lastTimestamp) {
+                <span class="chat-time">{{ formatChatListTime(chat.lastTimestamp) }}</span>
+              }
+              @if (chat.unread > 0) {
+                <span class="chat-unread">{{ chat.unread > 99 ? '99+' : chat.unread }}</span>
+              }
+            </div>
+          </button>
+        </cdk-virtual-scroll-viewport>
+      }
+    </aside>
+
+    <section class="conversation-pane" [class.hidden-mobile]="isMobile() && showContactsPane()">
+      @if (store.activeChat(); as activeChat) {
+        <header class="conversation-header">
+          @if (isMobile()) {
+            <button
+              mat-icon-button
+              type="button"
+              class="back-button-rtl"
+              (click)="backToList()"
+              aria-label="חזרה">
+              <mat-icon>arrow_forward</mat-icon>
+            </button>
+          }
+
+          <div
+            class="conversation-title"
+            [class.clickable]="canShowGroupMembers()"
+            (click)="canShowGroupMembers() && openGroupMembers()"
+            [attr.role]="canShowGroupMembers() ? 'button' : null"
+            [attr.tabindex]="canShowGroupMembers() ? '0' : null"
+            (keydown.enter)="canShowGroupMembers() && openGroupMembers()"
+            (keydown.space)="canShowGroupMembers() && openGroupMembers(); $event.preventDefault()">
+            <h2>{{ activeChat.title }}</h2>
+            <small>{{ activeChat.isGroup ? 'קבוצה' : activeChat.id }}</small>
+          </div>
+
+          @if (canCallActiveChat()) {
+            <button
+              mat-icon-button
+              type="button"
+              class="conversation-call-btn"
+              (click)="startCallToActiveChat()"
+              aria-label="חייג">
+              <mat-icon>call</mat-icon>
+            </button>
+          }
+        </header>
+
+        <div #messagesPanel class="messages-panel" (scroll)="onMessagesPanelScroll()">
+          @if (stickyMessageDateLabel(); as stickyDateLabel) {
+            <div class="messages-sticky-date">
+              <span>{{ stickyDateLabel }}</span>
+            </div>
+          }
+
+          @for (message of store.activeMessages(); track message.messageId; let index = $index) {
+            @if (shouldShowMessageDateBadge(index, message.timestamp)) {
+              <div class="message-date-badge">
+                <span>{{ formatMessageDateBadge(message.timestamp) }}</span>
+              </div>
+            }
+            <article
+              class="message-row"
+              [class.outgoing]="message.direction === 'outgoing'"
+              [attr.data-message-index]="index">
+              <div class="message-bubble">
+                @if (message.direction === 'incoming' && message.groupId) {
+                  <div class="message-sender">{{ message.senderDisplayName || message.sender }}</div>
+                }
+
+                @if (message.imageUrl) {
+                  <button
+                    type="button"
+                    class="message-image-btn"
+                    (click)="openFullImage(message.imageUrl)"
+                    aria-label="Open full image">
+                    <img class="message-image" [src]="message.imageUrl" alt="Attachment" loading="lazy" />
+                  </button>
+                }
+
+                @if (message.body) {
+                  <div class="message-content">
+                    @for (part of getMessageRenderParts(message.messageId, message.body); track $index) {
+                      @if (part.kind === 'text') {
+                        <span class="message-text">{{ part.text }}</span>
+                      } @else if (part.kind === 'phone') {
+                        <button
+                          type="button"
+                          class="message-phone"
+                          (click)="openPhoneActions(part)"
+                          aria-label="פעולות מספר טלפון">
+                          {{ part.display }}
+                        </button>
+                      } @else if (part.kind === 'image') {
+                        <button
+                          type="button"
+                          class="message-image-btn"
+                          (click)="openFullImage(part.url)"
+                          aria-label="Open full image">
+                          <img class="message-image" [src]="part.url" alt="Image" loading="lazy" />
+                        </button>
+                      } @else {
+                        <a [href]="part.url" target="_blank" rel="noopener" class="message-link">
+                          {{ part.label }}
+                        </a>
+                      }
+                    }
+                  </div>
+                }
+
+                <div class="message-meta">
+                  <span>{{ formatTime(message.timestamp) }}</span>
+                  @if (message.direction === 'outgoing') {
+                    <span
+                      class="message-status"
+                      [class.read]="isOutgoingStatusRead(message.deliveryStatus)"
+                      [class.failed]="message.deliveryStatus === 'failed'"
+                      [attr.aria-label]="outgoingStatusLabel(message.deliveryStatus)"
+                      [attr.title]="outgoingStatusLabel(message.deliveryStatus)">
+                      <mat-icon>{{ outgoingStatusIcon(message.deliveryStatus) }}</mat-icon>
+                    </span>
+                  }
+                </div>
+
+                @if (reactionBuckets(message).length) {
+                  <div class="message-reactions">
+                    @for (bucket of reactionBuckets(message); track bucket.emoji) {
+                      <span class="reaction-chip">
+                        {{ bucket.count > 1 ? bucket.emoji + ' ' + bucket.count : bucket.emoji }}
+                      </span>
+                    }
+                    <span class="reaction-total">{{ reactionTotal(message) }}</span>
+                    @if (canViewReactionDetails(message)) {
+                      <button
+                        type="button"
+                        class="reaction-details-btn"
+                        (click)="openReactionDetails(message)"
+                        aria-label="הצג רשימת מגיבים">
+                        <mat-icon>groups</mat-icon>
+                        <span>מגיבים</span>
+                      </button>
+                    }
+                  </div>
+                }
+
+                @if (canReactToMessage(message)) {
+                  <div class="message-react-action">
+                    <button
+                      type="button"
+                      class="message-react-btn"
+                      [matMenuTriggerFor]="reactionMenu"
+                      (click)="setReactionTarget(message)"
+                      aria-label="הוסף תגובה">
+                      <span>😊</span>
+                    </button>
+                  </div>
+                }
+              </div>
+            </article>
+          }
+        </div>
+
+        <button
+          type="button"
+          class="scroll-bottom-btn"
+          [class.visible]="showScrollToBottomButton()"
+          (click)="scrollToBottomFromButton()"
+          aria-label="גלול להודעה האחרונה">
+          <mat-icon>keyboard_arrow_down</mat-icon>
+        </button>
+
+        <form class="composer" (submit)="handleComposerSubmit($event)" novalidate>
+          <input
+            #fileInput
+            class="hidden-input"
+            type="file"
+            accept="image/*"
+            (change)="onFileSelected($event)" />
+
+          <div class="composer-input-shell">
+            <textarea
+              class="composer-textarea"
+              rows="1"
+              [formControl]="messageControl"
+              (focus)="handleTextInputFocus()"
+              [placeholder]="composerPlaceholder()"></textarea>
+            <button
+              type="button"
+              class="attach-btn"
+              [matMenuTriggerFor]="attachMenu"
+              [disabled]="!store.activeChat() || !store.canSendToActiveChat()"
+              aria-label="Attach">
+              <span class="attach-plus">+</span>
+            </button>
+
+            
+          </div>
+
+          <button
+            type="submit"
+            class="send-btn"
+            [disabled]="!canSendMessage()"
+            aria-label="Send message">
+            <mat-icon>send</mat-icon>
+          </button>
+
+          <mat-menu #attachMenu="matMenu">
+            <button mat-menu-item type="button" (click)="openImagePicker()">
+              <mat-icon>image</mat-icon>
+              <span>Pic</span>
+            </button>
+            <button mat-menu-item type="button" (click)="shareLocation()">
+              <mat-icon>location_on</mat-icon>
+              <span>Share location</span>
+            </button>
+          </mat-menu>
+
+          <mat-menu #reactionMenu="matMenu">
+            @for (emoji of reactionEmojis; track emoji) {
+              <button mat-menu-item type="button" (click)="addReaction(emoji)">
+                <span class="reaction-menu-emoji">{{ emoji }}</span>
+              </button>
+            }
+          </mat-menu>
+        </form>
+      } @else {
+        <div class="empty-conversation">
+          <mat-icon>chat_bubble</mat-icon>
+          <p>בחר צ׳אט מהרשימה כדי להתחיל התכתבות.</p>
+        </div>
+      }
+    </section>
+  </div>
+
+  @if (avatarPreview(); as avatar) {
+    <div class="avatar-preview-backdrop" (click)="closeChatAvatar()">
+      <div class="avatar-preview-dialog" (click)="$event.stopPropagation()">
+        <button type="button" class="avatar-preview-close" (click)="closeChatAvatar()" aria-label="Close">
+          <mat-icon>close</mat-icon>
+        </button>
+        <div class="avatar-preview-media" [class.loaded]="previewAvatarLoaded()">
+          <div class="avatar-preview-skeleton" aria-hidden="true"></div>
+          @if (avatar.lqipUrl) {
+            <img class="avatar-preview-lqip" [src]="avatar.lqipUrl" alt="" aria-hidden="true" decoding="async" />
+          }
+          <img
+            class="avatar-preview-image"
+            [src]="avatar.imageUrl"
+            [alt]="avatar.title"
+            loading="eager"
+            decoding="async"
+            (load)="onPreviewAvatarLoaded()"
+            (error)="onPreviewAvatarLoaded()" />
+        </div>
+        <div class="avatar-preview-title">{{ avatar.title }}</div>
+      </div>
+    </div>
+  }
+
+  @if (reactionDetailsPreview(); as details) {
+    <div class="reaction-details-backdrop" (click)="closeReactionDetails()">
+      <div class="reaction-details-dialog" (click)="$event.stopPropagation()">
+        <button type="button" class="reaction-details-close" (click)="closeReactionDetails()" aria-label="Close">
+          <mat-icon>close</mat-icon>
+        </button>
+        <div class="reaction-details-title">{{ details.groupTitle }}</div>
+        <div class="reaction-details-meta">תגובות בקבוצה</div>
+
+        @if (!details.rows.length) {
+          <div class="reaction-details-empty">אין תגובות להצגה.</div>
+        } @else {
+          <div class="reaction-details-list">
+            @for (row of details.rows; track row.username + '-' + row.emoji + '-' + $index) {
+              <div class="reaction-details-item">
+                <div class="reaction-details-user-wrap">
+                  <div class="reaction-details-user">{{ row.displayName }}</div>
+                  @if (row.username) {
+                    <div class="reaction-details-username">{{ row.username }}</div>
+                  }
+                </div>
+                <div class="reaction-details-emoji">{{ row.emoji }}</div>
+              </div>
+            }
+          </div>
+        }
+      </div>
+    </div>
+  }
+
+  @if (phoneActionTarget(); as phoneTarget) {
+    <div class="phone-action-backdrop" (click)="closePhoneActions()">
+      <div class="phone-action-dialog" (click)="$event.stopPropagation()">
+        <button type="button" class="phone-action-close" (click)="closePhoneActions()" aria-label="Close">
+          <mat-icon>close</mat-icon>
+        </button>
+        <div class="phone-action-title">מספר טלפון</div>
+        <div class="phone-action-number">{{ phoneTarget.display }}</div>
+        <div class="phone-action-buttons">
+          <button type="button" class="phone-action-btn" (click)="copyPhoneTarget()">העתק מספר</button>
+          <button type="button" class="phone-action-btn primary" (click)="callPhoneTarget()">חייג עכשיו</button>
+        </div>
+      </div>
+    </div>
+  }
+
+  @if (groupMembersPreview(); as groupPreview) {
+    <div class="group-members-backdrop" (click)="closeGroupMembers()">
+      <div class="group-members-dialog" (click)="$event.stopPropagation()">
+        <button type="button" class="group-members-close" (click)="closeGroupMembers()" aria-label="Close">
+          <mat-icon>close</mat-icon>
+        </button>
+        <div class="group-members-title">{{ groupPreview.title }}</div>
+        <div class="group-members-meta">
+          @if (groupPreview.type === 'community') {
+            קבוצת קהילה · רק מנהל שולח הודעות
+          } @else {
+            קבוצה רגילה · כל המשתתפים יכולים לשלוח
+          }
+        </div>
+
+        @if (groupPreview.canManageMembers) {
+          <div class="group-members-manage">
+            <button
+              mat-stroked-button
+              type="button"
+              class="group-members-add-btn"
+              (click)="toggleGroupMemberAddPanel()">
+              <mat-icon>person_add</mat-icon>
+              <span>{{ groupMemberAddOpen() ? 'סגור הוספה' : 'הוסף משתתף' }}</span>
+            </button>
+          </div>
+
+          @if (groupMemberAddOpen()) {
+            <div class="group-member-add-panel">
+              <label class="group-member-add-search-shell">
+                <mat-icon class="group-member-add-search-icon">search</mat-icon>
+                <input
+                  class="group-member-add-search-input"
+                  type="text"
+                  [value]="groupMemberAddSearchTerm()"
+                  (input)="onGroupMemberSearchInput($event)"
+                  (focus)="handleTextInputFocus()"
+                  placeholder="חיפוש איש קשר להוספה"
+                  aria-label="חיפוש איש קשר להוספה"
+                  autocomplete="off" />
+                @if (groupMemberAddSearchTerm().length > 0) {
+                  <button
+                    type="button"
+                    class="group-member-add-search-clear"
+                    (click)="clearGroupMemberSearch(); $event.preventDefault(); $event.stopPropagation()"
+                    aria-label="נקה חיפוש אנשי קשר">
+                    <mat-icon>close</mat-icon>
+                  </button>
+                }
+              </label>
+
+              @if (!filteredGroupMemberAddCandidates().length) {
+                <div class="group-member-add-empty">אין אנשי קשר זמינים להוספה</div>
+              } @else {
+                <div class="group-member-add-list">
+                  @for (candidate of filteredGroupMemberAddCandidates(); track candidate.username) {
+                    <button
+                      type="button"
+                      class="group-member-add-item"
+                      (click)="addCommunityMember(candidate.username)">
+                      <div class="group-add-member-row">
+                        <span class="group-add-member-name">{{ candidate.displayName }}</span>
+                        <span class="group-add-member-username">{{ candidate.username }}</span>
+                      </div>
+                    </button>
+                  }
+                </div>
+              }
+            </div>
+          }
+        }
+
+        @if (!groupPreview.members.length) {
+          <div class="group-members-empty">אין משתתפים להצגה.</div>
+        } @else {
+          <div class="group-members-list">
+            @for (member of groupPreview.members; track member.username) {
+              <div class="group-member-item">
+                <div class="group-member-main">
+                  <span class="group-member-name">{{ member.displayName }}</span>
+                  @if (member.info) {
+                    <span class="group-member-info">{{ member.info }}</span>
+                  }
+                  @if (member.isAdmin) {
+                    <span class="group-member-role">מנהל</span>
+                  }
+                </div>
+                @if (canRemoveCommunityMember(groupPreview, member.username)) {
+                  <button
+                    type="button"
+                    class="group-member-remove"
+                    (click)="removeCommunityMember(member.username)"
+                    aria-label="הסר משתתף">
+                    <mat-icon>person_remove</mat-icon>
+                  </button>
+                }
+              </div>
+            }
+          </div>
+        }
+      </div>
+    </div>
+  }
+</div>

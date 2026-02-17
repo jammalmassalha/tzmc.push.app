@@ -39,6 +39,9 @@ body {
     height: 100dvh; 
     height: var(--app-height, 100dvh);
     position: fixed; 
+    top: var(--app-viewport-offset-top, 0px);
+    left: 0;
+    right: 0;
     overflow: hidden; 
     
     /* RTL SETTINGS */
@@ -938,6 +941,20 @@ body.ios .chat-container {
     color: #027eb5;
     text-decoration: underline;
     word-break: break-all;
+}
+
+.msg-phone-link {
+    border: 0;
+    background: transparent;
+    padding: 0;
+    margin: 0;
+    color: #1f4fc4;
+    text-decoration: underline;
+    cursor: pointer;
+    font: inherit;
+    line-height: inherit;
+    direction: ltr;
+    text-align: right;
 }
 .msg-file-link {
     color: #027eb5;

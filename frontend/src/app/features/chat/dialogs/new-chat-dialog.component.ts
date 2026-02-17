@@ -1,0 +1,59 @@
+import { CommonModule } from '@angular/common';
+import { Component, computed, inject } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { FormControl, ReactiveFormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatDialogModule, MatDialogRef, MAT_DIALOG_DATA } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { startWith } from 'rxjs';
+import { Contact } from '../../../core/models/chat.models';
+
+export interface NewChatDialogData {
+  contacts: Contact[];
+  currentUser: string | null;
+}
+
+@Component({
+  selector: 'app-new-chat-dialog',
+  standalone: true,
+  imports: [
+    CommonModule,
+    ReactiveFormsModule,
+    MatDialogModule,
+    MatFormFieldModule,
+    MatInputModule,
+    MatButtonModule,
+    MatIconModule
+  ],
+  templateUrl: './new-chat-dialog.component.html',
+  styleUrl: './new-chat-dialog.component.scss'
+})
+export class NewChatDialogComponent {
+  readonly data = inject<NewChatDialogData>(MAT_DIALOG_DATA);
+  readonly dialogRef = inject(MatDialogRef<NewChatDialogComponent, string>);
+
+  readonly searchControl = new FormControl('', { nonNullable: true });
+  readonly searchTerm = toSignal(this.searchControl.valueChanges.pipe(startWith('')), {
+    initialValue: ''
+  });
+
+  readonly filteredContacts = computed(() => {
+    const current = this.data.currentUser;
+    const query = this.searchTerm().trim().toLowerCase();
+
+    return this.data.contacts.filter((contact) => {
+      if (current && contact.username === current) return false;
+      if (!query) return true;
+      return (
+        contact.displayName.toLowerCase().includes(query) ||
+        contact.username.toLowerCase().includes(query)
+      );
+    });
+  });
+
+  startChat(username: string): void {
+    this.dialogRef.close(username);
+  }
+}

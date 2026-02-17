@@ -8,6 +8,12 @@ const STORE_NAME = config.STORE_NAME || 'history';
 const OUTBOX_STORE = config.OUTBOX_STORE || 'outbox';
 const DB_VERSION = config.DB_VERSION || 3;
 const CACHE_NAME = config.CACHE_NAME || 'static-assets-v4';
+const VAPID_PUBLIC_KEY = config.VAPID_PUBLIC_KEY || '';
+const SUBSCRIPTION_URL = config.SUBSCRIPTION_URL || '';
+const AUTH_REFRESH_PUSH_TYPE = 'subscription-auth-refresh';
+const SW_CONTEXT_CACHE = 'sw-runtime-context-v1';
+const SW_CONTEXT_KEY = new URL('./__sw_runtime_context__', self.registration.scope).toString();
+let lastKnownPushUser = '';
 
 const ASSETS_TO_CACHE = [
   './',
@@ -141,6 +147,189 @@ const fetchWithRetry = async (url, options = {}, retryOptions = {}) => {
   }
   throw lastError;
 };
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = self.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+function hasValidSubscriptionKeys(subscription) {
+  if (!subscription || typeof subscription.toJSON !== 'function') return false;
+  const json = subscription.toJSON();
+  const keys = json && json.keys ? json.keys : null;
+  return Boolean(keys && keys.p256dh && keys.auth);
+}
+
+function detectWorkerDeviceType() {
+  const ua = (self.navigator && self.navigator.userAgent) ? self.navigator.userAgent : '';
+  const isMobile = /Mobile|Android|iP(hone|od)|IEMobile|BlackBerry|Kindle|Opera M(obi|ini)/i.test(ua);
+  return isMobile ? 'Mobile' : 'PC';
+}
+
+function normalizeUsername(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+async function readSwRuntimeContext() {
+  try {
+    const cache = await caches.open(SW_CONTEXT_CACHE);
+    const response = await cache.match(SW_CONTEXT_KEY);
+    if (!response) return {};
+    const payload = await response.json();
+    if (!payload || typeof payload !== 'object') return {};
+    const cachedUsername = normalizeUsername(payload.username || '');
+    if (cachedUsername) {
+      lastKnownPushUser = cachedUsername;
+    }
+    return payload;
+  } catch (_) {
+    return {};
+  }
+}
+
+async function persistSwRuntimeContext(partial = {}) {
+  const username = normalizeUsername(partial.username);
+  if (!username) return false;
+
+  try {
+    const previous = await readSwRuntimeContext();
+    const next = {
+      ...previous,
+      username,
+      at: Date.now()
+    };
+    const cache = await caches.open(SW_CONTEXT_CACHE);
+    await cache.put(
+      SW_CONTEXT_KEY,
+      new Response(JSON.stringify(next), {
+        headers: { 'Content-Type': 'application/json' }
+      })
+    );
+    lastKnownPushUser = username;
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function registerSubscriptionAfterChange(newSubscription = null) {
+  if (!SUBSCRIPTION_URL || !VAPID_PUBLIC_KEY) {
+    return false;
+  }
+
+  const context = await readSwRuntimeContext();
+  const username = normalizeUsername(context.username);
+  if (!username) {
+    return false;
+  }
+  lastKnownPushUser = username;
+
+  try {
+    let subscription = newSubscription;
+    if (!subscription || !hasValidSubscriptionKeys(subscription)) {
+      subscription = await self.registration.pushManager.getSubscription();
+    }
+    if (!subscription || !hasValidSubscriptionKeys(subscription)) {
+      subscription = await self.registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+      });
+    }
+    if (!subscription) {
+      return false;
+    }
+
+    const deviceType = detectWorkerDeviceType();
+    const registerPayload = {
+      username,
+      subscription,
+      action: 'reactivate_silent',
+      reason: 'pushsubscriptionchange',
+      deviceType
+    };
+    if (deviceType === 'PC') {
+      registerPayload.subscriptionPC = subscription;
+    } else {
+      registerPayload.subscriptionMobile = subscription;
+    }
+
+    await fetchWithRetry(SUBSCRIPTION_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(registerPayload)
+    }, { timeoutMs: 15000, retries: 2, backoffMs: 700 });
+
+    await persistSwRuntimeContext({ username });
+    return true;
+  } catch (err) {
+    console.warn('[SW] pushsubscriptionchange recovery failed:', err && err.message ? err.message : err);
+    return false;
+  }
+}
+
+async function refreshSubscriptionAuthInBackground(payload = {}) {
+  const username = String(payload.user || payload.username || '').trim().toLowerCase();
+  if (!username || !SUBSCRIPTION_URL || !VAPID_PUBLIC_KEY) {
+    return false;
+  }
+
+  try {
+    await persistSwRuntimeContext({ username });
+    let subscription = await self.registration.pushManager.getSubscription();
+    const forceResubscribe = Boolean(payload.forceResubscribe);
+    const needsResubscribe = forceResubscribe || !subscription || !hasValidSubscriptionKeys(subscription);
+    if (needsResubscribe && subscription) {
+      try {
+        await subscription.unsubscribe();
+      } catch (_) {
+        // Continue with subscribe attempt even when unsubscribe fails.
+      }
+      subscription = null;
+    }
+
+    if (!subscription) {
+      subscription = await self.registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+      });
+    }
+    if (!subscription) {
+      return false;
+    }
+
+    const deviceType = detectWorkerDeviceType();
+    const registerPayload = {
+      username,
+      subscription,
+      action: 'reactivate_silent',
+      reason: 'subscription-auth-refresh',
+      deviceType
+    };
+    if (deviceType === 'PC') {
+      registerPayload.subscriptionPC = subscription;
+    } else {
+      registerPayload.subscriptionMobile = subscription;
+    }
+
+    await fetchWithRetry(SUBSCRIPTION_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(registerPayload)
+    }, { timeoutMs: 15000, retries: 2, backoffMs: 700 });
+    return true;
+  } catch (err) {
+    console.warn('[SW] Subscription auth refresh failed:', err && err.message ? err.message : err);
+    return false;
+  }
+}
 
 async function saveNotificationExplicit(record) {
   try {
@@ -294,7 +483,16 @@ self.addEventListener('install', event => {
 self.addEventListener('activate', event => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
-    await Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key)));
+    await Promise.all(
+      keys
+        .filter(key => key !== CACHE_NAME && key !== SW_CONTEXT_CACHE)
+        .map(key => caches.delete(key))
+    );
+    const context = await readSwRuntimeContext();
+    const username = normalizeUsername(context.username || '');
+    if (username) {
+      lastKnownPushUser = username;
+    }
     await clients.claim();
   })());
 });
@@ -349,7 +547,14 @@ self.addEventListener('push', event => {
 
   // Normalize Payload
   const payload = rawData.data || rawData; 
-  const user = payload.user || rawData.notification?.username || 'Unknown';
+  const username = normalizeUsername(
+    payload.user || payload.username || rawData.notification?.username || lastKnownPushUser || ''
+  );
+  const user = username || payload.user || payload.username || rawData.notification?.username || 'Unknown';
+  if (username) {
+    lastKnownPushUser = username;
+    void persistSwRuntimeContext({ username });
+  }
   const messageId = payload.messageId || payload.message_id || payload.id || generateMessageId();
 
   if (payload && payload.type === 'read-receipt') {
@@ -360,6 +565,17 @@ self.addEventListener('push', event => {
       clients.forEach(client => client.postMessage({ action: 'read-receipt', messageIds, readAt, sender: payload.sender }));
     });
     event.waitUntil(Promise.all([updatePromise, notifyPromise]));
+    return;
+  }
+
+  if (payload && payload.type === AUTH_REFRESH_PUSH_TYPE) {
+    const refreshPromise = refreshSubscriptionAuthInBackground(payload);
+    const notifyClientsPromise = self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      clientList.forEach((client) => {
+        client.postMessage({ action: 'refresh-subscription-auth', payload });
+      });
+    });
+    event.waitUntil(Promise.all([refreshPromise, notifyClientsPromise]));
     return;
   }
 
@@ -517,15 +733,44 @@ self.addEventListener('notificationclick', event => {
   }
 
   const logClickPromise = Promise.resolve();;
+  const routeChat = String(data.chat || data.groupId || data.sender || '').trim();
+  let normalizedUrlToOpen = 'https://www.tzmc.co.il/subscribes/';
+  try {
+      normalizedUrlToOpen = new URL(urlToOpen, self.registration.scope).toString();
+  } catch (err) {
+      normalizedUrlToOpen = 'https://www.tzmc.co.il/subscribes/';
+  }
   const openAppPromise = clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clientList => {
       for (const client of clientList) {
           if (client.url.indexOf('tzmc.co.il/subscribes') > -1 && 'focus' in client) {
-              return client.focus().then(focusedClient => {
-                  if (focusedClient) focusedClient.postMessage({ action: 'navigate-route', url: urlToOpen });
-              });
+              const postNavigateMessage = (focusedClient) => {
+                  if (focusedClient) {
+                      focusedClient.postMessage({
+                          action: 'navigate-route',
+                          url: normalizedUrlToOpen,
+                          chat: routeChat || null,
+                          sender: data.sender || null,
+                          messageId: data.messageId || null
+                      });
+                  }
+                  return focusedClient;
+              };
+              if (typeof client.navigate === 'function') {
+                  return client.navigate(normalizedUrlToOpen)
+                      .then((navigatedClient) => {
+                          const clientToFocus = navigatedClient || client;
+                          if (clientToFocus && typeof clientToFocus.focus === 'function') {
+                              return clientToFocus.focus();
+                          }
+                          return client.focus();
+                      })
+                      .then(postNavigateMessage)
+                      .catch(() => client.focus().then(postNavigateMessage));
+              }
+              return client.focus().then(postNavigateMessage);
           }
       }
-      if (clients.openWindow) return clients.openWindow(urlToOpen);
+      if (clients.openWindow) return clients.openWindow(normalizedUrlToOpen);
   });
 
   event.waitUntil(Promise.all([logClickPromise, openAppPromise]));
@@ -533,10 +778,23 @@ self.addEventListener('notificationclick', event => {
 
 self.addEventListener('message', (event) => {
   if (!event.data) return;
+  if (event.data.action === 'register-window-context') {
+    const username = normalizeUsername(event.data.username || event.data.user || '');
+    const persistPromise = persistSwRuntimeContext({ username });
+    if (typeof event.waitUntil === 'function') {
+      event.waitUntil(persistPromise);
+    }
+    return;
+  }
   if (event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();
   }
   if (event.data.action === 'flush-outbox') {
     event.waitUntil(flushOutbox());
   }
+});
+
+self.addEventListener('pushsubscriptionchange', (event) => {
+  const nextSubscription = event && event.newSubscription ? event.newSubscription : null;
+  event.waitUntil(registerSubscriptionAfterChange(nextSubscription));
 });

@@ -26,17 +26,51 @@ window.onerror = function(msg, url, line) {
 const config = window.APP_CONFIG || {};
 const t = (key, vars) => (window.I18N && typeof window.I18N.t === 'function' ? window.I18N.t(key, vars) : key);
 const fetchWithRetry = window.fetchWithRetry ? window.fetchWithRetry : fetch;
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
 
 function updateAppHeight() {
-    const height = window.visualViewport ? window.visualViewport.height : window.innerHeight;
-    document.documentElement.style.setProperty('--app-height', `${height}px`);
+    const vv = window.visualViewport;
+    const height = vv ? vv.height : window.innerHeight;
+    const offsetTop = vv ? Math.max(0, vv.offsetTop || 0) : 0;
+    document.documentElement.style.setProperty('--app-height', `${Math.round(height)}px`);
+    document.documentElement.style.setProperty('--app-viewport-offset-top', `${Math.round(offsetTop)}px`);
+}
+
+function forceIOSViewportReset() {
+    if (!isIOS) return;
+    window.scrollTo(0, 0);
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+    updateAppHeight();
+}
+
+function handleIOSInputFocus(event) {
+    if (!isIOS) return;
+    const target = event && event.target ? event.target : null;
+    if (!target || !(target instanceof HTMLElement)) return;
+    const tagName = target.tagName;
+    const isEditable = tagName === 'INPUT' || tagName === 'TEXTAREA' || target.isContentEditable;
+    if (!isEditable) return;
+
+    forceIOSViewportReset();
+    setTimeout(forceIOSViewportReset, 80);
+    setTimeout(forceIOSViewportReset, 220);
 }
 
 updateAppHeight();
 window.addEventListener('resize', updateAppHeight);
 if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', updateAppHeight);
+    window.visualViewport.addEventListener('scroll', updateAppHeight);
 }
+document.addEventListener('focusin', (event) => {
+    updateAppHeight();
+    handleIOSInputFocus(event);
+});
+document.addEventListener('focusout', () => setTimeout(() => {
+    updateAppHeight();
+    forceIOSViewportReset();
+}, 80));
 
 function updateFooterOffset() {
     const footer = document.querySelector('.chat-footer');
@@ -60,7 +94,6 @@ function updateHeaderOffset() {
     }
 }
 
-const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
 if (isIOS) {
     document.body.classList.add('ios');
 }
@@ -497,13 +530,23 @@ function releaseFocus(modal) {
     }
 }
 
-function showConfirm(message) {
+function showConfirm(message, options = {}) {
     return new Promise((resolve) => {
         if (!confirmModal || !confirmModalConfirm || !confirmModalCancel || !confirmModalMessage) {
             resolve(false);
             return;
         }
+        const originalConfirmLabel = confirmModalConfirm.textContent || 'כן';
+        const originalCancelLabel = confirmModalCancel.textContent || 'לא';
+        const confirmLabel = typeof options.confirmLabel === 'string' && options.confirmLabel.trim()
+            ? options.confirmLabel.trim()
+            : originalConfirmLabel;
+        const cancelLabel = typeof options.cancelLabel === 'string' && options.cancelLabel.trim()
+            ? options.cancelLabel.trim()
+            : originalCancelLabel;
         confirmModalMessage.textContent = message;
+        confirmModalConfirm.textContent = confirmLabel;
+        confirmModalCancel.textContent = cancelLabel;
         const onConfirm = () => {
             cleanup();
             resolve(true);
@@ -515,6 +558,8 @@ function showConfirm(message) {
         const cleanup = () => {
             confirmModalConfirm.removeEventListener('click', onConfirm);
             confirmModalCancel.removeEventListener('click', onCancel);
+            confirmModalConfirm.textContent = originalConfirmLabel;
+            confirmModalCancel.textContent = originalCancelLabel;
             closeModal(confirmModal);
         };
         confirmModalConfirm.addEventListener('click', onConfirm);
@@ -794,6 +839,96 @@ function stripGroupMessagePrefix(text, senderName) {
     return text;
 }
 
+function normalizeCallablePhone(value) {
+    const source = String(value || '').trim().replace(/\s+/g, '');
+    if (!source) return '';
+    if (/^05\d{8}$/.test(source)) return source;
+    if (/^\+9725\d{8}$/.test(source)) return source;
+    if (/^\+97205\d{8}$/.test(source)) return source;
+    return '';
+}
+
+function escapeHtmlAttr(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function linkifyPhoneNumbersInText(text) {
+    const source = String(text || '');
+    if (!source) return source;
+    const phoneRegex = /(^|[^0-9+])(\+97205\d{8}|\+9725\d{8}|05\d{8})(?!\d)/g;
+    return source.replace(phoneRegex, (fullMatch, prefix, phoneMatch) => {
+        const phone = normalizeCallablePhone(phoneMatch);
+        if (!phone) return fullMatch;
+        return `${prefix}<button type="button" class="msg-phone-link" data-phone="${escapeHtmlAttr(phone)}">${phoneMatch}</button>`;
+    });
+}
+
+function linkifyPhoneNumbersInHtml(html) {
+    const value = String(html || '');
+    if (!value) return value;
+    const parts = value.split(/(<[^>]+>)/g);
+    return parts
+        .map((part) => {
+            if (!part || part.startsWith('<')) return part;
+            return linkifyPhoneNumbersInText(part);
+        })
+        .join('');
+}
+
+async function copyTextToClipboard(value) {
+    const text = String(value || '').trim();
+    if (!text) return false;
+    try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+            await navigator.clipboard.writeText(text);
+            return true;
+        }
+    } catch (err) {
+        // fallback below
+    }
+    try {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', 'true');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand('copy');
+        document.body.removeChild(textarea);
+        return copied;
+    } catch (err) {
+        return false;
+    }
+}
+
+async function showPhoneActionDialog(phoneRawValue) {
+    const phone = normalizeCallablePhone(phoneRawValue);
+    if (!phone) {
+        showToast('לא נמצא מספר טלפון תקין.', 'error');
+        return;
+    }
+
+    const shouldCallNow = await showConfirm(
+        `בחר פעולה עבור המספר:\n${phone}`,
+        {
+            confirmLabel: 'חייג עכשיו',
+            cancelLabel: 'העתק מספר'
+        }
+    );
+    if (shouldCallNow) {
+        window.location.href = `tel:${phone}`;
+        return;
+    }
+
+    const copied = await copyTextToClipboard(phone);
+    showToast(copied ? 'המספר הועתק.' : 'לא ניתן להעתיק את המספר.', copied ? 'success' : 'error');
+}
+
 function formatMessageText(text) {
     if (!text) return '';
     let processedText = text;
@@ -820,7 +955,7 @@ function formatMessageText(text) {
 
     // --- 2. STANDARD URL DETECTION ---
     const urlRegex = /(https?:\/\/[^\s]+)/g;
-    return processedText.replace(urlRegex, function(url) {
+    const withLinks = processedText.replace(urlRegex, function(url) {
         const cleanUrl = url.trim();
         const lowerUrl = cleanUrl.toLowerCase();
 
@@ -876,6 +1011,49 @@ function formatMessageText(text) {
         // F. DEFAULT LINK
         return `<a href="${cleanUrl}" target="_blank" class="msg-link-default">${cleanUrl}</a>`;
     });
+    return linkifyPhoneNumbersInHtml(withLinks);
+}
+
+function extractChatIdFromNotificationUrl(rawUrl) {
+    if (!rawUrl || typeof rawUrl !== 'string') return '';
+    try {
+        const parsedUrl = new URL(rawUrl, window.location.href);
+        return String(parsedUrl.searchParams.get('chat') || '').trim();
+    } catch (e) {
+        return '';
+    }
+}
+
+function handleNotificationNavigation(routePayload) {
+    const payload = (routePayload && typeof routePayload === 'object')
+        ? routePayload
+        : { url: routePayload };
+    const targetUrl = typeof payload.url === 'string' ? payload.url : '';
+    const chatFromUrl = extractChatIdFromNotificationUrl(targetUrl);
+    const fallbackChat = String(payload.chat || payload.sender || '').trim();
+    const chatTarget = chatFromUrl || fallbackChat;
+
+    if (!chatTarget) return false;
+    const knownUser = localStorage.getItem('username');
+    if (!knownUser) return false;
+
+    try {
+        if (targetUrl) {
+            const parsedUrl = new URL(targetUrl, window.location.href);
+            const chatParam = String(parsedUrl.searchParams.get('chat') || '').trim();
+            if (chatParam) {
+                const currentUrl = new URL(window.location.href);
+                currentUrl.searchParams.set('chat', chatParam);
+                window.history.replaceState({}, '', currentUrl.toString());
+            }
+        }
+    } catch (e) {
+        // Ignore URL parse failures and continue with chat-open fallback.
+    }
+
+    showChatRoom(chatTarget);
+    loadAndGroupHistory();
+    return true;
 }
 
 // --- INIT ---
@@ -934,10 +1112,16 @@ window.addEventListener('load', async () => {
                 if (event.data && event.data.action === 'outbox-updated') {
                     loadAndGroupHistory();
                 }
+                if (event.data && event.data.action === 'refresh-subscription-auth') {
+                    verifyAndReactivate({ force: true, reason: 'push-refresh' });
+                }
                 if (event.data && event.data.action === 'navigate-route') {
                     console.log("iOS Routing via SW Message:", event.data.url);
-                    // This changes the page while keeping the PWA wrapper active
-                    window.location.href = event.data.url;
+                    const handledInApp = handleNotificationNavigation(event.data);
+                    if (!handledInApp && event.data.url) {
+                        // Fallback: hard navigate when in-app route update isn't possible.
+                        window.location.href = event.data.url;
+                    }
                 }
                 if (event.data && event.data.action === 'group-update') {
                     const record = event.data.record || event.data;
@@ -957,6 +1141,7 @@ window.addEventListener('load', async () => {
             const urlParams = new URLSearchParams(window.location.search);
             const userParam = urlParams.get('user');
             if(userParam) localStorage.setItem('username', userParam);
+            postServiceWorkerPushContext({ username: userParam || localStorage.getItem('username') || '' });
             
         } catch (e) { console.error("SW Error:", e); }
     }
@@ -987,6 +1172,13 @@ window.addEventListener('load', async () => {
         });
         messagesArea.addEventListener('click', (event) => {
             const target = event.target;
+            const phoneTarget = target && target.closest ? target.closest('.msg-phone-link') : null;
+            if (phoneTarget && phoneTarget.dataset && phoneTarget.dataset.phone) {
+                event.preventDefault();
+                event.stopPropagation();
+                showPhoneActionDialog(phoneTarget.dataset.phone);
+                return;
+            }
             if (target && target.classList && target.classList.contains('msg-image')) {
                 const url = target.dataset.openUrl || target.dataset.full || target.src;
                 if (url) window.open(url, '_blank');
@@ -1006,6 +1198,7 @@ window.addEventListener('load', async () => {
     chatInput.addEventListener('focus', function() {
         // Small delay to allow keyboard to fully open
         setTimeout(() => {
+            forceIOSViewportReset();
             if (shouldAutoScroll) {
                 scrollToBottom();
             }
@@ -1026,6 +1219,7 @@ window.addEventListener('load', async () => {
     }
     if (savedUser || userParam) {
         currentUserContext = savedUser || userParam;
+        postServiceWorkerPushContext({ username: currentUserContext });
         
         loadLocalContacts();
         loadLocalGroups();
@@ -1338,14 +1532,9 @@ function showChatRoom(senderName) {
             callBtn.href = '#';
             callBtn.style.display = 'none';
         } else {
-            // 1. Check if the senderName looks like a phone number 
-            // (removes non-digits to check length)
-            const cleanNumber = senderName.replace(/[^0-9]/g, '');
-
-            // 2. Toggle Visibility
-            // If it has at least 3 digits and is NOT a system user, show the button
-            if (cleanNumber.length > 3 && !isSystemSenderName(senderName)) {
-                callBtn.href = `tel:${senderName}`; // Set the phone number
+            const callablePhone = normalizeCallablePhone(senderName);
+            if (callablePhone && !isSystemSenderName(senderName)) {
+                callBtn.href = `tel:${callablePhone}`;
                 callBtn.style.display = 'block';    // Show the button
             } else {
                 callBtn.href = '#';
@@ -2950,16 +3139,15 @@ function scrollToLastReadMessage(chatMsgs, firstUnreadIndex = -1) {
     }
     if (unreadIndex < 0) return false;
     const targetIndex = Math.max(unreadIndex - 1, 0);
-    let targetMsg = chatMsgs[targetIndex];
+    let targetMsg = chatMsgs[unreadIndex];
     let targetEl = document.getElementById(getMessageDomId(targetMsg));
     if (!targetEl) {
-        targetMsg = chatMsgs[unreadIndex];
+        targetMsg = chatMsgs[targetIndex];
         targetEl = document.getElementById(getMessageDomId(targetMsg));
     }
     if (!targetEl) return false;
-    const padding = 16;
-    const desiredTop = targetEl.offsetTop + targetEl.offsetHeight - area.clientHeight + padding;
-    area.scrollTop = Math.max(0, desiredTop);
+    const topPadding = 20;
+    area.scrollTop = Math.max(0, targetEl.offsetTop - topPadding);
     return true;
 }
 
@@ -3329,6 +3517,35 @@ function requestOutboxFlush() {
     }
 }
 
+function postServiceWorkerPushContext(options = {}) {
+    if (!('serviceWorker' in navigator)) return;
+    const fallbackUser = localStorage.getItem('username') || currentUserContext || '';
+    const username = String(options.username || fallbackUser || '').trim().toLowerCase();
+    if (!username) return;
+
+    const navigatorWithStandalone = navigator;
+    const payload = {
+        action: 'register-window-context',
+        username,
+        subscriptionUrl: SUBSCRIPTION_URL,
+        vapidPublicKey: VAPID_PUBLIC_KEY,
+        standalone: Boolean(
+            window.matchMedia && window.matchMedia('(display-mode: standalone)').matches
+        ) || Boolean(navigatorWithStandalone.standalone),
+        url: window.location.href,
+        at: Date.now()
+    };
+
+    navigator.serviceWorker.ready
+        .then((registration) => {
+            const worker = registration.active || navigator.serviceWorker.controller;
+            if (worker && typeof worker.postMessage === 'function') {
+                worker.postMessage(payload);
+            }
+        })
+        .catch(() => undefined);
+}
+
 
 // --- BADGE MANAGEMENT ---
 function clearAppBadge() {
@@ -3422,6 +3639,7 @@ document.getElementById('subscribeButton').addEventListener('click', async () =>
         scheduleStatusCheck(user, sub);
         localStorage.setItem('username', user);
         currentUserContext = user;
+        postServiceWorkerPushContext({ username: user });
         showContacts();
         fetchUsersFromSheet();
     } catch (e) {
@@ -3735,48 +3953,74 @@ function addLongPressEvent(element, callback) {
 // ==========================================================
 // [UPDATED] REACTIVATE (Handles PC vs Mobile)
 // ==========================================================
-async function verifyAndReactivate() {
+async function verifyAndReactivate(options = {}) {
     let user = localStorage.getItem('username');
-    if (!user) return; 
+    if (!user) return false;
     user = user.toLowerCase();
+    const force = Boolean(options.force);
+    const reason = (typeof options.reason === 'string' && options.reason.trim()) || 'auto-reactivate';
     
     if ('serviceWorker' in navigator) {
         try {
             const reg = await navigator.serviceWorker.ready;
             let sub = await reg.pushManager.getSubscription();
+            const hasValidSubscriptionKeys = Boolean(
+                sub?.toJSON()?.keys?.['p256dh'] && sub?.toJSON()?.keys?.['auth']
+            );
+            const shouldRefreshSubscription = force || !sub || !hasValidSubscriptionKeys;
+            if (!shouldRefreshSubscription) {
+                return false;
+            }
+
+            if (sub) {
+                try {
+                    await sub.unsubscribe();
+                } catch (e) {
+                    // Continue with subscribe attempt even if unsubscribe failed.
+                }
+                sub = null;
+            }
 
             if (!sub) {
-                console.log("[Auto-Fix] User logged in but Push missing. Reactivating...");
+                console.log("[Auto-Fix] Refreshing push subscription...");
                 sub = await reg.pushManager.subscribe({
                     userVisibleOnly: true,
                     applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
                 });
-
-                const deviceType = getDeviceType();
-                
-                let payload = {
-                    username: user,
-                    subscription: sub,
-                    action: 'reactivate_silent',
-                    deviceType: deviceType
-                };
-
-                if (deviceType === 'PC') {
-                    payload.subscriptionPC = sub;
-                }
-
-                await fetchWithRetry(SUBSCRIPTION_URL, {
-                    method: 'POST',
-                    mode: 'no-cors',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                }, { timeoutMs: 10000, retries: 2 });
-                console.log("[Auto-Fix] Reactivation sent.");
             }
+            if (!sub) {
+                return false;
+            }
+
+            const deviceType = getDeviceType();
+            
+            let payload = {
+                username: user,
+                subscription: sub,
+                action: 'reactivate_silent',
+                reason: reason,
+                deviceType: deviceType
+            };
+
+            if (deviceType === 'PC') {
+                payload.subscriptionPC = sub;
+            }
+
+            await fetchWithRetry(SUBSCRIPTION_URL, {
+                method: 'POST',
+                mode: 'no-cors',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            }, { timeoutMs: 10000, retries: 2 });
+            postServiceWorkerPushContext({ username: user });
+            console.log(`[Auto-Fix] Reactivation sent (${reason}).`);
+            return true;
         } catch (e) {
             console.error("[Auto-Fix] Failed:", e);
+            return false;
         }
     }
+    return false;
 }
 // --- CALL USER FUNCTION ---
 function callUser(event, phoneNumber) {
@@ -3790,8 +4034,8 @@ function callUser(event, phoneNumber) {
 
     // 3. Check if it's a valid number (basic check)
     // Assuming 'phoneNumber' is the username like '054...'
-    const normalized = normalizePhoneInput(phoneNumber);
-    if (!normalized || !isValidPhoneNumber(normalized)) {
+    const normalized = normalizeCallablePhone(phoneNumber);
+    if (!normalized) {
         showToast(t('call_invalid_number'), 'error');
         return;
     }
