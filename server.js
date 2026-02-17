@@ -198,11 +198,24 @@ const AUTH_REFRESH_CONTACT_DISCOVERY_CONCURRENCY = 8;
 const AUTH_REFRESH_CONTACT_DISCOVERY_MAX_SEEDS = 120;
 const AUTH_REFRESH_FAILURE_DETAILS_LIMIT = 80;
 const AUTH_REFRESH_STALE_CLEANUP_BATCH_SIZE = 40;
+const AUTH_REFRESH_SCHEDULER_ENABLED = String(process.env.AUTH_REFRESH_SCHEDULER_ENABLED || 'true').trim().toLowerCase() !== 'false';
+const AUTH_REFRESH_SCHEDULER_INTERVAL_MS = Math.max(
+    2 * 60 * 1000,
+    Number(process.env.AUTH_REFRESH_SCHEDULER_INTERVAL_MS) || 8 * 60 * 1000
+);
+const AUTH_REFRESH_SCHEDULER_INITIAL_DELAY_MS = Math.max(
+    5000,
+    Number(process.env.AUTH_REFRESH_SCHEDULER_INITIAL_DELAY_MS) || 45000
+);
+const AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE = String(
+    process.env.AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE || ''
+).trim().toLowerCase() === 'true';
 let subscriptionAuthRefreshState = {
     running: false,
     lastRunAt: 0,
     lastResult: null
 };
+let authRefreshSchedulerStarted = false;
 
 function buildSubscriptionCacheKey(usernames) {
     const values = Array.isArray(usernames) ? usernames : [usernames];
@@ -844,6 +857,50 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
     return resultSummary;
 }
 
+function startSubscriptionAuthRefreshScheduler() {
+    if (authRefreshSchedulerStarted) {
+        return;
+    }
+    authRefreshSchedulerStarted = true;
+
+    if (!AUTH_REFRESH_SCHEDULER_ENABLED) {
+        console.log('[AUTH REFRESH] Scheduler disabled by AUTH_REFRESH_SCHEDULER_ENABLED=false.');
+        return;
+    }
+
+    const runScheduledRefresh = () => {
+        runSubscriptionAuthRefreshJob({
+            requestId: generateMessageId(),
+            reason: 'scheduled-keepalive',
+            initiatedBy: 'scheduler',
+            forceResubscribe: AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE
+        })
+            .then((summary) => {
+                if (!summary || summary.status === 'running') {
+                    return;
+                }
+                console.log(
+                    `[AUTH REFRESH] Scheduler run ${summary.requestId || 'n/a'} | targeted=${summary.targeted || 0} success=${summary.success || 0} failed=${summary.failed || 0}`
+                );
+            })
+            .catch((error) => {
+                console.error('[AUTH REFRESH] Scheduler run failed:', error && error.message ? error.message : error);
+            });
+    };
+
+    setTimeout(() => {
+        runScheduledRefresh();
+        setInterval(
+            runScheduledRefresh,
+            AUTH_REFRESH_SCHEDULER_INTERVAL_MS
+        );
+    }, AUTH_REFRESH_SCHEDULER_INITIAL_DELAY_MS);
+
+    console.log(
+        `[AUTH REFRESH] Scheduler armed | initialDelay=${AUTH_REFRESH_SCHEDULER_INITIAL_DELAY_MS}ms | interval=${AUTH_REFRESH_SCHEDULER_INTERVAL_MS}ms | forceResubscribe=${AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE}`
+    );
+}
+
 function upsertGroup(payload = {}) {
     const groupId = payload.groupId;
     const groupName = typeof payload.groupName === 'string' ? payload.groupName.trim() : payload.groupName;
@@ -1254,6 +1311,25 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     if (!rawSubscriptions || rawSubscriptions.length === 0) {
         // Force refresh once to avoid stale cache windows (common after iOS resubscribe).
         rawSubscriptions = await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true });
+    }
+    if (!rawSubscriptions || rawSubscriptions.length === 0) {
+        // Some script deployments occasionally return an empty filtered lookup even though
+        // valid endpoint rows still exist in the full subscription feed.
+        const fallbackDiscovery = await getAllSubscriptionsForAuthRefresh({ usernames: targetUsersArray });
+        const discoveredSubscriptions = Array.isArray(fallbackDiscovery.subscriptions)
+            ? fallbackDiscovery.subscriptions
+            : [];
+        const targetUsersSet = new Set(targetUsersArray.map(normalizeUserKey).filter(Boolean));
+        rawSubscriptions = discoveredSubscriptions.filter((subscription) => {
+            const userKey = normalizeUserKey(subscription && (subscription.username || subscription.user));
+            return Boolean(userKey && targetUsersSet.has(userKey));
+        });
+        if (rawSubscriptions.length) {
+            const cacheKey = buildSubscriptionCacheKey(targetUsersArray);
+            if (cacheKey) {
+                subscriptionCache.set(cacheKey, { at: Date.now(), subscriptions: rawSubscriptions });
+            }
+        }
     }
     const recipientAuthJsonForLog = buildMobileSubscriptionAuthJsonForLog(
         targetUsersArray.join(','),
@@ -1998,6 +2074,7 @@ async function checkOutgoingQueue() {
 
 // Start the Timer (10,000 ms = 10 seconds)
 setInterval(checkOutgoingQueue, 10000);
+startSubscriptionAuthRefreshScheduler();
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

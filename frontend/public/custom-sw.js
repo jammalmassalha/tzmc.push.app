@@ -10,6 +10,44 @@ const SW_SUBSCRIPTION_CONTEXT_CACHE = 'tzmc-sw-subscription-context-v1';
 const SW_SUBSCRIPTION_CONTEXT_KEY = new URL('./__subscription_context__', self.registration.scope).toString();
 const clientContextById = new Map();
 
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function fetchWithRetry(url, options = {}, retryOptions = {}) {
+  const retries = Number.isFinite(retryOptions.retries) ? retryOptions.retries : 2;
+  const timeoutMs = Number.isFinite(retryOptions.timeoutMs) ? retryOptions.timeoutMs : 15000;
+  const backoffMs = Number.isFinite(retryOptions.backoffMs) ? retryOptions.backoffMs : 700;
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller ? controller.signal : undefined
+      });
+      // no-cors POST returns opaque responses (status=0). Network success is enough here.
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries) {
+        await sleep(backoffMs * Math.pow(2, attempt));
+        continue;
+      }
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    }
+  }
+
+  throw lastError || new Error('Network request failed');
+}
+
 function parsePushPayload(event) {
   if (!event.data) return {};
 
@@ -242,12 +280,12 @@ async function registerSubscriptionFromStoredContext(newSubscription = null, rea
       registerPayload.subscriptionMobile = subscription;
     }
 
-    await fetch(subscriptionUrl, {
+    await fetchWithRetry(subscriptionUrl, {
       method: 'POST',
       mode: 'no-cors',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(registerPayload)
-    });
+    }, { timeoutMs: 15000, retries: 2, backoffMs: 700 });
 
     await persistSubscriptionContext({
       username,
@@ -310,12 +348,12 @@ async function refreshSubscriptionAuthInBackground(payload) {
       registerPayload.subscriptionMobile = subscription;
     }
 
-    await fetch(subscriptionUrl, {
+    await fetchWithRetry(subscriptionUrl, {
       method: 'POST',
       mode: 'no-cors',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(registerPayload)
-    });
+    }, { timeoutMs: 15000, retries: 2, backoffMs: 700 });
     return true;
   } catch (_) {
     return false;
