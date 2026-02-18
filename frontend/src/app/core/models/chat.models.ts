@@ -25,6 +25,14 @@ export interface ChatGroup {
   type: GroupType;
 }
 
+export interface MessageReference {
+  messageId: string;
+  sender: string;
+  senderDisplayName?: string;
+  body?: string;
+  imageUrl?: string | null;
+}
+
 export interface ChatMessage {
   id: string;
   messageId: string;
@@ -43,6 +51,10 @@ export interface ChatMessage {
   reactions?: MessageReaction[];
   editedAt?: number | null;
   deletedAt?: number | null;
+  replyTo?: MessageReference | null;
+  forwarded?: boolean;
+  forwardedFrom?: string | null;
+  forwardedFromName?: string | null;
 }
 
 export interface ChatListItem {
@@ -79,6 +91,14 @@ export interface IncomingServerMessage {
   groupUpdatedAt?: number | null;
   groupType?: GroupType | null;
   groupSenderName?: string | null;
+  replyToMessageId?: string;
+  replyToSender?: string;
+  replyToSenderName?: string;
+  replyToBody?: string;
+  replyToImageUrl?: string | null;
+  forwarded?: boolean;
+  forwardedFrom?: string;
+  forwardedFromName?: string;
 }
 
 export interface ReplyPayload {
@@ -95,6 +115,14 @@ export interface ReplyPayload {
   groupUpdatedAt?: number;
   groupType?: GroupType;
   groupSenderName?: string;
+  replyToMessageId?: string;
+  replyToSender?: string;
+  replyToSenderName?: string;
+  replyToBody?: string;
+  replyToImageUrl?: string | null;
+  forwarded?: boolean;
+  forwardedFrom?: string;
+  forwardedFromName?: string;
 }
 
 export interface GroupUpdatePayload {

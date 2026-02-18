@@ -1,0 +1,74 @@
+.full-width {
+  width: 100%;
+}
+
+.chat-list {
+  max-height: 360px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-row {
+  width: 100%;
+  border-radius: 10px;
+  padding: 10px 12px;
+  justify-content: flex-start;
+  text-align: right;
+}
+
+.chat-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.chat-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.name {
+  font-weight: 600;
+  color: #1d2437;
+}
+
+.group-badge,
+.current-badge {
+  min-height: 18px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.group-badge {
+  background: rgba(43, 77, 174, 0.12);
+  color: #2b4dae;
+}
+
+.current-badge {
+  background: rgba(36, 123, 88, 0.14);
+  color: #1f6d4f;
+}
+
+.info {
+  font-size: 12px;
+  color: #566077;
+}
+
+.meta {
+  font-size: 11px;
+  color: #667084;
+}
+
+.empty-state {
+  padding: 18px;
+  text-align: center;
+  opacity: 0.8;
+}

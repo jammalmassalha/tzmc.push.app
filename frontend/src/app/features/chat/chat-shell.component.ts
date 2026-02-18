@@ -28,7 +28,8 @@ import {
   ChatGroup,
   ChatListItem,
   ChatMessage,
-  DeliveryStatus
+  DeliveryStatus,
+  MessageReference
 } from '../../core/models/chat.models';
 import {
   ActivatedChatMeta,
@@ -38,6 +39,7 @@ import {
 import { CreateGroupDialogComponent } from './dialogs/create-group-dialog.component';
 import { NewChatDialogComponent } from './dialogs/new-chat-dialog.component';
 import { ConfirmMessageActionDialogComponent } from './dialogs/confirm-message-action-dialog.component';
+import { ForwardMessageDialogComponent } from './dialogs/forward-message-dialog.component';
 
 type MessageRenderPart =
   | { kind: 'text'; text: string }
@@ -192,6 +194,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly reactionTargetMessageId = signal<string | null>(null);
   readonly messageActionTarget = signal<ChatMessage | null>(null);
   readonly editingMessageTarget = signal<ChatMessage | null>(null);
+  readonly replyingMessageTarget = signal<ChatMessage | null>(null);
   readonly pendingMessageActionIds = signal<Set<string>>(new Set<string>());
   readonly reactionDetailsPreview = signal<ReactionDetailsPreview | null>(null);
   readonly phoneActionTarget = signal<{ display: string; phone: string } | null>(null);
@@ -361,6 +364,29 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     }
   });
 
+  private readonly replyingMessageGuardEffect = effect(() => {
+    const replying = this.replyingMessageTarget();
+    if (!replying) return;
+
+    const activeChatId = this.store.activeChatId();
+    if (!activeChatId || activeChatId !== replying.chatId) {
+      this.replyingMessageTarget.set(null);
+      return;
+    }
+
+    const latest = this.store
+      .activeMessages()
+      .find((message) => message.messageId === replying.messageId);
+    if (!latest || latest.deletedAt) {
+      this.replyingMessageTarget.set(null);
+      return;
+    }
+
+    if (latest !== replying) {
+      this.replyingMessageTarget.set(latest);
+    }
+  });
+
   constructor(
     readonly store: ChatStoreService,
     private readonly dialog: MatDialog,
@@ -486,13 +512,21 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       return;
     }
 
+    const replyingTarget = this.replyingMessageTarget();
+    const replyReference = replyingTarget ? this.buildReplyReference(replyingTarget) : null;
     this.messageControl.setValue('');
+    if (replyingTarget) {
+      this.replyingMessageTarget.set(null);
+    }
     try {
-      await this.store.sendTextMessage(content);
+      await this.store.sendTextMessage(content, replyReference ? { replyTo: replyReference } : {});
     } catch (error) {
       const message = error instanceof Error ? error.message : 'שליחת ההודעה נכשלה';
       this.snackBar.open(message, 'סגור', { duration: 3000 });
       this.messageControl.setValue(content);
+      if (replyingTarget) {
+        this.replyingMessageTarget.set(replyingTarget);
+      }
     }
   }
 
@@ -1167,6 +1201,12 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     this.messageActionTarget.set(message);
   }
 
+  canOpenMessageActions(message: ChatMessage): boolean {
+    if (!message.messageId) return false;
+    if (this.canManageOutgoingMessage(message)) return true;
+    return this.canReplyToMessage(message) || this.canForwardMessage(message);
+  }
+
   canManageOutgoingMessage(message: ChatMessage): boolean {
     if (message.direction !== 'outgoing') return false;
     if (!message.messageId) return false;
@@ -1188,6 +1228,16 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     return Boolean(String(message.body || '').trim());
   }
 
+  canReplyToMessage(message: ChatMessage): boolean {
+    if (!message.messageId || message.deletedAt) return false;
+    return Boolean(String(message.body || '').trim() || message.imageUrl);
+  }
+
+  canForwardMessage(message: ChatMessage): boolean {
+    if (!message.messageId || message.deletedAt) return false;
+    return Boolean(String(message.body || '').trim() || message.imageUrl);
+  }
+
   isEditingMessage(message: ChatMessage): boolean {
     return this.editingMessageTarget()?.messageId === message.messageId;
   }
@@ -1198,6 +1248,56 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   isMessageDeleted(message: ChatMessage): boolean {
     return Boolean(message.deletedAt);
+  }
+
+  isMessageForwarded(message: ChatMessage): boolean {
+    return Boolean(message.forwarded);
+  }
+
+  replyAuthorLabel(reference: MessageReference): string {
+    const senderKey = this.normalizeUsername(reference.sender);
+    if (senderKey && senderKey === this.normalizeUsername(this.store.currentUser() || '')) {
+      return 'אתה';
+    }
+
+    const senderName = String(reference.senderDisplayName || '').trim();
+    if (senderName) {
+      return senderName;
+    }
+
+    const fromContacts = this.store.contacts().find((contact) => contact.username === senderKey);
+    if (fromContacts?.displayName) {
+      return fromContacts.displayName;
+    }
+
+    return senderKey || 'הודעה';
+  }
+
+  replyPreviewLabel(reference: MessageReference): string {
+    if (reference.imageUrl) {
+      return '📷 תמונה';
+    }
+    const body = String(reference.body || '').trim();
+    if (!body) {
+      return 'הודעה';
+    }
+    return this.clampPreview(body, 90);
+  }
+
+  composerReplyTitle(message: ChatMessage): string {
+    const reference = this.buildReplyReference(message);
+    if (!reference) {
+      return 'תגובה';
+    }
+    return `תגובה אל ${this.replyAuthorLabel(reference)}`;
+  }
+
+  composerReplyPreview(message: ChatMessage): string {
+    const reference = this.buildReplyReference(message);
+    if (!reference) {
+      return '';
+    }
+    return this.replyPreviewLabel(reference);
   }
 
   isMessageActionSyncing(message: ChatMessage): boolean {
@@ -1214,12 +1314,76 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (this.isMessageActionPendingById(target.messageId)) {
       return;
     }
+    this.replyingMessageTarget.set(null);
     this.editingMessageTarget.set(target);
     this.messageControl.setValue(target.body || '');
   }
 
   cancelEditingMessage(): void {
     this.clearComposerEditState();
+  }
+
+  startReplyToSelectedMessage(): void {
+    const target = this.messageActionTarget();
+    if (!target || !this.canReplyToMessage(target)) {
+      this.replyingMessageTarget.set(null);
+      return;
+    }
+    this.editingMessageTarget.set(null);
+    this.replyingMessageTarget.set(target);
+    this.messageActionTarget.set(null);
+  }
+
+  cancelReplyingMessage(): void {
+    this.replyingMessageTarget.set(null);
+    this.messageActionTarget.set(null);
+  }
+
+  async forwardSelectedMessage(): Promise<void> {
+    const target = this.messageActionTarget();
+    if (!target || !this.canForwardMessage(target)) {
+      return;
+    }
+    const targetMessageId = target.messageId;
+    if (this.isMessageActionPendingById(targetMessageId)) {
+      return;
+    }
+
+    const currentUser = this.normalizeUsername(this.store.currentUser() || '');
+    const destinationChats = this.store
+      .chatItems()
+      .filter((chat) => chat.id !== currentUser && this.store.canSendToChat(chat.id));
+    if (!destinationChats.length) {
+      this.snackBar.open('לא נמצאו צ׳אטים זמינים להעברה.', 'סגור', { duration: 2600 });
+      return;
+    }
+
+    const dialogRef = this.dialog.open(ForwardMessageDialogComponent, {
+      width: '420px',
+      data: {
+        chats: destinationChats,
+        currentChatId: this.store.activeChatId()
+      }
+    });
+    const destinationChatId = await firstValueFrom(dialogRef.afterClosed());
+    if (!destinationChatId) {
+      return;
+    }
+
+    this.setMessageActionPending(targetMessageId, true);
+    try {
+      await this.store.forwardMessageToChat(destinationChatId, target);
+      this.messageActionTarget.set(null);
+      const destinationTitle =
+        this.store.chatItems().find((chat) => chat.id === this.normalizeUsername(destinationChatId))?.title
+        ?? destinationChatId;
+      this.snackBar.open(`ההודעה הועברה אל ${destinationTitle}.`, 'סגור', { duration: 2600 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'העברת ההודעה נכשלה';
+      this.snackBar.open(message, 'סגור', { duration: 3200 });
+    } finally {
+      this.setMessageActionPending(targetMessageId, false);
+    }
   }
 
   async deleteSelectedMessageForEveryone(): Promise<void> {
@@ -1680,6 +1844,37 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     return '';
   }
 
+  private buildReplyReference(message: ChatMessage): MessageReference | null {
+    const messageId = String(message.messageId || '').trim();
+    const sender = this.normalizeUsername(message.sender || '');
+    if (!messageId || !sender) {
+      return null;
+    }
+
+    const body = String(message.body || '');
+    const imageUrl = message.imageUrl ?? null;
+    if (!body.trim() && !imageUrl) {
+      return null;
+    }
+
+    const senderDisplayName = String(message.senderDisplayName || '').trim();
+    return {
+      messageId,
+      sender,
+      senderDisplayName: senderDisplayName || undefined,
+      body,
+      imageUrl
+    };
+  }
+
+  private clampPreview(value: string, maxLength = 90): string {
+    const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+    if (normalized.length <= maxLength) {
+      return normalized;
+    }
+    return `${normalized.slice(0, maxLength)}…`;
+  }
+
   private async copyTextToClipboard(text: string): Promise<boolean> {
     const value = String(text || '').trim();
     if (!value) return false;
@@ -1766,6 +1961,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   private clearComposerEditState(options: { clearComposer?: boolean } = {}): void {
     this.editingMessageTarget.set(null);
+    this.replyingMessageTarget.set(null);
     this.messageActionTarget.set(null);
     if (options.clearComposer !== false) {
       this.messageControl.setValue('');

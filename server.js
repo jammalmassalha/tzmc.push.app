@@ -2509,7 +2509,15 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
             groupCreatedBy,
             groupUpdatedAt,
             groupSenderName,
-            membersToNotify
+            membersToNotify,
+            replyToMessageId,
+            replyToSender,
+            replyToSenderName,
+            replyToBody,
+            replyToImageUrl,
+            forwarded,
+            forwardedFrom,
+            forwardedFromName
         } = req.body;
         console.log(`[REPLY] From: ${user} | To: ${originalSender}`);
 
@@ -2551,6 +2559,38 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
         if (!messageContent && imageUrl) {
             messageContent = `[Image Sent]: ${imageUrl}`;
         }
+        const normalizedReplyToMessageId = String(replyToMessageId || '').trim();
+        const normalizedReplyToSender = normalizeUserKey(replyToSender || '');
+        const normalizedReplyToSenderName = String(replyToSenderName || '').trim();
+        const normalizedReplyToBody = typeof replyToBody === 'string' ? replyToBody : '';
+        const normalizedReplyToImageUrl = String(replyToImageUrl || '').trim();
+        const hasReplyContext = Boolean(
+            normalizedReplyToMessageId &&
+            normalizedReplyToSender &&
+            (normalizedReplyToBody.trim() || normalizedReplyToImageUrl)
+        );
+        const normalizedForwarded = parseBooleanInput(forwarded, false);
+        const normalizedForwardedFrom = normalizeUserKey(forwardedFrom || '');
+        const normalizedForwardedFromName = String(forwardedFromName || '').trim();
+        const messageMetadata = {};
+        if (hasReplyContext) {
+            messageMetadata.replyToMessageId = normalizedReplyToMessageId;
+            messageMetadata.replyToSender = normalizedReplyToSender;
+            messageMetadata.replyToBody = normalizedReplyToBody;
+            messageMetadata.replyToImageUrl = normalizedReplyToImageUrl || null;
+            if (normalizedReplyToSenderName) {
+                messageMetadata.replyToSenderName = normalizedReplyToSenderName;
+            }
+        }
+        if (normalizedForwarded) {
+            messageMetadata.forwarded = true;
+            if (normalizedForwardedFrom) {
+                messageMetadata.forwardedFrom = normalizedForwardedFrom;
+            }
+            if (normalizedForwardedFromName) {
+                messageMetadata.forwardedFromName = normalizedForwardedFromName;
+            }
+        }
 
         // ======================================================
         // [NEW] SAVE TO GOOGLE SHEET "Replay"
@@ -2572,15 +2612,8 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
         const normalizedGroupName = (typeof groupName === 'string') ? groupName.trim() : groupName;
         const notificationTitle = isGroup ? (normalizedGroupName || 'Group message') : `New message from ${senderLabel}`;
         const shortText = reply || (imageUrl ? 'Sent an image' : 'New Message');
-        const notificationData = {
-            messageId,
-            title: notificationTitle,
-            body: {
-                shortText: isGroup ? `${senderLabel}: ${shortText}` : shortText,
-                longText: reply
-            },
-            image: imageUrl,
-            data: isGroup ? {
+        const notificationExtraData = {
+            ...(isGroup ? {
                 groupId,
                 groupName: normalizedGroupName,
                 groupMembers,
@@ -2589,7 +2622,18 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
                 groupType: groupRecord ? groupRecord.type : normalizeGroupType(req.body.groupType || 'group'),
                 groupMessageText: shortText,
                 groupSenderName: senderLabel
-            } : undefined
+            } : {}),
+            ...messageMetadata
+        };
+        const notificationData = {
+            messageId,
+            title: notificationTitle,
+            body: {
+                shortText: isGroup ? `${senderLabel}: ${shortText}` : shortText,
+                longText: reply
+            },
+            image: imageUrl,
+            data: Object.keys(notificationExtraData).length ? notificationExtraData : undefined
         };
 
         // [EXISTING] SAVE TO POLLING QUEUE
@@ -2605,7 +2649,8 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
             groupCreatedBy: groupCreatedBy || null,
             groupUpdatedAt: groupUpdatedAt || null,
             groupType: groupRecord ? groupRecord.type : normalizeGroupType(req.body.groupType || 'group'),
-            groupSenderName: senderLabel
+            groupSenderName: senderLabel,
+            ...messageMetadata
         };
         addToQueue(targetToNotify, pollingMessage);
 

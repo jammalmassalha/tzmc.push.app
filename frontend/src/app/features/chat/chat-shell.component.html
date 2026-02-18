@@ -194,7 +194,7 @@
                   <div class="message-sender">{{ message.senderDisplayName || message.sender }}</div>
                 }
 
-                @if (canManageOutgoingMessage(message)) {
+                @if (canOpenMessageActions(message)) {
                   <div class="message-actions">
                     <button
                       type="button"
@@ -210,6 +210,20 @@
                         <mat-icon>more_horiz</mat-icon>
                       }
                     </button>
+                  </div>
+                }
+
+                @if (isMessageForwarded(message)) {
+                  <div class="message-forwarded-label">
+                    <mat-icon>forward</mat-icon>
+                    <span>הועברה</span>
+                  </div>
+                }
+
+                @if (message.replyTo; as replyReference) {
+                  <div class="message-reply-quote">
+                    <span class="message-reply-author">{{ replyAuthorLabel(replyReference) }}</span>
+                    <span class="message-reply-preview">{{ replyPreviewLabel(replyReference) }}</span>
                   </div>
                 }
 
@@ -334,6 +348,20 @@
               <mat-icon>close</mat-icon>
             </button>
           </div>
+        } @else if (replyingMessageTarget(); as replyingMessage) {
+          <div class="composer-reply-banner">
+            <div class="composer-reply-text">
+              <span class="composer-reply-title">{{ composerReplyTitle(replyingMessage) }}</span>
+              <span class="composer-reply-preview">{{ composerReplyPreview(replyingMessage) }}</span>
+            </div>
+            <button
+              type="button"
+              class="composer-reply-cancel"
+              (click)="cancelReplyingMessage()"
+              aria-label="בטל תגובה">
+              <mat-icon>close</mat-icon>
+            </button>
+          </div>
         }
 
         <form class="composer" (submit)="handleComposerSubmit($event)" novalidate>
@@ -395,27 +423,54 @@
               <button
                 mat-menu-item
                 type="button"
-                [disabled]="!canEditOutgoingMessage(targetMessage) || isMessageActionPending(targetMessage)"
-                (click)="startEditingSelectedMessage()">
+                [disabled]="!canReplyToMessage(targetMessage) || isMessageActionPending(targetMessage)"
+                (click)="startReplyToSelectedMessage()">
                 @if (isMessageActionPending(targetMessage)) {
                   <mat-spinner class="message-action-menu-spinner" diameter="16"></mat-spinner>
                 } @else {
-                  <mat-icon>edit</mat-icon>
+                  <mat-icon>reply</mat-icon>
                 }
-                <span>ערוך</span>
+                <span>השב</span>
               </button>
               <button
                 mat-menu-item
                 type="button"
-                [disabled]="isMessageActionPending(targetMessage)"
-                (click)="deleteSelectedMessageForEveryone()">
+                [disabled]="!canForwardMessage(targetMessage) || isMessageActionPending(targetMessage)"
+                (click)="forwardSelectedMessage()">
                 @if (isMessageActionPending(targetMessage)) {
                   <mat-spinner class="message-action-menu-spinner" diameter="16"></mat-spinner>
                 } @else {
-                  <mat-icon>delete</mat-icon>
+                  <mat-icon>forward</mat-icon>
                 }
-                <span>מחק אצל כולם</span>
+                <span>העבר</span>
               </button>
+
+              @if (canManageOutgoingMessage(targetMessage)) {
+                <button
+                  mat-menu-item
+                  type="button"
+                  [disabled]="!canEditOutgoingMessage(targetMessage) || isMessageActionPending(targetMessage)"
+                  (click)="startEditingSelectedMessage()">
+                  @if (isMessageActionPending(targetMessage)) {
+                    <mat-spinner class="message-action-menu-spinner" diameter="16"></mat-spinner>
+                  } @else {
+                    <mat-icon>edit</mat-icon>
+                  }
+                  <span>ערוך</span>
+                </button>
+                <button
+                  mat-menu-item
+                  type="button"
+                  [disabled]="isMessageActionPending(targetMessage)"
+                  (click)="deleteSelectedMessageForEveryone()">
+                  @if (isMessageActionPending(targetMessage)) {
+                    <mat-spinner class="message-action-menu-spinner" diameter="16"></mat-spinner>
+                  } @else {
+                    <mat-icon>delete</mat-icon>
+                  }
+                  <span>מחק אצל כולם</span>
+                </button>
+              }
             }
           </mat-menu>
         </form>

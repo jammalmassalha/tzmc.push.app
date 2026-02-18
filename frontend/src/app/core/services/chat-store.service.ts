@@ -11,6 +11,7 @@ import {
   GroupUpdatePayload,
   GroupType,
   IncomingServerMessage,
+  MessageReference,
   MessageReaction,
   OutboxDirectItem,
   OutboxGroupItem,
@@ -54,6 +55,19 @@ interface MessageActionSnapshot {
   thumbnailUrl?: string | null;
   editedAt?: number | null;
   deletedAt?: number | null;
+}
+
+interface SendMessageOptions {
+  replyTo?: MessageReference | null;
+  forwarded?: boolean;
+  forwardedFrom?: string | null;
+  forwardedFromName?: string | null;
+}
+
+interface SendMessagePayload extends SendMessageOptions {
+  body: string;
+  imageUrl: string | null;
+  thumbnailUrl?: string | null;
 }
 
 type BadgeCapableNavigator = Navigator & {
@@ -546,14 +560,63 @@ export class ChatStoreService {
     }
   }
 
-  async sendTextMessage(text: string): Promise<void> {
+  canSendToChat(chatId: string): boolean {
+    const normalizedChatId = this.normalizeChatId(chatId);
+    if (!normalizedChatId) return false;
+    const group = this.groups().find((item) => item.id === normalizedChatId);
+    if (!group) return true;
+    if (group.type !== 'community') return true;
+    return this.normalizeUser(group.createdBy) === this.normalizeUser(this.currentUser() ?? '');
+  }
+
+  async sendTextMessage(text: string, options: SendMessageOptions = {}): Promise<void> {
     const body = text.trim();
     if (!body) return;
 
     await this.sendMessageInternal({
       body,
-      imageUrl: null
+      imageUrl: null,
+      ...options
     });
+  }
+
+  async forwardMessageToChat(destinationChatId: string, sourceMessage: ChatMessage): Promise<void> {
+    const targetChatId = this.normalizeChatId(destinationChatId);
+    if (!targetChatId) {
+      throw new Error('צ׳אט יעד לא תקין');
+    }
+
+    if (!sourceMessage || sourceMessage.deletedAt) {
+      throw new Error('לא ניתן להעביר הודעה שנמחקה');
+    }
+
+    if (!this.canSendToChat(targetChatId)) {
+      throw new Error('אין הרשאה לשלוח בצ׳אט היעד');
+    }
+
+    const sourceBody = String(sourceMessage.body ?? '');
+    const sourceImageUrl = sourceMessage.imageUrl ?? null;
+    if (!sourceBody.trim() && !sourceImageUrl) {
+      throw new Error('אין תוכן להעברה');
+    }
+
+    const sourceSender = this.normalizeUser(sourceMessage.sender || '');
+    const sourceSenderName = String(
+      sourceMessage.senderDisplayName || (sourceSender ? this.getDisplayName(sourceSender) : '')
+    ).trim();
+
+    await this.dispatchMessageToChat(
+      targetChatId,
+      {
+        body: sourceBody,
+        imageUrl: sourceImageUrl,
+        thumbnailUrl: sourceMessage.thumbnailUrl ?? null,
+        forwarded: true,
+        forwardedFrom: sourceSender || null,
+        forwardedFromName: sourceSenderName || null
+      },
+      { activateChat: false }
+    );
   }
 
   async editSentMessageForEveryone(messageId: string, nextBody: string): Promise<void> {
@@ -1126,13 +1189,21 @@ export class ChatStoreService {
     return `${HR_UPLOAD_BASE_URL}${encoded}`;
   }
 
-  private async sendMessageInternal(payload: {
-    body: string;
-    imageUrl: string | null;
-    thumbnailUrl?: string | null;
-  }): Promise<void> {
-    const user = this.currentUser();
+  private async sendMessageInternal(payload: SendMessagePayload): Promise<void> {
     const chatId = this.activeChatId();
+    if (!chatId) {
+      throw new Error('No active chat');
+    }
+    await this.dispatchMessageToChat(chatId, payload, { activateChat: true });
+  }
+
+  private async dispatchMessageToChat(
+    chatIdRaw: string,
+    payload: SendMessagePayload,
+    options: { activateChat?: boolean } = {}
+  ): Promise<void> {
+    const user = this.currentUser();
+    const chatId = this.normalizeChatId(chatIdRaw);
     if (!user || !chatId) {
       throw new Error('No active chat');
     }
@@ -1143,6 +1214,7 @@ export class ChatStoreService {
       return;
     }
 
+    const metadata = this.normalizeSendMessageOptions(payload);
     const messageId = this.generateId('msg');
     const newMessage: ChatMessage = {
       id: this.generateId('rec'),
@@ -1159,11 +1231,17 @@ export class ChatStoreService {
       groupId: group?.id ?? null,
       groupName: group?.name ?? null,
       editedAt: null,
-      deletedAt: null
+      deletedAt: null,
+      replyTo: metadata.replyTo ?? null,
+      forwarded: metadata.forwarded,
+      forwardedFrom: metadata.forwardedFrom ?? null,
+      forwardedFromName: metadata.forwardedFromName ?? null
     };
 
     this.appendMessage(newMessage);
-    this.setActiveChat(chatId);
+    if (options.activateChat !== false) {
+      this.setActiveChat(chatId);
+    }
 
     if (this.isHrChat(chatId) && payload.body.trim()) {
       const handledByHrFlow = await this.handleHrOutgoing(payload.body);
@@ -1175,45 +1253,55 @@ export class ChatStoreService {
 
     if (!this.networkOnline()) {
       if (group) {
-        this.queueGroupMessage(group, messageId, payload.body, payload.imageUrl);
+        this.queueGroupMessage(group, messageId, payload.body, payload.imageUrl, undefined, metadata);
       } else {
-        this.queueDirectMessage(chatId, messageId, payload.body, payload.imageUrl);
+        this.queueDirectMessage(chatId, messageId, payload.body, payload.imageUrl, metadata);
       }
       this.setMessageStatus(messageId, 'queued');
       return;
     }
 
     if (group) {
-      await this.sendGroupMessage(group, messageId, payload.body, payload.imageUrl);
+      await this.sendGroupMessage(group, messageId, payload.body, payload.imageUrl, metadata);
       return;
     }
 
-    await this.sendDirectMessage(chatId, messageId, payload.body, payload.imageUrl);
+    await this.sendDirectMessage(chatId, messageId, payload.body, payload.imageUrl, metadata);
   }
 
   private async sendDirectMessage(
     originalSender: string,
     messageId: string,
     body: string,
-    imageUrl: string | null
+    imageUrl: string | null,
+    options: SendMessageOptions = {}
   ): Promise<void> {
     const user = this.currentUser();
     if (!user) return;
 
+    const metadata = this.normalizeSendMessageOptions(options);
     const payload: ReplyPayload = {
       user,
       senderName: this.getDisplayName(user),
       reply: body,
       imageUrl,
       originalSender,
-      messageId
+      messageId,
+      replyToMessageId: metadata.replyTo?.messageId,
+      replyToSender: metadata.replyTo?.sender,
+      replyToSenderName: metadata.replyTo?.senderDisplayName,
+      replyToBody: metadata.replyTo?.body,
+      replyToImageUrl: metadata.replyTo?.imageUrl ?? null,
+      forwarded: metadata.forwarded ? true : undefined,
+      forwardedFrom: metadata.forwardedFrom || undefined,
+      forwardedFromName: metadata.forwardedFromName || undefined
     };
 
     try {
       await this.api.sendDirectMessage(payload);
       this.setMessageStatus(messageId, 'sent');
     } catch {
-      this.queueDirectMessage(originalSender, messageId, body, imageUrl);
+      this.queueDirectMessage(originalSender, messageId, body, imageUrl, metadata);
       this.setMessageStatus(messageId, 'queued');
     }
   }
@@ -1222,11 +1310,13 @@ export class ChatStoreService {
     group: ChatGroup,
     messageId: string,
     body: string,
-    imageUrl: string | null
+    imageUrl: string | null,
+    options: SendMessageOptions = {}
   ): Promise<void> {
     const user = this.currentUser();
     if (!user) return;
 
+    const metadata = this.normalizeSendMessageOptions(options);
     const basePayload: Omit<ReplyPayload, 'originalSender'> = {
       user,
       senderName: this.getDisplayName(user),
@@ -1239,7 +1329,15 @@ export class ChatStoreService {
       groupCreatedBy: group.createdBy,
       groupUpdatedAt: group.updatedAt,
       groupType: group.type,
-      groupSenderName: this.getDisplayName(user)
+      groupSenderName: this.getDisplayName(user),
+      replyToMessageId: metadata.replyTo?.messageId,
+      replyToSender: metadata.replyTo?.sender,
+      replyToSenderName: metadata.replyTo?.senderDisplayName,
+      replyToBody: metadata.replyTo?.body,
+      replyToImageUrl: metadata.replyTo?.imageUrl ?? null,
+      forwarded: metadata.forwarded ? true : undefined,
+      forwardedFrom: metadata.forwardedFrom || undefined,
+      forwardedFromName: metadata.forwardedFromName || undefined
     };
 
     const recipients = group.members.filter((member) => this.normalizeUser(member) !== user);
@@ -1261,7 +1359,7 @@ export class ChatStoreService {
     }
 
     if (failedRecipients.length) {
-      this.queueGroupMessage(group, messageId, body, imageUrl, failedRecipients);
+      this.queueGroupMessage(group, messageId, body, imageUrl, failedRecipients, metadata);
       this.setMessageStatus(messageId, 'queued');
       return;
     }
@@ -1400,11 +1498,13 @@ export class ChatStoreService {
     originalSender: string,
     messageId: string,
     body: string,
-    imageUrl: string | null
+    imageUrl: string | null,
+    options: SendMessageOptions = {}
   ): void {
     const user = this.currentUser();
     if (!user) return;
 
+    const metadata = this.normalizeSendMessageOptions(options);
     const item: OutboxDirectItem = {
       id: this.generateId('out'),
       kind: 'direct',
@@ -1414,7 +1514,15 @@ export class ChatStoreService {
         reply: body,
         imageUrl,
         originalSender,
-        messageId
+        messageId,
+        replyToMessageId: metadata.replyTo?.messageId,
+        replyToSender: metadata.replyTo?.sender,
+        replyToSenderName: metadata.replyTo?.senderDisplayName,
+        replyToBody: metadata.replyTo?.body,
+        replyToImageUrl: metadata.replyTo?.imageUrl ?? null,
+        forwarded: metadata.forwarded ? true : undefined,
+        forwardedFrom: metadata.forwardedFrom || undefined,
+        forwardedFromName: metadata.forwardedFromName || undefined
       },
       messageId,
       attempts: 0,
@@ -1429,11 +1537,13 @@ export class ChatStoreService {
     messageId: string,
     body: string,
     imageUrl: string | null,
-    recipients?: string[]
+    recipients?: string[],
+    options: SendMessageOptions = {}
   ): void {
     const user = this.currentUser();
     if (!user) return;
 
+    const metadata = this.normalizeSendMessageOptions(options);
     const targets = recipients
       ? recipients
       : group.members.filter((member) => this.normalizeUser(member) !== user);
@@ -1456,7 +1566,15 @@ export class ChatStoreService {
         groupCreatedBy: group.createdBy,
         groupUpdatedAt: group.updatedAt,
         groupType: group.type,
-        groupSenderName: this.getDisplayName(user)
+        groupSenderName: this.getDisplayName(user),
+        replyToMessageId: metadata.replyTo?.messageId,
+        replyToSender: metadata.replyTo?.sender,
+        replyToSenderName: metadata.replyTo?.senderDisplayName,
+        replyToBody: metadata.replyTo?.body,
+        replyToImageUrl: metadata.replyTo?.imageUrl ?? null,
+        forwarded: metadata.forwarded ? true : undefined,
+        forwardedFrom: metadata.forwardedFrom || undefined,
+        forwardedFromName: metadata.forwardedFromName || undefined
       },
       attempts: 0,
       createdAt: Date.now()
@@ -1618,6 +1736,15 @@ export class ChatStoreService {
       this.ensureGroupFromIncoming(incoming);
     }
 
+    const replyTo = this.normalizeMessageReference({
+      messageId: incoming.replyToMessageId,
+      sender: incoming.replyToSender,
+      senderDisplayName: incoming.replyToSenderName,
+      body: incoming.replyToBody,
+      imageUrl: incoming.replyToImageUrl ?? null
+    });
+    const forwardedFrom = incoming.forwardedFrom ? this.normalizeUser(incoming.forwardedFrom) : '';
+    const forwardedFromName = String(incoming.forwardedFromName || '').trim();
     const record: ChatMessage = {
       id: this.generateId('rec'),
       messageId,
@@ -1632,7 +1759,11 @@ export class ChatStoreService {
       groupId: incoming.groupId ? this.normalizeChatId(incoming.groupId) : null,
       groupName: incoming.groupName ?? null,
       editedAt: Number.isFinite(Number(incoming.editedAt)) ? Number(incoming.editedAt) : null,
-      deletedAt: Number.isFinite(Number(incoming.deletedAt)) ? Number(incoming.deletedAt) : null
+      deletedAt: Number.isFinite(Number(incoming.deletedAt)) ? Number(incoming.deletedAt) : null,
+      replyTo,
+      forwarded: Boolean(incoming.forwarded),
+      forwardedFrom: forwardedFrom || null,
+      forwardedFromName: forwardedFromName || null
     };
 
     this.appendMessage(record);
@@ -2037,10 +2168,20 @@ export class ChatStoreService {
     const chatId = this.normalizeChatId(message.chatId);
     if (!chatId) return;
 
+    const normalizedSender = this.normalizeUser(message.sender);
+    const normalizedReplyTo = this.normalizeMessageReference(message.replyTo ?? null);
+    const normalizedForwardedFrom = message.forwardedFrom
+      ? this.normalizeUser(message.forwardedFrom)
+      : '';
+    const normalizedForwardedFromName = String(message.forwardedFromName || '').trim();
     const nextMessage: ChatMessage = {
       ...message,
       chatId,
-      sender: this.normalizeUser(message.sender)
+      sender: normalizedSender,
+      replyTo: normalizedReplyTo,
+      forwarded: Boolean(message.forwarded),
+      forwardedFrom: normalizedForwardedFrom || null,
+      forwardedFromName: normalizedForwardedFromName || null
     };
 
     this.messagesByChat.update((messageMap) => {
@@ -2211,9 +2352,10 @@ export class ChatStoreService {
   };
 
   private getMessagePreview(message: ChatMessage): string {
+    const forwardedPrefix = message.forwarded ? '↪ הועברה: ' : '';
     if (message.imageUrl) {
       const imagePreview = message.direction === 'outgoing' ? 'אתה: שלחת תמונה' : '📷 תמונה';
-      return this.truncatePreview(imagePreview);
+      return this.truncatePreview(`${forwardedPrefix}${imagePreview}`);
     }
     if (!message.body) {
       return '';
@@ -2223,11 +2365,11 @@ export class ChatStoreService {
     const isDocumentLink = /^https?:\/\/\S+\.(pdf|doc|docx)(\?|$)/i.test(trimmed);
     if (isDocumentLink) {
       const documentPreview = message.direction === 'outgoing' ? 'אתה: מסמך' : 'מסמך';
-      return this.truncatePreview(documentPreview);
+      return this.truncatePreview(`${forwardedPrefix}${documentPreview}`);
     }
 
     const preview = message.direction === 'outgoing' ? `אתה: ${trimmed}` : trimmed;
-    return this.truncatePreview(preview);
+    return this.truncatePreview(`${forwardedPrefix}${preview}`);
   }
 
   private truncatePreview(value: string, maxChars = 100): string {
@@ -2236,6 +2378,47 @@ export class ChatStoreService {
       return compact;
     }
     return `${compact.slice(0, maxChars)}…`;
+  }
+
+  private normalizeSendMessageOptions(options: SendMessageOptions = {}): SendMessageOptions {
+    const replyTo = this.normalizeMessageReference(options.replyTo ?? null);
+    const forwarded = Boolean(options.forwarded);
+    const forwardedFrom = options.forwardedFrom ? this.normalizeUser(options.forwardedFrom) : '';
+    const forwardedFromName = String(options.forwardedFromName || '').trim();
+    return {
+      replyTo,
+      forwarded,
+      forwardedFrom: forwardedFrom || null,
+      forwardedFromName: forwardedFromName || null
+    };
+  }
+
+  private normalizeMessageReference(rawValue: unknown): MessageReference | null {
+    if (!rawValue || typeof rawValue !== 'object') {
+      return null;
+    }
+
+    const value = rawValue as Partial<MessageReference>;
+    const messageId = String(value.messageId || '').trim();
+    const sender = this.normalizeUser(String(value.sender || ''));
+    if (!messageId || !sender) {
+      return null;
+    }
+
+    const senderDisplayName = String(value.senderDisplayName || '').trim();
+    const body = typeof value.body === 'string' ? value.body : '';
+    const imageUrl = typeof value.imageUrl === 'string' ? value.imageUrl.trim() : '';
+    if (!body.trim() && !imageUrl) {
+      return null;
+    }
+
+    return {
+      messageId,
+      sender,
+      senderDisplayName: senderDisplayName || undefined,
+      body,
+      imageUrl: imageUrl || null
+    };
   }
 
   private getDisplayName(username: string): string {
@@ -2368,7 +2551,11 @@ export class ChatStoreService {
           direction: record.direction === 'incoming' ? 'incoming' : 'outgoing',
           deliveryStatus: record.deliveryStatus ?? 'sent',
           editedAt: Number.isFinite(Number(record.editedAt)) ? Number(record.editedAt) : null,
-          deletedAt: Number.isFinite(Number(record.deletedAt)) ? Number(record.deletedAt) : null
+          deletedAt: Number.isFinite(Number(record.deletedAt)) ? Number(record.deletedAt) : null,
+          replyTo: this.normalizeMessageReference(record.replyTo ?? null),
+          forwarded: Boolean(record.forwarded),
+          forwardedFrom: record.forwardedFrom ? this.normalizeUser(record.forwardedFrom) : null,
+          forwardedFromName: String(record.forwardedFromName || '').trim() || null
         };
 
         if (!messageMap[chatId]) {
