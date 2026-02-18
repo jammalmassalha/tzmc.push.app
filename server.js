@@ -211,8 +211,11 @@ const AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE = String(
     process.env.AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE || ''
 ).trim().toLowerCase() === 'true';
 const AUTH_REFRESH_SCHEDULER_DEVICE_TYPES = String(
-    process.env.AUTH_REFRESH_SCHEDULER_DEVICE_TYPES || 'pc'
+    process.env.AUTH_REFRESH_SCHEDULER_DEVICE_TYPES || 'pc,mobile'
 ).trim();
+const AUTH_REFRESH_SCHEDULER_EXCLUDE_IOS_ENDPOINTS = String(
+    process.env.AUTH_REFRESH_SCHEDULER_EXCLUDE_IOS_ENDPOINTS || 'true'
+).trim().toLowerCase() !== 'false';
 const MOBILE_REREGISTER_PUSH_TYPE = 'mobile-re-register-prompt';
 const MOBILE_REREGISTER_DEFAULT_CAMPAIGN_ID = 'mobile-reregister-temp-v1';
 const MOBILE_REREGISTER_DEFAULT_TITLE = 'Reconnect notifications';
@@ -287,6 +290,12 @@ function parseSubscriptionDeviceTypesInput(rawValue) {
         }
     });
     return Array.from(allowed);
+}
+
+function isAppleWebPushEndpoint(endpointValue) {
+    const endpoint = String(endpointValue || '').trim().toLowerCase();
+    if (!endpoint) return false;
+    return endpoint.includes('push.apple.com');
 }
 
 function sanitizeCampaignId(rawValue) {
@@ -714,6 +723,7 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
     const initiatedBy = (typeof jobContext.initiatedBy === 'string' && jobContext.initiatedBy.trim()) || 'api';
     const requestedUsers = parseUsernamesInput(jobContext.usernames);
     const requestedDeviceTypes = parseSubscriptionDeviceTypesInput(jobContext.deviceTypes || jobContext.deviceType);
+    const excludeIosEndpoints = Boolean(jobContext.excludeIosEndpoints);
     const allowStaleCleanup = jobContext.allowStaleCleanup !== false;
 
     let resultSummary = {
@@ -725,6 +735,7 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
         forceResubscribe,
         requestedUserCount: requestedUsers.length,
         requestedDeviceTypes,
+        excludeIosEndpoints,
         discoveredUserCount: 0,
         targeted: 0,
         success: 0,
@@ -735,11 +746,14 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
     try {
         const discoveryResult = await getAllSubscriptionsForAuthRefresh({ usernames: requestedUsers });
         const allDiscoveredSubscriptions = Array.isArray(discoveryResult.subscriptions) ? discoveryResult.subscriptions : [];
-        const subscriptions = requestedDeviceTypes.length
+        const subscriptionsByType = requestedDeviceTypes.length
             ? allDiscoveredSubscriptions.filter((subscription) =>
                 requestedDeviceTypes.includes(normalizeSubscriptionType(subscription && subscription.type))
             )
             : allDiscoveredSubscriptions;
+        const subscriptions = excludeIosEndpoints
+            ? subscriptionsByType.filter((subscription) => !isAppleWebPushEndpoint(subscription && subscription.endpoint))
+            : subscriptionsByType;
         const discoveredUsers = Array.isArray(discoveryResult.discoveredUsers) ? discoveryResult.discoveredUsers : [];
         resultSummary.discoveredUserCount = discoveredUsers.length;
         if (discoveredUsers.length) {
@@ -1001,6 +1015,7 @@ function startSubscriptionAuthRefreshScheduler() {
             initiatedBy: 'scheduler',
             forceResubscribe: AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE,
             deviceTypes: AUTH_REFRESH_SCHEDULER_DEVICE_TYPES,
+            excludeIosEndpoints: AUTH_REFRESH_SCHEDULER_EXCLUDE_IOS_ENDPOINTS,
             allowStaleCleanup: false
         })
             .then((summary) => {
@@ -1025,7 +1040,7 @@ function startSubscriptionAuthRefreshScheduler() {
     }, AUTH_REFRESH_SCHEDULER_INITIAL_DELAY_MS);
 
     console.log(
-        `[AUTH REFRESH] Scheduler armed | initialDelay=${AUTH_REFRESH_SCHEDULER_INITIAL_DELAY_MS}ms | interval=${AUTH_REFRESH_SCHEDULER_INTERVAL_MS}ms | deviceTypes=${AUTH_REFRESH_SCHEDULER_DEVICE_TYPES || 'all'} | forceResubscribe=${AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE}`
+        `[AUTH REFRESH] Scheduler armed | initialDelay=${AUTH_REFRESH_SCHEDULER_INITIAL_DELAY_MS}ms | interval=${AUTH_REFRESH_SCHEDULER_INTERVAL_MS}ms | deviceTypes=${AUTH_REFRESH_SCHEDULER_DEVICE_TYPES || 'all'} | excludeIosEndpoints=${AUTH_REFRESH_SCHEDULER_EXCLUDE_IOS_ENDPOINTS} | forceResubscribe=${AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE}`
     );
 }
 
@@ -1471,6 +1486,21 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
         return cached.subscriptions;
     }
 
+    const requestedUsersSet = new Set(
+        parseUsernamesInput(requestUserList).map(normalizeUserKey).filter(Boolean)
+    );
+    const normalizeLookupSubscriptions = (payload) => {
+        const extracted = extractSubscriptionsFromSheetResponse(payload);
+        if (!extracted.length) return [];
+        if (!requestedUsersSet.size) return extracted;
+        return extracted.filter((subscription) => {
+            const subscriptionUser = normalizeUserKey(
+                subscription && (subscription.username || subscription.user)
+            );
+            return !subscriptionUser || requestedUsersSet.has(subscriptionUser);
+        });
+    };
+
     try {
         const response = await fetchWithRetry(
             `${GOOGLE_SHEET_URL}?usernames=${encodeURIComponent(requestUserList)}`,
@@ -1478,8 +1508,8 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
             { timeoutMs: 12000, retries: 2, backoffMs: 500 }
         );
         const result = await response.json();
-        if (Array.isArray(result.subscriptions)) {
-            const subscriptions = result.subscriptions.filter(Boolean);
+        const subscriptions = normalizeLookupSubscriptions(result);
+        if (subscriptions.length) {
             subscriptionCache.set(cacheKey, { at: now, subscriptions });
             return subscriptions;
         }
@@ -1795,26 +1825,47 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     const logContent = msgText || messageType || 'System Notification';
     const messageId = options.messageId || message.messageId || generateMessageId();
     const shouldIncrementBadge = !options.skipBadge;
+    const normalizedTargetUsers = Array.from(
+        new Set(targetUsersArray.map(normalizeUserKey).filter(Boolean))
+    );
+    const targetUsersSet = new Set(normalizedTargetUsers);
+    const fallbackTargetUser = normalizedTargetUsers.length === 1 ? normalizedTargetUsers[0] : '';
+    const normalizeAndFilterTargetSubscriptions = (subscriptions) => {
+        const normalized = dedupeSubscriptionsByEndpoint(subscriptions || []);
+        return normalized
+            .map((subscription) => {
+                if (subscription && subscription.username) return subscription;
+                if (!fallbackTargetUser) return subscription;
+                return {
+                    ...subscription,
+                    username: fallbackTargetUser
+                };
+            })
+            .filter((subscription) => {
+                const subscriptionUser = normalizeUserKey(subscription && (subscription.username || subscription.user));
+                return !subscriptionUser || targetUsersSet.has(subscriptionUser);
+            });
+    };
 
     console.log(`[PUSH] Searching subs for: ${targetUsersArray.join(', ')} from ${finalSender}`);
 
-    let rawSubscriptions = await getSubscriptionFromSheet(targetUsersArray);
-    if (!rawSubscriptions || rawSubscriptions.length === 0) {
+    let rawSubscriptions = normalizeAndFilterTargetSubscriptions(
+        await getSubscriptionFromSheet(targetUsersArray)
+    );
+    if (!rawSubscriptions.length) {
         // Force refresh once to avoid stale cache windows (common after iOS resubscribe).
-        rawSubscriptions = await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true });
+        rawSubscriptions = normalizeAndFilterTargetSubscriptions(
+            await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true })
+        );
     }
-    if (!rawSubscriptions || rawSubscriptions.length === 0) {
+    if (!rawSubscriptions.length) {
         // Some script deployments occasionally return an empty filtered lookup even though
         // valid endpoint rows still exist in the full subscription feed.
         const fallbackDiscovery = await getAllSubscriptionsForAuthRefresh({ usernames: targetUsersArray });
         const discoveredSubscriptions = Array.isArray(fallbackDiscovery.subscriptions)
             ? fallbackDiscovery.subscriptions
             : [];
-        const targetUsersSet = new Set(targetUsersArray.map(normalizeUserKey).filter(Boolean));
-        rawSubscriptions = discoveredSubscriptions.filter((subscription) => {
-            const userKey = normalizeUserKey(subscription && (subscription.username || subscription.user));
-            return Boolean(userKey && targetUsersSet.has(userKey));
-        });
+        rawSubscriptions = normalizeAndFilterTargetSubscriptions(discoveredSubscriptions);
         if (rawSubscriptions.length) {
             const cacheKey = buildSubscriptionCacheKey(targetUsersArray);
             if (cacheKey) {
@@ -1827,7 +1878,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         rawSubscriptions || []
     );
 
-    if (!rawSubscriptions || rawSubscriptions.length === 0) {
+    if (!rawSubscriptions.length) {
         logNotificationStatus(
             finalSender,
             targetUsersArray.join(','),
@@ -1839,18 +1890,16 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         return { success: 0, failed: 0 };
     }
 
-    const dedupeSubscriptions = (subscriptions) => subscriptions.filter((sub, index, self) =>
-        index === self.findIndex((t) => t.endpoint === sub.endpoint)
-    );
-
     const sendToSubscriptions = async (subscriptions, allowBadgeIncrement) => {
         const badgeCountByUser = new Map();
         return Promise.all(
             subscriptions.map(async (subscription) => {
                 // Increment unread badge once per user, not once per device endpoint.
-                const userKey = normalizeUserKey(subscription.username);
-                let currentCount = unreadCounts[userKey] || 0;
-                if (shouldIncrementBadge) {
+                const userKey = normalizeUserKey(
+                    subscription.username || subscription.user || fallbackTargetUser
+                );
+                let currentCount = userKey ? (unreadCounts[userKey] || 0) : 0;
+                if (shouldIncrementBadge && userKey) {
                     if (allowBadgeIncrement) {
                         if (badgeCountByUser.has(userKey)) {
                             currentCount = badgeCountByUser.get(userKey);
@@ -1874,11 +1923,11 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                     requireInteraction: true,
                     image: imageUrl,
                     url: clickUrl,
-                    user: subscription.username,
+                    user: userKey || subscription.username || '',
                     sender: finalSender,
                     messageId: messageId
                 };
-                if (shouldIncrementBadge) {
+                if (shouldIncrementBadge && userKey) {
                     payloadData.badgeCount = currentCount;
                 }
 
@@ -1895,23 +1944,34 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                         timeout: 15000
                     };
                     await webpush.sendNotification(subscription, payload, pushOptions);
-                    return { ok: true, username: subscription.username, badge: currentCount };
+                    return {
+                        ok: true,
+                        username: subscription.username || userKey || 'unknown',
+                        badge: currentCount
+                    };
                 } catch (err) {
                     const statusCode = err.statusCode || 'N/A';
                     if (statusCode === 404 || statusCode === 410) {
                         pruneSubscriptionCacheEndpoint(subscription.endpoint);
                     }
-                    return { ok: false, username: subscription.username, statusCode, message: err.message };
+                    return {
+                        ok: false,
+                        username: subscription.username || userKey || 'unknown',
+                        statusCode,
+                        message: err.message
+                    };
                 }
             })
         );
     };
 
-    let uniqueSubscriptions = dedupeSubscriptions(rawSubscriptions);
+    let uniqueSubscriptions = normalizeAndFilterTargetSubscriptions(rawSubscriptions);
     if (singlePerUser) {
         const oneSubscriptionPerUser = new Map();
         uniqueSubscriptions.forEach((subscription) => {
-            const userKey = normalizeUserKey(subscription.username);
+            const userKey = normalizeUserKey(
+                subscription.username || subscription.user || ''
+            ) || `endpoint:${String(subscription.endpoint || '').trim()}`;
             if (!userKey) return;
             // Keep latest observed subscription per user to prevent duplicate pushes.
             oneSubscriptionPerUser.set(userKey, subscription);
@@ -1945,7 +2005,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         }
 
         const refreshedRawSubscriptions = await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true });
-        const refreshedUniqueSubscriptions = dedupeSubscriptions(refreshedRawSubscriptions || []);
+        const refreshedUniqueSubscriptions = normalizeAndFilterTargetSubscriptions(refreshedRawSubscriptions || []);
         if (refreshedUniqueSubscriptions.length) {
             const existingEndpoints = new Set(uniqueSubscriptions.map((sub) => sub.endpoint));
             const retryTargets = refreshedUniqueSubscriptions.filter(
@@ -2007,15 +2067,29 @@ app.post(['/refresh-subscribe-auth', '/notify/refresh-subscribe-auth'], (req, re
     const initiatedBy = (req.body && typeof req.body.initiatedBy === 'string') ? req.body.initiatedBy.trim() : 'api';
     const forceResubscribe = !(req.body && req.body.forceResubscribe === false);
     const usernames = parseUsernamesInput(req.body && req.body.usernames);
+    const deviceTypes = parseSubscriptionDeviceTypesInput(req.body && (req.body.deviceTypes || req.body.deviceType));
+    const excludeIosEndpoints = req.body && Object.prototype.hasOwnProperty.call(req.body, 'excludeIosEndpoints')
+        ? parseBooleanInput(req.body.excludeIosEndpoints, false)
+        : false;
     res.json({
         status: 'queued',
         requestId,
         reason: reason || 'manual',
         forceResubscribe,
-        requestedUserCount: usernames.length
+        requestedUserCount: usernames.length,
+        deviceTypes: deviceTypes.length ? deviceTypes : ['all'],
+        excludeIosEndpoints
     });
 
-    runSubscriptionAuthRefreshJob({ requestId, reason, initiatedBy, forceResubscribe, usernames })
+    runSubscriptionAuthRefreshJob({
+        requestId,
+        reason,
+        initiatedBy,
+        forceResubscribe,
+        usernames,
+        deviceTypes,
+        excludeIosEndpoints
+    })
         .then((summary) => {
             console.log(
                 `[AUTH REFRESH] Completed ${summary.requestId} | discoveredUsers=${summary.discoveredUserCount || 0} targeted=${summary.targeted} success=${summary.success} failed=${summary.failed}`
