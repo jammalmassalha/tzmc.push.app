@@ -404,7 +404,7 @@ export class ChatApiService {
       payload.subscriptionMobile = subscription;
     }
 
-    await this.fetchWithRetry(
+    const sheetRegistration = this.fetchWithRetry(
       this.config.subscriptionUrl,
       {
         method: 'POST',
@@ -413,6 +413,17 @@ export class ChatApiService {
       },
       { retries: 2, timeoutMs: 15000, backoffMs: 700 }
     );
+    const backendRegistration = this.fetchWithRetry(
+      `${this.notifyBaseUrl}/register-device`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      },
+      { retries: 2, timeoutMs: 12000, backoffMs: 500 }
+    );
+
+    await Promise.allSettled([sheetRegistration, backendRegistration]);
   }
 
   async getVersion(): Promise<{ version: string; notes: string[] }> {

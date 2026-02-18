@@ -176,6 +176,36 @@ function normalizeUsername(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+function resolveNotifyRegisterDeviceUrl() {
+  try {
+    const configuredReplyUrl = String(config.NOTIFY_SERVER_URL || '').trim();
+    if (configuredReplyUrl) {
+      return configuredReplyUrl.replace(/\/reply(?:\?.*)?$/i, '/register-device');
+    }
+  } catch (_) {
+    // Fallback below.
+  }
+
+  try {
+    return new URL('/notify/register-device', self.location.origin).toString();
+  } catch (_) {
+    return 'https://www.tzmc.co.il/notify/register-device';
+  }
+}
+
+async function postRegistrationPayloadToNotifyBackend(registerPayload) {
+  try {
+    await fetchWithRetry(resolveNotifyRegisterDeviceUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(registerPayload)
+    }, { timeoutMs: 12000, retries: 2, backoffMs: 500 });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 async function readSwRuntimeContext() {
   try {
     const cache = await caches.open(SW_CONTEXT_CACHE);
@@ -219,7 +249,7 @@ async function persistSwRuntimeContext(partial = {}) {
 }
 
 async function registerSubscriptionAfterChange(newSubscription = null) {
-  if (!SUBSCRIPTION_URL || !VAPID_PUBLIC_KEY) {
+  if (!VAPID_PUBLIC_KEY) {
     return false;
   }
 
@@ -259,12 +289,20 @@ async function registerSubscriptionAfterChange(newSubscription = null) {
       registerPayload.subscriptionMobile = subscription;
     }
 
-    await fetchWithRetry(SUBSCRIPTION_URL, {
-      method: 'POST',
-      mode: 'no-cors',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(registerPayload)
-    }, { timeoutMs: 15000, retries: 2, backoffMs: 700 });
+    const registerTasks = [
+      postRegistrationPayloadToNotifyBackend(registerPayload)
+    ];
+    if (SUBSCRIPTION_URL) {
+      registerTasks.push(
+        fetchWithRetry(SUBSCRIPTION_URL, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(registerPayload)
+        }, { timeoutMs: 15000, retries: 2, backoffMs: 700 })
+      );
+    }
+    await Promise.allSettled(registerTasks);
 
     await persistSwRuntimeContext({ username });
     return true;
@@ -276,7 +314,7 @@ async function registerSubscriptionAfterChange(newSubscription = null) {
 
 async function refreshSubscriptionAuthInBackground(payload = {}) {
   const username = String(payload.user || payload.username || '').trim().toLowerCase();
-  if (!username || !SUBSCRIPTION_URL || !VAPID_PUBLIC_KEY) {
+  if (!username || !VAPID_PUBLIC_KEY) {
     return false;
   }
 
@@ -318,12 +356,20 @@ async function refreshSubscriptionAuthInBackground(payload = {}) {
       registerPayload.subscriptionMobile = subscription;
     }
 
-    await fetchWithRetry(SUBSCRIPTION_URL, {
-      method: 'POST',
-      mode: 'no-cors',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(registerPayload)
-    }, { timeoutMs: 15000, retries: 2, backoffMs: 700 });
+    const registerTasks = [
+      postRegistrationPayloadToNotifyBackend(registerPayload)
+    ];
+    if (SUBSCRIPTION_URL) {
+      registerTasks.push(
+        fetchWithRetry(SUBSCRIPTION_URL, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(registerPayload)
+        }, { timeoutMs: 15000, retries: 2, backoffMs: 700 })
+      );
+    }
+    await Promise.allSettled(registerTasks);
     return true;
   } catch (err) {
     console.warn('[SW] Subscription auth refresh failed:', err && err.message ? err.message : err);
@@ -564,7 +610,7 @@ self.addEventListener('push', event => {
     const notifyPromise = self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
       clients.forEach(client => client.postMessage({ action: 'read-receipt', messageIds, readAt, sender: payload.sender }));
     });
-    event.waitUntil(Promise.all([updatePromise, notifyPromise]));
+    event.waitUntil(Promise.allSettled([updatePromise, notifyPromise]));
     return;
   }
 
@@ -575,7 +621,7 @@ self.addEventListener('push', event => {
         client.postMessage({ action: 'refresh-subscription-auth', payload });
       });
     });
-    event.waitUntil(Promise.all([refreshPromise, notifyClientsPromise]));
+    event.waitUntil(Promise.allSettled([refreshPromise, notifyClientsPromise]));
     return;
   }
 
@@ -623,7 +669,7 @@ self.addEventListener('push', event => {
               request.onerror = (e) => reject(e);
           }).catch(reject);
       });
-      event.waitUntil(Promise.all([deletePromise, logPromise]));
+      event.waitUntil(Promise.allSettled([deletePromise, logPromise]));
       return; 
   }
 
@@ -676,7 +722,7 @@ self.addEventListener('push', event => {
   );
 
      event.waitUntil(
-        Promise.all([
+        Promise.allSettled([
             badgePromise,
             notificationPromise,
             savePromise,
@@ -720,7 +766,7 @@ self.addEventListener('notificationclick', event => {
           })
       }, { timeoutMs: 10000, retries: 1 }).catch(err => console.error('[SW] Reply failed:', err));
 
-      const updateNotifPromise = Promise.all([localDbPromise, serverPromise]).then(() => {
+      const updateNotifPromise = Promise.allSettled([localDbPromise, serverPromise]).then(() => {
           return self.registration.showNotification("Reply Sent âœ“", {
               body: `You: "${replyText}"`, 
               icon: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
@@ -728,7 +774,7 @@ self.addEventListener('notificationclick', event => {
               tag: 'reply-confirmation' 
           });
       });
-      event.waitUntil(Promise.all([logReplyPromise, updateNotifPromise]));
+      event.waitUntil(Promise.allSettled([logReplyPromise, updateNotifPromise]));
       return; 
   }
 
@@ -773,7 +819,7 @@ self.addEventListener('notificationclick', event => {
       if (clients.openWindow) return clients.openWindow(normalizedUrlToOpen);
   });
 
-  event.waitUntil(Promise.all([logClickPromise, openAppPromise]));
+  event.waitUntil(Promise.allSettled([logClickPromise, openAppPromise]));
 });
 
 self.addEventListener('message', (event) => {

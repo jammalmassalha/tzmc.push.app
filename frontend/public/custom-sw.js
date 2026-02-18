@@ -187,6 +187,27 @@ function detectWorkerDeviceType() {
   return isMobile ? 'Mobile' : 'PC';
 }
 
+function resolveNotifyRegisterDeviceUrl() {
+  try {
+    return new URL('../notify/register-device', self.registration.scope).toString();
+  } catch (_) {
+    return `${self.location.origin}/notify/register-device`;
+  }
+}
+
+async function postRegistrationPayloadToNotifyBackend(registerPayload) {
+  try {
+    await fetchWithRetry(resolveNotifyRegisterDeviceUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(registerPayload)
+    }, { timeoutMs: 12000, retries: 2, backoffMs: 500 });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 function normalizeUsername(value) {
   return String(value || '').trim().toLowerCase();
 }
@@ -280,12 +301,15 @@ async function registerSubscriptionFromStoredContext(newSubscription = null, rea
       registerPayload.subscriptionMobile = subscription;
     }
 
-    await fetchWithRetry(subscriptionUrl, {
-      method: 'POST',
-      mode: 'no-cors',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(registerPayload)
-    }, { timeoutMs: 15000, retries: 2, backoffMs: 700 });
+    await Promise.allSettled([
+      fetchWithRetry(subscriptionUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(registerPayload)
+      }, { timeoutMs: 15000, retries: 2, backoffMs: 700 }),
+      postRegistrationPayloadToNotifyBackend(registerPayload)
+    ]);
 
     await persistSubscriptionContext({
       username,
@@ -348,12 +372,15 @@ async function refreshSubscriptionAuthInBackground(payload) {
       registerPayload.subscriptionMobile = subscription;
     }
 
-    await fetchWithRetry(subscriptionUrl, {
-      method: 'POST',
-      mode: 'no-cors',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(registerPayload)
-    }, { timeoutMs: 15000, retries: 2, backoffMs: 700 });
+    await Promise.allSettled([
+      fetchWithRetry(subscriptionUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(registerPayload)
+      }, { timeoutMs: 15000, retries: 2, backoffMs: 700 }),
+      postRegistrationPayloadToNotifyBackend(registerPayload)
+    ]);
     return true;
   } catch (_) {
     return false;

@@ -40,6 +40,7 @@ let stateSaveTimer = null;
 
 let unreadCounts = {};
 let groups = {};
+let deviceSubscriptionsByUser = {};
 
 
 
@@ -259,6 +260,9 @@ function pruneSubscriptionCacheEndpoint(endpointToRemove) {
             });
         }
     }
+    if (removeLocalDeviceSubscriptionEndpoint(endpointToRemove)) {
+        scheduleStateSave();
+    }
 }
 
 function normalizeSubscriptionType(rawValue) {
@@ -423,6 +427,125 @@ function dedupeSubscriptionsByEndpoint(rawSubscriptions = []) {
         }
     });
     return Array.from(byEndpoint.values());
+}
+
+function normalizeLocalDeviceSubscriptionsRegistry(rawRegistry = {}) {
+    const normalizedRegistry = {};
+    if (!rawRegistry || typeof rawRegistry !== 'object') {
+        return normalizedRegistry;
+    }
+
+    Object.keys(rawRegistry).forEach((rawUserKey) => {
+        const userKey = normalizeUserKey(rawUserKey);
+        const rawSubscriptions = rawRegistry[rawUserKey];
+        if (!userKey || !Array.isArray(rawSubscriptions)) return;
+
+        const normalizedSubscriptions = dedupeSubscriptionsByEndpoint(
+            rawSubscriptions
+                .map((subscription) =>
+                    normalizeSubscriptionRecord(
+                        subscription,
+                        userKey,
+                        subscription && subscription.type
+                    )
+                )
+                .filter(Boolean)
+        )
+            .map((subscription) => ({
+                ...subscription,
+                username: userKey
+            }));
+
+        if (normalizedSubscriptions.length) {
+            normalizedRegistry[userKey] = normalizedSubscriptions;
+        }
+    });
+
+    return normalizedRegistry;
+}
+
+function getLocalDeviceSubscriptionsForUsers(usernames = []) {
+    const requestedUsers = parseUsernamesInput(usernames);
+    if (!requestedUsers.length) return [];
+
+    const collected = [];
+    requestedUsers.forEach((userKey) => {
+        const userSubscriptions = Array.isArray(deviceSubscriptionsByUser[userKey])
+            ? deviceSubscriptionsByUser[userKey]
+            : [];
+        userSubscriptions.forEach((subscription) => {
+            const normalized = normalizeSubscriptionRecord(
+                subscription,
+                userKey,
+                subscription && subscription.type
+            );
+            if (normalized) {
+                normalized.username = userKey;
+                collected.push(normalized);
+            }
+        });
+    });
+    return dedupeSubscriptionsByEndpoint(collected);
+}
+
+function upsertLocalDeviceSubscriptionsFromRegistration(payload = {}) {
+    const username = normalizeUserKey(payload.username || payload.user);
+    if (!username) return 0;
+
+    const defaultTypeHint = normalizeSubscriptionType(
+        payload.deviceType || payload.type || payload.platform
+    );
+    const collected = [];
+    collectSubscriptionsFromValue(payload.subscription, collected, username, defaultTypeHint);
+    collectSubscriptionsFromValue(payload.subscriptionMobile, collected, username, 'mobile');
+    collectSubscriptionsFromValue(payload.subscriptionPC, collected, username, 'pc');
+    if (!collected.length) return 0;
+
+    const existing = Array.isArray(deviceSubscriptionsByUser[username])
+        ? deviceSubscriptionsByUser[username]
+        : [];
+    const merged = dedupeSubscriptionsByEndpoint([...existing, ...collected])
+        .map((subscription) =>
+            normalizeSubscriptionRecord(
+                subscription,
+                username,
+                subscription && subscription.type
+            )
+        )
+        .filter(Boolean)
+        .map((subscription) => ({
+            ...subscription,
+            username
+        }));
+
+    if (!merged.length) return 0;
+    deviceSubscriptionsByUser[username] = merged;
+    return merged.length;
+}
+
+function removeLocalDeviceSubscriptionEndpoint(endpointToRemove) {
+    const normalizedEndpoint = String(endpointToRemove || '').trim();
+    if (!normalizedEndpoint) return false;
+
+    let changed = false;
+    Object.keys(deviceSubscriptionsByUser).forEach((userKey) => {
+        const existing = Array.isArray(deviceSubscriptionsByUser[userKey])
+            ? deviceSubscriptionsByUser[userKey]
+            : [];
+        const filtered = existing.filter(
+            (subscription) => String((subscription && subscription.endpoint) || '').trim() !== normalizedEndpoint
+        );
+        if (filtered.length !== existing.length) {
+            changed = true;
+            if (filtered.length) {
+                deviceSubscriptionsByUser[userKey] = filtered;
+            } else {
+                delete deviceSubscriptionsByUser[userKey];
+            }
+        }
+    });
+
+    return changed;
 }
 
 function extractSubscriptionsFromSheetResponse(sheetResponseBody) {
@@ -608,6 +731,10 @@ async function getAllSubscriptionsForAuthRefresh(options = {}) {
     for (const cacheEntry of subscriptionCache.values()) {
         if (!cacheEntry || !Array.isArray(cacheEntry.subscriptions)) continue;
         collectSubscriptionsFromValue(cacheEntry.subscriptions, collected);
+    }
+    for (const userSubscriptions of Object.values(deviceSubscriptionsByUser)) {
+        if (!Array.isArray(userSubscriptions) || !userSubscriptions.length) continue;
+        collectSubscriptionsFromValue(userSubscriptions, collected);
     }
 
     dedupeSubscriptionsByEndpoint(collected).forEach((subscription) => {
@@ -1298,6 +1425,11 @@ async function loadState() {
         unreadCounts = (data.unreadCounts && typeof data.unreadCounts === 'object') ? data.unreadCounts : {};
         messageQueue = (data.messageQueue && typeof data.messageQueue === 'object') ? data.messageQueue : {};
         groups = (data.groups && typeof data.groups === 'object') ? data.groups : {};
+        deviceSubscriptionsByUser = normalizeLocalDeviceSubscriptionsRegistry(
+            (data.deviceSubscriptionsByUser && typeof data.deviceSubscriptionsByUser === 'object')
+                ? data.deviceSubscriptionsByUser
+                : {}
+        );
         console.log('[STATE] Loaded persisted state.');
     } catch (err) {
         if (err.code !== 'ENOENT') {
@@ -1308,7 +1440,7 @@ async function loadState() {
 
 async function persistState() {
     try {
-        const payload = JSON.stringify({ unreadCounts, messageQueue, groups });
+        const payload = JSON.stringify({ unreadCounts, messageQueue, groups, deviceSubscriptionsByUser });
         const tmpFile = `${stateFile}.tmp`;
         await fsp.writeFile(tmpFile, payload, 'utf8');
         await fsp.rename(tmpFile, stateFile);
@@ -1519,6 +1651,34 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
         return cached ? cached.subscriptions : [];
     }
 }
+
+app.post(['/register-device', '/notify/register-device'], (req, res) => {
+    try {
+        const payload = req.body && typeof req.body === 'object' ? req.body : {};
+        const username = normalizeUserKey(payload.username || payload.user);
+        if (!username) {
+            return res.status(400).json({ status: 'error', message: 'Missing username' });
+        }
+
+        const trackedSubscriptions = upsertLocalDeviceSubscriptionsFromRegistration({
+            ...payload,
+            username
+        });
+        if (!trackedSubscriptions) {
+            return res.status(400).json({ status: 'error', message: 'Missing valid subscription payload' });
+        }
+
+        scheduleStateSave();
+        res.json({
+            status: 'success',
+            username,
+            trackedSubscriptions
+        });
+    } catch (error) {
+        console.error('[REGISTER DEVICE] Failed:', error.message);
+        res.status(500).json({ status: 'error', message: error.message });
+    }
+});
 // --- RESET BADGE ENDPOINT ---
 app.post(['/reset-badge', '/notify/reset-badge'], (req, res) => {
     const { user } = req.body;
@@ -1873,6 +2033,17 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
             }
         }
     }
+    const localSubscriptions = getLocalDeviceSubscriptionsForUsers(targetUsersArray);
+    if (localSubscriptions.length) {
+        rawSubscriptions = normalizeAndFilterTargetSubscriptions([
+            ...rawSubscriptions,
+            ...localSubscriptions
+        ]);
+        const cacheKey = buildSubscriptionCacheKey(targetUsersArray);
+        if (cacheKey && rawSubscriptions.length) {
+            subscriptionCache.set(cacheKey, { at: Date.now(), subscriptions: rawSubscriptions });
+        }
+    }
     const recipientAuthJsonForLog = buildMobileSubscriptionAuthJsonForLog(
         targetUsersArray.join(','),
         rawSubscriptions || []
@@ -2005,7 +2176,10 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         }
 
         const refreshedRawSubscriptions = await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true });
-        const refreshedUniqueSubscriptions = normalizeAndFilterTargetSubscriptions(refreshedRawSubscriptions || []);
+        const refreshedUniqueSubscriptions = normalizeAndFilterTargetSubscriptions([
+            ...(Array.isArray(refreshedRawSubscriptions) ? refreshedRawSubscriptions : []),
+            ...getLocalDeviceSubscriptionsForUsers(targetUsersArray)
+        ]);
         if (refreshedUniqueSubscriptions.length) {
             const existingEndpoints = new Set(uniqueSubscriptions.map((sub) => sub.endpoint));
             const retryTargets = refreshedUniqueSubscriptions.filter(
