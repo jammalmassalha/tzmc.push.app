@@ -37,6 +37,7 @@ const HR_UPLOAD_BASE_URL = 'https://www.tzmc.co.il/notify/uploads/';
 const HR_STEPS_CACHE_TTL_MS = 5 * 60 * 1000;
 const HR_ACTIONS_CACHE_TTL_MS = 5 * 60 * 1000;
 const READ_RECEIPT_BATCH_SIZE = 80;
+const READ_RECEIPT_FLUSH_DEBOUNCE_MS = 900;
 const DELETED_MESSAGE_PLACEHOLDER = '🚫 הודעה זו נמחקה';
 
 type HrAwaitingState = 'step' | 'action' | 'free-text';
@@ -110,6 +111,9 @@ export class ChatStoreService {
   private lastServerBadgeResetAt = 0;
   private lastForegroundSyncAt = 0;
   private readonly readReceiptSentByChat = new Map<string, Set<string>>();
+  private readonly pendingReadReceiptByChat = new Map<string, Set<string>>();
+  private readonly readReceiptFlushTimerByChat = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly readReceiptFlushInFlightByChat = new Set<string>();
   private pushRegisterInFlight = false;
   private lastPushRegisterAttemptAt = 0;
 
@@ -263,7 +267,7 @@ export class ChatStoreService {
     this.groups.set([]);
     this.messagesByChat.set({});
     this.unreadByChat.set({});
-    this.readReceiptSentByChat.clear();
+    this.resetReadReceiptTrackingState();
     this.activeChatId.set(null);
     this.lastError.set(null);
 
@@ -286,7 +290,7 @@ export class ChatStoreService {
     this.groups.set([]);
     this.messagesByChat.set({});
     this.unreadByChat.set({});
-    this.readReceiptSentByChat.clear();
+    this.resetReadReceiptTrackingState();
     this.activeChatId.set(null);
     this.lastError.set(null);
   }
@@ -370,13 +374,22 @@ export class ChatStoreService {
       localStorage.setItem(this.activeChatKey(user), normalized);
       localStorage.removeItem(this.homeViewKey(user));
     }
-    this.unreadByChat.update((map) => ({
-      ...map,
-      [normalized]: 0
-    }));
-    void this.sendReadReceiptsForChat(normalized);
+    this.seedPendingReadReceiptsFromUnreadCount(normalized, unreadBeforeOpen);
     void this.onChatActivated(normalized);
     this.schedulePersist();
+  }
+
+  markActiveChatReadAtBottom(chatId?: string | null): void {
+    const normalizedChatId = this.normalizeChatId(chatId ?? this.activeChatId() ?? '');
+    if (!normalizedChatId) return;
+    if (this.groups().some((group) => group.id === normalizedChatId)) return;
+    if (SYSTEM_CHAT_IDS.some((id) => this.normalizeChatId(id) === normalizedChatId)) return;
+
+    this.seedPendingReadReceiptsFromUnreadCount(
+      normalizedChatId,
+      Number(this.unreadByChat()[normalizedChatId] ?? 0)
+    );
+    this.scheduleReadReceiptFlush(normalizedChatId);
   }
 
   clearLastActiveChat(): void {
@@ -1256,7 +1269,25 @@ export class ChatStoreService {
     this.setMessageStatus(messageId, 'sent');
   }
 
-  private async sendReadReceiptsForChat(chatId: string): Promise<void> {
+  private scheduleReadReceiptFlush(chatId: string): void {
+    const normalizedChatId = this.normalizeChatId(chatId);
+    if (!normalizedChatId) return;
+    const pending = this.pendingReadReceiptByChat.get(normalizedChatId);
+    if (!pending || pending.size === 0) return;
+
+    const existingTimer = this.readReceiptFlushTimerByChat.get(normalizedChatId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    const timer = setTimeout(() => {
+      this.readReceiptFlushTimerByChat.delete(normalizedChatId);
+      void this.flushPendingReadReceiptsForChat(normalizedChatId);
+    }, READ_RECEIPT_FLUSH_DEBOUNCE_MS);
+    this.readReceiptFlushTimerByChat.set(normalizedChatId, timer);
+  }
+
+  private async flushPendingReadReceiptsForChat(chatId: string): Promise<void> {
     const user = this.currentUser();
     if (!user || !this.networkOnline()) return;
 
@@ -1264,37 +1295,105 @@ export class ChatStoreService {
     if (!normalizedChatId) return;
     if (this.groups().some((group) => group.id === normalizedChatId)) return;
     if (SYSTEM_CHAT_IDS.some((id) => this.normalizeChatId(id) === normalizedChatId)) return;
+    if (this.readReceiptFlushInFlightByChat.has(normalizedChatId)) {
+      this.scheduleReadReceiptFlush(normalizedChatId);
+      return;
+    }
 
-    const messages = this.messagesByChat()[normalizedChatId] ?? [];
-    if (!messages.length) return;
+    const pendingSet = this.pendingReadReceiptByChat.get(normalizedChatId);
+    if (!pendingSet || pendingSet.size === 0) return;
 
     const sentSet = this.readReceiptSentByChat.get(normalizedChatId) ?? new Set<string>();
-    const messageIds = messages
-      .filter((message) => message.direction === 'incoming' && Boolean(message.messageId))
-      .map((message) => message.messageId)
-      .filter((messageId) => !sentSet.has(messageId));
-    if (!messageIds.length) return;
+    const messageIds = Array.from(pendingSet).filter((messageId) => messageId && !sentSet.has(messageId));
+    if (!messageIds.length) {
+      this.pendingReadReceiptByChat.delete(normalizedChatId);
+      return;
+    }
 
+    this.readReceiptFlushInFlightByChat.add(normalizedChatId);
     const nextSent = new Set(sentSet);
-    for (let index = 0; index < messageIds.length; index += READ_RECEIPT_BATCH_SIZE) {
-      const batch = messageIds.slice(index, index + READ_RECEIPT_BATCH_SIZE);
-      try {
+    const readAt = Date.now();
+    let sentAnyBatch = false;
+
+    try {
+      for (let index = 0; index < messageIds.length; index += READ_RECEIPT_BATCH_SIZE) {
+        const batch = messageIds.slice(index, index + READ_RECEIPT_BATCH_SIZE);
+        if (!batch.length) continue;
         await this.api.sendReadReceipt({
           reader: this.normalizeUser(user),
           sender: normalizedChatId,
           messageIds: batch,
-          readAt: Date.now()
+          readAt
         });
-        batch.forEach((messageId) => nextSent.add(messageId));
-      } catch {
-        // Best-effort only; next activation/receive/focus will retry unsent batches.
-        break;
+        sentAnyBatch = true;
+        batch.forEach((messageId) => {
+          nextSent.add(messageId);
+          pendingSet.delete(messageId);
+        });
       }
+    } catch {
+      // Best-effort only; remaining pending IDs stay queued for a later bottom reach.
+    } finally {
+      this.readReceiptFlushInFlightByChat.delete(normalizedChatId);
     }
 
     if (nextSent.size !== sentSet.size) {
       this.readReceiptSentByChat.set(normalizedChatId, nextSent);
     }
+    if (pendingSet.size === 0) {
+      this.pendingReadReceiptByChat.delete(normalizedChatId);
+    }
+    if (sentAnyBatch) {
+      this.unreadByChat.update((map) => ({
+        ...map,
+        [normalizedChatId]: 0
+      }));
+      this.schedulePersist();
+    }
+  }
+
+  private trackIncomingMessageForReadReceipt(chatId: string, messageId: string): void {
+    const normalizedChatId = this.normalizeChatId(chatId);
+    const normalizedMessageId = String(messageId || '').trim();
+    if (!normalizedChatId || !normalizedMessageId) return;
+
+    const sentSet = this.readReceiptSentByChat.get(normalizedChatId);
+    if (sentSet?.has(normalizedMessageId)) return;
+
+    const pendingSet = this.pendingReadReceiptByChat.get(normalizedChatId) ?? new Set<string>();
+    pendingSet.add(normalizedMessageId);
+    this.pendingReadReceiptByChat.set(normalizedChatId, pendingSet);
+  }
+
+  private seedPendingReadReceiptsFromUnreadCount(chatId: string, unreadCountRaw: number): void {
+    const normalizedChatId = this.normalizeChatId(chatId);
+    if (!normalizedChatId) return;
+    const unreadCount = Math.max(0, Math.floor(Number(unreadCountRaw) || 0));
+    if (unreadCount <= 0) return;
+
+    const sentSet = this.readReceiptSentByChat.get(normalizedChatId) ?? new Set<string>();
+    const incomingMessageIds = (this.messagesByChat()[normalizedChatId] ?? [])
+      .filter((message) => message.direction === 'incoming' && Boolean(message.messageId))
+      .map((message) => String(message.messageId || '').trim())
+      .filter(Boolean);
+    if (!incomingMessageIds.length) return;
+
+    const unreadTailIds = incomingMessageIds.slice(-unreadCount).filter((messageId) => !sentSet.has(messageId));
+    if (!unreadTailIds.length) return;
+
+    const pendingSet = this.pendingReadReceiptByChat.get(normalizedChatId) ?? new Set<string>();
+    unreadTailIds.forEach((messageId) => pendingSet.add(messageId));
+    this.pendingReadReceiptByChat.set(normalizedChatId, pendingSet);
+  }
+
+  private resetReadReceiptTrackingState(): void {
+    this.readReceiptSentByChat.clear();
+    this.pendingReadReceiptByChat.clear();
+    this.readReceiptFlushInFlightByChat.clear();
+    for (const timer of this.readReceiptFlushTimerByChat.values()) {
+      clearTimeout(timer);
+    }
+    this.readReceiptFlushTimerByChat.clear();
   }
 
   private queueDirectMessage(
@@ -1537,19 +1636,14 @@ export class ChatStoreService {
     };
 
     this.appendMessage(record);
-
-    if (this.activeChatId() !== chatId) {
-      this.unreadByChat.update((map) => ({
-        ...map,
-        [chatId]: (map[chatId] ?? 0) + 1
-      }));
-    } else {
-      this.unreadByChat.update((map) => ({
-        ...map,
-        [chatId]: 0
-      }));
-      void this.sendReadReceiptsForChat(chatId);
+    if (!isGroup && !SYSTEM_CHAT_IDS.some((id) => this.normalizeChatId(id) === chatId)) {
+      this.trackIncomingMessageForReadReceipt(chatId, messageId);
     }
+
+    this.unreadByChat.update((map) => ({
+      ...map,
+      [chatId]: (map[chatId] ?? 0) + 1
+    }));
 
     this.schedulePersist();
   }
@@ -2540,10 +2634,6 @@ export class ChatStoreService {
     void this.pullMessages(user);
     void this.flushOutbox();
     void this.refresh(forceRefresh);
-    const activeChat = this.activeChatId();
-    if (activeChat) {
-      void this.sendReadReceiptsForChat(activeChat);
-    }
   }
 
   private syncAppBadge(unreadTotal: number): void {

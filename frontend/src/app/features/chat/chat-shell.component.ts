@@ -1537,7 +1537,11 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     }
 
     const distanceFromBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight;
-    this.isMessagesPanelAtBottom.set(distanceFromBottom <= this.scrollBottomThresholdPx);
+    const isAtBottom = distanceFromBottom <= this.scrollBottomThresholdPx;
+    this.isMessagesPanelAtBottom.set(isAtBottom);
+    if (isAtBottom && this.store.activeChatId()) {
+      this.store.markActiveChatReadAtBottom();
+    }
   }
 
   private parseMessageBody(body: string): MessageRenderPart[] {
