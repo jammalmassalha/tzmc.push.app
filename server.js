@@ -200,13 +200,8 @@ const AUTH_REFRESH_CONTACT_DISCOVERY_MAX_SEEDS = 120;
 const AUTH_REFRESH_FAILURE_DETAILS_LIMIT = 80;
 const AUTH_REFRESH_STALE_CLEANUP_BATCH_SIZE = 40;
 const AUTH_REFRESH_SCHEDULER_ENABLED = String(process.env.AUTH_REFRESH_SCHEDULER_ENABLED || 'true').trim().toLowerCase() !== 'false';
-const AUTH_REFRESH_SCHEDULER_INTERVAL_MS = Math.max(
-    2 * 60 * 1000,
-    Number(process.env.AUTH_REFRESH_SCHEDULER_INTERVAL_MS) || 5 * 60 * 1000
-);
-const AUTH_REFRESH_SCHEDULER_INITIAL_DELAY_MS = Math.max(
-    5000,
-    Number(process.env.AUTH_REFRESH_SCHEDULER_INITIAL_DELAY_MS) || 45000
+const AUTH_REFRESH_SCHEDULER_DAILY_TIME = parseAuthRefreshSchedulerDailyTime(
+    process.env.AUTH_REFRESH_SCHEDULER_DAILY_TIME || '00:01'
 );
 const AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE = String(
     process.env.AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE || ''
@@ -294,6 +289,35 @@ function parseSubscriptionDeviceTypesInput(rawValue) {
         }
     });
     return Array.from(allowed);
+}
+
+function parseAuthRefreshSchedulerDailyTime(rawValue) {
+    const fallback = {
+        hour: 0,
+        minute: 1,
+        second: 0,
+        label: '00:01'
+    };
+    const source = String(rawValue || '').trim();
+    if (!source) return fallback;
+
+    const match = source.match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?$/);
+    if (!match) return fallback;
+
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+    const second = match[3] === undefined ? 0 : Number(match[3]);
+    if (
+        !Number.isInteger(hour) || hour < 0 || hour > 23 ||
+        !Number.isInteger(minute) || minute < 0 || minute > 59 ||
+        !Number.isInteger(second) || second < 0 || second > 59
+    ) {
+        return fallback;
+    }
+
+    const label = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}` +
+        (second ? `:${String(second).padStart(2, '0')}` : '');
+    return { hour, minute, second, label };
 }
 
 function isAppleWebPushEndpoint(endpointValue) {
@@ -1124,6 +1148,21 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
     return resultSummary;
 }
 
+function getNextAuthRefreshSchedulerRunDate(baseDate = new Date()) {
+    const now = baseDate instanceof Date ? baseDate : new Date();
+    const nextRun = new Date(now.getTime());
+    nextRun.setHours(
+        AUTH_REFRESH_SCHEDULER_DAILY_TIME.hour,
+        AUTH_REFRESH_SCHEDULER_DAILY_TIME.minute,
+        AUTH_REFRESH_SCHEDULER_DAILY_TIME.second,
+        0
+    );
+    if (nextRun.getTime() <= now.getTime()) {
+        nextRun.setDate(nextRun.getDate() + 1);
+    }
+    return nextRun;
+}
+
 function startSubscriptionAuthRefreshScheduler() {
     if (authRefreshSchedulerStarted) {
         return;
@@ -1138,7 +1177,7 @@ function startSubscriptionAuthRefreshScheduler() {
     const runScheduledRefresh = () => {
         runSubscriptionAuthRefreshJob({
             requestId: generateMessageId(),
-            reason: 'scheduled-keepalive',
+            reason: 'scheduled-daily-keepalive',
             initiatedBy: 'scheduler',
             forceResubscribe: AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE,
             deviceTypes: AUTH_REFRESH_SCHEDULER_DEVICE_TYPES,
@@ -1158,16 +1197,22 @@ function startSubscriptionAuthRefreshScheduler() {
             });
     };
 
-    setTimeout(() => {
-        runScheduledRefresh();
-        setInterval(
-            runScheduledRefresh,
-            AUTH_REFRESH_SCHEDULER_INTERVAL_MS
+    const scheduleNextRun = () => {
+        const now = new Date();
+        const nextRun = getNextAuthRefreshSchedulerRunDate(now);
+        const delayMs = Math.max(1000, nextRun.getTime() - now.getTime());
+        setTimeout(() => {
+            runScheduledRefresh();
+            scheduleNextRun();
+        }, delayMs);
+        console.log(
+            `[AUTH REFRESH] Next scheduler run at ${nextRun.toISOString()} (local ${AUTH_REFRESH_SCHEDULER_DAILY_TIME.label})`
         );
-    }, AUTH_REFRESH_SCHEDULER_INITIAL_DELAY_MS);
+    };
 
+    scheduleNextRun();
     console.log(
-        `[AUTH REFRESH] Scheduler armed | initialDelay=${AUTH_REFRESH_SCHEDULER_INITIAL_DELAY_MS}ms | interval=${AUTH_REFRESH_SCHEDULER_INTERVAL_MS}ms | deviceTypes=${AUTH_REFRESH_SCHEDULER_DEVICE_TYPES || 'all'} | excludeIosEndpoints=${AUTH_REFRESH_SCHEDULER_EXCLUDE_IOS_ENDPOINTS} | forceResubscribe=${AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE}`
+        `[AUTH REFRESH] Scheduler armed | dailyLocalTime=${AUTH_REFRESH_SCHEDULER_DAILY_TIME.label} | deviceTypes=${AUTH_REFRESH_SCHEDULER_DEVICE_TYPES || 'all'} | excludeIosEndpoints=${AUTH_REFRESH_SCHEDULER_EXCLUDE_IOS_ENDPOINTS} | forceResubscribe=${AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE}`
     );
 }
 
