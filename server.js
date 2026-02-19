@@ -325,10 +325,15 @@ const AUTH_REFRESH_SCHEDULER_DEVICE_TYPES = String(
 const AUTH_REFRESH_SCHEDULER_EXCLUDE_IOS_ENDPOINTS = String(
     process.env.AUTH_REFRESH_SCHEDULER_EXCLUDE_IOS_ENDPOINTS || 'true'
 ).trim().toLowerCase() !== 'false';
+const APP_SERVER_TOKEN = String(
+    process.env.APP_SERVER_TOKEN ||
+    process.env.GOOGLE_SHEET_APP_SERVER_TOKEN ||
+    ''
+).trim();
 const CHECK_QUEUE_SERVER_TOKEN = String(
     process.env.CHECK_QUEUE_SERVER_TOKEN ||
     process.env.GOOGLE_SHEET_CHECK_QUEUE_TOKEN ||
-    ''
+    APP_SERVER_TOKEN
 ).trim();
 const MOBILE_REREGISTER_PUSH_TYPE = 'mobile-re-register-prompt';
 const MOBILE_REREGISTER_DEFAULT_CAMPAIGN_ID = 'mobile-reregister-temp-v1';
@@ -731,6 +736,25 @@ function parseUsernamesInput(rawValue) {
     return Array.from(normalized);
 }
 
+function buildGoogleSheetGetUrl(queryParams = {}, options = {}) {
+    const url = new URL(GOOGLE_SHEET_URL);
+    Object.entries(queryParams || {}).forEach(([key, value]) => {
+        if (value === undefined || value === null) return;
+        const normalizedValue = String(value).trim();
+        if (!normalizedValue) return;
+        url.searchParams.set(key, normalizedValue);
+    });
+    const token = String(
+        Object.prototype.hasOwnProperty.call(options, 'token')
+            ? (options && options.token)
+            : APP_SERVER_TOKEN
+    ).trim();
+    if (token) {
+        url.searchParams.set('token', token);
+    }
+    return url.toString();
+}
+
 function extractUsernamesFromContactsResponse(payload = {}) {
     const extracted = new Set();
     const candidateArrays = [];
@@ -760,7 +784,7 @@ async function fetchContactUsernamesForUser(userKey) {
     if (!userKey) return [];
     try {
         const response = await fetchWithRetry(
-            `${GOOGLE_SHEET_URL}?action=get_contacts&user=${encodeURIComponent(userKey)}`,
+            buildGoogleSheetGetUrl({ action: 'get_contacts', user: userKey }),
             {},
             { timeoutMs: 10000, retries: 1, backoffMs: 500 }
         );
@@ -859,9 +883,9 @@ async function getAllSubscriptionsForAuthRefresh(options = {}) {
     requestedUsers.forEach((userKey) => addUserToSet(discoveredUsers, userKey));
 
     const sheetUrls = [
-        `${GOOGLE_SHEET_URL}?usernames=${encodeURIComponent('all')}`,
-        `${GOOGLE_SHEET_URL}?action=get_all_subscriptions`,
-        `${GOOGLE_SHEET_URL}?action=get_subscriptions`
+        buildGoogleSheetGetUrl({ usernames: 'all' }),
+        buildGoogleSheetGetUrl({ action: 'get_all_subscriptions' }),
+        buildGoogleSheetGetUrl({ action: 'get_subscriptions' })
     ];
     for (const url of sheetUrls) {
         const fromSheet = await fetchSubscriptionsFromSheetUrl(url);
@@ -1799,7 +1823,7 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
 
     try {
         const response = await fetchWithRetry(
-            `${GOOGLE_SHEET_URL}?usernames=${encodeURIComponent(requestUserList)}`,
+            buildGoogleSheetGetUrl({ usernames: requestUserList }),
             {},
             { timeoutMs: 12000, retries: 2, backoffMs: 500 }
         );
@@ -2082,7 +2106,7 @@ app.post(['/verify-status', '/notify/verify-status'], async (req, res) => {
     console.log(`[Verify] Checking status for user: ${username}...`);
 
     // --- FIX: Use the variable 'GOOGLE_SHEET_URL' declared at the top of server.js ---
-    const scriptUrl = `${GOOGLE_SHEET_URL}?action=get_contacts&user=${encodeURIComponent(username)}`;
+    const scriptUrl = buildGoogleSheetGetUrl({ action: 'get_contacts', user: username });
     try {
         
         
@@ -2522,6 +2546,33 @@ app.post(['/mobile-reregister-campaign', '/notify/mobile-reregister-campaign'], 
         .catch((error) => {
             console.error(`[MOBILE REREGISTER] Failed ${requestId}:`, error && error.message ? error.message : error);
         });
+});
+
+app.get(['/contacts', '/notify/contacts'], async (req, res) => {
+    const user = req.query.user ? normalizeUserKey(req.query.user) : '';
+    if (!user) {
+        return res.status(400).json({ users: [], error: 'Missing user' });
+    }
+
+    try {
+        const response = await fetchWithRetry(
+            buildGoogleSheetGetUrl({ action: 'get_contacts', user }),
+            {},
+            { timeoutMs: 10000, retries: 2 }
+        );
+        if (!response.ok) {
+            return res.status(response.status).json({ users: [] });
+        }
+        const payload = await response.json();
+        const users = Array.isArray(payload && payload.users) ? payload.users : [];
+        return res.json({
+            result: 'success',
+            users
+        });
+    } catch (error) {
+        console.error('[CONTACTS] Failed to load contacts:', error && error.message ? error.message : error);
+        return res.status(502).json({ users: [], error: 'Contacts fetch failed' });
+    }
 });
 
 app.get(['/groups', '/notify/groups'], (req, res) => {
@@ -3083,12 +3134,11 @@ app.post('/notify', async (req, res) => {
 async function checkOutgoingQueue() {
     try {
         // Ask Google Script for pending messages
-        const queueUrl = new URL(GOOGLE_SHEET_URL);
-        queueUrl.searchParams.set('action', 'check_queue');
-        if (CHECK_QUEUE_SERVER_TOKEN) {
-            queueUrl.searchParams.set('token', CHECK_QUEUE_SERVER_TOKEN);
-        }
-        const response = await fetchWithRetry(queueUrl.toString(), {}, { timeoutMs: 10000, retries: 2 });
+        const response = await fetchWithRetry(
+            buildGoogleSheetGetUrl({ action: 'check_queue' }, { token: CHECK_QUEUE_SERVER_TOKEN }),
+            {},
+            { timeoutMs: 10000, retries: 2 }
+        );
         const data = await response.json();
 
         const queuedMessages = Array.isArray(data && data.messages) ? data.messages : [];

@@ -2,6 +2,7 @@
 var SPREADSHEET_ID = '1eQ9r491jTVz7RZJFoUxRRT23QLAJKWbWuKKTrh0NJKE';
 var CACHE_TTL_SECONDS = 300;
 var CONTACTS_CACHE_TTL_SECONDS = 60;
+var APP_SERVER_TOKEN_PROPERTY = 'APP_SERVER_TOKEN';
 var CHECK_QUEUE_SERVER_TOKEN_PROPERTY = 'CHECK_QUEUE_SERVER_TOKEN';
 
 function normalizePhone(value) {
@@ -19,13 +20,21 @@ function normalizeSheetPhone(value) {
   return normalizePhone(text);
 }
 
-function getCheckQueueServerToken() {
+function getServerGuardToken() {
   try {
-    var configured = PropertiesService.getScriptProperties().getProperty(CHECK_QUEUE_SERVER_TOKEN_PROPERTY);
-    return String(configured || '').trim();
+    var properties = PropertiesService.getScriptProperties();
+    var appToken = String(properties.getProperty(APP_SERVER_TOKEN_PROPERTY) || '').trim();
+    if (appToken) return appToken;
+    var queueToken = String(properties.getProperty(CHECK_QUEUE_SERVER_TOKEN_PROPERTY) || '').trim();
+    if (queueToken) return queueToken;
+    return '';
   } catch (err) {
     return '';
   }
+}
+
+function getCheckQueueServerToken() {
+  return getServerGuardToken();
 }
 
 function getLastDataRow(sheet) {
@@ -334,6 +343,12 @@ function doGet(e) {
     // 3. [UPDATED] GET CONTACTS (Modified for New Schema)
     // ======================================================
     if (e.parameter.action === 'get_contacts') {
+      var configuredContactsToken = getServerGuardToken();
+      var providedContactsToken = String(e.parameter.token || e.parameter.serverToken || '').trim();
+      if (configuredContactsToken && providedContactsToken !== configuredContactsToken) {
+        return createError('Unauthorized get_contacts read');
+      }
+
       var sheet = spreadsheet.getSheetByName('Subscribe');
       if (!sheet) return createError('Sheet Subscribe not found');
       var cache = CacheService.getScriptCache();

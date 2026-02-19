@@ -109,7 +109,7 @@ export class ChatApiService {
   }
 
   async getContacts(user: string): Promise<Contact[]> {
-    const url = `${this.config.subscriptionUrl}?action=get_contacts&user=${encodeURIComponent(user)}`;
+    const url = `${this.notifyBaseUrl}/contacts?user=${encodeURIComponent(user)}`;
     const response = await this.fetchWithRetry(url, {}, { retries: 2, timeoutMs: 10000 });
     if (!response.ok) {
       throw new Error(`Contacts request failed with ${response.status}`);
