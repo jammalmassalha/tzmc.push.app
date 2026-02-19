@@ -5,7 +5,7 @@
     const HR_STEPS_ACTION_LIST = 'get_hr_steps_action';
     const HR_WELCOME_KEY_PREFIX = 'hr_welcome_sent_';
     const HR_STATE_KEY_PREFIX = 'hr_state_';
-    const HR_UPLOAD_BASE_URL = 'https://www.tzmc.co.il/notify/uploads/';
+    const HR_UPLOAD_BASE_URL = '/notify/uploads/';
     const STEPS_CACHE_TTL_MS = 5 * 60 * 1000;
     const ACTIONS_CACHE_TTL_MS = 5 * 60 * 1000;
     let stepsCache = { at: 0, steps: [] };

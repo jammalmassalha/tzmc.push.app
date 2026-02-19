@@ -198,8 +198,27 @@ app.use((req, res, next) => {
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/notify', express.static(path.join(__dirname, 'public')));
 
-// Keep your uploads separate
-app.use(['/uploads', '/notify/uploads'], express.static(uploadDir));
+const authenticatedUploadsStaticMiddleware = express.static(uploadDir, {
+    fallthrough: false,
+    dotfiles: 'deny',
+    index: false,
+    setHeaders: (res) => {
+        res.setHeader('Cache-Control', 'private, max-age=300, must-revalidate');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+    }
+});
+app.use(['/uploads', '/notify/uploads'], (req, res, next) => {
+    const session = extractSessionFromRequest(req);
+    const sessionUser = normalizeUserCandidate(
+        (session && session.user) || req.authUser
+    );
+    if (!sessionUser) {
+        return res.status(401).json({ error: 'Authentication required' });
+    }
+    req.authSession = req.authSession || session || null;
+    req.authUser = sessionUser;
+    return next();
+}, authenticatedUploadsStaticMiddleware);
 
 
 app.use(bodyParser.json());
@@ -3277,8 +3296,8 @@ app.post(['/upload', '/notify/upload'], uploadFieldsValidated, (req, res) => {
     if (thumbnail && !isAllowedThumbnailUpload(thumbnail)) {
         return res.status(400).json({ error: 'Thumbnail must be an image file' });
     }
-    const fileUrl = `https://www.tzmc.co.il/notify/uploads/${file.filename}`;
-    const thumbUrl = thumbnail ? `https://www.tzmc.co.il/notify/uploads/${thumbnail.filename}` : null;
+    const fileUrl = `/notify/uploads/${encodeURIComponent(file.filename)}`;
+    const thumbUrl = thumbnail ? `/notify/uploads/${encodeURIComponent(thumbnail.filename)}` : null;
     res.json({ status: 'success', url: fileUrl, thumbUrl, type: file.mimetype });
 });
 
