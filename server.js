@@ -135,14 +135,22 @@ function addToQueue(targetUser, messageObj) {
     const recipients = Array.isArray(targetUser) ? targetUser : [targetUser];
     
     recipients.forEach(user => {
-        // [CHANGE] Force Lowercase Key
-        const normalizedUser = String(user).trim().toLowerCase(); 
+        const normalizedUser = normalizeUserCandidate(user);
+        if (!normalizedUser) return;
+
+        const queueEntry = (messageObj && typeof messageObj === 'object')
+            ? { ...messageObj, recipient: normalizedUser }
+            : {
+                recipient: normalizedUser,
+                body: String(messageObj || ''),
+                timestamp: Date.now()
+            };
 
         if (!messageQueue[normalizedUser]) {
             messageQueue[normalizedUser] = [];
         }
-        messageQueue[normalizedUser].push(messageObj);
-        notifySseClients(normalizedUser, messageObj);
+        messageQueue[normalizedUser].push(queueEntry);
+        notifySseClients(normalizedUser, queueEntry);
     });
     scheduleStateSave();
 }
@@ -1669,12 +1677,13 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
     const normalizeLookupSubscriptions = (payload) => {
         const extracted = extractSubscriptionsFromSheetResponse(payload);
         if (!extracted.length) return [];
-        if (!requestedUsersSet.size) return extracted;
         return extracted.filter((subscription) => {
             const subscriptionUser = normalizeUserKey(
                 subscription && (subscription.username || subscription.user)
             );
-            return !subscriptionUser || requestedUsersSet.has(subscriptionUser);
+            if (!subscriptionUser) return false;
+            if (!requestedUsersSet.size) return true;
+            return requestedUsersSet.has(subscriptionUser);
         });
     };
 
@@ -2034,21 +2043,23 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         new Set(targetUsersArray.map(normalizeUserKey).filter(Boolean))
     );
     const targetUsersSet = new Set(normalizedTargetUsers);
-    const fallbackTargetUser = normalizedTargetUsers.length === 1 ? normalizedTargetUsers[0] : '';
     const normalizeAndFilterTargetSubscriptions = (subscriptions) => {
         const normalized = dedupeSubscriptionsByEndpoint(subscriptions || []);
         return normalized
             .map((subscription) => {
-                if (subscription && subscription.username) return subscription;
-                if (!fallbackTargetUser) return subscription;
+                const subscriptionUser = normalizeUserKey(
+                    subscription && (subscription.username || subscription.user)
+                );
+                if (!subscriptionUser) return null;
                 return {
                     ...subscription,
-                    username: fallbackTargetUser
+                    username: subscriptionUser
                 };
             })
+            .filter(Boolean)
             .filter((subscription) => {
                 const subscriptionUser = normalizeUserKey(subscription && (subscription.username || subscription.user));
-                return !subscriptionUser || targetUsersSet.has(subscriptionUser);
+                return subscriptionUser && targetUsersSet.has(subscriptionUser);
             });
     };
 
@@ -2112,8 +2123,16 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
             subscriptions.map(async (subscription) => {
                 // Increment unread badge once per user, not once per device endpoint.
                 const userKey = normalizeUserKey(
-                    subscription.username || subscription.user || fallbackTargetUser
+                    subscription.username || subscription.user
                 );
+                if (!userKey || (targetUsersSet.size && !targetUsersSet.has(userKey))) {
+                    return {
+                        ok: false,
+                        username: userKey || 'unknown',
+                        statusCode: 'SKIP',
+                        message: 'Subscription user mismatch'
+                    };
+                }
                 let currentCount = userKey ? (unreadCounts[userKey] || 0) : 0;
                 if (shouldIncrementBadge && userKey) {
                     if (allowBadgeIncrement) {
@@ -2139,7 +2158,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                     requireInteraction: true,
                     image: imageUrl,
                     url: clickUrl,
-                    user: userKey || subscription.username || '',
+                    user: userKey,
                     sender: finalSender,
                     messageId: messageId
                 };
@@ -2187,7 +2206,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         uniqueSubscriptions.forEach((subscription) => {
             const userKey = normalizeUserKey(
                 subscription.username || subscription.user || ''
-            ) || `endpoint:${String(subscription.endpoint || '').trim()}`;
+            );
             if (!userKey) return;
             // Keep latest observed subscription per user to prevent duplicate pushes.
             oneSubscriptionPerUser.set(userKey, subscription);
@@ -2410,18 +2429,29 @@ app.get(['/groups', '/notify/groups'], (req, res) => {
 // ======================================================
 app.get(['/messages', '/notify/messages'], (req, res) => {
     // [CHANGE] Force Lowercase Lookup
-    const user = req.query.user ? String(req.query.user).trim().toLowerCase() : null;
+    const user = req.query.user ? normalizeUserKey(req.query.user) : '';
     
     if (!user) return res.json({ messages: [] });
 
     // Check mailbox (using lowercase key)
     if (messageQueue[user] && messageQueue[user].length > 0) {
-        const waitingMessages = messageQueue[user];
+        const mailbox = Array.isArray(messageQueue[user]) ? messageQueue[user] : [];
+        const waitingMessages = mailbox.filter((message) => {
+            if (!message || typeof message !== 'object') {
+                return true;
+            }
+            const recipient = normalizeUserKey(message.recipient || message.user || '');
+            return !recipient || recipient === user;
+        });
+        const droppedCount = mailbox.length - waitingMessages.length;
         
         // Clear mailbox after picking up
         messageQueue[user] = []; 
         scheduleStateSave();
         
+        if (droppedCount > 0) {
+            console.warn(`[POLLING] Dropped ${droppedCount} mismatched queued messages for ${user}`);
+        }
         console.log(`[POLLING] Delivered ${waitingMessages.length} msgs to ${user}`);
         return res.json({ messages: waitingMessages });
     }
@@ -2940,15 +2970,19 @@ async function checkOutgoingQueue() {
         const response = await fetchWithRetry(`${GOOGLE_SHEET_URL}?action=check_queue`, {}, { timeoutMs: 10000, retries: 2 });
         const data = await response.json();
 
-        if (data.messages && data.messages.length > 0) {
-            console.log(`[QUEUE] Found ${data.messages.length} messages.`);
+        const queuedMessages = Array.isArray(data && data.messages) ? data.messages : [];
+        if (queuedMessages.length > 0) {
+            console.log(`[QUEUE] Found ${queuedMessages.length} messages.`);
 
-            for (const msg of data.messages) {
-                const targetUser = msg.recipient;
-                const senderName = msg.sender || 'System'; 
-                const bodyText = msg.content;
+            for (const msg of queuedMessages) {
+                const targetUsers = parseUsernamesInput(msg && msg.recipient);
+                const senderName = String((msg && msg.sender) || 'System').trim() || 'System';
+                const bodyText = String((msg && msg.content) || '').trim();
+                if (!targetUsers.length || !bodyText) {
+                    continue;
+                }
                 
-                const messageId = msg.messageId || generateMessageId();
+                const messageId = (msg && msg.messageId) ? String(msg.messageId).trim() : generateMessageId();
                 const notificationData = {
                     messageId,
                     title: `Message from ${senderName}`,
@@ -2959,7 +2993,7 @@ async function checkOutgoingQueue() {
                 };
 
                 // 1. Send Push Notification (Handles all devices)
-                await sendPushNotificationToUser(targetUser, notificationData, senderName, { messageId });
+                await sendPushNotificationToUser(targetUsers, notificationData, senderName, { messageId });
                 
                 // 2. Add to Polling Queue
                 const pollingMessage = {
@@ -2969,7 +3003,7 @@ async function checkOutgoingQueue() {
                     timestamp: Date.now(),
                     imageUrl: null
                 };
-                addToQueue(targetUser, pollingMessage);
+                addToQueue(targetUsers, pollingMessage);
             }
         }
     } catch (error) {

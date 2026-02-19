@@ -398,6 +398,7 @@ function doGet(e) {
     // 4. CHECK QUEUE (Polling)
     // ======================================================
     if (action === 'check_queue') {
+      var requestedUser = normalizePhone(e.parameter.user || e.parameter.username || '');
       var queueSheet = spreadsheet.getSheetByName('ToSend');
 
       if (!queueSheet) {
@@ -416,23 +417,31 @@ function doGet(e) {
         var range = queueSheet.getRange(2, 1, lastRow - 1, 3);
         var values = range.getValues();
         var messages = [];
+        var rowsToDelete = [];
 
         for (var i = 0; i < values.length; i++) {
           var row = values[i];
 
           if (row[0] && row[2]) {
-            // 1. Get the raw recipient string
-            var recipient = normalizePhone(row[0]);
+            var recipient = normalizeSheetPhone(row[0]);
+            if (!recipient) continue;
+            if (requestedUser && recipient !== requestedUser) continue;
 
             messages.push({
-              recipient: recipient, // Use the fixed variable
+              recipient: recipient,
               sender: String(row[1]).trim(),
               content: String(row[2]).trim()
             });
+            rowsToDelete.push(i + 2);
           }
         }
 
-        range.clearContent();
+        if (rowsToDelete.length > 0) {
+          rowsToDelete.sort(function (a, b) { return b - a; });
+          for (var d = 0; d < rowsToDelete.length; d++) {
+            queueSheet.deleteRow(rowsToDelete[d]);
+          }
+        }
         return createJSON({ 'messages': messages });
 
       } finally {
