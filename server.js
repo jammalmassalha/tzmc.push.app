@@ -199,7 +199,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use('/notify', express.static(path.join(__dirname, 'public')));
 
 const authenticatedUploadsStaticMiddleware = express.static(uploadDir, {
-    fallthrough: false,
+    fallthrough: true,
+    redirect: false,
     dotfiles: 'deny',
     index: false,
     setHeaders: (res) => {
@@ -215,10 +216,16 @@ app.use(['/uploads', '/notify/uploads'], (req, res, next) => {
     if (!sessionUser) {
         return res.status(401).json({ error: 'Authentication required' });
     }
+    const requestPath = String(req.path || '').trim();
+    if (!requestPath || requestPath === '/' || requestPath === '.') {
+        return res.status(404).json({ error: 'File not found' });
+    }
     req.authSession = req.authSession || session || null;
     req.authUser = sessionUser;
     return next();
-}, authenticatedUploadsStaticMiddleware);
+}, authenticatedUploadsStaticMiddleware, (_req, res) => {
+    return res.status(404).json({ error: 'File not found' });
+});
 
 
 app.use(bodyParser.json());
