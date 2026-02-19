@@ -2384,9 +2384,25 @@ async function fetchUsersFromSheet() {
         if (Date.now() - lastContactsFetch < CONTACTS_TTL_MS) {
             return;
         }
-        const url = CONTACTS_URL + '?user=' + encodeURIComponent(currentUser);
-        
-        const res = await fetchWithRetry(url, {}, { timeoutMs: 10000, retries: 2 });
+        const encodedUser = encodeURIComponent(currentUser);
+        const contactsBaseUrl = String(CONTACTS_URL || '').replace(/\/+$/, '');
+        const contactCandidates = [
+            contactsBaseUrl + '?user=' + encodedUser,
+            contactsBaseUrl + '/' + encodedUser
+        ];
+        let res = null;
+        let lastStatus = 0;
+        for (let i = 0; i < contactCandidates.length; i++) {
+            const candidateRes = await fetchWithRetry(contactCandidates[i], {}, { timeoutMs: 10000, retries: 1 });
+            if (candidateRes.ok) {
+                res = candidateRes;
+                break;
+            }
+            lastStatus = candidateRes.status || 0;
+        }
+        if (!res) {
+            throw new Error('Contacts request failed with ' + lastStatus);
+        }
         const data = await res.json();
         
         if (data.users && Array.isArray(data.users)) {
