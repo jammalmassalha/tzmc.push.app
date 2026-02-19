@@ -4,20 +4,22 @@ import { ChatStoreService } from './core/services/chat-store.service';
 
 const authGuard: CanActivateFn = async () => {
   const store = inject(ChatStoreService);
+  const router = inject(Router);
   await store.ensureSessionReady();
   if (store.isAuthenticated()) {
     return true;
   }
-  return inject(Router).createUrlTree(['/setup']);
+  return router.createUrlTree(['/setup']);
 };
 
 const guestGuard: CanActivateFn = async () => {
   const store = inject(ChatStoreService);
+  const router = inject(Router);
   await store.ensureSessionReady();
   if (!store.isAuthenticated()) {
     return true;
   }
-  return inject(Router).createUrlTree(['/chats']);
+  return router.createUrlTree(['/chats']);
 };
 
 export const routes: Routes = [

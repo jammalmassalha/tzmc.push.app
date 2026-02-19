@@ -11,3 +11,11 @@ RewriteRule ^ https://www.tzmc.co.il%{REQUEST_URI} [R=301,L]
 # Deny direct client probes for classic script extensions.
 RewriteCond %{THE_REQUEST} \s/+[^\s]*\.(?:cgi|asp|aspx|php)(?:[\s?]|$) [NC]
 RewriteRule \.(?:cgi|asp|aspx|php)$ - [F,L,NC]
+
+# Keep existing assets/files untouched.
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Angular SPA fallback for /subscribes routes (e.g. /subscribes/chats).
+RewriteRule ^ index.html [L]
