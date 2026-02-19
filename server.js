@@ -220,6 +220,11 @@ const AUTH_REFRESH_SCHEDULER_DEVICE_TYPES = String(
 const AUTH_REFRESH_SCHEDULER_EXCLUDE_IOS_ENDPOINTS = String(
     process.env.AUTH_REFRESH_SCHEDULER_EXCLUDE_IOS_ENDPOINTS || 'true'
 ).trim().toLowerCase() !== 'false';
+const CHECK_QUEUE_SERVER_TOKEN = String(
+    process.env.CHECK_QUEUE_SERVER_TOKEN ||
+    process.env.GOOGLE_SHEET_CHECK_QUEUE_TOKEN ||
+    ''
+).trim();
 const MOBILE_REREGISTER_PUSH_TYPE = 'mobile-re-register-prompt';
 const MOBILE_REREGISTER_DEFAULT_CAMPAIGN_ID = 'mobile-reregister-temp-v1';
 const MOBILE_REREGISTER_DEFAULT_TITLE = 'Reconnect notifications';
@@ -2967,7 +2972,12 @@ app.post('/notify', async (req, res) => {
 async function checkOutgoingQueue() {
     try {
         // Ask Google Script for pending messages
-        const response = await fetchWithRetry(`${GOOGLE_SHEET_URL}?action=check_queue`, {}, { timeoutMs: 10000, retries: 2 });
+        const queueUrl = new URL(GOOGLE_SHEET_URL);
+        queueUrl.searchParams.set('action', 'check_queue');
+        if (CHECK_QUEUE_SERVER_TOKEN) {
+            queueUrl.searchParams.set('token', CHECK_QUEUE_SERVER_TOKEN);
+        }
+        const response = await fetchWithRetry(queueUrl.toString(), {}, { timeoutMs: 10000, retries: 2 });
         const data = await response.json();
 
         const queuedMessages = Array.isArray(data && data.messages) ? data.messages : [];

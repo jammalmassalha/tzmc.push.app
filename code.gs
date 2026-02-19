@@ -2,6 +2,7 @@
 var SPREADSHEET_ID = '1eQ9r491jTVz7RZJFoUxRRT23QLAJKWbWuKKTrh0NJKE';
 var CACHE_TTL_SECONDS = 300;
 var CONTACTS_CACHE_TTL_SECONDS = 60;
+var CHECK_QUEUE_SERVER_TOKEN_PROPERTY = 'CHECK_QUEUE_SERVER_TOKEN';
 
 function normalizePhone(value) {
   var text = String(value || '').trim();
@@ -16,6 +17,15 @@ function normalizeSheetPhone(value) {
   var text = String(value || '').trim();
   if (text.charAt(0) === "'") text = text.substring(1);
   return normalizePhone(text);
+}
+
+function getCheckQueueServerToken() {
+  try {
+    var configured = PropertiesService.getScriptProperties().getProperty(CHECK_QUEUE_SERVER_TOKEN_PROPERTY);
+    return String(configured || '').trim();
+  } catch (err) {
+    return '';
+  }
 }
 
 function getLastDataRow(sheet) {
@@ -399,6 +409,12 @@ function doGet(e) {
     // ======================================================
     if (action === 'check_queue') {
       var requestedUser = normalizePhone(e.parameter.user || e.parameter.username || '');
+      var configuredQueueToken = getCheckQueueServerToken();
+      var providedQueueToken = String(e.parameter.token || e.parameter.serverToken || '').trim();
+      var isAllUsersRead = !requestedUser;
+      if (isAllUsersRead && configuredQueueToken && providedQueueToken !== configuredQueueToken) {
+        return createError('Unauthorized check_queue read');
+      }
       var queueSheet = spreadsheet.getSheetByName('ToSend');
 
       if (!queueSheet) {
