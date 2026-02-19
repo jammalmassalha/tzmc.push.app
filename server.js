@@ -86,6 +86,49 @@ if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir);
 }
 
+const ALLOWED_IMAGE_EXTENSIONS = new Set([
+    '.jpg',
+    '.jpeg',
+    '.png',
+    '.gif',
+    '.webp',
+    '.bmp',
+    '.svg',
+    '.avif',
+    '.heic',
+    '.heif'
+]);
+const PDF_EXTENSION = '.pdf';
+const PDF_MIME_TYPE = 'application/pdf';
+
+function normalizeUploadMimeType(file = {}) {
+    return String(file.mimetype || '').trim().toLowerCase();
+}
+
+function normalizeUploadExtension(file = {}) {
+    return path.extname(String(file.originalname || '')).toLowerCase();
+}
+
+function isImageUpload(file = {}) {
+    const mimeType = normalizeUploadMimeType(file);
+    const extension = normalizeUploadExtension(file);
+    return mimeType.startsWith('image/') || ALLOWED_IMAGE_EXTENSIONS.has(extension);
+}
+
+function isPdfUpload(file = {}) {
+    const mimeType = normalizeUploadMimeType(file);
+    const extension = normalizeUploadExtension(file);
+    return mimeType === PDF_MIME_TYPE || extension === PDF_EXTENSION;
+}
+
+function isAllowedMainUpload(file = {}) {
+    return isImageUpload(file) || isPdfUpload(file);
+}
+
+function isAllowedThumbnailUpload(file = {}) {
+    return isImageUpload(file);
+}
+
 // --- 2. STORAGE CONFIG ---
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
@@ -103,8 +146,37 @@ const storage = multer.diskStorage({
     }
   }
 });
-const upload = multer({ storage: storage });
+const upload = multer({
+    storage: storage,
+    fileFilter: (req, file, cb) => {
+        if (!file || !file.fieldname) {
+            return cb(new Error('Invalid upload payload'));
+        }
+        if (file.fieldname === 'file') {
+            if (isAllowedMainUpload(file)) {
+                return cb(null, true);
+            }
+            return cb(new Error('Only image and PDF files are allowed'));
+        }
+        if (file.fieldname === 'thumbnail') {
+            if (isAllowedThumbnailUpload(file)) {
+                return cb(null, true);
+            }
+            return cb(new Error('Thumbnail must be an image file'));
+        }
+        return cb(new Error(`Unsupported upload field: ${file.fieldname}`));
+    }
+});
 const uploadFields = upload.fields([{ name: 'file', maxCount: 1 }, { name: 'thumbnail', maxCount: 1 }]);
+function uploadFieldsValidated(req, res, next) {
+    uploadFields(req, res, (error) => {
+        if (!error) {
+            return next();
+        }
+        const message = error && error.message ? error.message : 'Invalid upload request';
+        return res.status(400).json({ error: message });
+    });
+}
 
 // --- 3. WEB PUSH CONFIG ---
 
@@ -2517,12 +2589,18 @@ app.get(['/stream', '/notify/stream'], (req, res) => {
     req.on('error', cleanup);
 });
 
-app.post(['/upload', '/notify/upload'], uploadFields, (req, res) => {
+app.post(['/upload', '/notify/upload'], uploadFieldsValidated, (req, res) => {
     const file = req.files && req.files.file ? req.files.file[0] : null;
     const thumbnail = req.files && req.files.thumbnail ? req.files.thumbnail[0] : null;
 
     if (!file) {
         return res.status(400).json({ error: 'No file uploaded' });
+    }
+    if (!isAllowedMainUpload(file)) {
+        return res.status(400).json({ error: 'Only image and PDF files are allowed' });
+    }
+    if (thumbnail && !isAllowedThumbnailUpload(thumbnail)) {
+        return res.status(400).json({ error: 'Thumbnail must be an image file' });
     }
     const fileUrl = `https://www.tzmc.co.il/notify/uploads/${file.filename}`;
     const thumbUrl = thumbnail ? `https://www.tzmc.co.il/notify/uploads/${thumbnail.filename}` : null;
