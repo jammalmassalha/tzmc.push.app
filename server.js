@@ -17,6 +17,39 @@ const crypto = require('crypto');
 // --- 1. SETUP UPLOADS FOLDER ---
 const uploadDir = path.join(__dirname, 'uploads');
 const app = express();
+app.disable('x-powered-by');
+
+const CONTENT_SECURITY_POLICY = [
+    "default-src 'self' https: data: blob:",
+    "base-uri 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "img-src 'self' https: data: blob:",
+    "font-src 'self' https: data:",
+    "style-src 'self' https: 'unsafe-inline'",
+    "script-src 'self' https: 'unsafe-inline' 'unsafe-eval'",
+    "connect-src 'self' https: wss:",
+    "worker-src 'self' blob:",
+    "media-src 'self' https: data: blob:",
+    "form-action 'self'",
+    "manifest-src 'self'",
+    'upgrade-insecure-requests'
+].join('; ');
+
+app.use((req, res, next) => {
+    const forwardedProto = String(req.headers['x-forwarded-proto'] || '').toLowerCase();
+    const isHttpsRequest = req.secure || forwardedProto.includes('https');
+    if (isHttpsRequest) {
+        res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
+    res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY);
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    next();
+});
+
 const SERVER_VERSION = '1.40'; // Bumped version
 const SERVER_RELEASE_NOTES = [
     'Update available toast with reload button.',
