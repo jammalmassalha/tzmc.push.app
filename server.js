@@ -254,13 +254,25 @@ const ALLOWED_IMAGE_EXTENSIONS = new Set([
     '.gif',
     '.webp',
     '.bmp',
-    '.svg',
     '.avif',
     '.heic',
     '.heif'
 ]);
 const PDF_EXTENSION = '.pdf';
 const PDF_MIME_TYPE = 'application/pdf';
+const MAX_UPLOAD_INSPECTION_BYTES = 40 * 1024 * 1024;
+const ISO_BMFF_IMAGE_BRANDS = new Set(['avif', 'avis', 'heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1']);
+const PDF_DISALLOWED_TOKENS = [
+    /\/javascript\b/i,
+    /\/js\b/i,
+    /\/openaction\b/i,
+    /\/launch\b/i,
+    /\/aa\b/i,
+    /\/richmedia\b/i,
+    /\/submitform\b/i,
+    /\/embeddedfile\b/i,
+    /\/encrypt\b/i
+];
 
 function normalizeUploadMimeType(file = {}) {
     return String(file.mimetype || '').trim().toLowerCase();
@@ -290,21 +302,218 @@ function isAllowedThumbnailUpload(file = {}) {
     return isImageUpload(file);
 }
 
+function chooseSafeUploadExtension(file = {}) {
+    const ext = normalizeUploadExtension(file);
+    if (ALLOWED_IMAGE_EXTENSIONS.has(ext) || ext === PDF_EXTENSION) {
+        return ext;
+    }
+    const mimeType = normalizeUploadMimeType(file);
+    if (mimeType === 'image/jpeg') return '.jpg';
+    if (mimeType === 'image/png') return '.png';
+    if (mimeType === 'image/gif') return '.gif';
+    if (mimeType === 'image/webp') return '.webp';
+    if (mimeType === 'image/bmp' || mimeType === 'image/x-ms-bmp') return '.bmp';
+    if (mimeType === 'image/avif') return '.avif';
+    if (mimeType === 'image/heic') return '.heic';
+    if (mimeType === 'image/heif') return '.heif';
+    if (mimeType === PDF_MIME_TYPE) return PDF_EXTENSION;
+    if (mimeType.startsWith('image/')) return '.jpg';
+    return '';
+}
+
+function sanitizeUploadBaseName(rawName = '') {
+    const base = path.basename(String(rawName || '').trim());
+    const ext = path.extname(base);
+    const stem = base.slice(0, Math.max(0, base.length - ext.length));
+    const sanitized = stem
+        .normalize('NFKD')
+        .replace(/[^a-zA-Z0-9._-]+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^[._-]+|[._-]+$/g, '')
+        .slice(0, 40);
+    return sanitized || 'upload';
+}
+
+function buildSafeUploadFilename(file = {}) {
+    const safeStem = sanitizeUploadBaseName(file.originalname || '');
+    const extension = chooseSafeUploadExtension(file);
+    const uniqueSuffix = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+    return `${safeStem}-${uniqueSuffix}${extension}`;
+}
+
+function bufferStartsWith(buffer, signature) {
+    if (!Buffer.isBuffer(buffer) || !Buffer.isBuffer(signature)) return false;
+    if (buffer.length < signature.length) return false;
+    return buffer.subarray(0, signature.length).equals(signature);
+}
+
+function validatePngStructure(buffer) {
+    const pngSignature = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+    if (!bufferStartsWith(buffer, pngSignature)) {
+        return false;
+    }
+
+    let offset = pngSignature.length;
+    while (offset + 12 <= buffer.length) {
+        const chunkLength = buffer.readUInt32BE(offset);
+        const chunkType = buffer.toString('ascii', offset + 4, offset + 8);
+        const nextOffset = offset + 12 + chunkLength;
+        if (nextOffset > buffer.length) {
+            return false;
+        }
+        if (chunkType === 'IEND') {
+            return nextOffset === buffer.length;
+        }
+        offset = nextOffset;
+    }
+    return false;
+}
+
+function validateWebpStructure(buffer) {
+    if (buffer.length < 12) return false;
+    if (!buffer.subarray(0, 4).equals(Buffer.from('RIFF'))) return false;
+    if (!buffer.subarray(8, 12).equals(Buffer.from('WEBP'))) return false;
+    const declaredSize = buffer.readUInt32LE(4) + 8;
+    return declaredSize === buffer.length;
+}
+
+function validateBmpStructure(buffer) {
+    if (buffer.length < 14) return false;
+    if (!buffer.subarray(0, 2).equals(Buffer.from('BM'))) return false;
+    const declaredSize = buffer.readUInt32LE(2);
+    return declaredSize === buffer.length;
+}
+
+function validateIsoBmffStructure(buffer) {
+    if (buffer.length < 16) return false;
+    if (buffer.toString('ascii', 4, 8) !== 'ftyp') return false;
+    const brand = buffer.toString('ascii', 8, 12).toLowerCase();
+    if (!ISO_BMFF_IMAGE_BRANDS.has(brand)) return false;
+
+    let offset = 0;
+    while (offset + 8 <= buffer.length) {
+        let boxSize = buffer.readUInt32BE(offset);
+        if (boxSize === 0) {
+            return offset + 8 <= buffer.length;
+        }
+        if (boxSize === 1) {
+            if (offset + 16 > buffer.length) return false;
+            const extendedSize = Number(buffer.readBigUInt64BE(offset + 8));
+            if (!Number.isFinite(extendedSize) || extendedSize < 16) return false;
+            boxSize = extendedSize;
+        } else if (boxSize < 8) {
+            return false;
+        }
+
+        const nextOffset = offset + boxSize;
+        if (nextOffset > buffer.length) {
+            return false;
+        }
+        offset = nextOffset;
+    }
+    return offset === buffer.length;
+}
+
+function detectImageFormat(buffer) {
+    if (validatePngStructure(buffer)) return 'png';
+    if (bufferStartsWith(buffer, Buffer.from([0xFF, 0xD8])) && buffer.subarray(buffer.length - 2).equals(Buffer.from([0xFF, 0xD9]))) {
+        return 'jpeg';
+    }
+    if ((bufferStartsWith(buffer, Buffer.from('GIF87a')) || bufferStartsWith(buffer, Buffer.from('GIF89a'))) && buffer[buffer.length - 1] === 0x3B) {
+        return 'gif';
+    }
+    if (validateWebpStructure(buffer)) return 'webp';
+    if (validateBmpStructure(buffer)) return 'bmp';
+    if (validateIsoBmffStructure(buffer)) return 'iso-bmff';
+    return '';
+}
+
+function hasUnsafePdfContent(buffer) {
+    if (!bufferStartsWith(buffer, Buffer.from('%PDF-'))) {
+        return { unsafe: true, reason: 'Invalid PDF file signature' };
+    }
+    const eofMarker = Buffer.from('%%EOF');
+    const eofIndex = buffer.lastIndexOf(eofMarker);
+    if (eofIndex < 0) {
+        return { unsafe: true, reason: 'Invalid PDF structure' };
+    }
+    const trailing = buffer.subarray(eofIndex + eofMarker.length).toString('latin1').trim();
+    if (trailing) {
+        return { unsafe: true, reason: 'PDF contains trailing hidden data' };
+    }
+
+    const text = buffer.toString('latin1');
+    if (/<script\b/i.test(text) || /javascript:/i.test(text)) {
+        return { unsafe: true, reason: 'PDF contains script content' };
+    }
+    for (const tokenRegex of PDF_DISALLOWED_TOKENS) {
+        if (tokenRegex.test(text)) {
+            return { unsafe: true, reason: 'PDF contains active or encrypted content' };
+        }
+    }
+    return { unsafe: false, reason: '' };
+}
+
+async function safelyDeleteUploadedFile(file = null) {
+    if (!file || !file.path) return;
+    try {
+        const resolvedUploadDir = path.resolve(uploadDir) + path.sep;
+        const resolvedPath = path.resolve(String(file.path));
+        if (!resolvedPath.startsWith(resolvedUploadDir)) {
+            return;
+        }
+        await fsp.unlink(resolvedPath);
+    } catch (error) {
+        // Ignore cleanup failures to keep request handling stable.
+    }
+}
+
+async function validateUploadedFileSecurity(file = {}, options = {}) {
+    const allowImage = options.allowImage !== false;
+    const allowPdf = options.allowPdf !== false;
+    if (!file || !file.path) {
+        return { ok: false, message: 'Invalid uploaded file data' };
+    }
+
+    const fileSize = Number(file.size || 0);
+    if (!Number.isFinite(fileSize) || fileSize <= 0) {
+        return { ok: false, message: 'Uploaded file is empty' };
+    }
+    if (fileSize > MAX_UPLOAD_INSPECTION_BYTES) {
+        return { ok: false, message: 'File is too large for security inspection' };
+    }
+
+    const fileBuffer = await fsp.readFile(file.path);
+    if (!fileBuffer.length) {
+        return { ok: false, message: 'Uploaded file is empty' };
+    }
+
+    const isPdfCandidate = allowPdf && isPdfUpload(file);
+    if (isPdfCandidate) {
+        const pdfResult = hasUnsafePdfContent(fileBuffer);
+        if (pdfResult.unsafe) {
+            return { ok: false, message: pdfResult.reason || 'Unsafe PDF content detected' };
+        }
+        return { ok: true, message: '' };
+    }
+
+    const isImageCandidate = allowImage && isImageUpload(file);
+    if (isImageCandidate) {
+        const detectedFormat = detectImageFormat(fileBuffer);
+        if (!detectedFormat) {
+            return { ok: false, message: 'Invalid image content or hidden payload detected' };
+        }
+        return { ok: true, message: '' };
+    }
+
+    return { ok: false, message: 'Only secure image and PDF files are allowed' };
+}
+
 // --- 2. STORAGE CONFIG ---
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
-    const originalName = file.originalname;
-    const ext = path.extname(originalName);
-
-    if (originalName && originalName.trim() !== '') {
-      // ✅ Use filename sent by client
-      cb(null, originalName);
-    } else {
-      // 🔁 Fallback to unique name
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-      cb(null, uniqueSuffix + ext);
-    }
+    cb(null, buildSafeUploadFilename(file));
   }
 });
 const upload = multer({
@@ -3283,19 +3492,42 @@ app.get(['/stream', '/notify/stream'], (req, res) => {
     req.on('error', cleanup);
 });
 
-app.post(['/upload', '/notify/upload'], uploadFieldsValidated, (req, res) => {
+app.post(['/upload', '/notify/upload'], uploadFieldsValidated, async (req, res) => {
     const file = req.files && req.files.file ? req.files.file[0] : null;
     const thumbnail = req.files && req.files.thumbnail ? req.files.thumbnail[0] : null;
+    const uploadedFiles = [file, thumbnail].filter(Boolean);
+    const rejectWithCleanup = async (statusCode, message) => {
+        await Promise.all(uploadedFiles.map((entry) => safelyDeleteUploadedFile(entry)));
+        return res.status(statusCode).json({ error: message });
+    };
 
     if (!file) {
-        return res.status(400).json({ error: 'No file uploaded' });
+        return rejectWithCleanup(400, 'No file uploaded');
     }
     if (!isAllowedMainUpload(file)) {
-        return res.status(400).json({ error: 'Only image and PDF files are allowed' });
+        return rejectWithCleanup(400, 'Only image and PDF files are allowed');
     }
     if (thumbnail && !isAllowedThumbnailUpload(thumbnail)) {
-        return res.status(400).json({ error: 'Thumbnail must be an image file' });
+        return rejectWithCleanup(400, 'Thumbnail must be an image file');
     }
+
+    try {
+        const mainValidation = await validateUploadedFileSecurity(file, { allowImage: true, allowPdf: true });
+        if (!mainValidation.ok) {
+            return rejectWithCleanup(400, mainValidation.message || 'Unsafe file content detected');
+        }
+
+        if (thumbnail) {
+            const thumbnailValidation = await validateUploadedFileSecurity(thumbnail, { allowImage: true, allowPdf: false });
+            if (!thumbnailValidation.ok) {
+                return rejectWithCleanup(400, thumbnailValidation.message || 'Unsafe thumbnail content detected');
+            }
+        }
+    } catch (error) {
+        console.error('[UPLOAD SECURITY] Validation failure:', error && error.message ? error.message : error);
+        return rejectWithCleanup(400, 'File content validation failed');
+    }
+
     const fileUrl = `/notify/uploads/${encodeURIComponent(file.filename)}`;
     const thumbUrl = thumbnail ? `/notify/uploads/${encodeURIComponent(thumbnail.filename)}` : null;
     res.json({ status: 'success', url: fileUrl, thumbUrl, type: file.mimetype });
