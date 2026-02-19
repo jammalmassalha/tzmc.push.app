@@ -820,16 +820,26 @@ export class ChatStoreService {
       throw new Error('אין צ׳אט פעיל.');
     }
 
-    const group = this.groups().find((item) => item.id === activeChatId) ?? null;
-    const isCommunityGroup = group ? group.type === 'community' : !this.canSendToActiveChat();
-    if (!isCommunityGroup) {
-      throw new Error('ניתן להגיב רק בקבוצת קהילה.');
-    }
-
     const normalizedTargetId = String(targetMessageId || '').trim();
     const normalizedEmoji = String(emoji || '').trim();
     if (!normalizedTargetId || !normalizedEmoji) {
       return;
+    }
+
+    const chatMessages = this.messagesByChat()[activeChatId] ?? [];
+    const targetMessage = chatMessages.find((message) => message.messageId === normalizedTargetId) ?? null;
+    const group = this.groups().find((item) => item.id === activeChatId) ?? null;
+    const fallbackGroup = targetMessage?.groupId
+      ? this.groups().find((item) => item.id === this.normalizeChatId(targetMessage.groupId || '')) ?? null
+      : null;
+    const effectiveGroup = group ?? fallbackGroup;
+    const targetGroupType: GroupType | null =
+      targetMessage?.groupType === 'community' || targetMessage?.groupType === 'group'
+        ? targetMessage.groupType
+        : (effectiveGroup?.type ?? null);
+    const isCommunityGroup = targetGroupType === 'community' || (!targetGroupType && !this.canSendToActiveChat());
+    if (!isCommunityGroup) {
+      throw new Error('ניתן להגיב רק בקבוצת קהילה.');
     }
 
     const reaction: MessageReaction = {
@@ -850,12 +860,12 @@ export class ChatStoreService {
     }
 
     const activeChat = this.activeChat();
-    const groupId = group?.id || fallbackGroupId;
-    const groupName = group?.name || activeChat?.title || groupId;
-    const groupMembers = group?.members ?? [];
-    const groupCreatedBy = group?.createdBy || '';
-    const groupUpdatedAt = group?.updatedAt || Date.now();
-    const groupType: GroupType = group?.type === 'group' ? 'group' : 'community';
+    const groupId = effectiveGroup?.id || fallbackGroupId;
+    const groupName = effectiveGroup?.name || activeChat?.title || groupId;
+    const groupMembers = effectiveGroup?.members ?? [];
+    const groupCreatedBy = effectiveGroup?.createdBy || '';
+    const groupUpdatedAt = effectiveGroup?.updatedAt || Date.now();
+    const groupType: GroupType = targetGroupType === 'group' ? 'group' : 'community';
 
     await this.api.sendReaction({
       groupId,
@@ -1265,6 +1275,7 @@ export class ChatStoreService {
       deliveryStatus: this.networkOnline() ? 'pending' : 'queued',
       groupId: group?.id ?? null,
       groupName: group?.name ?? null,
+      groupType: group?.type ?? null,
       editedAt: null,
       deletedAt: null,
       replyTo: metadata.replyTo ?? null,
@@ -1792,6 +1803,13 @@ export class ChatStoreService {
     if (isGroup && incoming.groupId && incoming.groupName) {
       this.ensureGroupFromIncoming(incoming);
     }
+    const incomingGroup = isGroup
+      ? this.groups().find((item) => item.id === chatId) ?? null
+      : null;
+    const normalizedIncomingGroupType: GroupType | null =
+      incoming.groupType === 'community' || incoming.groupType === 'group'
+        ? incoming.groupType
+        : (incomingGroup?.type ?? null);
 
     const replyTo = this.normalizeMessageReference({
       messageId: incoming.replyToMessageId,
@@ -1815,6 +1833,7 @@ export class ChatStoreService {
       deliveryStatus: 'delivered',
       groupId: incoming.groupId ? this.normalizeChatId(incoming.groupId) : null,
       groupName: incoming.groupName ?? null,
+      groupType: normalizedIncomingGroupType,
       editedAt: Number.isFinite(Number(incoming.editedAt)) ? Number(incoming.editedAt) : null,
       deletedAt: Number.isFinite(Number(incoming.deletedAt)) ? Number(incoming.deletedAt) : null,
       replyTo,
@@ -2592,6 +2611,7 @@ export class ChatStoreService {
       const parsed = JSON.parse(raw) as Partial<PersistedChatState>;
       const contacts = this.normalizeContacts(Array.isArray(parsed.contacts) ? parsed.contacts : []);
       const groups = this.normalizeGroups(Array.isArray(parsed.groups) ? parsed.groups : [], user);
+      const groupsById = new Map(groups.map((group) => [group.id, group]));
       const unreadByChat = parsed.unreadByChat && typeof parsed.unreadByChat === 'object'
         ? parsed.unreadByChat
         : {};
@@ -2600,6 +2620,11 @@ export class ChatStoreService {
       for (const record of parsed.messages ?? []) {
         if (!record || !record.chatId) continue;
         const chatId = this.normalizeChatId(record.chatId);
+        const normalizedGroupId = record.groupId ? this.normalizeChatId(record.groupId) : null;
+        const normalizedGroupType: GroupType | null =
+          record.groupType === 'group' || record.groupType === 'community'
+            ? record.groupType
+            : (normalizedGroupId ? (groupsById.get(normalizedGroupId)?.type ?? null) : null);
         const normalized: ChatMessage = {
           ...record,
           chatId,
@@ -2609,8 +2634,10 @@ export class ChatStoreService {
           timestamp: Number(record.timestamp ?? Date.now()),
           direction: record.direction === 'incoming' ? 'incoming' : 'outgoing',
           deliveryStatus: record.deliveryStatus ?? 'sent',
+          groupId: normalizedGroupId,
           editedAt: Number.isFinite(Number(record.editedAt)) ? Number(record.editedAt) : null,
           deletedAt: Number.isFinite(Number(record.deletedAt)) ? Number(record.deletedAt) : null,
+          groupType: normalizedGroupType,
           replyTo: this.normalizeMessageReference(record.replyTo ?? null),
           forwarded: Boolean(record.forwarded),
           forwardedFrom: record.forwardedFrom ? this.normalizeUser(record.forwardedFrom) : null,

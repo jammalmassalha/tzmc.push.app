@@ -866,6 +866,13 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const activeChat = this.store.activeChat();
     if (!activeChat?.isGroup) return false;
 
+    if (message.groupType === 'community') {
+      return true;
+    }
+    if (message.groupType === 'group') {
+      return false;
+    }
+
     const activeGroup = this.findActiveGroup();
     if (activeGroup) {
       return activeGroup.type === 'community';
@@ -914,10 +921,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   canViewReactionDetails(message: ChatMessage): boolean {
     const activeGroup = this.findActiveGroup();
+    const isCommunityMessage = message.groupType === 'community' || Boolean(activeGroup && activeGroup.type === 'community');
     return Boolean(
-      activeGroup &&
-      activeGroup.type === 'community' &&
-      this.store.canSendToActiveChat() &&
+      isCommunityMessage &&
       Array.isArray(message.reactions) &&
       message.reactions.length
     );

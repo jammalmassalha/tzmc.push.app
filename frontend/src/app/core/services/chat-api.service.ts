@@ -83,7 +83,10 @@ interface HrActionsResponse {
 interface SessionResponse {
   authenticated?: boolean;
   user?: string | null;
+  csrfToken?: string | null;
   status?: string;
+  message?: string;
+  retryAfterSeconds?: number;
 }
 
 export interface HrStepOption {
@@ -101,6 +104,7 @@ export interface HrActionOption {
 export class ChatApiService {
   private readonly config = runtimeConfig;
   private readonly notifyBaseUrl = getNotifyBaseUrl(this.config.notifyReplyUrl);
+  private csrfToken: string | null = null;
 
   get streamUrlBase(): string {
     return `${this.notifyBaseUrl}/stream`;
@@ -117,11 +121,16 @@ export class ChatApiService {
   async getSessionUser(): Promise<string | null> {
     const response = await this.fetchWithRetry(`${this.notifyBaseUrl}/auth/session`, {}, { retries: 1, timeoutMs: 8000 });
     if (!response.ok) {
+      this.csrfToken = null;
       return null;
     }
 
     const body = (await response.json()) as SessionResponse;
+    this.csrfToken = String(body.csrfToken ?? '').trim() || null;
     const user = String(body.user ?? '').trim().toLowerCase();
+    if (!body.authenticated) {
+      this.csrfToken = null;
+    }
     return body.authenticated && user ? user : null;
   }
 
@@ -143,12 +152,14 @@ export class ChatApiService {
     if (!response.ok) {
       let errorMessage = 'נכשל בהתחברות';
       try {
-        const body = (await response.json()) as { message?: string; error?: string };
+        const body = (await response.json()) as SessionResponse & { error?: string };
         const backendMessage = String(body.message ?? body.error ?? '').trim();
         if (response.status === 400) {
           errorMessage = 'מספר טלפון לא תקין';
         } else if (response.status === 403) {
           errorMessage = 'המשתמש אינו מורשה';
+        } else if (response.status === 429 && body.retryAfterSeconds) {
+          errorMessage = `יותר מדי ניסיונות. נסה שוב בעוד ${body.retryAfterSeconds} שניות`;
         } else if (backendMessage) {
           errorMessage = backendMessage;
         }
@@ -159,8 +170,10 @@ export class ChatApiService {
     }
 
     const body = (await response.json()) as SessionResponse;
+    this.csrfToken = String(body.csrfToken ?? '').trim() || null;
     const sessionUser = String(body.user ?? '').trim().toLowerCase();
     if (!body.authenticated || !sessionUser) {
+      this.csrfToken = null;
       throw new Error('נכשל בהתחברות');
     }
     return sessionUser;
@@ -172,6 +185,7 @@ export class ChatApiService {
       { method: 'DELETE' },
       { retries: 0, timeoutMs: 8000 }
     );
+    this.csrfToken = null;
   }
 
   async getContacts(user?: string): Promise<Contact[]> {
@@ -654,8 +668,21 @@ export class ChatApiService {
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
       try {
+        const method = String(init.method || 'GET').trim().toUpperCase();
+        const headers = new Headers(init.headers || undefined);
+        const shouldAttachCsrf =
+          method !== 'GET' &&
+          method !== 'HEAD' &&
+          init.mode !== 'no-cors' &&
+          Boolean(this.csrfToken) &&
+          !headers.has('X-CSRF-Token');
+        if (shouldAttachCsrf) {
+          headers.set('X-CSRF-Token', String(this.csrfToken));
+        }
+
         const response = await fetch(input, {
           ...init,
+          headers,
           credentials: init.credentials ?? 'same-origin',
           signal: controller.signal
         });

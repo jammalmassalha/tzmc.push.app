@@ -48,6 +48,7 @@ export interface ChatMessage {
   deliveryStatus: DeliveryStatus;
   groupId?: string | null;
   groupName?: string | null;
+  groupType?: GroupType | null;
   reactions?: MessageReaction[];
   editedAt?: number | null;
   deletedAt?: number | null;

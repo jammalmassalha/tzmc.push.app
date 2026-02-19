@@ -213,7 +213,8 @@ app.use(cors({
         'Cache-Control',
         'Pragma',
         'Last-Event-ID',
-        'X-Requested-With'
+        'X-Requested-With',
+        'X-CSRF-Token'
     ]
 }));
 
@@ -458,6 +459,20 @@ const SESSION_SIGNING_SECRET = String(
     ''
 ).trim();
 const SESSION_USER_PATTERN = /^0\d{9}$/;
+const AUTH_SESSION_RATE_LIMIT_WINDOW_MS = Math.max(
+    60 * 1000,
+    Number(process.env.AUTH_SESSION_RATE_LIMIT_WINDOW_MS || 10 * 60 * 1000) || 10 * 60 * 1000
+);
+const AUTH_SESSION_RATE_LIMIT_MAX_PER_IP = Math.max(
+    3,
+    Number(process.env.AUTH_SESSION_RATE_LIMIT_MAX_PER_IP || 18) || 18
+);
+const AUTH_SESSION_RATE_LIMIT_MAX_PER_USER = Math.max(
+    2,
+    Number(process.env.AUTH_SESSION_RATE_LIMIT_MAX_PER_USER || 8) || 8
+);
+const CSRF_PROTECTION_ENABLED = String(process.env.CSRF_PROTECTION_ENABLED || 'false').trim().toLowerCase() === 'true';
+const CSRF_HEADER_NAME = 'x-csrf-token';
 const MOBILE_REREGISTER_PUSH_TYPE = 'mobile-re-register-prompt';
 const MOBILE_REREGISTER_DEFAULT_CAMPAIGN_ID = 'mobile-reregister-temp-v1';
 const MOBILE_REREGISTER_DEFAULT_TITLE = 'Reconnect notifications';
@@ -473,6 +488,9 @@ let subscriptionAuthRefreshState = {
     lastResult: null
 };
 let authRefreshSchedulerStarted = false;
+const activeSessionIdByUser = new Map();
+const authSessionRateLimitByIp = new Map();
+const authSessionRateLimitByUser = new Map();
 let mobileReregisterCampaignState = {
     running: false,
     lastRunAt: 0,
@@ -859,6 +877,49 @@ function parseUsernamesInput(rawValue) {
     return Array.from(normalized);
 }
 
+function getClientIpAddress(req) {
+    const forwardedFor = String((req && req.headers && req.headers['x-forwarded-for']) || '').trim();
+    if (forwardedFor) {
+        const first = forwardedFor.split(',')[0].trim();
+        if (first) return first;
+    }
+    return String(
+        (req && req.ip) ||
+        (req && req.socket && req.socket.remoteAddress) ||
+        ''
+    ).trim() || 'unknown';
+}
+
+function consumeRateLimitEntry(store, key, maxAttempts, windowMs) {
+    const now = Date.now();
+    const normalizedKey = String(key || '').trim().toLowerCase();
+    if (!normalizedKey) {
+        return { allowed: true, retryAfterSeconds: 0, remaining: maxAttempts };
+    }
+
+    const existing = Array.isArray(store.get(normalizedKey)) ? store.get(normalizedKey) : [];
+    const threshold = now - windowMs;
+    const recent = existing.filter((timestamp) => Number.isFinite(timestamp) && timestamp > threshold);
+    if (recent.length >= maxAttempts) {
+        const oldestActive = recent[0] || now;
+        const retryAfterMs = Math.max(1000, windowMs - Math.max(0, now - oldestActive));
+        store.set(normalizedKey, recent);
+        return {
+            allowed: false,
+            retryAfterSeconds: Math.ceil(retryAfterMs / 1000),
+            remaining: 0
+        };
+    }
+
+    recent.push(now);
+    store.set(normalizedKey, recent);
+    return {
+        allowed: true,
+        retryAfterSeconds: 0,
+        remaining: Math.max(0, maxAttempts - recent.length)
+    };
+}
+
 function normalizeSameSiteValue(rawValue) {
     const normalized = String(rawValue || '').trim().toLowerCase();
     if (normalized === 'none') return 'None';
@@ -938,55 +999,90 @@ function safeTimingCompare(leftValue, rightValue) {
     return crypto.timingSafeEqual(leftBuffer, rightBuffer);
 }
 
+function generateRandomToken(byteLength = 24) {
+    return crypto
+        .randomBytes(byteLength)
+        .toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/g, '');
+}
+
 function createSessionToken(user) {
     const normalizedUser = normalizeUserCandidate(user);
     if (!normalizedUser || !SESSION_SIGNING_SECRET) {
         return null;
     }
+    const sessionId = generateRandomToken(18);
+    const csrfToken = generateRandomToken(24);
     const expiresAt = Date.now() + SESSION_COOKIE_TTL_MS;
+    activeSessionIdByUser.set(normalizedUser, sessionId);
     const payload = encodeBase64Url(
         JSON.stringify({
             user: normalizedUser,
-            expiresAt
+            expiresAt,
+            sid: sessionId,
+            csrfToken
         })
     );
     const signature = signSessionPayload(payload);
     if (!signature) {
+        activeSessionIdByUser.delete(normalizedUser);
         return null;
     }
     return {
         token: `${payload}.${signature}`,
-        expiresAt
+        expiresAt,
+        sessionId,
+        csrfToken
     };
 }
 
-function getUserFromSessionToken(rawToken) {
+function getSessionFromToken(rawToken) {
     const token = String(rawToken || '').trim();
     if (!token || !SESSION_SIGNING_SECRET) {
-        return '';
+        return null;
     }
 
     const parts = token.split('.');
     if (parts.length !== 2) {
-        return '';
+        return null;
     }
     const payloadEncoded = parts[0];
     const providedSignature = parts[1];
     const expectedSignature = signSessionPayload(payloadEncoded);
     if (!expectedSignature || !safeTimingCompare(providedSignature, expectedSignature)) {
-        return '';
+        return null;
     }
 
     try {
         const parsed = JSON.parse(decodeBase64Url(payloadEncoded));
         const user = normalizeUserCandidate(parsed && parsed.user);
         const expiresAt = Number(parsed && parsed.expiresAt);
+        const sessionId = String((parsed && parsed.sid) || '').trim();
+        const csrfToken = String((parsed && parsed.csrfToken) || '').trim();
         if (!user || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-            return '';
+            return null;
         }
-        return user;
+        if (!sessionId || !csrfToken) {
+            return null;
+        }
+
+        const activeSessionId = String(activeSessionIdByUser.get(user) || '').trim();
+        if (activeSessionId && activeSessionId !== sessionId) {
+            return null;
+        }
+        if (!activeSessionId) {
+            activeSessionIdByUser.set(user, sessionId);
+        }
+        return {
+            user,
+            expiresAt,
+            sessionId,
+            csrfToken
+        };
     } catch (error) {
-        return '';
+        return null;
     }
 }
 
@@ -1025,9 +1121,14 @@ function clearSessionCookie(res, req) {
     res.setHeader('Set-Cookie', cookieParts.join('; '));
 }
 
-function extractSessionUserFromRequest(req) {
+function extractSessionFromRequest(req) {
     const cookieMap = parseCookiesFromHeader(req && req.headers ? req.headers.cookie : '');
-    return getUserFromSessionToken(cookieMap[SESSION_COOKIE_NAME]);
+    return getSessionFromToken(cookieMap[SESSION_COOKIE_NAME]);
+}
+
+function extractSessionUserFromRequest(req) {
+    const session = extractSessionFromRequest(req);
+    return session && session.user ? session.user : '';
 }
 
 function resolveAuthorizedUser(req, candidateUser, options = {}) {
@@ -2162,16 +2263,54 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
 }
 
 app.use((req, _res, next) => {
-    req.authUser = extractSessionUserFromRequest(req);
+    const authSession = extractSessionFromRequest(req);
+    req.authSession = authSession || null;
+    req.authUser = authSession && authSession.user ? authSession.user : '';
     next();
+});
+
+app.use((req, res, next) => {
+    if (!CSRF_PROTECTION_ENABLED) {
+        return next();
+    }
+
+    const method = String(req.method || 'GET').toUpperCase();
+    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+        return next();
+    }
+
+    const requestPath = String(req.path || '').trim();
+    const isAuthSessionPath = requestPath === '/auth/session' || requestPath === '/notify/auth/session';
+    if (isAuthSessionPath && method === 'POST') {
+        return next();
+    }
+
+    const session = req.authSession && typeof req.authSession === 'object'
+        ? req.authSession
+        : null;
+    if (!session || !session.user) {
+        return next();
+    }
+
+    const csrfHeader = String(req.headers[CSRF_HEADER_NAME] || '').trim();
+    if (!csrfHeader || csrfHeader !== String(session.csrfToken || '')) {
+        return res.status(403).json({ error: 'Invalid CSRF token' });
+    }
+
+    return next();
 });
 
 app.get(['/auth/session', '/notify/auth/session'], (req, res) => {
     const user = normalizeUserCandidate(req.authUser);
+    const authSession = req.authSession && typeof req.authSession === 'object' ? req.authSession : null;
     if (!user) {
         return res.json({ authenticated: false, user: null });
     }
-    return res.json({ authenticated: true, user });
+    return res.json({
+        authenticated: true,
+        user,
+        csrfToken: authSession && authSession.csrfToken ? authSession.csrfToken : null
+    });
 });
 
 app.post(['/auth/session', '/notify/auth/session'], async (req, res) => {
@@ -2183,6 +2322,29 @@ app.post(['/auth/session', '/notify/auth/session'], async (req, res) => {
 
     if (!SESSION_SIGNING_SECRET) {
         return res.status(500).json({ status: 'error', message: 'Session configuration missing' });
+    }
+
+    const clientIp = getClientIpAddress(req);
+    const ipLimit = consumeRateLimitEntry(
+        authSessionRateLimitByIp,
+        clientIp,
+        AUTH_SESSION_RATE_LIMIT_MAX_PER_IP,
+        AUTH_SESSION_RATE_LIMIT_WINDOW_MS
+    );
+    const userLimit = consumeRateLimitEntry(
+        authSessionRateLimitByUser,
+        requestedUser,
+        AUTH_SESSION_RATE_LIMIT_MAX_PER_USER,
+        AUTH_SESSION_RATE_LIMIT_WINDOW_MS
+    );
+    if (!ipLimit.allowed || !userLimit.allowed) {
+        const retryAfterSeconds = Math.max(ipLimit.retryAfterSeconds || 0, userLimit.retryAfterSeconds || 0, 1);
+        res.setHeader('Retry-After', String(retryAfterSeconds));
+        return res.status(429).json({
+            status: 'error',
+            message: 'Too many login attempts. Please try again later.',
+            retryAfterSeconds
+        });
     }
 
     try {
@@ -2210,7 +2372,8 @@ app.post(['/auth/session', '/notify/auth/session'], async (req, res) => {
             status: 'success',
             authenticated: true,
             user: requestedUser,
-            expiresAt: sessionToken.expiresAt
+            expiresAt: sessionToken.expiresAt,
+            csrfToken: sessionToken.csrfToken
         });
     } catch (error) {
         console.error('[AUTH SESSION] Failed to create session:', error && error.message ? error.message : error);
@@ -2219,6 +2382,13 @@ app.post(['/auth/session', '/notify/auth/session'], async (req, res) => {
 });
 
 app.delete(['/auth/session', '/notify/auth/session'], (req, res) => {
+    const authSession = req.authSession && typeof req.authSession === 'object' ? req.authSession : null;
+    if (authSession && authSession.user) {
+        const currentSessionId = String(activeSessionIdByUser.get(authSession.user) || '').trim();
+        if (!currentSessionId || currentSessionId === String(authSession.sessionId || '')) {
+            activeSessionIdByUser.delete(authSession.user);
+        }
+    }
     clearSessionCookie(res, req);
     return res.json({ status: 'success', authenticated: false });
 });
@@ -3056,7 +3226,7 @@ app.get(['/stream', '/notify/stream'], (req, res) => {
         Connection: 'keep-alive',
         'X-Accel-Buffering': 'no',
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization, Cache-Control, Pragma, Last-Event-ID'
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, Cache-Control, Pragma, Last-Event-ID, X-CSRF-Token'
     });
     req.socket.setTimeout(0);
     res.setTimeout(0);
