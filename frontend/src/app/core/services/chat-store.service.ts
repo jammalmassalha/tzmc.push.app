@@ -396,12 +396,20 @@ export class ChatStoreService {
   markActiveChatReadAtBottom(chatId?: string | null): void {
     const normalizedChatId = this.normalizeChatId(chatId ?? this.activeChatId() ?? '');
     if (!normalizedChatId) return;
-    if (this.groups().some((group) => group.id === normalizedChatId)) return;
-    if (SYSTEM_CHAT_IDS.some((id) => this.normalizeChatId(id) === normalizedChatId)) return;
+    const unreadCount = Math.max(0, Math.floor(Number(this.unreadByChat()[normalizedChatId] ?? 0)));
+
+    // Clear local unread badge as soon as user reaches the chat bottom.
+    this.clearUnreadCountForChat(normalizedChatId);
+
+    const isGroupChat = this.groups().some((group) => group.id === normalizedChatId);
+    const isSystemChat = SYSTEM_CHAT_IDS.some((id) => this.normalizeChatId(id) === normalizedChatId);
+    if (isGroupChat || isSystemChat) {
+      return;
+    }
 
     this.seedPendingReadReceiptsFromUnreadCount(
       normalizedChatId,
-      Number(this.unreadByChat()[normalizedChatId] ?? 0)
+      unreadCount
     );
     this.scheduleReadReceiptFlush(normalizedChatId);
   }
@@ -1492,6 +1500,28 @@ export class ChatStoreService {
       clearTimeout(timer);
     }
     this.readReceiptFlushTimerByChat.clear();
+  }
+
+  private clearUnreadCountForChat(chatId: string): void {
+    const normalizedChatId = this.normalizeChatId(chatId);
+    if (!normalizedChatId) return;
+
+    let changed = false;
+    this.unreadByChat.update((map) => {
+      const current = Math.max(0, Math.floor(Number(map[normalizedChatId] ?? 0)));
+      if (current <= 0) {
+        return map;
+      }
+      changed = true;
+      return {
+        ...map,
+        [normalizedChatId]: 0
+      };
+    });
+
+    if (changed) {
+      this.schedulePersist();
+    }
   }
 
   private queueDirectMessage(
