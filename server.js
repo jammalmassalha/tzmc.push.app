@@ -2548,8 +2548,12 @@ app.post(['/mobile-reregister-campaign', '/notify/mobile-reregister-campaign'], 
         });
 });
 
-app.get(['/contacts', '/notify/contacts'], async (req, res) => {
-    const user = req.query.user ? normalizeUserKey(req.query.user) : '';
+app.get(['/contacts', '/notify/contacts', '/contacts/:user', '/notify/contacts/:user'], async (req, res) => {
+    const user = normalizeUserKey(
+        (req.query && req.query.user) ||
+        (req.params && req.params.user) ||
+        ''
+    );
     if (!user) {
         return res.status(400).json({ users: [], error: 'Missing user' });
     }

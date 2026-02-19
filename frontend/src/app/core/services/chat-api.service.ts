@@ -109,10 +109,32 @@ export class ChatApiService {
   }
 
   async getContacts(user: string): Promise<Contact[]> {
-    const url = `${this.notifyBaseUrl}/contacts?user=${encodeURIComponent(user)}`;
-    const response = await this.fetchWithRetry(url, {}, { retries: 2, timeoutMs: 10000 });
-    if (!response.ok) {
-      throw new Error(`Contacts request failed with ${response.status}`);
+    const normalizedUser = String(user || '').trim();
+    if (!normalizedUser) {
+      return [];
+    }
+    const encodedUser = encodeURIComponent(normalizedUser);
+    const candidateUrls = [
+      `${this.notifyBaseUrl}/contacts?user=${encodedUser}`,
+      `${this.notifyBaseUrl}/contacts/${encodedUser}`
+    ];
+
+    let response: Response | null = null;
+    let lastStatus = 0;
+    for (const url of candidateUrls) {
+      try {
+        const candidateResponse = await this.fetchWithRetry(url, {}, { retries: 1, timeoutMs: 10000 });
+        if (candidateResponse.ok) {
+          response = candidateResponse;
+          break;
+        }
+        lastStatus = candidateResponse.status;
+      } catch {
+        // Try the next compatible URL variant.
+      }
+    }
+    if (!response) {
+      throw new Error(`Contacts request failed with ${lastStatus || 0}`);
     }
 
     const body = (await response.json()) as ContactResponse;
