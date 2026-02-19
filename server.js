@@ -19,6 +19,11 @@ const uploadDir = path.join(__dirname, 'uploads');
 const app = express();
 app.disable('x-powered-by');
 
+const DEFAULT_ALLOWED_HOSTS = ['tzmc.co.il', 'www.tzmc.co.il', 'localhost', '127.0.0.1', '::1'];
+const ALLOWED_HOSTS = buildHostAllowlist(
+    String(process.env.ALLOWED_HOSTS || DEFAULT_ALLOWED_HOSTS.join(','))
+);
+
 const CONTENT_SECURITY_POLICY = [
     "default-src 'self' https: data: blob:",
     "base-uri 'self'",
@@ -35,6 +40,109 @@ const CONTENT_SECURITY_POLICY = [
     "manifest-src 'self'",
     'upgrade-insecure-requests'
 ].join('; ');
+
+function normalizeHostValue(rawValue) {
+    const value = String(rawValue || '').trim().toLowerCase();
+    if (!value) {
+        return '';
+    }
+    const primaryValue = value.split(',')[0].trim();
+    if (!primaryValue) {
+        return '';
+    }
+    const candidate = primaryValue.includes('://')
+        ? primaryValue
+        : `http://${primaryValue}`;
+    try {
+        const parsed = new URL(candidate);
+        return String(parsed.hostname || '').trim().toLowerCase().replace(/\.+$/, '');
+    } catch (error) {
+        return primaryValue
+            .replace(/^\[|\]$/g, '')
+            .replace(/:\d+$/, '')
+            .replace(/\.+$/, '')
+            .trim()
+            .toLowerCase();
+    }
+}
+
+function buildHostAllowlist(rawValue) {
+    const exactHosts = new Set();
+    const wildcardSuffixes = [];
+    let allowAny = false;
+    const parts = String(rawValue || '')
+        .split(',')
+        .map((entry) => String(entry || '').trim())
+        .filter(Boolean);
+
+    for (const part of parts) {
+        const normalizedPart = part.toLowerCase();
+        if (normalizedPart === '*') {
+            allowAny = true;
+            continue;
+        }
+        const hasWildcardPrefix = normalizedPart.startsWith('*.') || normalizedPart.startsWith('.');
+        const candidate = hasWildcardPrefix
+            ? normalizedPart.replace(/^\*\./, '').replace(/^\./, '')
+            : normalizedPart;
+        const normalizedHost = normalizeHostValue(candidate);
+        if (!normalizedHost) {
+            continue;
+        }
+        if (hasWildcardPrefix) {
+            wildcardSuffixes.push(normalizedHost);
+            continue;
+        }
+        exactHosts.add(normalizedHost);
+    }
+
+    return {
+        allowAny,
+        exactHosts,
+        wildcardSuffixes
+    };
+}
+
+function isAllowedHost(hostname) {
+    if (ALLOWED_HOSTS.allowAny) {
+        return true;
+    }
+    const normalizedHost = normalizeHostValue(hostname);
+    if (!normalizedHost) {
+        return false;
+    }
+    if (ALLOWED_HOSTS.exactHosts.has(normalizedHost)) {
+        return true;
+    }
+    return ALLOWED_HOSTS.wildcardSuffixes.some((suffix) => {
+        return normalizedHost === suffix || normalizedHost.endsWith(`.${suffix}`);
+    });
+}
+
+function parseHostHeaderValues(rawValue) {
+    return String(rawValue || '')
+        .split(',')
+        .map((entry) => normalizeHostValue(entry))
+        .filter(Boolean);
+}
+
+app.use((req, res, next) => {
+    const hostHeaderValue = req.headers.host || '';
+    const requestHost = parseHostHeaderValues(hostHeaderValue)[0] || '';
+    if (!isAllowedHost(requestHost)) {
+        console.warn(`[SECURITY] Rejected request with invalid host header "${hostHeaderValue}" on ${req.originalUrl || req.url}`);
+        return res.status(400).json({ error: 'Invalid Host header' });
+    }
+
+    const forwardedHostHeader = req.headers['x-forwarded-host'] || '';
+    const forwardedHosts = parseHostHeaderValues(forwardedHostHeader);
+    if (forwardedHosts.some((candidateHost) => !isAllowedHost(candidateHost))) {
+        console.warn(`[SECURITY] Rejected request with invalid x-forwarded-host "${forwardedHostHeader}" on ${req.originalUrl || req.url}`);
+        return res.status(400).json({ error: 'Invalid Host header' });
+    }
+
+    next();
+});
 
 app.use((req, res, next) => {
     const forwardedProto = String(req.headers['x-forwarded-proto'] || '').toLowerCase();
