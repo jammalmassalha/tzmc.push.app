@@ -443,6 +443,21 @@ const CHECK_QUEUE_SERVER_TOKEN = String(
     process.env.GOOGLE_SHEET_CHECK_QUEUE_TOKEN ||
     APP_SERVER_TOKEN
 ).trim();
+const SESSION_COOKIE_NAME = String(process.env.SESSION_COOKIE_NAME || 'tzmc_session').trim() || 'tzmc_session';
+const SESSION_COOKIE_TTL_MS = Math.max(
+    5 * 60 * 1000,
+    Number(process.env.SESSION_COOKIE_TTL_MS || 30 * 24 * 60 * 60 * 1000) || 30 * 24 * 60 * 60 * 1000
+);
+const SESSION_COOKIE_SAME_SITE = String(process.env.SESSION_COOKIE_SAMESITE || 'Lax').trim();
+const SESSION_COOKIE_SECURE = String(process.env.SESSION_COOKIE_SECURE || 'true').trim().toLowerCase() !== 'false';
+const SESSION_SIGNING_SECRET = String(
+    process.env.SESSION_SIGNING_SECRET ||
+    APP_SERVER_TOKEN ||
+    CHECK_QUEUE_SERVER_TOKEN ||
+    vapidKeys.privateKey ||
+    ''
+).trim();
+const SESSION_USER_PATTERN = /^0\d{9}$/;
 const MOBILE_REREGISTER_PUSH_TYPE = 'mobile-re-register-prompt';
 const MOBILE_REREGISTER_DEFAULT_CAMPAIGN_ID = 'mobile-reregister-temp-v1';
 const MOBILE_REREGISTER_DEFAULT_TITLE = 'Reconnect notifications';
@@ -842,6 +857,204 @@ function parseUsernamesInput(rawValue) {
     const normalized = new Set();
     values.forEach((value) => addUserToSet(normalized, value));
     return Array.from(normalized);
+}
+
+function normalizeSameSiteValue(rawValue) {
+    const normalized = String(rawValue || '').trim().toLowerCase();
+    if (normalized === 'none') return 'None';
+    if (normalized === 'strict') return 'Strict';
+    return 'Lax';
+}
+
+function normalizeCookieHost(rawHost) {
+    return normalizeHostValue(rawHost || '').replace(/\.+$/, '');
+}
+
+function shouldUseSecureSessionCookie(req) {
+    if (!SESSION_COOKIE_SECURE) {
+        return false;
+    }
+    const hostHeader = req && req.headers ? req.headers.host : '';
+    const hostname = normalizeCookieHost(hostHeader);
+    if (!hostname) {
+        return true;
+    }
+    return !['localhost', '127.0.0.1', '::1'].includes(hostname);
+}
+
+function parseCookiesFromHeader(cookieHeader) {
+    const result = {};
+    String(cookieHeader || '')
+        .split(';')
+        .forEach((entry) => {
+            const trimmed = String(entry || '').trim();
+            if (!trimmed) return;
+            const separatorIndex = trimmed.indexOf('=');
+            if (separatorIndex <= 0) return;
+            const key = trimmed.slice(0, separatorIndex).trim();
+            if (!key) return;
+            const value = trimmed.slice(separatorIndex + 1).trim();
+            try {
+                result[key] = decodeURIComponent(value);
+            } catch (error) {
+                result[key] = value;
+            }
+        });
+    return result;
+}
+
+function encodeBase64Url(input) {
+    return Buffer.from(String(input || ''), 'utf8')
+        .toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/g, '');
+}
+
+function decodeBase64Url(input) {
+    const normalized = String(input || '').replace(/-/g, '+').replace(/_/g, '/');
+    const remainder = normalized.length % 4;
+    const padding = remainder === 0 ? '' : '='.repeat(4 - remainder);
+    return Buffer.from(normalized + padding, 'base64').toString('utf8');
+}
+
+function signSessionPayload(payload) {
+    if (!SESSION_SIGNING_SECRET) return '';
+    return crypto
+        .createHmac('sha256', SESSION_SIGNING_SECRET)
+        .update(String(payload || ''))
+        .digest('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/g, '');
+}
+
+function safeTimingCompare(leftValue, rightValue) {
+    const leftBuffer = Buffer.from(String(leftValue || ''), 'utf8');
+    const rightBuffer = Buffer.from(String(rightValue || ''), 'utf8');
+    if (leftBuffer.length !== rightBuffer.length) {
+        return false;
+    }
+    return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function createSessionToken(user) {
+    const normalizedUser = normalizeUserCandidate(user);
+    if (!normalizedUser || !SESSION_SIGNING_SECRET) {
+        return null;
+    }
+    const expiresAt = Date.now() + SESSION_COOKIE_TTL_MS;
+    const payload = encodeBase64Url(
+        JSON.stringify({
+            user: normalizedUser,
+            expiresAt
+        })
+    );
+    const signature = signSessionPayload(payload);
+    if (!signature) {
+        return null;
+    }
+    return {
+        token: `${payload}.${signature}`,
+        expiresAt
+    };
+}
+
+function getUserFromSessionToken(rawToken) {
+    const token = String(rawToken || '').trim();
+    if (!token || !SESSION_SIGNING_SECRET) {
+        return '';
+    }
+
+    const parts = token.split('.');
+    if (parts.length !== 2) {
+        return '';
+    }
+    const payloadEncoded = parts[0];
+    const providedSignature = parts[1];
+    const expectedSignature = signSessionPayload(payloadEncoded);
+    if (!expectedSignature || !safeTimingCompare(providedSignature, expectedSignature)) {
+        return '';
+    }
+
+    try {
+        const parsed = JSON.parse(decodeBase64Url(payloadEncoded));
+        const user = normalizeUserCandidate(parsed && parsed.user);
+        const expiresAt = Number(parsed && parsed.expiresAt);
+        if (!user || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+            return '';
+        }
+        return user;
+    } catch (error) {
+        return '';
+    }
+}
+
+function setSessionCookie(res, req, tokenValue, expiresAt) {
+    const sameSite = normalizeSameSiteValue(SESSION_COOKIE_SAME_SITE);
+    const secure = shouldUseSecureSessionCookie(req);
+    const maxAgeSeconds = Math.max(1, Math.floor((Number(expiresAt) - Date.now()) / 1000));
+    const cookieParts = [
+        `${SESSION_COOKIE_NAME}=${encodeURIComponent(String(tokenValue || ''))}`,
+        'Path=/',
+        'HttpOnly',
+        `SameSite=${sameSite}`,
+        `Max-Age=${maxAgeSeconds}`,
+        `Expires=${new Date(Date.now() + maxAgeSeconds * 1000).toUTCString()}`
+    ];
+    if (secure) {
+        cookieParts.push('Secure');
+    }
+    res.setHeader('Set-Cookie', cookieParts.join('; '));
+}
+
+function clearSessionCookie(res, req) {
+    const sameSite = normalizeSameSiteValue(SESSION_COOKIE_SAME_SITE);
+    const secure = shouldUseSecureSessionCookie(req);
+    const cookieParts = [
+        `${SESSION_COOKIE_NAME}=`,
+        'Path=/',
+        'HttpOnly',
+        `SameSite=${sameSite}`,
+        'Max-Age=0',
+        'Expires=Thu, 01 Jan 1970 00:00:00 GMT'
+    ];
+    if (secure) {
+        cookieParts.push('Secure');
+    }
+    res.setHeader('Set-Cookie', cookieParts.join('; '));
+}
+
+function extractSessionUserFromRequest(req) {
+    const cookieMap = parseCookiesFromHeader(req && req.headers ? req.headers.cookie : '');
+    return getUserFromSessionToken(cookieMap[SESSION_COOKIE_NAME]);
+}
+
+function resolveAuthorizedUser(req, candidateUser, options = {}) {
+    const required = options.required !== false;
+    const sessionUser = normalizeUserCandidate(req && req.authUser);
+    const requestedUser = normalizeUserCandidate(candidateUser);
+
+    if (sessionUser) {
+        if (requestedUser && requestedUser !== sessionUser) {
+            return {
+                user: '',
+                error: 'User mismatch',
+                status: 403
+            };
+        }
+        return { user: sessionUser, error: '', status: 200 };
+    }
+
+    if (!requestedUser && required) {
+        return {
+            user: '',
+            error: 'Missing user',
+            status: 400
+        };
+    }
+
+    return { user: requestedUser, error: '', status: 200 };
 }
 
 function buildGoogleSheetGetUrl(queryParams = {}, options = {}) {
@@ -1948,13 +2161,76 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
     }
 }
 
+app.use((req, _res, next) => {
+    req.authUser = extractSessionUserFromRequest(req);
+    next();
+});
+
+app.get(['/auth/session', '/notify/auth/session'], (req, res) => {
+    const user = normalizeUserCandidate(req.authUser);
+    if (!user) {
+        return res.json({ authenticated: false, user: null });
+    }
+    return res.json({ authenticated: true, user });
+});
+
+app.post(['/auth/session', '/notify/auth/session'], async (req, res) => {
+    const payload = req.body && typeof req.body === 'object' ? req.body : {};
+    const requestedUser = normalizeUserCandidate(payload.username || payload.user || payload.phone);
+    if (!SESSION_USER_PATTERN.test(requestedUser)) {
+        return res.status(400).json({ status: 'error', message: 'Invalid user' });
+    }
+
+    if (!SESSION_SIGNING_SECRET) {
+        return res.status(500).json({ status: 'error', message: 'Session configuration missing' });
+    }
+
+    try {
+        const response = await fetchWithRetry(
+            buildGoogleSheetGetUrl({ action: 'get_contacts', user: requestedUser }),
+            {},
+            { timeoutMs: 10000, retries: 1, backoffMs: 500 }
+        );
+        if (!response.ok) {
+            return res.status(502).json({ status: 'error', message: 'Unable to verify user' });
+        }
+        const contactsPayload = await response.json();
+        const users = Array.isArray(contactsPayload && contactsPayload.users) ? contactsPayload.users : [];
+        if (!users.length) {
+            return res.status(403).json({ status: 'error', message: 'Unauthorized user' });
+        }
+
+        const sessionToken = createSessionToken(requestedUser);
+        if (!sessionToken) {
+            return res.status(500).json({ status: 'error', message: 'Failed to create session' });
+        }
+
+        setSessionCookie(res, req, sessionToken.token, sessionToken.expiresAt);
+        return res.json({
+            status: 'success',
+            authenticated: true,
+            user: requestedUser,
+            expiresAt: sessionToken.expiresAt
+        });
+    } catch (error) {
+        console.error('[AUTH SESSION] Failed to create session:', error && error.message ? error.message : error);
+        return res.status(502).json({ status: 'error', message: 'Unable to verify user' });
+    }
+});
+
+app.delete(['/auth/session', '/notify/auth/session'], (req, res) => {
+    clearSessionCookie(res, req);
+    return res.json({ status: 'success', authenticated: false });
+});
+
 app.post(['/register-device', '/notify/register-device'], (req, res) => {
     try {
         const payload = req.body && typeof req.body === 'object' ? req.body : {};
-        const username = normalizeUserKey(payload.username || payload.user);
-        if (!username) {
-            return res.status(400).json({ status: 'error', message: 'Missing username' });
+        const resolvedUser = resolveAuthorizedUser(req, payload.username || payload.user, { required: true });
+        if (resolvedUser.error) {
+            return res.status(resolvedUser.status).json({ status: 'error', message: resolvedUser.error });
         }
+        const username = resolvedUser.user;
 
         const trackedSubscriptions = upsertLocalDeviceSubscriptionsFromRegistration({
             ...payload,
@@ -1977,10 +2253,15 @@ app.post(['/register-device', '/notify/register-device'], (req, res) => {
 });
 // --- RESET BADGE ENDPOINT ---
 app.post(['/reset-badge', '/notify/reset-badge'], (req, res) => {
-    const { user } = req.body;
+    const { user: requestedUser } = req.body || {};
+    const resolvedUser = resolveAuthorizedUser(req, requestedUser, { required: false });
+    if (resolvedUser.error) {
+        return res.status(resolvedUser.status).json({ status: 'error', message: resolvedUser.error });
+    }
+    const user = resolvedUser.user;
     if (user) {
         // Reset count for this user
-        unreadCounts[String(user).toLowerCase()] = 0;
+        unreadCounts[user] = 0;
         console.log(`[BADGE] Reset count for ${user}`);
         scheduleStateSave();
     }
@@ -2036,7 +2317,11 @@ app.post(['/backup', '/notify/backup'], (req, res) => {
 app.post(['/delete', '/notify/delete'], async (req, res) => {
     try {
         const body = req.body || {};
-        const sender = normalizeUserKey(body.sender || body.user);
+        const resolvedSender = resolveAuthorizedUser(req, body.sender || body.user, { required: true });
+        if (resolvedSender.error) {
+            return res.status(resolvedSender.status).json({ error: resolvedSender.error });
+        }
+        const sender = resolvedSender.user;
         const messageId = String(body.messageId || '').trim();
         const deletedAtRaw = Number(body.deletedAt || body.timestamp || Date.now());
         const deletedAt = Number.isFinite(deletedAtRaw) ? deletedAtRaw : Date.now();
@@ -2119,7 +2404,11 @@ app.post(['/delete', '/notify/delete'], async (req, res) => {
 app.post(['/edit', '/notify/edit'], async (req, res) => {
     try {
         const body = req.body || {};
-        const sender = normalizeUserKey(body.sender || body.user);
+        const resolvedSender = resolveAuthorizedUser(req, body.sender || body.user, { required: true });
+        if (resolvedSender.error) {
+            return res.status(resolvedSender.status).json({ error: resolvedSender.error });
+        }
+        const sender = resolvedSender.user;
         const messageId = String(body.messageId || '').trim();
         const editedBody = String(body.body || body.editedBody || '').trim();
         const editedAtRaw = Number(body.editedAt || body.timestamp || Date.now());
@@ -2657,11 +2946,16 @@ app.post(['/mobile-reregister-campaign', '/notify/mobile-reregister-campaign'], 
 });
 
 app.get(['/contacts', '/notify/contacts', '/contacts/:user', '/notify/contacts/:user'], async (req, res) => {
-    const user = normalizeUserKey(
+    const requestedUser = normalizeUserKey(
         (req.query && req.query.user) ||
         (req.params && req.params.user) ||
         ''
     );
+    const resolvedUser = resolveAuthorizedUser(req, requestedUser, { required: true });
+    if (resolvedUser.error) {
+        return res.status(resolvedUser.status).json({ users: [], error: resolvedUser.error });
+    }
+    const user = resolvedUser.user;
     if (!user) {
         return res.status(400).json({ users: [], error: 'Missing user' });
     }
@@ -2688,7 +2982,12 @@ app.get(['/contacts', '/notify/contacts', '/contacts/:user', '/notify/contacts/:
 });
 
 app.get(['/groups', '/notify/groups'], (req, res) => {
-    const user = req.query.user ? normalizeUserKey(req.query.user) : '';
+    const requestedUser = req.query.user ? normalizeUserKey(req.query.user) : '';
+    const resolvedUser = resolveAuthorizedUser(req, requestedUser, { required: true });
+    if (resolvedUser.error) {
+        return res.status(resolvedUser.status).json({ groups: [], error: resolvedUser.error });
+    }
+    const user = resolvedUser.user;
     if (!user) return res.json({ groups: [] });
     const result = Object.values(groups || {}).filter(group => {
         if (!group || !Array.isArray(group.members)) return false;
@@ -2702,7 +3001,12 @@ app.get(['/groups', '/notify/groups'], (req, res) => {
 // ======================================================
 app.get(['/messages', '/notify/messages'], (req, res) => {
     // [CHANGE] Force Lowercase Lookup
-    const user = req.query.user ? normalizeUserKey(req.query.user) : '';
+    const requestedUser = req.query.user ? normalizeUserKey(req.query.user) : '';
+    const resolvedUser = resolveAuthorizedUser(req, requestedUser, { required: true });
+    if (resolvedUser.error) {
+        return res.status(resolvedUser.status).json({ messages: [] });
+    }
+    const user = resolvedUser.user;
     
     if (!user) return res.json({ messages: [] });
 
@@ -2736,7 +3040,12 @@ app.get(['/messages', '/notify/messages'], (req, res) => {
 // [NEW] SSE STREAM (REAL-TIME)
 // ======================================================
 app.get(['/stream', '/notify/stream'], (req, res) => {
-    const user = req.query.user ? String(req.query.user).trim().toLowerCase() : null;
+    const requestedUser = req.query.user ? String(req.query.user).trim().toLowerCase() : '';
+    const resolvedUser = resolveAuthorizedUser(req, requestedUser, { required: true });
+    if (resolvedUser.error) {
+        return res.status(resolvedUser.status).json({ error: resolvedUser.error });
+    }
+    const user = resolvedUser.user || null;
     if (!user) {
         return res.status(400).json({ error: 'Missing user' });
     }
@@ -2806,7 +3115,7 @@ app.post(['/upload', '/notify/upload'], uploadFieldsValidated, (req, res) => {
 app.post(['/reply', '/notify/reply'], async (req, res) => {
     try {
         const {
-            user,
+            user: requestedUser,
             reply,
             originalSender,
             imageUrl,
@@ -2828,6 +3137,11 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
             forwardedFrom,
             forwardedFromName
         } = req.body;
+        const resolvedSender = resolveAuthorizedUser(req, requestedUser, { required: true });
+        if (resolvedSender.error) {
+            return res.status(resolvedSender.status).json({ error: resolvedSender.error });
+        }
+        const user = resolvedSender.user;
         console.log(`[REPLY] From: ${user} | To: ${originalSender}`);
 
         let groupRecord = null;
@@ -3059,7 +3373,11 @@ app.post(['/reaction', '/notify/reaction'], async (req, res) => {
         } = req.body || {};
         const normalizedTargetMessageId = String(targetMessageId || '').trim();
         const normalizedEmoji = String(emoji || '').trim();
-        const normalizedReactor = normalizeUserKey(reactor);
+        const resolvedReactor = resolveAuthorizedUser(req, reactor, { required: true });
+        if (resolvedReactor.error) {
+            return res.status(resolvedReactor.status).json({ error: resolvedReactor.error });
+        }
+        const normalizedReactor = resolvedReactor.user;
         if (!groupId || !normalizedTargetMessageId || !normalizedEmoji) {
             return res.status(400).json({ error: 'Missing reaction fields' });
         }
@@ -3150,12 +3468,16 @@ app.post(['/reaction', '/notify/reaction'], async (req, res) => {
 
 app.post(['/read', '/notify/read'], async (req, res) => {
     try {
-        const { reader, sender, messageIds, readAt } = req.body;
-        if (!reader || !sender || !Array.isArray(messageIds) || messageIds.length === 0) {
+        const { reader: requestedReader, sender, messageIds, readAt } = req.body;
+        if (!requestedReader || !sender || !Array.isArray(messageIds) || messageIds.length === 0) {
             return res.status(400).json({ status: 'error', message: 'Missing fields' });
         }
+        const resolvedReader = resolveAuthorizedUser(req, requestedReader, { required: true });
+        if (resolvedReader.error) {
+            return res.status(resolvedReader.status).json({ status: 'error', message: resolvedReader.error });
+        }
 
-        const normalizedReader = String(reader).trim();
+        const normalizedReader = resolvedReader.user;
         const normalizedSender = String(sender).trim();
         const uniqueMessageIds = Array.from(
             new Set(

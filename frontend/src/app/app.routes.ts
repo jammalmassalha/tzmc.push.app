@@ -2,16 +2,18 @@ import { inject } from '@angular/core';
 import { CanActivateFn, Router, Routes } from '@angular/router';
 import { ChatStoreService } from './core/services/chat-store.service';
 
-const authGuard: CanActivateFn = () => {
+const authGuard: CanActivateFn = async () => {
   const store = inject(ChatStoreService);
+  await store.ensureSessionReady();
   if (store.isAuthenticated()) {
     return true;
   }
   return inject(Router).createUrlTree(['/setup']);
 };
 
-const guestGuard: CanActivateFn = () => {
+const guestGuard: CanActivateFn = async () => {
   const store = inject(ChatStoreService);
+  await store.ensureSessionReady();
   if (!store.isAuthenticated()) {
     return true;
   }

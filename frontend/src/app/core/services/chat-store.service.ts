@@ -96,7 +96,7 @@ export interface ActivatedChatMeta {
 
 @Injectable({ providedIn: 'root' })
 export class ChatStoreService {
-  readonly currentUser = signal<string | null>(this.readStoredUser());
+  readonly currentUser = signal<string | null>(null);
   readonly contacts = signal<Contact[]>([]);
   readonly groups = signal<ChatGroup[]>([]);
   readonly activeChatId = signal<string | null>(null);
@@ -130,6 +130,7 @@ export class ChatStoreService {
   private readonly readReceiptFlushInFlightByChat = new Set<string>();
   private pushRegisterInFlight = false;
   private lastPushRegisterAttemptAt = 0;
+  private authBootstrapPromise: Promise<void> | null = null;
 
   readonly chatItems = computed<ChatListItem[]>(() => {
     const groupsById = new Map(this.groups().map((group) => [group.id, group]));
@@ -213,11 +214,6 @@ export class ChatStoreService {
   });
 
   constructor(private readonly api: ChatApiService) {
-    const storedUser = this.currentUser();
-    if (storedUser) {
-      this.restoreState(storedUser);
-    }
-
     if (typeof window !== 'undefined') {
       window.addEventListener('online', this.handleOnline);
       window.addEventListener('offline', this.handleOffline);
@@ -233,7 +229,35 @@ export class ChatStoreService {
     return Boolean(this.currentUser());
   }
 
+  async ensureSessionReady(): Promise<void> {
+    if (!this.authBootstrapPromise) {
+      this.authBootstrapPromise = this.bootstrapSessionUser();
+    }
+    await this.authBootstrapPromise;
+  }
+
+  private async bootstrapSessionUser(): Promise<void> {
+    this.removeLegacyStoredUser();
+    try {
+      const sessionUser = await this.api.getSessionUser();
+      if (!sessionUser) {
+        this.currentUser.set(null);
+        return;
+      }
+      const user = this.normalizeUser(sessionUser);
+      if (!user) {
+        this.currentUser.set(null);
+        return;
+      }
+      this.currentUser.set(user);
+      this.restoreState(user);
+    } catch {
+      this.currentUser.set(null);
+    }
+  }
+
   async initialize(): Promise<void> {
+    await this.ensureSessionReady();
     const user = this.currentUser();
     if (!user) return;
     if (this.initializedUser === user) return;
@@ -271,10 +295,9 @@ export class ChatStoreService {
       throw new Error('מספר טלפון לא תקין');
     }
 
-    const user = this.normalizeUser(normalized);
+    const user = await this.api.createSession(this.normalizeUser(normalized));
     this.stopRealtime();
 
-    localStorage.setItem('username', user);
     this.currentUser.set(user);
     this.initializedUser = null;
     this.contacts.set([]);
@@ -290,11 +313,15 @@ export class ChatStoreService {
     await this.initialize();
   }
 
-  logout(): void {
+  async logout(): Promise<void> {
+    try {
+      await this.api.clearSession();
+    } catch {
+      // Keep local logout resilient even if network fails.
+    }
     const user = this.currentUser();
     this.stopRealtime();
     this.initializedUser = null;
-    localStorage.removeItem('username');
     if (user) {
       localStorage.removeItem(this.activeChatKey(user));
       localStorage.removeItem(this.homeViewKey(user));
@@ -1637,7 +1664,7 @@ export class ChatStoreService {
     }
 
     try {
-      this.stream = this.api.createMessageStream(user);
+      this.stream = this.api.createMessageStream();
       this.stream.addEventListener('message', (event: MessageEvent<string>) => {
         this.handleIncomingPayload(event.data);
       });
@@ -1702,7 +1729,7 @@ export class ChatStoreService {
 
     this.pullInFlight = true;
     try {
-      const messages = await this.api.pollMessages(user);
+      const messages = await this.api.pollMessages();
       for (const message of messages) {
         this.applyIncomingMessage(message);
       }
@@ -2542,9 +2569,11 @@ export class ChatStoreService {
     return digits;
   }
 
-  private readStoredUser(): string | null {
-    const value = localStorage.getItem('username');
-    return value ? this.normalizeUser(value) : null;
+  private removeLegacyStoredUser(): void {
+    if (typeof localStorage === 'undefined') {
+      return;
+    }
+    localStorage.removeItem('username');
   }
 
   private stateKey(user: string): string {

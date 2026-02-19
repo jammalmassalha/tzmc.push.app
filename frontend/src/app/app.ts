@@ -68,9 +68,7 @@ export class App {
     const postContext = (): void => {
       const standalone = this.isStandaloneWindow();
       const username = String(
-        this.store.currentUser() ||
-        (typeof localStorage !== 'undefined' ? localStorage.getItem('username') : '') ||
-        ''
+        this.store.currentUser() || ''
       )
         .trim()
         .toLowerCase();

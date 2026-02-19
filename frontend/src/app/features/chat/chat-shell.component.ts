@@ -731,7 +731,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   async logout(): Promise<void> {
-    this.store.logout();
+    await this.store.logout();
     await this.router.navigate(['/setup']);
   }
 

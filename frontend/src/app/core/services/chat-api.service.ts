@@ -80,6 +80,12 @@ interface HrActionsResponse {
   }>;
 }
 
+interface SessionResponse {
+  authenticated?: boolean;
+  user?: string | null;
+  status?: string;
+}
+
 export interface HrStepOption {
   id: string;
   name: string;
@@ -108,16 +114,76 @@ export class ChatApiService {
     return this.config.vapidPublicKey;
   }
 
-  async getContacts(user: string): Promise<Contact[]> {
-    const normalizedUser = String(user || '').trim();
-    if (!normalizedUser) {
-      return [];
+  async getSessionUser(): Promise<string | null> {
+    const response = await this.fetchWithRetry(`${this.notifyBaseUrl}/auth/session`, {}, { retries: 1, timeoutMs: 8000 });
+    if (!response.ok) {
+      return null;
     }
-    const encodedUser = encodeURIComponent(normalizedUser);
-    const candidateUrls = [
-      `${this.notifyBaseUrl}/contacts?user=${encodedUser}`,
-      `${this.notifyBaseUrl}/contacts/${encodedUser}`
-    ];
+
+    const body = (await response.json()) as SessionResponse;
+    const user = String(body.user ?? '').trim().toLowerCase();
+    return body.authenticated && user ? user : null;
+  }
+
+  async createSession(user: string): Promise<string> {
+    const normalized = String(user || '').trim().toLowerCase();
+    if (!normalized) {
+      throw new Error('מספר טלפון לא תקין');
+    }
+
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/auth/session`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: normalized })
+      },
+      { retries: 1, timeoutMs: 12000 }
+    );
+    if (!response.ok) {
+      let errorMessage = 'נכשל בהתחברות';
+      try {
+        const body = (await response.json()) as { message?: string; error?: string };
+        const backendMessage = String(body.message ?? body.error ?? '').trim();
+        if (response.status === 400) {
+          errorMessage = 'מספר טלפון לא תקין';
+        } else if (response.status === 403) {
+          errorMessage = 'המשתמש אינו מורשה';
+        } else if (backendMessage) {
+          errorMessage = backendMessage;
+        }
+      } catch {
+        // Keep fallback message.
+      }
+      throw new Error(errorMessage);
+    }
+
+    const body = (await response.json()) as SessionResponse;
+    const sessionUser = String(body.user ?? '').trim().toLowerCase();
+    if (!body.authenticated || !sessionUser) {
+      throw new Error('נכשל בהתחברות');
+    }
+    return sessionUser;
+  }
+
+  async clearSession(): Promise<void> {
+    await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/auth/session`,
+      { method: 'DELETE' },
+      { retries: 0, timeoutMs: 8000 }
+    );
+  }
+
+  async getContacts(user?: string): Promise<Contact[]> {
+    const normalizedUser = String(user || '').trim();
+    const candidateUrls = [`${this.notifyBaseUrl}/contacts`];
+    if (normalizedUser) {
+      const encodedUser = encodeURIComponent(normalizedUser);
+      candidateUrls.push(
+        `${this.notifyBaseUrl}/contacts?user=${encodedUser}`,
+        `${this.notifyBaseUrl}/contacts/${encodedUser}`
+      );
+    }
 
     let response: Response | null = null;
     let lastStatus = 0;
@@ -215,11 +281,25 @@ export class ChatApiService {
     };
   }
 
-  async getGroups(user: string): Promise<ChatGroup[]> {
-    const url = `${this.config.groupsUrl}?user=${encodeURIComponent(user)}`;
-    const response = await this.fetchWithRetry(url, {}, { retries: 2, timeoutMs: 10000 });
-    if (!response.ok) {
-      throw new Error(`Groups request failed with ${response.status}`);
+  async getGroups(user?: string): Promise<ChatGroup[]> {
+    const normalizedUser = String(user || '').trim().toLowerCase();
+    const candidateUrls = [this.config.groupsUrl];
+    if (normalizedUser) {
+      candidateUrls.push(`${this.config.groupsUrl}?user=${encodeURIComponent(normalizedUser)}`);
+    }
+
+    let response: Response | null = null;
+    let lastStatus = 0;
+    for (const url of candidateUrls) {
+      const candidateResponse = await this.fetchWithRetry(url, {}, { retries: 1, timeoutMs: 10000 });
+      if (candidateResponse.ok) {
+        response = candidateResponse;
+        break;
+      }
+      lastStatus = candidateResponse.status;
+    }
+    if (!response) {
+      throw new Error(`Groups request failed with ${lastStatus || 0}`);
     }
 
     const body = (await response.json()) as GroupsResponse;
@@ -240,7 +320,7 @@ export class ChatApiService {
           id,
           name,
           members,
-          createdBy: createdBy || user,
+          createdBy: createdBy || normalizedUser,
           updatedAt,
           type
         } satisfies ChatGroup;
@@ -248,19 +328,36 @@ export class ChatApiService {
       .filter((group) => Boolean(group.id && group.name));
   }
 
-  async pollMessages(user: string): Promise<IncomingServerMessage[]> {
-    const url = `${this.messagesUrlBase}?user=${encodeURIComponent(user)}`;
-    const response = await this.fetchWithRetry(url, {}, { retries: 1, timeoutMs: 10000 });
-    if (!response.ok) {
-      throw new Error(`Messages request failed with ${response.status}`);
+  async pollMessages(user?: string): Promise<IncomingServerMessage[]> {
+    const normalizedUser = String(user || '').trim().toLowerCase();
+    const candidateUrls = [this.messagesUrlBase];
+    if (normalizedUser) {
+      candidateUrls.push(`${this.messagesUrlBase}?user=${encodeURIComponent(normalizedUser)}`);
+    }
+
+    let response: Response | null = null;
+    let lastStatus = 0;
+    for (const url of candidateUrls) {
+      const candidateResponse = await this.fetchWithRetry(url, {}, { retries: 0, timeoutMs: 10000 });
+      if (candidateResponse.ok) {
+        response = candidateResponse;
+        break;
+      }
+      lastStatus = candidateResponse.status;
+    }
+    if (!response) {
+      throw new Error(`Messages request failed with ${lastStatus || 0}`);
     }
 
     const body = (await response.json()) as PollResponse;
     return Array.isArray(body.messages) ? body.messages : [];
   }
 
-  createMessageStream(user: string): EventSource {
-    const url = `${this.streamUrlBase}?user=${encodeURIComponent(user)}`;
+  createMessageStream(user?: string): EventSource {
+    const normalizedUser = String(user || '').trim().toLowerCase();
+    const url = normalizedUser
+      ? `${this.streamUrlBase}?user=${encodeURIComponent(normalizedUser)}`
+      : this.streamUrlBase;
     return new EventSource(url);
   }
 
@@ -559,6 +656,7 @@ export class ChatApiService {
       try {
         const response = await fetch(input, {
           ...init,
+          credentials: init.credentials ?? 'same-origin',
           signal: controller.signal
         });
 
