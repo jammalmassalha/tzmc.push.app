@@ -865,7 +865,7 @@ export class ChatStoreService {
     const groupMembers = effectiveGroup?.members ?? [];
     const groupCreatedBy = effectiveGroup?.createdBy || '';
     const groupUpdatedAt = effectiveGroup?.updatedAt || Date.now();
-    const groupType: GroupType = targetGroupType === 'group' ? 'group' : 'community';
+    const groupType: GroupType = effectiveGroup?.type === 'group' ? 'group' : 'community';
 
     await this.api.sendReaction({
       groupId,
