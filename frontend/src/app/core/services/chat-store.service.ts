@@ -23,6 +23,7 @@ import {
 import { ChatApiService, HrActionOption, HrStepOption } from './chat-api.service';
 
 const CONTACTS_TTL_MS = 5 * 60 * 1000;
+const CONTACTS_ACCESS_SYNC_INTERVAL_MS = 60 * 1000;
 const GROUPS_TTL_MS = 2 * 60 * 1000;
 const POLL_INTERVAL_MS = 15000;
 const STREAM_RETRY_MS = 5000;
@@ -112,6 +113,7 @@ export class ChatStoreService {
   private readonly messagesByChat = signal<Record<string, ChatMessage[]>>({});
   private stream: EventSource | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private contactsAccessSyncTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private pullInFlight = false;
@@ -130,6 +132,7 @@ export class ChatStoreService {
   private readonly readReceiptFlushInFlightByChat = new Set<string>();
   private pushRegisterInFlight = false;
   private lastPushRegisterAttemptAt = 0;
+  private contactsAccessSyncInFlight = false;
   private authBootstrapPromise: Promise<void> | null = null;
 
   readonly chatItems = computed<ChatListItem[]>(() => {
@@ -269,6 +272,8 @@ export class ChatStoreService {
     void this.tryRegisterPush(user, { force: true });
     this.connectRealtime(user);
     await this.flushOutbox();
+    this.startBackgroundContactsAccessSync(user);
+    void this.syncContactsAccessInBackground(user);
 
     const storedActive = this.getStoredActiveChat(user);
     if (storedActive && this.chatItems().some((chat) => chat.id === storedActive)) {
@@ -297,6 +302,7 @@ export class ChatStoreService {
 
     const user = await this.api.createSession(this.normalizeUser(normalized));
     this.stopRealtime();
+    this.stopBackgroundContactsAccessSync();
 
     this.currentUser.set(user);
     this.initializedUser = null;
@@ -321,6 +327,7 @@ export class ChatStoreService {
     }
     const user = this.currentUser();
     this.stopRealtime();
+    this.stopBackgroundContactsAccessSync();
     this.initializedUser = null;
     if (user) {
       localStorage.removeItem(this.activeChatKey(user));
@@ -1723,6 +1730,54 @@ export class ChatStoreService {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+  }
+
+  private startBackgroundContactsAccessSync(user: string): void {
+    this.stopBackgroundContactsAccessSync();
+    this.contactsAccessSyncTimer = setInterval(() => {
+      void this.syncContactsAccessInBackground(user);
+    }, CONTACTS_ACCESS_SYNC_INTERVAL_MS);
+  }
+
+  private stopBackgroundContactsAccessSync(): void {
+    if (this.contactsAccessSyncTimer) {
+      clearInterval(this.contactsAccessSyncTimer);
+      this.contactsAccessSyncTimer = null;
+    }
+    this.contactsAccessSyncInFlight = false;
+  }
+
+  private async syncContactsAccessInBackground(user: string): Promise<void> {
+    if (this.contactsAccessSyncInFlight) return;
+    if (this.currentUser() !== user) return;
+    if (!this.isNetworkReachable()) return;
+
+    this.contactsAccessSyncInFlight = true;
+    try {
+      const contacts = this.normalizeContacts(await this.api.getContacts(user));
+      if (this.haveContactsChanged(this.contacts(), contacts)) {
+        this.contacts.set(contacts);
+        this.schedulePersist();
+      }
+      this.lastContactsFetchAt = Date.now();
+    } catch {
+      // Silent background check to avoid noisy UX.
+    } finally {
+      this.contactsAccessSyncInFlight = false;
+    }
+  }
+
+  private haveContactsChanged(current: Contact[], next: Contact[]): boolean {
+    if (current.length !== next.length) {
+      return true;
+    }
+    const currentSignature = current
+      .map((item) => `${item.username}|${item.displayName}|${item.info || ''}|${item.phone || ''}|${item.upic || ''}`)
+      .join('\n');
+    const nextSignature = next
+      .map((item) => `${item.username}|${item.displayName}|${item.info || ''}|${item.phone || ''}|${item.upic || ''}`)
+      .join('\n');
+    return currentSignature !== nextSignature;
   }
 
   private scheduleStreamReconnect(user: string): void {
