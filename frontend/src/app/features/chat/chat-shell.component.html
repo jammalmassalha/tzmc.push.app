@@ -605,6 +605,18 @@
                 }
               </label>
 
+              @if (selectedGroupMemberAddCount() > 0) {
+                <div class="group-member-add-actions">
+                  <span class="group-member-add-actions-count">נבחרו {{ selectedGroupMemberAddCount() }} אנשי קשר</span>
+                  <div class="group-member-add-actions-buttons">
+                    <button mat-flat-button color="primary" type="button" (click)="addSelectedCommunityMembers()">
+                      הוסף נבחרים
+                    </button>
+                    <button mat-stroked-button type="button" (click)="clearSelectedGroupMemberAdds()">נקה בחירה</button>
+                  </div>
+                </div>
+              }
+
               @if (!filteredGroupMemberAddCandidates().length) {
                 <div class="group-member-add-empty">אין אנשי קשר זמינים להוספה</div>
               } @else {
@@ -613,11 +625,17 @@
                     <button
                       type="button"
                       class="group-member-add-item"
-                      (click)="addCommunityMember(candidate.username)">
+                      [class.selected]="isGroupMemberAddSelected(candidate.username)"
+                      (click)="toggleGroupMemberAddSelection(candidate.username)">
                       <div class="group-add-member-row">
                         <span class="group-add-member-name">{{ candidate.displayName }}</span>
                         <span class="group-add-member-username">{{ candidate.username }}</span>
                       </div>
+                      <span class="group-member-select-indicator">
+                        <mat-icon>
+                          {{ isGroupMemberAddSelected(candidate.username) ? 'check_circle' : 'radio_button_unchecked' }}
+                        </mat-icon>
+                      </span>
                     </button>
                   }
                 </div>
@@ -629,6 +647,18 @@
         @if (!groupPreview.members.length) {
           <div class="group-members-empty">אין משתתפים להצגה.</div>
         } @else {
+          @if (groupPreview.canManageMembers && selectedGroupMemberRemoveCount() > 0) {
+            <div class="group-member-remove-actions">
+              <span class="group-member-remove-actions-count">נבחרו {{ selectedGroupMemberRemoveCount() }} להסרה</span>
+              <div class="group-member-remove-actions-buttons">
+                <button mat-flat-button color="warn" type="button" (click)="removeSelectedCommunityMembers()">
+                  הסר נבחרים
+                </button>
+                <button mat-stroked-button type="button" (click)="clearSelectedGroupMemberRemovals()">נקה בחירה</button>
+              </div>
+            </div>
+          }
+
           <div class="group-members-list">
             @for (member of groupPreview.members; track member.username) {
               <div class="group-member-item">
@@ -644,10 +674,13 @@
                 @if (canRemoveCommunityMember(groupPreview, member.username)) {
                   <button
                     type="button"
-                    class="group-member-remove"
-                    (click)="removeCommunityMember(member.username)"
-                    aria-label="הסר משתתף">
-                    <mat-icon>person_remove</mat-icon>
+                    class="group-member-remove-select"
+                    [class.selected]="isGroupMemberRemoveSelected(member.username)"
+                    (click)="toggleGroupMemberRemoveSelection(member.username)"
+                    aria-label="בחר משתתף להסרה">
+                    <mat-icon>
+                      {{ isGroupMemberRemoveSelected(member.username) ? 'check_circle' : 'radio_button_unchecked' }}
+                    </mat-icon>
                   </button>
                 }
               </div>

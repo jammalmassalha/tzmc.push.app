@@ -201,6 +201,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly groupMembersPreview = signal<GroupMembersPreview | null>(null);
   readonly groupMemberAddOpen = signal(false);
   readonly groupMemberAddSearchTerm = signal('');
+  readonly selectedGroupMemberAddUsernames = signal<Set<string>>(new Set<string>());
+  readonly selectedGroupMemberRemoveUsernames = signal<Set<string>>(new Set<string>());
+  readonly selectedGroupMemberAddCount = computed(() => this.selectedGroupMemberAddUsernames().size);
+  readonly selectedGroupMemberRemoveCount = computed(() => this.selectedGroupMemberRemoveUsernames().size);
   readonly groupMemberAddCandidates = computed<GroupMemberAddCandidate[]>(() => {
     const preview = this.groupMembersPreview();
     if (!preview?.canManageMembers) return [];
@@ -748,39 +752,71 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (!group) return;
     this.groupMemberAddOpen.set(false);
     this.groupMemberAddSearchTerm.set('');
+    this.clearSelectedGroupMemberAdds();
+    this.clearSelectedGroupMemberRemovals();
     this.groupMembersPreview.set(this.buildGroupMembersPreview(group));
   }
 
-  async addCommunityMember(username: string): Promise<void> {
+  async addSelectedCommunityMembers(): Promise<void> {
     const preview = this.groupMembersPreview();
     if (!preview?.canManageMembers) return;
+    const selected = Array.from(this.selectedGroupMemberAddUsernames());
+    if (!selected.length) {
+      this.snackBar.open('בחר לפחות איש קשר אחד להוספה.', 'סגור', { duration: 2200 });
+      return;
+    }
 
-    const normalized = String(username || '').trim().toLowerCase();
-    if (!normalized) return;
+    const existingMemberSet = new Set(preview.members.map((member) => member.username));
+    const toAdd = selected.filter((username) => !existingMemberSet.has(username));
+    if (!toAdd.length) {
+      this.snackBar.open('כל אנשי הקשר שנבחרו כבר נמצאים בקבוצה.', 'סגור', { duration: 2400 });
+      this.clearSelectedGroupMemberAdds();
+      return;
+    }
 
-    const nextMembers = Array.from(new Set([...preview.members.map((member) => member.username), normalized]));
-    await this.updateCommunityMembers(preview.groupId, nextMembers, 'המשתתף נוסף לקבוצה.');
+    const nextMembers = Array.from(new Set([...preview.members.map((member) => member.username), ...toAdd]));
+    const successMessage = toAdd.length === 1 ? 'המשתתף נוסף לקבוצה.' : `נוספו ${toAdd.length} משתתפים לקבוצה.`;
+    await this.updateCommunityMembers(preview.groupId, nextMembers, successMessage);
+    this.clearSelectedGroupMemberAdds();
     this.groupMemberAddSearchTerm.set('');
     this.groupMemberAddOpen.set(false);
   }
 
-  async removeCommunityMember(username: string): Promise<void> {
+  async removeSelectedCommunityMembers(): Promise<void> {
     const preview = this.groupMembersPreview();
     if (!preview?.canManageMembers) return;
+    const selected = Array.from(this.selectedGroupMemberRemoveUsernames());
+    if (!selected.length) {
+      this.snackBar.open('בחר לפחות משתתף אחד להסרה.', 'סגור', { duration: 2200 });
+      return;
+    }
 
-    const normalized = String(username || '').trim().toLowerCase();
-    const target = preview.members.find((member) => member.username === normalized);
-    if (!target || target.isAdmin) return;
+    const removableSet = new Set(
+      preview.members
+        .filter((member) => !member.isAdmin)
+        .map((member) => member.username)
+    );
+    const toRemove = selected.filter((username) => removableSet.has(username));
+    if (!toRemove.length) {
+      this.snackBar.open('לא ניתן להסיר את המשתתפים שנבחרו.', 'סגור', { duration: 2400 });
+      this.clearSelectedGroupMemberRemovals();
+      return;
+    }
 
+    const toRemoveSet = new Set(toRemove);
     const nextMembers = preview.members
       .map((member) => member.username)
-      .filter((memberUsername) => memberUsername !== normalized);
-    await this.updateCommunityMembers(preview.groupId, nextMembers, 'המשתתף הוסר מהקבוצה.');
+      .filter((memberUsername) => !toRemoveSet.has(memberUsername));
+    const successMessage = toRemove.length === 1 ? 'המשתתף הוסר מהקבוצה.' : `הוסרו ${toRemove.length} משתתפים מהקבוצה.`;
+    await this.updateCommunityMembers(preview.groupId, nextMembers, successMessage);
+    this.clearSelectedGroupMemberRemovals();
   }
 
   closeGroupMembers(): void {
     this.groupMemberAddOpen.set(false);
     this.groupMemberAddSearchTerm.set('');
+    this.clearSelectedGroupMemberAdds();
+    this.clearSelectedGroupMemberRemovals();
     this.groupMembersPreview.set(null);
   }
 
@@ -789,6 +825,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     this.groupMemberAddOpen.set(nextState);
     if (!nextState) {
       this.groupMemberAddSearchTerm.set('');
+      this.clearSelectedGroupMemberAdds();
     }
   }
 
@@ -799,6 +836,58 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   clearGroupMemberSearch(): void {
     this.groupMemberAddSearchTerm.set('');
+  }
+
+  toggleGroupMemberAddSelection(username: string): void {
+    const normalized = this.normalizeUsername(username);
+    if (!normalized) return;
+
+    const next = new Set(this.selectedGroupMemberAddUsernames());
+    if (next.has(normalized)) {
+      next.delete(normalized);
+    } else {
+      next.add(normalized);
+    }
+    this.selectedGroupMemberAddUsernames.set(next);
+  }
+
+  isGroupMemberAddSelected(username: string): boolean {
+    const normalized = this.normalizeUsername(username);
+    if (!normalized) return false;
+    return this.selectedGroupMemberAddUsernames().has(normalized);
+  }
+
+  clearSelectedGroupMemberAdds(): void {
+    this.selectedGroupMemberAddUsernames.set(new Set<string>());
+  }
+
+  toggleGroupMemberRemoveSelection(username: string): void {
+    const preview = this.groupMembersPreview();
+    if (!preview?.canManageMembers) return;
+
+    const normalized = this.normalizeUsername(username);
+    if (!normalized) return;
+
+    const target = preview.members.find((member) => member.username === normalized);
+    if (!target || target.isAdmin) return;
+
+    const next = new Set(this.selectedGroupMemberRemoveUsernames());
+    if (next.has(normalized)) {
+      next.delete(normalized);
+    } else {
+      next.add(normalized);
+    }
+    this.selectedGroupMemberRemoveUsernames.set(next);
+  }
+
+  isGroupMemberRemoveSelected(username: string): boolean {
+    const normalized = this.normalizeUsername(username);
+    if (!normalized) return false;
+    return this.selectedGroupMemberRemoveUsernames().has(normalized);
+  }
+
+  clearSelectedGroupMemberRemovals(): void {
+    this.selectedGroupMemberRemoveUsernames.set(new Set<string>());
   }
 
   canShowGroupMembers(): boolean {
@@ -855,6 +944,8 @@ export class ChatShellComponent implements OnInit, OnDestroy {
         return;
       }
       this.groupMembersPreview.set(this.buildGroupMembersPreview(refreshed));
+      this.clearSelectedGroupMemberAdds();
+      this.clearSelectedGroupMemberRemovals();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'עדכון חברי קבוצה נכשל';
       this.snackBar.open(message, 'סגור', { duration: 3200 });
