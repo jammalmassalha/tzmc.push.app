@@ -33,6 +33,9 @@ const PUSH_REGISTER_REFRESH_MS = 6 * 60 * 60 * 1000;
 const FOREGROUND_SYNC_MIN_INTERVAL_MS = 4000;
 const BADGE_RESET_MIN_INTERVAL_MS = 30000;
 const PUSH_RECOVERY_PULL_DELAYS_MS = [1200, 3600];
+const DELIVERY_TELEMETRY_FLUSH_INTERVAL_MS = 60 * 1000;
+const DELIVERY_TELEMETRY_FLUSH_MIN_EVENTS = 4;
+const DELIVERY_TELEMETRY_DEVICE_ID_KEY = 'modern-chat-delivery-device-id';
 const HR_CHAT_NAME = 'ציפי';
 const HR_WELCOME_KEY_PREFIX = 'hr_welcome_sent_';
 const HR_STATE_KEY_PREFIX = 'hr_state_';
@@ -70,6 +73,20 @@ interface SendMessagePayload extends SendMessageOptions {
   body: string;
   imageUrl: string | null;
   thumbnailUrl?: string | null;
+}
+
+interface DeliveryTelemetryCounters {
+  pushPayloadReceived: number;
+  pushImmediateMessageBuilt: number;
+  pushMessageApplied: number;
+  pushMessageNoop: number;
+  pushMissingMessageContext: number;
+  pushRecoveryPullScheduled: number;
+  ssePayloadReceived: number;
+  sseMessageApplied: number;
+  sseMessageNoop: number;
+  pollMessagesFetched: number;
+  pollMessagesApplied: number;
 }
 
 type BadgeCapableNavigator = Navigator & {
@@ -135,6 +152,11 @@ export class ChatStoreService {
   private lastPushRegisterAttemptAt = 0;
   private contactsAccessSyncInFlight = false;
   private authBootstrapPromise: Promise<void> | null = null;
+  private deliveryTelemetryFlushTimer: ReturnType<typeof setInterval> | null = null;
+  private deliveryTelemetryInFlight = false;
+  private deliveryTelemetryLastFlushedAt = 0;
+  private deliveryTelemetryDeviceId = '';
+  private deliveryTelemetryCounters: DeliveryTelemetryCounters = this.createEmptyDeliveryTelemetryCounters();
 
   readonly chatItems = computed<ChatListItem[]>(() => {
     const groupsById = new Map(this.groups().map((group) => [group.id, group]));
@@ -275,6 +297,7 @@ export class ChatStoreService {
     await this.flushOutbox();
     this.startBackgroundContactsAccessSync(user);
     void this.syncContactsAccessInBackground(user);
+    this.startDeliveryTelemetry(user);
 
     const storedActive = this.getStoredActiveChat(user);
     if (storedActive && this.chatItems().some((chat) => chat.id === storedActive)) {
@@ -304,6 +327,8 @@ export class ChatStoreService {
     const user = await this.api.createSession(this.normalizeUser(normalized));
     this.stopRealtime();
     this.stopBackgroundContactsAccessSync();
+    void this.flushDeliveryTelemetry({ force: true, includeZero: false });
+    this.stopDeliveryTelemetry();
 
     this.currentUser.set(user);
     this.initializedUser = null;
@@ -329,6 +354,8 @@ export class ChatStoreService {
     const user = this.currentUser();
     this.stopRealtime();
     this.stopBackgroundContactsAccessSync();
+    void this.flushDeliveryTelemetry({ force: true, includeZero: false });
+    this.stopDeliveryTelemetry();
     this.initializedUser = null;
     if (user) {
       localStorage.removeItem(this.activeChatKey(user));
@@ -1781,6 +1808,118 @@ export class ChatStoreService {
     return currentSignature !== nextSignature;
   }
 
+  private startDeliveryTelemetry(user: string): void {
+    if (!user) {
+      return;
+    }
+    this.stopDeliveryTelemetry();
+    this.deliveryTelemetryCounters = this.createEmptyDeliveryTelemetryCounters();
+    this.deliveryTelemetryLastFlushedAt = Date.now();
+    this.ensureDeliveryTelemetryDeviceId();
+    this.deliveryTelemetryFlushTimer = setInterval(() => {
+      void this.flushDeliveryTelemetry();
+    }, DELIVERY_TELEMETRY_FLUSH_INTERVAL_MS);
+  }
+
+  private stopDeliveryTelemetry(): void {
+    if (this.deliveryTelemetryFlushTimer) {
+      clearInterval(this.deliveryTelemetryFlushTimer);
+      this.deliveryTelemetryFlushTimer = null;
+    }
+    this.deliveryTelemetryInFlight = false;
+  }
+
+  private createEmptyDeliveryTelemetryCounters(): DeliveryTelemetryCounters {
+    return {
+      pushPayloadReceived: 0,
+      pushImmediateMessageBuilt: 0,
+      pushMessageApplied: 0,
+      pushMessageNoop: 0,
+      pushMissingMessageContext: 0,
+      pushRecoveryPullScheduled: 0,
+      ssePayloadReceived: 0,
+      sseMessageApplied: 0,
+      sseMessageNoop: 0,
+      pollMessagesFetched: 0,
+      pollMessagesApplied: 0
+    };
+  }
+
+  private incrementDeliveryTelemetry(counter: keyof DeliveryTelemetryCounters, delta = 1): void {
+    const normalizedDelta = Math.max(0, Math.floor(Number(delta) || 0));
+    if (!normalizedDelta) return;
+    this.deliveryTelemetryCounters[counter] += normalizedDelta;
+    void this.flushDeliveryTelemetry();
+  }
+
+  private totalDeliveryTelemetryEvents(counters: DeliveryTelemetryCounters): number {
+    return Object.values(counters).reduce((sum, value) => sum + (Number(value) || 0), 0);
+  }
+
+  private ensureDeliveryTelemetryDeviceId(): string {
+    if (this.deliveryTelemetryDeviceId) {
+      return this.deliveryTelemetryDeviceId;
+    }
+    const stored = this.safeStorageGet(DELIVERY_TELEMETRY_DEVICE_ID_KEY).trim();
+    if (stored) {
+      this.deliveryTelemetryDeviceId = stored;
+      return stored;
+    }
+    const nextId = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+      ? crypto.randomUUID()
+      : `dev_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    this.deliveryTelemetryDeviceId = nextId;
+    this.safeStorageSet(DELIVERY_TELEMETRY_DEVICE_ID_KEY, nextId);
+    return nextId;
+  }
+
+  private async flushDeliveryTelemetry(options: { force?: boolean; includeZero?: boolean } = {}): Promise<void> {
+    const user = this.currentUser();
+    if (!user) return;
+    if (this.deliveryTelemetryInFlight) return;
+
+    const force = Boolean(options.force);
+    const includeZero = Boolean(options.includeZero);
+    const now = Date.now();
+    const elapsed = now - this.deliveryTelemetryLastFlushedAt;
+    const snapshot = { ...this.deliveryTelemetryCounters };
+    const totalEvents = this.totalDeliveryTelemetryEvents(snapshot);
+
+    if (!force && totalEvents < DELIVERY_TELEMETRY_FLUSH_MIN_EVENTS && elapsed < DELIVERY_TELEMETRY_FLUSH_INTERVAL_MS) {
+      return;
+    }
+    if (!includeZero && totalEvents <= 0) {
+      return;
+    }
+
+    this.deliveryTelemetryInFlight = true;
+    this.deliveryTelemetryCounters = this.createEmptyDeliveryTelemetryCounters();
+    try {
+      const unreadTotal = Object.values(this.unreadByChat()).reduce((sum, count) => sum + (Number(count) || 0), 0);
+      await this.api.sendClientLog(
+        'delivery-telemetry',
+        {
+          ...snapshot,
+          deviceId: this.ensureDeliveryTelemetryDeviceId(),
+          activeChatId: this.activeChatId(),
+          unreadTotal,
+          inForeground: this.isAppInForeground(),
+          networkOnline: this.networkOnline(),
+          at: now
+        },
+        user
+      );
+      this.deliveryTelemetryLastFlushedAt = now;
+    } catch {
+      // Merge back on failure to avoid dropping telemetry counters.
+      (Object.keys(snapshot) as Array<keyof DeliveryTelemetryCounters>).forEach((key) => {
+        this.deliveryTelemetryCounters[key] += snapshot[key];
+      });
+    } finally {
+      this.deliveryTelemetryInFlight = false;
+    }
+  }
+
   private scheduleStreamReconnect(user: string): void {
     if (this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
@@ -1797,9 +1936,14 @@ export class ChatStoreService {
     this.pullInFlight = true;
     try {
       const messages = await this.api.pollMessages();
+      this.incrementDeliveryTelemetry('pollMessagesFetched', messages.length);
+      let appliedCount = 0;
       for (const message of messages) {
-        this.applyIncomingMessage(message);
+        if (this.applyIncomingMessage(message)) {
+          appliedCount += 1;
+        }
       }
+      this.incrementDeliveryTelemetry('pollMessagesApplied', appliedCount);
     } catch {
       // Polling failures are expected during network interruptions.
     } finally {
@@ -1809,52 +1953,52 @@ export class ChatStoreService {
 
   private handleIncomingPayload(rawData: string): void {
     try {
+      this.incrementDeliveryTelemetry('ssePayloadReceived');
       const message = JSON.parse(rawData) as IncomingServerMessage;
-      this.applyIncomingMessage(message);
+      if (this.applyIncomingMessage(message)) {
+        this.incrementDeliveryTelemetry('sseMessageApplied');
+      } else {
+        this.incrementDeliveryTelemetry('sseMessageNoop');
+      }
     } catch {
       // Ignore malformed realtime payloads.
     }
   }
 
-  private applyIncomingMessage(incoming: IncomingServerMessage): void {
+  private applyIncomingMessage(incoming: IncomingServerMessage): boolean {
     const incomingType = String(incoming.type ?? '').trim().toLowerCase();
     if (incomingType === 'delete-action') {
-      this.applyIncomingDeleteAction(incoming);
-      return;
+      return this.applyIncomingDeleteAction(incoming);
     }
     if (incomingType === 'edit-action') {
-      this.applyIncomingEditAction(incoming);
-      return;
+      return this.applyIncomingEditAction(incoming);
     }
     if (incomingType === 'reaction') {
-      this.applyIncomingReaction(incoming);
-      return;
+      return this.applyIncomingReaction(incoming);
     }
     if (incomingType === 'group-update') {
-      this.applyIncomingGroupUpdate(incoming);
-      return;
+      return this.applyIncomingGroupUpdate(incoming);
     }
     if (incomingType === 'read-receipt') {
-      this.applyIncomingReadReceipt(incoming);
-      return;
+      return this.applyIncomingReadReceipt(incoming);
     }
 
     const sender = this.normalizeUser(incoming.sender ?? '');
-    if (!sender) return;
+    if (!sender) return false;
 
     const isGroup = Boolean(incoming.groupId);
     const chatId = isGroup
       ? this.normalizeChatId(incoming.groupId ?? '')
       : this.normalizeChatId(sender);
-    if (!chatId) return;
+    if (!chatId) return false;
 
     const messageId = String(incoming.messageId ?? this.generateId('srv')).trim();
-    if (!messageId) return;
+    if (!messageId) return false;
 
     const alreadyExists = (this.messagesByChat()[chatId] ?? []).some(
       (message) => message.messageId === messageId
     );
-    if (alreadyExists) return;
+    if (alreadyExists) return false;
 
     if (isGroup && incoming.groupId && incoming.groupName) {
       this.ensureGroupFromIncoming(incoming);
@@ -1909,11 +2053,12 @@ export class ChatStoreService {
     }));
 
     this.schedulePersist();
+    return true;
   }
 
-  private applyIncomingGroupUpdate(incoming: IncomingServerMessage): void {
+  private applyIncomingGroupUpdate(incoming: IncomingServerMessage): boolean {
     const groupId = this.normalizeChatId(incoming.groupId ?? '');
-    if (!groupId || !incoming.groupName) return;
+    if (!groupId || !incoming.groupName) return false;
 
     const currentUser = this.normalizeUser(this.currentUser() ?? '');
     const members = Array.isArray(incoming.groupMembers)
@@ -1921,43 +2066,44 @@ export class ChatStoreService {
       : [];
     if (currentUser && members.length && !members.includes(currentUser)) {
       this.removeGroupLocally(groupId);
-      return;
+      return true;
     }
 
     this.ensureGroupFromIncoming(incoming);
     this.schedulePersist();
+    return true;
   }
 
-  private applyIncomingReadReceipt(incoming: IncomingServerMessage): void {
+  private applyIncomingReadReceipt(incoming: IncomingServerMessage): boolean {
     const messageIds = Array.isArray(incoming.messageIds)
       ? incoming.messageIds.map((id) => String(id || '').trim()).filter(Boolean)
       : String(incoming.messageId ?? '')
           .split(',')
           .map((id) => String(id || '').trim())
           .filter(Boolean);
-    if (!messageIds.length) return;
+    if (!messageIds.length) return false;
 
-    this.markOutgoingMessagesAsRead(messageIds);
+    return this.markOutgoingMessagesAsRead(messageIds);
   }
 
-  private applyIncomingEditAction(incoming: IncomingServerMessage): void {
+  private applyIncomingEditAction(incoming: IncomingServerMessage): boolean {
     const messageId = String(incoming.messageId ?? '').trim();
     const body = String(incoming.body ?? '').trim();
-    if (!messageId || !body) return;
+    if (!messageId || !body) return false;
 
     const editedAtValue = Number(incoming.editedAt ?? incoming.timestamp ?? Date.now());
     const editedAt = Number.isFinite(editedAtValue) ? editedAtValue : Date.now();
-    this.applyMessageEditLocally(messageId, body, editedAt);
+    return this.applyMessageEditLocally(messageId, body, editedAt);
   }
 
-  private applyIncomingDeleteAction(incoming: IncomingServerMessage): void {
+  private applyIncomingDeleteAction(incoming: IncomingServerMessage): boolean {
     const messageIds = Array.isArray(incoming.messageIds)
       ? incoming.messageIds.map((id) => String(id || '').trim()).filter(Boolean)
       : String(incoming.messageId ?? '')
           .split(',')
           .map((id) => String(id || '').trim())
           .filter(Boolean);
-    if (!messageIds.length) return;
+    if (!messageIds.length) return false;
 
     const deletedAtValue = Number(incoming.deletedAt ?? incoming.timestamp ?? Date.now());
     const deletedAt = Number.isFinite(deletedAtValue) ? deletedAtValue : Date.now();
@@ -1968,11 +2114,12 @@ export class ChatStoreService {
     if (changed) {
       this.schedulePersist();
     }
+    return changed;
   }
 
-  private applyIncomingReaction(incoming: IncomingServerMessage): void {
+  private applyIncomingReaction(incoming: IncomingServerMessage): boolean {
     const groupId = this.normalizeChatId(incoming.groupId ?? '');
-    if (!groupId) return;
+    if (!groupId) return false;
 
     if (incoming.groupName) {
       this.ensureGroupFromIncoming(incoming);
@@ -1982,7 +2129,7 @@ export class ChatStoreService {
     const emoji = String(incoming.emoji ?? '').trim();
     const reactor = this.normalizeUser(incoming.reactor ?? incoming.sender ?? '');
     if (!targetMessageId || !emoji || !reactor) {
-      return;
+      return false;
     }
 
     const reaction: MessageReaction = {
@@ -1992,11 +2139,11 @@ export class ChatStoreService {
     };
 
     const changed = this.applyReactionToMessage(groupId, targetMessageId, reaction);
-    if (!changed) return;
+    if (!changed) return false;
 
     const currentUser = this.normalizeUser(this.currentUser() ?? '');
     if (currentUser && reactor === currentUser) {
-      return;
+      return true;
     }
 
     const group = this.groups().find((item) => item.id === groupId);
@@ -2010,6 +2157,7 @@ export class ChatStoreService {
       reactorName,
       emoji
     });
+    return true;
   }
 
   private ensureGroupFromIncoming(incoming: IncomingServerMessage): void {
@@ -2355,9 +2503,9 @@ export class ChatStoreService {
     this.schedulePersist();
   }
 
-  private markOutgoingMessagesAsRead(messageIds: string[]): void {
+  private markOutgoingMessagesAsRead(messageIds: string[]): boolean {
     const targetIds = new Set(messageIds.map((id) => String(id || '').trim()).filter(Boolean));
-    if (!targetIds.size) return;
+    if (!targetIds.size) return false;
 
     let changed = false;
     this.messagesByChat.update((messageMap) => {
@@ -2381,6 +2529,7 @@ export class ChatStoreService {
     if (changed) {
       this.schedulePersist();
     }
+    return changed;
   }
 
   private shouldApplyDeliveryStatusTransition(
@@ -2849,6 +2998,7 @@ export class ChatStoreService {
       return;
     }
     if (action !== 'push-payload') return;
+    this.incrementDeliveryTelemetry('pushPayloadReceived');
 
     const payloadRaw = messageData.payload;
     if (!payloadRaw || typeof payloadRaw !== 'object') return;
@@ -2897,7 +3047,14 @@ export class ChatStoreService {
     if (payloadType !== 'reaction' && payloadType !== 'group-update' && payloadType !== 'read-receipt') {
       const immediateMessage = this.buildIncomingMessageFromPushPayload(payload, incoming);
       if (immediateMessage) {
-        this.applyIncomingMessage(immediateMessage);
+        this.incrementDeliveryTelemetry('pushImmediateMessageBuilt');
+        if (this.applyIncomingMessage(immediateMessage)) {
+          this.incrementDeliveryTelemetry('pushMessageApplied');
+        } else {
+          this.incrementDeliveryTelemetry('pushMessageNoop');
+        }
+      } else {
+        this.incrementDeliveryTelemetry('pushMissingMessageContext');
       }
       // For regular pushes, recover with immediate + delayed pulls so chat list stays fresh.
       this.syncForegroundState({ forceRefresh: true });
@@ -2905,7 +3062,11 @@ export class ChatStoreService {
       return;
     }
 
-    this.applyIncomingMessage(incoming);
+    if (this.applyIncomingMessage(incoming)) {
+      this.incrementDeliveryTelemetry('pushMessageApplied');
+    } else {
+      this.incrementDeliveryTelemetry('pushMessageNoop');
+    }
   };
 
   private buildIncomingMessageFromPushPayload(
@@ -2945,6 +3106,7 @@ export class ChatStoreService {
   private schedulePushRecoveryPulls(): void {
     const user = this.currentUser();
     if (!user) return;
+    this.incrementDeliveryTelemetry('pushRecoveryPullScheduled', PUSH_RECOVERY_PULL_DELAYS_MS.length);
     for (const delayMs of PUSH_RECOVERY_PULL_DELAYS_MS) {
       setTimeout(() => {
         if (this.currentUser() !== user) return;

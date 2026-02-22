@@ -717,6 +717,14 @@ const AUTH_SESSION_REQUIRE_CONTACT_VERIFICATION = String(
 ).trim().toLowerCase() === 'true';
 const CSRF_PROTECTION_ENABLED = String(process.env.CSRF_PROTECTION_ENABLED || 'false').trim().toLowerCase() === 'true';
 const CSRF_HEADER_NAME = 'x-csrf-token';
+const DELIVERY_TELEMETRY_RETENTION_MS = Math.max(
+    60 * 60 * 1000,
+    Number(process.env.DELIVERY_TELEMETRY_RETENTION_MS || 7 * 24 * 60 * 60 * 1000) || 7 * 24 * 60 * 60 * 1000
+);
+const DELIVERY_TELEMETRY_MAX_DEVICES = Math.max(
+    100,
+    Number(process.env.DELIVERY_TELEMETRY_MAX_DEVICES || 2000) || 2000
+);
 const MOBILE_REREGISTER_PUSH_TYPE = 'mobile-re-register-prompt';
 const MOBILE_REREGISTER_DEFAULT_CAMPAIGN_ID = 'mobile-reregister-temp-v1';
 const MOBILE_REREGISTER_DEFAULT_TITLE = 'Reconnect notifications';
@@ -735,6 +743,7 @@ let authRefreshSchedulerStarted = false;
 const activeSessionIdByUser = new Map();
 const authSessionRateLimitByIp = new Map();
 const authSessionRateLimitByUser = new Map();
+const deliveryTelemetryByDevice = new Map();
 let mobileReregisterCampaignState = {
     running: false,
     lastRunAt: 0,
@@ -1400,6 +1409,99 @@ function resolveAuthorizedUser(req, candidateUser, options = {}) {
     }
 
     return { user: requestedUser, error: '', status: 200 };
+}
+
+function normalizeDeliveryTelemetryValue(rawValue) {
+    const value = Number(rawValue);
+    if (!Number.isFinite(value)) return 0;
+    return Math.max(0, Math.floor(value));
+}
+
+function normalizeDeliveryTelemetryPayload(payload = {}) {
+    const source = payload && typeof payload === 'object' ? payload : {};
+    return {
+        pushPayloadReceived: normalizeDeliveryTelemetryValue(source.pushPayloadReceived),
+        pushImmediateMessageBuilt: normalizeDeliveryTelemetryValue(source.pushImmediateMessageBuilt),
+        pushMessageApplied: normalizeDeliveryTelemetryValue(source.pushMessageApplied),
+        pushMessageNoop: normalizeDeliveryTelemetryValue(source.pushMessageNoop),
+        pushMissingMessageContext: normalizeDeliveryTelemetryValue(source.pushMissingMessageContext),
+        pushRecoveryPullScheduled: normalizeDeliveryTelemetryValue(source.pushRecoveryPullScheduled),
+        ssePayloadReceived: normalizeDeliveryTelemetryValue(source.ssePayloadReceived),
+        sseMessageApplied: normalizeDeliveryTelemetryValue(source.sseMessageApplied),
+        sseMessageNoop: normalizeDeliveryTelemetryValue(source.sseMessageNoop),
+        pollMessagesFetched: normalizeDeliveryTelemetryValue(source.pollMessagesFetched),
+        pollMessagesApplied: normalizeDeliveryTelemetryValue(source.pollMessagesApplied)
+    };
+}
+
+function sumDeliveryTelemetryCounters(counters = {}) {
+    return Object.values(counters).reduce((sum, value) => sum + normalizeDeliveryTelemetryValue(value), 0);
+}
+
+function pruneDeliveryTelemetryStore() {
+    const now = Date.now();
+    for (const [deviceId, entry] of deliveryTelemetryByDevice.entries()) {
+        if (!entry || !entry.lastSeenAt || now - Number(entry.lastSeenAt) > DELIVERY_TELEMETRY_RETENTION_MS) {
+            deliveryTelemetryByDevice.delete(deviceId);
+        }
+    }
+
+    if (deliveryTelemetryByDevice.size <= DELIVERY_TELEMETRY_MAX_DEVICES) {
+        return;
+    }
+
+    const sorted = Array.from(deliveryTelemetryByDevice.entries()).sort((a, b) => {
+        const aSeen = Number(a[1] && a[1].lastSeenAt) || 0;
+        const bSeen = Number(b[1] && b[1].lastSeenAt) || 0;
+        return aSeen - bSeen;
+    });
+    const overflow = Math.max(0, sorted.length - DELIVERY_TELEMETRY_MAX_DEVICES);
+    for (let index = 0; index < overflow; index += 1) {
+        deliveryTelemetryByDevice.delete(sorted[index][0]);
+    }
+}
+
+function recordDeliveryTelemetryLog({ user = '', payload = {}, timestamp = 0, req = null }) {
+    const counters = normalizeDeliveryTelemetryPayload(payload);
+    if (sumDeliveryTelemetryCounters(counters) <= 0) {
+        return;
+    }
+
+    const normalizedUser = normalizeUserCandidate(user);
+    const safePayload = payload && typeof payload === 'object' ? payload : {};
+    const rawDeviceId = String(safePayload.deviceId || '').trim();
+    if (!rawDeviceId) {
+        return;
+    }
+    const deviceId = rawDeviceId.slice(0, 120);
+    const entryAt = Number(timestamp) || Date.now();
+    const existing = deliveryTelemetryByDevice.get(deviceId) || {
+        deviceId,
+        user: normalizedUser || null,
+        firstSeenAt: entryAt,
+        lastSeenAt: entryAt,
+        flushCount: 0,
+        counters: normalizeDeliveryTelemetryPayload({})
+    };
+
+    const mergedCounters = { ...existing.counters };
+    Object.keys(counters).forEach((key) => {
+        mergedCounters[key] = normalizeDeliveryTelemetryValue(mergedCounters[key]) + normalizeDeliveryTelemetryValue(counters[key]);
+    });
+
+    deliveryTelemetryByDevice.set(deviceId, {
+        ...existing,
+        user: normalizedUser || existing.user || null,
+        activeChatId: typeof safePayload.activeChatId === 'string' ? safePayload.activeChatId : (existing.activeChatId || null),
+        inForeground: Boolean(safePayload.inForeground),
+        networkOnline: Boolean(safePayload.networkOnline),
+        unreadTotal: normalizeDeliveryTelemetryValue(safePayload.unreadTotal),
+        ip: getClientIpAddress(req),
+        lastSeenAt: entryAt,
+        flushCount: normalizeDeliveryTelemetryValue(existing.flushCount) + 1,
+        counters: mergedCounters
+    });
+    pruneDeliveryTelemetryStore();
 }
 
 function buildGoogleSheetGetUrl(queryParams = {}, options = {}) {
@@ -2691,7 +2793,52 @@ app.post(['/log', '/notify/log'], (req, res) => {
     if (payload) {
         console.log('[CLIENT LOG] payload:', payload);
     }
+    if (String(event || '').trim().toLowerCase() === 'delivery-telemetry') {
+        recordDeliveryTelemetryLog({ user, payload, timestamp, req });
+    }
     res.json({ status: 'ok' });
+});
+
+app.get(['/delivery-telemetry/status', '/notify/delivery-telemetry/status'], (req, res) => {
+    const token = String(
+        (req.query && req.query.token) ||
+        (req.headers && (req.headers['x-admin-token'] || req.headers['x-app-token'])) ||
+        ''
+    ).trim();
+    const isAdminTokenValid = APP_SERVER_TOKEN && token === APP_SERVER_TOKEN;
+    const requestingUser = normalizeUserCandidate(req.authUser);
+    if (APP_SERVER_TOKEN) {
+        if (!isAdminTokenValid) {
+            return res.status(403).json({ error: 'Forbidden' });
+        }
+    } else if (!requestingUser) {
+        return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    pruneDeliveryTelemetryStore();
+    const limitRaw = Number(req.query && req.query.limit);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.floor(limitRaw)), 500) : 100;
+    const filterUser = normalizeUserCandidate(req.query && req.query.user);
+    const filterDeviceId = String((req.query && req.query.deviceId) || '').trim();
+    const effectiveFilterUser = isAdminTokenValid
+        ? filterUser
+        : (requestingUser || filterUser);
+
+    const rows = Array.from(deliveryTelemetryByDevice.values())
+        .filter((entry) => {
+            if (effectiveFilterUser && normalizeUserCandidate(entry.user) !== effectiveFilterUser) return false;
+            if (filterDeviceId && String(entry.deviceId || '') !== filterDeviceId) return false;
+            return true;
+        })
+        .sort((a, b) => Number(b.lastSeenAt || 0) - Number(a.lastSeenAt || 0))
+        .slice(0, limit);
+
+    return res.json({
+        result: 'success',
+        totalTrackedDevices: deliveryTelemetryByDevice.size,
+        count: rows.length,
+        devices: rows
+    });
 });
 // ======================================================
 // [UPDATED] BACKUP CHATS ENDPOINT (NON-BLOCKING)

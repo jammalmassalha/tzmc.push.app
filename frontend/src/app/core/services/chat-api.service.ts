@@ -89,6 +89,13 @@ interface SessionResponse {
   retryAfterSeconds?: number;
 }
 
+interface ClientLogPayload {
+  event: string;
+  payload?: Record<string, unknown>;
+  user?: string;
+  timestamp?: number;
+}
+
 export interface HrStepOption {
   id: string;
   name: string;
@@ -186,6 +193,31 @@ export class ChatApiService {
       { retries: 0, timeoutMs: 8000 }
     );
     this.csrfToken = null;
+  }
+
+  async sendClientLog(event: string, payload: Record<string, unknown>, user?: string): Promise<void> {
+    const safeEvent = String(event || '').trim();
+    if (!safeEvent) {
+      return;
+    }
+    const body: ClientLogPayload = {
+      event: safeEvent,
+      payload: payload && typeof payload === 'object' ? payload : {},
+      user: String(user || '').trim() || undefined,
+      timestamp: Date.now()
+    };
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/log`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      },
+      { retries: 1, timeoutMs: 8000, backoffMs: 400 }
+    );
+    if (!response.ok) {
+      throw new Error(`Client log failed with ${response.status}`);
+    }
   }
 
   async getContacts(user?: string): Promise<Contact[]> {
