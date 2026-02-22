@@ -54,13 +54,27 @@ function parsePushPayload(event) {
   try {
     const raw = event.data.json();
     if (raw && typeof raw === 'object') {
-      if (raw.data && typeof raw.data === 'object') {
-        return raw.data;
-      }
-      if (raw.notification && typeof raw.notification === 'object') {
-        return raw.notification;
-      }
-      return raw;
+      const basePayload = raw.notification && typeof raw.notification === 'object'
+        ? raw.notification
+        : raw;
+      const dataPayload = basePayload.data && typeof basePayload.data === 'object'
+        ? basePayload.data
+        : {};
+      const normalizedBody = typeof basePayload.body === 'string'
+        ? basePayload.body
+        : (
+          basePayload.body && typeof basePayload.body === 'object'
+            ? (basePayload.body.longText || basePayload.body.shortText || '')
+            : ''
+        );
+      return {
+        ...basePayload,
+        ...dataPayload,
+        messageText: normalizedBody || String(dataPayload.messageText || dataPayload.longText || dataPayload.shortText || '').trim(),
+        image: typeof basePayload.image === 'string' && basePayload.image
+          ? basePayload.image
+          : (typeof dataPayload.image === 'string' ? dataPayload.image : undefined)
+      };
     }
   } catch (_) {
     // Fallback to text payload below.

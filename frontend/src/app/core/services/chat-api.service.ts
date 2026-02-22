@@ -344,15 +344,14 @@ export class ChatApiService {
 
   async pollMessages(user?: string): Promise<IncomingServerMessage[]> {
     const normalizedUser = String(user || '').trim().toLowerCase();
-    const candidateUrls = [this.messagesUrlBase];
-    if (normalizedUser) {
-      candidateUrls.push(`${this.messagesUrlBase}?user=${encodeURIComponent(normalizedUser)}`);
-    }
+    const candidateUrls = normalizedUser
+      ? [`${this.messagesUrlBase}?user=${encodeURIComponent(normalizedUser)}`, this.messagesUrlBase]
+      : [this.messagesUrlBase];
 
     let response: Response | null = null;
     let lastStatus = 0;
     for (const url of candidateUrls) {
-      const candidateResponse = await this.fetchWithRetry(url, {}, { retries: 0, timeoutMs: 10000 });
+      const candidateResponse = await this.fetchWithRetry(url, {}, { retries: 1, timeoutMs: 10000 });
       if (candidateResponse.ok) {
         response = candidateResponse;
         break;

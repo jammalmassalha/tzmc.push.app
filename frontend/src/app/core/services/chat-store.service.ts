@@ -32,6 +32,7 @@ const PUSH_REGISTER_MIN_INTERVAL_MS = 30000;
 const PUSH_REGISTER_REFRESH_MS = 6 * 60 * 60 * 1000;
 const FOREGROUND_SYNC_MIN_INTERVAL_MS = 4000;
 const BADGE_RESET_MIN_INTERVAL_MS = 30000;
+const PUSH_RECOVERY_PULL_DELAYS_MS = [1200, 3600];
 const HR_CHAT_NAME = 'ציפי';
 const HR_WELCOME_KEY_PREFIX = 'hr_welcome_sent_';
 const HR_STATE_KEY_PREFIX = 'hr_state_';
@@ -1682,7 +1683,7 @@ export class ChatStoreService {
     }
 
     try {
-      this.stream = this.api.createMessageStream();
+      this.stream = this.api.createMessageStream(user);
       this.stream.addEventListener('message', (event: MessageEvent<string>) => {
         this.handleIncomingPayload(event.data);
       });
@@ -2862,12 +2863,6 @@ export class ChatStoreService {
       this.syncForegroundState({ forceRefresh: true });
       return;
     }
-    if (payloadType !== 'reaction' && payloadType !== 'group-update' && payloadType !== 'read-receipt') {
-      // For regular message pushes, force a near-immediate pull so opened app isn't stale.
-      this.syncForegroundState();
-      return;
-    }
-
     const numericGroupUpdatedAt = Number(payload['groupUpdatedAt']);
     const numericReadAt = Number(payload['readAt']);
     const payloadMessageIds = Array.isArray(payload['messageIds'])
@@ -2899,8 +2894,65 @@ export class ChatStoreService {
       groupType: payload['groupType'] === 'community' ? 'community' : 'group'
     };
 
+    if (payloadType !== 'reaction' && payloadType !== 'group-update' && payloadType !== 'read-receipt') {
+      const immediateMessage = this.buildIncomingMessageFromPushPayload(payload, incoming);
+      if (immediateMessage) {
+        this.applyIncomingMessage(immediateMessage);
+      }
+      // For regular pushes, recover with immediate + delayed pulls so chat list stays fresh.
+      this.syncForegroundState({ forceRefresh: true });
+      this.schedulePushRecoveryPulls();
+      return;
+    }
+
     this.applyIncomingMessage(incoming);
   };
+
+  private buildIncomingMessageFromPushPayload(
+    payload: Record<string, unknown>,
+    seed: IncomingServerMessage
+  ): IncomingServerMessage | null {
+    const sender = this.normalizeUser(String(payload['sender'] ?? seed.sender ?? '').trim());
+    const groupId = String(payload['groupId'] ?? seed.groupId ?? '').trim();
+    const messageId = String(payload['messageId'] ?? seed.messageId ?? '').trim();
+    if (!messageId || (!sender && !groupId)) {
+      return null;
+    }
+
+    const bodyFromPayload = String(
+      payload['messageText'] ??
+      payload['groupMessageText'] ??
+      payload['longText'] ??
+      payload['shortText'] ??
+      ''
+    ).trim();
+    const imageUrl = String(payload['image'] ?? '').trim();
+    const incoming: IncomingServerMessage = {
+      ...seed,
+      messageId,
+      sender: sender || (groupId ? groupId : ''),
+      body: bodyFromPayload,
+      imageUrl: imageUrl || null
+    };
+    if (groupId) {
+      incoming.groupId = groupId;
+      incoming.groupName = String(payload['groupName'] ?? seed.groupName ?? '').trim() || groupId;
+      incoming.groupType = payload['groupType'] === 'community' ? 'community' : (seed.groupType ?? 'group');
+    }
+    return incoming;
+  }
+
+  private schedulePushRecoveryPulls(): void {
+    const user = this.currentUser();
+    if (!user) return;
+    for (const delayMs of PUSH_RECOVERY_PULL_DELAYS_MS) {
+      setTimeout(() => {
+        if (this.currentUser() !== user) return;
+        if (!this.isNetworkReachable()) return;
+        void this.pullMessages(user);
+      }, delayMs);
+    }
+  }
 
   private resolveNotificationChatId(
     messageData: { url?: unknown; chat?: unknown; payload?: unknown },
