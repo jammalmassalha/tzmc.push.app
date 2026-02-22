@@ -167,7 +167,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   readonly filteredChats = computed(() => {
     const query = this.searchTerm().trim().toLowerCase();
-    const chats = this.store.chatItems();
+    const chats = this.store.chatItems().filter((chat) => this.shouldDisplayChatInContactsPane(chat));
     if (!query) return chats;
 
     return chats.filter(
@@ -1467,6 +1467,18 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   trackByChatId(_: number, chat: ChatListItem): string {
     return chat.id;
+  }
+
+  private shouldDisplayChatInContactsPane(chat: ChatListItem): boolean {
+    if (chat.pinned || chat.isGroup) {
+      return true;
+    }
+
+    if (chat.id === this.store.activeChatId()) {
+      return true;
+    }
+
+    return chat.lastTimestamp > 0 || chat.unread > 0;
   }
 
   private scrollMessagesToBottom(behavior: ScrollBehavior = 'auto'): void {
