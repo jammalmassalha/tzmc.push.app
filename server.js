@@ -706,6 +706,9 @@ const AUTH_SESSION_RATE_LIMIT_MAX_PER_USER = Math.max(
     2,
     Number(process.env.AUTH_SESSION_RATE_LIMIT_MAX_PER_USER || 8) || 8
 );
+const AUTH_SESSION_REQUIRE_CONTACT_VERIFICATION = String(
+    process.env.AUTH_SESSION_REQUIRE_CONTACT_VERIFICATION || 'false'
+).trim().toLowerCase() === 'true';
 const CSRF_PROTECTION_ENABLED = String(process.env.CSRF_PROTECTION_ENABLED || 'false').trim().toLowerCase() === 'true';
 const CSRF_HEADER_NAME = 'x-csrf-token';
 const MOBILE_REREGISTER_PUSH_TYPE = 'mobile-re-register-prompt';
@@ -2583,18 +2586,20 @@ app.post(['/auth/session', '/notify/auth/session'], async (req, res) => {
     }
 
     try {
-        const response = await fetchWithRetry(
-            buildGoogleSheetGetUrl({ action: 'get_contacts', user: requestedUser }),
-            {},
-            { timeoutMs: 10000, retries: 1, backoffMs: 500 }
-        );
-        if (!response.ok) {
-            return res.status(502).json({ status: 'error', message: 'Unable to verify user' });
-        }
-        const contactsPayload = await response.json();
-        const users = Array.isArray(contactsPayload && contactsPayload.users) ? contactsPayload.users : [];
-        if (!users.length) {
-            return res.status(403).json({ status: 'error', message: 'Unauthorized user' });
+        if (AUTH_SESSION_REQUIRE_CONTACT_VERIFICATION) {
+            const response = await fetchWithRetry(
+                buildGoogleSheetGetUrl({ action: 'get_contacts', user: requestedUser }),
+                {},
+                { timeoutMs: 10000, retries: 1, backoffMs: 500 }
+            );
+            if (!response.ok) {
+                return res.status(502).json({ status: 'error', message: 'Unable to verify user' });
+            }
+            const contactsPayload = await response.json();
+            const users = Array.isArray(contactsPayload && contactsPayload.users) ? contactsPayload.users : [];
+            if (!users.length) {
+                return res.status(403).json({ status: 'error', message: 'Unauthorized user' });
+            }
         }
 
         const sessionToken = createSessionToken(requestedUser);
