@@ -342,6 +342,12 @@ function sanitizeUploadBaseName(rawName = '') {
 }
 
 function buildSafeUploadFilename(file = {}) {
+    const originalName = path.basename(String(file.originalname || '').trim());
+    if (originalName && originalName !== '.' && originalName !== '..') {
+        // Keep client filename as requested (without directory traversal segments).
+        return originalName;
+    }
+
     const safeStem = sanitizeUploadBaseName(file.originalname || '');
     const extension = chooseSafeUploadExtension(file);
     const uniqueSuffix = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
