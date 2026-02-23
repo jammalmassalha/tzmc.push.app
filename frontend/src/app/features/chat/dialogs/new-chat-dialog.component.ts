@@ -42,9 +42,13 @@ export class NewChatDialogComponent {
     return this.data.contacts.filter((contact) => {
       if (current && contact.username === current) return false;
       if (!query) return true;
+      const info = String(contact.info || '').toLowerCase();
+      const phone = String(contact.phone || '').toLowerCase();
       return (
         contact.displayName.toLowerCase().includes(query) ||
-        contact.username.toLowerCase().includes(query)
+        contact.username.toLowerCase().includes(query) ||
+        info.includes(query) ||
+        phone.includes(query)
       );
     });
   });

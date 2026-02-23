@@ -64,9 +64,13 @@ export class CreateGroupDialogComponent {
     return this.data.contacts.filter((contact) => {
       if (currentUser && contact.username === currentUser) return false;
       if (!query) return true;
+      const info = String(contact.info || '').toLowerCase();
+      const phone = String(contact.phone || '').toLowerCase();
       return (
         contact.displayName.toLowerCase().includes(query) ||
-        contact.username.toLowerCase().includes(query)
+        contact.username.toLowerCase().includes(query) ||
+        info.includes(query) ||
+        phone.includes(query)
       );
     });
   });
