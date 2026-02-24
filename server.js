@@ -741,12 +741,11 @@ const AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_USER = Math.max(
     3,
     Number(process.env.AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_USER || 12) || 12
 );
-const INFORU_SMS_URL = String(process.env.INFORU_SMS_URL || 'https://uapi.inforu.co.il/SendMessageXml.ashx').trim();
-const INFORU_USERNAME = String(process.env.INFORU_USERNAME || 'tzmcgovil').trim();
-const INFORU_API_TOKEN = String(process.env.INFORU_API_TOKEN || '088a13e2-c2d9-4518-8c0c-2e531c3033de').trim();
-const INFORU_SENDER = String(process.env.INFORU_SENDER || 'Tzafon').trim() || 'Tzafon';
-const AUTH_CODE_SMS_TEMPLATE = String(
-    process.env.AUTH_CODE_SMS_TEMPLATE || 'קוד אימות לכניסה לאפליקציה: {{code}}'
+const INFORU_SMS_URL = String( 'https://uapi.inforu.co.il/SendMessageXml.ashx').trim();
+const INFORU_USERNAME = String('tzmcgovil').trim();
+const INFORU_API_TOKEN = String( '088a13e2-c2d9-4518-8c0c-2e531c3033de').trim();
+const INFORU_SENDER = String('Tzafon').trim() || 'Tzafon';
+const AUTH_CODE_SMS_TEMPLATE = String('קוד אימות לכניסה לאפליקציה: {{code}}'
 ).trim();
 const AUTH_CODE_SMS_DESTINATION_OVERRIDES = new Map([
     ['0550000001', '0546799693']
@@ -757,11 +756,11 @@ const AUTH_CODE_SHEET_TOKEN = String(
     CHECK_QUEUE_SERVER_TOKEN ||
     ''
 ).trim();
-const CSRF_PROTECTION_ENABLED = String(process.env.CSRF_PROTECTION_ENABLED || 'false').trim().toLowerCase() === 'true';
+const CSRF_PROTECTION_ENABLED = String('false').trim().toLowerCase() === 'true';
 const CSRF_HEADER_NAME = 'x-csrf-token';
 const DELIVERY_TELEMETRY_RETENTION_MS = Math.max(
     60 * 60 * 1000,
-    Number(process.env.DELIVERY_TELEMETRY_RETENTION_MS || 7 * 24 * 60 * 60 * 1000) || 7 * 24 * 60 * 60 * 1000
+    Number(7 * 24 * 60 * 60 * 1000) || 7 * 24 * 60 * 60 * 1000
 );
 const DELIVERY_TELEMETRY_MAX_DEVICES = Math.max(
     100,
