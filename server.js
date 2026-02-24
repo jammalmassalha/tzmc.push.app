@@ -2989,63 +2989,13 @@ app.get(['/auth/session', '/notify/auth/session'], (req, res) => {
     });
 });
 
-app.post(['/auth/session', '/notify/auth/session'], async (req, res) => {
-    const payload = req.body && typeof req.body === 'object' ? req.body : {};
-    const requestedUser = normalizeUserCandidate(payload.username || payload.user || payload.phone);
-    if (!SESSION_USER_PATTERN.test(requestedUser)) {
-        return res.status(400).json({ status: 'error', message: 'Invalid user' });
-    }
-
-    if (!SESSION_SIGNING_SECRET) {
-        return res.status(500).json({ status: 'error', message: 'Session configuration missing' });
-    }
-
-    const clientIp = getClientIpAddress(req);
-    const ipLimit = consumeRateLimitEntry(
-        authSessionRateLimitByIp,
-        clientIp,
-        AUTH_SESSION_RATE_LIMIT_MAX_PER_IP,
-        AUTH_SESSION_RATE_LIMIT_WINDOW_MS
-    );
-    const userLimit = consumeRateLimitEntry(
-        authSessionRateLimitByUser,
-        requestedUser,
-        AUTH_SESSION_RATE_LIMIT_MAX_PER_USER,
-        AUTH_SESSION_RATE_LIMIT_WINDOW_MS
-    );
-    if (!ipLimit.allowed || !userLimit.allowed) {
-        const retryAfterSeconds = Math.max(ipLimit.retryAfterSeconds || 0, userLimit.retryAfterSeconds || 0, 1);
-        res.setHeader('Retry-After', String(retryAfterSeconds));
-        return res.status(429).json({
-            status: 'error',
-            message: 'Too many login attempts. Please try again later.',
-            retryAfterSeconds
-        });
-    }
-
-    try {
-        const authCheck = await ensureRequestedUserCanAuthenticate(requestedUser);
-        if (!authCheck.ok) {
-            return res.status(authCheck.status).json({ status: 'error', message: authCheck.message });
-        }
-
-        const sessionToken = createSessionToken(requestedUser);
-        if (!sessionToken) {
-            return res.status(500).json({ status: 'error', message: 'Failed to create session' });
-        }
-
-        setSessionCookie(res, req, sessionToken.token, sessionToken.expiresAt);
-        return res.json({
-            status: 'success',
-            authenticated: true,
-            user: requestedUser,
-            expiresAt: sessionToken.expiresAt,
-            csrfToken: sessionToken.csrfToken
-        });
-    } catch (error) {
-        console.error('[AUTH SESSION] Failed to create session:', error && error.message ? error.message : error);
-        return res.status(502).json({ status: 'error', message: 'Unable to verify user' });
-    }
+app.post(['/auth/session', '/notify/auth/session'], (_req, res) => {
+    return res.status(410).json({
+        status: 'error',
+        message: 'Direct login is disabled. Use SMS verification code flow.',
+        verificationRequired: true,
+        legacyLoginDisabled: true
+    });
 });
 
 app.post(['/auth/session/request-code', '/notify/auth/session/request-code'], async (req, res) => {
