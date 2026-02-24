@@ -715,6 +715,39 @@ const AUTH_SESSION_RATE_LIMIT_MAX_PER_USER = Math.max(
 const AUTH_SESSION_REQUIRE_CONTACT_VERIFICATION = String(
     process.env.AUTH_SESSION_REQUIRE_CONTACT_VERIFICATION || 'false'
 ).trim().toLowerCase() === 'true';
+const AUTH_CODE_DIGITS = 6;
+const AUTH_CODE_PATTERN = new RegExp(`^\\d{${AUTH_CODE_DIGITS}}$`);
+const AUTH_CODE_TTL_SECONDS = Math.max(
+    60,
+    Number(process.env.AUTH_CODE_TTL_SECONDS || 5 * 60) || 5 * 60
+);
+const AUTH_CODE_RATE_LIMIT_WINDOW_MS = Math.max(
+    60 * 1000,
+    Number(process.env.AUTH_CODE_RATE_LIMIT_WINDOW_MS || 10 * 60 * 1000) || 10 * 60 * 1000
+);
+const AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_IP = Math.max(
+    2,
+    Number(process.env.AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_IP || 12) || 12
+);
+const AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_USER = Math.max(
+    2,
+    Number(process.env.AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_USER || 6) || 6
+);
+const AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_IP = Math.max(
+    3,
+    Number(process.env.AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_IP || 24) || 24
+);
+const AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_USER = Math.max(
+    3,
+    Number(process.env.AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_USER || 12) || 12
+);
+const INFORU_SMS_URL = String(process.env.INFORU_SMS_URL || 'https://uapi.inforu.co.il/SendMessageXml.ashx').trim();
+const INFORU_USERNAME = String(process.env.INFORU_USERNAME || '').trim();
+const INFORU_API_TOKEN = String(process.env.INFORU_API_TOKEN || '').trim();
+const INFORU_SENDER = String(process.env.INFORU_SENDER || 'Tzafon').trim() || 'Tzafon';
+const AUTH_CODE_SMS_TEMPLATE = String(
+    process.env.AUTH_CODE_SMS_TEMPLATE || 'קוד אימות לכניסה לאפליקציה: {{code}}'
+).trim();
 const CSRF_PROTECTION_ENABLED = String(process.env.CSRF_PROTECTION_ENABLED || 'false').trim().toLowerCase() === 'true';
 const CSRF_HEADER_NAME = 'x-csrf-token';
 const DELIVERY_TELEMETRY_RETENTION_MS = Math.max(
@@ -743,6 +776,10 @@ let authRefreshSchedulerStarted = false;
 const activeSessionIdByUser = new Map();
 const authSessionRateLimitByIp = new Map();
 const authSessionRateLimitByUser = new Map();
+const authCodeRequestRateLimitByIp = new Map();
+const authCodeRequestRateLimitByUser = new Map();
+const authCodeVerifyRateLimitByIp = new Map();
+const authCodeVerifyRateLimitByUser = new Map();
 const deliveryTelemetryByDevice = new Map();
 let mobileReregisterCampaignState = {
     running: false,
@@ -1521,6 +1558,172 @@ function buildGoogleSheetGetUrl(queryParams = {}, options = {}) {
         url.searchParams.set('token', token);
     }
     return url.toString();
+}
+
+function normalizeAuthCode(value) {
+    return String(value || '').replace(/\D/g, '').slice(0, AUTH_CODE_DIGITS);
+}
+
+function generateAuthCode() {
+    const min = Math.pow(10, AUTH_CODE_DIGITS - 1);
+    const max = Math.pow(10, AUTH_CODE_DIGITS) - 1;
+    return String(min + Math.floor(Math.random() * (max - min + 1)));
+}
+
+function escapeXmlValue(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+}
+
+function formatAuthCodeSmsMessage(code) {
+    const template = AUTH_CODE_SMS_TEMPLATE || 'קוד אימות לכניסה לאפליקציה: {{code}}';
+    if (template.includes('{{code}}')) {
+        return template.replace(/\{\{code\}\}/g, String(code || ''));
+    }
+    return `${template} ${code}`;
+}
+
+function extractInforuStatusCode(rawResponse) {
+    const match = String(rawResponse || '').match(/<Status>\s*([^<\s]+)\s*<\/Status>/i);
+    return match ? String(match[1] || '').trim() : '';
+}
+
+async function sendAuthCodeSms(user, code) {
+    if (!INFORU_USERNAME || !INFORU_API_TOKEN) {
+        throw new Error('SMS gateway configuration missing');
+    }
+    const normalizedUser = normalizeUserCandidate(user);
+    const normalizedCode = normalizeAuthCode(code);
+    if (!SESSION_USER_PATTERN.test(normalizedUser) || !AUTH_CODE_PATTERN.test(normalizedCode)) {
+        throw new Error('Invalid SMS verification payload');
+    }
+
+    const escapedMessage = escapeXmlValue(formatAuthCodeSmsMessage(normalizedCode));
+    const escapedSender = escapeXmlValue(INFORU_SENDER);
+    const escapedUsername = escapeXmlValue(INFORU_USERNAME);
+    const escapedToken = escapeXmlValue(INFORU_API_TOKEN);
+    const escapedPhone = escapeXmlValue(normalizedUser);
+    const messageInterval = `${normalizedUser}-${Date.now()}`;
+    const escapedMessageInterval = escapeXmlValue(messageInterval);
+    const xmlPayload = [
+        '<Inforu>',
+        '<User>',
+        `<Username>${escapedUsername}</Username>`,
+        `<ApiToken>${escapedToken}</ApiToken>`,
+        '</User>',
+        '<Content Type="sms">',
+        `<Message>${escapedMessage}</Message>`,
+        '</Content>',
+        '<Recipients>',
+        `<PhoneNumber>${escapedPhone}</PhoneNumber>`,
+        '</Recipients>',
+        '<Settings>',
+        `<Sender>${escapedSender}</Sender>`,
+        `<MessageInterval>${escapedMessageInterval}</MessageInterval>`,
+        '</Settings>',
+        '</Inforu>'
+    ].join('');
+    const encodedPayload = `InforuXML=${encodeURIComponent(xmlPayload)}`;
+
+    const response = await fetchWithRetry(
+        INFORU_SMS_URL,
+        {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+            },
+            body: encodedPayload
+        },
+        { timeoutMs: 15000, retries: 1, backoffMs: 700 }
+    );
+    const rawResponse = await response.text();
+    const statusCode = extractInforuStatusCode(rawResponse);
+    if (!response.ok || statusCode !== '1') {
+        throw new Error(`SMS gateway rejected request (${response.status || 'n/a'})`);
+    }
+}
+
+async function setAuthCodeOnSubscribeSheet(user, code) {
+    const normalizedUser = normalizeUserCandidate(user);
+    const normalizedCode = normalizeAuthCode(code);
+    if (!SESSION_USER_PATTERN.test(normalizedUser) || !AUTH_CODE_PATTERN.test(normalizedCode)) {
+        throw new Error('Invalid verification code payload');
+    }
+
+    const response = await fetchWithRetry(
+        GOOGLE_SHEET_URL,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: 'set_login_code',
+                user: normalizedUser,
+                code: normalizedCode,
+                ttlSeconds: AUTH_CODE_TTL_SECONDS,
+                token: APP_SERVER_TOKEN
+            })
+        },
+        { timeoutMs: 15000, retries: 2, backoffMs: 600 }
+    );
+    if (!response.ok) {
+        throw new Error(`Failed to persist verification code (${response.status})`);
+    }
+    const payload = await response.json();
+    if (!payload || payload.result !== 'success') {
+        throw new Error(payload && payload.message ? payload.message : 'Sheet update failed');
+    }
+}
+
+async function verifyAuthCodeFromSubscribeSheet(user, code) {
+    const normalizedUser = normalizeUserCandidate(user);
+    const normalizedCode = normalizeAuthCode(code);
+    if (!SESSION_USER_PATTERN.test(normalizedUser) || !AUTH_CODE_PATTERN.test(normalizedCode)) {
+        return false;
+    }
+
+    const response = await fetchWithRetry(
+        GOOGLE_SHEET_URL,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: 'verify_login_code',
+                user: normalizedUser,
+                code: normalizedCode,
+                token: APP_SERVER_TOKEN
+            })
+        },
+        { timeoutMs: 15000, retries: 1, backoffMs: 500 }
+    );
+    if (!response.ok) {
+        throw new Error(`Failed to verify code (${response.status})`);
+    }
+    const payload = await response.json();
+    return Boolean(payload && payload.result === 'success' && payload.verified === true);
+}
+
+async function ensureRequestedUserCanAuthenticate(requestedUser) {
+    if (!AUTH_SESSION_REQUIRE_CONTACT_VERIFICATION) {
+        return { ok: true, status: 200, message: '' };
+    }
+    const response = await fetchWithRetry(
+        buildGoogleSheetGetUrl({ action: 'get_contacts', user: requestedUser }),
+        {},
+        { timeoutMs: 10000, retries: 1, backoffMs: 500 }
+    );
+    if (!response.ok) {
+        return { ok: false, status: 502, message: 'Unable to verify user' };
+    }
+    const contactsPayload = await response.json();
+    const users = Array.isArray(contactsPayload && contactsPayload.users) ? contactsPayload.users : [];
+    if (!users.length) {
+        return { ok: false, status: 403, message: 'Unauthorized user' };
+    }
+    return { ok: true, status: 200, message: '' };
 }
 
 function extractUsernamesFromContactsResponse(payload = {}) {
@@ -2694,20 +2897,9 @@ app.post(['/auth/session', '/notify/auth/session'], async (req, res) => {
     }
 
     try {
-        if (AUTH_SESSION_REQUIRE_CONTACT_VERIFICATION) {
-            const response = await fetchWithRetry(
-                buildGoogleSheetGetUrl({ action: 'get_contacts', user: requestedUser }),
-                {},
-                { timeoutMs: 10000, retries: 1, backoffMs: 500 }
-            );
-            if (!response.ok) {
-                return res.status(502).json({ status: 'error', message: 'Unable to verify user' });
-            }
-            const contactsPayload = await response.json();
-            const users = Array.isArray(contactsPayload && contactsPayload.users) ? contactsPayload.users : [];
-            if (!users.length) {
-                return res.status(403).json({ status: 'error', message: 'Unauthorized user' });
-            }
+        const authCheck = await ensureRequestedUserCanAuthenticate(requestedUser);
+        if (!authCheck.ok) {
+            return res.status(authCheck.status).json({ status: 'error', message: authCheck.message });
         }
 
         const sessionToken = createSessionToken(requestedUser);
@@ -2726,6 +2918,126 @@ app.post(['/auth/session', '/notify/auth/session'], async (req, res) => {
     } catch (error) {
         console.error('[AUTH SESSION] Failed to create session:', error && error.message ? error.message : error);
         return res.status(502).json({ status: 'error', message: 'Unable to verify user' });
+    }
+});
+
+app.post(['/auth/session/request-code', '/notify/auth/session/request-code'], async (req, res) => {
+    const payload = req.body && typeof req.body === 'object' ? req.body : {};
+    const requestedUser = normalizeUserCandidate(payload.username || payload.user || payload.phone);
+    if (!SESSION_USER_PATTERN.test(requestedUser)) {
+        return res.status(400).json({ status: 'error', message: 'Invalid user' });
+    }
+
+    const clientIp = getClientIpAddress(req);
+    const ipLimit = consumeRateLimitEntry(
+        authCodeRequestRateLimitByIp,
+        clientIp,
+        AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_IP,
+        AUTH_CODE_RATE_LIMIT_WINDOW_MS
+    );
+    const userLimit = consumeRateLimitEntry(
+        authCodeRequestRateLimitByUser,
+        requestedUser,
+        AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_USER,
+        AUTH_CODE_RATE_LIMIT_WINDOW_MS
+    );
+    if (!ipLimit.allowed || !userLimit.allowed) {
+        const retryAfterSeconds = Math.max(ipLimit.retryAfterSeconds || 0, userLimit.retryAfterSeconds || 0, 1);
+        res.setHeader('Retry-After', String(retryAfterSeconds));
+        return res.status(429).json({
+            status: 'error',
+            message: 'Too many verification attempts. Please try again later.',
+            retryAfterSeconds
+        });
+    }
+
+    try {
+        const authCheck = await ensureRequestedUserCanAuthenticate(requestedUser);
+        if (!authCheck.ok) {
+            return res.status(authCheck.status).json({ status: 'error', message: authCheck.message });
+        }
+
+        const verificationCode = generateAuthCode();
+        await setAuthCodeOnSubscribeSheet(requestedUser, verificationCode);
+        await sendAuthCodeSms(requestedUser, verificationCode);
+
+        return res.json({
+            status: 'success',
+            verificationRequired: true,
+            codeSent: true,
+            user: requestedUser,
+            expiresInSeconds: AUTH_CODE_TTL_SECONDS
+        });
+    } catch (error) {
+        console.error('[AUTH CODE] Failed to send verification code:', error && error.message ? error.message : error);
+        return res.status(502).json({ status: 'error', message: 'Unable to send verification code' });
+    }
+});
+
+app.post(['/auth/session/verify-code', '/notify/auth/session/verify-code'], async (req, res) => {
+    const payload = req.body && typeof req.body === 'object' ? req.body : {};
+    const requestedUser = normalizeUserCandidate(payload.username || payload.user || payload.phone);
+    const submittedCode = normalizeAuthCode(payload.code || payload.otp || payload.verificationCode);
+    if (!SESSION_USER_PATTERN.test(requestedUser)) {
+        return res.status(400).json({ status: 'error', message: 'Invalid user' });
+    }
+    if (!AUTH_CODE_PATTERN.test(submittedCode)) {
+        return res.status(400).json({ status: 'error', message: 'Invalid verification code' });
+    }
+    if (!SESSION_SIGNING_SECRET) {
+        return res.status(500).json({ status: 'error', message: 'Session configuration missing' });
+    }
+
+    const clientIp = getClientIpAddress(req);
+    const ipLimit = consumeRateLimitEntry(
+        authCodeVerifyRateLimitByIp,
+        clientIp,
+        AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_IP,
+        AUTH_CODE_RATE_LIMIT_WINDOW_MS
+    );
+    const userLimit = consumeRateLimitEntry(
+        authCodeVerifyRateLimitByUser,
+        requestedUser,
+        AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_USER,
+        AUTH_CODE_RATE_LIMIT_WINDOW_MS
+    );
+    if (!ipLimit.allowed || !userLimit.allowed) {
+        const retryAfterSeconds = Math.max(ipLimit.retryAfterSeconds || 0, userLimit.retryAfterSeconds || 0, 1);
+        res.setHeader('Retry-After', String(retryAfterSeconds));
+        return res.status(429).json({
+            status: 'error',
+            message: 'Too many verification attempts. Please try again later.',
+            retryAfterSeconds
+        });
+    }
+
+    try {
+        const authCheck = await ensureRequestedUserCanAuthenticate(requestedUser);
+        if (!authCheck.ok) {
+            return res.status(authCheck.status).json({ status: 'error', message: authCheck.message });
+        }
+
+        const verified = await verifyAuthCodeFromSubscribeSheet(requestedUser, submittedCode);
+        if (!verified) {
+            return res.status(401).json({ status: 'error', message: 'Invalid verification code' });
+        }
+
+        const sessionToken = createSessionToken(requestedUser);
+        if (!sessionToken) {
+            return res.status(500).json({ status: 'error', message: 'Failed to create session' });
+        }
+
+        setSessionCookie(res, req, sessionToken.token, sessionToken.expiresAt);
+        return res.json({
+            status: 'success',
+            authenticated: true,
+            user: requestedUser,
+            expiresAt: sessionToken.expiresAt,
+            csrfToken: sessionToken.csrfToken
+        });
+    } catch (error) {
+        console.error('[AUTH CODE] Failed to verify code:', error && error.message ? error.message : error);
+        return res.status(502).json({ status: 'error', message: 'Unable to verify code' });
     }
 });
 

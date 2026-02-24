@@ -331,6 +331,34 @@ export class ChatStoreService {
     }
 
     const user = await this.api.createSession(this.normalizeUser(normalized));
+    await this.applyAuthenticatedSessionUser(user);
+  }
+
+  async requestUserVerificationCode(rawValue: string): Promise<string> {
+    const normalized = this.normalizePhone(rawValue);
+    if (!normalized) {
+      throw new Error('מספר טלפון לא תקין');
+    }
+
+    await this.api.requestSessionCode(this.normalizeUser(normalized));
+    return normalized;
+  }
+
+  async verifyUserVerificationCode(rawPhone: string, rawCode: string): Promise<void> {
+    const normalizedPhone = this.normalizePhone(rawPhone);
+    const normalizedCode = String(rawCode || '').trim();
+    if (!normalizedPhone) {
+      throw new Error('מספר טלפון לא תקין');
+    }
+    if (!/^\d{6}$/.test(normalizedCode)) {
+      throw new Error('יש להזין קוד אימות בן 6 ספרות');
+    }
+
+    const user = await this.api.verifySessionCode(this.normalizeUser(normalizedPhone), normalizedCode);
+    await this.applyAuthenticatedSessionUser(user);
+  }
+
+  private async applyAuthenticatedSessionUser(user: string): Promise<void> {
     this.stopRealtime();
     this.stopBackgroundContactsAccessSync();
     void this.flushDeliveryTelemetry({ force: true, includeZero: false });

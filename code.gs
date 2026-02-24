@@ -76,6 +76,28 @@ function findUserRow(sheet, username) {
   return match ? match.getRow() : null;
 }
 
+function normalizeLoginCode(value) {
+  var text = String(value || '').replace(/\D/g, '').trim();
+  if (text.length !== 6) return '';
+  return text;
+}
+
+function normalizeStoredLoginCode(value) {
+  var text = String(value || '').trim();
+  if (text.charAt(0) === "'") {
+    text = text.substring(1);
+  }
+  return normalizeLoginCode(text);
+}
+
+function ensureSubscribeOtpHeader(sheet) {
+  if (!sheet) return;
+  var headerLabel = String(sheet.getRange(1, 11).getValue() || '').trim();
+  if (!headerLabel) {
+    sheet.getRange(1, 11).setValue('Login Code');
+  }
+}
+
 function safeParseSubscriptionJson(rawValue) {
   var text = String(rawValue || '').trim();
   if (!text) return null;
@@ -593,6 +615,62 @@ function doPost(e) {
   try {
     var spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
     var data = JSON.parse(e.postData.contents);
+    var configuredServerToken = getServerGuardToken();
+    var providedServerToken = String(data.token || data.serverToken || '').trim();
+
+    if (data.action === 'set_login_code') {
+      if (configuredServerToken && providedServerToken !== configuredServerToken) {
+        return createJSON({ result: 'error', message: 'Unauthorized set_login_code request' });
+      }
+      var setCodeSheet = spreadsheet.getSheetByName('Subscribe');
+      if (!setCodeSheet) {
+        return createJSON({ result: 'error', message: 'Sheet Subscribe not found' });
+      }
+
+      var setCodeUser = normalizePhone(data.user || data.username || data.phone || '');
+      var setCodeValue = normalizeLoginCode(data.code || data.otp || '');
+      if (!setCodeUser || !setCodeValue) {
+        return createJSON({ result: 'error', message: 'Invalid user or verification code' });
+      }
+
+      var setCodeRow = findUserRow(setCodeSheet, setCodeUser);
+      if (!setCodeRow) {
+        return createJSON({ result: 'error', message: 'User not found' });
+      }
+
+      ensureSubscribeOtpHeader(setCodeSheet);
+      setCodeSheet.getRange(setCodeRow, 11).setValue("'" + setCodeValue); // K
+      return createJSON({ result: 'success', updatedRows: 1 });
+    }
+
+    if (data.action === 'verify_login_code') {
+      if (configuredServerToken && providedServerToken !== configuredServerToken) {
+        return createJSON({ result: 'error', message: 'Unauthorized verify_login_code request' });
+      }
+      var verifyCodeSheet = spreadsheet.getSheetByName('Subscribe');
+      if (!verifyCodeSheet) {
+        return createJSON({ result: 'error', message: 'Sheet Subscribe not found' });
+      }
+
+      var verifyCodeUser = normalizePhone(data.user || data.username || data.phone || '');
+      var verifyCodeValue = normalizeLoginCode(data.code || data.otp || '');
+      if (!verifyCodeUser || !verifyCodeValue) {
+        return createJSON({ result: 'success', verified: false });
+      }
+
+      var verifyCodeRow = findUserRow(verifyCodeSheet, verifyCodeUser);
+      if (!verifyCodeRow) {
+        return createJSON({ result: 'success', verified: false });
+      }
+
+      ensureSubscribeOtpHeader(verifyCodeSheet);
+      var storedCode = normalizeStoredLoginCode(verifyCodeSheet.getRange(verifyCodeRow, 11).getValue()); // K
+      var isCodeValid = storedCode === verifyCodeValue;
+      if (isCodeValid) {
+        verifyCodeSheet.getRange(verifyCodeRow, 11).setValue(''); // consume OTP once
+      }
+      return createJSON({ result: 'success', verified: isCodeValid });
+    }
 
     // ======================================================
     // 1. SAVE LOG (To Sheet: Logs)

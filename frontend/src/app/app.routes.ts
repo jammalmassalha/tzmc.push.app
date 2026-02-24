@@ -29,6 +29,12 @@ export const routes: Routes = [
     redirectTo: 'chats'
   },
   {
+    path: 'setup/verify',
+    canActivate: [guestGuard],
+    loadComponent: () =>
+      import('./features/setup/setup-verify.component').then((m) => m.SetupVerifyComponent)
+  },
+  {
     path: 'setup',
     canActivate: [guestGuard],
     loadComponent: () =>

@@ -87,6 +87,9 @@ interface SessionResponse {
   status?: string;
   message?: string;
   retryAfterSeconds?: number;
+  verificationRequired?: boolean;
+  codeSent?: boolean;
+  expiresInSeconds?: number;
 }
 
 interface ClientLogPayload {
@@ -182,6 +185,101 @@ export class ChatApiService {
     if (!body.authenticated || !sessionUser) {
       this.csrfToken = null;
       throw new Error('נכשל בהתחברות');
+    }
+    return sessionUser;
+  }
+
+  async requestSessionCode(user: string): Promise<{ expiresInSeconds: number }> {
+    const normalized = String(user || '').trim().toLowerCase();
+    if (!normalized) {
+      throw new Error('מספר טלפון לא תקין');
+    }
+
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/auth/session/request-code`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: normalized })
+      },
+      { retries: 1, timeoutMs: 12000 }
+    );
+    if (!response.ok) {
+      let errorMessage = 'שליחת קוד אימות נכשלה';
+      try {
+        const body = (await response.json()) as SessionResponse & { error?: string };
+        const backendMessage = String(body.message ?? body.error ?? '').trim();
+        if (response.status === 400) {
+          errorMessage = 'מספר טלפון לא תקין';
+        } else if (response.status === 403) {
+          errorMessage = 'המשתמש אינו מורשה';
+        } else if (response.status === 429 && body.retryAfterSeconds) {
+          errorMessage = `יותר מדי ניסיונות. נסה שוב בעוד ${body.retryAfterSeconds} שניות`;
+        } else if (backendMessage) {
+          errorMessage = backendMessage;
+        }
+      } catch {
+        // Keep fallback message.
+      }
+      throw new Error(errorMessage);
+    }
+
+    const body = (await response.json()) as SessionResponse;
+    const expiresInSeconds = Number(body.expiresInSeconds ?? 0);
+    return {
+      expiresInSeconds: Number.isFinite(expiresInSeconds) && expiresInSeconds > 0
+        ? Math.floor(expiresInSeconds)
+        : 300
+    };
+  }
+
+  async verifySessionCode(user: string, code: string): Promise<string> {
+    const normalized = String(user || '').trim().toLowerCase();
+    const normalizedCode = String(code || '').trim();
+    if (!normalized) {
+      throw new Error('מספר טלפון לא תקין');
+    }
+    if (!/^\d{6}$/.test(normalizedCode)) {
+      throw new Error('יש להזין קוד אימות בן 6 ספרות');
+    }
+
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/auth/session/verify-code`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: normalized, code: normalizedCode })
+      },
+      { retries: 1, timeoutMs: 12000 }
+    );
+    if (!response.ok) {
+      let errorMessage = 'אימות הקוד נכשל';
+      try {
+        const body = (await response.json()) as SessionResponse & { error?: string };
+        const backendMessage = String(body.message ?? body.error ?? '').trim();
+        if (response.status === 400) {
+          errorMessage = 'קוד אימות לא תקין';
+        } else if (response.status === 401) {
+          errorMessage = 'קוד האימות שגוי או פג תוקף';
+        } else if (response.status === 403) {
+          errorMessage = 'המשתמש אינו מורשה';
+        } else if (response.status === 429 && body.retryAfterSeconds) {
+          errorMessage = `יותר מדי ניסיונות. נסה שוב בעוד ${body.retryAfterSeconds} שניות`;
+        } else if (backendMessage) {
+          errorMessage = backendMessage;
+        }
+      } catch {
+        // Keep fallback message.
+      }
+      throw new Error(errorMessage);
+    }
+
+    const body = (await response.json()) as SessionResponse;
+    this.csrfToken = String(body.csrfToken ?? '').trim() || null;
+    const sessionUser = String(body.user ?? '').trim().toLowerCase();
+    if (!body.authenticated || !sessionUser) {
+      this.csrfToken = null;
+      throw new Error('אימות הקוד נכשל');
     }
     return sessionUser;
   }
