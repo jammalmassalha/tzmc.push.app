@@ -1,4 +1,4 @@
-import { Injectable, batch, computed, effect, signal } from '@angular/core';
+import { Injectable, computed, effect, signal } from '@angular/core';
 import { SYSTEM_CHAT_IDS } from '../config/runtime-config';
 import {
   ChatGroup,
@@ -1945,11 +1945,27 @@ export class ChatStoreService {
       this.incrementDeliveryTelemetry('pollMessagesFetched', messages.length);
       let appliedCount = 0;
       this.runIncomingBatch(() => {
+        const bufferedRegularMessages: IncomingServerMessage[] = [];
+        const flushBufferedRegularMessages = (): void => {
+          if (!bufferedRegularMessages.length) return;
+          appliedCount += this.applyRegularIncomingMessagesBulk(bufferedRegularMessages);
+          bufferedRegularMessages.length = 0;
+        };
+
         for (const message of messages) {
-          if (this.applyIncomingMessage(message)) {
-            appliedCount += 1;
+          const incomingType = String(message.type ?? '').trim().toLowerCase();
+          if (this.isIncomingActionType(incomingType)) {
+            flushBufferedRegularMessages();
+            if (this.applyIncomingMessage(message)) {
+              appliedCount += 1;
+            }
+            continue;
           }
+
+          bufferedRegularMessages.push(message);
         }
+
+        flushBufferedRegularMessages();
       });
       this.incrementDeliveryTelemetry('pollMessagesApplied', appliedCount);
     } catch {
@@ -1957,6 +1973,138 @@ export class ChatStoreService {
     } finally {
       this.pullInFlight = false;
     }
+  }
+
+  private isIncomingActionType(incomingType: string): boolean {
+    return (
+      incomingType === 'delete-action' ||
+      incomingType === 'edit-action' ||
+      incomingType === 'reaction' ||
+      incomingType === 'group-update' ||
+      incomingType === 'read-receipt'
+    );
+  }
+
+  private applyRegularIncomingMessagesBulk(messages: IncomingServerMessage[]): number {
+    if (!messages.length) return 0;
+
+    const currentMessageMap = this.messagesByChat();
+    const nextMessageMap: Record<string, ChatMessage[]> = { ...currentMessageMap };
+    const mutableListChats = new Set<string>();
+    const knownMessageIdsByChat = new Map<string, Set<string>>();
+    const nextUnreadMap: Record<string, number> = { ...this.unreadByChat() };
+
+    let groupsSnapshot = this.groups();
+    let messagesChanged = false;
+    let unreadChanged = false;
+    let appliedCount = 0;
+
+    const getMessageIdSet = (chatId: string): Set<string> => {
+      const existing = knownMessageIdsByChat.get(chatId);
+      if (existing) return existing;
+      const set = new Set((nextMessageMap[chatId] ?? []).map((message) => message.messageId));
+      knownMessageIdsByChat.set(chatId, set);
+      return set;
+    };
+
+    const getMutableList = (chatId: string): ChatMessage[] => {
+      if (!mutableListChats.has(chatId)) {
+        nextMessageMap[chatId] = nextMessageMap[chatId] ? [...nextMessageMap[chatId]] : [];
+        mutableListChats.add(chatId);
+      }
+      return nextMessageMap[chatId] ?? [];
+    };
+
+    for (const incoming of messages) {
+      const sender = this.normalizeUser(incoming.sender ?? '');
+      if (!sender) continue;
+
+      const isGroup = Boolean(incoming.groupId);
+      const chatId = isGroup
+        ? this.normalizeChatId(incoming.groupId ?? '')
+        : this.normalizeChatId(sender);
+      if (!chatId) continue;
+
+      const messageId = String(incoming.messageId ?? this.generateId('srv')).trim();
+      if (!messageId) continue;
+
+      const knownMessageIds = getMessageIdSet(chatId);
+      if (knownMessageIds.has(messageId)) continue;
+
+      if (isGroup && incoming.groupId && incoming.groupName) {
+        this.ensureGroupFromIncoming(incoming);
+        groupsSnapshot = this.groups();
+      }
+      const incomingGroup = isGroup
+        ? groupsSnapshot.find((item) => item.id === chatId) ?? null
+        : null;
+      const normalizedIncomingGroupType: GroupType | null =
+        incoming.groupType === 'community' || incoming.groupType === 'group'
+          ? incoming.groupType
+          : (incomingGroup?.type ?? null);
+
+      const replyTo = this.normalizeMessageReference({
+        messageId: incoming.replyToMessageId,
+        sender: incoming.replyToSender,
+        senderDisplayName: incoming.replyToSenderName,
+        body: incoming.replyToBody,
+        imageUrl: incoming.replyToImageUrl ?? null
+      });
+      const forwardedFrom = incoming.forwardedFrom ? this.normalizeUser(incoming.forwardedFrom) : '';
+      const forwardedFromName = String(incoming.forwardedFromName || '').trim();
+      const record: ChatMessage = {
+        id: this.generateId('rec'),
+        messageId,
+        chatId,
+        sender,
+        senderDisplayName: incoming.groupSenderName || this.getDisplayName(sender),
+        body: String(incoming.body ?? ''),
+        imageUrl: incoming.imageUrl ?? null,
+        direction: 'incoming',
+        timestamp: Number(incoming.timestamp ?? Date.now()),
+        deliveryStatus: 'delivered',
+        groupId: incoming.groupId ? this.normalizeChatId(incoming.groupId) : null,
+        groupName: incoming.groupName ?? null,
+        groupType: normalizedIncomingGroupType,
+        editedAt: Number.isFinite(Number(incoming.editedAt)) ? Number(incoming.editedAt) : null,
+        deletedAt: Number.isFinite(Number(incoming.deletedAt)) ? Number(incoming.deletedAt) : null,
+        replyTo,
+        forwarded: Boolean(incoming.forwarded),
+        forwardedFrom: forwardedFrom || null,
+        forwardedFromName: forwardedFromName || null
+      };
+
+      const list = getMutableList(chatId);
+      if (!list.length || list[list.length - 1].timestamp <= record.timestamp) {
+        list.push(record);
+      } else {
+        const insertAt = this.findMessageInsertIndexByTimestamp(list, record.timestamp);
+        list.splice(insertAt, 0, record);
+      }
+
+      knownMessageIds.add(messageId);
+      messagesChanged = true;
+      appliedCount += 1;
+
+      if (!isGroup && !this.isSystemChat(chatId)) {
+        this.trackIncomingMessageForReadReceipt(chatId, messageId);
+      }
+
+      nextUnreadMap[chatId] = (nextUnreadMap[chatId] ?? 0) + 1;
+      unreadChanged = true;
+    }
+
+    if (messagesChanged) {
+      this.messagesByChat.set(nextMessageMap);
+    }
+    if (unreadChanged) {
+      this.unreadByChat.set(nextUnreadMap);
+    }
+    if (messagesChanged || unreadChanged) {
+      this.schedulePersist();
+    }
+
+    return appliedCount;
   }
 
   private handleIncomingPayload(rawData: string): void {
@@ -2925,7 +3073,7 @@ export class ChatStoreService {
   private runIncomingBatch<T>(work: () => T): T {
     this.incomingBatchDepth += 1;
     try {
-      return batch(work);
+      return work();
     } finally {
       this.incomingBatchDepth -= 1;
       if (this.incomingBatchDepth === 0 && this.pendingPersistAfterIncomingBatch) {
