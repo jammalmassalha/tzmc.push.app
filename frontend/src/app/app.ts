@@ -1,9 +1,26 @@
 import { CommonModule } from '@angular/common';
-import { ChangeDetectionStrategy, Component, OnDestroy, signal } from '@angular/core';
-import { NavigationCancel, NavigationEnd, NavigationError, Router, RouterOutlet } from '@angular/router';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  EffectRef,
+  OnDestroy,
+  computed,
+  effect,
+  signal
+} from '@angular/core';
+import {
+  NavigationCancel,
+  NavigationEnd,
+  NavigationError,
+  NavigationStart,
+  Router,
+  RouterOutlet
+} from '@angular/router';
 import { Subscription } from 'rxjs';
 import { ChatStoreService } from './core/services/chat-store.service';
 import { runtimeConfig } from './core/config/runtime-config';
+
+type StartupLoaderPhase = 'auth' | 'contacts' | 'chats' | 'finalizing' | 'ready';
 
 @Component({
   selector: 'app-root',
@@ -16,11 +33,44 @@ export class App implements OnDestroy {
   private static readonly MOBILE_CACHE_SESSION_KEY = 'mobile-cache-cleanup-v4';
   private static readonly STARTUP_SYNC_TIMEOUT_MS = 7000;
   private static readonly STARTUP_LOADER_TIMEOUT_MS = 30000;
+  private static readonly STARTUP_HIDE_DELAY_MS = 220;
+  // Customize these labels to change startup loader text.
+  private static readonly STARTUP_TEXT_BY_PHASE: Record<StartupLoaderPhase, string> = {
+    auth: 'מאמת משתמש…',
+    contacts: 'טוען נתוני אנשי קשר…',
+    chats: 'טוען שיחות והודעות…',
+    finalizing: 'מסיים טעינה…',
+    ready: 'מוכן'
+  };
+  private static readonly STARTUP_MIN_PERCENT_BY_PHASE: Record<StartupLoaderPhase, number> = {
+    auth: 12,
+    contacts: 45,
+    chats: 72,
+    finalizing: 92,
+    ready: 100
+  };
+  private static readonly STARTUP_MAX_PERCENT_BY_PHASE: Record<StartupLoaderPhase, number> = {
+    auth: 36,
+    contacts: 68,
+    chats: 88,
+    finalizing: 98,
+    ready: 100
+  };
+
   readonly startupLoaderVisible = signal(true);
   readonly startupLoaderSeconds = signal(0);
+  readonly startupLoaderPhase = signal<StartupLoaderPhase>('auth');
+  readonly startupLoaderPercent = signal(12);
+  readonly startupLoaderText = computed(() => {
+    const phase = this.startupLoaderPhase();
+    const label = App.STARTUP_TEXT_BY_PHASE[phase] ?? 'טוען…';
+    return `${label} ${this.startupLoaderSeconds()}s`;
+  });
   private startupLoaderIntervalId: number | null = null;
   private startupLoaderTimeoutId: number | null = null;
+  private startupLoaderHideDelayId: number | null = null;
   private startupNavigationSub: Subscription | null = null;
+  private startupStorePhaseEffectRef: EffectRef | null = null;
 
   constructor(
     private readonly store: ChatStoreService,
@@ -33,8 +83,14 @@ export class App implements OnDestroy {
 
   ngOnDestroy(): void {
     this.stopStartupLoaderTimers();
+    if (this.startupLoaderHideDelayId !== null) {
+      window.clearTimeout(this.startupLoaderHideDelayId);
+      this.startupLoaderHideDelayId = null;
+    }
     this.startupNavigationSub?.unsubscribe();
     this.startupNavigationSub = null;
+    this.startupStorePhaseEffectRef?.destroy();
+    this.startupStorePhaseEffectRef = null;
   }
 
   private startStartupLoader(): void {
@@ -43,22 +99,65 @@ export class App implements OnDestroy {
       return;
     }
 
+    this.setStartupLoaderPhase('auth');
     this.startupLoaderIntervalId = window.setInterval(() => {
       this.startupLoaderSeconds.update((value) => value + 1);
+      this.advanceStartupLoaderProgressTick();
     }, 1000);
     this.startupLoaderTimeoutId = window.setTimeout(() => {
       this.hideStartupLoader();
     }, App.STARTUP_LOADER_TIMEOUT_MS);
-
-    this.startupNavigationSub = this.router.events.subscribe((event) => {
-      if (
-        event instanceof NavigationEnd ||
-        event instanceof NavigationCancel ||
-        event instanceof NavigationError
-      ) {
-        this.hideStartupLoader();
+    this.startupStorePhaseEffectRef = effect(() => {
+      if (!this.startupLoaderVisible()) {
+        return;
+      }
+      if (this.store.loading()) {
+        this.setStartupLoaderPhase('contacts');
+        return;
+      }
+      if (this.store.syncing()) {
+        this.setStartupLoaderPhase('chats');
       }
     });
+
+    this.startupNavigationSub = this.router.events.subscribe((event) => {
+      if (event instanceof NavigationStart) {
+        this.setStartupLoaderPhase('chats');
+        return;
+      }
+      if (event instanceof NavigationEnd || event instanceof NavigationCancel || event instanceof NavigationError) {
+        this.completeStartupLoader();
+      }
+    });
+  }
+
+  private setStartupLoaderPhase(phase: StartupLoaderPhase): void {
+    if (!this.startupLoaderVisible()) return;
+    this.startupLoaderPhase.set(phase);
+    const minPercent = App.STARTUP_MIN_PERCENT_BY_PHASE[phase] ?? 0;
+    this.startupLoaderPercent.update((value) => Math.max(value, minPercent));
+  }
+
+  private advanceStartupLoaderProgressTick(): void {
+    if (!this.startupLoaderVisible()) return;
+    const phase = this.startupLoaderPhase();
+    const maxPercent = App.STARTUP_MAX_PERCENT_BY_PHASE[phase] ?? 99;
+    if (maxPercent <= 0) return;
+    this.startupLoaderPercent.update((value) => Math.min(maxPercent, value + 1));
+  }
+
+  private completeStartupLoader(): void {
+    if (!this.startupLoaderVisible()) return;
+    this.setStartupLoaderPhase('finalizing');
+    this.startupLoaderPercent.set(100);
+    this.startupLoaderPhase.set('ready');
+    if (this.startupLoaderHideDelayId !== null) {
+      window.clearTimeout(this.startupLoaderHideDelayId);
+    }
+    this.startupLoaderHideDelayId = window.setTimeout(() => {
+      this.startupLoaderHideDelayId = null;
+      this.hideStartupLoader();
+    }, App.STARTUP_HIDE_DELAY_MS);
   }
 
   private hideStartupLoader(): void {
