@@ -31,7 +31,7 @@
       <mat-icon>group_add</mat-icon>
       <span>קבוצה חדשה</span>
     </button>
-    <button mat-menu-item type="button" (click)="logout()">
+    <button mat-menu-item type="button" [disabled]="isLoggingOut()" (click)="logout()">
       <mat-icon>logout</mat-icon>
       <span>התנתקות</span>
     </button>
@@ -482,6 +482,16 @@
       }
     </section>
   </div>
+
+  @if (isLoggingOut()) {
+    <div class="logout-loader-backdrop" role="status" aria-live="polite" aria-busy="true">
+      <div class="logout-loader-card">
+        <mat-spinner diameter="54"></mat-spinner>
+        <div class="logout-loader-title">מתנתק מהמערכת...</div>
+        <div class="logout-loader-subtitle">{{ logoutLoaderText() }}</div>
+      </div>
+    </div>
+  }
 
   @if (avatarPreview(); as avatar) {
     <div class="avatar-preview-backdrop" (click)="closeChatAvatar()">

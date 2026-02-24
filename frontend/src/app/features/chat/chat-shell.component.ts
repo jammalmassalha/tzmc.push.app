@@ -199,6 +199,12 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly reactionDetailsPreview = signal<ReactionDetailsPreview | null>(null);
   readonly phoneActionTarget = signal<{ display: string; phone: string } | null>(null);
   readonly groupMembersPreview = signal<GroupMembersPreview | null>(null);
+  readonly isLoggingOut = signal(false);
+  readonly logoutElapsedSeconds = signal(0);
+  readonly logoutLoaderText = computed(() => {
+    const seconds = this.logoutElapsedSeconds();
+    return seconds > 0 ? `מתנתק... ${seconds}ש׳` : 'מתנתק...';
+  });
   readonly groupMemberAddOpen = signal(false);
   readonly groupMemberAddSearchTerm = signal('');
   readonly selectedGroupMemberAddUsernames = signal<Set<string>>(new Set<string>());
@@ -256,6 +262,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   private pendingOpenScroll: { chatId: string; unreadBeforeOpen: number } | null = null;
   private openBoundaryScrollRafId: number | null = null;
   private relativeTimeRefreshId: number | null = null;
+  private logoutProgressIntervalId: number | null = null;
   private routeQueryParamsSub: Subscription | null = null;
 
   private readonly autoScrollEffect = effect(() => {
@@ -441,6 +448,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       window.cancelAnimationFrame(this.openBoundaryScrollRafId);
       this.openBoundaryScrollRafId = null;
     }
+    this.clearLogoutProgressInterval();
     this.routeQueryParamsSub?.unsubscribe();
     this.routeQueryParamsSub = null;
     if (typeof document !== 'undefined') {
@@ -735,12 +743,46 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   async logout(): Promise<void> {
-    await this.store.logout();
-    await this.router.navigate(['/setup']);
+    if (this.isLoggingOut()) {
+      return;
+    }
+
+    this.startLogoutLoader();
+    try {
+      await this.store.logout();
+      await this.router.navigate(['/setup']);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'ההתנתקות נכשלה. נסה שוב.';
+      this.snackBar.open(message, 'סגור', { duration: 3400 });
+    } finally {
+      this.stopLogoutLoader();
+    }
   }
 
   clearChatSearch(): void {
     this.searchControl.setValue('');
+  }
+
+  private startLogoutLoader(): void {
+    this.clearLogoutProgressInterval();
+    this.logoutElapsedSeconds.set(0);
+    this.isLoggingOut.set(true);
+    this.logoutProgressIntervalId = window.setInterval(() => {
+      this.logoutElapsedSeconds.update((seconds) => seconds + 1);
+    }, 1000);
+  }
+
+  private stopLogoutLoader(): void {
+    this.clearLogoutProgressInterval();
+    this.logoutElapsedSeconds.set(0);
+    this.isLoggingOut.set(false);
+  }
+
+  private clearLogoutProgressInterval(): void {
+    if (this.logoutProgressIntervalId !== null) {
+      window.clearInterval(this.logoutProgressIntervalId);
+      this.logoutProgressIntervalId = null;
+    }
   }
 
   openGroupMembers(): void {
