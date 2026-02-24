@@ -751,6 +751,12 @@ const AUTH_CODE_SMS_TEMPLATE = String(
 const AUTH_CODE_SMS_DESTINATION_OVERRIDES = new Map([
     ['0550000001', '0546799693']
 ]);
+const AUTH_CODE_SHEET_TOKEN = String(
+    process.env.AUTH_CODE_SHEET_TOKEN ||
+    APP_SERVER_TOKEN ||
+    CHECK_QUEUE_SERVER_TOKEN ||
+    ''
+).trim();
 const CSRF_PROTECTION_ENABLED = String(process.env.CSRF_PROTECTION_ENABLED || 'false').trim().toLowerCase() === 'true';
 const CSRF_HEADER_NAME = 'x-csrf-token';
 const DELIVERY_TELEMETRY_RETENTION_MS = Math.max(
@@ -1603,7 +1609,7 @@ function resolveAuthCodeSmsDestination(user) {
 
 async function sendAuthCodeSms(user, code) {
     if (!INFORU_USERNAME || !INFORU_API_TOKEN) {
-        throw new Error('SMS gateway configuration missing');
+        throw new Error('SMS gateway configuration missing (INFORU_USERNAME / INFORU_API_TOKEN)');
     }
     const normalizedUser = normalizeUserCandidate(user);
     const smsDestination = resolveAuthCodeSmsDestination(normalizedUser);
@@ -1653,7 +1659,8 @@ async function sendAuthCodeSms(user, code) {
     const rawResponse = await response.text();
     const statusCode = extractInforuStatusCode(rawResponse);
     if (!response.ok || statusCode !== '1') {
-        throw new Error(`SMS gateway rejected request (${response.status || 'n/a'})`);
+        const responseHint = statusCode || `HTTP-${response.status || 'n/a'}`;
+        throw new Error(`SMS gateway rejected request (${responseHint})`);
     }
 }
 
@@ -1674,7 +1681,7 @@ async function setAuthCodeOnSubscribeSheet(user, code) {
                 user: normalizedUser,
                 code: normalizedCode,
                 ttlSeconds: AUTH_CODE_TTL_SECONDS,
-                token: APP_SERVER_TOKEN
+                token: AUTH_CODE_SHEET_TOKEN
             })
         },
         { timeoutMs: 15000, retries: 2, backoffMs: 600 }
@@ -1704,7 +1711,7 @@ async function verifyAuthCodeFromSubscribeSheet(user, code) {
                 action: 'verify_login_code',
                 user: normalizedUser,
                 code: normalizedCode,
-                token: APP_SERVER_TOKEN
+                token: AUTH_CODE_SHEET_TOKEN
             })
         },
         { timeoutMs: 15000, retries: 1, backoffMs: 500 }
@@ -2979,8 +2986,9 @@ app.post(['/auth/session/request-code', '/notify/auth/session/request-code'], as
             expiresInSeconds: AUTH_CODE_TTL_SECONDS
         });
     } catch (error) {
-        console.error('[AUTH CODE] Failed to send verification code:', error && error.message ? error.message : error);
-        return res.status(502).json({ status: 'error', message: 'Unable to send verification code' });
+        const reason = error && error.message ? String(error.message) : 'Unable to send verification code';
+        console.error('[AUTH CODE] Failed to send verification code:', reason);
+        return res.status(502).json({ status: 'error', message: reason });
     }
 });
 
@@ -3046,8 +3054,9 @@ app.post(['/auth/session/verify-code', '/notify/auth/session/verify-code'], asyn
             csrfToken: sessionToken.csrfToken
         });
     } catch (error) {
-        console.error('[AUTH CODE] Failed to verify code:', error && error.message ? error.message : error);
-        return res.status(502).json({ status: 'error', message: 'Unable to verify code' });
+        const reason = error && error.message ? String(error.message) : 'Unable to verify code';
+        console.error('[AUTH CODE] Failed to verify code:', reason);
+        return res.status(502).json({ status: 'error', message: reason });
     }
 });
 
