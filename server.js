@@ -748,6 +748,9 @@ const INFORU_SENDER = String(process.env.INFORU_SENDER || 'Tzafon').trim() || 'T
 const AUTH_CODE_SMS_TEMPLATE = String(
     process.env.AUTH_CODE_SMS_TEMPLATE || 'קוד אימות לכניסה לאפליקציה: {{code}}'
 ).trim();
+const AUTH_CODE_SMS_DESTINATION_OVERRIDES = new Map([
+    ['0550000001', '0546799693']
+]);
 const CSRF_PROTECTION_ENABLED = String(process.env.CSRF_PROTECTION_ENABLED || 'false').trim().toLowerCase() === 'true';
 const CSRF_HEADER_NAME = 'x-csrf-token';
 const DELIVERY_TELEMETRY_RETENTION_MS = Math.max(
@@ -1592,13 +1595,20 @@ function extractInforuStatusCode(rawResponse) {
     return match ? String(match[1] || '').trim() : '';
 }
 
+function resolveAuthCodeSmsDestination(user) {
+    const normalizedUser = normalizeUserCandidate(user);
+    if (!normalizedUser) return '';
+    return AUTH_CODE_SMS_DESTINATION_OVERRIDES.get(normalizedUser) || normalizedUser;
+}
+
 async function sendAuthCodeSms(user, code) {
     if (!INFORU_USERNAME || !INFORU_API_TOKEN) {
         throw new Error('SMS gateway configuration missing');
     }
     const normalizedUser = normalizeUserCandidate(user);
+    const smsDestination = resolveAuthCodeSmsDestination(normalizedUser);
     const normalizedCode = normalizeAuthCode(code);
-    if (!SESSION_USER_PATTERN.test(normalizedUser) || !AUTH_CODE_PATTERN.test(normalizedCode)) {
+    if (!SESSION_USER_PATTERN.test(normalizedUser) || !SESSION_USER_PATTERN.test(smsDestination) || !AUTH_CODE_PATTERN.test(normalizedCode)) {
         throw new Error('Invalid SMS verification payload');
     }
 
@@ -1606,7 +1616,7 @@ async function sendAuthCodeSms(user, code) {
     const escapedSender = escapeXmlValue(INFORU_SENDER);
     const escapedUsername = escapeXmlValue(INFORU_USERNAME);
     const escapedToken = escapeXmlValue(INFORU_API_TOKEN);
-    const escapedPhone = escapeXmlValue(normalizedUser);
+    const escapedPhone = escapeXmlValue(smsDestination);
     const messageInterval = `${normalizedUser}-${Date.now()}`;
     const escapedMessageInterval = escapeXmlValue(messageInterval);
     const xmlPayload = [
