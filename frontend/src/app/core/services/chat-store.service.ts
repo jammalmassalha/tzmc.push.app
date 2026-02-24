@@ -1,4 +1,4 @@
-import { Injectable, computed, effect, signal } from '@angular/core';
+import { Injectable, batch, computed, effect, signal } from '@angular/core';
 import { SYSTEM_CHAT_IDS } from '../config/runtime-config';
 import {
   ChatGroup,
@@ -157,27 +157,33 @@ export class ChatStoreService {
   private deliveryTelemetryLastFlushedAt = 0;
   private deliveryTelemetryDeviceId = '';
   private deliveryTelemetryCounters: DeliveryTelemetryCounters = this.createEmptyDeliveryTelemetryCounters();
+  private readonly systemChatIdSet = new Set<string>(
+    SYSTEM_CHAT_IDS.map((id) => this.normalizeChatId(id)).filter(Boolean)
+  );
+  private incomingBatchDepth = 0;
+  private pendingPersistAfterIncomingBatch = false;
 
   readonly chatItems = computed<ChatListItem[]>(() => {
-    const groupsById = new Map(this.groups().map((group) => [group.id, group]));
-    const contactsById = new Map(this.contacts().map((contact) => [contact.username, contact]));
+    const groups = this.groups();
+    const contacts = this.contacts();
+    const messageMap = this.messagesByChat();
+    const unreadMap = this.unreadByChat();
+    const groupsById = new Map(groups.map((group) => [group.id, group]));
+    const contactsById = new Map(contacts.map((contact) => [contact.username, contact]));
     const chatIds = new Set<string>();
 
-    for (const contact of this.contacts()) {
+    for (const contact of contacts) {
       chatIds.add(contact.username);
     }
-    for (const group of this.groups()) {
+    for (const group of groups) {
       chatIds.add(group.id);
     }
-    for (const id of Object.keys(this.messagesByChat())) {
+    for (const id of Object.keys(messageMap)) {
       chatIds.add(id);
     }
-    for (const systemId of SYSTEM_CHAT_IDS) {
-      chatIds.add(this.normalizeUser(systemId));
+    for (const systemId of this.systemChatIdSet) {
+      chatIds.add(systemId);
     }
-
-    const unreadMap = this.unreadByChat();
-    const messageMap = this.messagesByChat();
     const items: ChatListItem[] = [];
 
     for (const chatId of chatIds) {
@@ -190,7 +196,7 @@ export class ChatStoreService {
       const subtitle = lastMessage ? this.getMessagePreview(lastMessage) : (group ? 'אין הודעות בקבוצה' : '');
       const lastTimestamp = lastMessage?.timestamp ?? 0;
       const unread = unreadMap[chatId] ?? 0;
-      const pinned = SYSTEM_CHAT_IDS.some((id) => this.normalizeUser(id) === chatId);
+      const pinned = this.isSystemChat(chatId);
 
       items.push({
         id: chatId,
@@ -464,7 +470,7 @@ export class ChatStoreService {
     this.clearUnreadCountForChat(normalizedChatId);
 
     const isGroupChat = this.groups().some((group) => group.id === normalizedChatId);
-    const isSystemChat = SYSTEM_CHAT_IDS.some((id) => this.normalizeChatId(id) === normalizedChatId);
+    const isSystemChat = this.isSystemChat(normalizedChatId);
     if (isGroupChat || isSystemChat) {
       return;
     }
@@ -1473,7 +1479,7 @@ export class ChatStoreService {
     const normalizedChatId = this.normalizeChatId(chatId);
     if (!normalizedChatId) return;
     if (this.groups().some((group) => group.id === normalizedChatId)) return;
-    if (SYSTEM_CHAT_IDS.some((id) => this.normalizeChatId(id) === normalizedChatId)) return;
+    if (this.isSystemChat(normalizedChatId)) return;
     if (this.readReceiptFlushInFlightByChat.has(normalizedChatId)) {
       this.scheduleReadReceiptFlush(normalizedChatId);
       return;
@@ -1938,11 +1944,13 @@ export class ChatStoreService {
       const messages = await this.api.pollMessages();
       this.incrementDeliveryTelemetry('pollMessagesFetched', messages.length);
       let appliedCount = 0;
-      for (const message of messages) {
-        if (this.applyIncomingMessage(message)) {
-          appliedCount += 1;
+      this.runIncomingBatch(() => {
+        for (const message of messages) {
+          if (this.applyIncomingMessage(message)) {
+            appliedCount += 1;
+          }
         }
-      }
+      });
       this.incrementDeliveryTelemetry('pollMessagesApplied', appliedCount);
     } catch {
       // Polling failures are expected during network interruptions.
@@ -2043,7 +2051,7 @@ export class ChatStoreService {
     };
 
     this.appendMessage(record);
-    if (!isGroup && !SYSTEM_CHAT_IDS.some((id) => this.normalizeChatId(id) === chatId)) {
+    if (!isGroup && !this.isSystemChat(chatId)) {
       this.trackIncomingMessageForReadReceipt(chatId, messageId);
     }
 
@@ -2465,12 +2473,19 @@ export class ChatStoreService {
     };
 
     this.messagesByChat.update((messageMap) => {
-      const list = messageMap[chatId] ? [...messageMap[chatId]] : [];
-      if (list.some((entry) => entry.messageId === nextMessage.messageId)) {
+      const existingList = messageMap[chatId] ?? [];
+      if (existingList.some((entry) => entry.messageId === nextMessage.messageId)) {
         return messageMap;
       }
-      list.push(nextMessage);
-      list.sort((a, b) => a.timestamp - b.timestamp);
+
+      const list = [...existingList];
+      if (!list.length || list[list.length - 1].timestamp <= nextMessage.timestamp) {
+        list.push(nextMessage);
+      } else {
+        const insertAt = this.findMessageInsertIndexByTimestamp(list, nextMessage.timestamp);
+        list.splice(insertAt, 0, nextMessage);
+      }
+
       return {
         ...messageMap,
         [chatId]: list
@@ -2478,6 +2493,20 @@ export class ChatStoreService {
     });
 
     this.schedulePersist();
+  }
+
+  private findMessageInsertIndexByTimestamp(list: ChatMessage[], timestamp: number): number {
+    let low = 0;
+    let high = list.length;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      if (list[mid].timestamp <= timestamp) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    return low;
   }
 
   private setMessageStatus(messageId: string, status: DeliveryStatus): void {
@@ -2781,6 +2810,11 @@ export class ChatStoreService {
     return this.normalizeUser(value);
   }
 
+  private isSystemChat(chatId: string): boolean {
+    const normalized = this.normalizeChatId(chatId);
+    return Boolean(normalized && this.systemChatIdSet.has(normalized));
+  }
+
   private normalizeUser(value: string): string {
     return String(value || '').trim().toLowerCase();
   }
@@ -2871,6 +2905,14 @@ export class ChatStoreService {
   }
 
   private schedulePersist(): void {
+    if (this.incomingBatchDepth > 0) {
+      this.pendingPersistAfterIncomingBatch = true;
+      return;
+    }
+    this.schedulePersistNow();
+  }
+
+  private schedulePersistNow(): void {
     if (this.persistTimer) {
       clearTimeout(this.persistTimer);
     }
@@ -2878,6 +2920,19 @@ export class ChatStoreService {
       this.persistTimer = null;
       this.persistState();
     }, 250);
+  }
+
+  private runIncomingBatch<T>(work: () => T): T {
+    this.incomingBatchDepth += 1;
+    try {
+      return batch(work);
+    } finally {
+      this.incomingBatchDepth -= 1;
+      if (this.incomingBatchDepth === 0 && this.pendingPersistAfterIncomingBatch) {
+        this.pendingPersistAfterIncomingBatch = false;
+        this.schedulePersistNow();
+      }
+    }
   }
 
   private persistState(): void {
