@@ -1802,6 +1802,57 @@ async function ensureRequestedUserCanAuthenticate(requestedUser) {
     return { ok: true, status: 200, message: '' };
 }
 
+function ensureRegistrationFlowOnly(req, requestedUser) {
+    const sessionUser = normalizeUserCandidate(req && req.authUser);
+    if (!sessionUser) {
+        return { ok: true, status: 200, message: '' };
+    }
+    if (sessionUser === requestedUser) {
+        return {
+            ok: false,
+            status: 403,
+            message: 'Authenticated users cannot request registration SMS code'
+        };
+    }
+    return {
+        ok: false,
+        status: 403,
+        message: 'User mismatch'
+    };
+}
+
+async function ensureRequestedUserIsRegistered(requestedUser) {
+    const normalizedUser = normalizeUserCandidate(requestedUser);
+    if (!SESSION_USER_PATTERN.test(normalizedUser)) {
+        return { ok: false, status: 400, message: 'Invalid user' };
+    }
+    try {
+        const response = await fetchWithRetry(
+            buildGoogleSheetGetUrl({ action: 'check_auth', user: normalizedUser }),
+            {},
+            { timeoutMs: 10000, retries: 1, backoffMs: 500 }
+        );
+        if (!response.ok) {
+            return { ok: false, status: 502, message: 'Unable to verify registered user' };
+        }
+        const payload = await response.json();
+        const status = String(payload && payload.status ? payload.status : '').trim().toLowerCase();
+        const isActive = payload && Object.prototype.hasOwnProperty.call(payload, 'isActive')
+            ? Boolean(payload.isActive)
+            : status === 'success';
+        if (status === 'success' && isActive) {
+            return { ok: true, status: 200, message: '' };
+        }
+        const backendMessage = String(payload && payload.message ? payload.message : '').trim();
+        if (backendMessage && /inactive/i.test(backendMessage)) {
+            return { ok: false, status: 403, message: 'User inactive' };
+        }
+        return { ok: false, status: 403, message: 'Unauthorized user' };
+    } catch (error) {
+        return { ok: false, status: 502, message: 'Unable to verify registered user' };
+    }
+}
+
 function extractUsernamesFromContactsResponse(payload = {}) {
     const extracted = new Set();
     const candidateArrays = [];
@@ -3003,6 +3054,13 @@ app.post(['/auth/session/request-code', '/notify/auth/session/request-code'], as
     if (!SESSION_USER_PATTERN.test(requestedUser)) {
         return res.status(400).json({ status: 'error', message: 'Invalid user' });
     }
+    const registrationFlowCheck = ensureRegistrationFlowOnly(req, requestedUser);
+    if (!registrationFlowCheck.ok) {
+        return res.status(registrationFlowCheck.status).json({
+            status: 'error',
+            message: registrationFlowCheck.message
+        });
+    }
 
     const clientIp = getClientIpAddress(req);
     const ipLimit = consumeRateLimitEntry(
@@ -3028,9 +3086,12 @@ app.post(['/auth/session/request-code', '/notify/auth/session/request-code'], as
     }
 
     try {
-        const authCheck = await ensureRequestedUserCanAuthenticate(requestedUser);
-        if (!authCheck.ok) {
-            return res.status(authCheck.status).json({ status: 'error', message: authCheck.message });
+        const registrationCheck = await ensureRequestedUserIsRegistered(requestedUser);
+        if (!registrationCheck.ok) {
+            return res.status(registrationCheck.status).json({
+                status: 'error',
+                message: registrationCheck.message
+            });
         }
 
         const verificationCode = generateAuthCode();
@@ -3064,6 +3125,13 @@ app.post(['/auth/session/verify-code', '/notify/auth/session/verify-code'], asyn
     if (!SESSION_SIGNING_SECRET) {
         return res.status(500).json({ status: 'error', message: 'Session configuration missing' });
     }
+    const registrationFlowCheck = ensureRegistrationFlowOnly(req, requestedUser);
+    if (!registrationFlowCheck.ok) {
+        return res.status(registrationFlowCheck.status).json({
+            status: 'error',
+            message: registrationFlowCheck.message
+        });
+    }
 
     const clientIp = getClientIpAddress(req);
     const ipLimit = consumeRateLimitEntry(
@@ -3089,9 +3157,12 @@ app.post(['/auth/session/verify-code', '/notify/auth/session/verify-code'], asyn
     }
 
     try {
-        const authCheck = await ensureRequestedUserCanAuthenticate(requestedUser);
-        if (!authCheck.ok) {
-            return res.status(authCheck.status).json({ status: 'error', message: authCheck.message });
+        const registrationCheck = await ensureRequestedUserIsRegistered(requestedUser);
+        if (!registrationCheck.ok) {
+            return res.status(registrationCheck.status).json({
+                status: 'error',
+                message: registrationCheck.message
+            });
         }
 
         const verified = await verifyAuthCodeFromSubscribeSheet(requestedUser, submittedCode);
