@@ -2,7 +2,7 @@ const vapidKeys = {
     publicKey: "BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk",
     privateKey: "fMQqCaakMboV7LEV57wJhxPAdyppOBRDBjRDVQBxg1s"
 };
-const GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbwvnlvHlDCEpMZmKRfXbaxwiO61I9AxIZcyMEyZsgRoYb4HbsflTXGmFpANkXj4QKcYLA/exec';
+const GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbwiBFAyG_EEDNDC1R_eA46f-hbLTtx8G8_3Klz85yjKVG_CMBq4hUPrJkRlZfdZ8dODHg/exec';
 
 const express = require('express');
 const webpush = require('web-push');
@@ -742,8 +742,8 @@ const AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_USER = Math.max(
     Number(process.env.AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_USER || 12) || 12
 );
 const INFORU_SMS_URL = String(process.env.INFORU_SMS_URL || 'https://uapi.inforu.co.il/SendMessageXml.ashx').trim();
-const INFORU_USERNAME = String(process.env.INFORU_USERNAME || '').trim();
-const INFORU_API_TOKEN = String(process.env.INFORU_API_TOKEN || '').trim();
+const INFORU_USERNAME = String(process.env.INFORU_USERNAME || 'tzmcgovil').trim();
+const INFORU_API_TOKEN = String(process.env.INFORU_API_TOKEN || '088a13e2-c2d9-4518-8c0c-2e531c3033de').trim();
 const INFORU_SENDER = String(process.env.INFORU_SENDER || 'Tzafon').trim() || 'Tzafon';
 const AUTH_CODE_SMS_TEMPLATE = String(
     process.env.AUTH_CODE_SMS_TEMPLATE || 'קוד אימות לכניסה לאפליקציה: {{code}}'
