@@ -741,11 +741,12 @@ const AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_USER = Math.max(
     3,
     Number(process.env.AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_USER || 12) || 12
 );
-const INFORU_SMS_URL = String( 'https://uapi.inforu.co.il/SendMessageXml.ashx').trim();
-const INFORU_USERNAME = String('tzmcgovil').trim();
-const INFORU_API_TOKEN = String( '088a13e2-c2d9-4518-8c0c-2e531c3033de').trim();
-const INFORU_SENDER = String('Tzafon').trim() || 'Tzafon';
-const AUTH_CODE_SMS_TEMPLATE = String('קוד אימות לכניסה לאפליקציה: {{code}}'
+const INFORU_SMS_URL = String(process.env.INFORU_SMS_URL || 'https://uapi.inforu.co.il/SendMessageXml.ashx').trim();
+const INFORU_USERNAME = String(process.env.INFORU_USERNAME || 'tzmcgovil').trim();
+const INFORU_API_TOKEN = String(process.env.INFORU_API_TOKEN || '088a13e2-c2d9-4518-8c0c-2e531c3033de').trim();
+const INFORU_SENDER = String(process.env.INFORU_SENDER || 'Tzafon').trim();
+const AUTH_CODE_SMS_TEMPLATE = String(
+    process.env.AUTH_CODE_SMS_TEMPLATE || 'קוד אימות לכניסה לאפליקציה: {{code}}'
 ).trim();
 const AUTH_CODE_SMS_DESTINATION_OVERRIDES = new Map([
     ['0550000001', '0546799693']
@@ -1600,6 +1601,80 @@ function extractInforuStatusCode(rawResponse) {
     return match ? String(match[1] || '').trim() : '';
 }
 
+function extractInforuStatusDescription(rawResponse) {
+    const source = String(rawResponse || '');
+    const candidateTags = ['Description', 'StatusDescription', 'ErrorDescription', 'Error', 'Message'];
+    for (const tag of candidateTags) {
+        const expression = new RegExp(`<${tag}>\\s*([^<]+?)\\s*<\\/${tag}>`, 'i');
+        const match = source.match(expression);
+        if (match && String(match[1] || '').trim()) {
+            return String(match[1] || '').trim();
+        }
+    }
+    return '';
+}
+
+function buildInforuSmsXmlPayload({
+    username,
+    apiToken,
+    message,
+    phone,
+    sender,
+    includeSender
+}) {
+    const escapedUsername = escapeXmlValue(username);
+    const escapedToken = escapeXmlValue(apiToken);
+    const escapedMessage = escapeXmlValue(message);
+    const escapedPhone = escapeXmlValue(phone);
+    const escapedSender = escapeXmlValue(sender || '');
+    const xmlParts = [
+        '<Inforu>',
+        '<User>',
+        `<Username>${escapedUsername}</Username>`,
+        `<ApiToken>${escapedToken}</ApiToken>`,
+        '</User>',
+        '<Content Type="sms">',
+        `<Message>${escapedMessage}</Message>`,
+        '</Content>',
+        '<Recipients>',
+        `<PhoneNumber>${escapedPhone}</PhoneNumber>`,
+        '</Recipients>'
+    ];
+    if (includeSender && escapedSender) {
+        xmlParts.push(
+            '<Settings>',
+            `<Sender>${escapedSender}</Sender>`,
+            '</Settings>'
+        );
+    }
+    xmlParts.push('</Inforu>');
+    return xmlParts.join('');
+}
+
+async function postInforuSmsXml(xmlPayload) {
+    const encodedPayload = new URLSearchParams({ InforuXML: xmlPayload }).toString();
+    const response = await fetchWithRetry(
+        INFORU_SMS_URL,
+        {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+            },
+            body: encodedPayload
+        },
+        { timeoutMs: 15000, retries: 1, backoffMs: 700 }
+    );
+    const rawResponse = await response.text();
+    const statusCode = extractInforuStatusCode(rawResponse);
+    const description = extractInforuStatusDescription(rawResponse);
+    return {
+        ok: Boolean(response.ok && statusCode === '1'),
+        statusCode,
+        description,
+        httpStatus: response.status
+    };
+}
+
 function resolveAuthCodeSmsDestination(user) {
     const normalizedUser = normalizeUserCandidate(user);
     if (!normalizedUser) return '';
@@ -1617,49 +1692,34 @@ async function sendAuthCodeSms(user, code) {
         throw new Error('Invalid SMS verification payload');
     }
 
-    const escapedMessage = escapeXmlValue(formatAuthCodeSmsMessage(normalizedCode));
-    const escapedSender = escapeXmlValue(INFORU_SENDER);
-    const escapedUsername = escapeXmlValue(INFORU_USERNAME);
-    const escapedToken = escapeXmlValue(INFORU_API_TOKEN);
-    const escapedPhone = escapeXmlValue(smsDestination);
-    const messageInterval = `${normalizedUser}-${Date.now()}`;
-    const escapedMessageInterval = escapeXmlValue(messageInterval);
-    const xmlPayload = [
-        '<Inforu>',
-        '<User>',
-        `<Username>${escapedUsername}</Username>`,
-        `<ApiToken>${escapedToken}</ApiToken>`,
-        '</User>',
-        '<Content Type="sms">',
-        `<Message>${escapedMessage}</Message>`,
-        '</Content>',
-        '<Recipients>',
-        `<PhoneNumber>${escapedPhone}</PhoneNumber>`,
-        '</Recipients>',
-        '<Settings>',
-        `<Sender>${escapedSender}</Sender>`,
-        `<MessageInterval>${escapedMessageInterval}</MessageInterval>`,
-        '</Settings>',
-        '</Inforu>'
-    ].join('');
-    const encodedPayload = `InforuXML=${encodeURIComponent(xmlPayload)}`;
+    const message = formatAuthCodeSmsMessage(normalizedCode);
+    const primaryXmlPayload = buildInforuSmsXmlPayload({
+        username: INFORU_USERNAME,
+        apiToken: INFORU_API_TOKEN,
+        message,
+        phone: smsDestination,
+        sender: INFORU_SENDER,
+        includeSender: true
+    });
+    let sendResult = await postInforuSmsXml(primaryXmlPayload);
 
-    const response = await fetchWithRetry(
-        INFORU_SMS_URL,
-        {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
-            },
-            body: encodedPayload
-        },
-        { timeoutMs: 15000, retries: 1, backoffMs: 700 }
-    );
-    const rawResponse = await response.text();
-    const statusCode = extractInforuStatusCode(rawResponse);
-    if (!response.ok || statusCode !== '1') {
-        const responseHint = statusCode || `HTTP-${response.status || 'n/a'}`;
-        throw new Error(`SMS gateway rejected request (${responseHint})`);
+    // Some InforU accounts reject a sender alias and accept account default.
+    if (!sendResult.ok && sendResult.statusCode === '-17' && INFORU_SENDER) {
+        const fallbackXmlPayload = buildInforuSmsXmlPayload({
+            username: INFORU_USERNAME,
+            apiToken: INFORU_API_TOKEN,
+            message,
+            phone: smsDestination,
+            sender: '',
+            includeSender: false
+        });
+        sendResult = await postInforuSmsXml(fallbackXmlPayload);
+    }
+
+    if (!sendResult.ok) {
+        const statusPart = sendResult.statusCode || `HTTP-${sendResult.httpStatus || 'n/a'}`;
+        const descriptionPart = sendResult.description ? `: ${sendResult.description}` : '';
+        throw new Error(`SMS gateway rejected request (${statusPart}${descriptionPart})`);
     }
 }
 
