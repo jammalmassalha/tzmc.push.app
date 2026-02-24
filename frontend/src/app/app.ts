@@ -1,22 +1,83 @@
-import { ChangeDetectionStrategy, Component } from '@angular/core';
-import { RouterOutlet } from '@angular/router';
+import { CommonModule } from '@angular/common';
+import { ChangeDetectionStrategy, Component, OnDestroy, signal } from '@angular/core';
+import { NavigationCancel, NavigationEnd, NavigationError, Router, RouterOutlet } from '@angular/router';
+import { Subscription } from 'rxjs';
 import { ChatStoreService } from './core/services/chat-store.service';
 import { runtimeConfig } from './core/config/runtime-config';
 
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet],
+  imports: [CommonModule, RouterOutlet],
   templateUrl: './app.html',
   styleUrl: './app.scss',
   changeDetection: ChangeDetectionStrategy.OnPush
 })
-export class App {
+export class App implements OnDestroy {
   private static readonly MOBILE_CACHE_SESSION_KEY = 'mobile-cache-cleanup-v4';
   private static readonly STARTUP_SYNC_TIMEOUT_MS = 7000;
+  private static readonly STARTUP_LOADER_TIMEOUT_MS = 30000;
+  readonly startupLoaderVisible = signal(true);
+  readonly startupLoaderSeconds = signal(0);
+  private startupLoaderIntervalId: number | null = null;
+  private startupLoaderTimeoutId: number | null = null;
+  private startupNavigationSub: Subscription | null = null;
 
-  constructor(private readonly store: ChatStoreService) {
+  constructor(
+    private readonly store: ChatStoreService,
+    private readonly router: Router
+  ) {
+    this.startStartupLoader();
     void this.clearCachesOnMobileLoad();
     this.bindServiceWorkerWindowContextSync();
+  }
+
+  ngOnDestroy(): void {
+    this.stopStartupLoaderTimers();
+    this.startupNavigationSub?.unsubscribe();
+    this.startupNavigationSub = null;
+  }
+
+  private startStartupLoader(): void {
+    if (typeof window === 'undefined') {
+      this.startupLoaderVisible.set(false);
+      return;
+    }
+
+    this.startupLoaderIntervalId = window.setInterval(() => {
+      this.startupLoaderSeconds.update((value) => value + 1);
+    }, 1000);
+    this.startupLoaderTimeoutId = window.setTimeout(() => {
+      this.hideStartupLoader();
+    }, App.STARTUP_LOADER_TIMEOUT_MS);
+
+    this.startupNavigationSub = this.router.events.subscribe((event) => {
+      if (
+        event instanceof NavigationEnd ||
+        event instanceof NavigationCancel ||
+        event instanceof NavigationError
+      ) {
+        this.hideStartupLoader();
+      }
+    });
+  }
+
+  private hideStartupLoader(): void {
+    if (!this.startupLoaderVisible()) {
+      return;
+    }
+    this.startupLoaderVisible.set(false);
+    this.stopStartupLoaderTimers();
+  }
+
+  private stopStartupLoaderTimers(): void {
+    if (this.startupLoaderIntervalId !== null) {
+      window.clearInterval(this.startupLoaderIntervalId);
+      this.startupLoaderIntervalId = null;
+    }
+    if (this.startupLoaderTimeoutId !== null) {
+      window.clearTimeout(this.startupLoaderTimeoutId);
+      this.startupLoaderTimeoutId = null;
+    }
   }
 
   private async clearCachesOnMobileLoad(): Promise<void> {
