@@ -2027,9 +2027,25 @@ export class ChatStoreService {
 
       const messageId = String(incoming.messageId ?? this.generateId('srv')).trim();
       if (!messageId) continue;
+      const incomingBody = this.resolveIncomingMessageBody(incoming);
+      const incomingImageUrl = this.resolveIncomingImageUrl(incoming);
 
       const knownMessageIds = getMessageIdSet(chatId);
-      if (knownMessageIds.has(messageId)) continue;
+      if (knownMessageIds.has(messageId)) {
+        if (!this.hasRenderableIncomingContent(incomingBody, incomingImageUrl)) {
+          continue;
+        }
+        const list = getMutableList(chatId);
+        if (this.hydrateIncomingMessageInList(list, messageId, incomingBody, incomingImageUrl)) {
+          messagesChanged = true;
+          appliedCount += 1;
+        }
+        continue;
+      }
+
+      if (!this.hasRenderableIncomingContent(incomingBody, incomingImageUrl)) {
+        continue;
+      }
 
       if (isGroup && incoming.groupId && incoming.groupName) {
         this.ensureGroupFromIncoming(incoming);
@@ -2058,8 +2074,8 @@ export class ChatStoreService {
         chatId,
         sender,
         senderDisplayName: incoming.groupSenderName || this.getDisplayName(sender),
-        body: String(incoming.body ?? ''),
-        imageUrl: incoming.imageUrl ?? null,
+        body: incomingBody,
+        imageUrl: incomingImageUrl,
         direction: 'incoming',
         timestamp: Number(incoming.timestamp ?? Date.now()),
         deliveryStatus: 'delivered',
@@ -2150,11 +2166,18 @@ export class ChatStoreService {
 
     const messageId = String(incoming.messageId ?? this.generateId('srv')).trim();
     if (!messageId) return false;
+    const incomingBody = this.resolveIncomingMessageBody(incoming);
+    const incomingImageUrl = this.resolveIncomingImageUrl(incoming);
 
     const alreadyExists = (this.messagesByChat()[chatId] ?? []).some(
       (message) => message.messageId === messageId
     );
-    if (alreadyExists) return false;
+    if (alreadyExists) {
+      return this.hydrateExistingIncomingMessage(chatId, messageId, incomingBody, incomingImageUrl);
+    }
+    if (!this.hasRenderableIncomingContent(incomingBody, incomingImageUrl)) {
+      return false;
+    }
 
     if (isGroup && incoming.groupId && incoming.groupName) {
       this.ensureGroupFromIncoming(incoming);
@@ -2182,8 +2205,8 @@ export class ChatStoreService {
       chatId,
       sender,
       senderDisplayName: incoming.groupSenderName || this.getDisplayName(sender),
-      body: String(incoming.body ?? ''),
-      imageUrl: incoming.imageUrl ?? null,
+      body: incomingBody,
+      imageUrl: incomingImageUrl,
       direction: 'incoming',
       timestamp: Number(incoming.timestamp ?? Date.now()),
       deliveryStatus: 'delivered',
@@ -2209,6 +2232,115 @@ export class ChatStoreService {
     }));
 
     this.schedulePersist();
+    return true;
+  }
+
+  private normalizeIncomingBodyValue(value: unknown): string {
+    if (typeof value === 'string') {
+      return value.trim();
+    }
+    if (value && typeof value === 'object') {
+      const nested = value as Record<string, unknown>;
+      const nestedBody = nested['longText'] ?? nested['shortText'] ?? nested['text'] ?? nested['body'] ?? '';
+      return String(nestedBody || '').trim();
+    }
+    return String(value ?? '').trim();
+  }
+
+  private normalizeIncomingImageValue(value: unknown): string | null {
+    const normalized = String(value ?? '').trim();
+    return normalized || null;
+  }
+
+  private resolveIncomingMessageBody(incoming: IncomingServerMessage): string {
+    const payload = incoming as Record<string, unknown>;
+    const rawBody = incoming.body
+      ?? payload['messageText']
+      ?? payload['groupMessageText']
+      ?? payload['longText']
+      ?? payload['shortText']
+      ?? payload['text']
+      ?? payload['message']
+      ?? payload['reply']
+      ?? payload['body']
+      ?? '';
+    return this.normalizeIncomingBodyValue(rawBody);
+  }
+
+  private resolveIncomingImageUrl(incoming: IncomingServerMessage): string | null {
+    const payload = incoming as Record<string, unknown>;
+    const rawImage = incoming.imageUrl
+      ?? payload['image']
+      ?? payload['imageUrl']
+      ?? null;
+    return this.normalizeIncomingImageValue(rawImage);
+  }
+
+  private hasRenderableIncomingContent(body: string, imageUrl: string | null): boolean {
+    return Boolean(String(body || '').trim() || String(imageUrl || '').trim());
+  }
+
+  private hydrateExistingIncomingMessage(
+    chatId: string,
+    messageId: string,
+    incomingBody: string,
+    incomingImageUrl: string | null
+  ): boolean {
+    if (!this.hasRenderableIncomingContent(incomingBody, incomingImageUrl)) {
+      return false;
+    }
+
+    let changed = false;
+    this.messagesByChat.update((messageMap) => {
+      const list = messageMap[chatId];
+      if (!list?.length) {
+        return messageMap;
+      }
+
+      const nextList = [...list];
+      if (!this.hydrateIncomingMessageInList(nextList, messageId, incomingBody, incomingImageUrl)) {
+        return messageMap;
+      }
+      changed = true;
+      return {
+        ...messageMap,
+        [chatId]: nextList
+      };
+    });
+
+    if (changed) {
+      this.schedulePersist();
+    }
+    return changed;
+  }
+
+  private hydrateIncomingMessageInList(
+    list: ChatMessage[],
+    messageId: string,
+    incomingBody: string,
+    incomingImageUrl: string | null
+  ): boolean {
+    const index = list.findIndex((message) => message.messageId === messageId);
+    if (index < 0) return false;
+
+    const current = list[index];
+    if (current.direction !== 'incoming' || current.deletedAt) {
+      return false;
+    }
+
+    const currentBody = String(current.body || '').trim();
+    const currentImage = String(current.imageUrl || '').trim();
+    const nextBody = currentBody || incomingBody;
+    const nextImage = currentImage || String(incomingImageUrl || '').trim();
+    if (nextBody === currentBody && nextImage === currentImage) {
+      return false;
+    }
+
+    list[index] = {
+      ...current,
+      body: nextBody,
+      imageUrl: nextImage || null
+    };
     return true;
   }
 
@@ -3283,20 +3415,29 @@ export class ChatStoreService {
       return null;
     }
 
-    const bodyFromPayload = String(
+    const bodyFromPayload = this.normalizeIncomingBodyValue(
       payload['messageText'] ??
       payload['groupMessageText'] ??
       payload['longText'] ??
       payload['shortText'] ??
+      payload['text'] ??
+      payload['message'] ??
+      payload['reply'] ??
+      payload['body'] ??
       ''
-    ).trim();
-    const imageUrl = String(payload['image'] ?? '').trim();
+    );
+    const imageUrl = this.normalizeIncomingImageValue(
+      payload['image'] ??
+      payload['imageUrl'] ??
+      payload['thumbnailUrl'] ??
+      null
+    );
     const incoming: IncomingServerMessage = {
       ...seed,
       messageId,
       sender: sender || (groupId ? groupId : ''),
       body: bodyFromPayload,
-      imageUrl: imageUrl || null
+      imageUrl
     };
     if (groupId) {
       incoming.groupId = groupId;
