@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { Component, OnInit, computed, inject, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
@@ -28,7 +28,8 @@ import { ChatStoreService } from '../../core/services/chat-store.service';
   templateUrl: './setup-verify.component.html',
   styleUrl: './setup-verify.component.scss'
 })
-export class SetupVerifyComponent implements OnInit {
+export class SetupVerifyComponent implements OnInit, OnDestroy {
+  private static readonly RESEND_COOLDOWN_SECONDS = 120;
   private readonly fb = inject(FormBuilder);
   private readonly store = inject(ChatStoreService);
   private readonly router = inject(Router);
@@ -42,7 +43,17 @@ export class SetupVerifyComponent implements OnInit {
   readonly phone = signal('');
   readonly submitting = signal(false);
   readonly resending = signal(false);
+  readonly resendCooldownSeconds = signal(0);
   readonly maskedPhone = computed(() => this.maskPhone(this.phone()));
+  readonly canResendCode = computed(() => !this.resending() && this.resendCooldownSeconds() <= 0);
+  readonly resendCodeButtonLabel = computed(() => {
+    const remaining = this.resendCooldownSeconds();
+    if (remaining > 0) {
+      return `שלח קוד שוב (${remaining}s)`;
+    }
+    return 'שלח קוד שוב';
+  });
+  private resendCooldownIntervalId: number | null = null;
 
   ngOnInit(): void {
     const phoneFromQuery = String(this.route.snapshot.queryParamMap.get('phone') || '').trim();
@@ -52,6 +63,11 @@ export class SetupVerifyComponent implements OnInit {
       return;
     }
     this.phone.set(normalized);
+    this.startResendCooldown();
+  }
+
+  ngOnDestroy(): void {
+    this.clearResendCooldownTimer();
   }
 
   async submit(): Promise<void> {
@@ -80,12 +96,13 @@ export class SetupVerifyComponent implements OnInit {
 
   async resendCode(): Promise<void> {
     const phone = this.phone();
-    if (!phone || this.resending()) return;
+    if (!phone || !this.canResendCode()) return;
 
     this.resending.set(true);
     try {
       await this.store.requestUserVerificationCode(phone);
       this.snackBar.open('קוד אימות נשלח שוב.', 'סגור', { duration: 2800 });
+      this.startResendCooldown();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'שליחת קוד אימות נכשלה';
       this.snackBar.open(message, 'סגור', { duration: 4000 });
@@ -107,5 +124,26 @@ export class SetupVerifyComponent implements OnInit {
     const normalized = this.normalizePhone(value);
     if (!normalized) return '';
     return `${normalized.slice(0, 3)}*****${normalized.slice(-2)}`;
+  }
+
+  private startResendCooldown(): void {
+    this.clearResendCooldownTimer();
+    this.resendCooldownSeconds.set(SetupVerifyComponent.RESEND_COOLDOWN_SECONDS);
+    this.resendCooldownIntervalId = window.setInterval(() => {
+      const next = this.resendCooldownSeconds() - 1;
+      if (next <= 0) {
+        this.resendCooldownSeconds.set(0);
+        this.clearResendCooldownTimer();
+        return;
+      }
+      this.resendCooldownSeconds.set(next);
+    }, 1000);
+  }
+
+  private clearResendCooldownTimer(): void {
+    if (this.resendCooldownIntervalId !== null) {
+      window.clearInterval(this.resendCooldownIntervalId);
+      this.resendCooldownIntervalId = null;
+    }
   }
 }

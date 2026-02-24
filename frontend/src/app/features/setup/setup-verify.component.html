@@ -49,9 +49,9 @@
       </form>
 
       <div class="actions-row">
-        <button mat-stroked-button type="button" (click)="resendCode()" [disabled]="resending()">
+        <button mat-stroked-button type="button" (click)="resendCode()" [disabled]="!canResendCode()">
           @if (!resending()) {
-            <span>שלח קוד שוב</span>
+            <span>{{ resendCodeButtonLabel() }}</span>
           } @else {
             <mat-spinner diameter="18"></mat-spinner>
           }
