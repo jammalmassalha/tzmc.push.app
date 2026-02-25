@@ -66,10 +66,12 @@ export class SetupComponent implements OnDestroy {
     const phone = this.form.controls.phone.value;
     this.submitting.set(true);
     try {
-      await this.store.registerUser(phone);
-      await this.router.navigate(['/chats']);
+      const normalizedPhone = await this.store.requestUserVerificationCode(phone);
+      await this.router.navigate(['/setup/verify'], {
+        queryParams: { phone: normalizedPhone }
+      });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'נכשל בהתחברות';
+      const message = error instanceof Error ? error.message : 'שליחת קוד אימות נכשלה';
       this.snackBar.open(message, 'סגור', { duration: 4000 });
     } finally {
       this.submitting.set(false);

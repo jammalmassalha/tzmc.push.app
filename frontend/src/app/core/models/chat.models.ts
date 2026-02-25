@@ -25,6 +25,14 @@ export interface ChatGroup {
   type: GroupType;
 }
 
+export interface MessageReference {
+  messageId: string;
+  sender: string;
+  senderDisplayName?: string;
+  body?: string;
+  imageUrl?: string | null;
+}
+
 export interface ChatMessage {
   id: string;
   messageId: string;
@@ -40,7 +48,14 @@ export interface ChatMessage {
   deliveryStatus: DeliveryStatus;
   groupId?: string | null;
   groupName?: string | null;
+  groupType?: GroupType | null;
   reactions?: MessageReaction[];
+  editedAt?: number | null;
+  deletedAt?: number | null;
+  replyTo?: MessageReference | null;
+  forwarded?: boolean;
+  forwardedFrom?: string | null;
+  forwardedFromName?: string | null;
 }
 
 export interface ChatListItem {
@@ -59,6 +74,8 @@ export interface IncomingServerMessage {
   messageId?: string;
   sender?: string;
   type?: string;
+  editedAt?: number;
+  deletedAt?: number;
   messageIds?: string[];
   readAt?: number;
   targetMessageId?: string;
@@ -75,6 +92,14 @@ export interface IncomingServerMessage {
   groupUpdatedAt?: number | null;
   groupType?: GroupType | null;
   groupSenderName?: string | null;
+  replyToMessageId?: string;
+  replyToSender?: string;
+  replyToSenderName?: string;
+  replyToBody?: string;
+  replyToImageUrl?: string | null;
+  forwarded?: boolean;
+  forwardedFrom?: string;
+  forwardedFromName?: string;
 }
 
 export interface ReplyPayload {
@@ -91,6 +116,14 @@ export interface ReplyPayload {
   groupUpdatedAt?: number;
   groupType?: GroupType;
   groupSenderName?: string;
+  replyToMessageId?: string;
+  replyToSender?: string;
+  replyToSenderName?: string;
+  replyToBody?: string;
+  replyToImageUrl?: string | null;
+  forwarded?: boolean;
+  forwardedFrom?: string;
+  forwardedFromName?: string;
 }
 
 export interface GroupUpdatePayload {
@@ -121,6 +154,37 @@ export interface ReadReceiptPayload {
   sender: string;
   messageIds: string[];
   readAt: number;
+}
+
+export interface EditMessagePayload {
+  sender: string;
+  messageId: string;
+  body: string;
+  editedAt: number;
+  timestamp?: number;
+  recipient?: string;
+  recipients?: string[];
+  groupId?: string;
+  groupName?: string;
+  groupMembers?: string[];
+  groupCreatedBy?: string;
+  groupUpdatedAt?: number;
+  groupType?: GroupType;
+}
+
+export interface DeleteMessagePayload {
+  sender: string;
+  messageId: string;
+  deletedAt: number;
+  timestamp?: number;
+  recipient?: string;
+  recipients?: string[];
+  groupId?: string;
+  groupName?: string;
+  groupMembers?: string[];
+  groupCreatedBy?: string;
+  groupUpdatedAt?: number;
+  groupType?: GroupType;
 }
 
 export interface OutboxDirectItem {

@@ -19,16 +19,17 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatMenuModule } from '@angular/material/menu';
-import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { Router, ActivatedRoute } from '@angular/router';
-import { Subscription, startWith } from 'rxjs';
+import { Subscription, firstValueFrom, startWith } from 'rxjs';
 import {
   ChatGroup,
   ChatListItem,
   ChatMessage,
-  DeliveryStatus
+  DeliveryStatus,
+  MessageReference
 } from '../../core/models/chat.models';
 import {
   ActivatedChatMeta,
@@ -37,6 +38,8 @@ import {
 } from '../../core/services/chat-store.service';
 import { CreateGroupDialogComponent } from './dialogs/create-group-dialog.component';
 import { NewChatDialogComponent } from './dialogs/new-chat-dialog.component';
+import { ConfirmMessageActionDialogComponent } from './dialogs/confirm-message-action-dialog.component';
+import { ForwardMessageDialogComponent } from './dialogs/forward-message-dialog.component';
 
 type MessageRenderPart =
   | { kind: 'text'; text: string }
@@ -105,7 +108,7 @@ interface ReactionDetailsPreview {
     MatIconModule,
     MatMenuModule,
     MatToolbarModule,
-    MatProgressBarModule,
+    MatProgressSpinnerModule,
     MatChipsModule,
     MatSnackBarModule
   ],
@@ -164,7 +167,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   readonly filteredChats = computed(() => {
     const query = this.searchTerm().trim().toLowerCase();
-    const chats = this.store.chatItems();
+    const chats = this.store.chatItems().filter((chat) => this.shouldDisplayChatInContactsPane(chat));
     if (!query) return chats;
 
     return chats.filter(
@@ -183,20 +186,31 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     return this.store.canSendToActiveChat() ? 'הקלד הודעה' : 'רק מנהל יכול לשלוח בקבוצת קהילה';
   });
 
-  readonly isBusy = computed(
-    () => this.store.loading() || this.store.syncing() || this.store.uploading()
-  );
   readonly reactionEmojis = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
   readonly nowTimestamp = signal(Date.now());
   readonly stickyMessageTimestamp = signal<number | null>(null);
   readonly isMessagesPanelAtBottom = signal(true);
   readonly avatarPreview = signal<AvatarPreview | null>(null);
   readonly reactionTargetMessageId = signal<string | null>(null);
+  readonly messageActionTarget = signal<ChatMessage | null>(null);
+  readonly editingMessageTarget = signal<ChatMessage | null>(null);
+  readonly replyingMessageTarget = signal<ChatMessage | null>(null);
+  readonly pendingMessageActionIds = signal<Set<string>>(new Set<string>());
   readonly reactionDetailsPreview = signal<ReactionDetailsPreview | null>(null);
   readonly phoneActionTarget = signal<{ display: string; phone: string } | null>(null);
   readonly groupMembersPreview = signal<GroupMembersPreview | null>(null);
+  readonly isLoggingOut = signal(false);
+  readonly logoutElapsedSeconds = signal(0);
+  readonly logoutLoaderText = computed(() => {
+    const seconds = this.logoutElapsedSeconds();
+    return seconds > 0 ? `מתנתק... ${seconds}ש׳` : 'מתנתק...';
+  });
   readonly groupMemberAddOpen = signal(false);
   readonly groupMemberAddSearchTerm = signal('');
+  readonly selectedGroupMemberAddUsernames = signal<Set<string>>(new Set<string>());
+  readonly selectedGroupMemberRemoveUsernames = signal<Set<string>>(new Set<string>());
+  readonly selectedGroupMemberAddCount = computed(() => this.selectedGroupMemberAddUsernames().size);
+  readonly selectedGroupMemberRemoveCount = computed(() => this.selectedGroupMemberRemoveUsernames().size);
   readonly groupMemberAddCandidates = computed<GroupMemberAddCandidate[]>(() => {
     const preview = this.groupMembersPreview();
     if (!preview?.canManageMembers) return [];
@@ -233,11 +247,22 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   );
   private readonly messagePartsCache = new Map<string, ParsedMessageCacheEntry>();
   private readonly scrollBottomThresholdPx = 44;
+  private readonly conversationSwipeMinDistancePx = 80;
+  private readonly conversationSwipeMaxDurationMs = 800;
+  private readonly conversationSwipeHorizontalBias = 1.35;
+  private readonly conversationSwipeCancelVerticalDeltaPx = 24;
+  private conversationSwipeStartX: number | null = null;
+  private conversationSwipeStartY: number | null = null;
+  private conversationSwipeLastX: number | null = null;
+  private conversationSwipeLastY: number | null = null;
+  private conversationSwipeStartedAt: number | null = null;
+  private conversationSwipeTracking = false;
   private lastAutoScrollChatId: string | null = null;
   private lastAutoScrollMessageCount = 0;
   private pendingOpenScroll: { chatId: string; unreadBeforeOpen: number } | null = null;
   private openBoundaryScrollRafId: number | null = null;
   private relativeTimeRefreshId: number | null = null;
+  private logoutProgressIntervalId: number | null = null;
   private routeQueryParamsSub: Subscription | null = null;
 
   private readonly autoScrollEffect = effect(() => {
@@ -327,6 +352,52 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     this.store.clearIncomingReactionNotice();
   });
 
+  private readonly editingMessageGuardEffect = effect(() => {
+    const editing = this.editingMessageTarget();
+    if (!editing) return;
+
+    const activeChatId = this.store.activeChatId();
+    if (!activeChatId || activeChatId !== editing.chatId) {
+      this.clearComposerEditState();
+      return;
+    }
+
+    const latest = this.store
+      .activeMessages()
+      .find((message) => message.messageId === editing.messageId);
+    if (!latest || latest.direction !== 'outgoing' || latest.deletedAt) {
+      this.clearComposerEditState();
+      return;
+    }
+
+    if (latest !== editing) {
+      this.editingMessageTarget.set(latest);
+    }
+  });
+
+  private readonly replyingMessageGuardEffect = effect(() => {
+    const replying = this.replyingMessageTarget();
+    if (!replying) return;
+
+    const activeChatId = this.store.activeChatId();
+    if (!activeChatId || activeChatId !== replying.chatId) {
+      this.replyingMessageTarget.set(null);
+      return;
+    }
+
+    const latest = this.store
+      .activeMessages()
+      .find((message) => message.messageId === replying.messageId);
+    if (!latest || latest.deletedAt) {
+      this.replyingMessageTarget.set(null);
+      return;
+    }
+
+    if (latest !== replying) {
+      this.replyingMessageTarget.set(latest);
+    }
+  });
+
   constructor(
     readonly store: ChatStoreService,
     private readonly dialog: MatDialog,
@@ -377,6 +448,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       window.cancelAnimationFrame(this.openBoundaryScrollRafId);
       this.openBoundaryScrollRafId = null;
     }
+    this.clearLogoutProgressInterval();
     this.routeQueryParamsSub?.unsubscribe();
     this.routeQueryParamsSub = null;
     if (typeof document !== 'undefined') {
@@ -386,6 +458,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   openChat(chatId: string): void {
+    this.resetConversationSwipeGesture();
+    this.clearComposerEditState();
+    this.messageActionTarget.set(null);
     this.closeReactionDetails();
     this.store.setActiveChat(chatId);
     if (this.isMobile()) {
@@ -394,6 +469,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   backToList(): void {
+    this.resetConversationSwipeGesture();
+    this.clearComposerEditState();
+    this.messageActionTarget.set(null);
     this.closeReactionDetails();
     this.store.clearLastActiveChat();
     this.showContactsPane.set(true);
@@ -414,8 +492,54 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (!this.canSendMessage()) return;
 
     const content = this.messageControl.value;
+    const editingTarget = this.editingMessageTarget();
+    if (editingTarget) {
+      const trimmed = content.trim();
+      if (!trimmed) return;
+      const editingMessageId = editingTarget.messageId;
+      if (this.isMessageActionPendingById(editingMessageId)) {
+        return;
+      }
+      this.setMessageActionPending(editingMessageId, true);
+
+      // Optimistic UX: close edit mode immediately so user feels instant submit.
+      this.clearComposerEditState();
+
+      try {
+        await this.store.editSentMessageForEveryone(editingMessageId, trimmed);
+        this.snackBar.open('ההודעה נערכה.', 'סגור', { duration: 2200 });
+      } catch (error) {
+        const latest = this.store
+          .activeMessages()
+          .find((message) => message.messageId === editingMessageId && message.direction === 'outgoing');
+        if (latest && !latest.deletedAt) {
+          this.editingMessageTarget.set(latest);
+          this.messageControl.setValue(trimmed);
+        }
+        const message = error instanceof Error ? error.message : 'עריכת ההודעה נכשלה';
+        this.snackBar.open(message, 'סגור', { duration: 3000 });
+      } finally {
+        this.setMessageActionPending(editingMessageId, false);
+      }
+      return;
+    }
+
+    const replyingTarget = this.replyingMessageTarget();
+    const replyReference = replyingTarget ? this.buildReplyReference(replyingTarget) : null;
     this.messageControl.setValue('');
-    await this.store.sendTextMessage(content);
+    if (replyingTarget) {
+      this.replyingMessageTarget.set(null);
+    }
+    try {
+      await this.store.sendTextMessage(content, replyReference ? { replyTo: replyReference } : {});
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'שליחת ההודעה נכשלה';
+      this.snackBar.open(message, 'סגור', { duration: 3000 });
+      this.messageControl.setValue(content);
+      if (replyingTarget) {
+        this.replyingMessageTarget.set(replyingTarget);
+      }
+    }
   }
 
   async handleComposerSubmit(event: SubmitEvent): Promise<void> {
@@ -427,6 +551,96 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   onMessagesPanelScroll(): void {
     this.updateStickyMessageDateFromViewport();
     this.updateMessagesBottomState();
+  }
+
+  onConversationTouchStart(event: TouchEvent): void {
+    if (!this.shouldEnableConversationSwipe(event)) {
+      this.resetConversationSwipeGesture();
+      return;
+    }
+
+    const touch = event.touches[0];
+    this.conversationSwipeStartX = touch.clientX;
+    this.conversationSwipeStartY = touch.clientY;
+    this.conversationSwipeLastX = touch.clientX;
+    this.conversationSwipeLastY = touch.clientY;
+    this.conversationSwipeStartedAt = Date.now();
+    this.conversationSwipeTracking = true;
+  }
+
+  onConversationTouchMove(event: TouchEvent): void {
+    if (!this.conversationSwipeTracking || event.touches.length !== 1) {
+      this.resetConversationSwipeGesture();
+      return;
+    }
+
+    const touch = event.touches[0];
+    this.conversationSwipeLastX = touch.clientX;
+    this.conversationSwipeLastY = touch.clientY;
+
+    const startX = this.conversationSwipeStartX ?? touch.clientX;
+    const startY = this.conversationSwipeStartY ?? touch.clientY;
+    const deltaX = touch.clientX - startX;
+    const deltaY = touch.clientY - startY;
+    const horizontalDistance = Math.abs(deltaX);
+    const verticalDistance = Math.abs(deltaY);
+
+    if (
+      verticalDistance >= this.conversationSwipeCancelVerticalDeltaPx &&
+      verticalDistance > horizontalDistance * this.conversationSwipeHorizontalBias
+    ) {
+      // Preserve normal vertical message scrolling and avoid accidental back navigation.
+      this.resetConversationSwipeGesture();
+    }
+  }
+
+  onConversationTouchEnd(event: TouchEvent): void {
+    if (!this.conversationSwipeTracking) {
+      this.resetConversationSwipeGesture();
+      return;
+    }
+
+    const fallbackX = this.conversationSwipeLastX ?? this.conversationSwipeStartX;
+    const fallbackY = this.conversationSwipeLastY ?? this.conversationSwipeStartY;
+    const changedTouch = event.changedTouches?.[0];
+    const endX = changedTouch ? changedTouch.clientX : fallbackX;
+    const endY = changedTouch ? changedTouch.clientY : fallbackY;
+    const startX = this.conversationSwipeStartX;
+    const startY = this.conversationSwipeStartY;
+    const startedAt = this.conversationSwipeStartedAt;
+
+    this.resetConversationSwipeGesture();
+
+    if (
+      startX === null ||
+      startY === null ||
+      endX === null ||
+      endY === null ||
+      startedAt === null ||
+      !this.isMobile() ||
+      !this.store.activeChatId() ||
+      this.showContactsPane()
+    ) {
+      return;
+    }
+
+    const deltaX = endX - startX;
+    const deltaY = endY - startY;
+    const horizontalDistance = Math.abs(deltaX);
+    const verticalDistance = Math.abs(deltaY);
+    const elapsed = Date.now() - startedAt;
+    const isHorizontalSwipe =
+      horizontalDistance >= this.conversationSwipeMinDistancePx &&
+      horizontalDistance > verticalDistance * this.conversationSwipeHorizontalBias &&
+      elapsed <= this.conversationSwipeMaxDurationMs;
+
+    if (isHorizontalSwipe) {
+      this.backToList();
+    }
+  }
+
+  onConversationTouchCancel(): void {
+    this.resetConversationSwipeGesture();
   }
 
   handleTextInputFocus(): void {
@@ -529,12 +743,46 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   async logout(): Promise<void> {
-    this.store.logout();
-    await this.router.navigate(['/setup']);
+    if (this.isLoggingOut()) {
+      return;
+    }
+
+    this.startLogoutLoader();
+    try {
+      await this.store.logout();
+      await this.router.navigate(['/setup']);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'ההתנתקות נכשלה. נסה שוב.';
+      this.snackBar.open(message, 'סגור', { duration: 3400 });
+    } finally {
+      this.stopLogoutLoader();
+    }
   }
 
   clearChatSearch(): void {
     this.searchControl.setValue('');
+  }
+
+  private startLogoutLoader(): void {
+    this.clearLogoutProgressInterval();
+    this.logoutElapsedSeconds.set(0);
+    this.isLoggingOut.set(true);
+    this.logoutProgressIntervalId = window.setInterval(() => {
+      this.logoutElapsedSeconds.update((seconds) => seconds + 1);
+    }, 1000);
+  }
+
+  private stopLogoutLoader(): void {
+    this.clearLogoutProgressInterval();
+    this.logoutElapsedSeconds.set(0);
+    this.isLoggingOut.set(false);
+  }
+
+  private clearLogoutProgressInterval(): void {
+    if (this.logoutProgressIntervalId !== null) {
+      window.clearInterval(this.logoutProgressIntervalId);
+      this.logoutProgressIntervalId = null;
+    }
   }
 
   openGroupMembers(): void {
@@ -546,39 +794,71 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (!group) return;
     this.groupMemberAddOpen.set(false);
     this.groupMemberAddSearchTerm.set('');
+    this.clearSelectedGroupMemberAdds();
+    this.clearSelectedGroupMemberRemovals();
     this.groupMembersPreview.set(this.buildGroupMembersPreview(group));
   }
 
-  async addCommunityMember(username: string): Promise<void> {
+  async addSelectedCommunityMembers(): Promise<void> {
     const preview = this.groupMembersPreview();
     if (!preview?.canManageMembers) return;
+    const selected = Array.from(this.selectedGroupMemberAddUsernames());
+    if (!selected.length) {
+      this.snackBar.open('בחר לפחות איש קשר אחד להוספה.', 'סגור', { duration: 2200 });
+      return;
+    }
 
-    const normalized = String(username || '').trim().toLowerCase();
-    if (!normalized) return;
+    const existingMemberSet = new Set(preview.members.map((member) => member.username));
+    const toAdd = selected.filter((username) => !existingMemberSet.has(username));
+    if (!toAdd.length) {
+      this.snackBar.open('כל אנשי הקשר שנבחרו כבר נמצאים בקבוצה.', 'סגור', { duration: 2400 });
+      this.clearSelectedGroupMemberAdds();
+      return;
+    }
 
-    const nextMembers = Array.from(new Set([...preview.members.map((member) => member.username), normalized]));
-    await this.updateCommunityMembers(preview.groupId, nextMembers, 'המשתתף נוסף לקבוצה.');
+    const nextMembers = Array.from(new Set([...preview.members.map((member) => member.username), ...toAdd]));
+    const successMessage = toAdd.length === 1 ? 'המשתתף נוסף לקבוצה.' : `נוספו ${toAdd.length} משתתפים לקבוצה.`;
+    await this.updateCommunityMembers(preview.groupId, nextMembers, successMessage);
+    this.clearSelectedGroupMemberAdds();
     this.groupMemberAddSearchTerm.set('');
     this.groupMemberAddOpen.set(false);
   }
 
-  async removeCommunityMember(username: string): Promise<void> {
+  async removeSelectedCommunityMembers(): Promise<void> {
     const preview = this.groupMembersPreview();
     if (!preview?.canManageMembers) return;
+    const selected = Array.from(this.selectedGroupMemberRemoveUsernames());
+    if (!selected.length) {
+      this.snackBar.open('בחר לפחות משתתף אחד להסרה.', 'סגור', { duration: 2200 });
+      return;
+    }
 
-    const normalized = String(username || '').trim().toLowerCase();
-    const target = preview.members.find((member) => member.username === normalized);
-    if (!target || target.isAdmin) return;
+    const removableSet = new Set(
+      preview.members
+        .filter((member) => !member.isAdmin)
+        .map((member) => member.username)
+    );
+    const toRemove = selected.filter((username) => removableSet.has(username));
+    if (!toRemove.length) {
+      this.snackBar.open('לא ניתן להסיר את המשתתפים שנבחרו.', 'סגור', { duration: 2400 });
+      this.clearSelectedGroupMemberRemovals();
+      return;
+    }
 
+    const toRemoveSet = new Set(toRemove);
     const nextMembers = preview.members
       .map((member) => member.username)
-      .filter((memberUsername) => memberUsername !== normalized);
-    await this.updateCommunityMembers(preview.groupId, nextMembers, 'המשתתף הוסר מהקבוצה.');
+      .filter((memberUsername) => !toRemoveSet.has(memberUsername));
+    const successMessage = toRemove.length === 1 ? 'המשתתף הוסר מהקבוצה.' : `הוסרו ${toRemove.length} משתתפים מהקבוצה.`;
+    await this.updateCommunityMembers(preview.groupId, nextMembers, successMessage);
+    this.clearSelectedGroupMemberRemovals();
   }
 
   closeGroupMembers(): void {
     this.groupMemberAddOpen.set(false);
     this.groupMemberAddSearchTerm.set('');
+    this.clearSelectedGroupMemberAdds();
+    this.clearSelectedGroupMemberRemovals();
     this.groupMembersPreview.set(null);
   }
 
@@ -587,6 +867,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     this.groupMemberAddOpen.set(nextState);
     if (!nextState) {
       this.groupMemberAddSearchTerm.set('');
+      this.clearSelectedGroupMemberAdds();
     }
   }
 
@@ -597,6 +878,58 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   clearGroupMemberSearch(): void {
     this.groupMemberAddSearchTerm.set('');
+  }
+
+  toggleGroupMemberAddSelection(username: string): void {
+    const normalized = this.normalizeUsername(username);
+    if (!normalized) return;
+
+    const next = new Set(this.selectedGroupMemberAddUsernames());
+    if (next.has(normalized)) {
+      next.delete(normalized);
+    } else {
+      next.add(normalized);
+    }
+    this.selectedGroupMemberAddUsernames.set(next);
+  }
+
+  isGroupMemberAddSelected(username: string): boolean {
+    const normalized = this.normalizeUsername(username);
+    if (!normalized) return false;
+    return this.selectedGroupMemberAddUsernames().has(normalized);
+  }
+
+  clearSelectedGroupMemberAdds(): void {
+    this.selectedGroupMemberAddUsernames.set(new Set<string>());
+  }
+
+  toggleGroupMemberRemoveSelection(username: string): void {
+    const preview = this.groupMembersPreview();
+    if (!preview?.canManageMembers) return;
+
+    const normalized = this.normalizeUsername(username);
+    if (!normalized) return;
+
+    const target = preview.members.find((member) => member.username === normalized);
+    if (!target || target.isAdmin) return;
+
+    const next = new Set(this.selectedGroupMemberRemoveUsernames());
+    if (next.has(normalized)) {
+      next.delete(normalized);
+    } else {
+      next.add(normalized);
+    }
+    this.selectedGroupMemberRemoveUsernames.set(next);
+  }
+
+  isGroupMemberRemoveSelected(username: string): boolean {
+    const normalized = this.normalizeUsername(username);
+    if (!normalized) return false;
+    return this.selectedGroupMemberRemoveUsernames().has(normalized);
+  }
+
+  clearSelectedGroupMemberRemovals(): void {
+    this.selectedGroupMemberRemoveUsernames.set(new Set<string>());
   }
 
   canShowGroupMembers(): boolean {
@@ -653,6 +986,8 @@ export class ChatShellComponent implements OnInit, OnDestroy {
         return;
       }
       this.groupMembersPreview.set(this.buildGroupMembersPreview(refreshed));
+      this.clearSelectedGroupMemberAdds();
+      this.clearSelectedGroupMemberRemovals();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'עדכון חברי קבוצה נכשל';
       this.snackBar.open(message, 'סגור', { duration: 3200 });
@@ -663,6 +998,13 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (!message.messageId) return false;
     const activeChat = this.store.activeChat();
     if (!activeChat?.isGroup) return false;
+
+    if (message.groupType === 'community') {
+      return true;
+    }
+    if (message.groupType === 'group') {
+      return false;
+    }
 
     const activeGroup = this.findActiveGroup();
     if (activeGroup) {
@@ -712,10 +1054,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   canViewReactionDetails(message: ChatMessage): boolean {
     const activeGroup = this.findActiveGroup();
+    const isCommunityMessage = message.groupType === 'community' || Boolean(activeGroup && activeGroup.type === 'community');
     return Boolean(
-      activeGroup &&
-      activeGroup.type === 'community' &&
-      this.store.canSendToActiveChat() &&
+      isCommunityMessage &&
       Array.isArray(message.reactions) &&
       message.reactions.length
     );
@@ -995,6 +1336,237 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     this.closePhoneActions();
   }
 
+  setMessageActionTarget(message: ChatMessage): void {
+    this.messageActionTarget.set(message);
+  }
+
+  canOpenMessageActions(message: ChatMessage): boolean {
+    if (!message.messageId) return false;
+    if (this.canManageOutgoingMessage(message)) return true;
+    return this.canReplyToMessage(message) || this.canForwardMessage(message);
+  }
+
+  canManageOutgoingMessage(message: ChatMessage): boolean {
+    if (message.direction !== 'outgoing') return false;
+    if (!message.messageId) return false;
+    if (message.deletedAt) return false;
+    return (
+      message.deliveryStatus === 'sent' ||
+      message.deliveryStatus === 'delivered' ||
+      message.deliveryStatus === 'read'
+    );
+  }
+
+  isMessageActionPending(message: ChatMessage): boolean {
+    return this.isMessageActionPendingById(message.messageId);
+  }
+
+  canEditOutgoingMessage(message: ChatMessage): boolean {
+    if (!this.canManageOutgoingMessage(message)) return false;
+    if (message.imageUrl) return false;
+    return Boolean(String(message.body || '').trim());
+  }
+
+  canReplyToMessage(message: ChatMessage): boolean {
+    if (!message.messageId || message.deletedAt) return false;
+    return Boolean(String(message.body || '').trim() || message.imageUrl);
+  }
+
+  canForwardMessage(message: ChatMessage): boolean {
+    if (!message.messageId || message.deletedAt) return false;
+    return Boolean(String(message.body || '').trim() || message.imageUrl);
+  }
+
+  isEditingMessage(message: ChatMessage): boolean {
+    return this.editingMessageTarget()?.messageId === message.messageId;
+  }
+
+  isMessageEdited(message: ChatMessage): boolean {
+    return !message.deletedAt && Boolean(message.editedAt);
+  }
+
+  isMessageDeleted(message: ChatMessage): boolean {
+    return Boolean(message.deletedAt);
+  }
+
+  isMessageForwarded(message: ChatMessage): boolean {
+    return Boolean(message.forwarded);
+  }
+
+  replyAuthorLabel(reference: MessageReference): string {
+    const senderKey = this.normalizeUsername(reference.sender);
+    if (senderKey && senderKey === this.normalizeUsername(this.store.currentUser() || '')) {
+      return 'אתה';
+    }
+
+    const senderName = String(reference.senderDisplayName || '').trim();
+    if (senderName) {
+      return senderName;
+    }
+
+    const fromContacts = this.store.contacts().find((contact) => contact.username === senderKey);
+    if (fromContacts?.displayName) {
+      return fromContacts.displayName;
+    }
+
+    return senderKey || 'הודעה';
+  }
+
+  replyPreviewLabel(reference: MessageReference): string {
+    if (reference.imageUrl) {
+      return '📷 תמונה';
+    }
+    const body = String(reference.body || '').trim();
+    if (!body) {
+      return 'הודעה';
+    }
+    return this.clampPreview(body, 90);
+  }
+
+  composerReplyTitle(message: ChatMessage): string {
+    const reference = this.buildReplyReference(message);
+    if (!reference) {
+      return 'תגובה';
+    }
+    return `תגובה אל ${this.replyAuthorLabel(reference)}`;
+  }
+
+  composerReplyPreview(message: ChatMessage): string {
+    const reference = this.buildReplyReference(message);
+    if (!reference) {
+      return '';
+    }
+    return this.replyPreviewLabel(reference);
+  }
+
+  isMessageActionSyncing(message: ChatMessage): boolean {
+    if (!this.isMessageActionPending(message)) return false;
+    return this.isMessageEdited(message) || this.isMessageDeleted(message);
+  }
+
+  startEditingSelectedMessage(): void {
+    const target = this.messageActionTarget();
+    if (!target || !this.canEditOutgoingMessage(target)) {
+      this.clearComposerEditState();
+      return;
+    }
+    if (this.isMessageActionPendingById(target.messageId)) {
+      return;
+    }
+    this.replyingMessageTarget.set(null);
+    this.editingMessageTarget.set(target);
+    this.messageControl.setValue(target.body || '');
+  }
+
+  cancelEditingMessage(): void {
+    this.clearComposerEditState();
+  }
+
+  startReplyToSelectedMessage(): void {
+    const target = this.messageActionTarget();
+    if (!target || !this.canReplyToMessage(target)) {
+      this.replyingMessageTarget.set(null);
+      return;
+    }
+    this.editingMessageTarget.set(null);
+    this.replyingMessageTarget.set(target);
+    this.messageActionTarget.set(null);
+  }
+
+  cancelReplyingMessage(): void {
+    this.replyingMessageTarget.set(null);
+    this.messageActionTarget.set(null);
+  }
+
+  async forwardSelectedMessage(): Promise<void> {
+    const target = this.messageActionTarget();
+    if (!target || !this.canForwardMessage(target)) {
+      return;
+    }
+    const targetMessageId = target.messageId;
+    if (this.isMessageActionPendingById(targetMessageId)) {
+      return;
+    }
+
+    const currentUser = this.normalizeUsername(this.store.currentUser() || '');
+    const destinationChats = this.store
+      .chatItems()
+      .filter((chat) => chat.id !== currentUser && this.store.canSendToChat(chat.id));
+    if (!destinationChats.length) {
+      this.snackBar.open('לא נמצאו צ׳אטים זמינים להעברה.', 'סגור', { duration: 2600 });
+      return;
+    }
+
+    const dialogRef = this.dialog.open(ForwardMessageDialogComponent, {
+      width: '420px',
+      data: {
+        chats: destinationChats,
+        currentChatId: this.store.activeChatId()
+      }
+    });
+    const destinationChatId = await firstValueFrom(dialogRef.afterClosed());
+    if (!destinationChatId) {
+      return;
+    }
+
+    this.setMessageActionPending(targetMessageId, true);
+    try {
+      await this.store.forwardMessageToChat(destinationChatId, target);
+      this.messageActionTarget.set(null);
+      const destinationTitle =
+        this.store.chatItems().find((chat) => chat.id === this.normalizeUsername(destinationChatId))?.title
+        ?? destinationChatId;
+      this.snackBar.open(`ההודעה הועברה אל ${destinationTitle}.`, 'סגור', { duration: 2600 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'העברת ההודעה נכשלה';
+      this.snackBar.open(message, 'סגור', { duration: 3200 });
+    } finally {
+      this.setMessageActionPending(targetMessageId, false);
+    }
+  }
+
+  async deleteSelectedMessageForEveryone(): Promise<void> {
+    const target = this.messageActionTarget();
+    if (!target || !this.canManageOutgoingMessage(target)) {
+      return;
+    }
+    const targetMessageId = target.messageId;
+    if (this.isMessageActionPendingById(targetMessageId)) {
+      return;
+    }
+
+    const dialogRef = this.dialog.open(ConfirmMessageActionDialogComponent, {
+      width: '360px',
+      data: {
+        title: 'מחיקת הודעה',
+        message: 'האם למחוק הודעה זו אצל כולם?',
+        confirmLabel: 'מחק אצל כולם',
+        cancelLabel: 'ביטול',
+        confirmColor: 'warn'
+      }
+    });
+    const confirmed = await firstValueFrom(dialogRef.afterClosed());
+    if (!confirmed) {
+      return;
+    }
+
+    this.setMessageActionPending(targetMessageId, true);
+    try {
+      await this.store.deleteSentMessageForEveryone(targetMessageId);
+      if (this.editingMessageTarget()?.messageId === targetMessageId || this.isMessageDeleted(target)) {
+        this.clearComposerEditState();
+      }
+      this.snackBar.open('ההודעה נמחקה אצל כולם.', 'סגור', { duration: 2400 });
+    } catch (error) {
+      const message = error instanceof Error
+        ? `ההודעה נמחקה מקומית. ייתכן שהמחיקה אצל כולם נכשלה: ${error.message}`
+        : 'ההודעה נמחקה מקומית אך ייתכן שלא נמחקה אצל כולם.';
+      this.snackBar.open(message, 'סגור', { duration: 3200 });
+    } finally {
+      this.setMessageActionPending(targetMessageId, false);
+    }
+  }
+
   outgoingStatusLabel(status: DeliveryStatus): string {
     switch (status) {
       case 'queued':
@@ -1028,6 +1600,18 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   trackByChatId(_: number, chat: ChatListItem): string {
     return chat.id;
+  }
+
+  private shouldDisplayChatInContactsPane(chat: ChatListItem): boolean {
+    if (chat.pinned || chat.isGroup) {
+      return true;
+    }
+
+    if (chat.id === this.store.activeChatId()) {
+      return true;
+    }
+
+    return chat.lastTimestamp > 0 || chat.unread > 0;
   }
 
   private scrollMessagesToBottom(behavior: ScrollBehavior = 'auto'): void {
@@ -1268,7 +1852,11 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     }
 
     const distanceFromBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight;
-    this.isMessagesPanelAtBottom.set(distanceFromBottom <= this.scrollBottomThresholdPx);
+    const isAtBottom = distanceFromBottom <= this.scrollBottomThresholdPx;
+    this.isMessagesPanelAtBottom.set(isAtBottom);
+    if (isAtBottom && this.store.activeChatId()) {
+      this.store.markActiveChatReadAtBottom();
+    }
   }
 
   private parseMessageBody(body: string): MessageRenderPart[] {
@@ -1407,6 +1995,37 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     return '';
   }
 
+  private buildReplyReference(message: ChatMessage): MessageReference | null {
+    const messageId = String(message.messageId || '').trim();
+    const sender = this.normalizeUsername(message.sender || '');
+    if (!messageId || !sender) {
+      return null;
+    }
+
+    const body = String(message.body || '');
+    const imageUrl = message.imageUrl ?? null;
+    if (!body.trim() && !imageUrl) {
+      return null;
+    }
+
+    const senderDisplayName = String(message.senderDisplayName || '').trim();
+    return {
+      messageId,
+      sender,
+      senderDisplayName: senderDisplayName || undefined,
+      body,
+      imageUrl
+    };
+  }
+
+  private clampPreview(value: string, maxLength = 90): string {
+    const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+    if (normalized.length <= maxLength) {
+      return normalized;
+    }
+    return `${normalized.slice(0, maxLength)}…`;
+  }
+
   private async copyTextToClipboard(text: string): Promise<boolean> {
     const value = String(text || '').trim();
     if (!value) return false;
@@ -1459,5 +2078,63 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   private normalizeUsername(value: string): string {
     return String(value || '').trim().toLowerCase();
+  }
+
+  private shouldEnableConversationSwipe(event: TouchEvent): boolean {
+    if (!this.isMobile()) return false;
+    if (!this.store.activeChatId()) return false;
+    if (this.showContactsPane()) return false;
+    if (event.touches.length !== 1) return false;
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return true;
+    }
+    return !this.shouldIgnoreConversationSwipeTarget(target);
+  }
+
+  private shouldIgnoreConversationSwipeTarget(target: HTMLElement): boolean {
+    return Boolean(
+      target.closest(
+        'textarea, input, select, button, a, [role="button"], [mat-menu-item], [contenteditable="true"]'
+      )
+    );
+  }
+
+  private resetConversationSwipeGesture(): void {
+    this.conversationSwipeStartX = null;
+    this.conversationSwipeStartY = null;
+    this.conversationSwipeLastX = null;
+    this.conversationSwipeLastY = null;
+    this.conversationSwipeStartedAt = null;
+    this.conversationSwipeTracking = false;
+  }
+
+  private clearComposerEditState(options: { clearComposer?: boolean } = {}): void {
+    this.editingMessageTarget.set(null);
+    this.replyingMessageTarget.set(null);
+    this.messageActionTarget.set(null);
+    if (options.clearComposer !== false) {
+      this.messageControl.setValue('');
+    }
+  }
+
+  private isMessageActionPendingById(messageId: string): boolean {
+    const normalizedId = String(messageId || '').trim();
+    if (!normalizedId) return false;
+    return this.pendingMessageActionIds().has(normalizedId);
+  }
+
+  private setMessageActionPending(messageId: string, pending: boolean): void {
+    const normalizedId = String(messageId || '').trim();
+    if (!normalizedId) return;
+
+    const next = new Set(this.pendingMessageActionIds());
+    if (pending) {
+      next.add(normalizedId);
+    } else {
+      next.delete(normalizedId);
+    }
+    this.pendingMessageActionIds.set(next);
   }
 }

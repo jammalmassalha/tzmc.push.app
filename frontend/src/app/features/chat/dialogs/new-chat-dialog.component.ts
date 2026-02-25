@@ -4,9 +4,7 @@ import { toSignal } from '@angular/core/rxjs-interop';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatDialogModule, MatDialogRef, MAT_DIALOG_DATA } from '@angular/material/dialog';
-import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
-import { MatInputModule } from '@angular/material/input';
 import { startWith } from 'rxjs';
 import { Contact } from '../../../core/models/chat.models';
 
@@ -22,8 +20,6 @@ export interface NewChatDialogData {
     CommonModule,
     ReactiveFormsModule,
     MatDialogModule,
-    MatFormFieldModule,
-    MatInputModule,
     MatButtonModule,
     MatIconModule
   ],
@@ -46,9 +42,13 @@ export class NewChatDialogComponent {
     return this.data.contacts.filter((contact) => {
       if (current && contact.username === current) return false;
       if (!query) return true;
+      const info = String(contact.info || '').toLowerCase();
+      const phone = String(contact.phone || '').toLowerCase();
       return (
         contact.displayName.toLowerCase().includes(query) ||
-        contact.username.toLowerCase().includes(query)
+        contact.username.toLowerCase().includes(query) ||
+        info.includes(query) ||
+        phone.includes(query)
       );
     });
   });

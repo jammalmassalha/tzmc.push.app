@@ -6,9 +6,47 @@ const FALLBACK_TITLE = 'TZMC';
 const FALLBACK_BODY = 'התקבלה הודעה חדשה';
 const CLIENT_CONTEXT_TTL_MS = 10 * 60 * 1000;
 const AUTH_REFRESH_PUSH_TYPE = 'subscription-auth-refresh';
-const SW_SUBSCRIPTION_CONTEXT_CACHE = 'tzmc-sw-subscription-context-v1';
+const SW_SUBSCRIPTION_CONTEXT_CACHE = 'tzmc-sw-subscription-context-v6';
 const SW_SUBSCRIPTION_CONTEXT_KEY = new URL('./__subscription_context__', self.registration.scope).toString();
 const clientContextById = new Map();
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function fetchWithRetry(url, options = {}, retryOptions = {}) {
+  const retries = Number.isFinite(retryOptions.retries) ? retryOptions.retries : 2;
+  const timeoutMs = Number.isFinite(retryOptions.timeoutMs) ? retryOptions.timeoutMs : 15000;
+  const backoffMs = Number.isFinite(retryOptions.backoffMs) ? retryOptions.backoffMs : 700;
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller ? controller.signal : undefined
+      });
+      // no-cors POST returns opaque responses (status=0). Network success is enough here.
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries) {
+        await sleep(backoffMs * Math.pow(2, attempt));
+        continue;
+      }
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    }
+  }
+
+  throw lastError || new Error('Network request failed');
+}
 
 function parsePushPayload(event) {
   if (!event.data) return {};
@@ -16,13 +54,27 @@ function parsePushPayload(event) {
   try {
     const raw = event.data.json();
     if (raw && typeof raw === 'object') {
-      if (raw.data && typeof raw.data === 'object') {
-        return raw.data;
-      }
-      if (raw.notification && typeof raw.notification === 'object') {
-        return raw.notification;
-      }
-      return raw;
+      const basePayload = raw.notification && typeof raw.notification === 'object'
+        ? raw.notification
+        : raw;
+      const dataPayload = basePayload.data && typeof basePayload.data === 'object'
+        ? basePayload.data
+        : {};
+      const normalizedBody = typeof basePayload.body === 'string'
+        ? basePayload.body
+        : (
+          basePayload.body && typeof basePayload.body === 'object'
+            ? (basePayload.body.longText || basePayload.body.shortText || '')
+            : ''
+        );
+      return {
+        ...basePayload,
+        ...dataPayload,
+        messageText: normalizedBody || String(dataPayload.messageText || dataPayload.longText || dataPayload.shortText || '').trim(),
+        image: typeof basePayload.image === 'string' && basePayload.image
+          ? basePayload.image
+          : (typeof dataPayload.image === 'string' ? dataPayload.image : undefined)
+      };
     }
   } catch (_) {
     // Fallback to text payload below.
@@ -149,6 +201,27 @@ function detectWorkerDeviceType() {
   return isMobile ? 'Mobile' : 'PC';
 }
 
+function resolveNotifyRegisterDeviceUrl() {
+  try {
+    return new URL('../notify/register-device', self.registration.scope).toString();
+  } catch (_) {
+    return `${self.location.origin}/notify/register-device`;
+  }
+}
+
+async function postRegistrationPayloadToNotifyBackend(registerPayload) {
+  try {
+    await fetchWithRetry(resolveNotifyRegisterDeviceUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(registerPayload)
+    }, { timeoutMs: 12000, retries: 2, backoffMs: 500 });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 function normalizeUsername(value) {
   return String(value || '').trim().toLowerCase();
 }
@@ -242,12 +315,15 @@ async function registerSubscriptionFromStoredContext(newSubscription = null, rea
       registerPayload.subscriptionMobile = subscription;
     }
 
-    await fetch(subscriptionUrl, {
-      method: 'POST',
-      mode: 'no-cors',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(registerPayload)
-    });
+    await Promise.allSettled([
+      fetchWithRetry(subscriptionUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(registerPayload)
+      }, { timeoutMs: 15000, retries: 2, backoffMs: 700 }),
+      postRegistrationPayloadToNotifyBackend(registerPayload)
+    ]);
 
     await persistSubscriptionContext({
       username,
@@ -310,12 +386,15 @@ async function refreshSubscriptionAuthInBackground(payload) {
       registerPayload.subscriptionMobile = subscription;
     }
 
-    await fetch(subscriptionUrl, {
-      method: 'POST',
-      mode: 'no-cors',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(registerPayload)
-    });
+    await Promise.allSettled([
+      fetchWithRetry(subscriptionUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(registerPayload)
+      }, { timeoutMs: 15000, retries: 2, backoffMs: 700 }),
+      postRegistrationPayloadToNotifyBackend(registerPayload)
+    ]);
     return true;
   } catch (_) {
     return false;
@@ -326,9 +405,20 @@ function shouldShowNotification(payload) {
   const body = normalizeBody(payload);
   const title = typeof payload.title === 'string' ? payload.title : '';
   const type = typeof payload.type === 'string' ? payload.type : '';
+  const skipNotification = Boolean(payload && payload.skipNotification);
+
+  if (skipNotification) {
+    return false;
+  }
 
   // Keep these events silent; app updates from message bus/polling.
-  if (type === 'read-receipt' || type === 'group-update' || type === AUTH_REFRESH_PUSH_TYPE) {
+  if (
+    type === 'read-receipt' ||
+    type === 'group-update' ||
+    type === 'delete-action' ||
+    type === 'edit-action' ||
+    type === AUTH_REFRESH_PUSH_TYPE
+  ) {
     return false;
   }
 

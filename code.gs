@@ -2,6 +2,8 @@
 var SPREADSHEET_ID = '1eQ9r491jTVz7RZJFoUxRRT23QLAJKWbWuKKTrh0NJKE';
 var CACHE_TTL_SECONDS = 300;
 var CONTACTS_CACHE_TTL_SECONDS = 60;
+var APP_SERVER_TOKEN_PROPERTY = 'APP_SERVER_TOKEN';
+var CHECK_QUEUE_SERVER_TOKEN_PROPERTY = 'CHECK_QUEUE_SERVER_TOKEN';
 
 function normalizePhone(value) {
   var text = String(value || '').trim();
@@ -16,6 +18,23 @@ function normalizeSheetPhone(value) {
   var text = String(value || '').trim();
   if (text.charAt(0) === "'") text = text.substring(1);
   return normalizePhone(text);
+}
+
+function getServerGuardToken() {
+  try {
+    var properties = PropertiesService.getScriptProperties();
+    var appToken = String(properties.getProperty(APP_SERVER_TOKEN_PROPERTY) || '').trim();
+    if (appToken) return appToken;
+    var queueToken = String(properties.getProperty(CHECK_QUEUE_SERVER_TOKEN_PROPERTY) || '').trim();
+    if (queueToken) return queueToken;
+    return '';
+  } catch (err) {
+    return '';
+  }
+}
+
+function getCheckQueueServerToken() {
+  return getServerGuardToken();
 }
 
 function getLastDataRow(sheet) {
@@ -55,6 +74,28 @@ function findUserRow(sheet, username) {
     match = finder.findNext();
   }
   return match ? match.getRow() : null;
+}
+
+function normalizeLoginCode(value) {
+  var text = String(value || '').replace(/\D/g, '').trim();
+  if (text.length !== 6) return '';
+  return text;
+}
+
+function normalizeStoredLoginCode(value) {
+  var text = String(value || '').trim();
+  if (text.charAt(0) === "'") {
+    text = text.substring(1);
+  }
+  return normalizeLoginCode(text);
+}
+
+function ensureSubscribeOtpHeader(sheet) {
+  if (!sheet) return;
+  var headerLabel = String(sheet.getRange(1, 11).getValue() || '').trim();
+  if (!headerLabel) {
+    sheet.getRange(1, 11).setValue('Login Code');
+  }
 }
 
 function safeParseSubscriptionJson(rawValue) {
@@ -324,6 +365,12 @@ function doGet(e) {
     // 3. [UPDATED] GET CONTACTS (Modified for New Schema)
     // ======================================================
     if (e.parameter.action === 'get_contacts') {
+      var configuredContactsToken = getServerGuardToken();
+      var providedContactsToken = String(e.parameter.token || e.parameter.serverToken || '').trim();
+      if (configuredContactsToken && providedContactsToken !== configuredContactsToken) {
+        return createError('Unauthorized get_contacts read');
+      }
+
       var sheet = spreadsheet.getSheetByName('Subscribe');
       if (!sheet) return createError('Sheet Subscribe not found');
       var cache = CacheService.getScriptCache();
@@ -398,6 +445,13 @@ function doGet(e) {
     // 4. CHECK QUEUE (Polling)
     // ======================================================
     if (action === 'check_queue') {
+      var requestedUser = normalizePhone(e.parameter.user || e.parameter.username || '');
+      var configuredQueueToken = getCheckQueueServerToken();
+      var providedQueueToken = String(e.parameter.token || e.parameter.serverToken || '').trim();
+      var isAllUsersRead = !requestedUser;
+      if (isAllUsersRead && configuredQueueToken && providedQueueToken !== configuredQueueToken) {
+        return createError('Unauthorized check_queue read');
+      }
       var queueSheet = spreadsheet.getSheetByName('ToSend');
 
       if (!queueSheet) {
@@ -416,23 +470,31 @@ function doGet(e) {
         var range = queueSheet.getRange(2, 1, lastRow - 1, 3);
         var values = range.getValues();
         var messages = [];
+        var rowsToDelete = [];
 
         for (var i = 0; i < values.length; i++) {
           var row = values[i];
 
           if (row[0] && row[2]) {
-            // 1. Get the raw recipient string
-            var recipient = normalizePhone(row[0]);
+            var recipient = normalizeSheetPhone(row[0]);
+            if (!recipient) continue;
+            if (requestedUser && recipient !== requestedUser) continue;
 
             messages.push({
-              recipient: recipient, // Use the fixed variable
+              recipient: recipient,
               sender: String(row[1]).trim(),
               content: String(row[2]).trim()
             });
+            rowsToDelete.push(i + 2);
           }
         }
 
-        range.clearContent();
+        if (rowsToDelete.length > 0) {
+          rowsToDelete.sort(function (a, b) { return b - a; });
+          for (var d = 0; d < rowsToDelete.length; d++) {
+            queueSheet.deleteRow(rowsToDelete[d]);
+          }
+        }
         return createJSON({ 'messages': messages });
 
       } finally {
@@ -553,6 +615,62 @@ function doPost(e) {
   try {
     var spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
     var data = JSON.parse(e.postData.contents);
+    var configuredServerToken = getServerGuardToken();
+    var providedServerToken = String(data.token || data.serverToken || '').trim();
+
+    if (data.action === 'set_login_code') {
+      if (configuredServerToken && providedServerToken !== configuredServerToken) {
+        return createJSON({ result: 'error', message: 'Unauthorized set_login_code request' });
+      }
+      var setCodeSheet = spreadsheet.getSheetByName('Subscribe');
+      if (!setCodeSheet) {
+        return createJSON({ result: 'error', message: 'Sheet Subscribe not found' });
+      }
+
+      var setCodeUser = normalizePhone(data.user || data.username || data.phone || '');
+      var setCodeValue = normalizeLoginCode(data.code || data.otp || '');
+      if (!setCodeUser || !setCodeValue) {
+        return createJSON({ result: 'error', message: 'Invalid user or verification code' });
+      }
+
+      var setCodeRow = findUserRow(setCodeSheet, setCodeUser);
+      if (!setCodeRow) {
+        return createJSON({ result: 'error', message: 'User not found' });
+      }
+
+      ensureSubscribeOtpHeader(setCodeSheet);
+      setCodeSheet.getRange(setCodeRow, 11).setValue("'" + setCodeValue); // K
+      return createJSON({ result: 'success', updatedRows: 1 });
+    }
+
+    if (data.action === 'verify_login_code') {
+      if (configuredServerToken && providedServerToken !== configuredServerToken) {
+        return createJSON({ result: 'error', message: 'Unauthorized verify_login_code request' });
+      }
+      var verifyCodeSheet = spreadsheet.getSheetByName('Subscribe');
+      if (!verifyCodeSheet) {
+        return createJSON({ result: 'error', message: 'Sheet Subscribe not found' });
+      }
+
+      var verifyCodeUser = normalizePhone(data.user || data.username || data.phone || '');
+      var verifyCodeValue = normalizeLoginCode(data.code || data.otp || '');
+      if (!verifyCodeUser || !verifyCodeValue) {
+        return createJSON({ result: 'success', verified: false });
+      }
+
+      var verifyCodeRow = findUserRow(verifyCodeSheet, verifyCodeUser);
+      if (!verifyCodeRow) {
+        return createJSON({ result: 'success', verified: false });
+      }
+
+      ensureSubscribeOtpHeader(verifyCodeSheet);
+      var storedCode = normalizeStoredLoginCode(verifyCodeSheet.getRange(verifyCodeRow, 11).getValue()); // K
+      var isCodeValid = storedCode === verifyCodeValue;
+      if (isCodeValid) {
+        verifyCodeSheet.getRange(verifyCodeRow, 11).setValue(''); // consume OTP once
+      }
+      return createJSON({ result: 'success', verified: isCodeValid });
+    }
 
     // ======================================================
     // 1. SAVE LOG (To Sheet: Logs)

@@ -31,15 +31,11 @@
       <mat-icon>group_add</mat-icon>
       <span>קבוצה חדשה</span>
     </button>
-    <button mat-menu-item type="button" (click)="logout()">
+    <button mat-menu-item type="button" [disabled]="isLoggingOut()" (click)="logout()">
       <mat-icon>logout</mat-icon>
       <span>התנתקות</span>
     </button>
   </mat-menu>
-
-  @if (isBusy()) {
-    <mat-progress-bar class="app-progress" mode="indeterminate"></mat-progress-bar>
-  }
 
   <div class="chat-layout">
     <aside class="contacts-pane" [class.hidden-mobile]="isMobile() && !showContactsPane()">
@@ -132,7 +128,13 @@
       }
     </aside>
 
-    <section class="conversation-pane" [class.hidden-mobile]="isMobile() && showContactsPane()">
+    <section
+      class="conversation-pane"
+      [class.hidden-mobile]="isMobile() && showContactsPane()"
+      (touchstart)="onConversationTouchStart($event)"
+      (touchmove)="onConversationTouchMove($event)"
+      (touchend)="onConversationTouchEnd($event)"
+      (touchcancel)="onConversationTouchCancel()">
       @if (store.activeChat(); as activeChat) {
         <header class="conversation-header">
           @if (isMobile()) {
@@ -187,9 +189,42 @@
               class="message-row"
               [class.outgoing]="message.direction === 'outgoing'"
               [attr.data-message-index]="index">
-              <div class="message-bubble">
+              <div class="message-bubble" [class.deleted]="isMessageDeleted(message)">
                 @if (message.direction === 'incoming' && message.groupId) {
                   <div class="message-sender">{{ message.senderDisplayName || message.sender }}</div>
+                }
+
+                @if (canOpenMessageActions(message)) {
+                  <div class="message-actions">
+                    <button
+                      type="button"
+                      class="message-action-btn"
+                      [class.pending]="isMessageActionPending(message)"
+                      [matMenuTriggerFor]="messageActionsMenu"
+                      [disabled]="isMessageActionPending(message)"
+                      (click)="setMessageActionTarget(message)"
+                      aria-label="פעולות הודעה">
+                      @if (isMessageActionPending(message)) {
+                        <mat-spinner class="message-action-spinner" diameter="16"></mat-spinner>
+                      } @else {
+                        <mat-icon>more_horiz</mat-icon>
+                      }
+                    </button>
+                  </div>
+                }
+
+                @if (isMessageForwarded(message)) {
+                  <div class="message-forwarded-label">
+                    <mat-icon>forward</mat-icon>
+                    <span>הועברה</span>
+                  </div>
+                }
+
+                @if (message.replyTo; as replyReference) {
+                  <div class="message-reply-quote">
+                    <span class="message-reply-author">{{ replyAuthorLabel(replyReference) }}</span>
+                    <span class="message-reply-preview">{{ replyPreviewLabel(replyReference) }}</span>
+                  </div>
                 }
 
                 @if (message.imageUrl) {
@@ -234,6 +269,12 @@
 
                 <div class="message-meta">
                   <span>{{ formatTime(message.timestamp) }}</span>
+                  @if (isMessageEdited(message)) {
+                    <span class="message-edited-label">נערך</span>
+                  }
+                  @if (isMessageActionSyncing(message)) {
+                    <span class="message-syncing-label">מסנכרן...</span>
+                  }
                   @if (message.direction === 'outgoing') {
                     <span
                       class="message-status"
@@ -293,6 +334,36 @@
           <mat-icon>keyboard_arrow_down</mat-icon>
         </button>
 
+        @if (editingMessageTarget(); as editingMessage) {
+          <div class="composer-edit-banner">
+            <div class="composer-edit-text">
+              <span class="composer-edit-title">עריכת הודעה</span>
+              <span class="composer-edit-preview">{{ editingMessage.body }}</span>
+            </div>
+            <button
+              type="button"
+              class="composer-edit-cancel"
+              (click)="cancelEditingMessage()"
+              aria-label="בטל עריכה">
+              <mat-icon>close</mat-icon>
+            </button>
+          </div>
+        } @else if (replyingMessageTarget(); as replyingMessage) {
+          <div class="composer-reply-banner">
+            <div class="composer-reply-text">
+              <span class="composer-reply-title">{{ composerReplyTitle(replyingMessage) }}</span>
+              <span class="composer-reply-preview">{{ composerReplyPreview(replyingMessage) }}</span>
+            </div>
+            <button
+              type="button"
+              class="composer-reply-cancel"
+              (click)="cancelReplyingMessage()"
+              aria-label="בטל תגובה">
+              <mat-icon>close</mat-icon>
+            </button>
+          </div>
+        }
+
         <form class="composer" (submit)="handleComposerSubmit($event)" novalidate>
           <input
             #fileInput
@@ -346,6 +417,62 @@
               </button>
             }
           </mat-menu>
+
+          <mat-menu #messageActionsMenu="matMenu">
+            @if (messageActionTarget(); as targetMessage) {
+              <button
+                mat-menu-item
+                type="button"
+                [disabled]="!canReplyToMessage(targetMessage) || isMessageActionPending(targetMessage)"
+                (click)="startReplyToSelectedMessage()">
+                @if (isMessageActionPending(targetMessage)) {
+                  <mat-spinner class="message-action-menu-spinner" diameter="16"></mat-spinner>
+                } @else {
+                  <mat-icon>reply</mat-icon>
+                }
+                <span>השב</span>
+              </button>
+              <button
+                mat-menu-item
+                type="button"
+                [disabled]="!canForwardMessage(targetMessage) || isMessageActionPending(targetMessage)"
+                (click)="forwardSelectedMessage()">
+                @if (isMessageActionPending(targetMessage)) {
+                  <mat-spinner class="message-action-menu-spinner" diameter="16"></mat-spinner>
+                } @else {
+                  <mat-icon>forward</mat-icon>
+                }
+                <span>העבר</span>
+              </button>
+
+              @if (canManageOutgoingMessage(targetMessage)) {
+                <button
+                  mat-menu-item
+                  type="button"
+                  [disabled]="!canEditOutgoingMessage(targetMessage) || isMessageActionPending(targetMessage)"
+                  (click)="startEditingSelectedMessage()">
+                  @if (isMessageActionPending(targetMessage)) {
+                    <mat-spinner class="message-action-menu-spinner" diameter="16"></mat-spinner>
+                  } @else {
+                    <mat-icon>edit</mat-icon>
+                  }
+                  <span>ערוך</span>
+                </button>
+                <button
+                  mat-menu-item
+                  type="button"
+                  [disabled]="isMessageActionPending(targetMessage)"
+                  (click)="deleteSelectedMessageForEveryone()">
+                  @if (isMessageActionPending(targetMessage)) {
+                    <mat-spinner class="message-action-menu-spinner" diameter="16"></mat-spinner>
+                  } @else {
+                    <mat-icon>delete</mat-icon>
+                  }
+                  <span>מחק אצל כולם</span>
+                </button>
+              }
+            }
+          </mat-menu>
         </form>
       } @else {
         <div class="empty-conversation">
@@ -355,6 +482,16 @@
       }
     </section>
   </div>
+
+  @if (isLoggingOut()) {
+    <div class="logout-loader-backdrop" role="status" aria-live="polite" aria-busy="true">
+      <div class="logout-loader-card">
+        <mat-spinner diameter="54"></mat-spinner>
+        <div class="logout-loader-title">מתנתק מהמערכת...</div>
+        <div class="logout-loader-subtitle">{{ logoutLoaderText() }}</div>
+      </div>
+    </div>
+  }
 
   @if (avatarPreview(); as avatar) {
     <div class="avatar-preview-backdrop" (click)="closeChatAvatar()">
@@ -478,6 +615,18 @@
                 }
               </label>
 
+              @if (selectedGroupMemberAddCount() > 0) {
+                <div class="group-member-add-actions">
+                  <span class="group-member-add-actions-count">נבחרו {{ selectedGroupMemberAddCount() }} אנשי קשר</span>
+                  <div class="group-member-add-actions-buttons">
+                    <button mat-flat-button color="primary" type="button" (click)="addSelectedCommunityMembers()">
+                      הוסף נבחרים
+                    </button>
+                    <button mat-stroked-button type="button" (click)="clearSelectedGroupMemberAdds()">נקה בחירה</button>
+                  </div>
+                </div>
+              }
+
               @if (!filteredGroupMemberAddCandidates().length) {
                 <div class="group-member-add-empty">אין אנשי קשר זמינים להוספה</div>
               } @else {
@@ -486,11 +635,17 @@
                     <button
                       type="button"
                       class="group-member-add-item"
-                      (click)="addCommunityMember(candidate.username)">
+                      [class.selected]="isGroupMemberAddSelected(candidate.username)"
+                      (click)="toggleGroupMemberAddSelection(candidate.username)">
                       <div class="group-add-member-row">
                         <span class="group-add-member-name">{{ candidate.displayName }}</span>
                         <span class="group-add-member-username">{{ candidate.username }}</span>
                       </div>
+                      <span class="group-member-select-indicator">
+                        <mat-icon>
+                          {{ isGroupMemberAddSelected(candidate.username) ? 'check_circle' : 'radio_button_unchecked' }}
+                        </mat-icon>
+                      </span>
                     </button>
                   }
                 </div>
@@ -502,6 +657,18 @@
         @if (!groupPreview.members.length) {
           <div class="group-members-empty">אין משתתפים להצגה.</div>
         } @else {
+          @if (groupPreview.canManageMembers && selectedGroupMemberRemoveCount() > 0) {
+            <div class="group-member-remove-actions">
+              <span class="group-member-remove-actions-count">נבחרו {{ selectedGroupMemberRemoveCount() }} להסרה</span>
+              <div class="group-member-remove-actions-buttons">
+                <button mat-flat-button color="warn" type="button" (click)="removeSelectedCommunityMembers()">
+                  הסר נבחרים
+                </button>
+                <button mat-stroked-button type="button" (click)="clearSelectedGroupMemberRemovals()">נקה בחירה</button>
+              </div>
+            </div>
+          }
+
           <div class="group-members-list">
             @for (member of groupPreview.members; track member.username) {
               <div class="group-member-item">
@@ -517,10 +684,13 @@
                 @if (canRemoveCommunityMember(groupPreview, member.username)) {
                   <button
                     type="button"
-                    class="group-member-remove"
-                    (click)="removeCommunityMember(member.username)"
-                    aria-label="הסר משתתף">
-                    <mat-icon>person_remove</mat-icon>
+                    class="group-member-remove-select"
+                    [class.selected]="isGroupMemberRemoveSelected(member.username)"
+                    (click)="toggleGroupMemberRemoveSelection(member.username)"
+                    aria-label="בחר משתתף להסרה">
+                    <mat-icon>
+                      {{ isGroupMemberRemoveSelected(member.username) ? 'check_circle' : 'radio_button_unchecked' }}
+                    </mat-icon>
                   </button>
                 }
               </div>

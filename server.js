@@ -2,7 +2,7 @@ const vapidKeys = {
     publicKey: "BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk",
     privateKey: "fMQqCaakMboV7LEV57wJhxPAdyppOBRDBjRDVQBxg1s"
 };
-const GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbwo4WIOH_68a0UV5ompNXujigGzyGxSoX9yGct3pKv1SWCLAvTouFpGT1f7GekRgf0IBg/exec';
+const GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbwiBFAyG_EEDNDC1R_eA46f-hbLTtx8G8_3Klz85yjKVG_CMBq4hUPrJkRlZfdZ8dODHg/exec';
 
 const express = require('express');
 const webpush = require('web-push');
@@ -17,6 +17,147 @@ const crypto = require('crypto');
 // --- 1. SETUP UPLOADS FOLDER ---
 const uploadDir = path.join(__dirname, 'uploads');
 const app = express();
+app.disable('x-powered-by');
+
+const DEFAULT_ALLOWED_HOSTS = ['tzmc.co.il', 'www.tzmc.co.il', 'localhost', '127.0.0.1', '::1'];
+const ALLOWED_HOSTS = buildHostAllowlist(
+    String(process.env.ALLOWED_HOSTS || DEFAULT_ALLOWED_HOSTS.join(','))
+);
+
+const CONTENT_SECURITY_POLICY = [
+    "default-src 'self' https: data: blob:",
+    "base-uri 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "img-src 'self' https: data: blob:",
+    "font-src 'self' https: data:",
+    "style-src 'self' https: 'unsafe-inline'",
+    "script-src 'self' https: 'unsafe-inline' 'unsafe-eval'",
+    "connect-src 'self' https: wss:",
+    "worker-src 'self' blob:",
+    "media-src 'self' https: data: blob:",
+    "form-action 'self'",
+    "manifest-src 'self'",
+    'upgrade-insecure-requests'
+].join('; ');
+
+function normalizeHostValue(rawValue) {
+    const value = String(rawValue || '').trim().toLowerCase();
+    if (!value) {
+        return '';
+    }
+    const primaryValue = value.split(',')[0].trim();
+    if (!primaryValue) {
+        return '';
+    }
+    const candidate = primaryValue.includes('://')
+        ? primaryValue
+        : `http://${primaryValue}`;
+    try {
+        const parsed = new URL(candidate);
+        return String(parsed.hostname || '').trim().toLowerCase().replace(/\.+$/, '');
+    } catch (error) {
+        return primaryValue
+            .replace(/^\[|\]$/g, '')
+            .replace(/:\d+$/, '')
+            .replace(/\.+$/, '')
+            .trim()
+            .toLowerCase();
+    }
+}
+
+function buildHostAllowlist(rawValue) {
+    const exactHosts = new Set();
+    const wildcardSuffixes = [];
+    let allowAny = false;
+    const parts = String(rawValue || '')
+        .split(',')
+        .map((entry) => String(entry || '').trim())
+        .filter(Boolean);
+
+    for (const part of parts) {
+        const normalizedPart = part.toLowerCase();
+        if (normalizedPart === '*') {
+            allowAny = true;
+            continue;
+        }
+        const hasWildcardPrefix = normalizedPart.startsWith('*.') || normalizedPart.startsWith('.');
+        const candidate = hasWildcardPrefix
+            ? normalizedPart.replace(/^\*\./, '').replace(/^\./, '')
+            : normalizedPart;
+        const normalizedHost = normalizeHostValue(candidate);
+        if (!normalizedHost) {
+            continue;
+        }
+        if (hasWildcardPrefix) {
+            wildcardSuffixes.push(normalizedHost);
+            continue;
+        }
+        exactHosts.add(normalizedHost);
+    }
+
+    return {
+        allowAny,
+        exactHosts,
+        wildcardSuffixes
+    };
+}
+
+function isAllowedHost(hostname) {
+    if (ALLOWED_HOSTS.allowAny) {
+        return true;
+    }
+    const normalizedHost = normalizeHostValue(hostname);
+    if (!normalizedHost) {
+        return false;
+    }
+    if (ALLOWED_HOSTS.exactHosts.has(normalizedHost)) {
+        return true;
+    }
+    return ALLOWED_HOSTS.wildcardSuffixes.some((suffix) => {
+        return normalizedHost === suffix || normalizedHost.endsWith(`.${suffix}`);
+    });
+}
+
+function parseHostHeaderValues(rawValue) {
+    return String(rawValue || '')
+        .split(',')
+        .map((entry) => normalizeHostValue(entry))
+        .filter(Boolean);
+}
+
+app.use((req, res, next) => {
+    const hostHeaderValue = req.headers.host || '';
+    const requestHost = parseHostHeaderValues(hostHeaderValue)[0] || '';
+    if (!isAllowedHost(requestHost)) {
+        console.warn(`[SECURITY] Rejected request with invalid host header "${hostHeaderValue}" on ${req.originalUrl || req.url}`);
+        return res.status(400).json({ error: 'Invalid Host header' });
+    }
+
+    const forwardedHostHeader = req.headers['x-forwarded-host'] || '';
+    const forwardedHosts = parseHostHeaderValues(forwardedHostHeader);
+    if (forwardedHosts.some((candidateHost) => !isAllowedHost(candidateHost))) {
+        console.warn(`[SECURITY] Rejected request with invalid x-forwarded-host "${forwardedHostHeader}" on ${req.originalUrl || req.url}`);
+        return res.status(400).json({ error: 'Invalid Host header' });
+    }
+
+    next();
+});
+
+app.use((req, res, next) => {
+    const forwardedProto = String(req.headers['x-forwarded-proto'] || '').toLowerCase();
+    const isHttpsRequest = req.secure || forwardedProto.includes('https');
+    if (isHttpsRequest) {
+        res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
+    res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY);
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    next();
+});
+
 const SERVER_VERSION = '1.40'; // Bumped version
 const SERVER_RELEASE_NOTES = [
     'Update available toast with reload button.',
@@ -40,6 +181,7 @@ let stateSaveTimer = null;
 
 let unreadCounts = {};
 let groups = {};
+let deviceSubscriptionsByUser = {};
 
 
 
@@ -56,8 +198,34 @@ app.use((req, res, next) => {
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/notify', express.static(path.join(__dirname, 'public')));
 
-// Keep your uploads separate
-app.use(['/uploads', '/notify/uploads'], express.static(uploadDir));
+const authenticatedUploadsStaticMiddleware = express.static(uploadDir, {
+    fallthrough: true,
+    redirect: false,
+    dotfiles: 'deny',
+    index: false,
+    setHeaders: (res) => {
+        res.setHeader('Cache-Control', 'private, max-age=300, must-revalidate');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+    }
+});
+app.use(['/uploads', '/notify/uploads'], (req, res, next) => {
+    const session = extractSessionFromRequest(req);
+    const sessionUser = normalizeUserCandidate(
+        (session && session.user) || req.authUser
+    );
+    if (!sessionUser) {
+        return res.status(401).json({ error: 'Authentication required' });
+    }
+    const requestPath = String(req.path || '').trim();
+    if (!requestPath || requestPath === '/' || requestPath === '.') {
+        return res.status(404).json({ error: 'File not found' });
+    }
+    req.authSession = req.authSession || session || null;
+    req.authUser = sessionUser;
+    return next();
+}, authenticatedUploadsStaticMiddleware, (_req, res) => {
+    return res.status(404).json({ error: 'File not found' });
+});
 
 
 app.use(bodyParser.json());
@@ -71,7 +239,8 @@ app.use(cors({
         'Cache-Control',
         'Pragma',
         'Last-Event-ID',
-        'X-Requested-With'
+        'X-Requested-With',
+        'X-CSRF-Token'
     ]
 }));
 
@@ -85,25 +254,312 @@ if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir);
 }
 
+const ALLOWED_IMAGE_EXTENSIONS = new Set([
+    '.jpg',
+    '.jpeg',
+    '.png',
+    '.gif',
+    '.webp',
+    '.bmp',
+    '.avif',
+    '.heic',
+    '.heif'
+]);
+const PDF_EXTENSION = '.pdf';
+const PDF_MIME_TYPE = 'application/pdf';
+const MAX_UPLOAD_INSPECTION_BYTES = 40 * 1024 * 1024;
+const ISO_BMFF_IMAGE_BRANDS = new Set(['avif', 'avis', 'heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1']);
+const PDF_DISALLOWED_TOKENS = [
+    /\/javascript\b/i,
+    /\/js\b/i,
+    /\/openaction\b/i,
+    /\/launch\b/i,
+    /\/aa\b/i,
+    /\/richmedia\b/i,
+    /\/submitform\b/i,
+    /\/embeddedfile\b/i,
+    /\/encrypt\b/i
+];
+
+function normalizeUploadMimeType(file = {}) {
+    return String(file.mimetype || '').trim().toLowerCase();
+}
+
+function normalizeUploadExtension(file = {}) {
+    return path.extname(String(file.originalname || '')).toLowerCase();
+}
+
+function isImageUpload(file = {}) {
+    const mimeType = normalizeUploadMimeType(file);
+    const extension = normalizeUploadExtension(file);
+    return mimeType.startsWith('image/') || ALLOWED_IMAGE_EXTENSIONS.has(extension);
+}
+
+function isPdfUpload(file = {}) {
+    const mimeType = normalizeUploadMimeType(file);
+    const extension = normalizeUploadExtension(file);
+    return mimeType === PDF_MIME_TYPE || extension === PDF_EXTENSION;
+}
+
+function isAllowedMainUpload(file = {}) {
+    return isImageUpload(file) || isPdfUpload(file);
+}
+
+function isAllowedThumbnailUpload(file = {}) {
+    return isImageUpload(file);
+}
+
+function chooseSafeUploadExtension(file = {}) {
+    const ext = normalizeUploadExtension(file);
+    if (ALLOWED_IMAGE_EXTENSIONS.has(ext) || ext === PDF_EXTENSION) {
+        return ext;
+    }
+    const mimeType = normalizeUploadMimeType(file);
+    if (mimeType === 'image/jpeg') return '.jpg';
+    if (mimeType === 'image/png') return '.png';
+    if (mimeType === 'image/gif') return '.gif';
+    if (mimeType === 'image/webp') return '.webp';
+    if (mimeType === 'image/bmp' || mimeType === 'image/x-ms-bmp') return '.bmp';
+    if (mimeType === 'image/avif') return '.avif';
+    if (mimeType === 'image/heic') return '.heic';
+    if (mimeType === 'image/heif') return '.heif';
+    if (mimeType === PDF_MIME_TYPE) return PDF_EXTENSION;
+    if (mimeType.startsWith('image/')) return '.jpg';
+    return '';
+}
+
+function sanitizeUploadBaseName(rawName = '') {
+    const base = path.basename(String(rawName || '').trim());
+    const ext = path.extname(base);
+    const stem = base.slice(0, Math.max(0, base.length - ext.length));
+    const sanitized = stem
+        .normalize('NFKD')
+        .replace(/[^a-zA-Z0-9._-]+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^[._-]+|[._-]+$/g, '')
+        .slice(0, 40);
+    return sanitized || 'upload';
+}
+
+function buildSafeUploadFilename(file = {}) {
+    const originalName = path.basename(String(file.originalname || '').trim());
+    if (originalName && originalName !== '.' && originalName !== '..') {
+        // Keep client filename as requested (without directory traversal segments).
+        return originalName;
+    }
+
+    const safeStem = sanitizeUploadBaseName(file.originalname || '');
+    const extension = chooseSafeUploadExtension(file);
+    const uniqueSuffix = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+    return `${safeStem}-${uniqueSuffix}${extension}`;
+}
+
+function bufferStartsWith(buffer, signature) {
+    if (!Buffer.isBuffer(buffer) || !Buffer.isBuffer(signature)) return false;
+    if (buffer.length < signature.length) return false;
+    return buffer.subarray(0, signature.length).equals(signature);
+}
+
+function validatePngStructure(buffer) {
+    const pngSignature = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+    if (!bufferStartsWith(buffer, pngSignature)) {
+        return false;
+    }
+
+    let offset = pngSignature.length;
+    while (offset + 12 <= buffer.length) {
+        const chunkLength = buffer.readUInt32BE(offset);
+        const chunkType = buffer.toString('ascii', offset + 4, offset + 8);
+        const nextOffset = offset + 12 + chunkLength;
+        if (nextOffset > buffer.length) {
+            return false;
+        }
+        if (chunkType === 'IEND') {
+            return nextOffset === buffer.length;
+        }
+        offset = nextOffset;
+    }
+    return false;
+}
+
+function validateWebpStructure(buffer) {
+    if (buffer.length < 12) return false;
+    if (!buffer.subarray(0, 4).equals(Buffer.from('RIFF'))) return false;
+    if (!buffer.subarray(8, 12).equals(Buffer.from('WEBP'))) return false;
+    const declaredSize = buffer.readUInt32LE(4) + 8;
+    return declaredSize === buffer.length;
+}
+
+function validateBmpStructure(buffer) {
+    if (buffer.length < 14) return false;
+    if (!buffer.subarray(0, 2).equals(Buffer.from('BM'))) return false;
+    const declaredSize = buffer.readUInt32LE(2);
+    return declaredSize === buffer.length;
+}
+
+function validateIsoBmffStructure(buffer) {
+    if (buffer.length < 16) return false;
+    if (buffer.toString('ascii', 4, 8) !== 'ftyp') return false;
+    const brand = buffer.toString('ascii', 8, 12).toLowerCase();
+    if (!ISO_BMFF_IMAGE_BRANDS.has(brand)) return false;
+
+    let offset = 0;
+    while (offset + 8 <= buffer.length) {
+        let boxSize = buffer.readUInt32BE(offset);
+        if (boxSize === 0) {
+            return offset + 8 <= buffer.length;
+        }
+        if (boxSize === 1) {
+            if (offset + 16 > buffer.length) return false;
+            const extendedSize = Number(buffer.readBigUInt64BE(offset + 8));
+            if (!Number.isFinite(extendedSize) || extendedSize < 16) return false;
+            boxSize = extendedSize;
+        } else if (boxSize < 8) {
+            return false;
+        }
+
+        const nextOffset = offset + boxSize;
+        if (nextOffset > buffer.length) {
+            return false;
+        }
+        offset = nextOffset;
+    }
+    return offset === buffer.length;
+}
+
+function detectImageFormat(buffer) {
+    if (validatePngStructure(buffer)) return 'png';
+    if (bufferStartsWith(buffer, Buffer.from([0xFF, 0xD8])) && buffer.subarray(buffer.length - 2).equals(Buffer.from([0xFF, 0xD9]))) {
+        return 'jpeg';
+    }
+    if ((bufferStartsWith(buffer, Buffer.from('GIF87a')) || bufferStartsWith(buffer, Buffer.from('GIF89a'))) && buffer[buffer.length - 1] === 0x3B) {
+        return 'gif';
+    }
+    if (validateWebpStructure(buffer)) return 'webp';
+    if (validateBmpStructure(buffer)) return 'bmp';
+    if (validateIsoBmffStructure(buffer)) return 'iso-bmff';
+    return '';
+}
+
+function hasUnsafePdfContent(buffer) {
+    if (!bufferStartsWith(buffer, Buffer.from('%PDF-'))) {
+        return { unsafe: true, reason: 'Invalid PDF file signature' };
+    }
+    const eofMarker = Buffer.from('%%EOF');
+    const eofIndex = buffer.lastIndexOf(eofMarker);
+    if (eofIndex < 0) {
+        return { unsafe: true, reason: 'Invalid PDF structure' };
+    }
+    const trailing = buffer.subarray(eofIndex + eofMarker.length).toString('latin1').trim();
+    if (trailing) {
+        return { unsafe: true, reason: 'PDF contains trailing hidden data' };
+    }
+
+    const text = buffer.toString('latin1');
+    if (/<script\b/i.test(text) || /javascript:/i.test(text)) {
+        return { unsafe: true, reason: 'PDF contains script content' };
+    }
+    for (const tokenRegex of PDF_DISALLOWED_TOKENS) {
+        if (tokenRegex.test(text)) {
+            return { unsafe: true, reason: 'PDF contains active or encrypted content' };
+        }
+    }
+    return { unsafe: false, reason: '' };
+}
+
+async function safelyDeleteUploadedFile(file = null) {
+    if (!file || !file.path) return;
+    try {
+        const resolvedUploadDir = path.resolve(uploadDir) + path.sep;
+        const resolvedPath = path.resolve(String(file.path));
+        if (!resolvedPath.startsWith(resolvedUploadDir)) {
+            return;
+        }
+        await fsp.unlink(resolvedPath);
+    } catch (error) {
+        // Ignore cleanup failures to keep request handling stable.
+    }
+}
+
+async function validateUploadedFileSecurity(file = {}, options = {}) {
+    const allowImage = options.allowImage !== false;
+    const allowPdf = options.allowPdf !== false;
+    if (!file || !file.path) {
+        return { ok: false, message: 'Invalid uploaded file data' };
+    }
+
+    const fileSize = Number(file.size || 0);
+    if (!Number.isFinite(fileSize) || fileSize <= 0) {
+        return { ok: false, message: 'Uploaded file is empty' };
+    }
+    if (fileSize > MAX_UPLOAD_INSPECTION_BYTES) {
+        return { ok: false, message: 'File is too large for security inspection' };
+    }
+
+    const fileBuffer = await fsp.readFile(file.path);
+    if (!fileBuffer.length) {
+        return { ok: false, message: 'Uploaded file is empty' };
+    }
+
+    const isPdfCandidate = allowPdf && isPdfUpload(file);
+    if (isPdfCandidate) {
+        const pdfResult = hasUnsafePdfContent(fileBuffer);
+        if (pdfResult.unsafe) {
+            return { ok: false, message: pdfResult.reason || 'Unsafe PDF content detected' };
+        }
+        return { ok: true, message: '' };
+    }
+
+    const isImageCandidate = allowImage && isImageUpload(file);
+    if (isImageCandidate) {
+        const detectedFormat = detectImageFormat(fileBuffer);
+        if (!detectedFormat) {
+            return { ok: false, message: 'Invalid image content or hidden payload detected' };
+        }
+        return { ok: true, message: '' };
+    }
+
+    return { ok: false, message: 'Only secure image and PDF files are allowed' };
+}
+
 // --- 2. STORAGE CONFIG ---
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
-    const originalName = file.originalname;
-    const ext = path.extname(originalName);
-
-    if (originalName && originalName.trim() !== '') {
-      // ✅ Use filename sent by client
-      cb(null, originalName);
-    } else {
-      // 🔁 Fallback to unique name
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-      cb(null, uniqueSuffix + ext);
-    }
+    cb(null, buildSafeUploadFilename(file));
   }
 });
-const upload = multer({ storage: storage });
+const upload = multer({
+    storage: storage,
+    fileFilter: (req, file, cb) => {
+        if (!file || !file.fieldname) {
+            return cb(new Error('Invalid upload payload'));
+        }
+        if (file.fieldname === 'file') {
+            if (isAllowedMainUpload(file)) {
+                return cb(null, true);
+            }
+            return cb(new Error('Only image and PDF files are allowed'));
+        }
+        if (file.fieldname === 'thumbnail') {
+            if (isAllowedThumbnailUpload(file)) {
+                return cb(null, true);
+            }
+            return cb(new Error('Thumbnail must be an image file'));
+        }
+        return cb(new Error(`Unsupported upload field: ${file.fieldname}`));
+    }
+});
 const uploadFields = upload.fields([{ name: 'file', maxCount: 1 }, { name: 'thumbnail', maxCount: 1 }]);
+function uploadFieldsValidated(req, res, next) {
+    uploadFields(req, res, (error) => {
+        if (!error) {
+            return next();
+        }
+        const message = error && error.message ? error.message : 'Invalid upload request';
+        return res.status(400).json({ error: message });
+    });
+}
 
 // --- 3. WEB PUSH CONFIG ---
 
@@ -134,14 +590,22 @@ function addToQueue(targetUser, messageObj) {
     const recipients = Array.isArray(targetUser) ? targetUser : [targetUser];
     
     recipients.forEach(user => {
-        // [CHANGE] Force Lowercase Key
-        const normalizedUser = String(user).trim().toLowerCase(); 
+        const normalizedUser = normalizeUserCandidate(user);
+        if (!normalizedUser) return;
+
+        const queueEntry = (messageObj && typeof messageObj === 'object')
+            ? { ...messageObj, recipient: normalizedUser }
+            : {
+                recipient: normalizedUser,
+                body: String(messageObj || ''),
+                timestamp: Date.now()
+            };
 
         if (!messageQueue[normalizedUser]) {
             messageQueue[normalizedUser] = [];
         }
-        messageQueue[normalizedUser].push(messageObj);
-        notifySseClients(normalizedUser, messageObj);
+        messageQueue[normalizedUser].push(queueEntry);
+        notifySseClients(normalizedUser, queueEntry);
     });
     scheduleStateSave();
 }
@@ -198,10 +662,139 @@ const AUTH_REFRESH_CONTACT_DISCOVERY_CONCURRENCY = 8;
 const AUTH_REFRESH_CONTACT_DISCOVERY_MAX_SEEDS = 120;
 const AUTH_REFRESH_FAILURE_DETAILS_LIMIT = 80;
 const AUTH_REFRESH_STALE_CLEANUP_BATCH_SIZE = 40;
+const AUTH_REFRESH_SCHEDULER_ENABLED = String(process.env.AUTH_REFRESH_SCHEDULER_ENABLED || 'true').trim().toLowerCase() !== 'false';
+const AUTH_REFRESH_SCHEDULER_DAILY_TIME = parseAuthRefreshSchedulerDailyTime(
+    process.env.AUTH_REFRESH_SCHEDULER_DAILY_TIME || '00:01'
+);
+const AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE = String(
+    process.env.AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE || ''
+).trim().toLowerCase() === 'true';
+const AUTH_REFRESH_SCHEDULER_DEVICE_TYPES = String(
+    process.env.AUTH_REFRESH_SCHEDULER_DEVICE_TYPES || 'pc,mobile'
+).trim();
+const AUTH_REFRESH_SCHEDULER_EXCLUDE_IOS_ENDPOINTS = String(
+    process.env.AUTH_REFRESH_SCHEDULER_EXCLUDE_IOS_ENDPOINTS || 'true'
+).trim().toLowerCase() !== 'false';
+const APP_SERVER_TOKEN = String(
+    process.env.APP_SERVER_TOKEN ||
+    process.env.GOOGLE_SHEET_APP_SERVER_TOKEN ||
+    ''
+).trim();
+const CHECK_QUEUE_SERVER_TOKEN = String(
+    process.env.CHECK_QUEUE_SERVER_TOKEN ||
+    process.env.GOOGLE_SHEET_CHECK_QUEUE_TOKEN ||
+    APP_SERVER_TOKEN
+).trim();
+const SESSION_COOKIE_NAME = String(process.env.SESSION_COOKIE_NAME || 'tzmc_session').trim() || 'tzmc_session';
+const SESSION_COOKIE_TTL_MS = Math.max(
+    5 * 60 * 1000,
+    Number(process.env.SESSION_COOKIE_TTL_MS || 30 * 24 * 60 * 60 * 1000) || 30 * 24 * 60 * 60 * 1000
+);
+const SESSION_COOKIE_SAME_SITE = String(process.env.SESSION_COOKIE_SAMESITE || 'Lax').trim();
+const SESSION_COOKIE_SECURE = String(process.env.SESSION_COOKIE_SECURE || 'true').trim().toLowerCase() !== 'false';
+const SESSION_SIGNING_SECRET = String(
+    process.env.SESSION_SIGNING_SECRET ||
+    APP_SERVER_TOKEN ||
+    CHECK_QUEUE_SERVER_TOKEN ||
+    vapidKeys.privateKey ||
+    ''
+).trim();
+const SESSION_USER_PATTERN = /^0\d{9}$/;
+const AUTH_SESSION_RATE_LIMIT_WINDOW_MS = Math.max(
+    60 * 1000,
+    Number(process.env.AUTH_SESSION_RATE_LIMIT_WINDOW_MS || 10 * 60 * 1000) || 10 * 60 * 1000
+);
+const AUTH_SESSION_RATE_LIMIT_MAX_PER_IP = Math.max(
+    3,
+    Number(process.env.AUTH_SESSION_RATE_LIMIT_MAX_PER_IP || 18) || 18
+);
+const AUTH_SESSION_RATE_LIMIT_MAX_PER_USER = Math.max(
+    2,
+    Number(process.env.AUTH_SESSION_RATE_LIMIT_MAX_PER_USER || 8) || 8
+);
+const AUTH_SESSION_REQUIRE_CONTACT_VERIFICATION = String(
+    process.env.AUTH_SESSION_REQUIRE_CONTACT_VERIFICATION || 'false'
+).trim().toLowerCase() === 'true';
+const AUTH_CODE_DIGITS = 6;
+const AUTH_CODE_PATTERN = new RegExp(`^\\d{${AUTH_CODE_DIGITS}}$`);
+const AUTH_CODE_TTL_SECONDS = Math.max(
+    60,
+    Number(process.env.AUTH_CODE_TTL_SECONDS || 5 * 60) || 5 * 60
+);
+const AUTH_CODE_RATE_LIMIT_WINDOW_MS = Math.max(
+    60 * 1000,
+    Number(process.env.AUTH_CODE_RATE_LIMIT_WINDOW_MS || 10 * 60 * 1000) || 10 * 60 * 1000
+);
+const AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_IP = Math.max(
+    2,
+    Number(process.env.AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_IP || 12) || 12
+);
+const AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_USER = Math.max(
+    2,
+    Number(process.env.AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_USER || 6) || 6
+);
+const AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_IP = Math.max(
+    3,
+    Number(process.env.AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_IP || 24) || 24
+);
+const AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_USER = Math.max(
+    3,
+    Number(process.env.AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_USER || 12) || 12
+);
+const INFORU_SMS_URL = String(process.env.INFORU_SMS_URL || 'https://uapi.inforu.co.il/SendMessageXml.ashx').trim();
+const INFORU_USERNAME = String(process.env.INFORU_USERNAME || 'tzmcgovil').trim();
+const INFORU_API_TOKEN = String(process.env.INFORU_API_TOKEN || '088a13e2-c2d9-4518-8c0c-2e531c3033de').trim();
+const INFORU_SENDER = String(process.env.INFORU_SENDER || 'Tzafon').trim();
+const AUTH_CODE_SMS_TEMPLATE = String(
+    process.env.AUTH_CODE_SMS_TEMPLATE || 'קוד אימות לכניסה לאפליקציה: {{code}}'
+).trim();
+const AUTH_CODE_SMS_DESTINATION_OVERRIDES = new Map([
+    ['0550000001', '0546799693']
+]);
+const AUTH_CODE_SHEET_TOKEN = String(
+    process.env.AUTH_CODE_SHEET_TOKEN ||
+    APP_SERVER_TOKEN ||
+    CHECK_QUEUE_SERVER_TOKEN ||
+    ''
+).trim();
+const CSRF_PROTECTION_ENABLED = String('false').trim().toLowerCase() === 'true';
+const CSRF_HEADER_NAME = 'x-csrf-token';
+const DELIVERY_TELEMETRY_RETENTION_MS = Math.max(
+    60 * 60 * 1000,
+    Number(7 * 24 * 60 * 60 * 1000) || 7 * 24 * 60 * 60 * 1000
+);
+const DELIVERY_TELEMETRY_MAX_DEVICES = Math.max(
+    100,
+    Number(process.env.DELIVERY_TELEMETRY_MAX_DEVICES || 2000) || 2000
+);
+const MOBILE_REREGISTER_PUSH_TYPE = 'mobile-re-register-prompt';
+const MOBILE_REREGISTER_DEFAULT_CAMPAIGN_ID = 'mobile-reregister-temp-v1';
+const MOBILE_REREGISTER_DEFAULT_TITLE = 'Reconnect notifications';
+const MOBILE_REREGISTER_DEFAULT_BODY = 'Open TZMC once to restore notifications on this device.';
+const MOBILE_REREGISTER_DEFAULT_URL = '/subscribes/';
+const MOBILE_REREGISTER_PUSH_URGENCY = 'high';
+const MOBILE_REREGISTER_PUSH_TTL_SECONDS = 24 * 60 * 60;
+const MOBILE_REREGISTER_SEND_CONCURRENCY = 20;
+const MOBILE_REREGISTER_MAX_TRACKED_CAMPAIGNS = 20;
 let subscriptionAuthRefreshState = {
     running: false,
     lastRunAt: 0,
     lastResult: null
+};
+let authRefreshSchedulerStarted = false;
+const activeSessionIdByUser = new Map();
+const authSessionRateLimitByIp = new Map();
+const authSessionRateLimitByUser = new Map();
+const authCodeRequestRateLimitByIp = new Map();
+const authCodeRequestRateLimitByUser = new Map();
+const authCodeVerifyRateLimitByIp = new Map();
+const authCodeVerifyRateLimitByUser = new Map();
+const deliveryTelemetryByDevice = new Map();
+let mobileReregisterCampaignState = {
+    running: false,
+    lastRunAt: 0,
+    lastResult: null,
+    sentTargetsByCampaign: new Map()
 };
 
 function buildSubscriptionCacheKey(usernames) {
@@ -225,9 +818,132 @@ function pruneSubscriptionCacheEndpoint(endpointToRemove) {
             });
         }
     }
+    if (removeLocalDeviceSubscriptionEndpoint(endpointToRemove)) {
+        scheduleStateSave();
+    }
 }
 
-function normalizeSubscriptionRecord(rawSubscription, usernameHint = '') {
+function normalizeSubscriptionType(rawValue) {
+    const normalized = String(rawValue || '').trim().toLowerCase();
+    if (!normalized) return '';
+    if (normalized === 'pc' || normalized === 'desktop' || normalized === 'web') return 'pc';
+    if (normalized === 'mobile' || normalized === 'ios' || normalized === 'android') return 'mobile';
+    return '';
+}
+
+function parseSubscriptionDeviceTypesInput(rawValue) {
+    const values = [];
+    if (Array.isArray(rawValue)) {
+        values.push(...rawValue);
+    } else if (typeof rawValue === 'string') {
+        values.push(...rawValue.split(','));
+    }
+    const allowed = new Set();
+    values.forEach((value) => {
+        const normalizedText = String(value || '').trim().toLowerCase();
+        if (normalizedText === 'all' || normalizedText === '*' || normalizedText === '%') {
+            allowed.add('mobile');
+            allowed.add('pc');
+            return;
+        }
+        const normalized = normalizeSubscriptionType(value);
+        if (normalized) {
+            allowed.add(normalized);
+        }
+    });
+    return Array.from(allowed);
+}
+
+function parseAuthRefreshSchedulerDailyTime(rawValue) {
+    const fallback = {
+        hour: 0,
+        minute: 1,
+        second: 0,
+        label: '00:01'
+    };
+    const source = String(rawValue || '').trim();
+    if (!source) return fallback;
+
+    const match = source.match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?$/);
+    if (!match) return fallback;
+
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+    const second = match[3] === undefined ? 0 : Number(match[3]);
+    if (
+        !Number.isInteger(hour) || hour < 0 || hour > 23 ||
+        !Number.isInteger(minute) || minute < 0 || minute > 59 ||
+        !Number.isInteger(second) || second < 0 || second > 59
+    ) {
+        return fallback;
+    }
+
+    const label = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}` +
+        (second ? `:${String(second).padStart(2, '0')}` : '');
+    return { hour, minute, second, label };
+}
+
+function isAppleWebPushEndpoint(endpointValue) {
+    const endpoint = String(endpointValue || '').trim().toLowerCase();
+    if (!endpoint) return false;
+    return endpoint.includes('push.apple.com');
+}
+
+function sanitizeCampaignId(rawValue) {
+    const source = String(rawValue || '').trim().toLowerCase();
+    if (!source) {
+        return MOBILE_REREGISTER_DEFAULT_CAMPAIGN_ID;
+    }
+    const normalized = source
+        .replace(/[^a-z0-9._:-]+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 80);
+    return normalized || MOBILE_REREGISTER_DEFAULT_CAMPAIGN_ID;
+}
+
+function parseBooleanInput(rawValue, defaultValue = false) {
+    if (typeof rawValue === 'boolean') return rawValue;
+    if (typeof rawValue === 'number') return rawValue !== 0;
+    if (typeof rawValue !== 'string') return defaultValue;
+    const normalized = rawValue.trim().toLowerCase();
+    if (!normalized) return defaultValue;
+    if (normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'y') return true;
+    if (normalized === 'false' || normalized === '0' || normalized === 'no' || normalized === 'n') return false;
+    return defaultValue;
+}
+
+function parsePositiveInteger(rawValue, fallbackValue = 0) {
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed) || parsed <= 0) return fallbackValue;
+    return Math.floor(parsed);
+}
+
+function getCampaignSentTargetsSet(campaignId) {
+    const safeCampaignId = sanitizeCampaignId(campaignId);
+    const stateMap = mobileReregisterCampaignState.sentTargetsByCampaign;
+    if (!stateMap.has(safeCampaignId)) {
+        stateMap.set(safeCampaignId, new Set());
+    }
+    while (stateMap.size > MOBILE_REREGISTER_MAX_TRACKED_CAMPAIGNS) {
+        const oldestKey = stateMap.keys().next().value;
+        if (!oldestKey) break;
+        stateMap.delete(oldestKey);
+    }
+    return stateMap.get(safeCampaignId);
+}
+
+function getCampaignSentCount(campaignId) {
+    const safeCampaignId = sanitizeCampaignId(campaignId);
+    const sentSet = mobileReregisterCampaignState.sentTargetsByCampaign.get(safeCampaignId);
+    return sentSet ? sentSet.size : 0;
+}
+
+function listTrackedCampaigns(limit = 20) {
+    return Array.from(mobileReregisterCampaignState.sentTargetsByCampaign.keys()).slice(-limit);
+}
+
+function normalizeSubscriptionRecord(rawSubscription, usernameHint = '', subscriptionTypeHint = '') {
     if (!rawSubscription || typeof rawSubscription !== 'object') return null;
     const endpoint = typeof rawSubscription.endpoint === 'string' ? rawSubscription.endpoint.trim() : '';
     const keys = (rawSubscription.keys && typeof rawSubscription.keys === 'object') ? rawSubscription.keys : null;
@@ -237,37 +953,48 @@ function normalizeSubscriptionRecord(rawSubscription, usernameHint = '') {
     const username = normalizeUserKey(
         rawSubscription.username || rawSubscription.user || usernameHint
     );
+    const type = normalizeSubscriptionType(
+        rawSubscription.type || rawSubscription.deviceType || subscriptionTypeHint
+    );
     return {
         endpoint,
         expirationTime: rawSubscription.expirationTime || null,
         keys: { p256dh, auth },
-        username: username || undefined
+        username: username || undefined,
+        type: type || undefined
     };
 }
 
-function collectSubscriptionsFromValue(value, sink, usernameHint = '') {
+function collectSubscriptionsFromValue(value, sink, usernameHint = '', subscriptionTypeHint = '') {
     if (!value) return;
     if (Array.isArray(value)) {
-        value.forEach((item) => collectSubscriptionsFromValue(item, sink, usernameHint));
+        value.forEach((item) => collectSubscriptionsFromValue(item, sink, usernameHint, subscriptionTypeHint));
         return;
     }
     if (typeof value !== 'object') return;
 
     const nextUsernameHint = normalizeUserKey(value.username || value.user || usernameHint);
-    const normalizedRecord = normalizeSubscriptionRecord(value, nextUsernameHint);
+    const nextTypeHint = normalizeSubscriptionType(value.type || value.deviceType || subscriptionTypeHint);
+    const normalizedRecord = normalizeSubscriptionRecord(value, nextUsernameHint, nextTypeHint);
     if (normalizedRecord) {
         sink.push(normalizedRecord);
     }
 
     ['subscription', 'subscriptionPC', 'subscriptionMobile', 'pushSubscription'].forEach((nestedKey) => {
         if (value[nestedKey]) {
-            collectSubscriptionsFromValue(value[nestedKey], sink, nextUsernameHint);
+            let nestedTypeHint = nextTypeHint;
+            if (nestedKey === 'subscriptionPC') {
+                nestedTypeHint = 'pc';
+            } else if (nestedKey === 'subscriptionMobile') {
+                nestedTypeHint = 'mobile';
+            }
+            collectSubscriptionsFromValue(value[nestedKey], sink, nextUsernameHint, nestedTypeHint);
         }
     });
 
     ['subscriptions', 'devices', 'rows', 'items', 'data', 'users'].forEach((nestedArrayKey) => {
         if (Array.isArray(value[nestedArrayKey])) {
-            collectSubscriptionsFromValue(value[nestedArrayKey], sink, nextUsernameHint);
+            collectSubscriptionsFromValue(value[nestedArrayKey], sink, nextUsernameHint, nextTypeHint);
         }
     });
 }
@@ -275,14 +1002,137 @@ function collectSubscriptionsFromValue(value, sink, usernameHint = '') {
 function dedupeSubscriptionsByEndpoint(rawSubscriptions = []) {
     const byEndpoint = new Map();
     rawSubscriptions.forEach((rawSubscription) => {
-        const normalized = normalizeSubscriptionRecord(rawSubscription, rawSubscription && rawSubscription.username);
+        const normalized = normalizeSubscriptionRecord(
+            rawSubscription,
+            rawSubscription && rawSubscription.username,
+            rawSubscription && rawSubscription.type
+        );
         if (!normalized) return;
         const existing = byEndpoint.get(normalized.endpoint);
-        if (!existing || (!existing.username && normalized.username)) {
+        if (!existing || (!existing.username && normalized.username) || (!existing.type && normalized.type)) {
             byEndpoint.set(normalized.endpoint, normalized);
         }
     });
     return Array.from(byEndpoint.values());
+}
+
+function normalizeLocalDeviceSubscriptionsRegistry(rawRegistry = {}) {
+    const normalizedRegistry = {};
+    if (!rawRegistry || typeof rawRegistry !== 'object') {
+        return normalizedRegistry;
+    }
+
+    Object.keys(rawRegistry).forEach((rawUserKey) => {
+        const userKey = normalizeUserKey(rawUserKey);
+        const rawSubscriptions = rawRegistry[rawUserKey];
+        if (!userKey || !Array.isArray(rawSubscriptions)) return;
+
+        const normalizedSubscriptions = dedupeSubscriptionsByEndpoint(
+            rawSubscriptions
+                .map((subscription) =>
+                    normalizeSubscriptionRecord(
+                        subscription,
+                        userKey,
+                        subscription && subscription.type
+                    )
+                )
+                .filter(Boolean)
+        )
+            .map((subscription) => ({
+                ...subscription,
+                username: userKey
+            }));
+
+        if (normalizedSubscriptions.length) {
+            normalizedRegistry[userKey] = normalizedSubscriptions;
+        }
+    });
+
+    return normalizedRegistry;
+}
+
+function getLocalDeviceSubscriptionsForUsers(usernames = []) {
+    const requestedUsers = parseUsernamesInput(usernames);
+    if (!requestedUsers.length) return [];
+
+    const collected = [];
+    requestedUsers.forEach((userKey) => {
+        const userSubscriptions = Array.isArray(deviceSubscriptionsByUser[userKey])
+            ? deviceSubscriptionsByUser[userKey]
+            : [];
+        userSubscriptions.forEach((subscription) => {
+            const normalized = normalizeSubscriptionRecord(
+                subscription,
+                userKey,
+                subscription && subscription.type
+            );
+            if (normalized) {
+                normalized.username = userKey;
+                collected.push(normalized);
+            }
+        });
+    });
+    return dedupeSubscriptionsByEndpoint(collected);
+}
+
+function upsertLocalDeviceSubscriptionsFromRegistration(payload = {}) {
+    const username = normalizeUserKey(payload.username || payload.user);
+    if (!username) return 0;
+
+    const defaultTypeHint = normalizeSubscriptionType(
+        payload.deviceType || payload.type || payload.platform
+    );
+    const collected = [];
+    collectSubscriptionsFromValue(payload.subscription, collected, username, defaultTypeHint);
+    collectSubscriptionsFromValue(payload.subscriptionMobile, collected, username, 'mobile');
+    collectSubscriptionsFromValue(payload.subscriptionPC, collected, username, 'pc');
+    if (!collected.length) return 0;
+
+    const existing = Array.isArray(deviceSubscriptionsByUser[username])
+        ? deviceSubscriptionsByUser[username]
+        : [];
+    const merged = dedupeSubscriptionsByEndpoint([...existing, ...collected])
+        .map((subscription) =>
+            normalizeSubscriptionRecord(
+                subscription,
+                username,
+                subscription && subscription.type
+            )
+        )
+        .filter(Boolean)
+        .map((subscription) => ({
+            ...subscription,
+            username
+        }));
+
+    if (!merged.length) return 0;
+    deviceSubscriptionsByUser[username] = merged;
+    return merged.length;
+}
+
+function removeLocalDeviceSubscriptionEndpoint(endpointToRemove) {
+    const normalizedEndpoint = String(endpointToRemove || '').trim();
+    if (!normalizedEndpoint) return false;
+
+    let changed = false;
+    Object.keys(deviceSubscriptionsByUser).forEach((userKey) => {
+        const existing = Array.isArray(deviceSubscriptionsByUser[userKey])
+            ? deviceSubscriptionsByUser[userKey]
+            : [];
+        const filtered = existing.filter(
+            (subscription) => String((subscription && subscription.endpoint) || '').trim() !== normalizedEndpoint
+        );
+        if (filtered.length !== existing.length) {
+            changed = true;
+            if (filtered.length) {
+                deviceSubscriptionsByUser[userKey] = filtered;
+            } else {
+                delete deviceSubscriptionsByUser[userKey];
+            }
+        }
+    });
+
+    return changed;
 }
 
 function extractSubscriptionsFromSheetResponse(sheetResponseBody) {
@@ -326,6 +1176,683 @@ function parseUsernamesInput(rawValue) {
     return Array.from(normalized);
 }
 
+function getClientIpAddress(req) {
+    const forwardedFor = String((req && req.headers && req.headers['x-forwarded-for']) || '').trim();
+    if (forwardedFor) {
+        const first = forwardedFor.split(',')[0].trim();
+        if (first) return first;
+    }
+    return String(
+        (req && req.ip) ||
+        (req && req.socket && req.socket.remoteAddress) ||
+        ''
+    ).trim() || 'unknown';
+}
+
+function consumeRateLimitEntry(store, key, maxAttempts, windowMs) {
+    const now = Date.now();
+    const normalizedKey = String(key || '').trim().toLowerCase();
+    if (!normalizedKey) {
+        return { allowed: true, retryAfterSeconds: 0, remaining: maxAttempts };
+    }
+
+    const existing = Array.isArray(store.get(normalizedKey)) ? store.get(normalizedKey) : [];
+    const threshold = now - windowMs;
+    const recent = existing.filter((timestamp) => Number.isFinite(timestamp) && timestamp > threshold);
+    if (recent.length >= maxAttempts) {
+        const oldestActive = recent[0] || now;
+        const retryAfterMs = Math.max(1000, windowMs - Math.max(0, now - oldestActive));
+        store.set(normalizedKey, recent);
+        return {
+            allowed: false,
+            retryAfterSeconds: Math.ceil(retryAfterMs / 1000),
+            remaining: 0
+        };
+    }
+
+    recent.push(now);
+    store.set(normalizedKey, recent);
+    return {
+        allowed: true,
+        retryAfterSeconds: 0,
+        remaining: Math.max(0, maxAttempts - recent.length)
+    };
+}
+
+function normalizeSameSiteValue(rawValue) {
+    const normalized = String(rawValue || '').trim().toLowerCase();
+    if (normalized === 'none') return 'None';
+    if (normalized === 'strict') return 'Strict';
+    return 'Lax';
+}
+
+function normalizeCookieHost(rawHost) {
+    return normalizeHostValue(rawHost || '').replace(/\.+$/, '');
+}
+
+function shouldUseSecureSessionCookie(req) {
+    if (!SESSION_COOKIE_SECURE) {
+        return false;
+    }
+    const hostHeader = req && req.headers ? req.headers.host : '';
+    const hostname = normalizeCookieHost(hostHeader);
+    if (!hostname) {
+        return true;
+    }
+    return !['localhost', '127.0.0.1', '::1'].includes(hostname);
+}
+
+function parseCookiesFromHeader(cookieHeader) {
+    const result = {};
+    String(cookieHeader || '')
+        .split(';')
+        .forEach((entry) => {
+            const trimmed = String(entry || '').trim();
+            if (!trimmed) return;
+            const separatorIndex = trimmed.indexOf('=');
+            if (separatorIndex <= 0) return;
+            const key = trimmed.slice(0, separatorIndex).trim();
+            if (!key) return;
+            const value = trimmed.slice(separatorIndex + 1).trim();
+            try {
+                result[key] = decodeURIComponent(value);
+            } catch (error) {
+                result[key] = value;
+            }
+        });
+    return result;
+}
+
+function encodeBase64Url(input) {
+    return Buffer.from(String(input || ''), 'utf8')
+        .toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/g, '');
+}
+
+function decodeBase64Url(input) {
+    const normalized = String(input || '').replace(/-/g, '+').replace(/_/g, '/');
+    const remainder = normalized.length % 4;
+    const padding = remainder === 0 ? '' : '='.repeat(4 - remainder);
+    return Buffer.from(normalized + padding, 'base64').toString('utf8');
+}
+
+function signSessionPayload(payload) {
+    if (!SESSION_SIGNING_SECRET) return '';
+    return crypto
+        .createHmac('sha256', SESSION_SIGNING_SECRET)
+        .update(String(payload || ''))
+        .digest('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/g, '');
+}
+
+function safeTimingCompare(leftValue, rightValue) {
+    const leftBuffer = Buffer.from(String(leftValue || ''), 'utf8');
+    const rightBuffer = Buffer.from(String(rightValue || ''), 'utf8');
+    if (leftBuffer.length !== rightBuffer.length) {
+        return false;
+    }
+    return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function generateRandomToken(byteLength = 24) {
+    return crypto
+        .randomBytes(byteLength)
+        .toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/g, '');
+}
+
+function createSessionToken(user) {
+    const normalizedUser = normalizeUserCandidate(user);
+    if (!normalizedUser || !SESSION_SIGNING_SECRET) {
+        return null;
+    }
+    const sessionId = generateRandomToken(18);
+    const csrfToken = generateRandomToken(24);
+    const expiresAt = Date.now() + SESSION_COOKIE_TTL_MS;
+    activeSessionIdByUser.set(normalizedUser, sessionId);
+    const payload = encodeBase64Url(
+        JSON.stringify({
+            user: normalizedUser,
+            expiresAt,
+            sid: sessionId,
+            csrfToken
+        })
+    );
+    const signature = signSessionPayload(payload);
+    if (!signature) {
+        activeSessionIdByUser.delete(normalizedUser);
+        return null;
+    }
+    return {
+        token: `${payload}.${signature}`,
+        expiresAt,
+        sessionId,
+        csrfToken
+    };
+}
+
+function getSessionFromToken(rawToken) {
+    const token = String(rawToken || '').trim();
+    if (!token || !SESSION_SIGNING_SECRET) {
+        return null;
+    }
+
+    const parts = token.split('.');
+    if (parts.length !== 2) {
+        return null;
+    }
+    const payloadEncoded = parts[0];
+    const providedSignature = parts[1];
+    const expectedSignature = signSessionPayload(payloadEncoded);
+    if (!expectedSignature || !safeTimingCompare(providedSignature, expectedSignature)) {
+        return null;
+    }
+
+    try {
+        const parsed = JSON.parse(decodeBase64Url(payloadEncoded));
+        const user = normalizeUserCandidate(parsed && parsed.user);
+        const expiresAt = Number(parsed && parsed.expiresAt);
+        const sessionId = String((parsed && parsed.sid) || '').trim();
+        const csrfToken = String((parsed && parsed.csrfToken) || '').trim();
+        if (!user || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+            return null;
+        }
+        if (!sessionId || !csrfToken) {
+            return null;
+        }
+
+        const activeSessionId = String(activeSessionIdByUser.get(user) || '').trim();
+        if (activeSessionId && activeSessionId !== sessionId) {
+            return null;
+        }
+        if (!activeSessionId) {
+            activeSessionIdByUser.set(user, sessionId);
+        }
+        return {
+            user,
+            expiresAt,
+            sessionId,
+            csrfToken
+        };
+    } catch (error) {
+        return null;
+    }
+}
+
+function setSessionCookie(res, req, tokenValue, expiresAt) {
+    const sameSite = normalizeSameSiteValue(SESSION_COOKIE_SAME_SITE);
+    const secure = shouldUseSecureSessionCookie(req);
+    const maxAgeSeconds = Math.max(1, Math.floor((Number(expiresAt) - Date.now()) / 1000));
+    const cookieParts = [
+        `${SESSION_COOKIE_NAME}=${encodeURIComponent(String(tokenValue || ''))}`,
+        'Path=/',
+        'HttpOnly',
+        `SameSite=${sameSite}`,
+        `Max-Age=${maxAgeSeconds}`,
+        `Expires=${new Date(Date.now() + maxAgeSeconds * 1000).toUTCString()}`
+    ];
+    if (secure) {
+        cookieParts.push('Secure');
+    }
+    res.setHeader('Set-Cookie', cookieParts.join('; '));
+}
+
+function clearSessionCookie(res, req) {
+    const sameSite = normalizeSameSiteValue(SESSION_COOKIE_SAME_SITE);
+    const secure = shouldUseSecureSessionCookie(req);
+    const cookieParts = [
+        `${SESSION_COOKIE_NAME}=`,
+        'Path=/',
+        'HttpOnly',
+        `SameSite=${sameSite}`,
+        'Max-Age=0',
+        'Expires=Thu, 01 Jan 1970 00:00:00 GMT'
+    ];
+    if (secure) {
+        cookieParts.push('Secure');
+    }
+    res.setHeader('Set-Cookie', cookieParts.join('; '));
+}
+
+function extractSessionFromRequest(req) {
+    const cookieMap = parseCookiesFromHeader(req && req.headers ? req.headers.cookie : '');
+    return getSessionFromToken(cookieMap[SESSION_COOKIE_NAME]);
+}
+
+function extractSessionUserFromRequest(req) {
+    const session = extractSessionFromRequest(req);
+    return session && session.user ? session.user : '';
+}
+
+function resolveAuthorizedUser(req, candidateUser, options = {}) {
+    const required = options.required !== false;
+    const sessionUser = normalizeUserCandidate(req && req.authUser);
+    const requestedUser = normalizeUserCandidate(candidateUser);
+
+    if (sessionUser) {
+        if (requestedUser && requestedUser !== sessionUser) {
+            return {
+                user: '',
+                error: 'User mismatch',
+                status: 403
+            };
+        }
+        return { user: sessionUser, error: '', status: 200 };
+    }
+
+    if (!requestedUser && required) {
+        return {
+            user: '',
+            error: 'Missing user',
+            status: 400
+        };
+    }
+
+    return { user: requestedUser, error: '', status: 200 };
+}
+
+function normalizeDeliveryTelemetryValue(rawValue) {
+    const value = Number(rawValue);
+    if (!Number.isFinite(value)) return 0;
+    return Math.max(0, Math.floor(value));
+}
+
+function normalizeDeliveryTelemetryPayload(payload = {}) {
+    const source = payload && typeof payload === 'object' ? payload : {};
+    return {
+        pushPayloadReceived: normalizeDeliveryTelemetryValue(source.pushPayloadReceived),
+        pushImmediateMessageBuilt: normalizeDeliveryTelemetryValue(source.pushImmediateMessageBuilt),
+        pushMessageApplied: normalizeDeliveryTelemetryValue(source.pushMessageApplied),
+        pushMessageNoop: normalizeDeliveryTelemetryValue(source.pushMessageNoop),
+        pushMissingMessageContext: normalizeDeliveryTelemetryValue(source.pushMissingMessageContext),
+        pushRecoveryPullScheduled: normalizeDeliveryTelemetryValue(source.pushRecoveryPullScheduled),
+        ssePayloadReceived: normalizeDeliveryTelemetryValue(source.ssePayloadReceived),
+        sseMessageApplied: normalizeDeliveryTelemetryValue(source.sseMessageApplied),
+        sseMessageNoop: normalizeDeliveryTelemetryValue(source.sseMessageNoop),
+        pollMessagesFetched: normalizeDeliveryTelemetryValue(source.pollMessagesFetched),
+        pollMessagesApplied: normalizeDeliveryTelemetryValue(source.pollMessagesApplied)
+    };
+}
+
+function sumDeliveryTelemetryCounters(counters = {}) {
+    return Object.values(counters).reduce((sum, value) => sum + normalizeDeliveryTelemetryValue(value), 0);
+}
+
+function pruneDeliveryTelemetryStore() {
+    const now = Date.now();
+    for (const [deviceId, entry] of deliveryTelemetryByDevice.entries()) {
+        if (!entry || !entry.lastSeenAt || now - Number(entry.lastSeenAt) > DELIVERY_TELEMETRY_RETENTION_MS) {
+            deliveryTelemetryByDevice.delete(deviceId);
+        }
+    }
+
+    if (deliveryTelemetryByDevice.size <= DELIVERY_TELEMETRY_MAX_DEVICES) {
+        return;
+    }
+
+    const sorted = Array.from(deliveryTelemetryByDevice.entries()).sort((a, b) => {
+        const aSeen = Number(a[1] && a[1].lastSeenAt) || 0;
+        const bSeen = Number(b[1] && b[1].lastSeenAt) || 0;
+        return aSeen - bSeen;
+    });
+    const overflow = Math.max(0, sorted.length - DELIVERY_TELEMETRY_MAX_DEVICES);
+    for (let index = 0; index < overflow; index += 1) {
+        deliveryTelemetryByDevice.delete(sorted[index][0]);
+    }
+}
+
+function recordDeliveryTelemetryLog({ user = '', payload = {}, timestamp = 0, req = null }) {
+    const counters = normalizeDeliveryTelemetryPayload(payload);
+    if (sumDeliveryTelemetryCounters(counters) <= 0) {
+        return;
+    }
+
+    const normalizedUser = normalizeUserCandidate(user);
+    const safePayload = payload && typeof payload === 'object' ? payload : {};
+    const rawDeviceId = String(safePayload.deviceId || '').trim();
+    if (!rawDeviceId) {
+        return;
+    }
+    const deviceId = rawDeviceId.slice(0, 120);
+    const entryAt = Number(timestamp) || Date.now();
+    const existing = deliveryTelemetryByDevice.get(deviceId) || {
+        deviceId,
+        user: normalizedUser || null,
+        firstSeenAt: entryAt,
+        lastSeenAt: entryAt,
+        flushCount: 0,
+        counters: normalizeDeliveryTelemetryPayload({})
+    };
+
+    const mergedCounters = { ...existing.counters };
+    Object.keys(counters).forEach((key) => {
+        mergedCounters[key] = normalizeDeliveryTelemetryValue(mergedCounters[key]) + normalizeDeliveryTelemetryValue(counters[key]);
+    });
+
+    deliveryTelemetryByDevice.set(deviceId, {
+        ...existing,
+        user: normalizedUser || existing.user || null,
+        activeChatId: typeof safePayload.activeChatId === 'string' ? safePayload.activeChatId : (existing.activeChatId || null),
+        inForeground: Boolean(safePayload.inForeground),
+        networkOnline: Boolean(safePayload.networkOnline),
+        unreadTotal: normalizeDeliveryTelemetryValue(safePayload.unreadTotal),
+        ip: getClientIpAddress(req),
+        lastSeenAt: entryAt,
+        flushCount: normalizeDeliveryTelemetryValue(existing.flushCount) + 1,
+        counters: mergedCounters
+    });
+    pruneDeliveryTelemetryStore();
+}
+
+function buildGoogleSheetGetUrl(queryParams = {}, options = {}) {
+    const url = new URL(GOOGLE_SHEET_URL);
+    Object.entries(queryParams || {}).forEach(([key, value]) => {
+        if (value === undefined || value === null) return;
+        const normalizedValue = String(value).trim();
+        if (!normalizedValue) return;
+        url.searchParams.set(key, normalizedValue);
+    });
+    const token = String(
+        Object.prototype.hasOwnProperty.call(options, 'token')
+            ? (options && options.token)
+            : APP_SERVER_TOKEN
+    ).trim();
+    if (token) {
+        url.searchParams.set('token', token);
+    }
+    return url.toString();
+}
+
+function normalizeAuthCode(value) {
+    return String(value || '').replace(/\D/g, '').slice(0, AUTH_CODE_DIGITS);
+}
+
+function generateAuthCode() {
+    const min = Math.pow(10, AUTH_CODE_DIGITS - 1);
+    const max = Math.pow(10, AUTH_CODE_DIGITS) - 1;
+    return String(min + Math.floor(Math.random() * (max - min + 1)));
+}
+
+function escapeXmlValue(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+}
+
+function formatAuthCodeSmsMessage(code) {
+    const template = AUTH_CODE_SMS_TEMPLATE || 'קוד אימות לכניסה לאפליקציה: {{code}}';
+    if (template.includes('{{code}}')) {
+        return template.replace(/\{\{code\}\}/g, String(code || ''));
+    }
+    return `${template} ${code}`;
+}
+
+function extractInforuStatusCode(rawResponse) {
+    const match = String(rawResponse || '').match(/<Status>\s*([^<\s]+)\s*<\/Status>/i);
+    return match ? String(match[1] || '').trim() : '';
+}
+
+function extractInforuStatusDescription(rawResponse) {
+    const source = String(rawResponse || '');
+    const candidateTags = ['Description', 'StatusDescription', 'ErrorDescription', 'Error', 'Message'];
+    for (const tag of candidateTags) {
+        const expression = new RegExp(`<${tag}>\\s*([^<]+?)\\s*<\\/${tag}>`, 'i');
+        const match = source.match(expression);
+        if (match && String(match[1] || '').trim()) {
+            return String(match[1] || '').trim();
+        }
+    }
+    return '';
+}
+
+function buildInforuSmsXmlPayload({
+    username,
+    apiToken,
+    message,
+    phone,
+    sender,
+    includeSender
+}) {
+    const escapedUsername = escapeXmlValue(username);
+    const escapedToken = escapeXmlValue(apiToken);
+    const escapedMessage = escapeXmlValue(message);
+    const escapedPhone = escapeXmlValue(phone);
+    const escapedSender = escapeXmlValue(sender || '');
+    const xmlParts = [
+        '<Inforu>',
+        '<User>',
+        `<Username>${escapedUsername}</Username>`,
+        `<ApiToken>${escapedToken}</ApiToken>`,
+        '</User>',
+        '<Content Type="sms">',
+        `<Message>${escapedMessage}</Message>`,
+        '</Content>',
+        '<Recipients>',
+        `<PhoneNumber>${escapedPhone}</PhoneNumber>`,
+        '</Recipients>'
+    ];
+    if (includeSender && escapedSender) {
+        xmlParts.push(
+            '<Settings>',
+            `<Sender>${escapedSender}</Sender>`,
+            '</Settings>'
+        );
+    }
+    xmlParts.push('</Inforu>');
+    return xmlParts.join('');
+}
+
+async function postInforuSmsXml(xmlPayload) {
+    const encodedPayload = new URLSearchParams({ InforuXML: xmlPayload }).toString();
+    const response = await fetchWithRetry(
+        INFORU_SMS_URL,
+        {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+            },
+            body: encodedPayload
+        },
+        { timeoutMs: 15000, retries: 1, backoffMs: 700 }
+    );
+    const rawResponse = await response.text();
+    const statusCode = extractInforuStatusCode(rawResponse);
+    const description = extractInforuStatusDescription(rawResponse);
+    return {
+        ok: Boolean(response.ok && statusCode === '1'),
+        statusCode,
+        description,
+        httpStatus: response.status
+    };
+}
+
+function resolveAuthCodeSmsDestination(user) {
+    const normalizedUser = normalizeUserCandidate(user);
+    if (!normalizedUser) return '';
+    return AUTH_CODE_SMS_DESTINATION_OVERRIDES.get(normalizedUser) || normalizedUser;
+}
+
+async function sendAuthCodeSms(user, code) {
+    if (!INFORU_USERNAME || !INFORU_API_TOKEN) {
+        throw new Error('SMS gateway configuration missing (INFORU_USERNAME / INFORU_API_TOKEN)');
+    }
+    const normalizedUser = normalizeUserCandidate(user);
+    const smsDestination = resolveAuthCodeSmsDestination(normalizedUser);
+    const normalizedCode = normalizeAuthCode(code);
+    if (!SESSION_USER_PATTERN.test(normalizedUser) || !SESSION_USER_PATTERN.test(smsDestination) || !AUTH_CODE_PATTERN.test(normalizedCode)) {
+        throw new Error('Invalid SMS verification payload');
+    }
+
+    const message = formatAuthCodeSmsMessage(normalizedCode);
+    const primaryXmlPayload = buildInforuSmsXmlPayload({
+        username: INFORU_USERNAME,
+        apiToken: INFORU_API_TOKEN,
+        message,
+        phone: smsDestination,
+        sender: INFORU_SENDER,
+        includeSender: true
+    });
+    let sendResult = await postInforuSmsXml(primaryXmlPayload);
+
+    // Some InforU accounts reject a sender alias and accept account default.
+    if (!sendResult.ok && sendResult.statusCode === '-17' && INFORU_SENDER) {
+        const fallbackXmlPayload = buildInforuSmsXmlPayload({
+            username: INFORU_USERNAME,
+            apiToken: INFORU_API_TOKEN,
+            message,
+            phone: smsDestination,
+            sender: '',
+            includeSender: false
+        });
+        sendResult = await postInforuSmsXml(fallbackXmlPayload);
+    }
+
+    if (!sendResult.ok) {
+        const statusPart = sendResult.statusCode || `HTTP-${sendResult.httpStatus || 'n/a'}`;
+        const descriptionPart = sendResult.description ? `: ${sendResult.description}` : '';
+        throw new Error(`SMS gateway rejected request (${statusPart}${descriptionPart})`);
+    }
+}
+
+async function setAuthCodeOnSubscribeSheet(user, code) {
+    const normalizedUser = normalizeUserCandidate(user);
+    const normalizedCode = normalizeAuthCode(code);
+    if (!SESSION_USER_PATTERN.test(normalizedUser) || !AUTH_CODE_PATTERN.test(normalizedCode)) {
+        throw new Error('Invalid verification code payload');
+    }
+
+    const response = await fetchWithRetry(
+        GOOGLE_SHEET_URL,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: 'set_login_code',
+                user: normalizedUser,
+                code: normalizedCode,
+                ttlSeconds: AUTH_CODE_TTL_SECONDS,
+                token: AUTH_CODE_SHEET_TOKEN
+            })
+        },
+        { timeoutMs: 15000, retries: 2, backoffMs: 600 }
+    );
+    if (!response.ok) {
+        throw new Error(`Failed to persist verification code (${response.status})`);
+    }
+    const payload = await response.json();
+    if (!payload || payload.result !== 'success') {
+        throw new Error(payload && payload.message ? payload.message : 'Sheet update failed');
+    }
+}
+
+async function verifyAuthCodeFromSubscribeSheet(user, code) {
+    const normalizedUser = normalizeUserCandidate(user);
+    const normalizedCode = normalizeAuthCode(code);
+    if (!SESSION_USER_PATTERN.test(normalizedUser) || !AUTH_CODE_PATTERN.test(normalizedCode)) {
+        return false;
+    }
+
+    const response = await fetchWithRetry(
+        GOOGLE_SHEET_URL,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: 'verify_login_code',
+                user: normalizedUser,
+                code: normalizedCode,
+                token: AUTH_CODE_SHEET_TOKEN
+            })
+        },
+        { timeoutMs: 15000, retries: 1, backoffMs: 500 }
+    );
+    if (!response.ok) {
+        throw new Error(`Failed to verify code (${response.status})`);
+    }
+    const payload = await response.json();
+    return Boolean(payload && payload.result === 'success' && payload.verified === true);
+}
+
+async function ensureRequestedUserCanAuthenticate(requestedUser) {
+    if (!AUTH_SESSION_REQUIRE_CONTACT_VERIFICATION) {
+        return { ok: true, status: 200, message: '' };
+    }
+    const response = await fetchWithRetry(
+        buildGoogleSheetGetUrl({ action: 'get_contacts', user: requestedUser }),
+        {},
+        { timeoutMs: 10000, retries: 1, backoffMs: 500 }
+    );
+    if (!response.ok) {
+        return { ok: false, status: 502, message: 'Unable to verify user' };
+    }
+    const contactsPayload = await response.json();
+    const users = Array.isArray(contactsPayload && contactsPayload.users) ? contactsPayload.users : [];
+    if (!users.length) {
+        return { ok: false, status: 403, message: 'Unauthorized user' };
+    }
+    return { ok: true, status: 200, message: '' };
+}
+
+function ensureRegistrationFlowOnly(req, requestedUser) {
+    const sessionUser = normalizeUserCandidate(req && req.authUser);
+    if (!sessionUser) {
+        return { ok: true, status: 200, message: '' };
+    }
+    if (sessionUser === requestedUser) {
+        return {
+            ok: false,
+            status: 403,
+            message: 'Authenticated users cannot request registration SMS code'
+        };
+    }
+    return {
+        ok: false,
+        status: 403,
+        message: 'User mismatch'
+    };
+}
+
+async function ensureRequestedUserIsRegistered(requestedUser) {
+    const normalizedUser = normalizeUserCandidate(requestedUser);
+    if (!SESSION_USER_PATTERN.test(normalizedUser)) {
+        return { ok: false, status: 400, message: 'Invalid user' };
+    }
+    try {
+        const response = await fetchWithRetry(
+            buildGoogleSheetGetUrl({ action: 'check_auth', user: normalizedUser }),
+            {},
+            { timeoutMs: 10000, retries: 1, backoffMs: 500 }
+        );
+        if (!response.ok) {
+            return { ok: false, status: 502, message: 'Unable to verify registered user' };
+        }
+        const payload = await response.json();
+        const status = String(payload && payload.status ? payload.status : '').trim().toLowerCase();
+        const isActive = payload && Object.prototype.hasOwnProperty.call(payload, 'isActive')
+            ? Boolean(payload.isActive)
+            : status === 'success';
+        if (status === 'success' && isActive) {
+            return { ok: true, status: 200, message: '' };
+        }
+        const backendMessage = String(payload && payload.message ? payload.message : '').trim();
+        if (backendMessage && /inactive/i.test(backendMessage)) {
+            return { ok: false, status: 403, message: 'User inactive' };
+        }
+        return { ok: false, status: 403, message: 'Unauthorized user' };
+    } catch (error) {
+        return { ok: false, status: 502, message: 'Unable to verify registered user' };
+    }
+}
+
 function extractUsernamesFromContactsResponse(payload = {}) {
     const extracted = new Set();
     const candidateArrays = [];
@@ -355,7 +1882,7 @@ async function fetchContactUsernamesForUser(userKey) {
     if (!userKey) return [];
     try {
         const response = await fetchWithRetry(
-            `${GOOGLE_SHEET_URL}?action=get_contacts&user=${encodeURIComponent(userKey)}`,
+            buildGoogleSheetGetUrl({ action: 'get_contacts', user: userKey }),
             {},
             { timeoutMs: 10000, retries: 1, backoffMs: 500 }
         );
@@ -454,9 +1981,9 @@ async function getAllSubscriptionsForAuthRefresh(options = {}) {
     requestedUsers.forEach((userKey) => addUserToSet(discoveredUsers, userKey));
 
     const sheetUrls = [
-        `${GOOGLE_SHEET_URL}?usernames=${encodeURIComponent('all')}`,
-        `${GOOGLE_SHEET_URL}?action=get_all_subscriptions`,
-        `${GOOGLE_SHEET_URL}?action=get_subscriptions`
+        buildGoogleSheetGetUrl({ usernames: 'all' }),
+        buildGoogleSheetGetUrl({ action: 'get_all_subscriptions' }),
+        buildGoogleSheetGetUrl({ action: 'get_subscriptions' })
     ];
     for (const url of sheetUrls) {
         const fromSheet = await fetchSubscriptionsFromSheetUrl(url);
@@ -468,6 +1995,10 @@ async function getAllSubscriptionsForAuthRefresh(options = {}) {
     for (const cacheEntry of subscriptionCache.values()) {
         if (!cacheEntry || !Array.isArray(cacheEntry.subscriptions)) continue;
         collectSubscriptionsFromValue(cacheEntry.subscriptions, collected);
+    }
+    for (const userSubscriptions of Object.values(deviceSubscriptionsByUser)) {
+        if (!Array.isArray(userSubscriptions) || !userSubscriptions.length) continue;
+        collectSubscriptionsFromValue(userSubscriptions, collected);
     }
 
     dedupeSubscriptionsByEndpoint(collected).forEach((subscription) => {
@@ -582,6 +2113,9 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
     const refreshReason = (typeof jobContext.reason === 'string' && jobContext.reason.trim()) || 'manual';
     const initiatedBy = (typeof jobContext.initiatedBy === 'string' && jobContext.initiatedBy.trim()) || 'api';
     const requestedUsers = parseUsernamesInput(jobContext.usernames);
+    const requestedDeviceTypes = parseSubscriptionDeviceTypesInput(jobContext.deviceTypes || jobContext.deviceType);
+    const excludeIosEndpoints = Boolean(jobContext.excludeIosEndpoints);
+    const allowStaleCleanup = jobContext.allowStaleCleanup !== false;
 
     let resultSummary = {
         requestId,
@@ -591,6 +2125,8 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
         reason: refreshReason,
         forceResubscribe,
         requestedUserCount: requestedUsers.length,
+        requestedDeviceTypes,
+        excludeIosEndpoints,
         discoveredUserCount: 0,
         targeted: 0,
         success: 0,
@@ -600,7 +2136,15 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
 
     try {
         const discoveryResult = await getAllSubscriptionsForAuthRefresh({ usernames: requestedUsers });
-        const subscriptions = Array.isArray(discoveryResult.subscriptions) ? discoveryResult.subscriptions : [];
+        const allDiscoveredSubscriptions = Array.isArray(discoveryResult.subscriptions) ? discoveryResult.subscriptions : [];
+        const subscriptionsByType = requestedDeviceTypes.length
+            ? allDiscoveredSubscriptions.filter((subscription) =>
+                requestedDeviceTypes.includes(normalizeSubscriptionType(subscription && subscription.type))
+            )
+            : allDiscoveredSubscriptions;
+        const subscriptions = excludeIosEndpoints
+            ? subscriptionsByType.filter((subscription) => !isAppleWebPushEndpoint(subscription && subscription.endpoint))
+            : subscriptionsByType;
         const discoveredUsers = Array.isArray(discoveryResult.discoveredUsers) ? discoveryResult.discoveredUsers : [];
         resultSummary.discoveredUserCount = discoveredUsers.length;
         if (discoveredUsers.length) {
@@ -654,7 +2198,7 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
                 };
             } catch (error) {
                 const statusCode = error && error.statusCode;
-                if (statusCode === 404 || statusCode === 410) {
+                if (allowStaleCleanup && (statusCode === 404 || statusCode === 410)) {
                     pruneSubscriptionCacheEndpoint(subscription.endpoint);
                 }
                 return {
@@ -697,7 +2241,7 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
             .filter((result) => !result.ok && (result.statusCode === 404 || result.statusCode === 410))
             .map((result) => result.endpoint)
             .filter(Boolean);
-        if (staleEndpoints.length) {
+        if (allowStaleCleanup && staleEndpoints.length) {
             resultSummary.staleCleanup = await removeStaleSubscriptionsFromSheet(staleEndpoints);
         }
 
@@ -844,6 +2388,296 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
     return resultSummary;
 }
 
+function getNextAuthRefreshSchedulerRunDate(baseDate = new Date()) {
+    const now = baseDate instanceof Date ? baseDate : new Date();
+    const nextRun = new Date(now.getTime());
+    nextRun.setHours(
+        AUTH_REFRESH_SCHEDULER_DAILY_TIME.hour,
+        AUTH_REFRESH_SCHEDULER_DAILY_TIME.minute,
+        AUTH_REFRESH_SCHEDULER_DAILY_TIME.second,
+        0
+    );
+    if (nextRun.getTime() <= now.getTime()) {
+        nextRun.setDate(nextRun.getDate() + 1);
+    }
+    return nextRun;
+}
+
+function startSubscriptionAuthRefreshScheduler() {
+    if (authRefreshSchedulerStarted) {
+        return;
+    }
+    authRefreshSchedulerStarted = true;
+
+    if (!AUTH_REFRESH_SCHEDULER_ENABLED) {
+        console.log('[AUTH REFRESH] Scheduler disabled by AUTH_REFRESH_SCHEDULER_ENABLED=false.');
+        return;
+    }
+
+    const runScheduledRefresh = () => {
+        runSubscriptionAuthRefreshJob({
+            requestId: generateMessageId(),
+            reason: 'scheduled-daily-keepalive',
+            initiatedBy: 'scheduler',
+            forceResubscribe: AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE,
+            deviceTypes: AUTH_REFRESH_SCHEDULER_DEVICE_TYPES,
+            excludeIosEndpoints: AUTH_REFRESH_SCHEDULER_EXCLUDE_IOS_ENDPOINTS,
+            allowStaleCleanup: false
+        })
+            .then((summary) => {
+                if (!summary || summary.status === 'running') {
+                    return;
+                }
+                console.log(
+                    `[AUTH REFRESH] Scheduler run ${summary.requestId || 'n/a'} | targeted=${summary.targeted || 0} success=${summary.success || 0} failed=${summary.failed || 0}`
+                );
+            })
+            .catch((error) => {
+                console.error('[AUTH REFRESH] Scheduler run failed:', error && error.message ? error.message : error);
+            });
+    };
+
+    const scheduleNextRun = () => {
+        const now = new Date();
+        const nextRun = getNextAuthRefreshSchedulerRunDate(now);
+        const delayMs = Math.max(1000, nextRun.getTime() - now.getTime());
+        setTimeout(() => {
+            runScheduledRefresh();
+            scheduleNextRun();
+        }, delayMs);
+        console.log(
+            `[AUTH REFRESH] Next scheduler run at ${nextRun.toISOString()} (local ${AUTH_REFRESH_SCHEDULER_DAILY_TIME.label})`
+        );
+    };
+
+    scheduleNextRun();
+    console.log(
+        `[AUTH REFRESH] Scheduler armed | dailyLocalTime=${AUTH_REFRESH_SCHEDULER_DAILY_TIME.label} | deviceTypes=${AUTH_REFRESH_SCHEDULER_DEVICE_TYPES || 'all'} | excludeIosEndpoints=${AUTH_REFRESH_SCHEDULER_EXCLUDE_IOS_ENDPOINTS} | forceResubscribe=${AUTH_REFRESH_SCHEDULER_FORCE_RESUBSCRIBE}`
+    );
+}
+
+async function runMobileReregisterPromptCampaign(jobContext = {}) {
+    if (mobileReregisterCampaignState.running) {
+        return {
+            status: 'running',
+            message: 'Mobile re-register prompt campaign is already running.'
+        };
+    }
+
+    mobileReregisterCampaignState.running = true;
+    const startedAt = Date.now();
+    const requestId = jobContext.requestId || generateMessageId();
+    const campaignId = sanitizeCampaignId(jobContext.campaignId);
+    const requestedUsers = parseUsernamesInput(jobContext.usernames);
+    const requestedDeviceTypes = parseSubscriptionDeviceTypesInput(jobContext.deviceTypes || jobContext.deviceType);
+    const effectiveDeviceTypes = requestedDeviceTypes.length ? requestedDeviceTypes : ['mobile', 'pc'];
+    const oneTime = parseBooleanInput(jobContext.oneTime, true);
+    const force = parseBooleanInput(jobContext.force, false);
+    const requireInteraction = parseBooleanInput(jobContext.requireInteraction, true);
+    const maxTargets = parsePositiveInteger(jobContext.maxTargets, 0);
+    const title = (typeof jobContext.title === 'string' && jobContext.title.trim())
+        ? jobContext.title.trim()
+        : MOBILE_REREGISTER_DEFAULT_TITLE;
+    const body = (typeof jobContext.body === 'string' && jobContext.body.trim())
+        ? jobContext.body.trim()
+        : MOBILE_REREGISTER_DEFAULT_BODY;
+    const url = (typeof jobContext.url === 'string' && jobContext.url.trim())
+        ? jobContext.url.trim()
+        : MOBILE_REREGISTER_DEFAULT_URL;
+
+    let summary = {
+        requestId,
+        campaignId,
+        startedAt,
+        finishedAt: startedAt,
+        requestedUserCount: requestedUsers.length,
+        requestedDeviceTypes: effectiveDeviceTypes,
+        oneTime,
+        force,
+        discoveredUserCount: 0,
+        discoveredSubscriptions: 0,
+        targetCandidates: 0,
+        targeted: 0,
+        skippedAlreadySent: 0,
+        skippedMissingUser: 0,
+        skippedByLimit: 0,
+        success: 0,
+        failed: 0,
+        failures: []
+    };
+
+    try {
+        const discoveryResult = await getAllSubscriptionsForAuthRefresh({ usernames: requestedUsers });
+        const discoveredUsers = Array.isArray(discoveryResult.discoveredUsers) ? discoveryResult.discoveredUsers : [];
+        const allDiscoveredSubscriptions = Array.isArray(discoveryResult.subscriptions)
+            ? discoveryResult.subscriptions
+            : [];
+        const includeUnknownType = effectiveDeviceTypes.includes('mobile') && effectiveDeviceTypes.includes('pc');
+        const filteredSubscriptions = allDiscoveredSubscriptions
+            .filter((subscription) => {
+                const subscriptionType = normalizeSubscriptionType(subscription && subscription.type);
+                if (!subscriptionType) return includeUnknownType;
+                return effectiveDeviceTypes.includes(subscriptionType);
+            });
+        summary.discoveredUserCount = discoveredUsers.length;
+        summary.discoveredSubscriptions = filteredSubscriptions.length;
+
+        if (!filteredSubscriptions.length) {
+            summary.finishedAt = Date.now();
+            summary.warning = 'No subscriptions discovered for requested device scope.';
+            mobileReregisterCampaignState.lastRunAt = summary.finishedAt;
+            mobileReregisterCampaignState.lastResult = summary;
+            return summary;
+        }
+
+        const targetCandidates = dedupeSubscriptionsByEndpoint(filteredSubscriptions);
+        summary.targetCandidates = targetCandidates.length;
+        const sentTargetsSet = getCampaignSentTargetsSet(campaignId);
+        const targets = [];
+        targetCandidates.forEach((subscription) => {
+            const endpoint = typeof subscription.endpoint === 'string' ? subscription.endpoint.trim() : '';
+            const userKey = normalizeUserKey(subscription && (subscription.username || subscription.user));
+            if (!endpoint) {
+                summary.skippedMissingUser += 1;
+                return;
+            }
+            if (!userKey) {
+                summary.skippedMissingUser += 1;
+                return;
+            }
+            if (oneTime && !force && sentTargetsSet.has(endpoint)) {
+                summary.skippedAlreadySent += 1;
+                return;
+            }
+            targets.push({ ...subscription, username: userKey, endpoint });
+        });
+
+        if (maxTargets > 0 && targets.length > maxTargets) {
+            summary.skippedByLimit = targets.length - maxTargets;
+            targets.length = maxTargets;
+        }
+        summary.targeted = targets.length;
+
+        if (!targets.length) {
+            summary.finishedAt = Date.now();
+            summary.warning = 'No eligible subscriptions after one-time filters.';
+            mobileReregisterCampaignState.lastRunAt = summary.finishedAt;
+            mobileReregisterCampaignState.lastResult = summary;
+            return summary;
+        }
+
+        const deliveredUsers = new Set();
+        const deliveredEndpoints = new Set();
+        const failures = [];
+
+        for (let i = 0; i < targets.length; i += MOBILE_REREGISTER_SEND_CONCURRENCY) {
+            const batch = targets.slice(i, i + MOBILE_REREGISTER_SEND_CONCURRENCY);
+            const batchResults = await Promise.all(batch.map(async (subscription) => {
+                const pushPayload = JSON.stringify({
+                    data: {
+                        type: MOBILE_REREGISTER_PUSH_TYPE,
+                        title,
+                        body,
+                        user: subscription.username || '',
+                        url,
+                        requireInteraction,
+                        skipNotification: false,
+                        campaignId,
+                        sender: 'System',
+                        messageId: requestId
+                    }
+                });
+
+                try {
+                    await webpush.sendNotification(
+                        subscription,
+                        pushPayload,
+                        {
+                            TTL: MOBILE_REREGISTER_PUSH_TTL_SECONDS,
+                            headers: { Urgency: MOBILE_REREGISTER_PUSH_URGENCY },
+                            timeout: 15000
+                        }
+                    );
+                    return {
+                        ok: true,
+                        user: subscription.username,
+                        endpoint: subscription.endpoint
+                    };
+                } catch (error) {
+                    return {
+                        ok: false,
+                        user: subscription.username,
+                        statusCode: error && error.statusCode ? error.statusCode : null,
+                        error: error && error.message ? error.message : 'Unknown push error'
+                    };
+                }
+            }));
+
+            batchResults.forEach((result) => {
+                if (result.ok) {
+                    summary.success += 1;
+                    deliveredUsers.add(normalizeUserKey(result.user));
+                    if (result.endpoint) {
+                        deliveredEndpoints.add(result.endpoint);
+                    }
+                } else {
+                    summary.failed += 1;
+                    failures.push({
+                        user: result.user || null,
+                        statusCode: result.statusCode || null,
+                        error: result.error || 'Unknown'
+                    });
+                }
+            });
+        }
+
+        failures
+            .slice(0, AUTH_REFRESH_FAILURE_DETAILS_LIMIT)
+            .forEach((failure) => summary.failures.push(failure));
+
+        deliveredEndpoints.forEach((endpoint) => {
+            if (endpoint) sentTargetsSet.add(endpoint);
+        });
+        summary.finishedAt = Date.now();
+        summary.sentUsersSample = Array.from(deliveredUsers).slice(0, 120);
+        summary.sentTargetsCountForCampaign = getCampaignSentCount(campaignId);
+
+        const detailParts = [
+            `requestId=${requestId}`,
+            `campaignId=${campaignId}`,
+            `requestedUserCount=${summary.requestedUserCount}`,
+            `targeted=${summary.targeted}`,
+            `success=${summary.success}`,
+            `failed=${summary.failed}`,
+            `skippedAlreadySent=${summary.skippedAlreadySent}`,
+            `skippedByLimit=${summary.skippedByLimit}`,
+            `deviceTypes=${effectiveDeviceTypes.join(',')}`,
+            `oneTime=${oneTime}`,
+            `force=${force}`,
+            `campaignSentTargets=${summary.sentTargetsCountForCampaign}`
+        ];
+        const statusText = summary.success > 0 ? 'Sent' : 'Failed';
+        logNotificationStatus(
+            'System',
+            requestedUsers.length ? requestedUsers.join(',') : 'ALL',
+            'Device re-register prompt campaign',
+            statusText,
+            detailParts.join(' | ')
+        );
+    } catch (error) {
+        summary.finishedAt = Date.now();
+        summary.error = error && error.message ? error.message : 'Unknown campaign error';
+        summary.failed = summary.targeted || summary.failed || 1;
+        console.error('[MOBILE REREGISTER] Campaign failed:', summary.error);
+    } finally {
+        mobileReregisterCampaignState.running = false;
+        mobileReregisterCampaignState.lastRunAt = Date.now();
+        mobileReregisterCampaignState.lastResult = summary;
+    }
+
+    return summary;
+}
+
 function upsertGroup(payload = {}) {
     const groupId = payload.groupId;
     const groupName = typeof payload.groupName === 'string' ? payload.groupName.trim() : payload.groupName;
@@ -876,6 +2710,11 @@ async function loadState() {
         unreadCounts = (data.unreadCounts && typeof data.unreadCounts === 'object') ? data.unreadCounts : {};
         messageQueue = (data.messageQueue && typeof data.messageQueue === 'object') ? data.messageQueue : {};
         groups = (data.groups && typeof data.groups === 'object') ? data.groups : {};
+        deviceSubscriptionsByUser = normalizeLocalDeviceSubscriptionsRegistry(
+            (data.deviceSubscriptionsByUser && typeof data.deviceSubscriptionsByUser === 'object')
+                ? data.deviceSubscriptionsByUser
+                : {}
+        );
         console.log('[STATE] Loaded persisted state.');
     } catch (err) {
         if (err.code !== 'ENOENT') {
@@ -886,7 +2725,7 @@ async function loadState() {
 
 async function persistState() {
     try {
-        const payload = JSON.stringify({ unreadCounts, messageQueue, groups });
+        const payload = JSON.stringify({ unreadCounts, messageQueue, groups, deviceSubscriptionsByUser });
         const tmpFile = `${stateFile}.tmp`;
         await fsp.writeFile(tmpFile, payload, 'utf8');
         await fsp.rename(tmpFile, stateFile);
@@ -1064,15 +2903,31 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
         return cached.subscriptions;
     }
 
+    const requestedUsersSet = new Set(
+        parseUsernamesInput(requestUserList).map(normalizeUserKey).filter(Boolean)
+    );
+    const normalizeLookupSubscriptions = (payload) => {
+        const extracted = extractSubscriptionsFromSheetResponse(payload);
+        if (!extracted.length) return [];
+        return extracted.filter((subscription) => {
+            const subscriptionUser = normalizeUserKey(
+                subscription && (subscription.username || subscription.user)
+            );
+            if (!subscriptionUser) return false;
+            if (!requestedUsersSet.size) return true;
+            return requestedUsersSet.has(subscriptionUser);
+        });
+    };
+
     try {
         const response = await fetchWithRetry(
-            `${GOOGLE_SHEET_URL}?usernames=${encodeURIComponent(requestUserList)}`,
+            buildGoogleSheetGetUrl({ usernames: requestUserList }),
             {},
             { timeoutMs: 12000, retries: 2, backoffMs: 500 }
         );
         const result = await response.json();
-        if (Array.isArray(result.subscriptions)) {
-            const subscriptions = result.subscriptions.filter(Boolean);
+        const subscriptions = normalizeLookupSubscriptions(result);
+        if (subscriptions.length) {
             subscriptionCache.set(cacheKey, { at: now, subscriptions });
             return subscriptions;
         }
@@ -1082,12 +2937,260 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
         return cached ? cached.subscriptions : [];
     }
 }
+
+app.use((req, _res, next) => {
+    const authSession = extractSessionFromRequest(req);
+    req.authSession = authSession || null;
+    req.authUser = authSession && authSession.user ? authSession.user : '';
+    next();
+});
+
+app.use((req, res, next) => {
+    if (!CSRF_PROTECTION_ENABLED) {
+        return next();
+    }
+
+    const method = String(req.method || 'GET').toUpperCase();
+    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+        return next();
+    }
+
+    const requestPath = String(req.path || '').trim();
+    const isAuthSessionPath = requestPath === '/auth/session' || requestPath === '/notify/auth/session';
+    if (isAuthSessionPath && method === 'POST') {
+        return next();
+    }
+
+    const session = req.authSession && typeof req.authSession === 'object'
+        ? req.authSession
+        : null;
+    if (!session || !session.user) {
+        return next();
+    }
+
+    const csrfHeader = String(req.headers[CSRF_HEADER_NAME] || '').trim();
+    if (!csrfHeader || csrfHeader !== String(session.csrfToken || '')) {
+        return res.status(403).json({ error: 'Invalid CSRF token' });
+    }
+
+    return next();
+});
+
+app.get(['/auth/session', '/notify/auth/session'], (req, res) => {
+    const user = normalizeUserCandidate(req.authUser);
+    const authSession = req.authSession && typeof req.authSession === 'object' ? req.authSession : null;
+    if (!user) {
+        return res.json({ authenticated: false, user: null });
+    }
+    return res.json({
+        authenticated: true,
+        user,
+        csrfToken: authSession && authSession.csrfToken ? authSession.csrfToken : null
+    });
+});
+
+app.post(['/auth/session', '/notify/auth/session'], (_req, res) => {
+    return res.status(410).json({
+        status: 'error',
+        message: 'Direct login is disabled. Use SMS verification code flow.',
+        verificationRequired: true,
+        legacyLoginDisabled: true
+    });
+});
+
+app.post(['/auth/session/request-code', '/notify/auth/session/request-code'], async (req, res) => {
+    const payload = req.body && typeof req.body === 'object' ? req.body : {};
+    const requestedUser = normalizeUserCandidate(payload.username || payload.user || payload.phone);
+    if (!SESSION_USER_PATTERN.test(requestedUser)) {
+        return res.status(400).json({ status: 'error', message: 'Invalid user' });
+    }
+    const registrationFlowCheck = ensureRegistrationFlowOnly(req, requestedUser);
+    if (!registrationFlowCheck.ok) {
+        return res.status(registrationFlowCheck.status).json({
+            status: 'error',
+            message: registrationFlowCheck.message
+        });
+    }
+
+    const clientIp = getClientIpAddress(req);
+    const ipLimit = consumeRateLimitEntry(
+        authCodeRequestRateLimitByIp,
+        clientIp,
+        AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_IP,
+        AUTH_CODE_RATE_LIMIT_WINDOW_MS
+    );
+    const userLimit = consumeRateLimitEntry(
+        authCodeRequestRateLimitByUser,
+        requestedUser,
+        AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_USER,
+        AUTH_CODE_RATE_LIMIT_WINDOW_MS
+    );
+    if (!ipLimit.allowed || !userLimit.allowed) {
+        const retryAfterSeconds = Math.max(ipLimit.retryAfterSeconds || 0, userLimit.retryAfterSeconds || 0, 1);
+        res.setHeader('Retry-After', String(retryAfterSeconds));
+        return res.status(429).json({
+            status: 'error',
+            message: 'Too many verification attempts. Please try again later.',
+            retryAfterSeconds
+        });
+    }
+
+    try {
+        const registrationCheck = await ensureRequestedUserIsRegistered(requestedUser);
+        if (!registrationCheck.ok) {
+            return res.status(registrationCheck.status).json({
+                status: 'error',
+                message: registrationCheck.message
+            });
+        }
+
+        const verificationCode = generateAuthCode();
+        await setAuthCodeOnSubscribeSheet(requestedUser, verificationCode);
+        await sendAuthCodeSms(requestedUser, verificationCode);
+
+        return res.json({
+            status: 'success',
+            verificationRequired: true,
+            codeSent: true,
+            user: requestedUser,
+            expiresInSeconds: AUTH_CODE_TTL_SECONDS
+        });
+    } catch (error) {
+        const reason = error && error.message ? String(error.message) : 'Unable to send verification code';
+        console.error('[AUTH CODE] Failed to send verification code:', reason);
+        return res.status(502).json({ status: 'error', message: reason });
+    }
+});
+
+app.post(['/auth/session/verify-code', '/notify/auth/session/verify-code'], async (req, res) => {
+    const payload = req.body && typeof req.body === 'object' ? req.body : {};
+    const requestedUser = normalizeUserCandidate(payload.username || payload.user || payload.phone);
+    const submittedCode = normalizeAuthCode(payload.code || payload.otp || payload.verificationCode);
+    if (!SESSION_USER_PATTERN.test(requestedUser)) {
+        return res.status(400).json({ status: 'error', message: 'Invalid user' });
+    }
+    if (!AUTH_CODE_PATTERN.test(submittedCode)) {
+        return res.status(400).json({ status: 'error', message: 'Invalid verification code' });
+    }
+    if (!SESSION_SIGNING_SECRET) {
+        return res.status(500).json({ status: 'error', message: 'Session configuration missing' });
+    }
+    const registrationFlowCheck = ensureRegistrationFlowOnly(req, requestedUser);
+    if (!registrationFlowCheck.ok) {
+        return res.status(registrationFlowCheck.status).json({
+            status: 'error',
+            message: registrationFlowCheck.message
+        });
+    }
+
+    const clientIp = getClientIpAddress(req);
+    const ipLimit = consumeRateLimitEntry(
+        authCodeVerifyRateLimitByIp,
+        clientIp,
+        AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_IP,
+        AUTH_CODE_RATE_LIMIT_WINDOW_MS
+    );
+    const userLimit = consumeRateLimitEntry(
+        authCodeVerifyRateLimitByUser,
+        requestedUser,
+        AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_USER,
+        AUTH_CODE_RATE_LIMIT_WINDOW_MS
+    );
+    if (!ipLimit.allowed || !userLimit.allowed) {
+        const retryAfterSeconds = Math.max(ipLimit.retryAfterSeconds || 0, userLimit.retryAfterSeconds || 0, 1);
+        res.setHeader('Retry-After', String(retryAfterSeconds));
+        return res.status(429).json({
+            status: 'error',
+            message: 'Too many verification attempts. Please try again later.',
+            retryAfterSeconds
+        });
+    }
+
+    try {
+        const registrationCheck = await ensureRequestedUserIsRegistered(requestedUser);
+        if (!registrationCheck.ok) {
+            return res.status(registrationCheck.status).json({
+                status: 'error',
+                message: registrationCheck.message
+            });
+        }
+
+        const verified = await verifyAuthCodeFromSubscribeSheet(requestedUser, submittedCode);
+        if (!verified) {
+            return res.status(401).json({ status: 'error', message: 'Invalid verification code' });
+        }
+
+        const sessionToken = createSessionToken(requestedUser);
+        if (!sessionToken) {
+            return res.status(500).json({ status: 'error', message: 'Failed to create session' });
+        }
+
+        setSessionCookie(res, req, sessionToken.token, sessionToken.expiresAt);
+        return res.json({
+            status: 'success',
+            authenticated: true,
+            user: requestedUser,
+            expiresAt: sessionToken.expiresAt,
+            csrfToken: sessionToken.csrfToken
+        });
+    } catch (error) {
+        const reason = error && error.message ? String(error.message) : 'Unable to verify code';
+        console.error('[AUTH CODE] Failed to verify code:', reason);
+        return res.status(502).json({ status: 'error', message: reason });
+    }
+});
+
+app.delete(['/auth/session', '/notify/auth/session'], (req, res) => {
+    const authSession = req.authSession && typeof req.authSession === 'object' ? req.authSession : null;
+    if (authSession && authSession.user) {
+        const currentSessionId = String(activeSessionIdByUser.get(authSession.user) || '').trim();
+        if (!currentSessionId || currentSessionId === String(authSession.sessionId || '')) {
+            activeSessionIdByUser.delete(authSession.user);
+        }
+    }
+    clearSessionCookie(res, req);
+    return res.json({ status: 'success', authenticated: false });
+});
+
+app.post(['/register-device', '/notify/register-device'], (req, res) => {
+    try {
+        const payload = req.body && typeof req.body === 'object' ? req.body : {};
+        const resolvedUser = resolveAuthorizedUser(req, payload.username || payload.user, { required: true });
+        if (resolvedUser.error) {
+            return res.status(resolvedUser.status).json({ status: 'error', message: resolvedUser.error });
+        }
+        const username = resolvedUser.user;
+
+        const trackedSubscriptions = upsertLocalDeviceSubscriptionsFromRegistration({
+            ...payload,
+            username
+        });
+        if (!trackedSubscriptions) {
+            return res.status(400).json({ status: 'error', message: 'Missing valid subscription payload' });
+        }
+
+        scheduleStateSave();
+        res.json({
+            status: 'success',
+            username,
+            trackedSubscriptions
+        });
+    } catch (error) {
+        console.error('[REGISTER DEVICE] Failed:', error.message);
+        res.status(500).json({ status: 'error', message: error.message });
+    }
+});
 // --- RESET BADGE ENDPOINT ---
 app.post(['/reset-badge', '/notify/reset-badge'], (req, res) => {
-    const { user } = req.body;
+    const { user: requestedUser } = req.body || {};
+    const resolvedUser = resolveAuthorizedUser(req, requestedUser, { required: false });
+    if (resolvedUser.error) {
+        return res.status(resolvedUser.status).json({ status: 'error', message: resolvedUser.error });
+    }
+    const user = resolvedUser.user;
     if (user) {
         // Reset count for this user
-        unreadCounts[String(user).toLowerCase()] = 0;
+        unreadCounts[user] = 0;
         console.log(`[BADGE] Reset count for ${user}`);
         scheduleStateSave();
     }
@@ -1101,7 +3204,52 @@ app.post(['/log', '/notify/log'], (req, res) => {
     if (payload) {
         console.log('[CLIENT LOG] payload:', payload);
     }
+    if (String(event || '').trim().toLowerCase() === 'delivery-telemetry') {
+        recordDeliveryTelemetryLog({ user, payload, timestamp, req });
+    }
     res.json({ status: 'ok' });
+});
+
+app.get(['/delivery-telemetry/status', '/notify/delivery-telemetry/status'], (req, res) => {
+    const token = String(
+        (req.query && req.query.token) ||
+        (req.headers && (req.headers['x-admin-token'] || req.headers['x-app-token'])) ||
+        ''
+    ).trim();
+    const isAdminTokenValid = APP_SERVER_TOKEN && token === APP_SERVER_TOKEN;
+    const requestingUser = normalizeUserCandidate(req.authUser);
+    if (APP_SERVER_TOKEN) {
+        if (!isAdminTokenValid) {
+            return res.status(403).json({ error: 'Forbidden' });
+        }
+    } else if (!requestingUser) {
+        return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    pruneDeliveryTelemetryStore();
+    const limitRaw = Number(req.query && req.query.limit);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.floor(limitRaw)), 500) : 100;
+    const filterUser = normalizeUserCandidate(req.query && req.query.user);
+    const filterDeviceId = String((req.query && req.query.deviceId) || '').trim();
+    const effectiveFilterUser = isAdminTokenValid
+        ? filterUser
+        : (requestingUser || filterUser);
+
+    const rows = Array.from(deliveryTelemetryByDevice.values())
+        .filter((entry) => {
+            if (effectiveFilterUser && normalizeUserCandidate(entry.user) !== effectiveFilterUser) return false;
+            if (filterDeviceId && String(entry.deviceId || '') !== filterDeviceId) return false;
+            return true;
+        })
+        .sort((a, b) => Number(b.lastSeenAt || 0) - Number(a.lastSeenAt || 0))
+        .slice(0, limit);
+
+    return res.json({
+        result: 'success',
+        totalTrackedDevices: deliveryTelemetryByDevice.size,
+        count: rows.length,
+        devices: rows
+    });
 });
 // ======================================================
 // [UPDATED] BACKUP CHATS ENDPOINT (NON-BLOCKING)
@@ -1139,30 +3287,179 @@ app.post(['/backup', '/notify/backup'], (req, res) => {
         if (!res.headersSent) res.status(500).json({ error: e.message });
     }
 });
-// --- DELETE MESSAGE ENDPOINT ---
+// --- MESSAGE ACTION ENDPOINTS (EDIT / DELETE FOR EVERYONE) ---
 app.post(['/delete', '/notify/delete'], async (req, res) => {
     try {
-        const { timestamp, sender, recipient, messageId } = req.body;
-        console.log(`[DELETE] Request from ${sender} to remove msg ${timestamp}`);
+        const body = req.body || {};
+        const resolvedSender = resolveAuthorizedUser(req, body.sender || body.user, { required: true });
+        if (resolvedSender.error) {
+            return res.status(resolvedSender.status).json({ error: resolvedSender.error });
+        }
+        const sender = resolvedSender.user;
+        const messageId = String(body.messageId || '').trim();
+        const deletedAtRaw = Number(body.deletedAt || body.timestamp || Date.now());
+        const deletedAt = Number.isFinite(deletedAtRaw) ? deletedAtRaw : Date.now();
+        const groupId = body.groupId ? normalizeUserKey(body.groupId) : '';
+        const groupRecord = groupId ? groups[groupId] : null;
 
-        // Send Silent Push to Recipient
-        // We use a specific 'delete-action' type so the phone handles it in background
-        const payload = JSON.stringify({
+        if (!sender || !messageId) {
+            return res.status(400).json({ error: 'Missing sender or messageId' });
+        }
+
+        const recipientsFromPayload = parseUsernamesInput(
+            body.recipients || body.membersToNotify || body.recipient
+        );
+        const fallbackGroupRecipients = groupRecord && Array.isArray(groupRecord.members)
+            ? groupRecord.members.map(normalizeUserKey)
+            : [];
+        let recipients = recipientsFromPayload.length ? recipientsFromPayload : fallbackGroupRecipients;
+        recipients = Array.from(new Set(recipients.map(normalizeUserKey).filter(Boolean)))
+            .filter((recipientUser) => recipientUser !== sender);
+
+        if (!recipients.length) {
+            return res.json({ status: 'success', details: { success: 0, failed: 0 } });
+        }
+
+        const resolvedGroupName = (typeof body.groupName === 'string' && body.groupName.trim())
+            ? body.groupName.trim()
+            : (groupRecord ? groupRecord.name : null);
+        const resolvedGroupMembers = Array.isArray(body.groupMembers) && body.groupMembers.length
+            ? body.groupMembers.map(normalizeUserKey).filter(Boolean)
+            : (groupRecord && Array.isArray(groupRecord.members)
+                ? groupRecord.members.map(normalizeUserKey).filter(Boolean)
+                : null);
+        const resolvedGroupCreatedBy = body.groupCreatedBy
+            ? normalizeUserKey(body.groupCreatedBy)
+            : (groupRecord ? normalizeUserKey(groupRecord.createdBy) : null);
+        const resolvedGroupUpdatedAt = Number(body.groupUpdatedAt || (groupRecord ? groupRecord.updatedAt : deletedAt));
+        const resolvedGroupType = normalizeGroupType(body.groupType || (groupRecord ? groupRecord.type : 'group'));
+
+        const actionRecord = {
+            type: 'delete-action',
+            messageId,
+            sender,
+            deletedAt,
+            timestamp: Date.now(),
+            groupId: groupId || null,
+            groupName: resolvedGroupName || null,
+            groupMembers: resolvedGroupMembers,
+            groupCreatedBy: resolvedGroupCreatedBy || null,
+            groupUpdatedAt: Number.isFinite(resolvedGroupUpdatedAt) ? resolvedGroupUpdatedAt : deletedAt,
+            groupType: resolvedGroupType
+        };
+        addToQueue(recipients, actionRecord);
+
+        const notificationPayload = {
+            messageId,
+            title: '',
+            body: {
+                shortText: '',
+                longText: ''
+            },
             data: {
-                type: 'delete-action',
-                timestamp: timestamp,
-                sender: sender,
-                messageId: messageId || null
+                ...actionRecord,
+                skipNotification: true
             }
-        });
+        };
+        const result = await sendPushNotificationToUser(
+            recipients,
+            notificationPayload,
+            groupId || sender,
+            { messageId, skipBadge: true }
+        );
 
-        // Send to the recipient using your existing logic
-        await sendPushNotificationToUser(recipient, JSON.parse(payload), sender);
-        
-        res.json({ status: 'success' });
-
+        res.json({ status: 'success', details: result });
     } catch (e) {
         console.error('[DELETE ERROR]', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post(['/edit', '/notify/edit'], async (req, res) => {
+    try {
+        const body = req.body || {};
+        const resolvedSender = resolveAuthorizedUser(req, body.sender || body.user, { required: true });
+        if (resolvedSender.error) {
+            return res.status(resolvedSender.status).json({ error: resolvedSender.error });
+        }
+        const sender = resolvedSender.user;
+        const messageId = String(body.messageId || '').trim();
+        const editedBody = String(body.body || body.editedBody || '').trim();
+        const editedAtRaw = Number(body.editedAt || body.timestamp || Date.now());
+        const editedAt = Number.isFinite(editedAtRaw) ? editedAtRaw : Date.now();
+        const groupId = body.groupId ? normalizeUserKey(body.groupId) : '';
+        const groupRecord = groupId ? groups[groupId] : null;
+
+        if (!sender || !messageId || !editedBody) {
+            return res.status(400).json({ error: 'Missing sender, messageId or body' });
+        }
+
+        const recipientsFromPayload = parseUsernamesInput(
+            body.recipients || body.membersToNotify || body.recipient
+        );
+        const fallbackGroupRecipients = groupRecord && Array.isArray(groupRecord.members)
+            ? groupRecord.members.map(normalizeUserKey)
+            : [];
+        let recipients = recipientsFromPayload.length ? recipientsFromPayload : fallbackGroupRecipients;
+        recipients = Array.from(new Set(recipients.map(normalizeUserKey).filter(Boolean)))
+            .filter((recipientUser) => recipientUser !== sender);
+
+        if (!recipients.length) {
+            return res.json({ status: 'success', details: { success: 0, failed: 0 } });
+        }
+
+        const resolvedGroupName = (typeof body.groupName === 'string' && body.groupName.trim())
+            ? body.groupName.trim()
+            : (groupRecord ? groupRecord.name : null);
+        const resolvedGroupMembers = Array.isArray(body.groupMembers) && body.groupMembers.length
+            ? body.groupMembers.map(normalizeUserKey).filter(Boolean)
+            : (groupRecord && Array.isArray(groupRecord.members)
+                ? groupRecord.members.map(normalizeUserKey).filter(Boolean)
+                : null);
+        const resolvedGroupCreatedBy = body.groupCreatedBy
+            ? normalizeUserKey(body.groupCreatedBy)
+            : (groupRecord ? normalizeUserKey(groupRecord.createdBy) : null);
+        const resolvedGroupUpdatedAt = Number(body.groupUpdatedAt || (groupRecord ? groupRecord.updatedAt : editedAt));
+        const resolvedGroupType = normalizeGroupType(body.groupType || (groupRecord ? groupRecord.type : 'group'));
+
+        const actionRecord = {
+            type: 'edit-action',
+            messageId,
+            sender,
+            body: editedBody,
+            editedAt,
+            timestamp: Date.now(),
+            groupId: groupId || null,
+            groupName: resolvedGroupName || null,
+            groupMembers: resolvedGroupMembers,
+            groupCreatedBy: resolvedGroupCreatedBy || null,
+            groupUpdatedAt: Number.isFinite(resolvedGroupUpdatedAt) ? resolvedGroupUpdatedAt : editedAt,
+            groupType: resolvedGroupType
+        };
+        addToQueue(recipients, actionRecord);
+
+        const notificationPayload = {
+            messageId,
+            title: '',
+            body: {
+                shortText: '',
+                longText: ''
+            },
+            data: {
+                ...actionRecord,
+                skipNotification: true
+            }
+        };
+        const result = await sendPushNotificationToUser(
+            recipients,
+            notificationPayload,
+            groupId || sender,
+            { messageId, skipBadge: true }
+        );
+
+        res.json({ status: 'success', details: result });
+    } catch (e) {
+        console.error('[EDIT ERROR]', e);
         res.status(500).json({ error: e.message });
     }
 });
@@ -1180,7 +3477,7 @@ app.post(['/verify-status', '/notify/verify-status'], async (req, res) => {
     console.log(`[Verify] Checking status for user: ${username}...`);
 
     // --- FIX: Use the variable 'GOOGLE_SHEET_URL' declared at the top of server.js ---
-    const scriptUrl = `${GOOGLE_SHEET_URL}?action=get_contacts&user=${encodeURIComponent(username)}`;
+    const scriptUrl = buildGoogleSheetGetUrl({ action: 'get_contacts', user: username });
     try {
         
         
@@ -1247,20 +3544,73 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     const logContent = msgText || messageType || 'System Notification';
     const messageId = options.messageId || message.messageId || generateMessageId();
     const shouldIncrementBadge = !options.skipBadge;
+    const normalizedTargetUsers = Array.from(
+        new Set(targetUsersArray.map(normalizeUserKey).filter(Boolean))
+    );
+    const targetUsersSet = new Set(normalizedTargetUsers);
+    const normalizeAndFilterTargetSubscriptions = (subscriptions) => {
+        const normalized = dedupeSubscriptionsByEndpoint(subscriptions || []);
+        return normalized
+            .map((subscription) => {
+                const subscriptionUser = normalizeUserKey(
+                    subscription && (subscription.username || subscription.user)
+                );
+                if (!subscriptionUser) return null;
+                return {
+                    ...subscription,
+                    username: subscriptionUser
+                };
+            })
+            .filter(Boolean)
+            .filter((subscription) => {
+                const subscriptionUser = normalizeUserKey(subscription && (subscription.username || subscription.user));
+                return subscriptionUser && targetUsersSet.has(subscriptionUser);
+            });
+    };
 
     console.log(`[PUSH] Searching subs for: ${targetUsersArray.join(', ')} from ${finalSender}`);
 
-    let rawSubscriptions = await getSubscriptionFromSheet(targetUsersArray);
-    if (!rawSubscriptions || rawSubscriptions.length === 0) {
+    let rawSubscriptions = normalizeAndFilterTargetSubscriptions(
+        await getSubscriptionFromSheet(targetUsersArray)
+    );
+    if (!rawSubscriptions.length) {
         // Force refresh once to avoid stale cache windows (common after iOS resubscribe).
-        rawSubscriptions = await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true });
+        rawSubscriptions = normalizeAndFilterTargetSubscriptions(
+            await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true })
+        );
+    }
+    if (!rawSubscriptions.length) {
+        // Some script deployments occasionally return an empty filtered lookup even though
+        // valid endpoint rows still exist in the full subscription feed.
+        const fallbackDiscovery = await getAllSubscriptionsForAuthRefresh({ usernames: targetUsersArray });
+        const discoveredSubscriptions = Array.isArray(fallbackDiscovery.subscriptions)
+            ? fallbackDiscovery.subscriptions
+            : [];
+        rawSubscriptions = normalizeAndFilterTargetSubscriptions(discoveredSubscriptions);
+        if (rawSubscriptions.length) {
+            const cacheKey = buildSubscriptionCacheKey(targetUsersArray);
+            if (cacheKey) {
+                subscriptionCache.set(cacheKey, { at: Date.now(), subscriptions: rawSubscriptions });
+            }
+        }
+    }
+    const localSubscriptions = getLocalDeviceSubscriptionsForUsers(targetUsersArray);
+    if (localSubscriptions.length) {
+        rawSubscriptions = normalizeAndFilterTargetSubscriptions([
+            ...rawSubscriptions,
+            ...localSubscriptions
+        ]);
+        const cacheKey = buildSubscriptionCacheKey(targetUsersArray);
+        if (cacheKey && rawSubscriptions.length) {
+            subscriptionCache.set(cacheKey, { at: Date.now(), subscriptions: rawSubscriptions });
+        }
     }
     const recipientAuthJsonForLog = buildMobileSubscriptionAuthJsonForLog(
         targetUsersArray.join(','),
         rawSubscriptions || []
     );
 
-    if (!rawSubscriptions || rawSubscriptions.length === 0) {
+    if (!rawSubscriptions.length) {
         logNotificationStatus(
             finalSender,
             targetUsersArray.join(','),
@@ -1272,18 +3622,24 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         return { success: 0, failed: 0 };
     }
 
-    const dedupeSubscriptions = (subscriptions) => subscriptions.filter((sub, index, self) =>
-        index === self.findIndex((t) => t.endpoint === sub.endpoint)
-    );
-
     const sendToSubscriptions = async (subscriptions, allowBadgeIncrement) => {
         const badgeCountByUser = new Map();
         return Promise.all(
             subscriptions.map(async (subscription) => {
                 // Increment unread badge once per user, not once per device endpoint.
-                const userKey = normalizeUserKey(subscription.username);
-                let currentCount = unreadCounts[userKey] || 0;
-                if (shouldIncrementBadge) {
+                const userKey = normalizeUserKey(
+                    subscription.username || subscription.user
+                );
+                if (!userKey || (targetUsersSet.size && !targetUsersSet.has(userKey))) {
+                    return {
+                        ok: false,
+                        username: userKey || 'unknown',
+                        statusCode: 'SKIP',
+                        message: 'Subscription user mismatch'
+                    };
+                }
+                let currentCount = userKey ? (unreadCounts[userKey] || 0) : 0;
+                if (shouldIncrementBadge && userKey) {
                     if (allowBadgeIncrement) {
                         if (badgeCountByUser.has(userKey)) {
                             currentCount = badgeCountByUser.get(userKey);
@@ -1307,11 +3663,11 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                     requireInteraction: true,
                     image: imageUrl,
                     url: clickUrl,
-                    user: subscription.username,
+                    user: userKey,
                     sender: finalSender,
                     messageId: messageId
                 };
-                if (shouldIncrementBadge) {
+                if (shouldIncrementBadge && userKey) {
                     payloadData.badgeCount = currentCount;
                 }
 
@@ -1328,23 +3684,34 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                         timeout: 15000
                     };
                     await webpush.sendNotification(subscription, payload, pushOptions);
-                    return { ok: true, username: subscription.username, badge: currentCount };
+                    return {
+                        ok: true,
+                        username: subscription.username || userKey || 'unknown',
+                        badge: currentCount
+                    };
                 } catch (err) {
                     const statusCode = err.statusCode || 'N/A';
                     if (statusCode === 404 || statusCode === 410) {
                         pruneSubscriptionCacheEndpoint(subscription.endpoint);
                     }
-                    return { ok: false, username: subscription.username, statusCode, message: err.message };
+                    return {
+                        ok: false,
+                        username: subscription.username || userKey || 'unknown',
+                        statusCode,
+                        message: err.message
+                    };
                 }
             })
         );
     };
 
-    let uniqueSubscriptions = dedupeSubscriptions(rawSubscriptions);
+    let uniqueSubscriptions = normalizeAndFilterTargetSubscriptions(rawSubscriptions);
     if (singlePerUser) {
         const oneSubscriptionPerUser = new Map();
         uniqueSubscriptions.forEach((subscription) => {
-            const userKey = normalizeUserKey(subscription.username);
+            const userKey = normalizeUserKey(
+                subscription.username || subscription.user || ''
+            );
             if (!userKey) return;
             // Keep latest observed subscription per user to prevent duplicate pushes.
             oneSubscriptionPerUser.set(userKey, subscription);
@@ -1378,7 +3745,10 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         }
 
         const refreshedRawSubscriptions = await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true });
-        const refreshedUniqueSubscriptions = dedupeSubscriptions(refreshedRawSubscriptions || []);
+        const refreshedUniqueSubscriptions = normalizeAndFilterTargetSubscriptions([
+            ...(Array.isArray(refreshedRawSubscriptions) ? refreshedRawSubscriptions : []),
+            ...getLocalDeviceSubscriptionsForUsers(targetUsersArray)
+        ]);
         if (refreshedUniqueSubscriptions.length) {
             const existingEndpoints = new Set(uniqueSubscriptions.map((sub) => sub.endpoint));
             const retryTargets = refreshedUniqueSubscriptions.filter(
@@ -1440,15 +3810,29 @@ app.post(['/refresh-subscribe-auth', '/notify/refresh-subscribe-auth'], (req, re
     const initiatedBy = (req.body && typeof req.body.initiatedBy === 'string') ? req.body.initiatedBy.trim() : 'api';
     const forceResubscribe = !(req.body && req.body.forceResubscribe === false);
     const usernames = parseUsernamesInput(req.body && req.body.usernames);
+    const deviceTypes = parseSubscriptionDeviceTypesInput(req.body && (req.body.deviceTypes || req.body.deviceType));
+    const excludeIosEndpoints = req.body && Object.prototype.hasOwnProperty.call(req.body, 'excludeIosEndpoints')
+        ? parseBooleanInput(req.body.excludeIosEndpoints, false)
+        : false;
     res.json({
         status: 'queued',
         requestId,
         reason: reason || 'manual',
         forceResubscribe,
-        requestedUserCount: usernames.length
+        requestedUserCount: usernames.length,
+        deviceTypes: deviceTypes.length ? deviceTypes : ['all'],
+        excludeIosEndpoints
     });
 
-    runSubscriptionAuthRefreshJob({ requestId, reason, initiatedBy, forceResubscribe, usernames })
+    runSubscriptionAuthRefreshJob({
+        requestId,
+        reason,
+        initiatedBy,
+        forceResubscribe,
+        usernames,
+        deviceTypes,
+        excludeIosEndpoints
+    })
         .then((summary) => {
             console.log(
                 `[AUTH REFRESH] Completed ${summary.requestId} | discoveredUsers=${summary.discoveredUserCount || 0} targeted=${summary.targeted} success=${summary.success} failed=${summary.failed}`
@@ -1459,8 +3843,125 @@ app.post(['/refresh-subscribe-auth', '/notify/refresh-subscribe-auth'], (req, re
         });
 });
 
+// Temporary ops endpoint: one-time visible device prompt campaign to recover devices
+// that stopped receiving pushes until users reopen the app.
+app.get(['/mobile-reregister-campaign/status', '/notify/mobile-reregister-campaign/status'], (req, res) => {
+    const campaignIdQuery = (req.query && typeof req.query.campaignId === 'string')
+        ? sanitizeCampaignId(req.query.campaignId)
+        : '';
+    res.json({
+        running: mobileReregisterCampaignState.running,
+        lastRunAt: mobileReregisterCampaignState.lastRunAt || null,
+        lastResult: mobileReregisterCampaignState.lastResult || null,
+        campaignId: campaignIdQuery || null,
+        campaignSentTargets: campaignIdQuery ? getCampaignSentCount(campaignIdQuery) : null,
+        campaignSentUsers: campaignIdQuery ? getCampaignSentCount(campaignIdQuery) : null, // Legacy alias
+        trackedCampaigns: listTrackedCampaigns(20)
+    });
+});
+
+app.post(['/mobile-reregister-campaign', '/notify/mobile-reregister-campaign'], (req, res) => {
+    if (mobileReregisterCampaignState.running) {
+        return res.status(409).json({
+            status: 'running',
+            message: 'Mobile re-register prompt campaign is already running.',
+            lastResult: mobileReregisterCampaignState.lastResult || null
+        });
+    }
+
+    const payload = req.body && typeof req.body === 'object' ? req.body : {};
+    const requestId = generateMessageId();
+    const campaignId = sanitizeCampaignId(payload.campaignId);
+    const usernames = parseUsernamesInput(payload.usernames);
+    const oneTime = payload.oneTime === undefined ? true : parseBooleanInput(payload.oneTime, true);
+    const force = parseBooleanInput(payload.force, false);
+    const requestedDeviceTypes = parseSubscriptionDeviceTypesInput(payload.deviceTypes || payload.deviceType);
+    const deviceTypes = requestedDeviceTypes.length ? requestedDeviceTypes : ['mobile', 'pc'];
+    const requireInteraction = payload.requireInteraction === undefined
+        ? true
+        : parseBooleanInput(payload.requireInteraction, true);
+    const maxTargets = parsePositiveInteger(payload.maxTargets, 0);
+    const title = typeof payload.title === 'string' ? payload.title.trim() : '';
+    const body = typeof payload.body === 'string' ? payload.body.trim() : '';
+    const url = typeof payload.url === 'string' ? payload.url.trim() : '';
+
+    res.json({
+        status: 'queued',
+        requestId,
+        campaignId,
+        requestedUserCount: usernames.length,
+        deviceTypes,
+        oneTime,
+        force,
+        maxTargets
+    });
+
+    runMobileReregisterPromptCampaign({
+        requestId,
+        campaignId,
+        usernames,
+        deviceTypes,
+        oneTime,
+        force,
+        requireInteraction,
+        maxTargets,
+        title,
+        body,
+        url
+    })
+        .then((summary) => {
+            console.log(
+                `[MOBILE REREGISTER] Completed ${summary.requestId || requestId} | campaign=${summary.campaignId || campaignId} targeted=${summary.targeted || 0} success=${summary.success || 0} failed=${summary.failed || 0}`
+            );
+        })
+        .catch((error) => {
+            console.error(`[MOBILE REREGISTER] Failed ${requestId}:`, error && error.message ? error.message : error);
+        });
+});
+
+app.get(['/contacts', '/notify/contacts', '/contacts/:user', '/notify/contacts/:user'], async (req, res) => {
+    const requestedUser = normalizeUserKey(
+        (req.query && req.query.user) ||
+        (req.params && req.params.user) ||
+        ''
+    );
+    const resolvedUser = resolveAuthorizedUser(req, requestedUser, { required: true });
+    if (resolvedUser.error) {
+        return res.status(resolvedUser.status).json({ users: [], error: resolvedUser.error });
+    }
+    const user = resolvedUser.user;
+    if (!user) {
+        return res.status(400).json({ users: [], error: 'Missing user' });
+    }
+
+    try {
+        const response = await fetchWithRetry(
+            buildGoogleSheetGetUrl({ action: 'get_contacts', user }),
+            {},
+            { timeoutMs: 10000, retries: 2 }
+        );
+        if (!response.ok) {
+            return res.status(response.status).json({ users: [] });
+        }
+        const payload = await response.json();
+        const users = Array.isArray(payload && payload.users) ? payload.users : [];
+        return res.json({
+            result: 'success',
+            users
+        });
+    } catch (error) {
+        console.error('[CONTACTS] Failed to load contacts:', error && error.message ? error.message : error);
+        return res.status(502).json({ users: [], error: 'Contacts fetch failed' });
+    }
+});
+
 app.get(['/groups', '/notify/groups'], (req, res) => {
-    const user = req.query.user ? normalizeUserKey(req.query.user) : '';
+    const requestedUser = req.query.user ? normalizeUserKey(req.query.user) : '';
+    const resolvedUser = resolveAuthorizedUser(req, requestedUser, { required: true });
+    if (resolvedUser.error) {
+        return res.status(resolvedUser.status).json({ groups: [], error: resolvedUser.error });
+    }
+    const user = resolvedUser.user;
     if (!user) return res.json({ groups: [] });
     const result = Object.values(groups || {}).filter(group => {
         if (!group || !Array.isArray(group.members)) return false;
@@ -1474,18 +3975,34 @@ app.get(['/groups', '/notify/groups'], (req, res) => {
 // ======================================================
 app.get(['/messages', '/notify/messages'], (req, res) => {
     // [CHANGE] Force Lowercase Lookup
-    const user = req.query.user ? String(req.query.user).trim().toLowerCase() : null;
+    const requestedUser = req.query.user ? normalizeUserKey(req.query.user) : '';
+    const resolvedUser = resolveAuthorizedUser(req, requestedUser, { required: true });
+    if (resolvedUser.error) {
+        return res.status(resolvedUser.status).json({ messages: [] });
+    }
+    const user = resolvedUser.user;
     
     if (!user) return res.json({ messages: [] });
 
     // Check mailbox (using lowercase key)
     if (messageQueue[user] && messageQueue[user].length > 0) {
-        const waitingMessages = messageQueue[user];
+        const mailbox = Array.isArray(messageQueue[user]) ? messageQueue[user] : [];
+        const waitingMessages = mailbox.filter((message) => {
+            if (!message || typeof message !== 'object') {
+                return true;
+            }
+            const recipient = normalizeUserKey(message.recipient || message.user || '');
+            return !recipient || recipient === user;
+        });
+        const droppedCount = mailbox.length - waitingMessages.length;
         
         // Clear mailbox after picking up
         messageQueue[user] = []; 
         scheduleStateSave();
         
+        if (droppedCount > 0) {
+            console.warn(`[POLLING] Dropped ${droppedCount} mismatched queued messages for ${user}`);
+        }
         console.log(`[POLLING] Delivered ${waitingMessages.length} msgs to ${user}`);
         return res.json({ messages: waitingMessages });
     }
@@ -1497,7 +4014,12 @@ app.get(['/messages', '/notify/messages'], (req, res) => {
 // [NEW] SSE STREAM (REAL-TIME)
 // ======================================================
 app.get(['/stream', '/notify/stream'], (req, res) => {
-    const user = req.query.user ? String(req.query.user).trim().toLowerCase() : null;
+    const requestedUser = req.query.user ? String(req.query.user).trim().toLowerCase() : '';
+    const resolvedUser = resolveAuthorizedUser(req, requestedUser, { required: true });
+    if (resolvedUser.error) {
+        return res.status(resolvedUser.status).json({ error: resolvedUser.error });
+    }
+    const user = resolvedUser.user || null;
     if (!user) {
         return res.status(400).json({ error: 'Missing user' });
     }
@@ -1508,7 +4030,7 @@ app.get(['/stream', '/notify/stream'], (req, res) => {
         Connection: 'keep-alive',
         'X-Accel-Buffering': 'no',
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization, Cache-Control, Pragma, Last-Event-ID'
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, Cache-Control, Pragma, Last-Event-ID, X-CSRF-Token'
     });
     req.socket.setTimeout(0);
     res.setTimeout(0);
@@ -1546,22 +4068,51 @@ app.get(['/stream', '/notify/stream'], (req, res) => {
     req.on('error', cleanup);
 });
 
-app.post(['/upload', '/notify/upload'], uploadFields, (req, res) => {
+app.post(['/upload', '/notify/upload'], uploadFieldsValidated, async (req, res) => {
     const file = req.files && req.files.file ? req.files.file[0] : null;
     const thumbnail = req.files && req.files.thumbnail ? req.files.thumbnail[0] : null;
+    const uploadedFiles = [file, thumbnail].filter(Boolean);
+    const rejectWithCleanup = async (statusCode, message) => {
+        await Promise.all(uploadedFiles.map((entry) => safelyDeleteUploadedFile(entry)));
+        return res.status(statusCode).json({ error: message });
+    };
 
     if (!file) {
-        return res.status(400).json({ error: 'No file uploaded' });
+        return rejectWithCleanup(400, 'No file uploaded');
     }
-    const fileUrl = `https://www.tzmc.co.il/notify/uploads/${file.filename}`;
-    const thumbUrl = thumbnail ? `https://www.tzmc.co.il/notify/uploads/${thumbnail.filename}` : null;
+    if (!isAllowedMainUpload(file)) {
+        return rejectWithCleanup(400, 'Only image and PDF files are allowed');
+    }
+    if (thumbnail && !isAllowedThumbnailUpload(thumbnail)) {
+        return rejectWithCleanup(400, 'Thumbnail must be an image file');
+    }
+
+    try {
+        const mainValidation = await validateUploadedFileSecurity(file, { allowImage: true, allowPdf: true });
+        if (!mainValidation.ok) {
+            return rejectWithCleanup(400, mainValidation.message || 'Unsafe file content detected');
+        }
+
+        if (thumbnail) {
+            const thumbnailValidation = await validateUploadedFileSecurity(thumbnail, { allowImage: true, allowPdf: false });
+            if (!thumbnailValidation.ok) {
+                return rejectWithCleanup(400, thumbnailValidation.message || 'Unsafe thumbnail content detected');
+            }
+        }
+    } catch (error) {
+        console.error('[UPLOAD SECURITY] Validation failure:', error && error.message ? error.message : error);
+        return rejectWithCleanup(400, 'File content validation failed');
+    }
+
+    const fileUrl = `/notify/uploads/${encodeURIComponent(file.filename)}`;
+    const thumbUrl = thumbnail ? `/notify/uploads/${encodeURIComponent(thumbnail.filename)}` : null;
     res.json({ status: 'success', url: fileUrl, thumbUrl, type: file.mimetype });
 });
 
 app.post(['/reply', '/notify/reply'], async (req, res) => {
     try {
         const {
-            user,
+            user: requestedUser,
             reply,
             originalSender,
             imageUrl,
@@ -1573,8 +4124,21 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
             groupCreatedBy,
             groupUpdatedAt,
             groupSenderName,
-            membersToNotify
+            membersToNotify,
+            replyToMessageId,
+            replyToSender,
+            replyToSenderName,
+            replyToBody,
+            replyToImageUrl,
+            forwarded,
+            forwardedFrom,
+            forwardedFromName
         } = req.body;
+        const resolvedSender = resolveAuthorizedUser(req, requestedUser, { required: true });
+        if (resolvedSender.error) {
+            return res.status(resolvedSender.status).json({ error: resolvedSender.error });
+        }
+        const user = resolvedSender.user;
         console.log(`[REPLY] From: ${user} | To: ${originalSender}`);
 
         let groupRecord = null;
@@ -1615,6 +4179,38 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
         if (!messageContent && imageUrl) {
             messageContent = `[Image Sent]: ${imageUrl}`;
         }
+        const normalizedReplyToMessageId = String(replyToMessageId || '').trim();
+        const normalizedReplyToSender = normalizeUserKey(replyToSender || '');
+        const normalizedReplyToSenderName = String(replyToSenderName || '').trim();
+        const normalizedReplyToBody = typeof replyToBody === 'string' ? replyToBody : '';
+        const normalizedReplyToImageUrl = String(replyToImageUrl || '').trim();
+        const hasReplyContext = Boolean(
+            normalizedReplyToMessageId &&
+            normalizedReplyToSender &&
+            (normalizedReplyToBody.trim() || normalizedReplyToImageUrl)
+        );
+        const normalizedForwarded = parseBooleanInput(forwarded, false);
+        const normalizedForwardedFrom = normalizeUserKey(forwardedFrom || '');
+        const normalizedForwardedFromName = String(forwardedFromName || '').trim();
+        const messageMetadata = {};
+        if (hasReplyContext) {
+            messageMetadata.replyToMessageId = normalizedReplyToMessageId;
+            messageMetadata.replyToSender = normalizedReplyToSender;
+            messageMetadata.replyToBody = normalizedReplyToBody;
+            messageMetadata.replyToImageUrl = normalizedReplyToImageUrl || null;
+            if (normalizedReplyToSenderName) {
+                messageMetadata.replyToSenderName = normalizedReplyToSenderName;
+            }
+        }
+        if (normalizedForwarded) {
+            messageMetadata.forwarded = true;
+            if (normalizedForwardedFrom) {
+                messageMetadata.forwardedFrom = normalizedForwardedFrom;
+            }
+            if (normalizedForwardedFromName) {
+                messageMetadata.forwardedFromName = normalizedForwardedFromName;
+            }
+        }
 
         // ======================================================
         // [NEW] SAVE TO GOOGLE SHEET "Replay"
@@ -1636,15 +4232,8 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
         const normalizedGroupName = (typeof groupName === 'string') ? groupName.trim() : groupName;
         const notificationTitle = isGroup ? (normalizedGroupName || 'Group message') : `New message from ${senderLabel}`;
         const shortText = reply || (imageUrl ? 'Sent an image' : 'New Message');
-        const notificationData = {
-            messageId,
-            title: notificationTitle,
-            body: {
-                shortText: isGroup ? `${senderLabel}: ${shortText}` : shortText,
-                longText: reply
-            },
-            image: imageUrl,
-            data: isGroup ? {
+        const notificationExtraData = {
+            ...(isGroup ? {
                 groupId,
                 groupName: normalizedGroupName,
                 groupMembers,
@@ -1653,7 +4242,18 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
                 groupType: groupRecord ? groupRecord.type : normalizeGroupType(req.body.groupType || 'group'),
                 groupMessageText: shortText,
                 groupSenderName: senderLabel
-            } : undefined
+            } : {}),
+            ...messageMetadata
+        };
+        const notificationData = {
+            messageId,
+            title: notificationTitle,
+            body: {
+                shortText: isGroup ? `${senderLabel}: ${shortText}` : shortText,
+                longText: reply
+            },
+            image: imageUrl,
+            data: Object.keys(notificationExtraData).length ? notificationExtraData : undefined
         };
 
         // [EXISTING] SAVE TO POLLING QUEUE
@@ -1669,7 +4269,8 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
             groupCreatedBy: groupCreatedBy || null,
             groupUpdatedAt: groupUpdatedAt || null,
             groupType: groupRecord ? groupRecord.type : normalizeGroupType(req.body.groupType || 'group'),
-            groupSenderName: senderLabel
+            groupSenderName: senderLabel,
+            ...messageMetadata
         };
         addToQueue(targetToNotify, pollingMessage);
 
@@ -1769,7 +4370,11 @@ app.post(['/reaction', '/notify/reaction'], async (req, res) => {
         } = req.body || {};
         const normalizedTargetMessageId = String(targetMessageId || '').trim();
         const normalizedEmoji = String(emoji || '').trim();
-        const normalizedReactor = normalizeUserKey(reactor);
+        const resolvedReactor = resolveAuthorizedUser(req, reactor, { required: true });
+        if (resolvedReactor.error) {
+            return res.status(resolvedReactor.status).json({ error: resolvedReactor.error });
+        }
+        const normalizedReactor = resolvedReactor.user;
         if (!groupId || !normalizedTargetMessageId || !normalizedEmoji) {
             return res.status(400).json({ error: 'Missing reaction fields' });
         }
@@ -1860,12 +4465,16 @@ app.post(['/reaction', '/notify/reaction'], async (req, res) => {
 
 app.post(['/read', '/notify/read'], async (req, res) => {
     try {
-        const { reader, sender, messageIds, readAt } = req.body;
-        if (!reader || !sender || !Array.isArray(messageIds) || messageIds.length === 0) {
+        const { reader: requestedReader, sender, messageIds, readAt } = req.body;
+        if (!requestedReader || !sender || !Array.isArray(messageIds) || messageIds.length === 0) {
             return res.status(400).json({ status: 'error', message: 'Missing fields' });
         }
+        const resolvedReader = resolveAuthorizedUser(req, requestedReader, { required: true });
+        if (resolvedReader.error) {
+            return res.status(resolvedReader.status).json({ status: 'error', message: resolvedReader.error });
+        }
 
-        const normalizedReader = String(reader).trim();
+        const normalizedReader = resolvedReader.user;
         const normalizedSender = String(sender).trim();
         const uniqueMessageIds = Array.from(
             new Set(
@@ -1956,18 +4565,26 @@ app.post('/notify', async (req, res) => {
 async function checkOutgoingQueue() {
     try {
         // Ask Google Script for pending messages
-        const response = await fetchWithRetry(`${GOOGLE_SHEET_URL}?action=check_queue`, {}, { timeoutMs: 10000, retries: 2 });
+        const response = await fetchWithRetry(
+            buildGoogleSheetGetUrl({ action: 'check_queue' }, { token: CHECK_QUEUE_SERVER_TOKEN }),
+            {},
+            { timeoutMs: 10000, retries: 2 }
+        );
         const data = await response.json();
 
-        if (data.messages && data.messages.length > 0) {
-            console.log(`[QUEUE] Found ${data.messages.length} messages.`);
+        const queuedMessages = Array.isArray(data && data.messages) ? data.messages : [];
+        if (queuedMessages.length > 0) {
+            console.log(`[QUEUE] Found ${queuedMessages.length} messages.`);
 
-            for (const msg of data.messages) {
-                const targetUser = msg.recipient;
-                const senderName = msg.sender || 'System'; 
-                const bodyText = msg.content;
+            for (const msg of queuedMessages) {
+                const targetUsers = parseUsernamesInput(msg && msg.recipient);
+                const senderName = String((msg && msg.sender) || 'System').trim() || 'System';
+                const bodyText = String((msg && msg.content) || '').trim();
+                if (!targetUsers.length || !bodyText) {
+                    continue;
+                }
                 
-                const messageId = msg.messageId || generateMessageId();
+                const messageId = (msg && msg.messageId) ? String(msg.messageId).trim() : generateMessageId();
                 const notificationData = {
                     messageId,
                     title: `Message from ${senderName}`,
@@ -1978,7 +4595,7 @@ async function checkOutgoingQueue() {
                 };
 
                 // 1. Send Push Notification (Handles all devices)
-                await sendPushNotificationToUser(targetUser, notificationData, senderName, { messageId });
+                await sendPushNotificationToUser(targetUsers, notificationData, senderName, { messageId });
                 
                 // 2. Add to Polling Queue
                 const pollingMessage = {
@@ -1988,7 +4605,7 @@ async function checkOutgoingQueue() {
                     timestamp: Date.now(),
                     imageUrl: null
                 };
-                addToQueue(targetUser, pollingMessage);
+                addToQueue(targetUsers, pollingMessage);
             }
         }
     } catch (error) {
@@ -1998,6 +4615,7 @@ async function checkOutgoingQueue() {
 
 // Start the Timer (10,000 ms = 10 seconds)
 setInterval(checkOutgoingQueue, 10000);
+startSubscriptionAuthRefreshScheduler();
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

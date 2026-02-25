@@ -3,6 +3,8 @@ import { getNotifyBaseUrl, runtimeConfig } from '../config/runtime-config';
 import {
   ChatGroup,
   Contact,
+  DeleteMessagePayload,
+  EditMessagePayload,
   GroupUpdatePayload,
   IncomingServerMessage,
   ReadReceiptPayload,
@@ -78,6 +80,25 @@ interface HrActionsResponse {
   }>;
 }
 
+interface SessionResponse {
+  authenticated?: boolean;
+  user?: string | null;
+  csrfToken?: string | null;
+  status?: string;
+  message?: string;
+  retryAfterSeconds?: number;
+  verificationRequired?: boolean;
+  codeSent?: boolean;
+  expiresInSeconds?: number;
+}
+
+interface ClientLogPayload {
+  event: string;
+  payload?: Record<string, unknown>;
+  user?: string;
+  timestamp?: number;
+}
+
 export interface HrStepOption {
   id: string;
   name: string;
@@ -93,6 +114,7 @@ export interface HrActionOption {
 export class ChatApiService {
   private readonly config = runtimeConfig;
   private readonly notifyBaseUrl = getNotifyBaseUrl(this.config.notifyReplyUrl);
+  private csrfToken: string | null = null;
 
   get streamUrlBase(): string {
     return `${this.notifyBaseUrl}/stream`;
@@ -106,11 +128,223 @@ export class ChatApiService {
     return this.config.vapidPublicKey;
   }
 
-  async getContacts(user: string): Promise<Contact[]> {
-    const url = `${this.config.subscriptionUrl}?action=get_contacts&user=${encodeURIComponent(user)}`;
-    const response = await this.fetchWithRetry(url, {}, { retries: 2, timeoutMs: 10000 });
+  async getSessionUser(): Promise<string | null> {
+    const response = await this.fetchWithRetry(`${this.notifyBaseUrl}/auth/session`, {}, { retries: 1, timeoutMs: 8000 });
     if (!response.ok) {
-      throw new Error(`Contacts request failed with ${response.status}`);
+      this.csrfToken = null;
+      return null;
+    }
+
+    const body = (await response.json()) as SessionResponse;
+    this.csrfToken = String(body.csrfToken ?? '').trim() || null;
+    const user = String(body.user ?? '').trim().toLowerCase();
+    if (!body.authenticated) {
+      this.csrfToken = null;
+    }
+    return body.authenticated && user ? user : null;
+  }
+
+  async createSession(user: string): Promise<string> {
+    const normalized = String(user || '').trim().toLowerCase();
+    if (!normalized) {
+      throw new Error('מספר טלפון לא תקין');
+    }
+
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/auth/session`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: normalized })
+      },
+      { retries: 1, timeoutMs: 12000 }
+    );
+    if (!response.ok) {
+      let errorMessage = 'נכשל בהתחברות';
+      try {
+        const body = (await response.json()) as SessionResponse & { error?: string };
+        const backendMessage = String(body.message ?? body.error ?? '').trim();
+        if (response.status === 400) {
+          errorMessage = 'מספר טלפון לא תקין';
+        } else if (response.status === 403) {
+          errorMessage = 'המשתמש אינו מורשה';
+        } else if (response.status === 429 && body.retryAfterSeconds) {
+          errorMessage = `יותר מדי ניסיונות. נסה שוב בעוד ${body.retryAfterSeconds} שניות`;
+        } else if (backendMessage) {
+          errorMessage = backendMessage;
+        }
+      } catch {
+        // Keep fallback message.
+      }
+      throw new Error(errorMessage);
+    }
+
+    const body = (await response.json()) as SessionResponse;
+    this.csrfToken = String(body.csrfToken ?? '').trim() || null;
+    const sessionUser = String(body.user ?? '').trim().toLowerCase();
+    if (!body.authenticated || !sessionUser) {
+      this.csrfToken = null;
+      throw new Error('נכשל בהתחברות');
+    }
+    return sessionUser;
+  }
+
+  async requestSessionCode(user: string): Promise<{ expiresInSeconds: number }> {
+    const normalized = String(user || '').trim().toLowerCase();
+    if (!normalized) {
+      throw new Error('מספר טלפון לא תקין');
+    }
+
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/auth/session/request-code`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: normalized })
+      },
+      { retries: 1, timeoutMs: 12000 }
+    );
+    if (!response.ok) {
+      let errorMessage = 'שליחת קוד אימות נכשלה';
+      try {
+        const body = (await response.json()) as SessionResponse & { error?: string };
+        const backendMessage = String(body.message ?? body.error ?? '').trim();
+        if (response.status === 400) {
+          errorMessage = 'מספר טלפון לא תקין';
+        } else if (response.status === 403) {
+          errorMessage = 'המשתמש אינו מורשה';
+        } else if (response.status === 429 && body.retryAfterSeconds) {
+          errorMessage = `יותר מדי ניסיונות. נסה שוב בעוד ${body.retryAfterSeconds} שניות`;
+        } else if (backendMessage) {
+          errorMessage = backendMessage;
+        }
+      } catch {
+        // Keep fallback message.
+      }
+      throw new Error(errorMessage);
+    }
+
+    const body = (await response.json()) as SessionResponse;
+    const expiresInSeconds = Number(body.expiresInSeconds ?? 0);
+    return {
+      expiresInSeconds: Number.isFinite(expiresInSeconds) && expiresInSeconds > 0
+        ? Math.floor(expiresInSeconds)
+        : 300
+    };
+  }
+
+  async verifySessionCode(user: string, code: string): Promise<string> {
+    const normalized = String(user || '').trim().toLowerCase();
+    const normalizedCode = String(code || '').trim();
+    if (!normalized) {
+      throw new Error('מספר טלפון לא תקין');
+    }
+    if (!/^\d{6}$/.test(normalizedCode)) {
+      throw new Error('יש להזין קוד אימות בן 6 ספרות');
+    }
+
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/auth/session/verify-code`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: normalized, code: normalizedCode })
+      },
+      { retries: 1, timeoutMs: 12000 }
+    );
+    if (!response.ok) {
+      let errorMessage = 'אימות הקוד נכשל';
+      try {
+        const body = (await response.json()) as SessionResponse & { error?: string };
+        const backendMessage = String(body.message ?? body.error ?? '').trim();
+        if (response.status === 400) {
+          errorMessage = 'קוד אימות לא תקין';
+        } else if (response.status === 401) {
+          errorMessage = 'קוד האימות שגוי או פג תוקף';
+        } else if (response.status === 403) {
+          errorMessage = 'המשתמש אינו מורשה';
+        } else if (response.status === 429 && body.retryAfterSeconds) {
+          errorMessage = `יותר מדי ניסיונות. נסה שוב בעוד ${body.retryAfterSeconds} שניות`;
+        } else if (backendMessage) {
+          errorMessage = backendMessage;
+        }
+      } catch {
+        // Keep fallback message.
+      }
+      throw new Error(errorMessage);
+    }
+
+    const body = (await response.json()) as SessionResponse;
+    this.csrfToken = String(body.csrfToken ?? '').trim() || null;
+    const sessionUser = String(body.user ?? '').trim().toLowerCase();
+    if (!body.authenticated || !sessionUser) {
+      this.csrfToken = null;
+      throw new Error('אימות הקוד נכשל');
+    }
+    return sessionUser;
+  }
+
+  async clearSession(): Promise<void> {
+    await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/auth/session`,
+      { method: 'DELETE' },
+      { retries: 0, timeoutMs: 8000 }
+    );
+    this.csrfToken = null;
+  }
+
+  async sendClientLog(event: string, payload: Record<string, unknown>, user?: string): Promise<void> {
+    const safeEvent = String(event || '').trim();
+    if (!safeEvent) {
+      return;
+    }
+    const body: ClientLogPayload = {
+      event: safeEvent,
+      payload: payload && typeof payload === 'object' ? payload : {},
+      user: String(user || '').trim() || undefined,
+      timestamp: Date.now()
+    };
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/log`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      },
+      { retries: 1, timeoutMs: 8000, backoffMs: 400 }
+    );
+    if (!response.ok) {
+      throw new Error(`Client log failed with ${response.status}`);
+    }
+  }
+
+  async getContacts(user?: string): Promise<Contact[]> {
+    const normalizedUser = String(user || '').trim();
+    const candidateUrls = [`${this.notifyBaseUrl}/contacts`];
+    if (normalizedUser) {
+      const encodedUser = encodeURIComponent(normalizedUser);
+      candidateUrls.push(
+        `${this.notifyBaseUrl}/contacts?user=${encodedUser}`,
+        `${this.notifyBaseUrl}/contacts/${encodedUser}`
+      );
+    }
+
+    let response: Response | null = null;
+    let lastStatus = 0;
+    for (const url of candidateUrls) {
+      try {
+        const candidateResponse = await this.fetchWithRetry(url, {}, { retries: 1, timeoutMs: 10000 });
+        if (candidateResponse.ok) {
+          response = candidateResponse;
+          break;
+        }
+        lastStatus = candidateResponse.status;
+      } catch {
+        // Try the next compatible URL variant.
+      }
+    }
+    if (!response) {
+      throw new Error(`Contacts request failed with ${lastStatus || 0}`);
     }
 
     const body = (await response.json()) as ContactResponse;
@@ -191,11 +425,25 @@ export class ChatApiService {
     };
   }
 
-  async getGroups(user: string): Promise<ChatGroup[]> {
-    const url = `${this.config.groupsUrl}?user=${encodeURIComponent(user)}`;
-    const response = await this.fetchWithRetry(url, {}, { retries: 2, timeoutMs: 10000 });
-    if (!response.ok) {
-      throw new Error(`Groups request failed with ${response.status}`);
+  async getGroups(user?: string): Promise<ChatGroup[]> {
+    const normalizedUser = String(user || '').trim().toLowerCase();
+    const candidateUrls = [this.config.groupsUrl];
+    if (normalizedUser) {
+      candidateUrls.push(`${this.config.groupsUrl}?user=${encodeURIComponent(normalizedUser)}`);
+    }
+
+    let response: Response | null = null;
+    let lastStatus = 0;
+    for (const url of candidateUrls) {
+      const candidateResponse = await this.fetchWithRetry(url, {}, { retries: 1, timeoutMs: 10000 });
+      if (candidateResponse.ok) {
+        response = candidateResponse;
+        break;
+      }
+      lastStatus = candidateResponse.status;
+    }
+    if (!response) {
+      throw new Error(`Groups request failed with ${lastStatus || 0}`);
     }
 
     const body = (await response.json()) as GroupsResponse;
@@ -216,7 +464,7 @@ export class ChatApiService {
           id,
           name,
           members,
-          createdBy: createdBy || user,
+          createdBy: createdBy || normalizedUser,
           updatedAt,
           type
         } satisfies ChatGroup;
@@ -224,19 +472,35 @@ export class ChatApiService {
       .filter((group) => Boolean(group.id && group.name));
   }
 
-  async pollMessages(user: string): Promise<IncomingServerMessage[]> {
-    const url = `${this.messagesUrlBase}?user=${encodeURIComponent(user)}`;
-    const response = await this.fetchWithRetry(url, {}, { retries: 1, timeoutMs: 10000 });
-    if (!response.ok) {
-      throw new Error(`Messages request failed with ${response.status}`);
+  async pollMessages(user?: string): Promise<IncomingServerMessage[]> {
+    const normalizedUser = String(user || '').trim().toLowerCase();
+    const candidateUrls = normalizedUser
+      ? [`${this.messagesUrlBase}?user=${encodeURIComponent(normalizedUser)}`, this.messagesUrlBase]
+      : [this.messagesUrlBase];
+
+    let response: Response | null = null;
+    let lastStatus = 0;
+    for (const url of candidateUrls) {
+      const candidateResponse = await this.fetchWithRetry(url, {}, { retries: 1, timeoutMs: 10000 });
+      if (candidateResponse.ok) {
+        response = candidateResponse;
+        break;
+      }
+      lastStatus = candidateResponse.status;
+    }
+    if (!response) {
+      throw new Error(`Messages request failed with ${lastStatus || 0}`);
     }
 
     const body = (await response.json()) as PollResponse;
     return Array.isArray(body.messages) ? body.messages : [];
   }
 
-  createMessageStream(user: string): EventSource {
-    const url = `${this.streamUrlBase}?user=${encodeURIComponent(user)}`;
+  createMessageStream(user?: string): EventSource {
+    const normalizedUser = String(user || '').trim().toLowerCase();
+    const url = normalizedUser
+      ? `${this.streamUrlBase}?user=${encodeURIComponent(normalizedUser)}`
+      : this.streamUrlBase;
     return new EventSource(url);
   }
 
@@ -301,6 +565,38 @@ export class ChatApiService {
 
     if (!response.ok) {
       throw new Error(`Read receipt failed with ${response.status}`);
+    }
+  }
+
+  async editMessageForEveryone(payload: EditMessagePayload): Promise<void> {
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/edit`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      },
+      { retries: 2, timeoutMs: 10000 }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Edit message failed with ${response.status}`);
+    }
+  }
+
+  async deleteMessageForEveryone(payload: DeleteMessagePayload): Promise<void> {
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/delete`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      },
+      { retries: 2, timeoutMs: 10000 }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Delete message failed with ${response.status}`);
     }
   }
 
@@ -370,7 +666,7 @@ export class ChatApiService {
       payload.subscriptionMobile = subscription;
     }
 
-    await this.fetchWithRetry(
+    const sheetRegistration = this.fetchWithRetry(
       this.config.subscriptionUrl,
       {
         method: 'POST',
@@ -379,6 +675,17 @@ export class ChatApiService {
       },
       { retries: 2, timeoutMs: 15000, backoffMs: 700 }
     );
+    const backendRegistration = this.fetchWithRetry(
+      `${this.notifyBaseUrl}/register-device`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      },
+      { retries: 2, timeoutMs: 12000, backoffMs: 500 }
+    );
+
+    await Promise.allSettled([sheetRegistration, backendRegistration]);
   }
 
   async getVersion(): Promise<{ version: string; notes: string[] }> {
@@ -490,8 +797,22 @@ export class ChatApiService {
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
       try {
+        const method = String(init.method || 'GET').trim().toUpperCase();
+        const headers = new Headers(init.headers || undefined);
+        const shouldAttachCsrf =
+          method !== 'GET' &&
+          method !== 'HEAD' &&
+          init.mode !== 'no-cors' &&
+          Boolean(this.csrfToken) &&
+          !headers.has('X-CSRF-Token');
+        if (shouldAttachCsrf) {
+          headers.set('X-CSRF-Token', String(this.csrfToken));
+        }
+
         const response = await fetch(input, {
           ...init,
+          headers,
+          credentials: init.credentials ?? 'same-origin',
           signal: controller.signal
         });
 

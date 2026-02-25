@@ -1,0 +1,39 @@
+<h2 mat-dialog-title>העבר הודעה</h2>
+
+<mat-dialog-content>
+  <mat-form-field appearance="outline" class="full-width">
+    <mat-label>חיפוש צ׳אט</mat-label>
+    <input matInput [formControl]="searchControl" placeholder="שם, מספר או קבוצה" />
+    <mat-icon matSuffix>search</mat-icon>
+  </mat-form-field>
+
+  <div class="chat-list">
+    @if (!filteredChats().length) {
+      <div class="empty-state">לא נמצאו צ׳אטים מתאימים.</div>
+    } @else {
+      @for (chat of filteredChats(); track chat.id) {
+        <button mat-button type="button" class="chat-row" (click)="chooseChat(chat.id)">
+          <span class="chat-main">
+            <span class="chat-title-row">
+              <span class="name">{{ chat.title }}</span>
+              @if (chat.isGroup) {
+                <span class="group-badge">קבוצה</span>
+              }
+              @if (isCurrentChat(chat.id)) {
+                <span class="current-badge">צ׳אט נוכחי</span>
+              }
+            </span>
+            @if (chat.info) {
+              <span class="info">{{ chat.info }}</span>
+            }
+            <span class="meta">{{ chat.id }}</span>
+          </span>
+        </button>
+      }
+    }
+  </div>
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-stroked-button mat-dialog-close>ביטול</button>
+</mat-dialog-actions>

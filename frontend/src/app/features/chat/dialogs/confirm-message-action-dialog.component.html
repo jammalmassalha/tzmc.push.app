@@ -1,0 +1,18 @@
+<h2 mat-dialog-title>{{ data.title || 'אישור פעולה' }}</h2>
+
+<mat-dialog-content>
+  <p class="confirm-message">{{ data.message || 'האם להמשיך?' }}</p>
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-stroked-button type="button" [mat-dialog-close]="false">
+    {{ data.cancelLabel || 'ביטול' }}
+  </button>
+  <button
+    mat-flat-button
+    type="button"
+    [color]="data.confirmColor || 'primary'"
+    [mat-dialog-close]="true">
+    {{ data.confirmLabel || 'אישור' }}
+  </button>
+</mat-dialog-actions>

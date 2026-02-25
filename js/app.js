@@ -118,6 +118,8 @@ const DB_VERSION = config.DB_VERSION || 3;
 const VAPID_PUBLIC_KEY = config.VAPID_PUBLIC_KEY || 'BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk';
 const SUBSCRIPTION_URL = config.SUBSCRIPTION_URL || 'https://script.google.com/macros/s/AKfycbw70tnIlHsQTke8BxFhEbEQQJxMhKzN85cCTkJOuS_L7zUnCxNYLX-r2cxYU2j8jIn5/exec';
 const NOTIFY_SERVER_URL = config.NOTIFY_SERVER_URL || 'https://www.tzmc.co.il/notify/reply';
+const REGISTER_DEVICE_URL = config.REGISTER_DEVICE_URL || NOTIFY_SERVER_URL.replace(/\/reply(?:\?.*)?$/i, '/register-device');
+const CONTACTS_URL = config.CONTACTS_URL || NOTIFY_SERVER_URL.replace(/\/reply(?:\?.*)?$/i, '/contacts');
 const UPLOAD_SERVER_URL = config.UPLOAD_SERVER_URL || 'https://www.tzmc.co.il/notify/upload';
 const GROUP_UPDATE_URL = config.GROUP_UPDATE_URL || 'https://www.tzmc.co.il/notify/group-update';
 const GROUPS_URL = config.GROUPS_URL || 'https://www.tzmc.co.il/notify/groups';
@@ -2382,9 +2384,25 @@ async function fetchUsersFromSheet() {
         if (Date.now() - lastContactsFetch < CONTACTS_TTL_MS) {
             return;
         }
-        const url = SUBSCRIPTION_URL + '?action=get_contacts&user=' + encodeURIComponent(currentUser);
-        
-        const res = await fetchWithRetry(url, {}, { timeoutMs: 10000, retries: 2 });
+        const encodedUser = encodeURIComponent(currentUser);
+        const contactsBaseUrl = String(CONTACTS_URL || '').replace(/\/+$/, '');
+        const contactCandidates = [
+            contactsBaseUrl + '?user=' + encodedUser,
+            contactsBaseUrl + '/' + encodedUser
+        ];
+        let res = null;
+        let lastStatus = 0;
+        for (let i = 0; i < contactCandidates.length; i++) {
+            const candidateRes = await fetchWithRetry(contactCandidates[i], {}, { timeoutMs: 10000, retries: 1 });
+            if (candidateRes.ok) {
+                res = candidateRes;
+                break;
+            }
+            lastStatus = candidateRes.status || 0;
+        }
+        if (!res) {
+            throw new Error('Contacts request failed with ' + lastStatus);
+        }
         const data = await res.json();
         
         if (data.users && Array.isArray(data.users)) {
@@ -3517,6 +3535,29 @@ function requestOutboxFlush() {
     }
 }
 
+async function registerDeviceAcrossBackends(payload) {
+    const tasks = [
+        fetchWithRetry(SUBSCRIPTION_URL, {
+            method: 'POST',
+            mode: 'no-cors',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        }, { timeoutMs: 10000, retries: 2 })
+    ];
+
+    if (REGISTER_DEVICE_URL) {
+        tasks.push(
+            fetchWithRetry(REGISTER_DEVICE_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            }, { timeoutMs: 10000, retries: 2 })
+        );
+    }
+
+    await Promise.allSettled(tasks);
+}
+
 function postServiceWorkerPushContext(options = {}) {
     if (!('serviceWorker' in navigator)) return;
     const fallbackUser = localStorage.getItem('username') || currentUserContext || '';
@@ -3629,12 +3670,7 @@ document.getElementById('subscribeButton').addEventListener('click', async () =>
             payload.subscriptionPC = sub;
         }
 
-        await fetchWithRetry(SUBSCRIPTION_URL, { 
-            method: 'POST', 
-            mode: 'no-cors', 
-            headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify(payload) 
-        }, { timeoutMs: 10000, retries: 2 });
+        await registerDeviceAcrossBackends(payload);
         
         scheduleStatusCheck(user, sub);
         localStorage.setItem('username', user);
@@ -4006,12 +4042,7 @@ async function verifyAndReactivate(options = {}) {
                 payload.subscriptionPC = sub;
             }
 
-            await fetchWithRetry(SUBSCRIPTION_URL, {
-                method: 'POST',
-                mode: 'no-cors',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            }, { timeoutMs: 10000, retries: 2 });
+            await registerDeviceAcrossBackends(payload);
             postServiceWorkerPushContext({ username: user });
             console.log(`[Auto-Fix] Reactivation sent (${reason}).`);
             return true;

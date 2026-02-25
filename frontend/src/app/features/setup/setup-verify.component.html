@@ -1,0 +1,64 @@
+<div class="setup-page">
+  <div>
+    <img src="assets/images/logo.png" alt="Logo" class="logo" />
+  </div>
+
+  <mat-card class="setup-card">
+    <mat-card-header>
+      <mat-card-title>אימות כניסה</mat-card-title>
+      <mat-card-subtitle>הזן קוד בן 6 ספרות שנשלח ב-SMS</mat-card-subtitle>
+    </mat-card-header>
+
+    <mat-card-content>
+      <p class="setup-hint">
+        שלחנו קוד אל {{ maskedPhone() }}.
+      </p>
+
+      <form class="setup-form" [formGroup]="form" (ngSubmit)="submit()">
+        <mat-form-field appearance="outline">
+          <mat-label>קוד אימות</mat-label>
+          <input
+            matInput
+            type="text"
+            dir="ltr"
+            inputmode="numeric"
+            maxlength="6"
+            autocomplete="one-time-code"
+            formControlName="code"
+            placeholder="123456" />
+          @if (form.controls.code.hasError('required') && form.controls.code.touched) {
+            <mat-error>יש להזין קוד אימות.</mat-error>
+          }
+          @if (form.controls.code.hasError('pattern') && form.controls.code.touched) {
+            <mat-error>יש להזין 6 ספרות.</mat-error>
+          }
+        </mat-form-field>
+
+        <button
+          mat-flat-button
+          color="primary"
+          type="submit"
+          class="full-width"
+          [disabled]="submitting()">
+          @if (!submitting()) {
+            <span>אמת והמשך</span>
+          } @else {
+            <mat-spinner diameter="20"></mat-spinner>
+          }
+        </button>
+      </form>
+
+      <div class="actions-row">
+        <button mat-stroked-button type="button" (click)="resendCode()" [disabled]="!canResendCode()">
+          @if (!resending()) {
+            <span>{{ resendCodeButtonLabel() }}</span>
+          } @else {
+            <mat-spinner diameter="18"></mat-spinner>
+          }
+        </button>
+
+        <button mat-button type="button" (click)="backToSetup()">חזרה</button>
+      </div>
+    </mat-card-content>
+  </mat-card>
+</div>

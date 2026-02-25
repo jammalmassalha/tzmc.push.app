@@ -4,11 +4,14 @@ import {
   ChatGroup,
   ChatListItem,
   ChatMessage,
+  DeleteMessagePayload,
   Contact,
   DeliveryStatus,
+  EditMessagePayload,
   GroupUpdatePayload,
   GroupType,
   IncomingServerMessage,
+  MessageReference,
   MessageReaction,
   OutboxDirectItem,
   OutboxGroupItem,
@@ -20,6 +23,7 @@ import {
 import { ChatApiService, HrActionOption, HrStepOption } from './chat-api.service';
 
 const CONTACTS_TTL_MS = 5 * 60 * 1000;
+const CONTACTS_ACCESS_SYNC_INTERVAL_MS = 60 * 1000;
 const GROUPS_TTL_MS = 2 * 60 * 1000;
 const POLL_INTERVAL_MS = 15000;
 const STREAM_RETRY_MS = 5000;
@@ -28,13 +32,19 @@ const PUSH_REGISTER_MIN_INTERVAL_MS = 30000;
 const PUSH_REGISTER_REFRESH_MS = 6 * 60 * 60 * 1000;
 const FOREGROUND_SYNC_MIN_INTERVAL_MS = 4000;
 const BADGE_RESET_MIN_INTERVAL_MS = 30000;
+const PUSH_RECOVERY_PULL_DELAYS_MS = [1200, 3600];
+const DELIVERY_TELEMETRY_FLUSH_INTERVAL_MS = 60 * 1000;
+const DELIVERY_TELEMETRY_FLUSH_MIN_EVENTS = 4;
+const DELIVERY_TELEMETRY_DEVICE_ID_KEY = 'modern-chat-delivery-device-id';
 const HR_CHAT_NAME = 'ציפי';
 const HR_WELCOME_KEY_PREFIX = 'hr_welcome_sent_';
 const HR_STATE_KEY_PREFIX = 'hr_state_';
-const HR_UPLOAD_BASE_URL = 'https://www.tzmc.co.il/notify/uploads/';
+const HR_UPLOAD_BASE_URL = '/notify/uploads/';
 const HR_STEPS_CACHE_TTL_MS = 5 * 60 * 1000;
 const HR_ACTIONS_CACHE_TTL_MS = 5 * 60 * 1000;
 const READ_RECEIPT_BATCH_SIZE = 80;
+const READ_RECEIPT_FLUSH_DEBOUNCE_MS = 900;
+const DELETED_MESSAGE_PLACEHOLDER = '🚫 הודעה זו נמחקה';
 
 type HrAwaitingState = 'step' | 'action' | 'free-text';
 
@@ -42,6 +52,41 @@ interface HrConversationState {
   awaiting: HrAwaitingState;
   stepId: string | null;
   actions: HrActionOption[];
+}
+
+interface MessageActionSnapshot {
+  body: string;
+  imageUrl?: string | null;
+  thumbnailUrl?: string | null;
+  editedAt?: number | null;
+  deletedAt?: number | null;
+}
+
+interface SendMessageOptions {
+  replyTo?: MessageReference | null;
+  forwarded?: boolean;
+  forwardedFrom?: string | null;
+  forwardedFromName?: string | null;
+}
+
+interface SendMessagePayload extends SendMessageOptions {
+  body: string;
+  imageUrl: string | null;
+  thumbnailUrl?: string | null;
+}
+
+interface DeliveryTelemetryCounters {
+  pushPayloadReceived: number;
+  pushImmediateMessageBuilt: number;
+  pushMessageApplied: number;
+  pushMessageNoop: number;
+  pushMissingMessageContext: number;
+  pushRecoveryPullScheduled: number;
+  ssePayloadReceived: number;
+  sseMessageApplied: number;
+  sseMessageNoop: number;
+  pollMessagesFetched: number;
+  pollMessagesApplied: number;
 }
 
 type BadgeCapableNavigator = Navigator & {
@@ -70,7 +115,7 @@ export interface ActivatedChatMeta {
 
 @Injectable({ providedIn: 'root' })
 export class ChatStoreService {
-  readonly currentUser = signal<string | null>(this.readStoredUser());
+  readonly currentUser = signal<string | null>(null);
   readonly contacts = signal<Contact[]>([]);
   readonly groups = signal<ChatGroup[]>([]);
   readonly activeChatId = signal<string | null>(null);
@@ -86,6 +131,7 @@ export class ChatStoreService {
   private readonly messagesByChat = signal<Record<string, ChatMessage[]>>({});
   private stream: EventSource | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private contactsAccessSyncTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private pullInFlight = false;
@@ -99,29 +145,45 @@ export class ChatStoreService {
   private lastServerBadgeResetAt = 0;
   private lastForegroundSyncAt = 0;
   private readonly readReceiptSentByChat = new Map<string, Set<string>>();
+  private readonly pendingReadReceiptByChat = new Map<string, Set<string>>();
+  private readonly readReceiptFlushTimerByChat = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly readReceiptFlushInFlightByChat = new Set<string>();
   private pushRegisterInFlight = false;
   private lastPushRegisterAttemptAt = 0;
+  private contactsAccessSyncInFlight = false;
+  private authBootstrapPromise: Promise<void> | null = null;
+  private deliveryTelemetryFlushTimer: ReturnType<typeof setInterval> | null = null;
+  private deliveryTelemetryInFlight = false;
+  private deliveryTelemetryLastFlushedAt = 0;
+  private deliveryTelemetryDeviceId = '';
+  private deliveryTelemetryCounters: DeliveryTelemetryCounters = this.createEmptyDeliveryTelemetryCounters();
+  private readonly systemChatIdSet = new Set<string>(
+    SYSTEM_CHAT_IDS.map((id) => this.normalizeChatId(id)).filter(Boolean)
+  );
+  private incomingBatchDepth = 0;
+  private pendingPersistAfterIncomingBatch = false;
 
   readonly chatItems = computed<ChatListItem[]>(() => {
-    const groupsById = new Map(this.groups().map((group) => [group.id, group]));
-    const contactsById = new Map(this.contacts().map((contact) => [contact.username, contact]));
+    const groups = this.groups();
+    const contacts = this.contacts();
+    const messageMap = this.messagesByChat();
+    const unreadMap = this.unreadByChat();
+    const groupsById = new Map(groups.map((group) => [group.id, group]));
+    const contactsById = new Map(contacts.map((contact) => [contact.username, contact]));
     const chatIds = new Set<string>();
 
-    for (const contact of this.contacts()) {
+    for (const contact of contacts) {
       chatIds.add(contact.username);
     }
-    for (const group of this.groups()) {
+    for (const group of groups) {
       chatIds.add(group.id);
     }
-    for (const id of Object.keys(this.messagesByChat())) {
+    for (const id of Object.keys(messageMap)) {
       chatIds.add(id);
     }
-    for (const systemId of SYSTEM_CHAT_IDS) {
-      chatIds.add(this.normalizeUser(systemId));
+    for (const systemId of this.systemChatIdSet) {
+      chatIds.add(systemId);
     }
-
-    const unreadMap = this.unreadByChat();
-    const messageMap = this.messagesByChat();
     const items: ChatListItem[] = [];
 
     for (const chatId of chatIds) {
@@ -134,7 +196,7 @@ export class ChatStoreService {
       const subtitle = lastMessage ? this.getMessagePreview(lastMessage) : (group ? 'אין הודעות בקבוצה' : '');
       const lastTimestamp = lastMessage?.timestamp ?? 0;
       const unread = unreadMap[chatId] ?? 0;
-      const pinned = SYSTEM_CHAT_IDS.some((id) => this.normalizeUser(id) === chatId);
+      const pinned = this.isSystemChat(chatId);
 
       items.push({
         id: chatId,
@@ -184,11 +246,6 @@ export class ChatStoreService {
   });
 
   constructor(private readonly api: ChatApiService) {
-    const storedUser = this.currentUser();
-    if (storedUser) {
-      this.restoreState(storedUser);
-    }
-
     if (typeof window !== 'undefined') {
       window.addEventListener('online', this.handleOnline);
       window.addEventListener('offline', this.handleOffline);
@@ -204,18 +261,51 @@ export class ChatStoreService {
     return Boolean(this.currentUser());
   }
 
+  async ensureSessionReady(): Promise<void> {
+    if (!this.authBootstrapPromise) {
+      this.authBootstrapPromise = this.bootstrapSessionUser();
+    }
+    await this.authBootstrapPromise;
+  }
+
+  private async bootstrapSessionUser(): Promise<void> {
+    this.removeLegacyStoredUser();
+    try {
+      const sessionUser = await this.api.getSessionUser();
+      if (!sessionUser) {
+        this.currentUser.set(null);
+        return;
+      }
+      const user = this.normalizeUser(sessionUser);
+      if (!user) {
+        this.currentUser.set(null);
+        return;
+      }
+      this.currentUser.set(user);
+      this.restoreState(user);
+    } catch {
+      this.currentUser.set(null);
+    }
+  }
+
   async initialize(): Promise<void> {
+    await this.ensureSessionReady();
     const user = this.currentUser();
     if (!user) return;
     if (this.initializedUser === user) return;
 
     this.initializedUser = user;
     await this.refresh(true);
+    // Ensure first chat/message snapshot is loaded before startup loader can finish.
+    await this.pullMessages(user);
     this.clearDeviceAttention({ resetServerBadge: true });
     // Recover silently if a device lost its push subscription.
     void this.tryRegisterPush(user, { force: true });
     this.connectRealtime(user);
     await this.flushOutbox();
+    this.startBackgroundContactsAccessSync(user);
+    void this.syncContactsAccessInBackground(user);
+    this.startDeliveryTelemetry(user);
 
     const storedActive = this.getStoredActiveChat(user);
     if (storedActive && this.chatItems().some((chat) => chat.id === storedActive)) {
@@ -242,17 +332,47 @@ export class ChatStoreService {
       throw new Error('מספר טלפון לא תקין');
     }
 
-    const user = this.normalizeUser(normalized);
-    this.stopRealtime();
+    const user = await this.api.createSession(this.normalizeUser(normalized));
+    await this.applyAuthenticatedSessionUser(user);
+  }
 
-    localStorage.setItem('username', user);
+  async requestUserVerificationCode(rawValue: string): Promise<string> {
+    const normalized = this.normalizePhone(rawValue);
+    if (!normalized) {
+      throw new Error('מספר טלפון לא תקין');
+    }
+
+    await this.api.requestSessionCode(this.normalizeUser(normalized));
+    return normalized;
+  }
+
+  async verifyUserVerificationCode(rawPhone: string, rawCode: string): Promise<void> {
+    const normalizedPhone = this.normalizePhone(rawPhone);
+    const normalizedCode = String(rawCode || '').trim();
+    if (!normalizedPhone) {
+      throw new Error('מספר טלפון לא תקין');
+    }
+    if (!/^\d{6}$/.test(normalizedCode)) {
+      throw new Error('יש להזין קוד אימות בן 6 ספרות');
+    }
+
+    const user = await this.api.verifySessionCode(this.normalizeUser(normalizedPhone), normalizedCode);
+    await this.applyAuthenticatedSessionUser(user);
+  }
+
+  private async applyAuthenticatedSessionUser(user: string): Promise<void> {
+    this.stopRealtime();
+    this.stopBackgroundContactsAccessSync();
+    void this.flushDeliveryTelemetry({ force: true, includeZero: false });
+    this.stopDeliveryTelemetry();
+
     this.currentUser.set(user);
     this.initializedUser = null;
     this.contacts.set([]);
     this.groups.set([]);
     this.messagesByChat.set({});
     this.unreadByChat.set({});
-    this.readReceiptSentByChat.clear();
+    this.resetReadReceiptTrackingState();
     this.activeChatId.set(null);
     this.lastError.set(null);
 
@@ -261,11 +381,18 @@ export class ChatStoreService {
     await this.initialize();
   }
 
-  logout(): void {
+  async logout(): Promise<void> {
+    try {
+      await this.api.clearSession();
+    } catch {
+      // Keep local logout resilient even if network fails.
+    }
     const user = this.currentUser();
     this.stopRealtime();
+    this.stopBackgroundContactsAccessSync();
+    void this.flushDeliveryTelemetry({ force: true, includeZero: false });
+    this.stopDeliveryTelemetry();
     this.initializedUser = null;
-    localStorage.removeItem('username');
     if (user) {
       localStorage.removeItem(this.activeChatKey(user));
       localStorage.removeItem(this.homeViewKey(user));
@@ -275,7 +402,7 @@ export class ChatStoreService {
     this.groups.set([]);
     this.messagesByChat.set({});
     this.unreadByChat.set({});
-    this.readReceiptSentByChat.clear();
+    this.resetReadReceiptTrackingState();
     this.activeChatId.set(null);
     this.lastError.set(null);
   }
@@ -359,13 +486,30 @@ export class ChatStoreService {
       localStorage.setItem(this.activeChatKey(user), normalized);
       localStorage.removeItem(this.homeViewKey(user));
     }
-    this.unreadByChat.update((map) => ({
-      ...map,
-      [normalized]: 0
-    }));
-    void this.sendReadReceiptsForChat(normalized);
+    this.seedPendingReadReceiptsFromUnreadCount(normalized, unreadBeforeOpen);
     void this.onChatActivated(normalized);
     this.schedulePersist();
+  }
+
+  markActiveChatReadAtBottom(chatId?: string | null): void {
+    const normalizedChatId = this.normalizeChatId(chatId ?? this.activeChatId() ?? '');
+    if (!normalizedChatId) return;
+    const unreadCount = Math.max(0, Math.floor(Number(this.unreadByChat()[normalizedChatId] ?? 0)));
+
+    // Clear local unread badge as soon as user reaches the chat bottom.
+    this.clearUnreadCountForChat(normalizedChatId);
+
+    const isGroupChat = this.groups().some((group) => group.id === normalizedChatId);
+    const isSystemChat = this.isSystemChat(normalizedChatId);
+    if (isGroupChat || isSystemChat) {
+      return;
+    }
+
+    this.seedPendingReadReceiptsFromUnreadCount(
+      normalizedChatId,
+      unreadCount
+    );
+    this.scheduleReadReceiptFlush(normalizedChatId);
   }
 
   clearLastActiveChat(): void {
@@ -522,14 +666,190 @@ export class ChatStoreService {
     }
   }
 
-  async sendTextMessage(text: string): Promise<void> {
+  canSendToChat(chatId: string): boolean {
+    const normalizedChatId = this.normalizeChatId(chatId);
+    if (!normalizedChatId) return false;
+    const group = this.groups().find((item) => item.id === normalizedChatId);
+    if (!group) return true;
+    if (group.type !== 'community') return true;
+    return this.normalizeUser(group.createdBy) === this.normalizeUser(this.currentUser() ?? '');
+  }
+
+  async sendTextMessage(text: string, options: SendMessageOptions = {}): Promise<void> {
     const body = text.trim();
     if (!body) return;
 
     await this.sendMessageInternal({
       body,
-      imageUrl: null
+      imageUrl: null,
+      ...options
     });
+  }
+
+  async forwardMessageToChat(destinationChatId: string, sourceMessage: ChatMessage): Promise<void> {
+    const targetChatId = this.normalizeChatId(destinationChatId);
+    if (!targetChatId) {
+      throw new Error('צ׳אט יעד לא תקין');
+    }
+
+    if (!sourceMessage || sourceMessage.deletedAt) {
+      throw new Error('לא ניתן להעביר הודעה שנמחקה');
+    }
+
+    if (!this.canSendToChat(targetChatId)) {
+      throw new Error('אין הרשאה לשלוח בצ׳אט היעד');
+    }
+
+    const sourceBody = String(sourceMessage.body ?? '');
+    const sourceImageUrl = sourceMessage.imageUrl ?? null;
+    if (!sourceBody.trim() && !sourceImageUrl) {
+      throw new Error('אין תוכן להעברה');
+    }
+
+    const sourceSender = this.normalizeUser(sourceMessage.sender || '');
+    const sourceSenderName = String(
+      sourceMessage.senderDisplayName || (sourceSender ? this.getDisplayName(sourceSender) : '')
+    ).trim();
+
+    await this.dispatchMessageToChat(
+      targetChatId,
+      {
+        body: sourceBody,
+        imageUrl: sourceImageUrl,
+        thumbnailUrl: sourceMessage.thumbnailUrl ?? null,
+        forwarded: true,
+        forwardedFrom: sourceSender || null,
+        forwardedFromName: sourceSenderName || null
+      },
+      { activateChat: false }
+    );
+  }
+
+  async editSentMessageForEveryone(messageId: string, nextBody: string): Promise<void> {
+    const user = this.currentUser();
+    if (!user) {
+      throw new Error('יש להתחבר לפני עריכת הודעה');
+    }
+
+    const normalizedMessageId = String(messageId || '').trim();
+    const trimmedBody = String(nextBody || '').trim();
+    if (!normalizedMessageId || !trimmedBody) {
+      throw new Error('תוכן העריכה חסר');
+    }
+    if (!this.isNetworkReachable()) {
+      throw new Error('לא ניתן לערוך הודעה ללא חיבור');
+    }
+
+    const target = this.findOutgoingMessageForAction(normalizedMessageId);
+    if (!target) {
+      throw new Error('לא נמצאה הודעה לעריכה');
+    }
+    if (target.message.deletedAt) {
+      throw new Error('לא ניתן לערוך הודעה שנמחקה');
+    }
+
+    const currentBody = String(target.message.body || '').trim();
+    if (trimmedBody === currentBody) {
+      return;
+    }
+
+    const editTimestamp = Date.now();
+    const normalizedUser = this.normalizeUser(user);
+    const group = target.message.groupId
+      ? this.groups().find((item) => item.id === this.normalizeChatId(target.message.groupId ?? '')) ?? null
+      : null;
+    const recipients = group
+      ? group.members
+          .map((member) => this.normalizeUser(member))
+          .filter((member) => Boolean(member && member !== normalizedUser))
+      : [this.normalizeUser(target.message.chatId)].filter(Boolean);
+    const payload: EditMessagePayload = {
+      sender: normalizedUser,
+      messageId: normalizedMessageId,
+      body: trimmedBody,
+      editedAt: editTimestamp,
+      timestamp: Number(target.message.timestamp || Date.now()),
+      recipients,
+      recipient: recipients.length === 1 ? recipients[0] : undefined,
+      groupId: group?.id || target.message.groupId || undefined,
+      groupName: group?.name || target.message.groupName || undefined,
+      groupMembers: group?.members,
+      groupCreatedBy: group?.createdBy,
+      groupUpdatedAt: group?.updatedAt,
+      groupType: group?.type
+    };
+
+    const snapshot: MessageActionSnapshot = {
+      body: target.message.body,
+      editedAt: target.message.editedAt ?? null,
+      deletedAt: target.message.deletedAt ?? null
+    };
+    const optimisticApplied = this.applyMessageEditLocally(normalizedMessageId, trimmedBody, editTimestamp);
+    if (!optimisticApplied) {
+      return;
+    }
+
+    try {
+      await this.api.editMessageForEveryone(payload);
+    } catch (error) {
+      this.restoreMessageSnapshotLocally(normalizedMessageId, snapshot);
+      throw error;
+    }
+  }
+
+  async deleteSentMessageForEveryone(messageId: string): Promise<void> {
+    const user = this.currentUser();
+    if (!user) {
+      throw new Error('יש להתחבר לפני מחיקת הודעה');
+    }
+
+    const normalizedMessageId = String(messageId || '').trim();
+    if (!normalizedMessageId) {
+      throw new Error('מזהה הודעה חסר');
+    }
+    if (!this.isNetworkReachable()) {
+      throw new Error('לא ניתן למחוק הודעה ללא חיבור');
+    }
+
+    const target = this.findOutgoingMessageForAction(normalizedMessageId);
+    if (!target) {
+      throw new Error('לא נמצאה הודעה למחיקה');
+    }
+    if (target.message.deletedAt) {
+      return;
+    }
+
+    const deleteTimestamp = Date.now();
+    const normalizedUser = this.normalizeUser(user);
+    const group = target.message.groupId
+      ? this.groups().find((item) => item.id === this.normalizeChatId(target.message.groupId ?? '')) ?? null
+      : null;
+    const recipients = group
+      ? group.members
+          .map((member) => this.normalizeUser(member))
+          .filter((member) => Boolean(member && member !== normalizedUser))
+      : [this.normalizeUser(target.message.chatId)].filter(Boolean);
+    const payload: DeleteMessagePayload = {
+      sender: normalizedUser,
+      messageId: normalizedMessageId,
+      deletedAt: deleteTimestamp,
+      timestamp: Number(target.message.timestamp || Date.now()),
+      recipients,
+      recipient: recipients.length === 1 ? recipients[0] : undefined,
+      groupId: group?.id || target.message.groupId || undefined,
+      groupName: group?.name || target.message.groupName || undefined,
+      groupMembers: group?.members,
+      groupCreatedBy: group?.createdBy,
+      groupUpdatedAt: group?.updatedAt,
+      groupType: group?.type
+    };
+
+    const optimisticApplied = this.applyMessageDeleteLocally(normalizedMessageId, deleteTimestamp);
+    if (!optimisticApplied) {
+      return;
+    }
+
+    await this.api.deleteMessageForEveryone(payload);
   }
 
   async sendFile(file: File): Promise<void> {
@@ -571,16 +891,26 @@ export class ChatStoreService {
       throw new Error('אין צ׳אט פעיל.');
     }
 
-    const group = this.groups().find((item) => item.id === activeChatId) ?? null;
-    const isCommunityGroup = group ? group.type === 'community' : !this.canSendToActiveChat();
-    if (!isCommunityGroup) {
-      throw new Error('ניתן להגיב רק בקבוצת קהילה.');
-    }
-
     const normalizedTargetId = String(targetMessageId || '').trim();
     const normalizedEmoji = String(emoji || '').trim();
     if (!normalizedTargetId || !normalizedEmoji) {
       return;
+    }
+
+    const chatMessages = this.messagesByChat()[activeChatId] ?? [];
+    const targetMessage = chatMessages.find((message) => message.messageId === normalizedTargetId) ?? null;
+    const group = this.groups().find((item) => item.id === activeChatId) ?? null;
+    const fallbackGroup = targetMessage?.groupId
+      ? this.groups().find((item) => item.id === this.normalizeChatId(targetMessage.groupId || '')) ?? null
+      : null;
+    const effectiveGroup = group ?? fallbackGroup;
+    const targetGroupType: GroupType | null =
+      targetMessage?.groupType === 'community' || targetMessage?.groupType === 'group'
+        ? targetMessage.groupType
+        : (effectiveGroup?.type ?? null);
+    const isCommunityGroup = targetGroupType === 'community' || (!targetGroupType && !this.canSendToActiveChat());
+    if (!isCommunityGroup) {
+      throw new Error('ניתן להגיב רק בקבוצת קהילה.');
     }
 
     const reaction: MessageReaction = {
@@ -601,12 +931,12 @@ export class ChatStoreService {
     }
 
     const activeChat = this.activeChat();
-    const groupId = group?.id || fallbackGroupId;
-    const groupName = group?.name || activeChat?.title || groupId;
-    const groupMembers = group?.members ?? [];
-    const groupCreatedBy = group?.createdBy || '';
-    const groupUpdatedAt = group?.updatedAt || Date.now();
-    const groupType: GroupType = group?.type === 'group' ? 'group' : 'community';
+    const groupId = effectiveGroup?.id || fallbackGroupId;
+    const groupName = effectiveGroup?.name || activeChat?.title || groupId;
+    const groupMembers = effectiveGroup?.members ?? [];
+    const groupCreatedBy = effectiveGroup?.createdBy || '';
+    const groupUpdatedAt = effectiveGroup?.updatedAt || Date.now();
+    const groupType: GroupType = effectiveGroup?.type === 'group' ? 'group' : 'community';
 
     await this.api.sendReaction({
       groupId,
@@ -975,13 +1305,21 @@ export class ChatStoreService {
     return `${HR_UPLOAD_BASE_URL}${encoded}`;
   }
 
-  private async sendMessageInternal(payload: {
-    body: string;
-    imageUrl: string | null;
-    thumbnailUrl?: string | null;
-  }): Promise<void> {
-    const user = this.currentUser();
+  private async sendMessageInternal(payload: SendMessagePayload): Promise<void> {
     const chatId = this.activeChatId();
+    if (!chatId) {
+      throw new Error('No active chat');
+    }
+    await this.dispatchMessageToChat(chatId, payload, { activateChat: true });
+  }
+
+  private async dispatchMessageToChat(
+    chatIdRaw: string,
+    payload: SendMessagePayload,
+    options: { activateChat?: boolean } = {}
+  ): Promise<void> {
+    const user = this.currentUser();
+    const chatId = this.normalizeChatId(chatIdRaw);
     if (!user || !chatId) {
       throw new Error('No active chat');
     }
@@ -992,6 +1330,7 @@ export class ChatStoreService {
       return;
     }
 
+    const metadata = this.normalizeSendMessageOptions(payload);
     const messageId = this.generateId('msg');
     const newMessage: ChatMessage = {
       id: this.generateId('rec'),
@@ -1006,11 +1345,20 @@ export class ChatStoreService {
       timestamp: Date.now(),
       deliveryStatus: this.networkOnline() ? 'pending' : 'queued',
       groupId: group?.id ?? null,
-      groupName: group?.name ?? null
+      groupName: group?.name ?? null,
+      groupType: group?.type ?? null,
+      editedAt: null,
+      deletedAt: null,
+      replyTo: metadata.replyTo ?? null,
+      forwarded: metadata.forwarded,
+      forwardedFrom: metadata.forwardedFrom ?? null,
+      forwardedFromName: metadata.forwardedFromName ?? null
     };
 
     this.appendMessage(newMessage);
-    this.setActiveChat(chatId);
+    if (options.activateChat !== false) {
+      this.setActiveChat(chatId);
+    }
 
     if (this.isHrChat(chatId) && payload.body.trim()) {
       const handledByHrFlow = await this.handleHrOutgoing(payload.body);
@@ -1022,45 +1370,55 @@ export class ChatStoreService {
 
     if (!this.networkOnline()) {
       if (group) {
-        this.queueGroupMessage(group, messageId, payload.body, payload.imageUrl);
+        this.queueGroupMessage(group, messageId, payload.body, payload.imageUrl, undefined, metadata);
       } else {
-        this.queueDirectMessage(chatId, messageId, payload.body, payload.imageUrl);
+        this.queueDirectMessage(chatId, messageId, payload.body, payload.imageUrl, metadata);
       }
       this.setMessageStatus(messageId, 'queued');
       return;
     }
 
     if (group) {
-      await this.sendGroupMessage(group, messageId, payload.body, payload.imageUrl);
+      await this.sendGroupMessage(group, messageId, payload.body, payload.imageUrl, metadata);
       return;
     }
 
-    await this.sendDirectMessage(chatId, messageId, payload.body, payload.imageUrl);
+    await this.sendDirectMessage(chatId, messageId, payload.body, payload.imageUrl, metadata);
   }
 
   private async sendDirectMessage(
     originalSender: string,
     messageId: string,
     body: string,
-    imageUrl: string | null
+    imageUrl: string | null,
+    options: SendMessageOptions = {}
   ): Promise<void> {
     const user = this.currentUser();
     if (!user) return;
 
+    const metadata = this.normalizeSendMessageOptions(options);
     const payload: ReplyPayload = {
       user,
       senderName: this.getDisplayName(user),
       reply: body,
       imageUrl,
       originalSender,
-      messageId
+      messageId,
+      replyToMessageId: metadata.replyTo?.messageId,
+      replyToSender: metadata.replyTo?.sender,
+      replyToSenderName: metadata.replyTo?.senderDisplayName,
+      replyToBody: metadata.replyTo?.body,
+      replyToImageUrl: metadata.replyTo?.imageUrl ?? null,
+      forwarded: metadata.forwarded ? true : undefined,
+      forwardedFrom: metadata.forwardedFrom || undefined,
+      forwardedFromName: metadata.forwardedFromName || undefined
     };
 
     try {
       await this.api.sendDirectMessage(payload);
       this.setMessageStatus(messageId, 'sent');
     } catch {
-      this.queueDirectMessage(originalSender, messageId, body, imageUrl);
+      this.queueDirectMessage(originalSender, messageId, body, imageUrl, metadata);
       this.setMessageStatus(messageId, 'queued');
     }
   }
@@ -1069,11 +1427,13 @@ export class ChatStoreService {
     group: ChatGroup,
     messageId: string,
     body: string,
-    imageUrl: string | null
+    imageUrl: string | null,
+    options: SendMessageOptions = {}
   ): Promise<void> {
     const user = this.currentUser();
     if (!user) return;
 
+    const metadata = this.normalizeSendMessageOptions(options);
     const basePayload: Omit<ReplyPayload, 'originalSender'> = {
       user,
       senderName: this.getDisplayName(user),
@@ -1086,7 +1446,15 @@ export class ChatStoreService {
       groupCreatedBy: group.createdBy,
       groupUpdatedAt: group.updatedAt,
       groupType: group.type,
-      groupSenderName: this.getDisplayName(user)
+      groupSenderName: this.getDisplayName(user),
+      replyToMessageId: metadata.replyTo?.messageId,
+      replyToSender: metadata.replyTo?.sender,
+      replyToSenderName: metadata.replyTo?.senderDisplayName,
+      replyToBody: metadata.replyTo?.body,
+      replyToImageUrl: metadata.replyTo?.imageUrl ?? null,
+      forwarded: metadata.forwarded ? true : undefined,
+      forwardedFrom: metadata.forwardedFrom || undefined,
+      forwardedFromName: metadata.forwardedFromName || undefined
     };
 
     const recipients = group.members.filter((member) => this.normalizeUser(member) !== user);
@@ -1108,7 +1476,7 @@ export class ChatStoreService {
     }
 
     if (failedRecipients.length) {
-      this.queueGroupMessage(group, messageId, body, imageUrl, failedRecipients);
+      this.queueGroupMessage(group, messageId, body, imageUrl, failedRecipients, metadata);
       this.setMessageStatus(messageId, 'queued');
       return;
     }
@@ -1116,44 +1484,152 @@ export class ChatStoreService {
     this.setMessageStatus(messageId, 'sent');
   }
 
-  private async sendReadReceiptsForChat(chatId: string): Promise<void> {
+  private scheduleReadReceiptFlush(chatId: string): void {
+    const normalizedChatId = this.normalizeChatId(chatId);
+    if (!normalizedChatId) return;
+    const pending = this.pendingReadReceiptByChat.get(normalizedChatId);
+    if (!pending || pending.size === 0) return;
+
+    const existingTimer = this.readReceiptFlushTimerByChat.get(normalizedChatId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    const timer = setTimeout(() => {
+      this.readReceiptFlushTimerByChat.delete(normalizedChatId);
+      void this.flushPendingReadReceiptsForChat(normalizedChatId);
+    }, READ_RECEIPT_FLUSH_DEBOUNCE_MS);
+    this.readReceiptFlushTimerByChat.set(normalizedChatId, timer);
+  }
+
+  private async flushPendingReadReceiptsForChat(chatId: string): Promise<void> {
     const user = this.currentUser();
     if (!user || !this.networkOnline()) return;
 
     const normalizedChatId = this.normalizeChatId(chatId);
     if (!normalizedChatId) return;
     if (this.groups().some((group) => group.id === normalizedChatId)) return;
-    if (SYSTEM_CHAT_IDS.some((id) => this.normalizeChatId(id) === normalizedChatId)) return;
+    if (this.isSystemChat(normalizedChatId)) return;
+    if (this.readReceiptFlushInFlightByChat.has(normalizedChatId)) {
+      this.scheduleReadReceiptFlush(normalizedChatId);
+      return;
+    }
 
-    const messages = this.messagesByChat()[normalizedChatId] ?? [];
-    if (!messages.length) return;
+    const pendingSet = this.pendingReadReceiptByChat.get(normalizedChatId);
+    if (!pendingSet || pendingSet.size === 0) return;
 
     const sentSet = this.readReceiptSentByChat.get(normalizedChatId) ?? new Set<string>();
-    const messageIds = messages
-      .filter((message) => message.direction === 'incoming' && Boolean(message.messageId))
-      .map((message) => message.messageId)
-      .filter((messageId) => !sentSet.has(messageId));
-    if (!messageIds.length) return;
+    const messageIds = Array.from(pendingSet).filter((messageId) => messageId && !sentSet.has(messageId));
+    if (!messageIds.length) {
+      this.pendingReadReceiptByChat.delete(normalizedChatId);
+      return;
+    }
 
+    this.readReceiptFlushInFlightByChat.add(normalizedChatId);
     const nextSent = new Set(sentSet);
-    for (let index = 0; index < messageIds.length; index += READ_RECEIPT_BATCH_SIZE) {
-      const batch = messageIds.slice(index, index + READ_RECEIPT_BATCH_SIZE);
-      try {
+    const readAt = Date.now();
+    let sentAnyBatch = false;
+
+    try {
+      for (let index = 0; index < messageIds.length; index += READ_RECEIPT_BATCH_SIZE) {
+        const batch = messageIds.slice(index, index + READ_RECEIPT_BATCH_SIZE);
+        if (!batch.length) continue;
         await this.api.sendReadReceipt({
           reader: this.normalizeUser(user),
           sender: normalizedChatId,
           messageIds: batch,
-          readAt: Date.now()
+          readAt
         });
-        batch.forEach((messageId) => nextSent.add(messageId));
-      } catch {
-        // Best-effort only; next activation/receive/focus will retry unsent batches.
-        break;
+        sentAnyBatch = true;
+        batch.forEach((messageId) => {
+          nextSent.add(messageId);
+          pendingSet.delete(messageId);
+        });
       }
+    } catch {
+      // Best-effort only; remaining pending IDs stay queued for a later bottom reach.
+    } finally {
+      this.readReceiptFlushInFlightByChat.delete(normalizedChatId);
     }
 
     if (nextSent.size !== sentSet.size) {
       this.readReceiptSentByChat.set(normalizedChatId, nextSent);
+    }
+    if (pendingSet.size === 0) {
+      this.pendingReadReceiptByChat.delete(normalizedChatId);
+    }
+    if (sentAnyBatch) {
+      this.unreadByChat.update((map) => ({
+        ...map,
+        [normalizedChatId]: 0
+      }));
+      this.schedulePersist();
+    }
+  }
+
+  private trackIncomingMessageForReadReceipt(chatId: string, messageId: string): void {
+    const normalizedChatId = this.normalizeChatId(chatId);
+    const normalizedMessageId = String(messageId || '').trim();
+    if (!normalizedChatId || !normalizedMessageId) return;
+
+    const sentSet = this.readReceiptSentByChat.get(normalizedChatId);
+    if (sentSet?.has(normalizedMessageId)) return;
+
+    const pendingSet = this.pendingReadReceiptByChat.get(normalizedChatId) ?? new Set<string>();
+    pendingSet.add(normalizedMessageId);
+    this.pendingReadReceiptByChat.set(normalizedChatId, pendingSet);
+  }
+
+  private seedPendingReadReceiptsFromUnreadCount(chatId: string, unreadCountRaw: number): void {
+    const normalizedChatId = this.normalizeChatId(chatId);
+    if (!normalizedChatId) return;
+    const unreadCount = Math.max(0, Math.floor(Number(unreadCountRaw) || 0));
+    if (unreadCount <= 0) return;
+
+    const sentSet = this.readReceiptSentByChat.get(normalizedChatId) ?? new Set<string>();
+    const incomingMessageIds = (this.messagesByChat()[normalizedChatId] ?? [])
+      .filter((message) => message.direction === 'incoming' && Boolean(message.messageId))
+      .map((message) => String(message.messageId || '').trim())
+      .filter(Boolean);
+    if (!incomingMessageIds.length) return;
+
+    const unreadTailIds = incomingMessageIds.slice(-unreadCount).filter((messageId) => !sentSet.has(messageId));
+    if (!unreadTailIds.length) return;
+
+    const pendingSet = this.pendingReadReceiptByChat.get(normalizedChatId) ?? new Set<string>();
+    unreadTailIds.forEach((messageId) => pendingSet.add(messageId));
+    this.pendingReadReceiptByChat.set(normalizedChatId, pendingSet);
+  }
+
+  private resetReadReceiptTrackingState(): void {
+    this.readReceiptSentByChat.clear();
+    this.pendingReadReceiptByChat.clear();
+    this.readReceiptFlushInFlightByChat.clear();
+    for (const timer of this.readReceiptFlushTimerByChat.values()) {
+      clearTimeout(timer);
+    }
+    this.readReceiptFlushTimerByChat.clear();
+  }
+
+  private clearUnreadCountForChat(chatId: string): void {
+    const normalizedChatId = this.normalizeChatId(chatId);
+    if (!normalizedChatId) return;
+
+    let changed = false;
+    this.unreadByChat.update((map) => {
+      const current = Math.max(0, Math.floor(Number(map[normalizedChatId] ?? 0)));
+      if (current <= 0) {
+        return map;
+      }
+      changed = true;
+      return {
+        ...map,
+        [normalizedChatId]: 0
+      };
+    });
+
+    if (changed) {
+      this.schedulePersist();
     }
   }
 
@@ -1161,11 +1637,13 @@ export class ChatStoreService {
     originalSender: string,
     messageId: string,
     body: string,
-    imageUrl: string | null
+    imageUrl: string | null,
+    options: SendMessageOptions = {}
   ): void {
     const user = this.currentUser();
     if (!user) return;
 
+    const metadata = this.normalizeSendMessageOptions(options);
     const item: OutboxDirectItem = {
       id: this.generateId('out'),
       kind: 'direct',
@@ -1175,7 +1653,15 @@ export class ChatStoreService {
         reply: body,
         imageUrl,
         originalSender,
-        messageId
+        messageId,
+        replyToMessageId: metadata.replyTo?.messageId,
+        replyToSender: metadata.replyTo?.sender,
+        replyToSenderName: metadata.replyTo?.senderDisplayName,
+        replyToBody: metadata.replyTo?.body,
+        replyToImageUrl: metadata.replyTo?.imageUrl ?? null,
+        forwarded: metadata.forwarded ? true : undefined,
+        forwardedFrom: metadata.forwardedFrom || undefined,
+        forwardedFromName: metadata.forwardedFromName || undefined
       },
       messageId,
       attempts: 0,
@@ -1190,11 +1676,13 @@ export class ChatStoreService {
     messageId: string,
     body: string,
     imageUrl: string | null,
-    recipients?: string[]
+    recipients?: string[],
+    options: SendMessageOptions = {}
   ): void {
     const user = this.currentUser();
     if (!user) return;
 
+    const metadata = this.normalizeSendMessageOptions(options);
     const targets = recipients
       ? recipients
       : group.members.filter((member) => this.normalizeUser(member) !== user);
@@ -1217,7 +1705,15 @@ export class ChatStoreService {
         groupCreatedBy: group.createdBy,
         groupUpdatedAt: group.updatedAt,
         groupType: group.type,
-        groupSenderName: this.getDisplayName(user)
+        groupSenderName: this.getDisplayName(user),
+        replyToMessageId: metadata.replyTo?.messageId,
+        replyToSender: metadata.replyTo?.sender,
+        replyToSenderName: metadata.replyTo?.senderDisplayName,
+        replyToBody: metadata.replyTo?.body,
+        replyToImageUrl: metadata.replyTo?.imageUrl ?? null,
+        forwarded: metadata.forwarded ? true : undefined,
+        forwardedFrom: metadata.forwardedFrom || undefined,
+        forwardedFromName: metadata.forwardedFromName || undefined
       },
       attempts: 0,
       createdAt: Date.now()
@@ -1245,15 +1741,19 @@ export class ChatStoreService {
     this.stopRealtime();
     this.startPolling(user);
 
-    if (!this.networkOnline()) {
+    if (!this.isNetworkReachable()) {
       return;
     }
 
     try {
       this.stream = this.api.createMessageStream(user);
-      this.stream.onmessage = (event: MessageEvent<string>) => {
+      this.stream.addEventListener('message', (event: MessageEvent<string>) => {
         this.handleIncomingPayload(event.data);
-      };
+      });
+      this.stream.addEventListener('connected', () => {
+        // Immediately pull queued messages after stream handshake.
+        void this.pullMessages(user);
+      });
 
       this.stream.onerror = () => {
         this.stopStreamOnly();
@@ -1296,6 +1796,166 @@ export class ChatStoreService {
     }
   }
 
+  private startBackgroundContactsAccessSync(user: string): void {
+    this.stopBackgroundContactsAccessSync();
+    this.contactsAccessSyncTimer = setInterval(() => {
+      void this.syncContactsAccessInBackground(user);
+    }, CONTACTS_ACCESS_SYNC_INTERVAL_MS);
+  }
+
+  private stopBackgroundContactsAccessSync(): void {
+    if (this.contactsAccessSyncTimer) {
+      clearInterval(this.contactsAccessSyncTimer);
+      this.contactsAccessSyncTimer = null;
+    }
+    this.contactsAccessSyncInFlight = false;
+  }
+
+  private async syncContactsAccessInBackground(user: string): Promise<void> {
+    if (this.contactsAccessSyncInFlight) return;
+    if (this.currentUser() !== user) return;
+    if (!this.isNetworkReachable()) return;
+
+    this.contactsAccessSyncInFlight = true;
+    try {
+      const contacts = this.normalizeContacts(await this.api.getContacts(user));
+      if (this.haveContactsChanged(this.contacts(), contacts)) {
+        this.contacts.set(contacts);
+        this.schedulePersist();
+      }
+      this.lastContactsFetchAt = Date.now();
+    } catch {
+      // Silent background check to avoid noisy UX.
+    } finally {
+      this.contactsAccessSyncInFlight = false;
+    }
+  }
+
+  private haveContactsChanged(current: Contact[], next: Contact[]): boolean {
+    if (current.length !== next.length) {
+      return true;
+    }
+    const currentSignature = current
+      .map((item) => `${item.username}|${item.displayName}|${item.info || ''}|${item.phone || ''}|${item.upic || ''}`)
+      .join('\n');
+    const nextSignature = next
+      .map((item) => `${item.username}|${item.displayName}|${item.info || ''}|${item.phone || ''}|${item.upic || ''}`)
+      .join('\n');
+    return currentSignature !== nextSignature;
+  }
+
+  private startDeliveryTelemetry(user: string): void {
+    if (!user) {
+      return;
+    }
+    this.stopDeliveryTelemetry();
+    this.deliveryTelemetryCounters = this.createEmptyDeliveryTelemetryCounters();
+    this.deliveryTelemetryLastFlushedAt = Date.now();
+    this.ensureDeliveryTelemetryDeviceId();
+    this.deliveryTelemetryFlushTimer = setInterval(() => {
+      void this.flushDeliveryTelemetry();
+    }, DELIVERY_TELEMETRY_FLUSH_INTERVAL_MS);
+  }
+
+  private stopDeliveryTelemetry(): void {
+    if (this.deliveryTelemetryFlushTimer) {
+      clearInterval(this.deliveryTelemetryFlushTimer);
+      this.deliveryTelemetryFlushTimer = null;
+    }
+    this.deliveryTelemetryInFlight = false;
+  }
+
+  private createEmptyDeliveryTelemetryCounters(): DeliveryTelemetryCounters {
+    return {
+      pushPayloadReceived: 0,
+      pushImmediateMessageBuilt: 0,
+      pushMessageApplied: 0,
+      pushMessageNoop: 0,
+      pushMissingMessageContext: 0,
+      pushRecoveryPullScheduled: 0,
+      ssePayloadReceived: 0,
+      sseMessageApplied: 0,
+      sseMessageNoop: 0,
+      pollMessagesFetched: 0,
+      pollMessagesApplied: 0
+    };
+  }
+
+  private incrementDeliveryTelemetry(counter: keyof DeliveryTelemetryCounters, delta = 1): void {
+    const normalizedDelta = Math.max(0, Math.floor(Number(delta) || 0));
+    if (!normalizedDelta) return;
+    this.deliveryTelemetryCounters[counter] += normalizedDelta;
+    void this.flushDeliveryTelemetry();
+  }
+
+  private totalDeliveryTelemetryEvents(counters: DeliveryTelemetryCounters): number {
+    return Object.values(counters).reduce((sum, value) => sum + (Number(value) || 0), 0);
+  }
+
+  private ensureDeliveryTelemetryDeviceId(): string {
+    if (this.deliveryTelemetryDeviceId) {
+      return this.deliveryTelemetryDeviceId;
+    }
+    const stored = this.safeStorageGet(DELIVERY_TELEMETRY_DEVICE_ID_KEY).trim();
+    if (stored) {
+      this.deliveryTelemetryDeviceId = stored;
+      return stored;
+    }
+    const nextId = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+      ? crypto.randomUUID()
+      : `dev_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    this.deliveryTelemetryDeviceId = nextId;
+    this.safeStorageSet(DELIVERY_TELEMETRY_DEVICE_ID_KEY, nextId);
+    return nextId;
+  }
+
+  private async flushDeliveryTelemetry(options: { force?: boolean; includeZero?: boolean } = {}): Promise<void> {
+    const user = this.currentUser();
+    if (!user) return;
+    if (this.deliveryTelemetryInFlight) return;
+
+    const force = Boolean(options.force);
+    const includeZero = Boolean(options.includeZero);
+    const now = Date.now();
+    const elapsed = now - this.deliveryTelemetryLastFlushedAt;
+    const snapshot = { ...this.deliveryTelemetryCounters };
+    const totalEvents = this.totalDeliveryTelemetryEvents(snapshot);
+
+    if (!force && totalEvents < DELIVERY_TELEMETRY_FLUSH_MIN_EVENTS && elapsed < DELIVERY_TELEMETRY_FLUSH_INTERVAL_MS) {
+      return;
+    }
+    if (!includeZero && totalEvents <= 0) {
+      return;
+    }
+
+    this.deliveryTelemetryInFlight = true;
+    this.deliveryTelemetryCounters = this.createEmptyDeliveryTelemetryCounters();
+    try {
+      const unreadTotal = Object.values(this.unreadByChat()).reduce((sum, count) => sum + (Number(count) || 0), 0);
+      await this.api.sendClientLog(
+        'delivery-telemetry',
+        {
+          ...snapshot,
+          deviceId: this.ensureDeliveryTelemetryDeviceId(),
+          activeChatId: this.activeChatId(),
+          unreadTotal,
+          inForeground: this.isAppInForeground(),
+          networkOnline: this.networkOnline(),
+          at: now
+        },
+        user
+      );
+      this.deliveryTelemetryLastFlushedAt = now;
+    } catch {
+      // Merge back on failure to avoid dropping telemetry counters.
+      (Object.keys(snapshot) as Array<keyof DeliveryTelemetryCounters>).forEach((key) => {
+        this.deliveryTelemetryCounters[key] += snapshot[key];
+      });
+    } finally {
+      this.deliveryTelemetryInFlight = false;
+    }
+  }
+
   private scheduleStreamReconnect(user: string): void {
     if (this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
@@ -1306,15 +1966,38 @@ export class ChatStoreService {
   }
 
   private async pullMessages(user: string): Promise<void> {
-    if (this.pullInFlight || !this.networkOnline()) return;
+    if (this.pullInFlight || !this.isNetworkReachable()) return;
     if (this.currentUser() !== user) return;
 
     this.pullInFlight = true;
     try {
-      const messages = await this.api.pollMessages(user);
-      for (const message of messages) {
-        this.applyIncomingMessage(message);
-      }
+      const messages = await this.api.pollMessages();
+      this.incrementDeliveryTelemetry('pollMessagesFetched', messages.length);
+      let appliedCount = 0;
+      this.runIncomingBatch(() => {
+        const bufferedRegularMessages: IncomingServerMessage[] = [];
+        const flushBufferedRegularMessages = (): void => {
+          if (!bufferedRegularMessages.length) return;
+          appliedCount += this.applyRegularIncomingMessagesBulk(bufferedRegularMessages);
+          bufferedRegularMessages.length = 0;
+        };
+
+        for (const message of messages) {
+          const incomingType = String(message.type ?? '').trim().toLowerCase();
+          if (this.isIncomingActionType(incomingType)) {
+            flushBufferedRegularMessages();
+            if (this.applyIncomingMessage(message)) {
+              appliedCount += 1;
+            }
+            continue;
+          }
+
+          bufferedRegularMessages.push(message);
+        }
+
+        flushBufferedRegularMessages();
+      });
+      this.incrementDeliveryTelemetry('pollMessagesApplied', appliedCount);
     } catch {
       // Polling failures are expected during network interruptions.
     } finally {
@@ -1322,87 +2005,378 @@ export class ChatStoreService {
     }
   }
 
+  private isIncomingActionType(incomingType: string): boolean {
+    return (
+      incomingType === 'delete-action' ||
+      incomingType === 'edit-action' ||
+      incomingType === 'reaction' ||
+      incomingType === 'group-update' ||
+      incomingType === 'read-receipt'
+    );
+  }
+
+  private applyRegularIncomingMessagesBulk(messages: IncomingServerMessage[]): number {
+    if (!messages.length) return 0;
+
+    const currentMessageMap = this.messagesByChat();
+    const nextMessageMap: Record<string, ChatMessage[]> = { ...currentMessageMap };
+    const mutableListChats = new Set<string>();
+    const knownMessageIdsByChat = new Map<string, Set<string>>();
+    const nextUnreadMap: Record<string, number> = { ...this.unreadByChat() };
+
+    let groupsSnapshot = this.groups();
+    let messagesChanged = false;
+    let unreadChanged = false;
+    let appliedCount = 0;
+
+    const getMessageIdSet = (chatId: string): Set<string> => {
+      const existing = knownMessageIdsByChat.get(chatId);
+      if (existing) return existing;
+      const set = new Set((nextMessageMap[chatId] ?? []).map((message) => message.messageId));
+      knownMessageIdsByChat.set(chatId, set);
+      return set;
+    };
+
+    const getMutableList = (chatId: string): ChatMessage[] => {
+      if (!mutableListChats.has(chatId)) {
+        nextMessageMap[chatId] = nextMessageMap[chatId] ? [...nextMessageMap[chatId]] : [];
+        mutableListChats.add(chatId);
+      }
+      return nextMessageMap[chatId] ?? [];
+    };
+
+    for (const incoming of messages) {
+      const sender = this.normalizeUser(incoming.sender ?? '');
+      if (!sender) continue;
+
+      const isGroup = Boolean(incoming.groupId);
+      const chatId = isGroup
+        ? this.normalizeChatId(incoming.groupId ?? '')
+        : this.normalizeChatId(sender);
+      if (!chatId) continue;
+
+      const messageId = String(incoming.messageId ?? this.generateId('srv')).trim();
+      if (!messageId) continue;
+      const incomingBody = this.resolveIncomingMessageBody(incoming);
+      const incomingImageUrl = this.resolveIncomingImageUrl(incoming);
+
+      const knownMessageIds = getMessageIdSet(chatId);
+      if (knownMessageIds.has(messageId)) {
+        if (!this.hasRenderableIncomingContent(incomingBody, incomingImageUrl)) {
+          continue;
+        }
+        const list = getMutableList(chatId);
+        if (this.hydrateIncomingMessageInList(list, messageId, incomingBody, incomingImageUrl)) {
+          messagesChanged = true;
+          appliedCount += 1;
+        }
+        continue;
+      }
+
+      if (!this.hasRenderableIncomingContent(incomingBody, incomingImageUrl)) {
+        continue;
+      }
+
+      if (isGroup && incoming.groupId && incoming.groupName) {
+        this.ensureGroupFromIncoming(incoming);
+        groupsSnapshot = this.groups();
+      }
+      const incomingGroup = isGroup
+        ? groupsSnapshot.find((item) => item.id === chatId) ?? null
+        : null;
+      const normalizedIncomingGroupType: GroupType | null =
+        incoming.groupType === 'community' || incoming.groupType === 'group'
+          ? incoming.groupType
+          : (incomingGroup?.type ?? null);
+
+      const replyTo = this.normalizeMessageReference({
+        messageId: incoming.replyToMessageId,
+        sender: incoming.replyToSender,
+        senderDisplayName: incoming.replyToSenderName,
+        body: incoming.replyToBody,
+        imageUrl: incoming.replyToImageUrl ?? null
+      });
+      const forwardedFrom = incoming.forwardedFrom ? this.normalizeUser(incoming.forwardedFrom) : '';
+      const forwardedFromName = String(incoming.forwardedFromName || '').trim();
+      const record: ChatMessage = {
+        id: this.generateId('rec'),
+        messageId,
+        chatId,
+        sender,
+        senderDisplayName: incoming.groupSenderName || this.getDisplayName(sender),
+        body: incomingBody,
+        imageUrl: incomingImageUrl,
+        direction: 'incoming',
+        timestamp: Number(incoming.timestamp ?? Date.now()),
+        deliveryStatus: 'delivered',
+        groupId: incoming.groupId ? this.normalizeChatId(incoming.groupId) : null,
+        groupName: incoming.groupName ?? null,
+        groupType: normalizedIncomingGroupType,
+        editedAt: Number.isFinite(Number(incoming.editedAt)) ? Number(incoming.editedAt) : null,
+        deletedAt: Number.isFinite(Number(incoming.deletedAt)) ? Number(incoming.deletedAt) : null,
+        replyTo,
+        forwarded: Boolean(incoming.forwarded),
+        forwardedFrom: forwardedFrom || null,
+        forwardedFromName: forwardedFromName || null
+      };
+
+      const list = getMutableList(chatId);
+      if (!list.length || list[list.length - 1].timestamp <= record.timestamp) {
+        list.push(record);
+      } else {
+        const insertAt = this.findMessageInsertIndexByTimestamp(list, record.timestamp);
+        list.splice(insertAt, 0, record);
+      }
+
+      knownMessageIds.add(messageId);
+      messagesChanged = true;
+      appliedCount += 1;
+
+      if (!isGroup && !this.isSystemChat(chatId)) {
+        this.trackIncomingMessageForReadReceipt(chatId, messageId);
+      }
+
+      nextUnreadMap[chatId] = (nextUnreadMap[chatId] ?? 0) + 1;
+      unreadChanged = true;
+    }
+
+    if (messagesChanged) {
+      this.messagesByChat.set(nextMessageMap);
+    }
+    if (unreadChanged) {
+      this.unreadByChat.set(nextUnreadMap);
+    }
+    if (messagesChanged || unreadChanged) {
+      this.schedulePersist();
+    }
+
+    return appliedCount;
+  }
+
   private handleIncomingPayload(rawData: string): void {
     try {
+      this.incrementDeliveryTelemetry('ssePayloadReceived');
       const message = JSON.parse(rawData) as IncomingServerMessage;
-      this.applyIncomingMessage(message);
+      if (this.applyIncomingMessage(message)) {
+        this.incrementDeliveryTelemetry('sseMessageApplied');
+      } else {
+        this.incrementDeliveryTelemetry('sseMessageNoop');
+      }
     } catch {
       // Ignore malformed realtime payloads.
     }
   }
 
-  private applyIncomingMessage(incoming: IncomingServerMessage): void {
+  private applyIncomingMessage(incoming: IncomingServerMessage): boolean {
     const incomingType = String(incoming.type ?? '').trim().toLowerCase();
+    if (incomingType === 'delete-action') {
+      return this.applyIncomingDeleteAction(incoming);
+    }
+    if (incomingType === 'edit-action') {
+      return this.applyIncomingEditAction(incoming);
+    }
     if (incomingType === 'reaction') {
-      this.applyIncomingReaction(incoming);
-      return;
+      return this.applyIncomingReaction(incoming);
     }
     if (incomingType === 'group-update') {
-      this.applyIncomingGroupUpdate(incoming);
-      return;
+      return this.applyIncomingGroupUpdate(incoming);
     }
     if (incomingType === 'read-receipt') {
-      this.applyIncomingReadReceipt(incoming);
-      return;
+      return this.applyIncomingReadReceipt(incoming);
     }
 
     const sender = this.normalizeUser(incoming.sender ?? '');
-    if (!sender) return;
+    if (!sender) return false;
 
     const isGroup = Boolean(incoming.groupId);
     const chatId = isGroup
       ? this.normalizeChatId(incoming.groupId ?? '')
       : this.normalizeChatId(sender);
-    if (!chatId) return;
+    if (!chatId) return false;
 
     const messageId = String(incoming.messageId ?? this.generateId('srv')).trim();
-    if (!messageId) return;
+    if (!messageId) return false;
+    const incomingBody = this.resolveIncomingMessageBody(incoming);
+    const incomingImageUrl = this.resolveIncomingImageUrl(incoming);
 
     const alreadyExists = (this.messagesByChat()[chatId] ?? []).some(
       (message) => message.messageId === messageId
     );
-    if (alreadyExists) return;
+    if (alreadyExists) {
+      return this.hydrateExistingIncomingMessage(chatId, messageId, incomingBody, incomingImageUrl);
+    }
+    if (!this.hasRenderableIncomingContent(incomingBody, incomingImageUrl)) {
+      return false;
+    }
 
     if (isGroup && incoming.groupId && incoming.groupName) {
       this.ensureGroupFromIncoming(incoming);
     }
+    const incomingGroup = isGroup
+      ? this.groups().find((item) => item.id === chatId) ?? null
+      : null;
+    const normalizedIncomingGroupType: GroupType | null =
+      incoming.groupType === 'community' || incoming.groupType === 'group'
+        ? incoming.groupType
+        : (incomingGroup?.type ?? null);
 
+    const replyTo = this.normalizeMessageReference({
+      messageId: incoming.replyToMessageId,
+      sender: incoming.replyToSender,
+      senderDisplayName: incoming.replyToSenderName,
+      body: incoming.replyToBody,
+      imageUrl: incoming.replyToImageUrl ?? null
+    });
+    const forwardedFrom = incoming.forwardedFrom ? this.normalizeUser(incoming.forwardedFrom) : '';
+    const forwardedFromName = String(incoming.forwardedFromName || '').trim();
     const record: ChatMessage = {
       id: this.generateId('rec'),
       messageId,
       chatId,
       sender,
       senderDisplayName: incoming.groupSenderName || this.getDisplayName(sender),
-      body: String(incoming.body ?? ''),
-      imageUrl: incoming.imageUrl ?? null,
+      body: incomingBody,
+      imageUrl: incomingImageUrl,
       direction: 'incoming',
       timestamp: Number(incoming.timestamp ?? Date.now()),
       deliveryStatus: 'delivered',
       groupId: incoming.groupId ? this.normalizeChatId(incoming.groupId) : null,
-      groupName: incoming.groupName ?? null
+      groupName: incoming.groupName ?? null,
+      groupType: normalizedIncomingGroupType,
+      editedAt: Number.isFinite(Number(incoming.editedAt)) ? Number(incoming.editedAt) : null,
+      deletedAt: Number.isFinite(Number(incoming.deletedAt)) ? Number(incoming.deletedAt) : null,
+      replyTo,
+      forwarded: Boolean(incoming.forwarded),
+      forwardedFrom: forwardedFrom || null,
+      forwardedFromName: forwardedFromName || null
     };
 
     this.appendMessage(record);
-
-    if (this.activeChatId() !== chatId) {
-      this.unreadByChat.update((map) => ({
-        ...map,
-        [chatId]: (map[chatId] ?? 0) + 1
-      }));
-    } else {
-      this.unreadByChat.update((map) => ({
-        ...map,
-        [chatId]: 0
-      }));
-      void this.sendReadReceiptsForChat(chatId);
+    if (!isGroup && !this.isSystemChat(chatId)) {
+      this.trackIncomingMessageForReadReceipt(chatId, messageId);
     }
 
+    this.unreadByChat.update((map) => ({
+      ...map,
+      [chatId]: (map[chatId] ?? 0) + 1
+    }));
+
     this.schedulePersist();
+    return true;
   }
 
-  private applyIncomingGroupUpdate(incoming: IncomingServerMessage): void {
+  private normalizeIncomingBodyValue(value: unknown): string {
+    if (typeof value === 'string') {
+      return value.trim();
+    }
+    if (value && typeof value === 'object') {
+      const nested = value as Record<string, unknown>;
+      const nestedBody = nested['longText'] ?? nested['shortText'] ?? nested['text'] ?? nested['body'] ?? '';
+      return String(nestedBody || '').trim();
+    }
+    return String(value ?? '').trim();
+  }
+
+  private normalizeIncomingImageValue(value: unknown): string | null {
+    const normalized = String(value ?? '').trim();
+    return normalized || null;
+  }
+
+  private resolveIncomingMessageBody(incoming: IncomingServerMessage): string {
+    const payload = incoming as Record<string, unknown>;
+    const rawBody = incoming.body
+      ?? payload['messageText']
+      ?? payload['groupMessageText']
+      ?? payload['longText']
+      ?? payload['shortText']
+      ?? payload['text']
+      ?? payload['message']
+      ?? payload['reply']
+      ?? payload['body']
+      ?? '';
+    return this.normalizeIncomingBodyValue(rawBody);
+  }
+
+  private resolveIncomingImageUrl(incoming: IncomingServerMessage): string | null {
+    const payload = incoming as Record<string, unknown>;
+    const rawImage = incoming.imageUrl
+      ?? payload['image']
+      ?? payload['imageUrl']
+      ?? null;
+    return this.normalizeIncomingImageValue(rawImage);
+  }
+
+  private hasRenderableIncomingContent(body: string, imageUrl: string | null): boolean {
+    return Boolean(String(body || '').trim() || String(imageUrl || '').trim());
+  }
+
+  private hydrateExistingIncomingMessage(
+    chatId: string,
+    messageId: string,
+    incomingBody: string,
+    incomingImageUrl: string | null
+  ): boolean {
+    if (!this.hasRenderableIncomingContent(incomingBody, incomingImageUrl)) {
+      return false;
+    }
+
+    let changed = false;
+    this.messagesByChat.update((messageMap) => {
+      const list = messageMap[chatId];
+      if (!list?.length) {
+        return messageMap;
+      }
+
+      const nextList = [...list];
+      if (!this.hydrateIncomingMessageInList(nextList, messageId, incomingBody, incomingImageUrl)) {
+        return messageMap;
+      }
+      changed = true;
+      return {
+        ...messageMap,
+        [chatId]: nextList
+      };
+    });
+
+    if (changed) {
+      this.schedulePersist();
+    }
+    return changed;
+  }
+
+  private hydrateIncomingMessageInList(
+    list: ChatMessage[],
+    messageId: string,
+    incomingBody: string,
+    incomingImageUrl: string | null
+  ): boolean {
+    const index = list.findIndex((message) => message.messageId === messageId);
+    if (index < 0) return false;
+
+    const current = list[index];
+    if (current.direction !== 'incoming' || current.deletedAt) {
+      return false;
+    }
+
+    const currentBody = String(current.body || '').trim();
+    const currentImage = String(current.imageUrl || '').trim();
+    const nextBody = currentBody || incomingBody;
+    const nextImage = currentImage || String(incomingImageUrl || '').trim();
+    if (nextBody === currentBody && nextImage === currentImage) {
+      return false;
+    }
+
+    list[index] = {
+      ...current,
+      body: nextBody,
+      imageUrl: nextImage || null
+    };
+    return true;
+  }
+
+  private applyIncomingGroupUpdate(incoming: IncomingServerMessage): boolean {
     const groupId = this.normalizeChatId(incoming.groupId ?? '');
-    if (!groupId || !incoming.groupName) return;
+    if (!groupId || !incoming.groupName) return false;
 
     const currentUser = this.normalizeUser(this.currentUser() ?? '');
     const members = Array.isArray(incoming.groupMembers)
@@ -1410,28 +2384,60 @@ export class ChatStoreService {
       : [];
     if (currentUser && members.length && !members.includes(currentUser)) {
       this.removeGroupLocally(groupId);
-      return;
+      return true;
     }
 
     this.ensureGroupFromIncoming(incoming);
     this.schedulePersist();
+    return true;
   }
 
-  private applyIncomingReadReceipt(incoming: IncomingServerMessage): void {
+  private applyIncomingReadReceipt(incoming: IncomingServerMessage): boolean {
     const messageIds = Array.isArray(incoming.messageIds)
       ? incoming.messageIds.map((id) => String(id || '').trim()).filter(Boolean)
       : String(incoming.messageId ?? '')
           .split(',')
           .map((id) => String(id || '').trim())
           .filter(Boolean);
-    if (!messageIds.length) return;
+    if (!messageIds.length) return false;
 
-    this.markOutgoingMessagesAsRead(messageIds);
+    return this.markOutgoingMessagesAsRead(messageIds);
   }
 
-  private applyIncomingReaction(incoming: IncomingServerMessage): void {
+  private applyIncomingEditAction(incoming: IncomingServerMessage): boolean {
+    const messageId = String(incoming.messageId ?? '').trim();
+    const body = String(incoming.body ?? '').trim();
+    if (!messageId || !body) return false;
+
+    const editedAtValue = Number(incoming.editedAt ?? incoming.timestamp ?? Date.now());
+    const editedAt = Number.isFinite(editedAtValue) ? editedAtValue : Date.now();
+    return this.applyMessageEditLocally(messageId, body, editedAt);
+  }
+
+  private applyIncomingDeleteAction(incoming: IncomingServerMessage): boolean {
+    const messageIds = Array.isArray(incoming.messageIds)
+      ? incoming.messageIds.map((id) => String(id || '').trim()).filter(Boolean)
+      : String(incoming.messageId ?? '')
+          .split(',')
+          .map((id) => String(id || '').trim())
+          .filter(Boolean);
+    if (!messageIds.length) return false;
+
+    const deletedAtValue = Number(incoming.deletedAt ?? incoming.timestamp ?? Date.now());
+    const deletedAt = Number.isFinite(deletedAtValue) ? deletedAtValue : Date.now();
+    let changed = false;
+    messageIds.forEach((messageId) => {
+      changed = this.applyMessageDeleteLocally(messageId, deletedAt, { skipPersist: true }) || changed;
+    });
+    if (changed) {
+      this.schedulePersist();
+    }
+    return changed;
+  }
+
+  private applyIncomingReaction(incoming: IncomingServerMessage): boolean {
     const groupId = this.normalizeChatId(incoming.groupId ?? '');
-    if (!groupId) return;
+    if (!groupId) return false;
 
     if (incoming.groupName) {
       this.ensureGroupFromIncoming(incoming);
@@ -1441,7 +2447,7 @@ export class ChatStoreService {
     const emoji = String(incoming.emoji ?? '').trim();
     const reactor = this.normalizeUser(incoming.reactor ?? incoming.sender ?? '');
     if (!targetMessageId || !emoji || !reactor) {
-      return;
+      return false;
     }
 
     const reaction: MessageReaction = {
@@ -1451,11 +2457,11 @@ export class ChatStoreService {
     };
 
     const changed = this.applyReactionToMessage(groupId, targetMessageId, reaction);
-    if (!changed) return;
+    if (!changed) return false;
 
     const currentUser = this.normalizeUser(this.currentUser() ?? '');
     if (currentUser && reactor === currentUser) {
-      return;
+      return true;
     }
 
     const group = this.groups().find((item) => item.id === groupId);
@@ -1469,6 +2475,7 @@ export class ChatStoreService {
       reactorName,
       emoji
     });
+    return true;
   }
 
   private ensureGroupFromIncoming(incoming: IncomingServerMessage): void {
@@ -1629,23 +2636,166 @@ export class ChatStoreService {
     this.schedulePersist();
   }
 
+  private findOutgoingMessageForAction(messageId: string): { chatId: string; message: ChatMessage } | null {
+    const normalizedId = String(messageId || '').trim();
+    if (!normalizedId) return null;
+
+    const messageMap = this.messagesByChat();
+    for (const [chatId, list] of Object.entries(messageMap)) {
+      const message = list.find(
+        (item) => item.messageId === normalizedId && item.direction === 'outgoing'
+      );
+      if (message) {
+        return { chatId, message };
+      }
+    }
+    return null;
+  }
+
+  private restoreMessageSnapshotLocally(messageId: string, snapshot: MessageActionSnapshot): boolean {
+    const normalizedId = String(messageId || '').trim();
+    if (!normalizedId) return false;
+
+    let changed = false;
+    this.messagesByChat.update((messageMap) => {
+      const nextMap: Record<string, ChatMessage[]> = {};
+      for (const [chatId, list] of Object.entries(messageMap)) {
+        const nextList = list.map((message) => {
+          if (message.messageId !== normalizedId) {
+            return message;
+          }
+          changed = true;
+          return {
+            ...message,
+            body: snapshot.body,
+            imageUrl: snapshot.imageUrl ?? null,
+            thumbnailUrl: snapshot.thumbnailUrl ?? null,
+            editedAt: snapshot.editedAt ?? null,
+            deletedAt: snapshot.deletedAt ?? null
+          };
+        });
+        nextMap[chatId] = nextList;
+      }
+      return changed ? nextMap : messageMap;
+    });
+
+    if (changed) {
+      this.schedulePersist();
+    }
+    return changed;
+  }
+
+  private applyMessageEditLocally(messageId: string, body: string, editedAt: number): boolean {
+    const normalizedId = String(messageId || '').trim();
+    const nextBody = String(body || '').trim();
+    if (!normalizedId || !nextBody) return false;
+
+    let changed = false;
+    this.messagesByChat.update((messageMap) => {
+      const nextMap: Record<string, ChatMessage[]> = {};
+      for (const [chatId, list] of Object.entries(messageMap)) {
+        const nextList = list.map((message) => {
+          if (message.messageId !== normalizedId) {
+            return message;
+          }
+          if (message.deletedAt) {
+            return message;
+          }
+          if (String(message.body || '') === nextBody) {
+            return message;
+          }
+          changed = true;
+          return {
+            ...message,
+            body: nextBody,
+            editedAt
+          };
+        });
+        nextMap[chatId] = nextList;
+      }
+      return changed ? nextMap : messageMap;
+    });
+
+    if (changed) {
+      this.schedulePersist();
+    }
+    return changed;
+  }
+
+  private applyMessageDeleteLocally(
+    messageId: string,
+    deletedAt: number,
+    options: { skipPersist?: boolean } = {}
+  ): boolean {
+    const normalizedId = String(messageId || '').trim();
+    if (!normalizedId) return false;
+
+    let changed = false;
+    this.messagesByChat.update((messageMap) => {
+      const nextMap: Record<string, ChatMessage[]> = {};
+      for (const [chatId, list] of Object.entries(messageMap)) {
+        const nextList = list.map((message) => {
+          if (message.messageId !== normalizedId) {
+            return message;
+          }
+          if (message.deletedAt) {
+            return message;
+          }
+          changed = true;
+          return {
+            ...message,
+            body: DELETED_MESSAGE_PLACEHOLDER,
+            imageUrl: null,
+            thumbnailUrl: null,
+            editedAt: null,
+            deletedAt
+          };
+        });
+        nextMap[chatId] = nextList;
+      }
+      return changed ? nextMap : messageMap;
+    });
+
+    if (changed && !options.skipPersist) {
+      this.schedulePersist();
+    }
+    return changed;
+  }
+
   private appendMessage(message: ChatMessage): void {
     const chatId = this.normalizeChatId(message.chatId);
     if (!chatId) return;
 
+    const normalizedSender = this.normalizeUser(message.sender);
+    const normalizedReplyTo = this.normalizeMessageReference(message.replyTo ?? null);
+    const normalizedForwardedFrom = message.forwardedFrom
+      ? this.normalizeUser(message.forwardedFrom)
+      : '';
+    const normalizedForwardedFromName = String(message.forwardedFromName || '').trim();
     const nextMessage: ChatMessage = {
       ...message,
       chatId,
-      sender: this.normalizeUser(message.sender)
+      sender: normalizedSender,
+      replyTo: normalizedReplyTo,
+      forwarded: Boolean(message.forwarded),
+      forwardedFrom: normalizedForwardedFrom || null,
+      forwardedFromName: normalizedForwardedFromName || null
     };
 
     this.messagesByChat.update((messageMap) => {
-      const list = messageMap[chatId] ? [...messageMap[chatId]] : [];
-      if (list.some((entry) => entry.messageId === nextMessage.messageId)) {
+      const existingList = messageMap[chatId] ?? [];
+      if (existingList.some((entry) => entry.messageId === nextMessage.messageId)) {
         return messageMap;
       }
-      list.push(nextMessage);
-      list.sort((a, b) => a.timestamp - b.timestamp);
+
+      const list = [...existingList];
+      if (!list.length || list[list.length - 1].timestamp <= nextMessage.timestamp) {
+        list.push(nextMessage);
+      } else {
+        const insertAt = this.findMessageInsertIndexByTimestamp(list, nextMessage.timestamp);
+        list.splice(insertAt, 0, nextMessage);
+      }
+
       return {
         ...messageMap,
         [chatId]: list
@@ -1653,6 +2803,20 @@ export class ChatStoreService {
     });
 
     this.schedulePersist();
+  }
+
+  private findMessageInsertIndexByTimestamp(list: ChatMessage[], timestamp: number): number {
+    let low = 0;
+    let high = list.length;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      if (list[mid].timestamp <= timestamp) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    return low;
   }
 
   private setMessageStatus(messageId: string, status: DeliveryStatus): void {
@@ -1678,9 +2842,9 @@ export class ChatStoreService {
     this.schedulePersist();
   }
 
-  private markOutgoingMessagesAsRead(messageIds: string[]): void {
+  private markOutgoingMessagesAsRead(messageIds: string[]): boolean {
     const targetIds = new Set(messageIds.map((id) => String(id || '').trim()).filter(Boolean));
-    if (!targetIds.size) return;
+    if (!targetIds.size) return false;
 
     let changed = false;
     this.messagesByChat.update((messageMap) => {
@@ -1704,6 +2868,7 @@ export class ChatStoreService {
     if (changed) {
       this.schedulePersist();
     }
+    return changed;
   }
 
   private shouldApplyDeliveryStatusTransition(
@@ -1807,9 +2972,10 @@ export class ChatStoreService {
   };
 
   private getMessagePreview(message: ChatMessage): string {
+    const forwardedPrefix = message.forwarded ? '↪ הועברה: ' : '';
     if (message.imageUrl) {
       const imagePreview = message.direction === 'outgoing' ? 'אתה: שלחת תמונה' : '📷 תמונה';
-      return this.truncatePreview(imagePreview);
+      return this.truncatePreview(`${forwardedPrefix}${imagePreview}`);
     }
     if (!message.body) {
       return '';
@@ -1819,11 +2985,11 @@ export class ChatStoreService {
     const isDocumentLink = /^https?:\/\/\S+\.(pdf|doc|docx)(\?|$)/i.test(trimmed);
     if (isDocumentLink) {
       const documentPreview = message.direction === 'outgoing' ? 'אתה: מסמך' : 'מסמך';
-      return this.truncatePreview(documentPreview);
+      return this.truncatePreview(`${forwardedPrefix}${documentPreview}`);
     }
 
     const preview = message.direction === 'outgoing' ? `אתה: ${trimmed}` : trimmed;
-    return this.truncatePreview(preview);
+    return this.truncatePreview(`${forwardedPrefix}${preview}`);
   }
 
   private truncatePreview(value: string, maxChars = 100): string {
@@ -1832,6 +2998,47 @@ export class ChatStoreService {
       return compact;
     }
     return `${compact.slice(0, maxChars)}…`;
+  }
+
+  private normalizeSendMessageOptions(options: SendMessageOptions = {}): SendMessageOptions {
+    const replyTo = this.normalizeMessageReference(options.replyTo ?? null);
+    const forwarded = Boolean(options.forwarded);
+    const forwardedFrom = options.forwardedFrom ? this.normalizeUser(options.forwardedFrom) : '';
+    const forwardedFromName = String(options.forwardedFromName || '').trim();
+    return {
+      replyTo,
+      forwarded,
+      forwardedFrom: forwardedFrom || null,
+      forwardedFromName: forwardedFromName || null
+    };
+  }
+
+  private normalizeMessageReference(rawValue: unknown): MessageReference | null {
+    if (!rawValue || typeof rawValue !== 'object') {
+      return null;
+    }
+
+    const value = rawValue as Partial<MessageReference>;
+    const messageId = String(value.messageId || '').trim();
+    const sender = this.normalizeUser(String(value.sender || ''));
+    if (!messageId || !sender) {
+      return null;
+    }
+
+    const senderDisplayName = String(value.senderDisplayName || '').trim();
+    const body = typeof value.body === 'string' ? value.body : '';
+    const imageUrl = typeof value.imageUrl === 'string' ? value.imageUrl.trim() : '';
+    if (!body.trim() && !imageUrl) {
+      return null;
+    }
+
+    return {
+      messageId,
+      sender,
+      senderDisplayName: senderDisplayName || undefined,
+      body,
+      imageUrl: imageUrl || null
+    };
   }
 
   private getDisplayName(username: string): string {
@@ -1913,6 +3120,11 @@ export class ChatStoreService {
     return this.normalizeUser(value);
   }
 
+  private isSystemChat(chatId: string): boolean {
+    const normalized = this.normalizeChatId(chatId);
+    return Boolean(normalized && this.systemChatIdSet.has(normalized));
+  }
+
   private normalizeUser(value: string): string {
     return String(value || '').trim().toLowerCase();
   }
@@ -1925,9 +3137,11 @@ export class ChatStoreService {
     return digits;
   }
 
-  private readStoredUser(): string | null {
-    const value = localStorage.getItem('username');
-    return value ? this.normalizeUser(value) : null;
+  private removeLegacyStoredUser(): void {
+    if (typeof localStorage === 'undefined') {
+      return;
+    }
+    localStorage.removeItem('username');
   }
 
   private stateKey(user: string): string {
@@ -1946,6 +3160,7 @@ export class ChatStoreService {
       const parsed = JSON.parse(raw) as Partial<PersistedChatState>;
       const contacts = this.normalizeContacts(Array.isArray(parsed.contacts) ? parsed.contacts : []);
       const groups = this.normalizeGroups(Array.isArray(parsed.groups) ? parsed.groups : [], user);
+      const groupsById = new Map(groups.map((group) => [group.id, group]));
       const unreadByChat = parsed.unreadByChat && typeof parsed.unreadByChat === 'object'
         ? parsed.unreadByChat
         : {};
@@ -1954,6 +3169,11 @@ export class ChatStoreService {
       for (const record of parsed.messages ?? []) {
         if (!record || !record.chatId) continue;
         const chatId = this.normalizeChatId(record.chatId);
+        const normalizedGroupId = record.groupId ? this.normalizeChatId(record.groupId) : null;
+        const normalizedGroupType: GroupType | null =
+          record.groupType === 'group' || record.groupType === 'community'
+            ? record.groupType
+            : (normalizedGroupId ? (groupsById.get(normalizedGroupId)?.type ?? null) : null);
         const normalized: ChatMessage = {
           ...record,
           chatId,
@@ -1962,7 +3182,15 @@ export class ChatStoreService {
           body: String(record.body ?? ''),
           timestamp: Number(record.timestamp ?? Date.now()),
           direction: record.direction === 'incoming' ? 'incoming' : 'outgoing',
-          deliveryStatus: record.deliveryStatus ?? 'sent'
+          deliveryStatus: record.deliveryStatus ?? 'sent',
+          groupId: normalizedGroupId,
+          editedAt: Number.isFinite(Number(record.editedAt)) ? Number(record.editedAt) : null,
+          deletedAt: Number.isFinite(Number(record.deletedAt)) ? Number(record.deletedAt) : null,
+          groupType: normalizedGroupType,
+          replyTo: this.normalizeMessageReference(record.replyTo ?? null),
+          forwarded: Boolean(record.forwarded),
+          forwardedFrom: record.forwardedFrom ? this.normalizeUser(record.forwardedFrom) : null,
+          forwardedFromName: String(record.forwardedFromName || '').trim() || null
         };
 
         if (!messageMap[chatId]) {
@@ -1987,6 +3215,14 @@ export class ChatStoreService {
   }
 
   private schedulePersist(): void {
+    if (this.incomingBatchDepth > 0) {
+      this.pendingPersistAfterIncomingBatch = true;
+      return;
+    }
+    this.schedulePersistNow();
+  }
+
+  private schedulePersistNow(): void {
     if (this.persistTimer) {
       clearTimeout(this.persistTimer);
     }
@@ -1994,6 +3230,19 @@ export class ChatStoreService {
       this.persistTimer = null;
       this.persistState();
     }, 250);
+  }
+
+  private runIncomingBatch<T>(work: () => T): T {
+    this.incomingBatchDepth += 1;
+    try {
+      return work();
+    } finally {
+      this.incomingBatchDepth -= 1;
+      if (this.incomingBatchDepth === 0 && this.pendingPersistAfterIncomingBatch) {
+        this.pendingPersistAfterIncomingBatch = false;
+        this.schedulePersistNow();
+      }
+    }
   }
 
   private persistState(): void {
@@ -2068,6 +3317,18 @@ export class ChatStoreService {
     this.networkOnline.set(false);
   };
 
+  private isNetworkReachable(): boolean {
+    if (this.networkOnline()) {
+      return true;
+    }
+    if (typeof navigator !== 'undefined' && navigator.onLine) {
+      // Recover from stale offline events where online never fires.
+      this.networkOnline.set(true);
+      return true;
+    }
+    return false;
+  }
+
   private handleWindowFocus = (): void => {
     this.refreshPushRegistrationForCurrentUser(false);
     this.clearDeviceAttention({ resetServerBadge: true });
@@ -2102,6 +3363,7 @@ export class ChatStoreService {
       return;
     }
     if (action !== 'push-payload') return;
+    this.incrementDeliveryTelemetry('pushPayloadReceived');
 
     const payloadRaw = messageData.payload;
     if (!payloadRaw || typeof payloadRaw !== 'object') return;
@@ -2116,12 +3378,6 @@ export class ChatStoreService {
       this.syncForegroundState({ forceRefresh: true });
       return;
     }
-    if (payloadType !== 'reaction' && payloadType !== 'group-update' && payloadType !== 'read-receipt') {
-      // For regular message pushes, force a near-immediate pull so opened app isn't stale.
-      this.syncForegroundState();
-      return;
-    }
-
     const numericGroupUpdatedAt = Number(payload['groupUpdatedAt']);
     const numericReadAt = Number(payload['readAt']);
     const payloadMessageIds = Array.isArray(payload['messageIds'])
@@ -2153,8 +3409,86 @@ export class ChatStoreService {
       groupType: payload['groupType'] === 'community' ? 'community' : 'group'
     };
 
-    this.applyIncomingMessage(incoming);
+    if (payloadType !== 'reaction' && payloadType !== 'group-update' && payloadType !== 'read-receipt') {
+      const immediateMessage = this.buildIncomingMessageFromPushPayload(payload, incoming);
+      if (immediateMessage) {
+        this.incrementDeliveryTelemetry('pushImmediateMessageBuilt');
+        if (this.applyIncomingMessage(immediateMessage)) {
+          this.incrementDeliveryTelemetry('pushMessageApplied');
+        } else {
+          this.incrementDeliveryTelemetry('pushMessageNoop');
+        }
+      } else {
+        this.incrementDeliveryTelemetry('pushMissingMessageContext');
+      }
+      // For regular pushes, recover with immediate + delayed pulls so chat list stays fresh.
+      this.syncForegroundState({ forceRefresh: true });
+      this.schedulePushRecoveryPulls();
+      return;
+    }
+
+    if (this.applyIncomingMessage(incoming)) {
+      this.incrementDeliveryTelemetry('pushMessageApplied');
+    } else {
+      this.incrementDeliveryTelemetry('pushMessageNoop');
+    }
   };
+
+  private buildIncomingMessageFromPushPayload(
+    payload: Record<string, unknown>,
+    seed: IncomingServerMessage
+  ): IncomingServerMessage | null {
+    const sender = this.normalizeUser(String(payload['sender'] ?? seed.sender ?? '').trim());
+    const groupId = String(payload['groupId'] ?? seed.groupId ?? '').trim();
+    const messageId = String(payload['messageId'] ?? seed.messageId ?? '').trim();
+    if (!messageId || (!sender && !groupId)) {
+      return null;
+    }
+
+    const bodyFromPayload = this.normalizeIncomingBodyValue(
+      payload['messageText'] ??
+      payload['groupMessageText'] ??
+      payload['longText'] ??
+      payload['shortText'] ??
+      payload['text'] ??
+      payload['message'] ??
+      payload['reply'] ??
+      payload['body'] ??
+      ''
+    );
+    const imageUrl = this.normalizeIncomingImageValue(
+      payload['image'] ??
+      payload['imageUrl'] ??
+      payload['thumbnailUrl'] ??
+      null
+    );
+    const incoming: IncomingServerMessage = {
+      ...seed,
+      messageId,
+      sender: sender || (groupId ? groupId : ''),
+      body: bodyFromPayload,
+      imageUrl
+    };
+    if (groupId) {
+      incoming.groupId = groupId;
+      incoming.groupName = String(payload['groupName'] ?? seed.groupName ?? '').trim() || groupId;
+      incoming.groupType = payload['groupType'] === 'community' ? 'community' : (seed.groupType ?? 'group');
+    }
+    return incoming;
+  }
+
+  private schedulePushRecoveryPulls(): void {
+    const user = this.currentUser();
+    if (!user) return;
+    this.incrementDeliveryTelemetry('pushRecoveryPullScheduled', PUSH_RECOVERY_PULL_DELAYS_MS.length);
+    for (const delayMs of PUSH_RECOVERY_PULL_DELAYS_MS) {
+      setTimeout(() => {
+        if (this.currentUser() !== user) return;
+        if (!this.isNetworkReachable()) return;
+        void this.pullMessages(user);
+      }, delayMs);
+    }
+  }
 
   private resolveNotificationChatId(
     messageData: { url?: unknown; chat?: unknown; payload?: unknown },
@@ -2204,7 +3538,7 @@ export class ChatStoreService {
 
   private syncForegroundState(options: { forceRefresh?: boolean } = {}): void {
     const user = this.currentUser();
-    if (!user || !this.networkOnline()) return;
+    if (!user || !this.isNetworkReachable()) return;
 
     const forceRefresh = Boolean(options.forceRefresh);
     const now = Date.now();
@@ -2216,10 +3550,6 @@ export class ChatStoreService {
     void this.pullMessages(user);
     void this.flushOutbox();
     void this.refresh(forceRefresh);
-    const activeChat = this.activeChatId();
-    if (activeChat) {
-      void this.sendReadReceiptsForChat(activeChat);
-    }
   }
 
   private syncAppBadge(unreadTotal: number): void {
