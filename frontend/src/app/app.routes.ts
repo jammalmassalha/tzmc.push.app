@@ -7,6 +7,7 @@ const authGuard: CanActivateFn = async () => {
   const router = inject(Router);
   await store.ensureSessionReady();
   if (store.isAuthenticated()) {
+    await store.initialize();
     return true;
   }
   return router.createUrlTree(['/setup']);

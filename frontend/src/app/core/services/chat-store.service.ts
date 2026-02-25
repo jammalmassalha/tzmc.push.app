@@ -296,6 +296,8 @@ export class ChatStoreService {
 
     this.initializedUser = user;
     await this.refresh(true);
+    // Ensure first chat/message snapshot is loaded before startup loader can finish.
+    await this.pullMessages(user);
     this.clearDeviceAttention({ resetServerBadge: true });
     // Recover silently if a device lost its push subscription.
     void this.tryRegisterPush(user, { force: true });
