@@ -874,36 +874,54 @@ export class ChatStoreService {
     const stationValue = String(draft.station || '').trim();
     const awaiting = state.awaiting === 'cancel-select' ? 'menu' : state.awaiting;
 
-    return [
-      {
+    const breadcrumbs: ShuttleBreadcrumbStep[] = [];
+    if (awaiting !== 'menu') {
+      breadcrumbs.push({
         key: 'menu',
-        label: 'פעולה',
-        value: awaiting === 'menu' ? '' : 'הזמנה חדשה',
-        active: awaiting === 'menu',
-        completed: awaiting !== 'menu'
-      },
-      {
+        label: '',
+        value: 'הזמנה חדשה',
+        active: false,
+        completed: true
+      });
+    }
+    if (dateValue) {
+      breadcrumbs.push({
         key: 'date',
-        label: 'תאריך',
+        label: '',
         value: dateValue,
-        active: awaiting === 'date',
-        completed: Boolean(dateValue) && awaiting !== 'date'
-      },
-      {
+        active: false,
+        completed: true
+      });
+    }
+    if (shiftValue) {
+      breadcrumbs.push({
         key: 'shift',
-        label: 'משמרת',
+        label: '',
         value: shiftValue,
-        active: awaiting === 'shift',
-        completed: Boolean(shiftValue) && awaiting !== 'shift'
-      },
-      {
+        active: false,
+        completed: true
+      });
+    }
+    if (stationValue) {
+      breadcrumbs.push({
         key: 'station',
-        label: 'תחנה',
+        label: '',
         value: stationValue,
-        active: awaiting === 'station',
-        completed: false
-      }
-    ];
+        active: false,
+        completed: true
+      });
+    }
+
+    if (!breadcrumbs.length) {
+      return null;
+    }
+
+    const lastIndex = breadcrumbs.length - 1;
+    breadcrumbs[lastIndex] = {
+      ...breadcrumbs[lastIndex],
+      active: true
+    };
+    return breadcrumbs;
   }
 
   async submitShuttleQuickPickerSelection(rawValue: string): Promise<void> {

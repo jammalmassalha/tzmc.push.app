@@ -219,6 +219,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly shuttleOrdersDashboard = computed<ShuttleOrdersDashboard | null>(() =>
     this.store.getShuttleOrdersDashboard()
   );
+  readonly shuttleDashboardTab = signal<'ongoing' | 'past'>('ongoing');
   readonly isShuttleRoomActive = computed(() =>
     Boolean(this.shuttleOrdersDashboard() || this.shuttleQuickPicker())
   );
@@ -673,6 +674,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   clearShuttlePickerSearch(): void {
     if (!this.shuttlePickerSearchControl.value) return;
     this.shuttlePickerSearchControl.setValue('');
+  }
+
+  setShuttleDashboardTab(tab: 'ongoing' | 'past'): void {
+    this.shuttleDashboardTab.set(tab);
   }
 
   async cancelShuttleOrder(orderId: string): Promise<void> {
