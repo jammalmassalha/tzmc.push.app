@@ -110,6 +110,25 @@ export interface HrActionOption {
   returnValue: string;
 }
 
+export interface ShuttleOrderSubmitPayload {
+  employee: string;
+  date: string;
+  dateAlt: string;
+  shift: string;
+  station: string;
+  status: string;
+}
+
+const SHUTTLE_SHEET_URL =
+  'https://script.google.com/macros/s/AKfycbwQ9A-CDiyDA-upacWeVG-ZAbFLowpWyOMiYWwERyL8q82oqvp2IJWjYT1NwREX3Kxk/exec';
+
+const SHUTTLE_ENTRY_EMPLOYEE = 'entry.1035269960';
+const SHUTTLE_ENTRY_DATE = 'entry.794242217';
+const SHUTTLE_ENTRY_DATE_ALT = 'entry.794242217_22';
+const SHUTTLE_ENTRY_SHIFT = 'entry.1992732561';
+const SHUTTLE_ENTRY_STATION = 'entry.1096369604';
+const SHUTTLE_ENTRY_STATUS = 'entry.798637322';
+
 @Injectable({ providedIn: 'root' })
 export class ChatApiService {
   private readonly config = runtimeConfig;
@@ -754,6 +773,62 @@ export class ChatApiService {
       .filter((item) => Boolean(item.stepName || item.returnValue));
   }
 
+  async getShuttleEmployees(): Promise<string[]> {
+    const response = await this.fetchWithRetry(
+      `${SHUTTLE_SHEET_URL}?emp=test`,
+      {},
+      { retries: 2, timeoutMs: 12000 }
+    );
+    if (!response.ok) {
+      throw new Error(`Shuttle employees request failed with ${response.status}`);
+    }
+    const body = await response.text();
+    return this.parseJsonStringArray(body);
+  }
+
+  async getShuttleStations(): Promise<string[]> {
+    const response = await this.fetchWithRetry(
+      `${SHUTTLE_SHEET_URL}?park=test`,
+      {},
+      { retries: 2, timeoutMs: 12000 }
+    );
+    if (!response.ok) {
+      throw new Error(`Shuttle stations request failed with ${response.status}`);
+    }
+    const body = await response.text();
+    return this.parseJsonStringArray(body);
+  }
+
+  async submitShuttleOrder(payload: ShuttleOrderSubmitPayload): Promise<void> {
+    const employee = String(payload.employee || '').trim();
+    const date = String(payload.date || '').trim();
+    const dateAlt = String(payload.dateAlt || '').trim();
+    const shift = String(payload.shift || '').trim();
+    const station = String(payload.station || '').trim();
+    const status = String(payload.status || '').trim();
+
+    if (!employee || !date || !dateAlt || !shift || !station || !status) {
+      throw new Error('Shuttle payload is missing required fields');
+    }
+
+    const params = new URLSearchParams();
+    params.set(SHUTTLE_ENTRY_EMPLOYEE, employee);
+    params.set(SHUTTLE_ENTRY_DATE, date);
+    params.set(SHUTTLE_ENTRY_DATE_ALT, dateAlt);
+    params.set(SHUTTLE_ENTRY_SHIFT, shift);
+    params.set(SHUTTLE_ENTRY_STATION, station);
+    params.set(SHUTTLE_ENTRY_STATUS, status);
+
+    const response = await this.fetchWithRetry(
+      `${SHUTTLE_SHEET_URL}?${params.toString()}`,
+      {},
+      { retries: 2, timeoutMs: 12000 }
+    );
+    if (!response.ok) {
+      throw new Error(`Shuttle submit failed with ${response.status}`);
+    }
+  }
+
   private detectDeviceType(): 'Mobile' | 'PC' {
     if (typeof navigator === 'undefined') {
       return 'PC';
@@ -842,5 +917,19 @@ export class ChatApiService {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private parseJsonStringArray(payloadText: string): string[] {
+    try {
+      const parsed = JSON.parse(payloadText);
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+      return parsed
+        .map((item) => String(item ?? '').trim())
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
   }
 }

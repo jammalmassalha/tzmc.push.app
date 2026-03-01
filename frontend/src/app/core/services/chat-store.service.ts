@@ -37,11 +37,29 @@ const DELIVERY_TELEMETRY_FLUSH_INTERVAL_MS = 60 * 1000;
 const DELIVERY_TELEMETRY_FLUSH_MIN_EVENTS = 4;
 const DELIVERY_TELEMETRY_DEVICE_ID_KEY = 'modern-chat-delivery-device-id';
 const HR_CHAT_NAME = 'ציפי';
+const SHUTTLE_CHAT_NAME = 'הזמנת הסעה';
 const HR_WELCOME_KEY_PREFIX = 'hr_welcome_sent_';
 const HR_STATE_KEY_PREFIX = 'hr_state_';
 const HR_UPLOAD_BASE_URL = '/notify/uploads/';
 const HR_STEPS_CACHE_TTL_MS = 5 * 60 * 1000;
 const HR_ACTIONS_CACHE_TTL_MS = 5 * 60 * 1000;
+const SHUTTLE_WELCOME_KEY_PREFIX = 'shuttle_welcome_sent_';
+const SHUTTLE_STATE_KEY_PREFIX = 'shuttle_state_';
+const SHUTTLE_ORDERS_KEY_PREFIX = 'shuttle_orders_';
+const SHUTTLE_LIST_CACHE_TTL_MS = 5 * 60 * 1000;
+const SHUTTLE_DATE_CHOICES_COUNT = 10;
+const SHUTTLE_STATUS_ACTIVE_VALUE = 'פעיל активный';
+const SHUTTLE_STATUS_CANCEL_VALUE = 'ביטול נסיעה отмена поезд';
+const SHUTTLE_STATUS_ACTIVE_LABEL = 'פעיל';
+const SHUTTLE_STATUS_CANCEL_LABEL = 'בוטל';
+const SHUTTLE_DAY_NAMES = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'] as const;
+const SHUTTLE_SHIFT_OPTIONS = [
+  { label: '05:00', value: "'05:00" },
+  { label: '06:00', value: "'06:00" },
+  { label: '12:00', value: "'12:00" },
+  { label: '14:00', value: "'14:00" },
+  { label: '22:00', value: "'22:00" }
+] as const;
 const READ_RECEIPT_BATCH_SIZE = 80;
 const READ_RECEIPT_FLUSH_DEBOUNCE_MS = 900;
 const DELETED_MESSAGE_PLACEHOLDER = '🚫 הודעה זו נמחקה';
@@ -52,6 +70,37 @@ interface HrConversationState {
   awaiting: HrAwaitingState;
   stepId: string | null;
   actions: HrActionOption[];
+}
+
+type ShuttleAwaitingState = 'menu' | 'date' | 'shift' | 'station' | 'cancel-select';
+
+interface ShuttleOrderDraft {
+  date: string;
+  dayName: string;
+  shiftLabel: string;
+  shiftValue: string;
+  station: string;
+}
+
+interface ShuttleOrderRecord extends ShuttleOrderDraft {
+  id: string;
+  employee: string;
+  statusValue: string;
+  statusLabel: string;
+  submittedAt: number;
+  cancelledAt?: number;
+}
+
+interface ShuttleDateChoice {
+  value: string;
+  dayName: string;
+  label: string;
+}
+
+interface ShuttleConversationState {
+  awaiting: ShuttleAwaitingState;
+  draft: Partial<ShuttleOrderDraft> | null;
+  cancelCandidateIds: string[];
 }
 
 interface MessageActionSnapshot {
@@ -141,6 +190,9 @@ export class ChatStoreService {
   private hrStepsCache: { at: number; steps: HrStepOption[] } = { at: 0, steps: [] };
   private hrActionsCache: Record<string, { at: number; actions: HrActionOption[] }> = {};
   private hrInitInFlight = false;
+  private shuttleInitInFlight = false;
+  private shuttleStationsCache: { at: number; items: string[] } = { at: 0, items: [] };
+  private shuttleEmployeesCache: { at: number; items: string[] } = { at: 0, items: [] };
   private lastAppliedAppBadgeCount = -1;
   private lastServerBadgeResetAt = 0;
   private lastForegroundSyncAt = 0;
@@ -1036,12 +1088,21 @@ export class ChatStoreService {
   }
 
   private async onChatActivated(chatId: string): Promise<void> {
-    if (!this.isHrChat(chatId)) return;
-    await this.ensureHrFlowOnOpen();
+    if (this.isHrChat(chatId)) {
+      await this.ensureHrFlowOnOpen();
+      return;
+    }
+    if (this.isShuttleChat(chatId)) {
+      await this.ensureShuttleFlowOnOpen();
+    }
   }
 
   private isHrChat(chatId: string | null): boolean {
     return this.normalizeChatId(chatId ?? '') === this.normalizeChatId(HR_CHAT_NAME);
+  }
+
+  private isShuttleChat(chatId: string | null): boolean {
+    return this.normalizeChatId(chatId ?? '') === this.normalizeChatId(SHUTTLE_CHAT_NAME);
   }
 
   private async ensureHrFlowOnOpen(): Promise<void> {
@@ -1305,6 +1366,680 @@ export class ChatStoreService {
     return `${HR_UPLOAD_BASE_URL}${encoded}`;
   }
 
+  private defaultShuttleState(): ShuttleConversationState {
+    return {
+      awaiting: 'menu',
+      draft: null,
+      cancelCandidateIds: []
+    };
+  }
+
+  private async ensureShuttleFlowOnOpen(): Promise<void> {
+    const user = this.currentUser();
+    if (!user || this.shuttleInitInFlight) return;
+
+    this.shuttleInitInFlight = true;
+    try {
+      if (!this.shouldInitializeShuttleFlowOnOpen(user)) {
+        return;
+      }
+      await this.startShuttleFlow({ skipWelcome: false });
+    } finally {
+      this.shuttleInitInFlight = false;
+    }
+  }
+
+  private shouldInitializeShuttleFlowOnOpen(user: string): boolean {
+    const chatId = this.normalizeChatId(SHUTTLE_CHAT_NAME);
+    const shuttleMessages = this.messagesByChat()[chatId] ?? [];
+
+    if (shuttleMessages.length > 0) {
+      return false;
+    }
+    if (this.loadShuttleState(user)) {
+      return false;
+    }
+    if (localStorage.getItem(this.shuttleWelcomeKey(user))) {
+      return false;
+    }
+    return true;
+  }
+
+  private async handleShuttleOutgoing(messageBody: string): Promise<boolean> {
+    const user = this.currentUser();
+    if (!user) return false;
+    const trimmed = String(messageBody || '').trim();
+    if (!trimmed) return false;
+
+    if (trimmed === '0') {
+      this.saveShuttleState(user, this.defaultShuttleState());
+      this.sendShuttleMenu();
+      return true;
+    }
+
+    const state = this.loadShuttleState(user) ?? this.defaultShuttleState();
+    switch (state.awaiting) {
+      case 'menu':
+        return this.handleShuttleMenuSelection(user, trimmed);
+      case 'date':
+        return this.handleShuttleDateSelection(user, state, trimmed);
+      case 'shift':
+        return this.handleShuttleShiftSelection(user, state, trimmed);
+      case 'station':
+        return this.handleShuttleStationSelection(user, state, trimmed);
+      case 'cancel-select':
+        return this.handleShuttleCancelSelection(user, state, trimmed);
+      default:
+        this.saveShuttleState(user, this.defaultShuttleState());
+        this.sendShuttleMenu();
+        return true;
+    }
+  }
+
+  private async handleShuttleMenuSelection(user: string, value: string): Promise<boolean> {
+    const command = this.parseShuttleMenuCommand(value);
+    if (!command) {
+      this.sendShuttleSystemMessage('בחירה לא תקינה. נא לבחור 1, 2 או 3.', {
+        recordType: 'shuttle-invalid'
+      });
+      this.saveShuttleState(user, this.defaultShuttleState());
+      this.sendShuttleMenu();
+      return true;
+    }
+
+    if (command === 'new') {
+      this.saveShuttleState(user, {
+        awaiting: 'date',
+        draft: null,
+        cancelCandidateIds: []
+      });
+      this.sendShuttleSystemMessage(this.getShuttleDatePromptMessage(), { recordType: 'shuttle-date' });
+      return true;
+    }
+
+    if (command === 'list') {
+      this.sendShuttleOrders(user);
+      this.saveShuttleState(user, this.defaultShuttleState());
+      this.sendShuttleMenu();
+      return true;
+    }
+
+    await this.startShuttleCancelFlow(user);
+    return true;
+  }
+
+  private async handleShuttleDateSelection(
+    user: string,
+    _state: ShuttleConversationState,
+    value: string
+  ): Promise<boolean> {
+    const choices = this.getShuttleDateChoices();
+    const pickedIndex = this.parseShuttleSelection(value, choices.length);
+    if (pickedIndex < 0) {
+      this.sendShuttleSystemMessage('בחירה לא תקינה. נא לבחור מספר תאריך מהרשימה.', {
+        recordType: 'shuttle-invalid'
+      });
+      return true;
+    }
+
+    const picked = choices[pickedIndex];
+    this.saveShuttleState(user, {
+      awaiting: 'shift',
+      draft: {
+        date: picked.value,
+        dayName: picked.dayName
+      },
+      cancelCandidateIds: []
+    });
+    this.sendShuttleSystemMessage(this.getShuttleShiftPromptMessage(), { recordType: 'shuttle-shift' });
+    return true;
+  }
+
+  private async handleShuttleShiftSelection(
+    user: string,
+    state: ShuttleConversationState,
+    value: string
+  ): Promise<boolean> {
+    const pickedIndex = this.parseShuttleSelection(value, SHUTTLE_SHIFT_OPTIONS.length);
+    if (pickedIndex < 0) {
+      this.sendShuttleSystemMessage('בחירה לא תקינה. נא לבחור מספר משמרת מהרשימה.', {
+        recordType: 'shuttle-invalid'
+      });
+      return true;
+    }
+
+    const shift = SHUTTLE_SHIFT_OPTIONS[pickedIndex];
+    const stations = await this.fetchShuttleStationsCached();
+    if (!stations.length) {
+      this.sendShuttleSystemMessage('לא ניתן לטעון תחנות כרגע. נסה שוב מאוחר יותר.', {
+        recordType: 'shuttle-error'
+      });
+      this.saveShuttleState(user, this.defaultShuttleState());
+      this.sendShuttleMenu();
+      return true;
+    }
+
+    this.saveShuttleState(user, {
+      awaiting: 'station',
+      draft: {
+        ...(state.draft || {}),
+        shiftLabel: shift.label,
+        shiftValue: shift.value
+      },
+      cancelCandidateIds: []
+    });
+    this.sendShuttleSystemMessage(this.getShuttleStationsPromptMessage(stations), {
+      recordType: 'shuttle-station'
+    });
+    return true;
+  }
+
+  private async handleShuttleStationSelection(
+    user: string,
+    state: ShuttleConversationState,
+    value: string
+  ): Promise<boolean> {
+    const stations = await this.fetchShuttleStationsCached();
+    if (!stations.length) {
+      this.sendShuttleSystemMessage('לא ניתן לטעון תחנות כרגע. נסה שוב מאוחר יותר.', {
+        recordType: 'shuttle-error'
+      });
+      this.saveShuttleState(user, this.defaultShuttleState());
+      this.sendShuttleMenu();
+      return true;
+    }
+
+    const pickedIndex = this.parseShuttleSelection(value, stations.length);
+    if (pickedIndex < 0) {
+      this.sendShuttleSystemMessage('בחירה לא תקינה. נא לבחור מספר תחנה מהרשימה.', {
+        recordType: 'shuttle-invalid'
+      });
+      return true;
+    }
+
+    const station = stations[pickedIndex];
+    const draft = {
+      ...(state.draft || {}),
+      station
+    };
+    const isDraftReady = Boolean(draft.date && draft.dayName && draft.shiftLabel && draft.shiftValue && draft.station);
+    if (!isDraftReady) {
+      this.sendShuttleSystemMessage('חסרים נתוני הזמנה. מתחילים מחדש.', {
+        recordType: 'shuttle-error'
+      });
+      this.saveShuttleState(user, this.defaultShuttleState());
+      this.sendShuttleMenu();
+      return true;
+    }
+
+    const completeDraft = draft as ShuttleOrderDraft;
+    try {
+      const employee = await this.submitShuttleOrder(user, completeDraft, SHUTTLE_STATUS_ACTIVE_VALUE);
+      this.persistShuttleOrder(user, {
+        id: this.generateId('shuttle'),
+        employee,
+        date: completeDraft.date,
+        dayName: completeDraft.dayName,
+        shiftLabel: completeDraft.shiftLabel,
+        shiftValue: completeDraft.shiftValue,
+        station: completeDraft.station,
+        statusValue: SHUTTLE_STATUS_ACTIVE_VALUE,
+        statusLabel: SHUTTLE_STATUS_ACTIVE_LABEL,
+        submittedAt: Date.now()
+      });
+      this.sendShuttleSystemMessage(
+        `הבקשה נשלחה בהצלחה ✅\n${this.buildShuttleOrderSummary({
+          ...completeDraft,
+          id: '',
+          employee,
+          statusValue: SHUTTLE_STATUS_ACTIVE_VALUE,
+          statusLabel: SHUTTLE_STATUS_ACTIVE_LABEL,
+          submittedAt: Date.now()
+        })}`,
+        { recordType: 'shuttle-submit-success' }
+      );
+    } catch {
+      this.sendShuttleSystemMessage('שליחת הבקשה נכשלה. נסה שוב בעוד מספר רגעים.', {
+        recordType: 'shuttle-submit-failed'
+      });
+    }
+
+    this.saveShuttleState(user, this.defaultShuttleState());
+    this.sendShuttleMenu();
+    return true;
+  }
+
+  private async handleShuttleCancelSelection(
+    user: string,
+    state: ShuttleConversationState,
+    value: string
+  ): Promise<boolean> {
+    const candidateIds = Array.isArray(state.cancelCandidateIds) ? state.cancelCandidateIds : [];
+    const pickedIndex = this.parseShuttleSelection(value, candidateIds.length);
+    if (pickedIndex < 0) {
+      this.sendShuttleSystemMessage('בחירה לא תקינה. נא לבחור מספר הזמנה לביטול.', {
+        recordType: 'shuttle-invalid'
+      });
+      return true;
+    }
+
+    const targetOrderId = candidateIds[pickedIndex];
+    const targetOrder = this.loadShuttleOrders(user).find((order) => order.id === targetOrderId);
+    if (!targetOrder) {
+      this.sendShuttleSystemMessage('ההזמנה לא נמצאה. מתחילים מחדש.', {
+        recordType: 'shuttle-cancel-missing'
+      });
+      this.saveShuttleState(user, this.defaultShuttleState());
+      this.sendShuttleMenu();
+      return true;
+    }
+
+    try {
+      await this.submitShuttleOrder(user, targetOrder, SHUTTLE_STATUS_CANCEL_VALUE);
+      this.markShuttleOrderCancelled(user, targetOrder.id);
+      this.sendShuttleSystemMessage(
+        `ההזמנה בוטלה בהצלחה ✅\n${this.buildShuttleOrderSummary({
+          ...targetOrder,
+          statusValue: SHUTTLE_STATUS_CANCEL_VALUE,
+          statusLabel: SHUTTLE_STATUS_CANCEL_LABEL
+        })}`,
+        { recordType: 'shuttle-cancel-success' }
+      );
+    } catch {
+      this.sendShuttleSystemMessage('ביטול ההזמנה נכשל. נסה שוב בעוד מספר רגעים.', {
+        recordType: 'shuttle-cancel-failed'
+      });
+    }
+
+    this.saveShuttleState(user, this.defaultShuttleState());
+    this.sendShuttleMenu();
+    return true;
+  }
+
+  private async startShuttleFlow(options: { skipWelcome?: boolean } = {}): Promise<void> {
+    const user = this.currentUser();
+    if (!user) return;
+
+    if (!options.skipWelcome) {
+      const contactName = this.getDisplayName(user);
+      this.sendShuttleSystemMessage(
+        `${contactName} שלום, ברוך/ה הבא/ה להזמנת הסעה.\nכאן ניתן להזמין הסעה, לצפות בבקשות שלך ולבטל בקשה קיימת.`,
+        { recordType: 'shuttle-welcome' }
+      );
+      localStorage.setItem(this.shuttleWelcomeKey(user), '1');
+    }
+
+    this.saveShuttleState(user, this.defaultShuttleState());
+    this.sendShuttleMenu();
+  }
+
+  private sendShuttleMenu(): void {
+    this.sendShuttleSystemMessage(this.getShuttleMainMenuMessage(), { recordType: 'shuttle-menu' });
+  }
+
+  private sendShuttleOrders(user: string): void {
+    const orders = this.loadShuttleOrders(user)
+      .slice()
+      .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
+    this.sendShuttleSystemMessage(this.buildShuttleOrdersMessage(orders), {
+      recordType: 'shuttle-orders'
+    });
+  }
+
+  private async startShuttleCancelFlow(user: string): Promise<void> {
+    const activeOrders = this.loadShuttleOrders(user)
+      .filter((order) => order.statusValue !== SHUTTLE_STATUS_CANCEL_VALUE)
+      .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
+
+    if (!activeOrders.length) {
+      this.sendShuttleSystemMessage('אין בקשות פעילות לביטול.', { recordType: 'shuttle-cancel-empty' });
+      this.saveShuttleState(user, this.defaultShuttleState());
+      this.sendShuttleMenu();
+      return;
+    }
+
+    const lines = activeOrders.map((order, index) => `${index + 1}. ${this.buildShuttleOrderSummary(order)}`);
+    this.saveShuttleState(user, {
+      awaiting: 'cancel-select',
+      draft: null,
+      cancelCandidateIds: activeOrders.map((order) => order.id)
+    });
+    this.sendShuttleSystemMessage(`בחר את מספר ההזמנה שתרצה לבטל:\n${lines.join('\n')}`, {
+      recordType: 'shuttle-cancel-select'
+    });
+  }
+
+  private async fetchShuttleStationsCached(): Promise<string[]> {
+    const now = Date.now();
+    if (this.shuttleStationsCache.items.length && now - this.shuttleStationsCache.at < SHUTTLE_LIST_CACHE_TTL_MS) {
+      return this.shuttleStationsCache.items;
+    }
+
+    try {
+      const stations = await this.api.getShuttleStations();
+      if (stations.length) {
+        this.shuttleStationsCache = { at: now, items: stations };
+        return stations;
+      }
+    } catch {
+      // Keep flow resilient and report fallback in the conversation.
+    }
+    return [];
+  }
+
+  private async fetchShuttleEmployeesCached(): Promise<string[]> {
+    const now = Date.now();
+    if (this.shuttleEmployeesCache.items.length && now - this.shuttleEmployeesCache.at < SHUTTLE_LIST_CACHE_TTL_MS) {
+      return this.shuttleEmployeesCache.items;
+    }
+
+    try {
+      const employees = await this.api.getShuttleEmployees();
+      if (employees.length) {
+        this.shuttleEmployeesCache = { at: now, items: employees };
+        return employees;
+      }
+    } catch {
+      // Keep flow resilient and report fallback in the conversation.
+    }
+    return [];
+  }
+
+  private getShuttleDateChoices(): ShuttleDateChoice[] {
+    const today = new Date();
+    const choices: ShuttleDateChoice[] = [];
+    for (let i = 0; i < SHUTTLE_DATE_CHOICES_COUNT; i += 1) {
+      const date = new Date(today);
+      date.setDate(today.getDate() + i);
+      const value = this.toIsoDate(date);
+      const dayName = SHUTTLE_DAY_NAMES[date.getDay()];
+      choices.push({
+        value,
+        dayName,
+        label: `${dayName} ${value}`
+      });
+    }
+    return choices;
+  }
+
+  private getShuttleMainMenuMessage(): string {
+    return [
+      'היי, זהו חדר הזמנת ההסעה.',
+      'בחר פעולה:',
+      '1. הזמנה חדשה',
+      '2. הבקשות שלי',
+      '3. ביטול הזמנה קיימת',
+      'אפשר להקליד 0 בכל שלב כדי לחזור לתפריט הראשי.'
+    ].join('\n');
+  }
+
+  private getShuttleDatePromptMessage(): string {
+    const lines = this.getShuttleDateChoices().map((choice, index) => `${index + 1}. ${choice.label}`);
+    return ['בחר תאריך נסיעה:', ...lines].join('\n');
+  }
+
+  private getShuttleShiftPromptMessage(): string {
+    const lines = SHUTTLE_SHIFT_OPTIONS.map((shift, index) => `${index + 1}. ${shift.label}`);
+    return ['בחר משמרת (הסעה לעבודה):', ...lines].join('\n');
+  }
+
+  private getShuttleStationsPromptMessage(stations: string[]): string {
+    const lines = stations.map((station, index) => `${index + 1}. ${station}`);
+    return ['בחר תחנה:', ...lines].join('\n');
+  }
+
+  private buildShuttleOrdersMessage(orders: ShuttleOrderRecord[]): string {
+    if (!orders.length) {
+      return 'הבקשות שלך:\nלא נמצאו בקשות עבור המשתמש הנוכחי.';
+    }
+    const lines = orders.map((order, index) => `${index + 1}. ${this.buildShuttleOrderSummary(order)}`);
+    return ['הבקשות שלך:', ...lines].join('\n');
+  }
+
+  private buildShuttleOrderSummary(order: ShuttleOrderRecord): string {
+    const statusLabel = order.statusLabel || (
+      order.statusValue === SHUTTLE_STATUS_CANCEL_VALUE
+        ? SHUTTLE_STATUS_CANCEL_LABEL
+        : SHUTTLE_STATUS_ACTIVE_LABEL
+    );
+    const dayAndDate = `${String(order.dayName || '').trim()} ${String(order.date || '').trim()}`.trim();
+    const shift = String(order.shiftLabel || '').trim();
+    const station = String(order.station || '').trim();
+    return `[${statusLabel}] ${dayAndDate} | ${shift} | ${station}`.trim();
+  }
+
+  private parseShuttleMenuCommand(input: string): 'new' | 'list' | 'cancel' | '' {
+    const trimmed = String(input || '').trim();
+    if (!trimmed) return '';
+    if (trimmed === '1' || trimmed.includes('חדש')) return 'new';
+    if (trimmed === '2' || trimmed.includes('הצג') || trimmed.includes('בקשות')) return 'list';
+    if (trimmed === '3' || trimmed.includes('ביטול') || trimmed.includes('מחק')) return 'cancel';
+    return '';
+  }
+
+  private parseShuttleSelection(input: string, maxLength: number): number {
+    const index = Number.parseInt(String(input || '').trim(), 10) - 1;
+    if (Number.isNaN(index) || index < 0 || index >= maxLength) {
+      return -1;
+    }
+    return index;
+  }
+
+  private async submitShuttleOrder(
+    user: string,
+    draft: ShuttleOrderDraft,
+    statusValue: string
+  ): Promise<string> {
+    const employee = await this.resolveShuttleEmployeeValue(user);
+    await this.api.submitShuttleOrder({
+      employee,
+      date: draft.date,
+      dateAlt: this.toIsoDate(new Date()),
+      shift: draft.shiftValue,
+      station: draft.station,
+      status: statusValue
+    });
+    return employee;
+  }
+
+  private persistShuttleOrder(user: string, order: ShuttleOrderRecord): void {
+    const orders = this.loadShuttleOrders(user);
+    orders.unshift(order);
+    this.saveShuttleOrders(user, orders.slice(0, 300));
+  }
+
+  private markShuttleOrderCancelled(user: string, orderId: string): void {
+    const orders = this.loadShuttleOrders(user);
+    const updated = orders.map((order) => {
+      if (order.id !== orderId) {
+        return order;
+      }
+      return {
+        ...order,
+        statusValue: SHUTTLE_STATUS_CANCEL_VALUE,
+        statusLabel: SHUTTLE_STATUS_CANCEL_LABEL,
+        cancelledAt: Date.now()
+      };
+    });
+    this.saveShuttleOrders(user, updated);
+  }
+
+  private async resolveShuttleEmployeeValue(user: string): Promise<string> {
+    const normalizedUser = this.normalizeUser(user);
+    const userPhone = this.extractShuttlePhone(user);
+    const displayName = String(this.getDisplayName(user) || '').trim();
+    const employees = await this.fetchShuttleEmployeesCached();
+
+    if (employees.length) {
+      const exact = employees.find((entry) => this.normalizeUser(entry) === normalizedUser);
+      if (exact) return exact;
+
+      if (userPhone) {
+        const byPhone = employees.find((entry) => this.extractShuttlePhone(entry) === userPhone);
+        if (byPhone) return byPhone;
+      }
+
+      if (displayName) {
+        const normalizedDisplayName = this.normalizeUser(displayName);
+        const byName = employees.find((entry) =>
+          this.normalizeUser(entry).includes(normalizedDisplayName)
+        );
+        if (byName) return byName;
+      }
+    }
+
+    if (displayName && userPhone && !displayName.includes(userPhone)) {
+      return `${displayName} ${userPhone}`;
+    }
+    if (displayName) return displayName;
+    return user;
+  }
+
+  private extractShuttlePhone(value: string): string {
+    const digits = String(value || '').replace(/\D/g, '');
+    if (!digits) return '';
+    const embedded = digits.match(/05\d{8}/);
+    if (embedded?.[0]) {
+      return embedded[0];
+    }
+    if (/^5\d{8}$/.test(digits)) {
+      return `0${digits}`;
+    }
+    if (/^9725\d{8}$/.test(digits)) {
+      return `0${digits.slice(3)}`;
+    }
+    if (/^97205\d{8}$/.test(digits)) {
+      return `0${digits.slice(4)}`;
+    }
+    if (digits.length > 10) {
+      const tail = digits.slice(-10);
+      if (/^05\d{8}$/.test(tail)) {
+        return tail;
+      }
+    }
+    return '';
+  }
+
+  private toIsoDate(date: Date): string {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  private shuttleWelcomeKey(user: string): string {
+    return `${SHUTTLE_WELCOME_KEY_PREFIX}${this.normalizeUser(user)}`;
+  }
+
+  private shuttleStateKey(user: string): string {
+    return `${SHUTTLE_STATE_KEY_PREFIX}${this.normalizeUser(user)}`;
+  }
+
+  private shuttleOrdersKey(user: string): string {
+    return `${SHUTTLE_ORDERS_KEY_PREFIX}${this.normalizeUser(user)}`;
+  }
+
+  private loadShuttleState(user: string): ShuttleConversationState | null {
+    const raw = localStorage.getItem(this.shuttleStateKey(user));
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as ShuttleConversationState;
+      const awaiting: ShuttleAwaitingState = (
+        parsed?.awaiting === 'menu' ||
+        parsed?.awaiting === 'date' ||
+        parsed?.awaiting === 'shift' ||
+        parsed?.awaiting === 'station' ||
+        parsed?.awaiting === 'cancel-select'
+      )
+        ? parsed.awaiting
+        : 'menu';
+      const draftSource = parsed?.draft && typeof parsed.draft === 'object'
+        ? parsed.draft
+        : null;
+      const draft = draftSource
+        ? {
+          date: String(draftSource.date ?? '').trim(),
+          dayName: String(draftSource.dayName ?? '').trim(),
+          shiftLabel: String(draftSource.shiftLabel ?? '').trim(),
+          shiftValue: String(draftSource.shiftValue ?? '').trim(),
+          station: String(draftSource.station ?? '').trim()
+        }
+        : null;
+      return {
+        awaiting,
+        draft,
+        cancelCandidateIds: Array.isArray(parsed?.cancelCandidateIds)
+          ? parsed.cancelCandidateIds.map((id) => String(id || '').trim()).filter(Boolean)
+          : []
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private saveShuttleState(user: string, state: ShuttleConversationState): void {
+    localStorage.setItem(this.shuttleStateKey(user), JSON.stringify(state));
+  }
+
+  private loadShuttleOrders(user: string): ShuttleOrderRecord[] {
+    const raw = localStorage.getItem(this.shuttleOrdersKey(user));
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter((item) => item && typeof item === 'object')
+        .map((item) => ({
+          id: String(item.id || '').trim(),
+          employee: String(item.employee || '').trim(),
+          date: String(item.date || '').trim(),
+          dayName: String(item.dayName || '').trim(),
+          shiftLabel: String(item.shiftLabel || '').trim(),
+          shiftValue: String(item.shiftValue || '').trim(),
+          station: String(item.station || '').trim(),
+          statusValue: String(item.statusValue || SHUTTLE_STATUS_ACTIVE_VALUE).trim(),
+          statusLabel: String(item.statusLabel || '').trim(),
+          submittedAt: Number(item.submittedAt || 0),
+          cancelledAt: item.cancelledAt ? Number(item.cancelledAt) : undefined
+        }))
+        .filter((item) => Boolean(item.id && item.date && item.shiftValue && item.station));
+    } catch {
+      return [];
+    }
+  }
+
+  private saveShuttleOrders(user: string, orders: ShuttleOrderRecord[]): void {
+    localStorage.setItem(this.shuttleOrdersKey(user), JSON.stringify(orders));
+  }
+
+  private sendShuttleSystemMessage(
+    body: string,
+    options: { imageUrl?: string | null; recordType?: string } = {}
+  ): void {
+    const chatId = this.normalizeChatId(SHUTTLE_CHAT_NAME);
+    const message: ChatMessage = {
+      id: this.generateId('rec'),
+      messageId: this.generateId('shuttle'),
+      chatId,
+      sender: chatId,
+      senderDisplayName: SHUTTLE_CHAT_NAME,
+      recordType: options.recordType,
+      body,
+      imageUrl: options.imageUrl ?? null,
+      direction: 'incoming',
+      timestamp: Date.now(),
+      deliveryStatus: 'delivered'
+    };
+
+    this.appendMessage(message);
+    if (this.activeChatId() !== chatId) {
+      this.unreadByChat.update((map) => ({
+        ...map,
+        [chatId]: (map[chatId] ?? 0) + 1
+      }));
+    }
+  }
+
   private async sendMessageInternal(payload: SendMessagePayload): Promise<void> {
     const chatId = this.activeChatId();
     if (!chatId) {
@@ -1363,6 +2098,14 @@ export class ChatStoreService {
     if (this.isHrChat(chatId) && payload.body.trim()) {
       const handledByHrFlow = await this.handleHrOutgoing(payload.body);
       if (handledByHrFlow) {
+        this.setMessageStatus(messageId, 'delivered');
+        return;
+      }
+    }
+
+    if (this.isShuttleChat(chatId) && payload.body.trim()) {
+      const handledByShuttleFlow = await this.handleShuttleOutgoing(payload.body);
+      if (handledByShuttleFlow) {
         this.setMessageStatus(messageId, 'delivered');
         return;
       }
