@@ -138,7 +138,6 @@ let groupMap = {};
 const GROUPS_STORAGE_KEY = 'cachedGroups';
 const GROUP_ID_PREFIX = 'group:';
 const HR_CHAT_FALLBACK_NAME = t('hr_chat_name');
-const SHUTTLE_CHAT_FALLBACK_NAME = t('shuttle_chat_name');
 let activeGroupEditId = null;
 let activeGroupSelection = new Set();
 let activeReactionMessage = null;
@@ -272,49 +271,17 @@ function isHrChatName(senderName) {
     return normalizeGroupValue(senderName) === normalizeGroupValue(HR_CHAT_FALLBACK_NAME);
 }
 
-function isShuttleChatName(senderName) {
-    if (window.SHUTTLE_CHAT && typeof window.SHUTTLE_CHAT.isShuttleChat === 'function') {
-        return window.SHUTTLE_CHAT.isShuttleChat(senderName);
-    }
-    return normalizeGroupValue(senderName) === normalizeGroupValue(SHUTTLE_CHAT_FALLBACK_NAME);
-}
-
 function getPinnedChatEntries() {
-    const entries = [];
     if (window.HR_CHAT && typeof window.HR_CHAT.getPinnedChat === 'function') {
         const entry = window.HR_CHAT.getPinnedChat();
-        if (entry && entry.name) entries.push(entry);
+        return entry && entry.name ? [entry] : [];
     }
-    if (window.SHUTTLE_CHAT && typeof window.SHUTTLE_CHAT.getPinnedChat === 'function') {
-        const entry = window.SHUTTLE_CHAT.getPinnedChat();
-        if (entry && entry.name) entries.push(entry);
-    }
-
-    if (!entries.some((entry) => normalizeGroupValue(entry.name) === normalizeGroupValue(HR_CHAT_FALLBACK_NAME))) {
-        entries.push({ name: HR_CHAT_FALLBACK_NAME, pinned: true, isGroup: false });
-    }
-    if (!entries.some((entry) => normalizeGroupValue(entry.name) === normalizeGroupValue(SHUTTLE_CHAT_FALLBACK_NAME))) {
-        entries.push({ name: SHUTTLE_CHAT_FALLBACK_NAME, pinned: true, isGroup: false });
-    }
-
-    const uniqueEntries = [];
-    const seen = new Set();
-    entries.forEach((entry) => {
-        const key = normalizeGroupValue(entry.name);
-        if (!key || seen.has(key)) return;
-        seen.add(key);
-        uniqueEntries.push({
-            name: entry.name,
-            pinned: true,
-            isGroup: false
-        });
-    });
-    return uniqueEntries;
+    return [{ name: HR_CHAT_FALLBACK_NAME, pinned: true, isGroup: false }];
 }
 
 function isSystemSenderName(senderName) {
     const systemUsers = ['Bot', 'Support', 'System', 'Setup_User'];
-    if (isHrChatName(senderName) || isShuttleChatName(senderName)) return true;
+    if (isHrChatName(senderName)) return true;
     return systemUsers.includes(senderName);
 }
 
@@ -1585,9 +1552,6 @@ function showChatRoom(senderName) {
     justOpenedChat = true; 
     if (window.HR_CHAT && typeof window.HR_CHAT.handleChatOpen === 'function') {
         window.HR_CHAT.handleChatOpen(senderName);
-    }
-    if (window.SHUTTLE_CHAT && typeof window.SHUTTLE_CHAT.handleChatOpen === 'function') {
-        window.SHUTTLE_CHAT.handleChatOpen(senderName);
     }
     loadAndGroupHistory(); 
     
@@ -3362,19 +3326,6 @@ async function sendMessage(text = null, imageUrl = null, thumbnailUrl = null) {
     if (window.HR_CHAT && typeof window.HR_CHAT.isHrChat === 'function' && window.HR_CHAT.isHrChat(activeChatSender)) {
         if (typeof window.HR_CHAT.handleOutgoing === 'function') {
             const handled = await window.HR_CHAT.handleOutgoing(finalBody);
-            if (handled) {
-                await updateMessageDeliveryStatus(messageId, 'delivered');
-                return;
-            }
-        }
-    }
-    if (
-        window.SHUTTLE_CHAT &&
-        typeof window.SHUTTLE_CHAT.isShuttleChat === 'function' &&
-        window.SHUTTLE_CHAT.isShuttleChat(activeChatSender)
-    ) {
-        if (typeof window.SHUTTLE_CHAT.handleOutgoing === 'function') {
-            const handled = await window.SHUTTLE_CHAT.handleOutgoing(finalBody);
             if (handled) {
                 await updateMessageDeliveryStatus(messageId, 'delivered');
                 return;
