@@ -20,6 +20,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatMenuModule } from '@angular/material/menu';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatSelectModule } from '@angular/material/select';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { Router, ActivatedRoute } from '@angular/router';
@@ -34,7 +35,8 @@ import {
 import {
   ActivatedChatMeta,
   ChatStoreService,
-  IncomingReactionNotice
+  IncomingReactionNotice,
+  ShuttleQuickPickerState
 } from '../../core/services/chat-store.service';
 import { CreateGroupDialogComponent } from './dialogs/create-group-dialog.component';
 import { NewChatDialogComponent } from './dialogs/new-chat-dialog.component';
@@ -109,6 +111,7 @@ interface ReactionDetailsPreview {
     MatMenuModule,
     MatToolbarModule,
     MatProgressSpinnerModule,
+    MatSelectModule,
     MatChipsModule,
     MatSnackBarModule
   ],
@@ -154,6 +157,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   readonly searchControl = new FormControl('', { nonNullable: true });
   readonly messageControl = new FormControl('', { nonNullable: true });
+  readonly shuttlePickerControl = new FormControl('', { nonNullable: true });
 
   readonly searchTerm = toSignal(this.searchControl.valueChanges.pipe(startWith('')), {
     initialValue: ''
@@ -183,7 +187,18 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (!this.store.activeChat()) {
       return 'בחר צ׳אט כדי להתחיל';
     }
+    if (this.store.getShuttleQuickPickerState()) {
+      return 'לבחירה השתמש בכפתורים';
+    }
     return this.store.canSendToActiveChat() ? 'הקלד הודעה' : 'רק מנהל יכול לשלוח בקבוצת קהילה';
+  });
+  readonly shuttleQuickPicker = computed<ShuttleQuickPickerState | null>(() =>
+    this.store.getShuttleQuickPickerState()
+  );
+  readonly isSubmittingShuttlePicker = signal(false);
+  readonly shuttlePickerHasOptions = computed(() => {
+    const picker = this.shuttleQuickPicker();
+    return Boolean(picker && picker.options.length);
   });
 
   readonly reactionEmojis = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
@@ -257,6 +272,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   private conversationSwipeLastY: number | null = null;
   private conversationSwipeStartedAt: number | null = null;
   private conversationSwipeTracking = false;
+  private lastShuttlePickerKey: string | null = null;
   private lastAutoScrollChatId: string | null = null;
   private lastAutoScrollMessageCount = 0;
   private pendingOpenScroll: { chatId: string; unreadBeforeOpen: number } | null = null;
@@ -350,6 +366,15 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
     this.showReactionToast(notice);
     this.store.clearIncomingReactionNotice();
+  });
+
+  private readonly shuttlePickerSyncEffect = effect(() => {
+    const picker = this.shuttleQuickPicker();
+    const key = picker?.key ?? null;
+    if (key !== this.lastShuttlePickerKey) {
+      this.lastShuttlePickerKey = key;
+      this.shuttlePickerControl.setValue('');
+    }
   });
 
   private readonly editingMessageGuardEffect = effect(() => {
@@ -489,6 +514,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   async sendMessage(): Promise<void> {
+    if (this.shuttleQuickPicker() && !this.editingMessageTarget()) {
+      return;
+    }
     if (!this.canSendMessage()) return;
 
     const content = this.messageControl.value;
@@ -546,6 +574,34 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     event.preventDefault();
     event.stopPropagation();
     await this.sendMessage();
+  }
+
+  async chooseShuttlePickerOption(value: string): Promise<void> {
+    const normalized = String(value || '').trim();
+    if (!normalized || this.isSubmittingShuttlePicker()) return;
+    this.isSubmittingShuttlePicker.set(true);
+    try {
+      await this.store.sendTextMessage(normalized);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'בחירה נכשלה. נסה שוב.';
+      this.snackBar.open(message, 'סגור', { duration: 2800 });
+    } finally {
+      this.isSubmittingShuttlePicker.set(false);
+    }
+  }
+
+  async submitShuttlePickerSelection(): Promise<void> {
+    if (!this.shuttleQuickPicker()) return;
+    const selectedValue = String(this.shuttlePickerControl.value || '').trim();
+    if (!selectedValue) {
+      this.snackBar.open('יש לבחור אפשרות מהרשימה.', 'סגור', { duration: 2200 });
+      return;
+    }
+    await this.chooseShuttlePickerOption(selectedValue);
+  }
+
+  async goBackFromShuttlePicker(): Promise<void> {
+    await this.chooseShuttlePickerOption('0');
   }
 
   onMessagesPanelScroll(): void {
@@ -670,6 +726,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   openImagePicker(): void {
+    if (this.shuttleQuickPicker()) {
+      this.snackBar.open('בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.', 'סגור', { duration: 2600 });
+      return;
+    }
     if (!this.store.activeChat() || !this.store.canSendToActiveChat()) {
       this.snackBar.open('לא ניתן לצרף תמונה בצ׳אט זה.', 'סגור', { duration: 2500 });
       return;
@@ -678,6 +738,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   async shareLocation(): Promise<void> {
+    if (this.shuttleQuickPicker()) {
+      this.snackBar.open('בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.', 'סגור', { duration: 2600 });
+      return;
+    }
     if (!this.store.activeChat() || !this.store.canSendToActiveChat()) {
       this.snackBar.open('לא ניתן לשתף מיקום בצ׳אט זה.', 'סגור', { duration: 2500 });
       return;
@@ -700,6 +764,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   canSendMessage(): boolean {
+    if (this.shuttleQuickPicker() && !this.editingMessageTarget()) {
+      return false;
+    }
     return Boolean(this.messageValue().trim()) && this.store.canSendToActiveChat() && !!this.store.activeChat();
   }
 

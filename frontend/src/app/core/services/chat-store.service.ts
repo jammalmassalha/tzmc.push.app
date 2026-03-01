@@ -162,6 +162,20 @@ export interface ActivatedChatMeta {
   activatedAt: number;
 }
 
+export interface ShuttleQuickPickerOption {
+  value: string;
+  label: string;
+}
+
+export interface ShuttleQuickPickerState {
+  key: string;
+  title: string;
+  helperText?: string;
+  mode: 'buttons' | 'select';
+  options: ShuttleQuickPickerOption[];
+  allowBack: boolean;
+}
+
 @Injectable({ providedIn: 'root' })
 export class ChatStoreService {
   readonly currentUser = signal<string | null>(null);
@@ -725,6 +739,99 @@ export class ChatStoreService {
     if (!group) return true;
     if (group.type !== 'community') return true;
     return this.normalizeUser(group.createdBy) === this.normalizeUser(this.currentUser() ?? '');
+  }
+
+  getShuttleQuickPickerState(): ShuttleQuickPickerState | null {
+    const activeChatId = this.activeChatId();
+    if (!this.isShuttleChat(activeChatId)) {
+      return null;
+    }
+    const user = this.currentUser();
+    if (!user) {
+      return null;
+    }
+
+    const state = this.loadShuttleState(user) ?? this.defaultShuttleState();
+    if (state.awaiting === 'menu') {
+      return {
+        key: 'menu',
+        title: 'מה תרצה לבצע?',
+        helperText: 'בחר פעולה בלחיצה',
+        mode: 'buttons',
+        options: [
+          { value: '1', label: 'הזמנה חדשה' },
+          { value: '2', label: 'הבקשות שלי' },
+          { value: '3', label: 'ביטול הזמנה קיימת' }
+        ],
+        allowBack: false
+      };
+    }
+
+    if (state.awaiting === 'date') {
+      return {
+        key: 'date',
+        title: 'בחר תאריך נסיעה',
+        helperText: 'התאריכים זמינים ל-10 הימים הקרובים',
+        mode: 'buttons',
+        options: this.getShuttleDateChoices().map((choice, index) => ({
+          value: String(index + 1),
+          label: choice.label
+        })),
+        allowBack: true
+      };
+    }
+
+    if (state.awaiting === 'shift') {
+      return {
+        key: 'shift',
+        title: 'בחר משמרת',
+        helperText: 'הסעה לעבודה',
+        mode: 'buttons',
+        options: SHUTTLE_SHIFT_OPTIONS.map((option, index) => ({
+          value: String(index + 1),
+          label: option.label
+        })),
+        allowBack: true
+      };
+    }
+
+    if (state.awaiting === 'station') {
+      const stations = this.shuttleStationsCache.items;
+      return {
+        key: `station-${stations.length}`,
+        title: 'בחר תחנה',
+        helperText: 'לחץ על הרשימה ובחר תחנה',
+        mode: 'select',
+        options: stations.map((station, index) => ({
+          value: String(index + 1),
+          label: station
+        })),
+        allowBack: true
+      };
+    }
+
+    if (state.awaiting === 'cancel-select') {
+      const activeOrders = this.loadShuttleOrders(user)
+        .filter((order) => order.statusValue !== SHUTTLE_STATUS_CANCEL_VALUE)
+        .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
+      const candidateIdSet = new Set(state.cancelCandidateIds);
+      const cancelOptions = activeOrders
+        .filter((order) => candidateIdSet.has(order.id))
+        .map((order, index) => ({
+          value: String(index + 1),
+          label: this.buildShuttleOrderSummary(order)
+        }));
+      return {
+        key: `cancel-${cancelOptions.length}`,
+        title: 'בחר הזמנה לביטול',
+        helperText: cancelOptions.length ? 'בחר הזמנה מהרשימה ולחץ אישור' : 'אין הזמנות פעילות לביטול',
+        mode: 'select',
+        options: cancelOptions,
+        allowBack: true
+      };
+    }
+
+    return null;
   }
 
   async sendTextMessage(text: string, options: SendMessageOptions = {}): Promise<void> {

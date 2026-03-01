@@ -364,7 +364,76 @@
           </div>
         }
 
-        <form class="composer" (submit)="handleComposerSubmit($event)" novalidate>
+        @if (shuttleQuickPicker(); as shuttlePicker) {
+          <section class="shuttle-picker-panel">
+            <div class="shuttle-picker-header">
+              <div class="shuttle-picker-title">{{ shuttlePicker.title }}</div>
+              @if (shuttlePicker.helperText) {
+                <div class="shuttle-picker-helper">{{ shuttlePicker.helperText }}</div>
+              }
+            </div>
+
+            @if (shuttlePicker.mode === 'buttons') {
+              <div class="shuttle-picker-buttons">
+                @for (option of shuttlePicker.options; track option.value + '-' + $index) {
+                  <button
+                    mat-stroked-button
+                    type="button"
+                    class="shuttle-picker-option-btn"
+                    [disabled]="isSubmittingShuttlePicker()"
+                    (click)="chooseShuttlePickerOption(option.value)">
+                    {{ option.label }}
+                  </button>
+                }
+              </div>
+            } @else {
+              <div class="shuttle-picker-select">
+                <mat-form-field class="shuttle-picker-select-field" appearance="outline">
+                  <mat-label>בחר אפשרות</mat-label>
+                  <mat-select
+                    [formControl]="shuttlePickerControl"
+                    [disabled]="isSubmittingShuttlePicker() || !shuttlePicker.options.length">
+                    @for (option of shuttlePicker.options; track option.value + '-' + $index) {
+                      <mat-option [value]="option.value">{{ option.label }}</mat-option>
+                    }
+                  </mat-select>
+                </mat-form-field>
+
+                <button
+                  mat-flat-button
+                  color="primary"
+                  type="button"
+                  class="shuttle-picker-confirm-btn"
+                  [disabled]="
+                    isSubmittingShuttlePicker() ||
+                    !shuttlePicker.options.length ||
+                    !shuttlePickerControl.value
+                  "
+                  (click)="submitShuttlePickerSelection()">
+                  אישור בחירה
+                </button>
+              </div>
+            }
+
+            @if (shuttlePicker.allowBack) {
+              <button
+                mat-button
+                type="button"
+                class="shuttle-picker-back-btn"
+                [disabled]="isSubmittingShuttlePicker()"
+                (click)="goBackFromShuttlePicker()">
+                <mat-icon>arrow_back</mat-icon>
+                <span>חזרה לתפריט</span>
+              </button>
+            }
+          </section>
+        }
+
+        <form
+          class="composer"
+          [class.shuttle-composer-hidden]="!!shuttleQuickPicker()"
+          (submit)="handleComposerSubmit($event)"
+          novalidate>
           <input
             #fileInput
             class="hidden-input"
@@ -377,13 +446,14 @@
               class="composer-textarea"
               rows="1"
               [formControl]="messageControl"
+              [disabled]="!!shuttleQuickPicker()"
               (focus)="handleTextInputFocus()"
               [placeholder]="composerPlaceholder()"></textarea>
             <button
               type="button"
               class="attach-btn"
               [matMenuTriggerFor]="attachMenu"
-              [disabled]="!store.activeChat() || !store.canSendToActiveChat()"
+              [disabled]="!!shuttleQuickPicker() || !store.activeChat() || !store.canSendToActiveChat()"
               aria-label="Attach">
               <span class="attach-plus">+</span>
             </button>
