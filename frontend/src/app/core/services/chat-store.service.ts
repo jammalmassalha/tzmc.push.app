@@ -207,6 +207,7 @@ export class ChatStoreService {
   private shuttleInitInFlight = false;
   private shuttleStationsCache: { at: number; items: string[] } = { at: 0, items: [] };
   private shuttleEmployeesCache: { at: number; items: string[] } = { at: 0, items: [] };
+  private readonly shuttlePickerRevision = signal(0);
   private lastAppliedAppBadgeCount = -1;
   private lastServerBadgeResetAt = 0;
   private lastForegroundSyncAt = 0;
@@ -742,6 +743,7 @@ export class ChatStoreService {
   }
 
   getShuttleQuickPickerState(): ShuttleQuickPickerState | null {
+    this.shuttlePickerRevision();
     const activeChatId = this.activeChatId();
     if (!this.isShuttleChat(activeChatId)) {
       return null;
@@ -2086,6 +2088,7 @@ export class ChatStoreService {
 
   private saveShuttleState(user: string, state: ShuttleConversationState): void {
     localStorage.setItem(this.shuttleStateKey(user), JSON.stringify(state));
+    this.bumpShuttlePickerRevision();
   }
 
   private loadShuttleOrders(user: string): ShuttleOrderRecord[] {
@@ -2117,6 +2120,11 @@ export class ChatStoreService {
 
   private saveShuttleOrders(user: string, orders: ShuttleOrderRecord[]): void {
     localStorage.setItem(this.shuttleOrdersKey(user), JSON.stringify(orders));
+    this.bumpShuttlePickerRevision();
+  }
+
+  private bumpShuttlePickerRevision(): void {
+    this.shuttlePickerRevision.update((value) => value + 1);
   }
 
   private sendShuttleSystemMessage(
