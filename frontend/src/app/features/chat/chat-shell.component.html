@@ -190,7 +190,7 @@
                 <button
                   type="button"
                   role="tab"
-                  class="shuttle-orders-tab-btn"
+                  class="shuttle-orders-tab-btn ongoing"
                   [class.active]="shuttleDashboardTab() === 'ongoing'"
                   [attr.aria-selected]="shuttleDashboardTab() === 'ongoing'"
                   (click)="setShuttleDashboardTab('ongoing')">
@@ -199,7 +199,7 @@
                 <button
                   type="button"
                   role="tab"
-                  class="shuttle-orders-tab-btn"
+                  class="shuttle-orders-tab-btn past"
                   [class.active]="shuttleDashboardTab() === 'past'"
                   [attr.aria-selected]="shuttleDashboardTab() === 'past'"
                   (click)="setShuttleDashboardTab('past')">

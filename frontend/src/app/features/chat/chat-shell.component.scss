@@ -544,6 +544,8 @@ mat-chip:not(.offline) {
 .messages-panel.shuttle-no-scroll {
   overflow: hidden;
   overscroll-behavior: none;
+  display: flex;
+  flex-direction: column;
 }
 
 .messages-sticky-date {
@@ -949,11 +951,19 @@ mat-chip:not(.offline) {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  position: sticky;
-  top: 34px;
+  position: relative;
+  top: auto;
   z-index: 2;
-  max-height: min(58vh, 520px);
-  overflow: hidden;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.messages-panel.shuttle-no-scroll .shuttle-orders-dashboard {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
 }
 
 .shuttle-orders-tabs {
@@ -966,7 +976,7 @@ mat-chip:not(.offline) {
   flex: 1 1 0;
   min-height: 34px;
   border-radius: 10px;
-  border: 1px solid rgba(63, 87, 172, 0.25);
+  border: 1px solid rgba(63, 87, 172, 0.2);
   background: rgba(255, 255, 255, 0.76);
   color: #2d3f7d;
   font-size: 12px;
@@ -974,17 +984,32 @@ mat-chip:not(.offline) {
   cursor: pointer;
 }
 
-.shuttle-orders-tab-btn.active {
-  border-color: rgba(49, 76, 173, 0.45);
-  background: rgba(60, 87, 182, 0.16);
-  color: #203370;
+.shuttle-orders-tab-btn.ongoing {
+  border-color: rgba(27, 133, 90, 0.28);
+  color: #1f6b4f;
+}
+
+.shuttle-orders-tab-btn.ongoing.active {
+  border-color: rgba(20, 123, 82, 0.5);
+  background: rgba(22, 151, 101, 0.18);
+  color: #15533d;
+}
+
+.shuttle-orders-tab-btn.past {
+  border-color: rgba(176, 63, 74, 0.28);
+  color: #943340;
+}
+
+.shuttle-orders-tab-btn.past.active {
+  border-color: rgba(163, 45, 57, 0.5);
+  background: rgba(200, 62, 78, 0.17);
+  color: #7e2733;
 }
 
 .shuttle-orders-tab-panel {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
-  overscroll-behavior: contain;
+  overflow: visible;
   padding-inline-end: 2px;
 }
 
