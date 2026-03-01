@@ -958,7 +958,9 @@ mat-chip:not(.offline) {
   overflow: auto;
   overscroll-behavior: contain;
   position: fixed;
-  width: calc(79% - 30px);
+  left: 15px;
+  width: calc(100% - 30px);
+  right: 15px;
 }
 
 .messages-panel.shuttle-no-scroll .shuttle-orders-dashboard {
