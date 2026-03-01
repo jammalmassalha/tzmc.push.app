@@ -934,6 +934,188 @@ mat-chip:not(.offline) {
   line-height: 23px;
 }
 
+.shuttle-orders-dashboard {
+  margin: 6px 8px 10px;
+  padding: 10px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(247, 249, 255, 0.98) 0%, rgba(239, 244, 255, 0.96) 100%);
+  border: 1px solid rgba(71, 97, 188, 0.18);
+  box-shadow: 0 10px 24px rgba(20, 40, 112, 0.09);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.shuttle-orders-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.shuttle-orders-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #2a3d7e;
+}
+
+.shuttle-orders-empty {
+  font-size: 12px;
+  color: #62709a;
+  background: rgba(255, 255, 255, 0.74);
+  border: 1px dashed rgba(71, 97, 188, 0.24);
+  border-radius: 12px;
+  padding: 8px 10px;
+}
+
+.shuttle-orders-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.shuttle-order-card {
+  border-radius: 14px;
+  border: 1px solid rgba(64, 89, 179, 0.2);
+  background: rgba(255, 255, 255, 0.95);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.shuttle-order-card.past {
+  border-color: rgba(108, 120, 152, 0.25);
+  background: rgba(247, 249, 253, 0.94);
+}
+
+.shuttle-order-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.shuttle-order-status {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.shuttle-order-status.ongoing {
+  color: #1d6d52;
+  background: rgba(24, 167, 111, 0.16);
+}
+
+.shuttle-order-status.past {
+  color: #677496;
+  background: rgba(122, 136, 171, 0.16);
+}
+
+.shuttle-order-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.shuttle-order-row .label {
+  font-size: 11px;
+  color: #6a7698;
+  white-space: nowrap;
+}
+
+.shuttle-order-row .value {
+  font-size: 13px;
+  font-weight: 600;
+  color: #263057;
+  text-align: left;
+}
+
+.shuttle-order-delete-btn {
+  border: 0;
+  border-radius: 999px;
+  min-height: 30px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(227, 68, 83, 0.12);
+  color: #a93544;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.shuttle-order-delete-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.shuttle-order-delete-btn mat-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  line-height: 16px;
+}
+
+.shuttle-message-card {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(71, 97, 188, 0.26);
+  background: linear-gradient(180deg, rgba(244, 248, 255, 0.98) 0%, rgba(236, 243, 255, 0.95) 100%);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.shuttle-message-card.cancelled {
+  border-color: rgba(108, 120, 152, 0.3);
+  background: rgba(246, 248, 252, 0.95);
+}
+
+.shuttle-message-card-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #223165;
+}
+
+.shuttle-message-card-status {
+  align-self: flex-start;
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: rgba(42, 76, 186, 0.12);
+  color: #2c438e;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.shuttle-message-card.cancelled .shuttle-message-card-status {
+  background: rgba(126, 138, 167, 0.16);
+  color: #66728f;
+}
+
+.shuttle-message-card-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.shuttle-message-card-row .label {
+  font-size: 11px;
+  color: #657199;
+}
+
+.shuttle-message-card-row .value {
+  font-size: 13px;
+  font-weight: 600;
+  color: #273158;
+}
+
 .composer-edit-banner {
   margin: 6px 10px 0;
   padding: 6px 8px;

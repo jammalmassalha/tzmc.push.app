@@ -36,6 +36,7 @@ import {
   ActivatedChatMeta,
   ChatStoreService,
   IncomingReactionNotice,
+  ShuttleOrdersDashboard,
   ShuttleQuickPickerState
 } from '../../core/services/chat-store.service';
 import { CreateGroupDialogComponent } from './dialogs/create-group-dialog.component';
@@ -94,6 +95,15 @@ interface ReactionDetailRow {
 interface ReactionDetailsPreview {
   groupTitle: string;
   rows: ReactionDetailRow[];
+}
+
+interface ShuttleOrderMessageCard {
+  title: string;
+  statusLabel: string;
+  dayDate: string;
+  shift: string;
+  station: string;
+  cancelled: boolean;
 }
 
 @Component({
@@ -196,10 +206,14 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     this.store.getShuttleQuickPickerState()
   );
   readonly isSubmittingShuttlePicker = signal(false);
+  readonly isCancellingShuttleOrderIds = signal<Set<string>>(new Set<string>());
   readonly shuttlePickerHasOptions = computed(() => {
     const picker = this.shuttleQuickPicker();
     return Boolean(picker && picker.options.length);
   });
+  readonly shuttleOrdersDashboard = computed<ShuttleOrdersDashboard | null>(() =>
+    this.store.getShuttleOrdersDashboard()
+  );
 
   readonly reactionEmojis = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
   readonly nowTimestamp = signal(Date.now());
@@ -601,7 +615,67 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   async goBackFromShuttlePicker(): Promise<void> {
-    await this.chooseShuttlePickerOption('0');
+    await this.chooseShuttlePickerOption('חזרה לתפריט');
+  }
+
+  async cancelShuttleOrder(orderId: string): Promise<void> {
+    const normalizedId = String(orderId || '').trim();
+    if (!normalizedId) return;
+    if (this.isCancellingShuttleOrder(orderId)) return;
+
+    this.setShuttleOrderCancelling(normalizedId, true);
+    try {
+      await this.store.cancelShuttleOrderById(normalizedId);
+      this.snackBar.open('ההזמנה בוטלה.', 'סגור', { duration: 2400 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'ביטול ההזמנה נכשל.';
+      this.snackBar.open(message, 'סגור', { duration: 3200 });
+    } finally {
+      this.setShuttleOrderCancelling(normalizedId, false);
+    }
+  }
+
+  isCancellingShuttleOrder(orderId: string): boolean {
+    const normalizedId = String(orderId || '').trim();
+    if (!normalizedId) return false;
+    return this.isCancellingShuttleOrderIds().has(normalizedId);
+  }
+
+  shuttleOrderMessageCard(message: ChatMessage): ShuttleOrderMessageCard | null {
+    const recordType = String(message.recordType || '').trim();
+    if (recordType !== 'shuttle-submit-success' && recordType !== 'shuttle-cancel-success') {
+      return null;
+    }
+
+    const body = String(message.body || '').trim();
+    if (!body) return null;
+    const lines = body
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (!lines.length) return null;
+
+    const summaryLine = lines.find((line) => line.includes('[') && line.includes('|'));
+    if (!summaryLine) return null;
+
+    const cleanSummary = summaryLine.replace(/^\d+\.\s*/, '').trim();
+    const match = cleanSummary.match(/^\[(.+?)\]\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+)$/);
+    if (!match) return null;
+
+    const statusLabel = String(match[1] || '').trim();
+    const dayDate = String(match[2] || '').trim();
+    const shift = String(match[3] || '').trim();
+    const station = String(match[4] || '').trim();
+    const title = lines[0] || (recordType === 'shuttle-cancel-success' ? 'הזמנה בוטלה' : 'הזמנה נשמרה');
+
+    return {
+      title,
+      statusLabel,
+      dayDate,
+      shift,
+      station,
+      cancelled: recordType === 'shuttle-cancel-success' || statusLabel.includes('בוטל')
+    };
   }
 
   onMessagesPanelScroll(): void {
@@ -2203,5 +2277,18 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       next.delete(normalizedId);
     }
     this.pendingMessageActionIds.set(next);
+  }
+
+  private setShuttleOrderCancelling(orderId: string, pending: boolean): void {
+    const normalized = String(orderId || '').trim();
+    if (!normalized) return;
+
+    const next = new Set(this.isCancellingShuttleOrderIds());
+    if (pending) {
+      next.add(normalized);
+    } else {
+      next.delete(normalized);
+    }
+    this.isCancellingShuttleOrderIds.set(next);
   }
 }

@@ -179,6 +179,82 @@
             </div>
           }
 
+          @if (shuttleOrdersDashboard(); as shuttleDashboard) {
+            <section class="shuttle-orders-dashboard">
+              <div class="shuttle-orders-section">
+                <div class="shuttle-orders-section-title">הזמנות פעילות</div>
+                @if (!shuttleDashboard.ongoing.length) {
+                  <div class="shuttle-orders-empty">אין הזמנות פעילות כרגע.</div>
+                } @else {
+                  <div class="shuttle-orders-cards">
+                    @for (order of shuttleDashboard.ongoing; track order.id) {
+                      <article class="shuttle-order-card ongoing">
+                        <div class="shuttle-order-card-top">
+                          <span class="shuttle-order-status ongoing">פעילה</span>
+                          <button
+                            type="button"
+                            class="shuttle-order-delete-btn"
+                            [disabled]="isCancellingShuttleOrder(order.id)"
+                            (click)="cancelShuttleOrder(order.id)">
+                            @if (isCancellingShuttleOrder(order.id)) {
+                              <mat-spinner diameter="14"></mat-spinner>
+                            } @else {
+                              <mat-icon>delete</mat-icon>
+                            }
+                            <span>מחק הזמנה</span>
+                          </button>
+                        </div>
+                        <div class="shuttle-order-row">
+                          <span class="label">תאריך</span>
+                          <span class="value">{{ order.dayName }} {{ order.date }}</span>
+                        </div>
+                        <div class="shuttle-order-row">
+                          <span class="label">משמרת</span>
+                          <span class="value">{{ order.shiftLabel }}</span>
+                        </div>
+                        <div class="shuttle-order-row">
+                          <span class="label">תחנה</span>
+                          <span class="value">{{ order.station }}</span>
+                        </div>
+                      </article>
+                    }
+                  </div>
+                }
+              </div>
+
+              <div class="shuttle-orders-section">
+                <div class="shuttle-orders-section-title">הזמנות עבר</div>
+                @if (!shuttleDashboard.past.length) {
+                  <div class="shuttle-orders-empty">אין הזמנות עבר להצגה.</div>
+                } @else {
+                  <div class="shuttle-orders-cards">
+                    @for (order of shuttleDashboard.past; track order.id) {
+                      <article class="shuttle-order-card past">
+                        <div class="shuttle-order-card-top">
+                          <span class="shuttle-order-status past">
+                            {{ order.statusLabel.includes('בוטל') ? 'בוטלה' : 'הסתיימה' }}
+                          </span>
+                        </div>
+                        <div class="shuttle-order-row">
+                          <span class="label">תאריך</span>
+                          <span class="value">{{ order.dayName }} {{ order.date }}</span>
+                        </div>
+                        <div class="shuttle-order-row">
+                          <span class="label">משמרת</span>
+                          <span class="value">{{ order.shiftLabel }}</span>
+                        </div>
+                        <div class="shuttle-order-row">
+                          <span class="label">תחנה</span>
+                          <span class="value">{{ order.station }}</span>
+                        </div>
+                      </article>
+                    }
+                  </div>
+                }
+              </div>
+            </section>
+          }
+
           @for (message of store.activeMessages(); track message.messageId; let index = $index) {
             @if (shouldShowMessageDateBadge(index, message.timestamp)) {
               <div class="message-date-badge">
@@ -237,7 +313,24 @@
                   </button>
                 }
 
-                @if (message.body) {
+                @if (shuttleOrderMessageCard(message); as shuttleCard) {
+                  <div class="shuttle-message-card" [class.cancelled]="shuttleCard.cancelled">
+                    <div class="shuttle-message-card-title">{{ shuttleCard.title }}</div>
+                    <div class="shuttle-message-card-status">{{ shuttleCard.statusLabel }}</div>
+                    <div class="shuttle-message-card-row">
+                      <span class="label">תאריך</span>
+                      <span class="value">{{ shuttleCard.dayDate }}</span>
+                    </div>
+                    <div class="shuttle-message-card-row">
+                      <span class="label">משמרת</span>
+                      <span class="value">{{ shuttleCard.shift }}</span>
+                    </div>
+                    <div class="shuttle-message-card-row">
+                      <span class="label">תחנה</span>
+                      <span class="value">{{ shuttleCard.station }}</span>
+                    </div>
+                  </div>
+                } @else if (message.body) {
                   <div class="message-content">
                     @for (part of getMessageRenderParts(message.messageId, message.body); track $index) {
                       @if (part.kind === 'text') {
