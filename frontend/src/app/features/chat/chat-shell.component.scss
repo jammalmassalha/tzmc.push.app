@@ -1274,6 +1274,8 @@ mat-chip:not(.offline) {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  position: relative;
+  z-index: 11;
 }
 
 .shuttle-picker-breadcrumbs {
