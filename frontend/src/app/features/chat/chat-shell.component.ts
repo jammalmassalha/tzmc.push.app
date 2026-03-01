@@ -36,6 +36,7 @@ import {
   ActivatedChatMeta,
   ChatStoreService,
   IncomingReactionNotice,
+  ShuttleBreadcrumbStep,
   ShuttleOrdersDashboard,
   ShuttleQuickPickerState
 } from '../../core/services/chat-store.service';
@@ -168,11 +169,15 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly searchControl = new FormControl('', { nonNullable: true });
   readonly messageControl = new FormControl('', { nonNullable: true });
   readonly shuttlePickerControl = new FormControl('', { nonNullable: true });
+  readonly shuttlePickerSearchControl = new FormControl('', { nonNullable: true });
 
   readonly searchTerm = toSignal(this.searchControl.valueChanges.pipe(startWith('')), {
     initialValue: ''
   });
   readonly messageValue = toSignal(this.messageControl.valueChanges.pipe(startWith('')), {
+    initialValue: ''
+  });
+  readonly shuttlePickerSearchValue = toSignal(this.shuttlePickerSearchControl.valueChanges.pipe(startWith('')), {
     initialValue: ''
   });
 
@@ -214,6 +219,31 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly shuttleOrdersDashboard = computed<ShuttleOrdersDashboard | null>(() =>
     this.store.getShuttleOrdersDashboard()
   );
+  readonly shuttleBreadcrumbs = computed<ShuttleBreadcrumbStep[] | null>(() =>
+    this.store.getShuttleFlowBreadcrumbs()
+  );
+  readonly isShuttleStationPicker = computed(() => {
+    const picker = this.shuttleQuickPicker();
+    return Boolean(picker && picker.mode === 'select' && picker.key.startsWith('station-'));
+  });
+  readonly filteredShuttlePickerOptions = computed(() => {
+    const picker = this.shuttleQuickPicker();
+    if (!picker || picker.mode !== 'select') {
+      return [];
+    }
+
+    const options = picker.options;
+    if (!this.isShuttleStationPicker()) {
+      return options;
+    }
+
+    const query = String(this.shuttlePickerSearchValue() || '').trim().toLowerCase();
+    if (!query) {
+      return options;
+    }
+
+    return options.filter((option) => String(option.label || '').toLowerCase().includes(query));
+  });
 
   readonly reactionEmojis = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
   readonly nowTimestamp = signal(Date.now());
@@ -387,6 +417,24 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const key = picker?.key ?? null;
     if (key !== this.lastShuttlePickerKey) {
       this.lastShuttlePickerKey = key;
+      this.shuttlePickerControl.setValue('');
+      this.shuttlePickerSearchControl.setValue('');
+    }
+  });
+
+  private readonly shuttlePickerOptionValidityEffect = effect(() => {
+    const picker = this.shuttleQuickPicker();
+    if (!picker || picker.mode !== 'select') {
+      return;
+    }
+
+    const selected = String(this.shuttlePickerControl.value || '').trim();
+    if (!selected) {
+      return;
+    }
+
+    const visibleOptions = this.filteredShuttlePickerOptions();
+    if (!visibleOptions.some((option) => option.value === selected)) {
       this.shuttlePickerControl.setValue('');
     }
   });
@@ -595,7 +643,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (!normalized || this.isSubmittingShuttlePicker()) return;
     this.isSubmittingShuttlePicker.set(true);
     try {
-      await this.store.sendTextMessage(normalized);
+      await this.store.submitShuttleQuickPickerSelection(normalized);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'בחירה נכשלה. נסה שוב.';
       this.snackBar.open(message, 'סגור', { duration: 2800 });
@@ -616,6 +664,11 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   async goBackFromShuttlePicker(): Promise<void> {
     await this.chooseShuttlePickerOption('חזרה לתפריט');
+  }
+
+  clearShuttlePickerSearch(): void {
+    if (!this.shuttlePickerSearchControl.value) return;
+    this.shuttlePickerSearchControl.setValue('');
   }
 
   async cancelShuttleOrder(orderId: string): Promise<void> {

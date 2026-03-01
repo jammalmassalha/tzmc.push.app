@@ -459,6 +459,28 @@
 
         @if (shuttleQuickPicker(); as shuttlePicker) {
           <section class="shuttle-picker-panel">
+            @if (shuttleBreadcrumbs(); as breadcrumbs) {
+              <nav class="shuttle-picker-breadcrumbs" aria-label="שלבי הזמנת הסעה">
+                <mat-chip-set>
+                  @for (crumb of breadcrumbs; track crumb.key; let isLast = $last) {
+                    <mat-chip
+                      class="shuttle-picker-breadcrumb-chip"
+                      [class.active]="crumb.active"
+                      [class.completed]="crumb.completed"
+                      [highlighted]="crumb.active || crumb.completed">
+                      <span class="crumb-label">{{ crumb.label }}</span>
+                      @if (crumb.value) {
+                        <span class="crumb-value">{{ crumb.value }}</span>
+                      }
+                    </mat-chip>
+                    @if (!isLast) {
+                      <mat-icon class="shuttle-picker-breadcrumb-sep">chevron_left</mat-icon>
+                    }
+                  }
+                </mat-chip-set>
+              </nav>
+            }
+
             <div class="shuttle-picker-header">
               <div class="shuttle-picker-title">{{ shuttlePicker.title }}</div>
               @if (shuttlePicker.helperText) {
@@ -481,16 +503,39 @@
               </div>
             } @else {
               <div class="shuttle-picker-select">
+                @if (isShuttleStationPicker()) {
+                  <mat-form-field class="shuttle-picker-search-field" appearance="outline">
+                    <mat-label>חיפוש תחנה</mat-label>
+                    <input matInput [formControl]="shuttlePickerSearchControl" placeholder="הקלד שם תחנה" />
+                    @if (shuttlePickerSearchControl.value) {
+                      <button
+                        mat-icon-button
+                        matSuffix
+                        type="button"
+                        aria-label="נקה חיפוש תחנות"
+                        (click)="clearShuttlePickerSearch()">
+                        <mat-icon>close</mat-icon>
+                      </button>
+                    }
+                  </mat-form-field>
+                  <div class="shuttle-picker-search-result">
+                    נמצאו {{ filteredShuttlePickerOptions().length }} תחנות תואמות
+                  </div>
+                }
+
                 <mat-form-field class="shuttle-picker-select-field" appearance="outline">
                   <mat-label>בחר אפשרות</mat-label>
                   <mat-select
                     [formControl]="shuttlePickerControl"
-                    [disabled]="isSubmittingShuttlePicker() || !shuttlePicker.options.length">
-                    @for (option of shuttlePicker.options; track option.value + '-' + $index) {
+                    [disabled]="isSubmittingShuttlePicker() || !filteredShuttlePickerOptions().length">
+                    @for (option of filteredShuttlePickerOptions(); track option.value + '-' + $index) {
                       <mat-option [value]="option.value">{{ option.label }}</mat-option>
                     }
                   </mat-select>
                 </mat-form-field>
+                @if (!filteredShuttlePickerOptions().length) {
+                  <div class="shuttle-picker-empty-results">לא נמצאו תוצאות עבור החיפוש.</div>
+                }
 
                 <button
                   mat-flat-button
@@ -499,7 +544,7 @@
                   class="shuttle-picker-confirm-btn"
                   [disabled]="
                     isSubmittingShuttlePicker() ||
-                    !shuttlePicker.options.length ||
+                    !filteredShuttlePickerOptions().length ||
                     !shuttlePickerControl.value
                   "
                   (click)="submitShuttlePickerSelection()">

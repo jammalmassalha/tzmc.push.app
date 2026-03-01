@@ -944,6 +944,9 @@ mat-chip:not(.offline) {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  position: sticky;
+  top: 34px;
+  z-index: 2;
 }
 
 .shuttle-orders-section {
@@ -1220,6 +1223,64 @@ mat-chip:not(.offline) {
   gap: 10px;
 }
 
+.shuttle-picker-breadcrumbs {
+  display: flex;
+  align-items: center;
+}
+
+.shuttle-picker-breadcrumbs mat-chip-set {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  column-gap: 4px;
+}
+
+.shuttle-picker-breadcrumb-chip {
+  --mdc-chip-elevated-container-color: rgba(255, 255, 255, 0.72);
+  --mdc-chip-label-text-color: #30447f;
+  border: 1px solid rgba(56, 84, 180, 0.22);
+  border-radius: 12px;
+  min-height: 32px;
+  max-width: 100%;
+}
+
+.shuttle-picker-breadcrumb-chip.active {
+  --mdc-chip-elevated-container-color: rgba(54, 83, 181, 0.16);
+  --mdc-chip-label-text-color: #233880;
+  border-color: rgba(54, 83, 181, 0.42);
+}
+
+.shuttle-picker-breadcrumb-chip.completed {
+  --mdc-chip-elevated-container-color: rgba(26, 145, 99, 0.14);
+  --mdc-chip-label-text-color: #23664d;
+  border-color: rgba(26, 145, 99, 0.28);
+}
+
+.shuttle-picker-breadcrumb-chip .crumb-label {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.shuttle-picker-breadcrumb-chip .crumb-value {
+  display: block;
+  margin-top: 1px;
+  max-width: min(40vw, 220px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  opacity: 0.86;
+}
+
+.shuttle-picker-breadcrumb-sep {
+  width: 16px;
+  height: 16px;
+  font-size: 16px;
+  line-height: 16px;
+  color: #6d7cad;
+}
+
 .shuttle-picker-header {
   display: flex;
   flex-direction: column;
@@ -1265,8 +1326,26 @@ mat-chip:not(.offline) {
   gap: 8px;
 }
 
+.shuttle-picker-search-field {
+  width: 100%;
+}
+
+.shuttle-picker-search-result {
+  font-size: 12px;
+  color: #57658d;
+}
+
 .shuttle-picker-select-field {
   width: 100%;
+}
+
+.shuttle-picker-empty-results {
+  font-size: 12px;
+  color: #7f4b56;
+  background: rgba(255, 242, 244, 0.75);
+  border: 1px dashed rgba(177, 78, 95, 0.3);
+  border-radius: 10px;
+  padding: 6px 8px;
 }
 
 .shuttle-picker-confirm-btn {
