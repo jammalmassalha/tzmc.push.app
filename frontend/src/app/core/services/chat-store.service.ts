@@ -771,12 +771,10 @@ export class ChatStoreService {
       return {
         key: 'menu',
         title: 'מה תרצה לבצע?',
-        helperText: 'בחר פעולה בלחיצה',
+        helperText: 'הזמנה חדשה בלחיצה אחת',
         mode: 'buttons',
         options: [
-          { value: 'הזמנה חדשה', label: 'הזמנה חדשה' },
-          { value: 'הבקשות שלי', label: 'הבקשות שלי' },
-          { value: 'ביטול הזמנה קיימת', label: 'ביטול הזמנה קיימת' }
+          { value: 'הזמנה חדשה', label: 'הזמנה חדשה' }
         ],
         allowBack: false
       };
@@ -825,26 +823,6 @@ export class ChatStoreService {
       };
     }
 
-    if (state.awaiting === 'cancel-select') {
-      const cancelOptions = this.getShuttleCancelCandidateOrders(user, state)
-        .filter((order) => this.isShuttleOrderOngoing(order))
-        .map((order) => {
-          const summary = this.buildShuttleOrderSummary(order);
-          return {
-            value: summary,
-            label: summary
-          };
-        });
-      return {
-        key: `cancel-${cancelOptions.length}`,
-        title: 'בחר הזמנה לביטול',
-        helperText: cancelOptions.length ? 'בחר הזמנה מהרשימה ולחץ אישור' : 'אין הזמנות פעילות לביטול',
-        mode: 'select',
-        options: cancelOptions,
-        allowBack: true
-      };
-    }
-
     return null;
   }
 
@@ -889,31 +867,12 @@ export class ChatStoreService {
     const state = this.loadShuttleState(user) ?? this.defaultShuttleState();
     const draft = state.draft || {};
 
-    if (state.awaiting === 'cancel-select') {
-      return [
-        {
-          key: 'menu',
-          label: 'פעולה',
-          value: 'ביטול הזמנה',
-          active: false,
-          completed: true
-        },
-        {
-          key: 'cancel-select',
-          label: 'בחירת הזמנה',
-          value: '',
-          active: true,
-          completed: false
-        }
-      ];
-    }
-
     const dateValue = String(draft.dayName || '').trim() && String(draft.date || '').trim()
       ? `${String(draft.dayName || '').trim()} ${String(draft.date || '').trim()}`
       : '';
     const shiftValue = String(draft.shiftLabel || '').trim();
     const stationValue = String(draft.station || '').trim();
-    const awaiting = state.awaiting;
+    const awaiting = state.awaiting === 'cancel-select' ? 'menu' : state.awaiting;
 
     return [
       {
@@ -1696,7 +1655,8 @@ export class ChatStoreService {
       case 'station':
         return this.handleShuttleStationSelection(user, state, trimmed);
       case 'cancel-select':
-        return this.handleShuttleCancelSelection(user, state, trimmed);
+        this.saveShuttleState(user, this.defaultShuttleState());
+        return true;
       default:
         this.saveShuttleState(user, this.defaultShuttleState());
         this.sendShuttleMenu();
@@ -1706,7 +1666,7 @@ export class ChatStoreService {
 
   private async handleShuttleMenuSelection(user: string, value: string): Promise<boolean> {
     const command = this.parseShuttleMenuCommand(value);
-    if (!command) {
+    if (command !== 'new') {
       this.sendShuttleSystemMessage('בחירה לא תקינה. נא לבחור אחת מהאפשרויות המוצגות.', {
         recordType: 'shuttle-invalid'
       });
@@ -1715,22 +1675,11 @@ export class ChatStoreService {
       return true;
     }
 
-    if (command === 'new') {
-      this.saveShuttleState(user, {
-        awaiting: 'date',
-        draft: null,
-        cancelCandidateIds: []
-      });
-      return true;
-    }
-
-    if (command === 'list') {
-      this.saveShuttleState(user, this.defaultShuttleState());
-      this.sendShuttleMenu();
-      return true;
-    }
-
-    await this.startShuttleCancelFlow(user);
+    this.saveShuttleState(user, {
+      awaiting: 'date',
+      draft: null,
+      cancelCandidateIds: []
+    });
     return true;
   }
 
@@ -2089,12 +2038,10 @@ export class ChatStoreService {
       .toLowerCase();
   }
 
-  private parseShuttleMenuCommand(input: string): 'new' | 'list' | 'cancel' | '' {
+  private parseShuttleMenuCommand(input: string): 'new' | '' {
     const trimmed = String(input || '').trim();
     if (!trimmed) return '';
     if (trimmed === '1' || trimmed.includes('חדש')) return 'new';
-    if (trimmed === '2' || trimmed.includes('הצג') || trimmed.includes('בקשות')) return 'list';
-    if (trimmed === '3' || trimmed.includes('ביטול') || trimmed.includes('מחק')) return 'cancel';
     return '';
   }
 

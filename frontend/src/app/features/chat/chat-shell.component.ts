@@ -219,6 +219,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly shuttleOrdersDashboard = computed<ShuttleOrdersDashboard | null>(() =>
     this.store.getShuttleOrdersDashboard()
   );
+  readonly isShuttleRoomActive = computed(() =>
+    Boolean(this.shuttleOrdersDashboard() || this.shuttleQuickPicker())
+  );
   readonly shuttleBreadcrumbs = computed<ShuttleBreadcrumbStep[] | null>(() =>
     this.store.getShuttleFlowBreadcrumbs()
   );
@@ -301,6 +304,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly showScrollToBottomButton = computed(
     () =>
       Boolean(this.store.activeChatId()) &&
+      !this.isShuttleRoomActive() &&
       this.store.activeMessages().length > 0 &&
       !this.isMessagesPanelAtBottom()
   );

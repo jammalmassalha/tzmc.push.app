@@ -131,6 +131,7 @@
     <section
       class="conversation-pane"
       [class.hidden-mobile]="isMobile() && showContactsPane()"
+      [class.shuttle-room-active]="isShuttleRoomActive()"
       (touchstart)="onConversationTouchStart($event)"
       (touchmove)="onConversationTouchMove($event)"
       (touchend)="onConversationTouchEnd($event)"
@@ -172,7 +173,11 @@
           }
         </header>
 
-        <div #messagesPanel class="messages-panel" (scroll)="onMessagesPanelScroll()">
+        <div
+          #messagesPanel
+          class="messages-panel"
+          [class.shuttle-no-scroll]="isShuttleRoomActive()"
+          (scroll)="onMessagesPanelScroll()">
           @if (stickyMessageDateLabel(); as stickyDateLabel) {
             <div class="messages-sticky-date">
               <span>{{ stickyDateLabel }}</span>
@@ -504,20 +509,26 @@
             } @else {
               <div class="shuttle-picker-select">
                 @if (isShuttleStationPicker()) {
-                  <mat-form-field class="shuttle-picker-search-field" appearance="outline">
-                    <mat-label>חיפוש תחנה</mat-label>
-                    <input matInput [formControl]="shuttlePickerSearchControl" placeholder="הקלד שם תחנה" />
-                    @if (shuttlePickerSearchControl.value) {
+                  <label class="search-shell shuttle-picker-search-shell">
+                    <mat-icon class="search-icon">search</mat-icon>
+                    <input
+                      class="search-input shuttle-picker-search-input"
+                      type="text"
+                      [formControl]="shuttlePickerSearchControl"
+                      (focus)="handleTextInputFocus()"
+                      placeholder="חיפוש תחנה"
+                      aria-label="חיפוש תחנה"
+                      autocomplete="off" />
+                    @if (shuttlePickerSearchControl.value.length > 0) {
                       <button
-                        mat-icon-button
-                        matSuffix
                         type="button"
-                        aria-label="נקה חיפוש תחנות"
-                        (click)="clearShuttlePickerSearch()">
+                        class="search-clear-btn shuttle-picker-search-clear-btn"
+                        (click)="clearShuttlePickerSearch(); $event.preventDefault(); $event.stopPropagation()"
+                        aria-label="נקה חיפוש תחנות">
                         <mat-icon>close</mat-icon>
                       </button>
                     }
-                  </mat-form-field>
+                  </label>
                   <div class="shuttle-picker-search-result">
                     נמצאו {{ filteredShuttlePickerOptions().length }} תחנות תואמות
                   </div>
