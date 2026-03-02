@@ -855,6 +855,31 @@ export class ChatStoreService {
     return { ongoing, past };
   }
 
+  getShuttleOrdersLoading(): boolean {
+    this.shuttlePickerRevision();
+    const activeChatId = this.activeChatId();
+    if (!this.isShuttleChat(activeChatId)) {
+      return false;
+    }
+    const user = this.currentUser();
+    if (!user) {
+      return false;
+    }
+    return this.shuttleOrdersSyncInFlight.has(this.normalizeUser(user));
+  }
+
+  async refreshShuttleOrdersForActiveUser(): Promise<void> {
+    const activeChatId = this.activeChatId();
+    if (!this.isShuttleChat(activeChatId)) {
+      return;
+    }
+    const user = this.currentUser();
+    if (!user) {
+      throw new Error('יש להתחבר לפני טעינת הזמנות');
+    }
+    await this.refreshShuttleOrdersFromRemote(user, { force: true });
+  }
+
   getShuttleFlowBreadcrumbs(): ShuttleBreadcrumbStep[] | null {
     this.shuttlePickerRevision();
     const activeChatId = this.activeChatId();
@@ -1960,6 +1985,7 @@ export class ChatStoreService {
     }
 
     this.shuttleOrdersSyncInFlight.add(normalizedUser);
+    this.bumpShuttlePickerRevision();
     try {
       const remoteOrders = await this.api.getShuttleUserOrders(user);
       const mappedOrders = remoteOrders
@@ -1975,6 +2001,7 @@ export class ChatStoreService {
       this.shuttleOrdersSyncAt.set(normalizedUser, now);
     } finally {
       this.shuttleOrdersSyncInFlight.delete(normalizedUser);
+      this.bumpShuttlePickerRevision();
     }
   }
 
