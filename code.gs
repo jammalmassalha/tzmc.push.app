@@ -218,10 +218,14 @@ function doGet(e) {
     var action = e.parameter.action;
 
     // ======================================================
-    // 0. GET SHUTTLE ORDERS (From Sheet: DataToShow)
+    // 0. GET SHUTTLE ORDERS (From Sheet: לוג נסיעות)
     // ======================================================
     if (action === 'get_shuttle_orders') {
-      return handleGetShuttleOrders(spreadsheet, e.parameter || {});
+      if (typeof getCurrentUserOrders !== 'function') {
+        return createError('Shuttle orders handler not found');
+      }
+      var shuttleUser = (e.parameter && (e.parameter.user || e.parameter.username || e.parameter.phone)) || '';
+      return createJSON(getCurrentUserOrders(shuttleUser));
     }
 
     // ======================================================
