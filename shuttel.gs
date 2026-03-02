@@ -2,9 +2,20 @@ var ssID = "1OWt0Qty9ljn03U6PP32ftY8_wNy8qPl0FBS_Prwv40g"
 var formID = "1vd8BSr2igB55n9sHm7MZ4xIjWCEklKawjjzhNJ29n-w"
 var wsData = SpreadsheetApp.openById(ssID).getSheetByName("עובדים")
 var wsDataPark = SpreadsheetApp.openById(ssID).getSheetByName("תחנות")
+var wsDataToShow = SpreadsheetApp.openById(ssID).getSheetByName("DataToShow")
 //var form = FormApp.openById(formID)
 function doGet(e) {
   let data = "";
+  var action = String((e.parameter && e.parameter.action) || '').trim();
+
+  if (action === 'get_user_orders' || action === 'get_shuttle_orders') {
+    var currentUser = (e.parameter && (e.parameter.user || e.parameter.username || e.parameter.phone)) || '';
+    data = getCurrentUserOrders(currentUser);
+    return ContentService
+      .createTextOutput(JSON.stringify(data))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
   if (e.parameters.emp != null && e.parameters.emp != '') {
     data = getWorker();
     return ContentService.createTextOutput(JSON.stringify(data));
@@ -265,4 +276,168 @@ function isCellEmptyOrValueEmpty(cell) {
 
   // Check if the value is empty or null.
   return value === '' || value === null;
+}
+
+function getCurrentUserOrders(userValue) {
+  var normalizedUser = normalizeShuttlePhone(userValue);
+  if (!normalizedUser) {
+    return {
+      result: 'error',
+      message: 'Missing or invalid user'
+    };
+  }
+
+  if (!wsDataToShow) {
+    return {
+      result: 'error',
+      message: 'Sheet DataToShow not found'
+    };
+  }
+
+  var cache = CacheService.getScriptCache();
+  var cacheKey = 'current_user_orders_' + normalizedUser;
+  var cached = cache.get(cacheKey);
+  if (cached) {
+    return JSON.parse(cached);
+  }
+
+  var lastRow = wsDataToShow.getLastRow();
+  if (lastRow < 2) {
+    return {
+      result: 'success',
+      user: normalizedUser,
+      counts: { total: 0, ongoing: 0, past: 0 },
+      ongoing: [],
+      past: [],
+      orders: []
+    };
+  }
+
+  var rows = wsDataToShow.getRange(2, 1, lastRow - 1, 6).getValues(); // A..F
+  var orders = [];
+  var ongoing = [];
+  var past = [];
+
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var employee = String(row[0] || '').trim();
+    var employeePhone = extractPhoneFromEmployeeCell(employee);
+    if (!employeePhone || employeePhone !== normalizedUser) {
+      continue;
+    }
+
+    var dateDisplay = formatShuttleDate(row[1]);
+    var dateIso = toShuttleIsoDate(row[1]);
+    var statusText = String(row[4] || '').trim();
+    var statusLower = statusText.toLowerCase();
+    var isCancelled = statusLower.indexOf('ביטול') >= 0 || statusLower.indexOf('отмена') >= 0;
+    var isOngoing = !isCancelled && isIsoDateTodayOrFuture(dateIso);
+
+    var order = {
+      sheetRow: i + 2,
+      employee: employee,
+      employeePhone: employeePhone,
+      date: dateDisplay,
+      dateIso: dateIso,
+      shift: String(row[2] || '').trim(),
+      station: String(row[3] || '').trim(),
+      status: statusText,
+      display: String(row[5] || '').trim(),
+      isCancelled: isCancelled,
+      isOngoing: isOngoing
+    };
+
+    orders.push(order);
+    if (isOngoing) {
+      ongoing.push(order);
+    } else {
+      past.push(order);
+    }
+  }
+
+  var response = {
+    result: 'success',
+    user: normalizedUser,
+    counts: {
+      total: orders.length,
+      ongoing: ongoing.length,
+      past: past.length
+    },
+    ongoing: ongoing,
+    past: past,
+    orders: orders
+  };
+
+  cache.put(cacheKey, JSON.stringify(response), 45);
+  return response;
+}
+
+function extractPhoneFromEmployeeCell(employeeCellValue) {
+  var text = String(employeeCellValue || '').trim();
+  if (!text) return '';
+  if (text.charAt(0) === "'") text = text.substring(1);
+
+  var direct = normalizeShuttlePhone(text);
+  if (direct) return direct;
+
+  var matches = text.match(/\d{9,15}/g) || [];
+  for (var i = 0; i < matches.length; i++) {
+    var normalized = normalizeShuttlePhone(matches[i]);
+    if (normalized) return normalized;
+  }
+  return '';
+}
+
+function normalizeShuttlePhone(value) {
+  var digits = String(value || '').replace(/\D/g, '').trim();
+  if (!digits) return '';
+
+  if (/^9725\d{8}$/.test(digits)) {
+    return '0' + digits.substring(3);
+  }
+  if (/^97205\d{8}$/.test(digits)) {
+    return digits.substring(3);
+  }
+  if (/^5\d{8}$/.test(digits)) {
+    return '0' + digits;
+  }
+  if (/^05\d{8}$/.test(digits)) {
+    return digits;
+  }
+  if (digits.length > 10) {
+    var tail = digits.slice(-10);
+    if (/^05\d{8}$/.test(tail)) {
+      return tail;
+    }
+  }
+  return '';
+}
+
+function toShuttleIsoDate(value) {
+  if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime())) {
+    return Utilities.formatDate(value, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  }
+  var raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+  var slashMatch = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!slashMatch) return '';
+  var mm = ('0' + slashMatch[1]).slice(-2);
+  var dd = ('0' + slashMatch[2]).slice(-2);
+  var yyyy = slashMatch[3];
+  return yyyy + '-' + mm + '-' + dd;
+}
+
+function formatShuttleDate(value) {
+  if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime())) {
+    return Utilities.formatDate(value, Session.getScriptTimeZone(), 'M/d/yyyy');
+  }
+  return String(value || '').trim();
+}
+
+function isIsoDateTodayOrFuture(isoDate) {
+  if (!isoDate) return true;
+  var todayIso = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  return isoDate >= todayIso;
 }

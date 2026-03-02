@@ -218,6 +218,13 @@ function doGet(e) {
     var action = e.parameter.action;
 
     // ======================================================
+    // 0. GET SHUTTLE ORDERS (From Sheet: DataToShow)
+    // ======================================================
+    if (action === 'get_shuttle_orders') {
+      return handleGetShuttleOrders(spreadsheet, e.parameter || {});
+    }
+
+    // ======================================================
     // 1. GET DEPARTMENTS (From Sheet: ServiceIDFK)
     // ======================================================
     if (action === 'get_departments') {
