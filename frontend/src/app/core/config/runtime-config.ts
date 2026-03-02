@@ -43,7 +43,7 @@ export const runtimeConfig: RuntimeConfig = {
   versionUrl: `${backendOrigin}/notify/version`
 };
 
-export const SYSTEM_CHAT_IDS = ['ציפי'] as const;
+export const SYSTEM_CHAT_IDS = ['ציפי', 'הזמנת הסעה'] as const;
 
 export function getNotifyBaseUrl(notifyReplyUrl: string): string {
   if (notifyReplyUrl.endsWith('/reply')) {

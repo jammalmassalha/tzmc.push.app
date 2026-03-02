@@ -20,6 +20,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatMenuModule } from '@angular/material/menu';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatSelectModule } from '@angular/material/select';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { Router, ActivatedRoute } from '@angular/router';
@@ -34,7 +35,10 @@ import {
 import {
   ActivatedChatMeta,
   ChatStoreService,
-  IncomingReactionNotice
+  IncomingReactionNotice,
+  ShuttleBreadcrumbStep,
+  ShuttleOrdersDashboard,
+  ShuttleQuickPickerState
 } from '../../core/services/chat-store.service';
 import { CreateGroupDialogComponent } from './dialogs/create-group-dialog.component';
 import { NewChatDialogComponent } from './dialogs/new-chat-dialog.component';
@@ -94,6 +98,15 @@ interface ReactionDetailsPreview {
   rows: ReactionDetailRow[];
 }
 
+interface ShuttleOrderMessageCard {
+  title: string;
+  statusLabel: string;
+  dayDate: string;
+  shift: string;
+  station: string;
+  cancelled: boolean;
+}
+
 @Component({
   selector: 'app-chat-shell',
   standalone: true,
@@ -109,6 +122,7 @@ interface ReactionDetailsPreview {
     MatMenuModule,
     MatToolbarModule,
     MatProgressSpinnerModule,
+    MatSelectModule,
     MatChipsModule,
     MatSnackBarModule
   ],
@@ -154,11 +168,16 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   readonly searchControl = new FormControl('', { nonNullable: true });
   readonly messageControl = new FormControl('', { nonNullable: true });
+  readonly shuttlePickerControl = new FormControl('', { nonNullable: true });
+  readonly shuttlePickerSearchControl = new FormControl('', { nonNullable: true });
 
   readonly searchTerm = toSignal(this.searchControl.valueChanges.pipe(startWith('')), {
     initialValue: ''
   });
   readonly messageValue = toSignal(this.messageControl.valueChanges.pipe(startWith('')), {
+    initialValue: ''
+  });
+  readonly shuttlePickerSearchValue = toSignal(this.shuttlePickerSearchControl.valueChanges.pipe(startWith('')), {
     initialValue: ''
   });
 
@@ -183,7 +202,51 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (!this.store.activeChat()) {
       return 'בחר צ׳אט כדי להתחיל';
     }
+    if (this.store.getShuttleQuickPickerState()) {
+      return 'לבחירה השתמש בכפתורים';
+    }
     return this.store.canSendToActiveChat() ? 'הקלד הודעה' : 'רק מנהל יכול לשלוח בקבוצת קהילה';
+  });
+  readonly shuttleQuickPicker = computed<ShuttleQuickPickerState | null>(() =>
+    this.store.getShuttleQuickPickerState()
+  );
+  readonly isSubmittingShuttlePicker = signal(false);
+  readonly isCancellingShuttleOrderIds = signal<Set<string>>(new Set<string>());
+  readonly shuttlePickerHasOptions = computed(() => {
+    const picker = this.shuttleQuickPicker();
+    return Boolean(picker && picker.options.length);
+  });
+  readonly shuttleOrdersDashboard = computed<ShuttleOrdersDashboard | null>(() =>
+    this.store.getShuttleOrdersDashboard()
+  );
+  readonly shuttleDashboardTab = signal<'ongoing' | 'past'>('ongoing');
+  readonly isShuttleRoomActive = computed(() =>
+    Boolean(this.shuttleOrdersDashboard() || this.shuttleQuickPicker())
+  );
+  readonly shuttleBreadcrumbs = computed<ShuttleBreadcrumbStep[] | null>(() =>
+    this.store.getShuttleFlowBreadcrumbs()
+  );
+  readonly isShuttleStationPicker = computed(() => {
+    const picker = this.shuttleQuickPicker();
+    return Boolean(picker && picker.mode === 'select' && picker.key.startsWith('station-'));
+  });
+  readonly filteredShuttlePickerOptions = computed(() => {
+    const picker = this.shuttleQuickPicker();
+    if (!picker || picker.mode !== 'select') {
+      return [];
+    }
+
+    const options = picker.options;
+    if (!this.isShuttleStationPicker()) {
+      return options;
+    }
+
+    const query = String(this.shuttlePickerSearchValue() || '').trim().toLowerCase();
+    if (!query) {
+      return options;
+    }
+
+    return options.filter((option) => String(option.label || '').toLowerCase().includes(query));
   });
 
   readonly reactionEmojis = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
@@ -242,6 +305,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly showScrollToBottomButton = computed(
     () =>
       Boolean(this.store.activeChatId()) &&
+      !this.isShuttleRoomActive() &&
       this.store.activeMessages().length > 0 &&
       !this.isMessagesPanelAtBottom()
   );
@@ -257,6 +321,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   private conversationSwipeLastY: number | null = null;
   private conversationSwipeStartedAt: number | null = null;
   private conversationSwipeTracking = false;
+  private lastShuttlePickerKey: string | null = null;
   private lastAutoScrollChatId: string | null = null;
   private lastAutoScrollMessageCount = 0;
   private pendingOpenScroll: { chatId: string; unreadBeforeOpen: number } | null = null;
@@ -350,6 +415,33 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
     this.showReactionToast(notice);
     this.store.clearIncomingReactionNotice();
+  });
+
+  private readonly shuttlePickerSyncEffect = effect(() => {
+    const picker = this.shuttleQuickPicker();
+    const key = picker?.key ?? null;
+    if (key !== this.lastShuttlePickerKey) {
+      this.lastShuttlePickerKey = key;
+      this.shuttlePickerControl.setValue('');
+      this.shuttlePickerSearchControl.setValue('');
+    }
+  });
+
+  private readonly shuttlePickerOptionValidityEffect = effect(() => {
+    const picker = this.shuttleQuickPicker();
+    if (!picker || picker.mode !== 'select') {
+      return;
+    }
+
+    const selected = String(this.shuttlePickerControl.value || '').trim();
+    if (!selected) {
+      return;
+    }
+
+    const visibleOptions = this.filteredShuttlePickerOptions();
+    if (!visibleOptions.some((option) => option.value === selected)) {
+      this.shuttlePickerControl.setValue('');
+    }
   });
 
   private readonly editingMessageGuardEffect = effect(() => {
@@ -489,6 +581,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   async sendMessage(): Promise<void> {
+    if (this.shuttleQuickPicker() && !this.editingMessageTarget()) {
+      return;
+    }
     if (!this.canSendMessage()) return;
 
     const content = this.messageControl.value;
@@ -546,6 +641,103 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     event.preventDefault();
     event.stopPropagation();
     await this.sendMessage();
+  }
+
+  async chooseShuttlePickerOption(value: string): Promise<void> {
+    const normalized = String(value || '').trim();
+    if (!normalized || this.isSubmittingShuttlePicker()) return;
+    this.isSubmittingShuttlePicker.set(true);
+    try {
+      await this.store.submitShuttleQuickPickerSelection(normalized);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'בחירה נכשלה. נסה שוב.';
+      this.snackBar.open(message, 'סגור', { duration: 2800 });
+    } finally {
+      this.isSubmittingShuttlePicker.set(false);
+    }
+  }
+
+  async submitShuttlePickerSelection(): Promise<void> {
+    if (!this.shuttleQuickPicker()) return;
+    const selectedValue = String(this.shuttlePickerControl.value || '').trim();
+    if (!selectedValue) {
+      this.snackBar.open('יש לבחור אפשרות מהרשימה.', 'סגור', { duration: 2200 });
+      return;
+    }
+    await this.chooseShuttlePickerOption(selectedValue);
+  }
+
+  async goBackFromShuttlePicker(): Promise<void> {
+    await this.chooseShuttlePickerOption('חזרה לתפריט');
+  }
+
+  clearShuttlePickerSearch(): void {
+    if (!this.shuttlePickerSearchControl.value) return;
+    this.shuttlePickerSearchControl.setValue('');
+  }
+
+  setShuttleDashboardTab(tab: 'ongoing' | 'past'): void {
+    this.shuttleDashboardTab.set(tab);
+  }
+
+  async cancelShuttleOrder(orderId: string): Promise<void> {
+    const normalizedId = String(orderId || '').trim();
+    if (!normalizedId) return;
+    if (this.isCancellingShuttleOrder(orderId)) return;
+
+    this.setShuttleOrderCancelling(normalizedId, true);
+    try {
+      await this.store.cancelShuttleOrderById(normalizedId);
+      this.snackBar.open('ההזמנה בוטלה.', 'סגור', { duration: 2400 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'ביטול ההזמנה נכשל.';
+      this.snackBar.open(message, 'סגור', { duration: 3200 });
+    } finally {
+      this.setShuttleOrderCancelling(normalizedId, false);
+    }
+  }
+
+  isCancellingShuttleOrder(orderId: string): boolean {
+    const normalizedId = String(orderId || '').trim();
+    if (!normalizedId) return false;
+    return this.isCancellingShuttleOrderIds().has(normalizedId);
+  }
+
+  shuttleOrderMessageCard(message: ChatMessage): ShuttleOrderMessageCard | null {
+    const recordType = String(message.recordType || '').trim();
+    if (recordType !== 'shuttle-submit-success' && recordType !== 'shuttle-cancel-success') {
+      return null;
+    }
+
+    const body = String(message.body || '').trim();
+    if (!body) return null;
+    const lines = body
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (!lines.length) return null;
+
+    const summaryLine = lines.find((line) => line.includes('[') && line.includes('|'));
+    if (!summaryLine) return null;
+
+    const cleanSummary = summaryLine.replace(/^\d+\.\s*/, '').trim();
+    const match = cleanSummary.match(/^\[(.+?)\]\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+)$/);
+    if (!match) return null;
+
+    const statusLabel = String(match[1] || '').trim();
+    const dayDate = String(match[2] || '').trim();
+    const shift = String(match[3] || '').trim();
+    const station = String(match[4] || '').trim();
+    const title = lines[0] || (recordType === 'shuttle-cancel-success' ? 'הזמנה בוטלה' : 'הזמנה נשמרה');
+
+    return {
+      title,
+      statusLabel,
+      dayDate,
+      shift,
+      station,
+      cancelled: recordType === 'shuttle-cancel-success' || statusLabel.includes('בוטל')
+    };
   }
 
   onMessagesPanelScroll(): void {
@@ -670,6 +862,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   openImagePicker(): void {
+    if (this.shuttleQuickPicker()) {
+      this.snackBar.open('בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.', 'סגור', { duration: 2600 });
+      return;
+    }
     if (!this.store.activeChat() || !this.store.canSendToActiveChat()) {
       this.snackBar.open('לא ניתן לצרף תמונה בצ׳אט זה.', 'סגור', { duration: 2500 });
       return;
@@ -678,6 +874,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   async shareLocation(): Promise<void> {
+    if (this.shuttleQuickPicker()) {
+      this.snackBar.open('בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.', 'סגור', { duration: 2600 });
+      return;
+    }
     if (!this.store.activeChat() || !this.store.canSendToActiveChat()) {
       this.snackBar.open('לא ניתן לשתף מיקום בצ׳אט זה.', 'סגור', { duration: 2500 });
       return;
@@ -700,6 +900,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   canSendMessage(): boolean {
+    if (this.shuttleQuickPicker() && !this.editingMessageTarget()) {
+      return false;
+    }
     return Boolean(this.messageValue().trim()) && this.store.canSendToActiveChat() && !!this.store.activeChat();
   }
 
@@ -2136,5 +2339,18 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       next.delete(normalizedId);
     }
     this.pendingMessageActionIds.set(next);
+  }
+
+  private setShuttleOrderCancelling(orderId: string, pending: boolean): void {
+    const normalized = String(orderId || '').trim();
+    if (!normalized) return;
+
+    const next = new Set(this.isCancellingShuttleOrderIds());
+    if (pending) {
+      next.add(normalized);
+    } else {
+      next.delete(normalized);
+    }
+    this.isCancellingShuttleOrderIds.set(next);
   }
 }

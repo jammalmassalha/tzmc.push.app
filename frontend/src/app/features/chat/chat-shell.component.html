@@ -131,6 +131,7 @@
     <section
       class="conversation-pane"
       [class.hidden-mobile]="isMobile() && showContactsPane()"
+      [class.shuttle-room-active]="isShuttleRoomActive()"
       (touchstart)="onConversationTouchStart($event)"
       (touchmove)="onConversationTouchMove($event)"
       (touchend)="onConversationTouchEnd($event)"
@@ -172,11 +173,110 @@
           }
         </header>
 
-        <div #messagesPanel class="messages-panel" (scroll)="onMessagesPanelScroll()">
+        <div
+          #messagesPanel
+          class="messages-panel"
+          [class.shuttle-no-scroll]="isShuttleRoomActive()"
+          (scroll)="onMessagesPanelScroll()">
           @if (stickyMessageDateLabel(); as stickyDateLabel) {
             <div class="messages-sticky-date">
               <span>{{ stickyDateLabel }}</span>
             </div>
+          }
+
+          @if (shuttleOrdersDashboard(); as shuttleDashboard) {
+            <section class="shuttle-orders-dashboard">
+              <div class="shuttle-orders-tabs" role="tablist" aria-label="קטגוריות הזמנות">
+                <button
+                  type="button"
+                  role="tab"
+                  class="shuttle-orders-tab-btn ongoing"
+                  [class.active]="shuttleDashboardTab() === 'ongoing'"
+                  [attr.aria-selected]="shuttleDashboardTab() === 'ongoing'"
+                  (click)="setShuttleDashboardTab('ongoing')">
+                  פעילות ({{ shuttleDashboard.ongoing.length }})
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  class="shuttle-orders-tab-btn past"
+                  [class.active]="shuttleDashboardTab() === 'past'"
+                  [attr.aria-selected]="shuttleDashboardTab() === 'past'"
+                  (click)="setShuttleDashboardTab('past')">
+                  עבר ({{ shuttleDashboard.past.length }})
+                </button>
+              </div>
+
+              <div class="shuttle-orders-tab-panel" role="tabpanel">
+                @if (shuttleDashboardTab() === 'ongoing') {
+                  @if (!shuttleDashboard.ongoing.length) {
+                    <div class="shuttle-orders-empty">אין הזמנות פעילות כרגע.</div>
+                  } @else {
+                    <div class="shuttle-orders-cards">
+                      @for (order of shuttleDashboard.ongoing; track order.id) {
+                        <article class="shuttle-order-card ongoing">
+                          <div class="shuttle-order-card-top">
+                            <span class="shuttle-order-status ongoing">פעילה</span>
+                            <button
+                              type="button"
+                              class="shuttle-order-delete-btn"
+                              [disabled]="isCancellingShuttleOrder(order.id)"
+                              (click)="cancelShuttleOrder(order.id)">
+                              @if (isCancellingShuttleOrder(order.id)) {
+                                <mat-spinner diameter="14"></mat-spinner>
+                              } @else {
+                                <mat-icon>delete</mat-icon>
+                              }
+                              <span>מחק הזמנה</span>
+                            </button>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">תאריך</span>
+                            <span class="value">{{ order.dayName }} {{ order.date }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">משמרת</span>
+                            <span class="value">{{ order.shiftLabel }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">תחנה</span>
+                            <span class="value">{{ order.station }}</span>
+                          </div>
+                        </article>
+                      }
+                    </div>
+                  }
+                } @else {
+                  @if (!shuttleDashboard.past.length) {
+                    <div class="shuttle-orders-empty">אין הזמנות עבר להצגה.</div>
+                  } @else {
+                    <div class="shuttle-orders-cards">
+                      @for (order of shuttleDashboard.past; track order.id) {
+                        <article class="shuttle-order-card past">
+                          <div class="shuttle-order-card-top">
+                            <span class="shuttle-order-status past">
+                              {{ order.statusLabel.includes('בוטל') ? 'בוטלה' : 'הסתיימה' }}
+                            </span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">תאריך</span>
+                            <span class="value">{{ order.dayName }} {{ order.date }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">משמרת</span>
+                            <span class="value">{{ order.shiftLabel }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">תחנה</span>
+                            <span class="value">{{ order.station }}</span>
+                          </div>
+                        </article>
+                      }
+                    </div>
+                  }
+                }
+              </div>
+            </section>
           }
 
           @for (message of store.activeMessages(); track message.messageId; let index = $index) {
@@ -237,7 +337,24 @@
                   </button>
                 }
 
-                @if (message.body) {
+                @if (shuttleOrderMessageCard(message); as shuttleCard) {
+                  <div class="shuttle-message-card" [class.cancelled]="shuttleCard.cancelled">
+                    <div class="shuttle-message-card-title">{{ shuttleCard.title }}</div>
+                    <div class="shuttle-message-card-status">{{ shuttleCard.statusLabel }}</div>
+                    <div class="shuttle-message-card-row">
+                      <span class="label">תאריך</span>
+                      <span class="value">{{ shuttleCard.dayDate }}</span>
+                    </div>
+                    <div class="shuttle-message-card-row">
+                      <span class="label">משמרת</span>
+                      <span class="value">{{ shuttleCard.shift }}</span>
+                    </div>
+                    <div class="shuttle-message-card-row">
+                      <span class="label">תחנה</span>
+                      <span class="value">{{ shuttleCard.station }}</span>
+                    </div>
+                  </div>
+                } @else if (message.body) {
                   <div class="message-content">
                     @for (part of getMessageRenderParts(message.messageId, message.body); track $index) {
                       @if (part.kind === 'text') {
@@ -364,7 +481,147 @@
           </div>
         }
 
-        <form class="composer" (submit)="handleComposerSubmit($event)" novalidate>
+        @if (shuttleQuickPicker(); as shuttlePicker) {
+          <section class="shuttle-picker-panel">
+            @if (shuttleBreadcrumbs(); as breadcrumbs) {
+              <nav class="shuttle-picker-breadcrumbs" aria-label="שלבי הזמנת הסעה">
+                <mat-chip-set>
+                  @for (crumb of breadcrumbs; track crumb.key; let isLast = $last) {
+                    <mat-chip
+                      class="shuttle-picker-breadcrumb-chip"
+                      [class.active]="crumb.active"
+                      [class.completed]="crumb.completed"
+                      [highlighted]="crumb.active || crumb.completed">
+                      <span class="crumb-value">{{ crumb.value }}</span>
+                    </mat-chip>
+                    @if (!isLast) {
+                      <mat-icon class="shuttle-picker-breadcrumb-sep">arrow_back</mat-icon>
+                    }
+                  }
+                </mat-chip-set>
+              </nav>
+            }
+
+            <div class="shuttle-picker-header">
+              <div class="shuttle-picker-title">{{ shuttlePicker.title }}</div>
+              @if (shuttlePicker.helperText) {
+                <div class="shuttle-picker-helper">{{ shuttlePicker.helperText }}</div>
+              }
+            </div>
+
+            @if (shuttlePicker.mode === 'buttons') {
+              <div class="shuttle-picker-buttons">
+                @for (option of shuttlePicker.options; track option.value + '-' + $index) {
+                  <button
+                    mat-stroked-button
+                    type="button"
+                    class="shuttle-picker-option-btn"
+                    [disabled]="isSubmittingShuttlePicker()"
+                    (click)="chooseShuttlePickerOption(option.value)">
+                    {{ option.label }}
+                  </button>
+                }
+              </div>
+            } @else {
+              <div class="shuttle-picker-select">
+                @if (isShuttleStationPicker()) {
+                  <label class="search-shell shuttle-picker-search-shell">
+                    <mat-icon class="search-icon">search</mat-icon>
+                    <input
+                      class="search-input shuttle-picker-search-input"
+                      type="text"
+                      [formControl]="shuttlePickerSearchControl"
+                      (focus)="handleTextInputFocus()"
+                      placeholder="חיפוש תחנה"
+                      aria-label="חיפוש תחנה"
+                      autocomplete="off" />
+                    @if (shuttlePickerSearchControl.value.length > 0) {
+                      <button
+                        type="button"
+                        class="search-clear-btn shuttle-picker-search-clear-btn"
+                        (click)="clearShuttlePickerSearch(); $event.preventDefault(); $event.stopPropagation()"
+                        aria-label="נקה חיפוש תחנות">
+                        <mat-icon>close</mat-icon>
+                      </button>
+                    }
+                  </label>
+                  <div class="shuttle-picker-search-result">
+                    נמצאו {{ filteredShuttlePickerOptions().length }} תחנות תואמות
+                  </div>
+                  @if (!filteredShuttlePickerOptions().length) {
+                    <div class="shuttle-picker-empty-results">לא נמצאו תוצאות עבור החיפוש.</div>
+                  } @else {
+                    <div class="shuttle-station-list" role="listbox" aria-label="רשימת תחנות">
+                      @for (option of filteredShuttlePickerOptions(); track option.value + '-' + $index) {
+                        <button
+                          type="button"
+                          class="chat-item shuttle-station-item"
+                          [disabled]="isSubmittingShuttlePicker()"
+                          (click)="chooseShuttlePickerOption(option.value)">
+                          <span class="chat-item-main">
+                            <span class="chat-avatar-wrap shuttle-station-avatar">
+                              <mat-icon>location_on</mat-icon>
+                            </span>
+                            <span class="chat-text">
+                              <span class="chat-title shuttle-station-title">{{ option.label }}</span>
+                              <span class="chat-subtitle">תחנת איסוף</span>
+                            </span>
+                          </span>
+                        </button>
+                      }
+                    </div>
+                  }
+                } @else {
+                  <mat-form-field class="shuttle-picker-select-field" appearance="outline">
+                    <mat-label>בחר אפשרות</mat-label>
+                    <mat-select
+                      [formControl]="shuttlePickerControl"
+                      [disabled]="isSubmittingShuttlePicker() || !filteredShuttlePickerOptions().length">
+                      @for (option of filteredShuttlePickerOptions(); track option.value + '-' + $index) {
+                        <mat-option [value]="option.value">{{ option.label }}</mat-option>
+                      }
+                    </mat-select>
+                  </mat-form-field>
+                  @if (!filteredShuttlePickerOptions().length) {
+                    <div class="shuttle-picker-empty-results">לא נמצאו תוצאות עבור החיפוש.</div>
+                  }
+
+                  <button
+                    mat-flat-button
+                    color="primary"
+                    type="button"
+                    class="shuttle-picker-confirm-btn"
+                    [disabled]="
+                      isSubmittingShuttlePicker() ||
+                      !filteredShuttlePickerOptions().length ||
+                      !shuttlePickerControl.value
+                    "
+                    (click)="submitShuttlePickerSelection()">
+                    אישור בחירה
+                  </button>
+                }
+              </div>
+            }
+
+            @if (shuttlePicker.allowBack) {
+              <button
+                mat-button
+                type="button"
+                class="shuttle-picker-back-btn"
+                [disabled]="isSubmittingShuttlePicker()"
+                (click)="goBackFromShuttlePicker()">
+                <mat-icon>arrow_back</mat-icon>
+                <span>חזרה לתפריט</span>
+              </button>
+            }
+          </section>
+        }
+
+        <form
+          class="composer"
+          [class.shuttle-composer-hidden]="!!shuttleQuickPicker()"
+          (submit)="handleComposerSubmit($event)"
+          novalidate>
           <input
             #fileInput
             class="hidden-input"
@@ -377,13 +634,14 @@
               class="composer-textarea"
               rows="1"
               [formControl]="messageControl"
+              [disabled]="!!shuttleQuickPicker()"
               (focus)="handleTextInputFocus()"
               [placeholder]="composerPlaceholder()"></textarea>
             <button
               type="button"
               class="attach-btn"
               [matMenuTriggerFor]="attachMenu"
-              [disabled]="!store.activeChat() || !store.canSendToActiveChat()"
+              [disabled]="!!shuttleQuickPicker() || !store.activeChat() || !store.canSendToActiveChat()"
               aria-label="Attach">
               <span class="attach-plus">+</span>
             </button>
