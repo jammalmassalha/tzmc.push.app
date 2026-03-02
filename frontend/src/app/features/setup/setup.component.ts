@@ -1,8 +1,9 @@
 import { CommonModule } from '@angular/common';
-import { Component, OnDestroy, computed, inject, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
+import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
@@ -10,6 +11,7 @@ import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { Router } from '@angular/router';
 import { ChatStoreService } from '../../core/services/chat-store.service';
+import { InstallGuideDialogComponent } from './install-guide-dialog.component';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -23,6 +25,7 @@ interface BeforeInstallPromptEvent extends Event {
     CommonModule,
     ReactiveFormsModule,
     MatCardModule,
+    MatDialogModule,
     MatFormFieldModule,
     MatInputModule,
     MatButtonModule,
@@ -33,11 +36,13 @@ interface BeforeInstallPromptEvent extends Event {
   templateUrl: './setup.component.html',
   styleUrl: './setup.component.scss'
 })
-export class SetupComponent implements OnDestroy {
+export class SetupComponent implements OnInit, OnDestroy {
+  private static readonly INSTALL_GUIDE_SEEN_KEY = 'setup_install_guide_seen_v1';
   private readonly fb = inject(FormBuilder);
   private readonly store = inject(ChatStoreService);
   private readonly router = inject(Router);
   private readonly snackBar = inject(MatSnackBar);
+  private readonly dialog = inject(MatDialog);
 
   readonly form = this.fb.nonNullable.group({
     phone: ['', [Validators.required, Validators.pattern(/^0\d{9}$/)]]
@@ -51,6 +56,14 @@ export class SetupComponent implements OnDestroy {
 
   constructor() {
     window.addEventListener('beforeinstallprompt', this.onBeforeInstallPromptBound as EventListener);
+  }
+
+  ngOnInit(): void {
+    if (this.hasSeenInstallGuide()) {
+      return;
+    }
+    this.markInstallGuideSeen();
+    queueMicrotask(() => this.openInstallGuide());
   }
 
   ngOnDestroy(): void {
@@ -90,8 +103,32 @@ export class SetupComponent implements OnDestroy {
     }
   }
 
+  openInstallGuide(): void {
+    this.dialog.open(InstallGuideDialogComponent, {
+      width: '520px',
+      maxWidth: '95vw',
+      autoFocus: false
+    });
+  }
+
   private onBeforeInstallPrompt(event: Event): void {
     event.preventDefault();
     this.deferredPrompt.set(event as BeforeInstallPromptEvent);
+  }
+
+  private hasSeenInstallGuide(): boolean {
+    try {
+      return localStorage.getItem(SetupComponent.INSTALL_GUIDE_SEEN_KEY) === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  private markInstallGuideSeen(): void {
+    try {
+      localStorage.setItem(SetupComponent.INSTALL_GUIDE_SEEN_KEY, '1');
+    } catch {
+      // Ignore storage failures and avoid blocking setup.
+    }
   }
 }
