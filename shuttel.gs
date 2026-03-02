@@ -330,9 +330,9 @@ function getCurrentUserOrders(userValue) {
   orders = applyShuttleCancelPairingLogic(orders);
 
   orders.sort(function(a, b) {
-    var delta = Number(b.submittedAt || 0) - Number(a.submittedAt || 0);
+    var delta = getShuttleOrderDateTimeSortKey(a) - getShuttleOrderDateTimeSortKey(b);
     if (delta !== 0) return delta;
-    return Number(b.sheetRow || 0) - Number(a.sheetRow || 0);
+    return Number(a.sheetRow || 0) - Number(b.sheetRow || 0);
   });
 
   var ongoing = [];
@@ -460,6 +460,38 @@ function cloneShuttleOrder(order) {
 
 function normalizeOrderKeySegment(value) {
   return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function getShuttleOrderDateTimeSortKey(order) {
+  if (!order) return 0;
+  var dateIso = String(order.dateIso || toShuttleIsoDate(order.date || '') || '').trim();
+  var baseTs = 0;
+  if (dateIso) {
+    var parsedDate = new Date(dateIso + 'T00:00:00');
+    if (!isNaN(parsedDate.getTime())) {
+      baseTs = parsedDate.getTime();
+    }
+  }
+  if (!baseTs) {
+    baseTs = Number(order.submittedAt || 0) || 0;
+  }
+
+  var shiftLabel = formatShuttleShift(order.shift || order.shiftValue || '');
+  var shiftMinutes = parseShiftMinutes(shiftLabel);
+  if (baseTs && shiftMinutes >= 0) {
+    return baseTs + (shiftMinutes * 60 * 1000);
+  }
+  return baseTs;
+}
+
+function parseShiftMinutes(value) {
+  var text = String(value || '').trim();
+  var match = text.match(/^(\d{2}):(\d{2})$/);
+  if (!match) return -1;
+  var hh = Number(match[1]);
+  var mm = Number(match[2]);
+  if (isNaN(hh) || isNaN(mm)) return -1;
+  return (hh * 60) + mm;
 }
 
 function mapShuttleOrderRow(row, sheetRow) {

@@ -842,7 +842,7 @@ export class ChatStoreService {
 
     const orders = this.loadShuttleOrders(user)
       .slice()
-      .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
+      .sort((a, b) => this.compareShuttleOrdersByDateTimeAsc(a, b));
     const ongoing: ShuttleOrderRecord[] = [];
     const past: ShuttleOrderRecord[] = [];
     orders.forEach((order) => {
@@ -1957,7 +1957,7 @@ export class ChatStoreService {
   private async startShuttleCancelFlow(user: string): Promise<void> {
     const activeOrders = this.loadShuttleOrders(user)
       .filter((order) => this.isShuttleOrderOngoing(order))
-      .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
+      .sort((a, b) => this.compareShuttleOrdersByDateTimeAsc(a, b));
 
     if (!activeOrders.length) {
       this.sendShuttleSystemMessage('אין בקשות פעילות לביטול.', { recordType: 'shuttle-cancel-empty' });
@@ -2248,7 +2248,44 @@ export class ChatStoreService {
     );
     return this.loadShuttleOrders(user)
       .filter((order) => candidateIdSet.has(order.id) && this.isShuttleOrderOngoing(order))
-      .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
+      .sort((a, b) => this.compareShuttleOrdersByDateTimeAsc(a, b));
+  }
+
+  private compareShuttleOrdersByDateTimeAsc(a: ShuttleOrderRecord, b: ShuttleOrderRecord): number {
+    const aSort = this.getShuttleOrderDateTimeSortKey(a);
+    const bSort = this.getShuttleOrderDateTimeSortKey(b);
+    if (aSort !== bSort) {
+      return aSort - bSort;
+    }
+    const timeDelta = Number(a.submittedAt || 0) - Number(b.submittedAt || 0);
+    if (timeDelta !== 0) {
+      return timeDelta;
+    }
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  }
+
+  private getShuttleOrderDateTimeSortKey(order: ShuttleOrderRecord): number {
+    const date = this.parseShuttleDate(order.date);
+    const base = date ? date.getTime() : Number(order.submittedAt || 0) || 0;
+    const shiftText = this.normalizeShuttleShiftLabel(String(order.shiftLabel || order.shiftValue || '').trim());
+    const shiftMinutes = this.parseShuttleShiftMinutes(shiftText);
+    if (date && shiftMinutes >= 0) {
+      return base + shiftMinutes * 60 * 1000;
+    }
+    return base;
+  }
+
+  private parseShuttleShiftMinutes(shiftLabel: string): number {
+    const match = String(shiftLabel || '').trim().match(/^(\d{2}):(\d{2})$/);
+    if (!match) {
+      return -1;
+    }
+    const hours = Number(match[1]);
+    const minutes = Number(match[2]);
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+      return -1;
+    }
+    return hours * 60 + minutes;
   }
 
   private normalizeShuttleText(value: string): string {
