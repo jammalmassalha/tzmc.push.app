@@ -943,7 +943,7 @@ mat-chip:not(.offline) {
 
 .shuttle-orders-dashboard {
   margin: 6px 8px 10px;
-  padding: 10px;
+  padding: 35px 10px 10px;
   border-radius: 16px;
   background: linear-gradient(180deg, rgba(247, 249, 255, 0.98) 0%, rgba(239, 244, 255, 0.96) 100%);
   border: 1px solid rgba(71, 97, 188, 0.18);
@@ -1327,9 +1327,9 @@ mat-chip:not(.offline) {
 
 .shuttle-picker-breadcrumb-sep {
   width: 16px;
-  height: 16px;
+  height: 32px;
   font-size: 16px;
-  line-height: 16px;
+  line-height: 40px;
   color: #6d7cad;
 }
 
