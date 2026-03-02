@@ -685,6 +685,21 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (!normalizedId) return;
     if (this.isCancellingShuttleOrder(orderId)) return;
 
+    const dialogRef = this.dialog.open(ConfirmMessageActionDialogComponent, {
+      width: '360px',
+      data: {
+        title: 'מחיקת הזמנה',
+        message: 'האם למחוק (לבטל) את ההזמנה הזו?',
+        confirmLabel: 'כן, מחק',
+        cancelLabel: 'ביטול',
+        confirmColor: 'warn'
+      }
+    });
+    const confirmed = await firstValueFrom(dialogRef.afterClosed());
+    if (!confirmed) {
+      return;
+    }
+
     this.setShuttleOrderCancelling(normalizedId, true);
     try {
       await this.store.cancelShuttleOrderById(normalizedId);
