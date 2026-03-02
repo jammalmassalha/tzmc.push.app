@@ -2051,12 +2051,11 @@ export class ChatStoreService {
 
   private normalizeShuttleShiftLabel(value: string): string {
     const cleaned = String(value || '').trim().replace(/^'+/, '');
-    const match = cleaned.match(/^(\d{1,2}):(\d{2})$/);
-    if (!match) {
+    const extracted = this.extractShuttleTimeLabel(cleaned);
+    if (!extracted) {
       return cleaned;
     }
-    const hours = String(Number(match[1])).padStart(2, '0');
-    return `${hours}:${match[2]}`;
+    return extracted;
   }
 
   private normalizeShuttleShiftValue(rawValue: string, shiftLabel: string): string {
@@ -2071,6 +2070,10 @@ export class ChatStoreService {
         const normalizedLabel = this.normalizeShuttleShiftLabel(cleanedRaw);
         return `'${normalizedLabel}`;
       }
+      const normalizedFromRaw = this.normalizeShuttleShiftLabel(cleanedRaw);
+      if (/^\d{2}:\d{2}$/.test(normalizedFromRaw)) {
+        return `'${normalizedFromRaw}`;
+      }
       return cleanedRaw;
     }
 
@@ -2078,6 +2081,34 @@ export class ChatStoreService {
       return `'${shiftLabel}`;
     }
     return shiftLabel;
+  }
+
+  private extractShuttleTimeLabel(value: string): string {
+    const normalized = String(value || '').trim();
+    if (!normalized) {
+      return '';
+    }
+
+    const hhmm = normalized.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+    if (hhmm) {
+      const hours = String(Number(hhmm[1])).padStart(2, '0');
+      return `${hours}:${hhmm[2]}`;
+    }
+
+    const parsedDate = new Date(normalized);
+    if (!Number.isNaN(parsedDate.getTime())) {
+      const hours = String(parsedDate.getHours()).padStart(2, '0');
+      const minutes = String(parsedDate.getMinutes()).padStart(2, '0');
+      return `${hours}:${minutes}`;
+    }
+
+    const embedded = normalized.match(/(\d{1,2}):(\d{2})(?::\d{2})?/);
+    if (embedded) {
+      const hours = String(Number(embedded[1])).padStart(2, '0');
+      return `${hours}:${embedded[2]}`;
+    }
+
+    return '';
   }
 
   private isShuttleStatusCancelled(statusValue: string): boolean {

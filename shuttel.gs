@@ -339,7 +339,8 @@ function getCurrentUserOrders(userValue) {
       employeePhone: employeePhone,
       date: dateDisplay,
       dateIso: dateIso,
-      shift: String(row[2] || '').trim(),
+      shift: formatShuttleShift(row[2]),
+      shiftValue: formatShuttleShiftValue(row[2]),
       station: String(row[3] || '').trim(),
       status: statusText,
       display: String(row[5] || '').trim(),
@@ -434,6 +435,38 @@ function formatShuttleDate(value) {
     return Utilities.formatDate(value, Session.getScriptTimeZone(), 'M/d/yyyy');
   }
   return String(value || '').trim();
+}
+
+function formatShuttleShift(value) {
+  if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime())) {
+    return Utilities.formatDate(value, Session.getScriptTimeZone(), 'HH:mm');
+  }
+
+  var raw = String(value || '').trim();
+  if (!raw) return '';
+
+  var match = raw.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (match) {
+    return ('0' + Number(match[1])).slice(-2) + ':' + match[2];
+  }
+
+  var parsed = new Date(raw);
+  if (!isNaN(parsed.getTime())) {
+    return Utilities.formatDate(parsed, Session.getScriptTimeZone(), 'HH:mm');
+  }
+
+  var embedded = raw.match(/(\d{1,2}):(\d{2})(?::\d{2})?/);
+  if (embedded) {
+    return ('0' + Number(embedded[1])).slice(-2) + ':' + embedded[2];
+  }
+
+  return raw;
+}
+
+function formatShuttleShiftValue(value) {
+  var label = formatShuttleShift(value);
+  if (!label) return '';
+  return "'" + label;
 }
 
 function isIsoDateTodayOrFuture(isoDate) {
