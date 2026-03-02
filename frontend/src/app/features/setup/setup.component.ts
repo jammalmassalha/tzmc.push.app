@@ -3,6 +3,7 @@ import { Component, OnDestroy, computed, inject, signal } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
+import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
@@ -10,6 +11,7 @@ import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { Router } from '@angular/router';
 import { ChatStoreService } from '../../core/services/chat-store.service';
+import { InstallGuideDialogComponent } from './install-guide-dialog.component';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -23,6 +25,7 @@ interface BeforeInstallPromptEvent extends Event {
     CommonModule,
     ReactiveFormsModule,
     MatCardModule,
+    MatDialogModule,
     MatFormFieldModule,
     MatInputModule,
     MatButtonModule,
@@ -38,6 +41,7 @@ export class SetupComponent implements OnDestroy {
   private readonly store = inject(ChatStoreService);
   private readonly router = inject(Router);
   private readonly snackBar = inject(MatSnackBar);
+  private readonly dialog = inject(MatDialog);
 
   readonly form = this.fb.nonNullable.group({
     phone: ['', [Validators.required, Validators.pattern(/^0\d{9}$/)]]
@@ -88,6 +92,14 @@ export class SetupComponent implements OnDestroy {
     } finally {
       this.deferredPrompt.set(null);
     }
+  }
+
+  openInstallGuide(): void {
+    this.dialog.open(InstallGuideDialogComponent, {
+      width: '520px',
+      maxWidth: '95vw',
+      autoFocus: false
+    });
   }
 
   private onBeforeInstallPrompt(event: Event): void {
