@@ -998,6 +998,15 @@ mat-chip:not(.offline) {
   cursor: not-allowed;
 }
 
+.shuttle-orders-hint {
+  font-size: 11px;
+  color: #5b6a91;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px dashed rgba(76, 101, 179, 0.3);
+  border-radius: 8px;
+  padding: 4px 8px;
+}
+
 .shuttle-orders-tabs {
   display: flex;
   align-items: center;
