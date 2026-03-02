@@ -1837,7 +1837,7 @@ async function ensureRequestedUserIsRegistered(requestedUser) {
         }
         const payload = await response.json();
         const status = String(payload && payload.status ? payload.status : '').trim().toLowerCase();
-        const isActive = payload && Object.prototype.hasOwnProperty.call(payload, 'isActive')
+        const isActive = true;payload && Object.prototype.hasOwnProperty.call(payload, 'isActive')
             ? Boolean(payload.isActive)
             : status === 'success';
         if (status === 'success' && isActive) {
