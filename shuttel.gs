@@ -327,6 +327,8 @@ function getCurrentUserOrders(userValue) {
     orders.push(order);
   }
 
+  orders = applyShuttleCancelPairingLogic(orders);
+
   orders.sort(function(a, b) {
     var delta = Number(b.submittedAt || 0) - Number(a.submittedAt || 0);
     if (delta !== 0) return delta;
@@ -358,6 +360,106 @@ function getCurrentUserOrders(userValue) {
 
   cache.put(cacheKey, JSON.stringify(response), 45);
   return response;
+}
+
+function applyShuttleCancelPairingLogic(orders) {
+  var grouped = {};
+  var passthrough = [];
+
+  for (var i = 0; i < orders.length; i++) {
+    var order = orders[i];
+    var key = buildShuttleOrderKey(order);
+    if (!key) {
+      passthrough.push(order);
+      continue;
+    }
+    if (!grouped[key]) grouped[key] = [];
+    grouped[key].push(order);
+  }
+
+  var result = passthrough.slice();
+  var groupKeys = Object.keys(grouped);
+  for (var k = 0; k < groupKeys.length; k++) {
+    var group = grouped[groupKeys[k]];
+    if (!group || !group.length) continue;
+
+    var representative = selectGroupRepresentative(group);
+    if (!representative) continue;
+    result.push(representative);
+  }
+
+  return result;
+}
+
+function buildShuttleOrderKey(order) {
+  if (!order) return '';
+  var dateIso = normalizeOrderKeySegment(order.dateIso || toShuttleIsoDate(order.date || ''));
+  var shift = normalizeOrderKeySegment(formatShuttleShift(order.shift || order.shiftValue || ''));
+  var station = normalizeOrderKeySegment(order.station || '');
+  if (!dateIso || !shift || !station) return '';
+  return [dateIso, shift, station].join('|');
+}
+
+function selectGroupRepresentative(group) {
+  var hasCancel = false;
+  var latestOrder = null;
+  var latestCancelOrder = null;
+  var latestActiveOrder = null;
+
+  for (var i = 0; i < group.length; i++) {
+    var order = group[i];
+    var orderTs = Number(order.submittedAt || 0);
+    var statusText = String(order.status || '').toLowerCase();
+    var isCancelled = order.isCancelled === true ||
+      statusText.indexOf('ביטול') >= 0 ||
+      statusText.indexOf('отмена') >= 0;
+
+    if (!latestOrder || orderTs > Number(latestOrder.submittedAt || 0)) {
+      latestOrder = order;
+    }
+    if (isCancelled) {
+      hasCancel = true;
+      if (!latestCancelOrder || orderTs > Number(latestCancelOrder.submittedAt || 0)) {
+        latestCancelOrder = order;
+      }
+    } else {
+      if (!latestActiveOrder || orderTs > Number(latestActiveOrder.submittedAt || 0)) {
+        latestActiveOrder = order;
+      }
+    }
+  }
+
+  if (!hasCancel) {
+    return latestActiveOrder || latestOrder;
+  }
+
+  var base = latestCancelOrder || latestOrder;
+  if (!base) return null;
+  var next = cloneShuttleOrder(base);
+  next.isCancelled = true;
+  next.isOngoing = false;
+  if (!String(next.status || '').trim()) {
+    next.status = 'ביטול נסיעה отмена поезд';
+  }
+  next.statusValue = String(next.status || '').trim() || 'ביטול נסיעה отмена поезд';
+  if (!next.cancelledAt) {
+    next.cancelledAt = Number(next.submittedAt || Date.now());
+  }
+  return next;
+}
+
+function cloneShuttleOrder(order) {
+  var next = {};
+  for (var key in order) {
+    if (Object.prototype.hasOwnProperty.call(order, key)) {
+      next[key] = order[key];
+    }
+  }
+  return next;
+}
+
+function normalizeOrderKeySegment(value) {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
 function mapShuttleOrderRow(row, sheetRow) {
