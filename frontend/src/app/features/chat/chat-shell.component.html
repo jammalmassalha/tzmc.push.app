@@ -186,6 +186,25 @@
 
           @if (shuttleOrdersDashboard(); as shuttleDashboard) {
             <section class="shuttle-orders-dashboard">
+              <div class="shuttle-orders-toolbar">
+                <div>ההזמנות שלי</div>
+                <button
+                  type="button"
+                  class="shuttle-orders-refresh-btn"
+                  [disabled]="isLoadingShuttleOrders()"
+                  (click)="refreshShuttleOrders()">
+                  @if (isLoadingShuttleOrders()) {
+                    <mat-spinner diameter="14"></mat-spinner>
+                  } @else {
+                    <mat-icon>refresh</mat-icon>
+                  }
+                  <span>רענון</span>
+                </button>
+              </div>
+              @if (isLoadingShuttleOrders()) {
+                <div class="shuttle-orders-hint" aria-live="polite">טוען נתונים...</div>
+              }
+
               <div class="shuttle-orders-tabs" role="tablist" aria-label="קטגוריות הזמנות">
                 <button
                   type="button"

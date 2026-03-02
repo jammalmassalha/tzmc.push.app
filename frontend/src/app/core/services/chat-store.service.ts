@@ -20,7 +20,7 @@ import {
   PersistedChatState,
   ReplyPayload
 } from '../models/chat.models';
-import { ChatApiService, HrActionOption, HrStepOption } from './chat-api.service';
+import { ChatApiService, HrActionOption, HrStepOption, ShuttleUserOrderPayload } from './chat-api.service';
 
 const CONTACTS_TTL_MS = 5 * 60 * 1000;
 const CONTACTS_ACCESS_SYNC_INTERVAL_MS = 60 * 1000;
@@ -47,7 +47,11 @@ const SHUTTLE_WELCOME_KEY_PREFIX = 'shuttle_welcome_sent_';
 const SHUTTLE_STATE_KEY_PREFIX = 'shuttle_state_';
 const SHUTTLE_ORDERS_KEY_PREFIX = 'shuttle_orders_';
 const SHUTTLE_LIST_CACHE_TTL_MS = 5 * 60 * 1000;
+const SHUTTLE_REMOTE_ORDERS_SYNC_TTL_MS = 45 * 1000;
 const SHUTTLE_DATE_CHOICES_COUNT = 10;
+const SHUTTLE_REMINDER_LEAD_MS = 2 * 60 * 60 * 1000;
+const SHUTTLE_REMINDER_HISTORY_KEY_PREFIX = 'shuttle_reminder_2h_sent_';
+const SHUTTLE_REMINDER_HISTORY_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const SHUTTLE_STATUS_ACTIVE_VALUE = 'פעיל активный';
 const SHUTTLE_STATUS_CANCEL_VALUE = 'ביטול נסיעה отмена поезд';
 const SHUTTLE_STATUS_ACTIVE_LABEL = 'פעיל';
@@ -220,6 +224,9 @@ export class ChatStoreService {
   private shuttleInitInFlight = false;
   private shuttleStationsCache: { at: number; items: string[] } = { at: 0, items: [] };
   private shuttleEmployeesCache: { at: number; items: string[] } = { at: 0, items: [] };
+  private readonly shuttleOrdersSyncAt = new Map<string, number>();
+  private readonly shuttleOrdersSyncInFlight = new Set<string>();
+  private readonly shuttleReminderTimersByKey = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly shuttlePickerRevision = signal(0);
   private lastAppliedAppBadgeCount = -1;
   private lastServerBadgeResetAt = 0;
@@ -363,6 +370,7 @@ export class ChatStoreService {
       }
       this.currentUser.set(user);
       this.restoreState(user);
+      this.rescheduleShuttleRemindersForUser(user);
     } catch {
       this.currentUser.set(null);
     }
@@ -446,6 +454,11 @@ export class ChatStoreService {
     void this.flushDeliveryTelemetry({ force: true, includeZero: false });
     this.stopDeliveryTelemetry();
 
+    const previousUser = this.currentUser();
+    if (previousUser) {
+      this.clearShuttleReminderTimersForUser(previousUser);
+    }
+
     this.currentUser.set(user);
     this.initializedUser = null;
     this.contacts.set([]);
@@ -457,6 +470,7 @@ export class ChatStoreService {
     this.lastError.set(null);
 
     this.restoreState(user);
+    this.rescheduleShuttleRemindersForUser(user);
     await this.tryRegisterPush(user, { force: true });
     await this.initialize();
   }
@@ -474,6 +488,7 @@ export class ChatStoreService {
     this.stopDeliveryTelemetry();
     this.initializedUser = null;
     if (user) {
+      this.clearShuttleReminderTimersForUser(user);
       localStorage.removeItem(this.activeChatKey(user));
       localStorage.removeItem(this.homeViewKey(user));
     }
@@ -839,7 +854,7 @@ export class ChatStoreService {
 
     const orders = this.loadShuttleOrders(user)
       .slice()
-      .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
+      .sort((a, b) => this.compareShuttleOrdersByDateTimeAsc(a, b));
     const ongoing: ShuttleOrderRecord[] = [];
     const past: ShuttleOrderRecord[] = [];
     orders.forEach((order) => {
@@ -850,6 +865,31 @@ export class ChatStoreService {
       }
     });
     return { ongoing, past };
+  }
+
+  getShuttleOrdersLoading(): boolean {
+    this.shuttlePickerRevision();
+    const activeChatId = this.activeChatId();
+    if (!this.isShuttleChat(activeChatId)) {
+      return false;
+    }
+    const user = this.currentUser();
+    if (!user) {
+      return false;
+    }
+    return this.shuttleOrdersSyncInFlight.has(this.normalizeUser(user));
+  }
+
+  async refreshShuttleOrdersForActiveUser(): Promise<void> {
+    const activeChatId = this.activeChatId();
+    if (!this.isShuttleChat(activeChatId)) {
+      return;
+    }
+    const user = this.currentUser();
+    if (!user) {
+      throw new Error('יש להתחבר לפני טעינת הזמנות');
+    }
+    await this.refreshShuttleOrdersFromRemote(user, { force: true });
   }
 
   getShuttleFlowBreadcrumbs(): ShuttleBreadcrumbStep[] | null {
@@ -1625,6 +1665,7 @@ export class ChatStoreService {
 
     this.shuttleInitInFlight = true;
     try {
+      await this.refreshShuttleOrdersFromRemote(user);
       if (!this.shouldInitializeShuttleFlowOnOpen(user)) {
         return;
       }
@@ -1928,7 +1969,7 @@ export class ChatStoreService {
   private async startShuttleCancelFlow(user: string): Promise<void> {
     const activeOrders = this.loadShuttleOrders(user)
       .filter((order) => this.isShuttleOrderOngoing(order))
-      .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
+      .sort((a, b) => this.compareShuttleOrdersByDateTimeAsc(a, b));
 
     if (!activeOrders.length) {
       this.sendShuttleSystemMessage('אין בקשות פעילות לביטול.', { recordType: 'shuttle-cancel-empty' });
@@ -1942,6 +1983,179 @@ export class ChatStoreService {
       draft: null,
       cancelCandidateIds: activeOrders.map((order) => order.id)
     });
+  }
+
+  private async refreshShuttleOrdersFromRemote(user: string, options: { force?: boolean } = {}): Promise<void> {
+    const normalizedUser = this.normalizeUser(user);
+    const now = Date.now();
+    const lastSyncedAt = this.shuttleOrdersSyncAt.get(normalizedUser) ?? 0;
+    if (!options.force && now - lastSyncedAt < SHUTTLE_REMOTE_ORDERS_SYNC_TTL_MS) {
+      return;
+    }
+    if (this.shuttleOrdersSyncInFlight.has(normalizedUser)) {
+      return;
+    }
+
+    this.shuttleOrdersSyncInFlight.add(normalizedUser);
+    this.bumpShuttlePickerRevision();
+    try {
+      const remoteOrders = await this.api.getShuttleUserOrders(user);
+      const mappedOrders = remoteOrders
+        .map((item, index) => this.mapShuttleRemoteOrder(item, index))
+        .filter((item): item is ShuttleOrderRecord => Boolean(item))
+        .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
+
+      if (mappedOrders.length > 0 || this.loadShuttleOrders(user).length === 0) {
+        this.saveShuttleOrders(user, mappedOrders.slice(0, 300));
+      }
+      this.shuttleOrdersSyncAt.set(normalizedUser, Date.now());
+    } catch {
+      this.shuttleOrdersSyncAt.set(normalizedUser, now);
+    } finally {
+      this.shuttleOrdersSyncInFlight.delete(normalizedUser);
+      this.bumpShuttlePickerRevision();
+    }
+  }
+
+  private mapShuttleRemoteOrder(item: ShuttleUserOrderPayload, index: number): ShuttleOrderRecord | null {
+    const rawDate = String(item.dateIso || item.date || '').trim();
+    const dateIso = this.normalizeShuttleDateToIso(rawDate);
+    if (!dateIso) {
+      return null;
+    }
+
+    const dayName = String(item.dayName || '').trim() || this.resolveShuttleDayNameFromIso(dateIso);
+    const shiftLabel = this.normalizeShuttleShiftLabel(String(item.shift || '').trim());
+    const shiftValue = this.normalizeShuttleShiftValue(String(item.shiftValue || '').trim(), shiftLabel);
+    const station = String(item.station || '').trim();
+    if (!shiftLabel || !shiftValue || !station) {
+      return null;
+    }
+
+    const statusValue = String(item.statusValue || item.status || '').trim() || SHUTTLE_STATUS_ACTIVE_VALUE;
+    const isCancelled = item.isCancelled === true || this.isShuttleStatusCancelled(statusValue);
+    const statusLabel = isCancelled ? SHUTTLE_STATUS_CANCEL_LABEL : SHUTTLE_STATUS_ACTIVE_LABEL;
+    const submittedAtRaw = Number(item.submittedAt || 0);
+    const dateTimestamp = this.parseShuttleDate(dateIso)?.getTime() ?? Date.now();
+    const submittedAt = Number.isFinite(submittedAtRaw) && submittedAtRaw > 0
+      ? submittedAtRaw
+      : dateTimestamp + index;
+    const cancelledAtRaw = Number(item.cancelledAt || 0);
+    const explicitId = String(item.id || '').trim();
+    const sheetRow = Number(item.sheetRow || 0);
+
+    return {
+      id: explicitId || (
+        Number.isFinite(sheetRow) && sheetRow > 0
+          ? `sheet-${sheetRow}`
+          : `srv-${dateIso}-${shiftLabel}-${station}-${index}`
+      ),
+      employee: String(item.employee || '').trim(),
+      date: dateIso,
+      dayName,
+      shiftLabel,
+      shiftValue,
+      station,
+      statusValue: isCancelled ? SHUTTLE_STATUS_CANCEL_VALUE : statusValue,
+      statusLabel,
+      submittedAt,
+      cancelledAt: Number.isFinite(cancelledAtRaw) && cancelledAtRaw > 0 ? cancelledAtRaw : undefined
+    };
+  }
+
+  private normalizeShuttleDateToIso(value: string): string {
+    const normalized = String(value || '').trim();
+    if (!normalized) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+      return normalized;
+    }
+
+    const slashMatch = normalized.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (!slashMatch) {
+      return '';
+    }
+    const month = String(Number(slashMatch[1])).padStart(2, '0');
+    const day = String(Number(slashMatch[2])).padStart(2, '0');
+    const year = slashMatch[3];
+    return `${year}-${month}-${day}`;
+  }
+
+  private resolveShuttleDayNameFromIso(dateIso: string): string {
+    const parsed = this.parseShuttleDate(dateIso);
+    if (!parsed) {
+      return '';
+    }
+    return SHUTTLE_DAY_NAMES[parsed.getDay()];
+  }
+
+  private normalizeShuttleShiftLabel(value: string): string {
+    const cleaned = String(value || '').trim().replace(/^'+/, '');
+    const extracted = this.extractShuttleTimeLabel(cleaned);
+    if (!extracted) {
+      return cleaned;
+    }
+    return extracted;
+  }
+
+  private normalizeShuttleShiftValue(rawValue: string, shiftLabel: string): string {
+    const cleanedRaw = String(rawValue || '').trim();
+    if (cleanedRaw) {
+      if (/^'\d{1,2}:\d{2}$/.test(cleanedRaw)) {
+        const noQuote = cleanedRaw.slice(1);
+        const normalizedLabel = this.normalizeShuttleShiftLabel(noQuote);
+        return `'${normalizedLabel}`;
+      }
+      if (/^\d{1,2}:\d{2}$/.test(cleanedRaw)) {
+        const normalizedLabel = this.normalizeShuttleShiftLabel(cleanedRaw);
+        return `'${normalizedLabel}`;
+      }
+      const normalizedFromRaw = this.normalizeShuttleShiftLabel(cleanedRaw);
+      if (/^\d{2}:\d{2}$/.test(normalizedFromRaw)) {
+        return `'${normalizedFromRaw}`;
+      }
+      return cleanedRaw;
+    }
+
+    if (/^\d{2}:\d{2}$/.test(shiftLabel)) {
+      return `'${shiftLabel}`;
+    }
+    return shiftLabel;
+  }
+
+  private extractShuttleTimeLabel(value: string): string {
+    const normalized = String(value || '').trim();
+    if (!normalized) {
+      return '';
+    }
+
+    const hhmm = normalized.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+    if (hhmm) {
+      const hours = String(Number(hhmm[1])).padStart(2, '0');
+      return `${hours}:${hhmm[2]}`;
+    }
+
+    const parsedDate = new Date(normalized);
+    if (!Number.isNaN(parsedDate.getTime())) {
+      const hours = String(parsedDate.getHours()).padStart(2, '0');
+      const minutes = String(parsedDate.getMinutes()).padStart(2, '0');
+      return `${hours}:${minutes}`;
+    }
+
+    const embedded = normalized.match(/(\d{1,2}):(\d{2})(?::\d{2})?/);
+    if (embedded) {
+      const hours = String(Number(embedded[1])).padStart(2, '0');
+      return `${hours}:${embedded[2]}`;
+    }
+
+    return '';
+  }
+
+  private isShuttleStatusCancelled(statusValue: string): boolean {
+    const normalized = this.normalizeShuttleText(statusValue);
+    if (!normalized) {
+      return false;
+    }
+    return normalized.includes('ביטול') || normalized.includes('отмена');
   }
 
   private async fetchShuttleStationsCached(): Promise<string[]> {
@@ -2046,7 +2260,44 @@ export class ChatStoreService {
     );
     return this.loadShuttleOrders(user)
       .filter((order) => candidateIdSet.has(order.id) && this.isShuttleOrderOngoing(order))
-      .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
+      .sort((a, b) => this.compareShuttleOrdersByDateTimeAsc(a, b));
+  }
+
+  private compareShuttleOrdersByDateTimeAsc(a: ShuttleOrderRecord, b: ShuttleOrderRecord): number {
+    const aSort = this.getShuttleOrderDateTimeSortKey(a);
+    const bSort = this.getShuttleOrderDateTimeSortKey(b);
+    if (aSort !== bSort) {
+      return aSort - bSort;
+    }
+    const timeDelta = Number(a.submittedAt || 0) - Number(b.submittedAt || 0);
+    if (timeDelta !== 0) {
+      return timeDelta;
+    }
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  }
+
+  private getShuttleOrderDateTimeSortKey(order: ShuttleOrderRecord): number {
+    const date = this.parseShuttleDate(order.date);
+    const base = date ? date.getTime() : Number(order.submittedAt || 0) || 0;
+    const shiftText = this.normalizeShuttleShiftLabel(String(order.shiftLabel || order.shiftValue || '').trim());
+    const shiftMinutes = this.parseShuttleShiftMinutes(shiftText);
+    if (date && shiftMinutes >= 0) {
+      return base + shiftMinutes * 60 * 1000;
+    }
+    return base;
+  }
+
+  private parseShuttleShiftMinutes(shiftLabel: string): number {
+    const match = String(shiftLabel || '').trim().match(/^(\d{2}):(\d{2})$/);
+    if (!match) {
+      return -1;
+    }
+    const hours = Number(match[1]);
+    const minutes = Number(match[2]);
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+      return -1;
+    }
+    return hours * 60 + minutes;
   }
 
   private normalizeShuttleText(value: string): string {
@@ -2108,8 +2359,10 @@ export class ChatStoreService {
 
   private persistShuttleOrder(user: string, order: ShuttleOrderRecord): void {
     const orders = this.loadShuttleOrders(user);
-    orders.unshift(order);
-    this.saveShuttleOrders(user, orders.slice(0, 300));
+    const newOrderKey = this.buildShuttleOrderStatusGroupKey(order);
+    const deduped = orders.filter((existing) => this.buildShuttleOrderStatusGroupKey(existing) !== newOrderKey);
+    deduped.unshift(order);
+    this.saveShuttleOrders(user, deduped.slice(0, 300));
   }
 
   private markShuttleOrderCancelled(user: string, orderId: string): void {
@@ -2205,8 +2458,8 @@ export class ChatStoreService {
   }
 
   private parseShuttleDate(value: string): Date | null {
-    const normalized = String(value || '').trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    const normalized = this.normalizeShuttleDateToIso(String(value || '').trim());
+    if (!normalized) {
       return null;
     }
     const parsed = new Date(`${normalized}T00:00:00`);
@@ -2301,7 +2554,263 @@ export class ChatStoreService {
 
   private saveShuttleOrders(user: string, orders: ShuttleOrderRecord[]): void {
     localStorage.setItem(this.shuttleOrdersKey(user), JSON.stringify(orders));
+    this.rescheduleShuttleRemindersForUser(user);
     this.bumpShuttlePickerRevision();
+  }
+
+  private rescheduleShuttleRemindersForUser(user: string): void {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const normalizedUser = this.normalizeUser(user);
+    if (!normalizedUser) {
+      return;
+    }
+
+    this.clearShuttleReminderTimersForUser(normalizedUser);
+    const orders = this.loadShuttleOrders(normalizedUser);
+    const activeReminderKeys = new Set<string>();
+    orders.forEach((order) => {
+      if (!this.isShuttleOrderOngoing(order)) {
+        return;
+      }
+      const reminderKey = this.buildShuttleReminderKey(order);
+      if (!reminderKey) {
+        return;
+      }
+      activeReminderKeys.add(reminderKey);
+      this.scheduleShuttleReminderIfNeeded(normalizedUser, order, reminderKey);
+    });
+    this.pruneShuttleReminderHistory(normalizedUser, activeReminderKeys);
+  }
+
+  private scheduleShuttleReminderIfNeeded(
+    user: string,
+    order: ShuttleOrderRecord,
+    reminderKey: string
+  ): void {
+    const tripAt = this.getShuttleOrderEventTimestamp(order);
+    if (tripAt === null || !Number.isFinite(tripAt) || tripAt <= 0) {
+      return;
+    }
+    if (tripAt <= Date.now()) {
+      return;
+    }
+    if (this.hasShuttleReminderBeenSent(user, reminderKey)) {
+      return;
+    }
+
+    const fireReminder = (): void => {
+      if (this.normalizeUser(this.currentUser() || '') !== user) {
+        return;
+      }
+      if (this.hasShuttleReminderBeenSent(user, reminderKey)) {
+        return;
+      }
+      const latestOrder = this.loadShuttleOrders(user).find(
+        (item) => this.buildShuttleReminderKey(item) === reminderKey && this.isShuttleOrderOngoing(item)
+      );
+      if (!latestOrder) {
+        return;
+      }
+      const latestTripAt = this.getShuttleOrderEventTimestamp(latestOrder);
+      if (latestTripAt === null || !Number.isFinite(latestTripAt) || latestTripAt <= Date.now()) {
+        return;
+      }
+
+      this.markShuttleReminderSent(user, reminderKey);
+      this.sendShuttle2HourReminderAlert(latestOrder, reminderKey);
+    };
+
+    const reminderAt = tripAt - SHUTTLE_REMINDER_LEAD_MS;
+    if (reminderAt <= Date.now()) {
+      fireReminder();
+      return;
+    }
+
+    const timerStorageKey = `${user}|${reminderKey}`;
+    const delayMs = reminderAt - Date.now();
+    const timerId = setTimeout(() => {
+      this.shuttleReminderTimersByKey.delete(timerStorageKey);
+      fireReminder();
+    }, delayMs);
+    this.shuttleReminderTimersByKey.set(timerStorageKey, timerId);
+  }
+
+  private clearShuttleReminderTimersForUser(user: string): void {
+    const normalizedUser = this.normalizeUser(user);
+    if (!normalizedUser) {
+      return;
+    }
+    const prefix = `${normalizedUser}|`;
+    for (const [timerKey, timerId] of this.shuttleReminderTimersByKey.entries()) {
+      if (!timerKey.startsWith(prefix)) {
+        continue;
+      }
+      clearTimeout(timerId);
+      this.shuttleReminderTimersByKey.delete(timerKey);
+    }
+  }
+
+  private sendShuttle2HourReminderAlert(order: ShuttleOrderRecord, reminderKey: string): void {
+    const activeSummary = this.buildShuttleOrderSummary({
+      ...order,
+      statusValue: SHUTTLE_STATUS_ACTIVE_VALUE,
+      statusLabel: SHUTTLE_STATUS_ACTIVE_LABEL
+    });
+    this.sendShuttleSystemMessage(`⏰ תזכורת: נותרו כשעתיים להסעה שלך.\n${activeSummary}`, {
+      recordType: 'shuttle-reminder-2h'
+    });
+    this.showShuttleReminderBrowserNotification(order, reminderKey);
+  }
+
+  private showShuttleReminderBrowserNotification(order: ShuttleOrderRecord, reminderKey: string): void {
+    if (typeof window === 'undefined' || typeof Notification === 'undefined') {
+      return;
+    }
+    if (Notification.permission !== 'granted') {
+      return;
+    }
+
+    const dayAndDate = `${String(order.dayName || '').trim()} ${String(order.date || '').trim()}`.trim();
+    const shift = String(order.shiftLabel || '').trim();
+    const station = String(order.station || '').trim();
+    const detailLine = [dayAndDate, shift, station].filter(Boolean).join(' | ');
+
+    try {
+      const notification = new Notification('תזכורת להסעה בעוד שעתיים', {
+        body: detailLine || 'בדוק את פרטי ההזמנה בצ׳אט.',
+        tag: `shuttle-reminder-2h:${reminderKey}`
+      });
+      notification.onclick = () => {
+        try {
+          window.focus();
+        } catch {
+          // Ignore focus failures on restricted browser contexts.
+        }
+        this.setActiveChat(this.normalizeChatId(SHUTTLE_CHAT_NAME));
+        notification.close();
+      };
+    } catch {
+      // Notification display is best-effort.
+    }
+  }
+
+  private getShuttleOrderEventTimestamp(order: ShuttleOrderRecord): number | null {
+    const date = this.parseShuttleDate(order.date);
+    if (!date) {
+      return null;
+    }
+    const shiftLabel = this.normalizeShuttleShiftLabel(String(order.shiftLabel || order.shiftValue || '').trim());
+    const shiftMinutes = this.parseShuttleShiftMinutes(shiftLabel);
+    if (shiftMinutes < 0) {
+      return null;
+    }
+    return date.getTime() + shiftMinutes * 60 * 1000;
+  }
+
+  private buildShuttleReminderKey(order: ShuttleOrderRecord): string {
+    const dateKey = this.normalizeShuttleDateToIso(String(order.date || '').trim());
+    const shiftKey = this.normalizeShuttleShiftLabel(String(order.shiftLabel || order.shiftValue || '').trim());
+    const stationKey = this.normalizeShuttleText(String(order.station || '').trim());
+    if (!dateKey || !shiftKey || !stationKey) {
+      return '';
+    }
+    return `${dateKey}|${shiftKey}|${stationKey}`;
+  }
+
+  private shuttleReminderHistoryKey(user: string): string {
+    return `${SHUTTLE_REMINDER_HISTORY_KEY_PREFIX}${this.normalizeUser(user)}`;
+  }
+
+  private loadShuttleReminderHistory(user: string): Record<string, number> {
+    try {
+      const raw = localStorage.getItem(this.shuttleReminderHistoryKey(user));
+      if (!raw) {
+        return {};
+      }
+      const parsed = JSON.parse(raw) as unknown;
+      if (!parsed || typeof parsed !== 'object') {
+        return {};
+      }
+      const history: Record<string, number> = {};
+      for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+        const normalizedKey = String(key || '').trim();
+        const numericValue = Number(value || 0);
+        if (!normalizedKey || !Number.isFinite(numericValue) || numericValue <= 0) {
+          continue;
+        }
+        history[normalizedKey] = numericValue;
+      }
+      return history;
+    } catch {
+      return {};
+    }
+  }
+
+  private saveShuttleReminderHistory(user: string, history: Record<string, number>): void {
+    const compactEntries = Object.entries(history)
+      .filter(([key, value]) => {
+        const normalizedKey = String(key || '').trim();
+        const numericValue = Number(value || 0);
+        return Boolean(normalizedKey && Number.isFinite(numericValue) && numericValue > 0);
+      })
+      .sort((a, b) => Number(b[1]) - Number(a[1]))
+      .slice(0, 500);
+    const storageKey = this.shuttleReminderHistoryKey(user);
+    if (!compactEntries.length) {
+      localStorage.removeItem(storageKey);
+      return;
+    }
+    localStorage.setItem(storageKey, JSON.stringify(Object.fromEntries(compactEntries)));
+  }
+
+  private hasShuttleReminderBeenSent(user: string, reminderKey: string): boolean {
+    if (!reminderKey) {
+      return false;
+    }
+    const history = this.loadShuttleReminderHistory(user);
+    return Boolean(history[reminderKey]);
+  }
+
+  private markShuttleReminderSent(user: string, reminderKey: string): void {
+    if (!reminderKey) {
+      return;
+    }
+    const history = this.loadShuttleReminderHistory(user);
+    history[reminderKey] = Date.now();
+    this.saveShuttleReminderHistory(user, history);
+  }
+
+  private pruneShuttleReminderHistory(user: string, activeReminderKeys: Set<string>): void {
+    const history = this.loadShuttleReminderHistory(user);
+    const now = Date.now();
+    const nextHistory: Record<string, number> = {};
+    for (const [reminderKey, sentAtRaw] of Object.entries(history)) {
+      const sentAt = Number(sentAtRaw || 0);
+      if (activeReminderKeys.has(reminderKey)) {
+        nextHistory[reminderKey] = Number.isFinite(sentAt) && sentAt > 0 ? sentAt : now;
+        continue;
+      }
+      if (Number.isFinite(sentAt) && now - sentAt <= SHUTTLE_REMINDER_HISTORY_TTL_MS) {
+        nextHistory[reminderKey] = sentAt;
+      }
+    }
+    this.saveShuttleReminderHistory(user, nextHistory);
+  }
+
+  private buildShuttleOrderStatusGroupKey(order: ShuttleOrderRecord): string {
+    const dateKey = this.normalizeShuttleDateToIso(String(order.date || '').trim()) || String(order.date || '').trim();
+    const shiftKey = this.normalizeShuttleShiftLabel(String(order.shiftLabel || order.shiftValue || '').trim())
+      || String(order.shiftValue || '').trim();
+    const stationKey = this.normalizeShuttleText(String(order.station || '').trim());
+    const statusSource = String(order.statusValue || order.statusLabel || '').trim();
+    const statusKey = this.isShuttleStatusCancelled(statusSource) ? 'cancel' : 'active';
+
+    if (!dateKey || !shiftKey || !stationKey) {
+      return `id:${String(order.id || '').trim()}`;
+    }
+    return `${dateKey}|${shiftKey}|${stationKey}|${statusKey}`;
   }
 
   private bumpShuttlePickerRevision(): void {

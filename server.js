@@ -2,7 +2,7 @@ const vapidKeys = {
     publicKey: "BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk",
     privateKey: "fMQqCaakMboV7LEV57wJhxPAdyppOBRDBjRDVQBxg1s"
 };
-const GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbwiBFAyG_EEDNDC1R_eA46f-hbLTtx8G8_3Klz85yjKVG_CMBq4hUPrJkRlZfdZ8dODHg/exec';
+const GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbydNXIBiejqa_rHsLKr1xeiPwdGRvmQGB-uL8GnXyo_0vRYAe0dZa5nY7pTJfZeWSR1Mw/exec';
 
 const express = require('express');
 const webpush = require('web-push');
@@ -741,6 +741,9 @@ const AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_USER = Math.max(
     3,
     Number(process.env.AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_USER || 12) || 12
 );
+const AUTH_CODE_REQUIRE_REGISTERED_USER = String(
+    process.env.AUTH_CODE_REQUIRE_REGISTERED_USER || 'false'
+).trim().toLowerCase() === 'true';
 const INFORU_SMS_URL = String(process.env.INFORU_SMS_URL || 'https://uapi.inforu.co.il/SendMessageXml.ashx').trim();
 const INFORU_USERNAME = String(process.env.INFORU_USERNAME || 'tzmcgovil').trim();
 const INFORU_API_TOKEN = String(process.env.INFORU_API_TOKEN || '088a13e2-c2d9-4518-8c0c-2e531c3033de').trim();
@@ -776,12 +779,72 @@ const MOBILE_REREGISTER_PUSH_URGENCY = 'high';
 const MOBILE_REREGISTER_PUSH_TTL_SECONDS = 24 * 60 * 60;
 const MOBILE_REREGISTER_SEND_CONCURRENCY = 20;
 const MOBILE_REREGISTER_MAX_TRACKED_CAMPAIGNS = 20;
+const SHUTTLE_CHAT_NAME = 'הזמנת הסעה';
+const SHUTTLE_USER_ORDERS_URL = String(
+    process.env.SHUTTLE_USER_ORDERS_URL ||
+    'https://script.google.com/macros/s/AKfycbyIWpm_EFxcvtR0zaDQQWYo0rjIK0kdaBl8VVG2rC2OSi8wXgMZQ3duwf6lj8R4Rxif/exec'
+).trim();
+const SHUTTLE_REMINDER_ENABLED = String(process.env.SHUTTLE_REMINDER_ENABLED || 'true').trim().toLowerCase() !== 'false';
+const SHUTTLE_REMINDER_INTERVAL_MS = Math.max(
+    15 * 1000,
+    Number(process.env.SHUTTLE_REMINDER_INTERVAL_MS || 60 * 1000) || 60 * 1000
+);
+const SHUTTLE_REMINDER_USER_REFRESH_MS = Math.max(
+    30 * 1000,
+    Number(process.env.SHUTTLE_REMINDER_USER_REFRESH_MS || 2 * 60 * 1000) || 2 * 60 * 1000
+);
+const SHUTTLE_REMINDER_USERS_DISCOVERY_REFRESH_MS = Math.max(
+    60 * 1000,
+    Number(process.env.SHUTTLE_REMINDER_USERS_DISCOVERY_REFRESH_MS || 10 * 60 * 1000) || 10 * 60 * 1000
+);
+const SHUTTLE_REMINDER_FETCH_TIMEOUT_MS = Math.max(
+    8 * 1000,
+    Number(process.env.SHUTTLE_REMINDER_FETCH_TIMEOUT_MS || 30 * 1000) || 30 * 1000
+);
+const SHUTTLE_REMINDER_FETCH_RETRIES = Math.max(
+    0,
+    Number(process.env.SHUTTLE_REMINDER_FETCH_RETRIES || 0) || 0
+);
+const SHUTTLE_REMINDER_LEAD_MS = 2 * 60 * 60 * 1000;
+const SHUTTLE_REMINDER_SENT_TTL_MS = Math.max(
+    24 * 60 * 60 * 1000,
+    Number(process.env.SHUTTLE_REMINDER_SENT_TTL_MS || 14 * 24 * 60 * 60 * 1000) || 14 * 24 * 60 * 60 * 1000
+);
+const SHUTTLE_REMINDER_MAX_SENT_RECORDS = Math.max(
+    500,
+    Number(process.env.SHUTTLE_REMINDER_MAX_SENT_RECORDS || 5000) || 5000
+);
+const SHUTTLE_REMINDER_USER_PROCESS_BATCH = Math.max(
+    1,
+    Number(process.env.SHUTTLE_REMINDER_USER_PROCESS_BATCH || 6) || 6
+);
+const SHUTTLE_REMINDER_TIMEZONE = String(
+    process.env.SHUTTLE_REMINDER_TIMEZONE || 'Asia/Jerusalem'
+).trim() || 'Asia/Jerusalem';
+const SHUTTLE_REMINDER_TITLE = String(
+    process.env.SHUTTLE_REMINDER_TITLE || 'תזכורת להסעה בעוד שעתיים'
+).trim() || 'תזכורת להסעה בעוד שעתיים';
+const SHUTTLE_REMINDER_BODY_PREFIX = String(
+    process.env.SHUTTLE_REMINDER_BODY_PREFIX || 'נותרו כשעתיים להסעה שלך'
+).trim() || 'נותרו כשעתיים להסעה שלך';
+const SHUTTLE_REMINDER_TYPE = 'shuttle-reminder-2h';
 let subscriptionAuthRefreshState = {
     running: false,
     lastRunAt: 0,
     lastResult: null
 };
 let authRefreshSchedulerStarted = false;
+let shuttleReminderSchedulerStarted = false;
+let shuttleReminderSchedulerTimer = null;
+let shuttleReminderState = {
+    running: false,
+    lastRunAt: 0,
+    lastResult: null,
+    lastTickTrigger: null
+};
+let shuttleReminderSentAtByKey = {};
+const shuttleReminderKnownUsersCache = { at: 0, users: [] };
+const shuttleReminderOrdersCacheByUser = {};
 const activeSessionIdByUser = new Map();
 const authSessionRateLimitByIp = new Map();
 const authSessionRateLimitByUser = new Map();
@@ -917,6 +980,287 @@ function parsePositiveInteger(rawValue, fallbackValue = 0) {
     const parsed = Number(rawValue);
     if (!Number.isFinite(parsed) || parsed <= 0) return fallbackValue;
     return Math.floor(parsed);
+}
+
+function isValidTimeZoneName(timeZone) {
+    try {
+        Intl.DateTimeFormat('en-US', { timeZone }).format(new Date());
+        return true;
+    } catch (error) {
+        return false;
+    }
+}
+
+function getShuttleReminderEffectiveTimeZone() {
+    return isValidTimeZoneName(SHUTTLE_REMINDER_TIMEZONE) ? SHUTTLE_REMINDER_TIMEZONE : 'UTC';
+}
+
+function normalizeShuttleReminderText(value) {
+    return String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ');
+}
+
+function normalizeShuttleReminderDateIso(value) {
+    const source = String(value || '').trim();
+    if (!source) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(source)) {
+        return source;
+    }
+    const slashMatch = source.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (slashMatch) {
+        const month = String(Number(slashMatch[1])).padStart(2, '0');
+        const day = String(Number(slashMatch[2])).padStart(2, '0');
+        const year = String(slashMatch[3]).trim();
+        return `${year}-${month}-${day}`;
+    }
+    return '';
+}
+
+function normalizeShuttleReminderShiftLabel(value) {
+    const cleaned = String(value || '').trim().replace(/^'+/, '');
+    if (!cleaned) return '';
+    const directMatch = cleaned.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+    if (directMatch) {
+        return `${String(Number(directMatch[1])).padStart(2, '0')}:${directMatch[2]}`;
+    }
+    const embedded = cleaned.match(/(\d{1,2}):(\d{2})(?::\d{2})?/);
+    if (embedded) {
+        return `${String(Number(embedded[1])).padStart(2, '0')}:${embedded[2]}`;
+    }
+    return '';
+}
+
+function parseShuttleReminderShiftMinutes(shiftLabel) {
+    const match = String(shiftLabel || '').trim().match(/^(\d{2}):(\d{2})$/);
+    if (!match) return -1;
+    const hh = Number(match[1]);
+    const mm = Number(match[2]);
+    if (!Number.isFinite(hh) || !Number.isFinite(mm) || hh < 0 || hh > 23 || mm < 0 || mm > 59) {
+        return -1;
+    }
+    return (hh * 60) + mm;
+}
+
+function getTimeZoneOffsetMsForDate(date, timeZone) {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+    });
+    const parts = formatter.formatToParts(date);
+    const values = {};
+    parts.forEach((part) => {
+        if (part.type !== 'literal') {
+            values[part.type] = part.value;
+        }
+    });
+    const asUtc = Date.UTC(
+        Number(values.year || 0),
+        Math.max(0, Number(values.month || 1) - 1),
+        Number(values.day || 1),
+        Number(values.hour || 0),
+        Number(values.minute || 0),
+        Number(values.second || 0)
+    );
+    return asUtc - date.getTime();
+}
+
+function getUtcTimestampForTimeZoneDateTime(dateIso, shiftLabel, timeZone) {
+    const dateMatch = String(dateIso || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const timeMatch = String(shiftLabel || '').trim().match(/^(\d{2}):(\d{2})$/);
+    if (!dateMatch || !timeMatch) return null;
+
+    const year = Number(dateMatch[1]);
+    const month = Number(dateMatch[2]);
+    const day = Number(dateMatch[3]);
+    const hour = Number(timeMatch[1]);
+    const minute = Number(timeMatch[2]);
+    if (
+        !Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day) ||
+        !Number.isFinite(hour) || !Number.isFinite(minute)
+    ) {
+        return null;
+    }
+
+    const baseUtc = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
+    let guess = baseUtc;
+    for (let i = 0; i < 3; i += 1) {
+        const offsetMs = getTimeZoneOffsetMsForDate(new Date(guess), timeZone);
+        const adjusted = baseUtc - offsetMs;
+        if (Math.abs(adjusted - guess) < 1000) {
+            guess = adjusted;
+            break;
+        }
+        guess = adjusted;
+    }
+    return guess;
+}
+
+function resolveShuttleReminderTripTimestamp(dateIso, shiftLabel) {
+    const normalizedDateIso = normalizeShuttleReminderDateIso(dateIso);
+    const normalizedShift = normalizeShuttleReminderShiftLabel(shiftLabel);
+    if (!normalizedDateIso || !normalizedShift) return null;
+    const effectiveTimeZone = getShuttleReminderEffectiveTimeZone();
+    if (effectiveTimeZone) {
+        const utcTs = getUtcTimestampForTimeZoneDateTime(
+            normalizedDateIso,
+            normalizedShift,
+            effectiveTimeZone
+        );
+        if (Number.isFinite(utcTs) && utcTs > 0) {
+            return utcTs;
+        }
+    }
+    const localTs = new Date(`${normalizedDateIso}T${normalizedShift}:00`).getTime();
+    return Number.isFinite(localTs) && localTs > 0 ? localTs : null;
+}
+
+function isShuttleReminderCancelledStatus(value) {
+    const normalized = normalizeShuttleReminderText(value);
+    if (!normalized) return false;
+    return normalized.includes('ביטול') || normalized.includes('отмена');
+}
+
+function buildShuttleReminderOrderKey(order) {
+    if (!order || typeof order !== 'object') return '';
+    const dateIso = normalizeShuttleReminderDateIso(order.dateIso || order.date || '');
+    const shiftLabel = normalizeShuttleReminderShiftLabel(
+        order.shift || order.shiftLabel || order.shiftValue || ''
+    );
+    const station = normalizeShuttleReminderText(order.station || '');
+    if (!dateIso || !shiftLabel || !station) return '';
+    return `${dateIso}|${shiftLabel}|${station}`;
+}
+
+function buildShuttleReminderSentKey(user, orderKey) {
+    const normalizedUser = normalizeUserKey(user);
+    const normalizedOrderKey = String(orderKey || '').trim();
+    if (!normalizedUser || !normalizedOrderKey) return '';
+    return `${normalizedUser}|${normalizedOrderKey}`;
+}
+
+function normalizeShuttleReminderSentState(rawState) {
+    if (!rawState || typeof rawState !== 'object') {
+        return {};
+    }
+    const now = Date.now();
+    const entries = Object.entries(rawState)
+        .map(([key, value]) => {
+            const sentKey = String(key || '').trim();
+            const sentAt = Number(value || 0);
+            if (!sentKey || !Number.isFinite(sentAt) || sentAt <= 0) {
+                return null;
+            }
+            if (now - sentAt > SHUTTLE_REMINDER_SENT_TTL_MS) {
+                return null;
+            }
+            return [sentKey, sentAt];
+        })
+        .filter(Boolean)
+        .sort((a, b) => Number(b[1]) - Number(a[1]))
+        .slice(0, SHUTTLE_REMINDER_MAX_SENT_RECORDS);
+    return Object.fromEntries(entries);
+}
+
+function pruneShuttleReminderSentState() {
+    shuttleReminderSentAtByKey = normalizeShuttleReminderSentState(shuttleReminderSentAtByKey);
+}
+
+function hasShuttleReminderBeenSentForOrder(user, orderKey) {
+    const sentKey = buildShuttleReminderSentKey(user, orderKey);
+    if (!sentKey) return false;
+    const sentAt = Number(shuttleReminderSentAtByKey[sentKey] || 0);
+    if (!Number.isFinite(sentAt) || sentAt <= 0) {
+        return false;
+    }
+    if (Date.now() - sentAt > SHUTTLE_REMINDER_SENT_TTL_MS) {
+        delete shuttleReminderSentAtByKey[sentKey];
+        return false;
+    }
+    return true;
+}
+
+function markShuttleReminderSentForOrder(user, orderKey, sentAt = Date.now()) {
+    const sentKey = buildShuttleReminderSentKey(user, orderKey);
+    if (!sentKey) return;
+    shuttleReminderSentAtByKey[sentKey] = Number(sentAt) || Date.now();
+}
+
+function parseShuttleReminderOrdersPayload(payloadText) {
+    let root;
+    try {
+        root = JSON.parse(payloadText);
+    } catch (error) {
+        throw new Error('Invalid shuttle reminder payload');
+    }
+
+    const rows = [];
+    const collectRows = (value) => {
+        if (!Array.isArray(value)) return;
+        value.forEach((item) => {
+            if (item && typeof item === 'object') {
+                rows.push(item);
+            }
+        });
+    };
+
+    if (Array.isArray(root)) {
+        collectRows(root);
+    } else if (root && typeof root === 'object') {
+        const payload = root;
+        const result = String(payload.result || '').trim().toLowerCase();
+        if (result && result !== 'success') {
+            const reason = String(payload.message || 'Failed to fetch shuttle orders').trim();
+            throw new Error(reason || 'Failed to fetch shuttle orders');
+        }
+        collectRows(payload.orders);
+        collectRows(payload.data);
+        collectRows(payload.ongoing);
+        collectRows(payload.past);
+    }
+
+    return rows;
+}
+
+function mapShuttleReminderOrder(rawOrder, user) {
+    const dateIso = normalizeShuttleReminderDateIso(rawOrder && (rawOrder.dateIso || rawOrder.date));
+    const shiftLabel = normalizeShuttleReminderShiftLabel(
+        rawOrder && (rawOrder.shift || rawOrder.shiftLabel || rawOrder.shiftValue)
+    );
+    const station = String((rawOrder && rawOrder.station) || '').trim();
+    const statusValue = String(
+        (rawOrder && (rawOrder.statusValue || rawOrder.status || '')) || ''
+    ).trim();
+    const isCancelled = rawOrder && rawOrder.isCancelled === true
+        ? true
+        : isShuttleReminderCancelledStatus(statusValue);
+    if (!dateIso || !shiftLabel || !station || isCancelled) {
+        return null;
+    }
+    const orderKey = buildShuttleReminderOrderKey({ dateIso, shiftLabel, station });
+    if (!orderKey) {
+        return null;
+    }
+    const tripAt = resolveShuttleReminderTripTimestamp(dateIso, shiftLabel);
+    if (!Number.isFinite(tripAt) || tripAt <= 0) {
+        return null;
+    }
+    return {
+        user,
+        dateIso,
+        shiftLabel,
+        station,
+        statusValue,
+        orderKey,
+        tripAt
+    };
 }
 
 function getCampaignSentTargetsSet(campaignId) {
@@ -1974,6 +2318,256 @@ async function fetchSubscriptionsFromSheetUrl(url) {
     }
 }
 
+function collectShuttleReminderUsersFromSubscriptions(subscriptions = [], targetSet = new Set()) {
+    (Array.isArray(subscriptions) ? subscriptions : []).forEach((subscription) => {
+        if (!subscription || typeof subscription !== 'object') return;
+        addUserToSet(targetSet, subscription.username || subscription.user);
+    });
+    return targetSet;
+}
+
+function collectShuttleReminderCandidateUsersFromRuntime() {
+    const users = new Set();
+    Object.keys(deviceSubscriptionsByUser || {}).forEach((userKey) => addUserToSet(users, userKey));
+    for (const cacheEntry of subscriptionCache.values()) {
+        if (!cacheEntry || !Array.isArray(cacheEntry.subscriptions)) continue;
+        collectShuttleReminderUsersFromSubscriptions(cacheEntry.subscriptions, users);
+    }
+    return Array.from(users).filter((userKey) => SESSION_USER_PATTERN.test(userKey));
+}
+
+async function refreshShuttleReminderKnownUsers(options = {}) {
+    const force = Boolean(options.force);
+    const now = Date.now();
+    const users = new Set(collectShuttleReminderCandidateUsersFromRuntime());
+    const hasFreshCache = shuttleReminderKnownUsersCache.at > 0 &&
+        (now - shuttleReminderKnownUsersCache.at) < SHUTTLE_REMINDER_USERS_DISCOVERY_REFRESH_MS;
+
+    if (!force && hasFreshCache && Array.isArray(shuttleReminderKnownUsersCache.users)) {
+        shuttleReminderKnownUsersCache.users.forEach((userKey) => addUserToSet(users, userKey));
+    } else {
+        const discoveredFromSheet = new Set();
+        const sheetUrls = [
+            buildGoogleSheetGetUrl({ usernames: 'all' }),
+            buildGoogleSheetGetUrl({ action: 'get_all_subscriptions' }),
+            buildGoogleSheetGetUrl({ action: 'get_subscriptions' })
+        ];
+        for (const url of sheetUrls) {
+            const subscriptions = await fetchSubscriptionsFromSheetUrl(url);
+            collectShuttleReminderUsersFromSubscriptions(subscriptions, discoveredFromSheet);
+        }
+        shuttleReminderKnownUsersCache.at = now;
+        shuttleReminderKnownUsersCache.users = Array.from(discoveredFromSheet)
+            .filter((userKey) => SESSION_USER_PATTERN.test(userKey));
+        shuttleReminderKnownUsersCache.users.forEach((userKey) => addUserToSet(users, userKey));
+    }
+
+    return Array.from(users).filter((userKey) => SESSION_USER_PATTERN.test(userKey));
+}
+
+function pruneShuttleReminderOrdersCache() {
+    const now = Date.now();
+    const maxAgeMs = Math.max(
+        SHUTTLE_REMINDER_USER_REFRESH_MS * 4,
+        5 * 60 * 1000
+    );
+    Object.keys(shuttleReminderOrdersCacheByUser).forEach((userKey) => {
+        const entry = shuttleReminderOrdersCacheByUser[userKey];
+        const entryAt = Number(entry && entry.at) || 0;
+        if (!entryAt || now - entryAt > maxAgeMs) {
+            delete shuttleReminderOrdersCacheByUser[userKey];
+        }
+    });
+}
+
+async function fetchShuttleReminderOrdersForUser(userKey) {
+    if (!SHUTTLE_USER_ORDERS_URL) {
+        return [];
+    }
+    const normalizedUser = normalizeUserCandidate(userKey);
+    if (!normalizedUser || !SESSION_USER_PATTERN.test(normalizedUser)) {
+        return [];
+    }
+    const requestUrl = new URL(SHUTTLE_USER_ORDERS_URL);
+    requestUrl.searchParams.set('action', 'get_user_orders');
+    requestUrl.searchParams.set('user', normalizedUser);
+
+    const response = await fetchWithRetry(
+        requestUrl.toString(),
+        {},
+        {
+            timeoutMs: SHUTTLE_REMINDER_FETCH_TIMEOUT_MS,
+            retries: SHUTTLE_REMINDER_FETCH_RETRIES,
+            backoffMs: 700
+        }
+    );
+    if (!response.ok) {
+        throw new Error(`Shuttle orders fetch failed (${response.status})`);
+    }
+    const payloadText = await response.text();
+    const rows = parseShuttleReminderOrdersPayload(payloadText);
+    const mappedOrders = rows
+        .map((row) => mapShuttleReminderOrder(row, normalizedUser))
+        .filter(Boolean);
+    const dedupedByOrderKey = new Map();
+    mappedOrders.forEach((order) => {
+        const existing = dedupedByOrderKey.get(order.orderKey);
+        if (!existing || Number(order.tripAt || 0) > Number(existing.tripAt || 0)) {
+            dedupedByOrderKey.set(order.orderKey, order);
+        }
+    });
+    return Array.from(dedupedByOrderKey.values());
+}
+
+async function loadShuttleReminderOrdersForUser(userKey, options = {}) {
+    const normalizedUser = normalizeUserCandidate(userKey);
+    if (!normalizedUser || !SESSION_USER_PATTERN.test(normalizedUser)) {
+        return { orders: [], source: 'invalid-user' };
+    }
+
+    const forceRefresh = Boolean(options.forceRefresh);
+    const now = Date.now();
+    const cacheEntry = shuttleReminderOrdersCacheByUser[normalizedUser];
+    const isCacheFresh = cacheEntry &&
+        Number.isFinite(Number(cacheEntry.at)) &&
+        (now - Number(cacheEntry.at) < SHUTTLE_REMINDER_USER_REFRESH_MS);
+
+    if (!forceRefresh && isCacheFresh) {
+        return {
+            orders: Array.isArray(cacheEntry.orders) ? cacheEntry.orders : [],
+            source: 'cache'
+        };
+    }
+
+    try {
+        const orders = await fetchShuttleReminderOrdersForUser(normalizedUser);
+        shuttleReminderOrdersCacheByUser[normalizedUser] = {
+            at: now,
+            orders
+        };
+        return { orders, source: 'remote' };
+    } catch (error) {
+        if (cacheEntry && Array.isArray(cacheEntry.orders)) {
+            return {
+                orders: cacheEntry.orders,
+                source: 'stale-cache'
+            };
+        }
+        throw error;
+    }
+}
+
+async function processShuttleReminderForUser(userKey, now, options = {}) {
+    const normalizedUser = normalizeUserCandidate(userKey);
+    const result = {
+        user: normalizedUser,
+        source: 'cache',
+        fetched: false,
+        orderCount: 0,
+        dueCount: 0,
+        sent: 0,
+        failed: 0,
+        noTarget: 0,
+        skippedAlreadySent: 0,
+        errors: []
+    };
+    if (!normalizedUser || !SESSION_USER_PATTERN.test(normalizedUser)) {
+        result.source = 'invalid-user';
+        return result;
+    }
+
+    try {
+        const loaded = await loadShuttleReminderOrdersForUser(
+            normalizedUser,
+            { forceRefresh: Boolean(options.forceRefresh) }
+        );
+        result.source = loaded.source;
+        result.fetched = loaded.source === 'remote';
+
+        const activeOrders = (Array.isArray(loaded.orders) ? loaded.orders : [])
+            .filter((order) => Number.isFinite(Number(order.tripAt || 0)))
+            .filter((order) => Number(order.tripAt) > now);
+        result.orderCount = activeOrders.length;
+
+        const dueOrders = [];
+        activeOrders.forEach((order) => {
+            if (hasShuttleReminderBeenSentForOrder(normalizedUser, order.orderKey)) {
+                result.skippedAlreadySent += 1;
+                return;
+            }
+            const tripAt = Number(order.tripAt || 0);
+            const reminderAt = tripAt - SHUTTLE_REMINDER_LEAD_MS;
+            if (now < reminderAt || now >= tripAt) {
+                return;
+            }
+            dueOrders.push(order);
+        });
+        result.dueCount = dueOrders.length;
+
+        for (const order of dueOrders) {
+            const orderSummary = `${order.dateIso} | ${order.shiftLabel} | ${order.station}`;
+            const reminderText = `${SHUTTLE_REMINDER_BODY_PREFIX}: ${orderSummary}`;
+            const messageId = `shuttle_reminder_${generateMessageId()}`;
+            const pushPayload = {
+                messageId,
+                title: SHUTTLE_REMINDER_TITLE,
+                body: {
+                    shortText: reminderText,
+                    longText: reminderText
+                },
+                data: {
+                    type: SHUTTLE_REMINDER_TYPE,
+                    sender: SHUTTLE_CHAT_NAME,
+                    shuttleDate: order.dateIso,
+                    shuttleShift: order.shiftLabel,
+                    shuttleStation: order.station
+                }
+            };
+            const pushResult = await sendPushNotificationToUser(
+                [normalizedUser],
+                pushPayload,
+                SHUTTLE_CHAT_NAME,
+                {
+                    messageId,
+                    skipBadge: true,
+                    allowSecondAttempt: true
+                }
+            );
+            const successCount = Number((pushResult && pushResult.success) || 0);
+            const failedCount = Number((pushResult && pushResult.failed) || 0);
+            if (successCount > 0) {
+                markShuttleReminderSentForOrder(normalizedUser, order.orderKey, now);
+                addToQueue(normalizedUser, {
+                    messageId,
+                    sender: SHUTTLE_CHAT_NAME,
+                    body: reminderText,
+                    timestamp: Date.now(),
+                    type: SHUTTLE_REMINDER_TYPE,
+                    shuttleDate: order.dateIso,
+                    shuttleShift: order.shiftLabel,
+                    shuttleStation: order.station
+                });
+                result.sent += 1;
+                continue;
+            }
+            if (failedCount === 0) {
+                result.noTarget += 1;
+                continue;
+            }
+            result.failed += 1;
+            result.errors.push(`Push failed for ${orderSummary}`);
+        }
+    } catch (error) {
+        result.failed += 1;
+        result.errors.push(error && error.message ? error.message : 'Unknown user processing error');
+    }
+
+    if (result.errors.length > 8) {
+        result.errors = result.errors.slice(0, 8);
+    }
+    return result;
+}
+
 async function getAllSubscriptionsForAuthRefresh(options = {}) {
     const collected = [];
     const discoveredUsers = new Set();
@@ -2456,6 +3050,172 @@ function startSubscriptionAuthRefreshScheduler() {
     );
 }
 
+async function runShuttleReminderJob(jobContext = {}) {
+    const trigger = (typeof jobContext.trigger === 'string' && jobContext.trigger.trim())
+        ? jobContext.trigger.trim()
+        : 'manual';
+    if (!SHUTTLE_USER_ORDERS_URL) {
+        return {
+            status: 'disabled',
+            reason: 'Missing SHUTTLE_USER_ORDERS_URL'
+        };
+    }
+    if (!SHUTTLE_REMINDER_ENABLED && !parseBooleanInput(jobContext.allowWhenDisabled, false)) {
+        return {
+            status: 'disabled',
+            reason: 'SHUTTLE_REMINDER_ENABLED=false'
+        };
+    }
+    if (shuttleReminderState.running) {
+        return {
+            status: 'running',
+            message: 'Shuttle reminder scheduler is already running.'
+        };
+    }
+
+    shuttleReminderState.running = true;
+    shuttleReminderState.lastTickTrigger = trigger;
+    const startedAt = Date.now();
+    const summary = {
+        requestId: jobContext.requestId || generateMessageId(),
+        trigger,
+        startedAt,
+        finishedAt: startedAt,
+        candidateUsers: 0,
+        processedUsers: 0,
+        fetchedUsers: 0,
+        dueOrders: 0,
+        sent: 0,
+        failed: 0,
+        noTarget: 0,
+        skippedAlreadySent: 0,
+        sentStateCount: 0,
+        userResultsSample: [],
+        errors: []
+    };
+    const sentStateCountBefore = Object.keys(shuttleReminderSentAtByKey).length;
+
+    try {
+        pruneShuttleReminderSentState();
+        pruneShuttleReminderOrdersCache();
+        const users = await refreshShuttleReminderKnownUsers({
+            force: parseBooleanInput(jobContext.forceUsersRefresh, false)
+        });
+        summary.candidateUsers = users.length;
+        const tickNow = Date.now();
+
+        for (let i = 0; i < users.length; i += SHUTTLE_REMINDER_USER_PROCESS_BATCH) {
+            const batch = users.slice(i, i + SHUTTLE_REMINDER_USER_PROCESS_BATCH);
+            const batchResults = await Promise.all(
+                batch.map((userKey) =>
+                    processShuttleReminderForUser(
+                        userKey,
+                        tickNow,
+                        { forceRefresh: parseBooleanInput(jobContext.forceOrdersRefresh, false) }
+                    )
+                )
+            );
+            batchResults.forEach((result) => {
+                summary.processedUsers += 1;
+                if (result.fetched) summary.fetchedUsers += 1;
+                summary.dueOrders += Number(result.dueCount || 0);
+                summary.sent += Number(result.sent || 0);
+                summary.failed += Number(result.failed || 0);
+                summary.noTarget += Number(result.noTarget || 0);
+                summary.skippedAlreadySent += Number(result.skippedAlreadySent || 0);
+                if (summary.userResultsSample.length < 30) {
+                    summary.userResultsSample.push({
+                        user: result.user,
+                        source: result.source,
+                        dueCount: result.dueCount,
+                        sent: result.sent,
+                        failed: result.failed,
+                        noTarget: result.noTarget
+                    });
+                }
+                if (Array.isArray(result.errors) && result.errors.length && summary.errors.length < 80) {
+                    result.errors.slice(0, 3).forEach((item) => {
+                        if (summary.errors.length < 80) {
+                            summary.errors.push(`[${result.user}] ${item}`);
+                        }
+                    });
+                }
+            });
+        }
+
+        pruneShuttleReminderSentState();
+        summary.sentStateCount = Object.keys(shuttleReminderSentAtByKey).length;
+        if (summary.sent > 0 || summary.sentStateCount !== sentStateCountBefore) {
+            scheduleStateSave();
+        }
+    } catch (error) {
+        summary.failed += 1;
+        summary.errors.push(error && error.message ? error.message : 'Unknown shuttle reminder scheduler error');
+    } finally {
+        summary.finishedAt = Date.now();
+        shuttleReminderState.running = false;
+        shuttleReminderState.lastRunAt = summary.finishedAt;
+        shuttleReminderState.lastResult = summary;
+    }
+
+    return summary;
+}
+
+function startShuttleReminderScheduler() {
+    if (shuttleReminderSchedulerStarted) {
+        return;
+    }
+    shuttleReminderSchedulerStarted = true;
+
+    if (!SHUTTLE_REMINDER_ENABLED) {
+        console.log('[SHUTTLE REMINDER] Scheduler disabled by SHUTTLE_REMINDER_ENABLED=false.');
+        return;
+    }
+    if (!SHUTTLE_USER_ORDERS_URL) {
+        console.log('[SHUTTLE REMINDER] Scheduler disabled because SHUTTLE_USER_ORDERS_URL is missing.');
+        return;
+    }
+
+    const runTick = (trigger) => {
+        runShuttleReminderJob({ trigger })
+            .then((summary) => {
+                if (!summary || summary.status === 'running' || summary.status === 'disabled') {
+                    return;
+                }
+                if (summary.sent > 0 || summary.failed > 0 || summary.dueOrders > 0) {
+                    console.log(
+                        `[SHUTTLE REMINDER] ${summary.requestId} | trigger=${trigger} | users=${summary.candidateUsers} due=${summary.dueOrders} sent=${summary.sent} failed=${summary.failed} noTarget=${summary.noTarget}`
+                    );
+                }
+            })
+            .catch((error) => {
+                console.error('[SHUTTLE REMINDER] Tick failed:', error && error.message ? error.message : error);
+            });
+    };
+
+    shuttleReminderSchedulerTimer = setInterval(() => {
+        runTick('interval');
+    }, SHUTTLE_REMINDER_INTERVAL_MS);
+    setTimeout(() => runTick('startup'), 4000);
+
+    const effectiveTimeZone = getShuttleReminderEffectiveTimeZone();
+    console.log(
+        `[SHUTTLE REMINDER] Scheduler armed | intervalMs=${SHUTTLE_REMINDER_INTERVAL_MS} | leadMs=${SHUTTLE_REMINDER_LEAD_MS} | timezone=${effectiveTimeZone} | usersRefreshMs=${SHUTTLE_REMINDER_USERS_DISCOVERY_REFRESH_MS} | ordersRefreshMs=${SHUTTLE_REMINDER_USER_REFRESH_MS}`
+    );
+}
+
+function isSchedulerOpsRequestAuthorized(req) {
+    const token = String(
+        (req.query && req.query.token) ||
+        (req.headers && (req.headers['x-admin-token'] || req.headers['x-app-token'])) ||
+        ''
+    ).trim();
+    if (APP_SERVER_TOKEN) {
+        return token === APP_SERVER_TOKEN;
+    }
+    return Boolean(normalizeUserCandidate(req.authUser));
+}
+
 async function runMobileReregisterPromptCampaign(jobContext = {}) {
     if (mobileReregisterCampaignState.running) {
         return {
@@ -2715,6 +3475,16 @@ async function loadState() {
                 ? data.deviceSubscriptionsByUser
                 : {}
         );
+        shuttleReminderSentAtByKey = normalizeShuttleReminderSentState(
+            (data.shuttleReminderSentAtByKey && typeof data.shuttleReminderSentAtByKey === 'object')
+                ? data.shuttleReminderSentAtByKey
+                : {}
+        );
+        shuttleReminderKnownUsersCache.at = 0;
+        shuttleReminderKnownUsersCache.users = [];
+        Object.keys(shuttleReminderOrdersCacheByUser).forEach((userKey) => {
+            delete shuttleReminderOrdersCacheByUser[userKey];
+        });
         console.log('[STATE] Loaded persisted state.');
     } catch (err) {
         if (err.code !== 'ENOENT') {
@@ -2725,7 +3495,13 @@ async function loadState() {
 
 async function persistState() {
     try {
-        const payload = JSON.stringify({ unreadCounts, messageQueue, groups, deviceSubscriptionsByUser });
+        const payload = JSON.stringify({
+            unreadCounts,
+            messageQueue,
+            groups,
+            deviceSubscriptionsByUser,
+            shuttleReminderSentAtByKey
+        });
         const tmpFile = `${stateFile}.tmp`;
         await fsp.writeFile(tmpFile, payload, 'utf8');
         await fsp.rename(tmpFile, stateFile);
@@ -3036,12 +3812,14 @@ app.post(['/auth/session/request-code', '/notify/auth/session/request-code'], as
     }
 
     try {
-        const registrationCheck = await ensureRequestedUserIsRegistered(requestedUser);
-        if (!registrationCheck.ok) {
-            return res.status(registrationCheck.status).json({
-                status: 'error',
-                message: registrationCheck.message
-            });
+        if (AUTH_CODE_REQUIRE_REGISTERED_USER) {
+            const registrationCheck = await ensureRequestedUserIsRegistered(requestedUser);
+            if (!registrationCheck.ok) {
+                return res.status(registrationCheck.status).json({
+                    status: 'error',
+                    message: registrationCheck.message
+                });
+            }
         }
 
         const verificationCode = generateAuthCode();
@@ -3107,12 +3885,14 @@ app.post(['/auth/session/verify-code', '/notify/auth/session/verify-code'], asyn
     }
 
     try {
-        const registrationCheck = await ensureRequestedUserIsRegistered(requestedUser);
-        if (!registrationCheck.ok) {
-            return res.status(registrationCheck.status).json({
-                status: 'error',
-                message: registrationCheck.message
-            });
+        if (AUTH_CODE_REQUIRE_REGISTERED_USER) {
+            const registrationCheck = await ensureRequestedUserIsRegistered(requestedUser);
+            if (!registrationCheck.ok) {
+                return res.status(registrationCheck.status).json({
+                    status: 'error',
+                    message: registrationCheck.message
+                });
+            }
         }
 
         const verified = await verifyAuthCodeFromSubscribeSheet(requestedUser, submittedCode);
@@ -3919,6 +4699,79 @@ app.post(['/mobile-reregister-campaign', '/notify/mobile-reregister-campaign'], 
         });
 });
 
+app.get(['/shuttle-reminders/status', '/notify/shuttle-reminders/status'], (req, res) => {
+    if (!isSchedulerOpsRequestAuthorized(req)) {
+        return res.status(403).json({ error: 'Forbidden' });
+    }
+    const effectiveTimeZone = getShuttleReminderEffectiveTimeZone();
+    return res.json({
+        enabled: SHUTTLE_REMINDER_ENABLED,
+        running: shuttleReminderState.running,
+        lastRunAt: shuttleReminderState.lastRunAt || null,
+        lastResult: shuttleReminderState.lastResult || null,
+        schedulerStarted: shuttleReminderSchedulerStarted,
+        intervalMs: SHUTTLE_REMINDER_INTERVAL_MS,
+        leadMs: SHUTTLE_REMINDER_LEAD_MS,
+        userRefreshMs: SHUTTLE_REMINDER_USER_REFRESH_MS,
+        usersDiscoveryRefreshMs: SHUTTLE_REMINDER_USERS_DISCOVERY_REFRESH_MS,
+        fetchTimeoutMs: SHUTTLE_REMINDER_FETCH_TIMEOUT_MS,
+        fetchRetries: SHUTTLE_REMINDER_FETCH_RETRIES,
+        ordersUrlConfigured: Boolean(SHUTTLE_USER_ORDERS_URL),
+        timezone: effectiveTimeZone,
+        trackedSentReminders: Object.keys(shuttleReminderSentAtByKey).length,
+        cachedUsers: Array.isArray(shuttleReminderKnownUsersCache.users)
+            ? shuttleReminderKnownUsersCache.users.length
+            : 0,
+        cachedOrderUsers: Object.keys(shuttleReminderOrdersCacheByUser).length
+    });
+});
+
+app.post(['/shuttle-reminders/run', '/notify/shuttle-reminders/run'], (req, res) => {
+    if (!isSchedulerOpsRequestAuthorized(req)) {
+        return res.status(403).json({ error: 'Forbidden' });
+    }
+    if (shuttleReminderState.running) {
+        return res.status(409).json({
+            status: 'running',
+            message: 'Shuttle reminder scheduler is already running.',
+            lastResult: shuttleReminderState.lastResult || null
+        });
+    }
+
+    const payload = req.body && typeof req.body === 'object' ? req.body : {};
+    const requestId = generateMessageId();
+    const forceUsersRefresh = parseBooleanInput(payload.forceUsersRefresh, false);
+    const forceOrdersRefresh = parseBooleanInput(payload.forceOrdersRefresh, false);
+    const allowWhenDisabled = parseBooleanInput(payload.allowWhenDisabled, false);
+
+    res.json({
+        status: 'queued',
+        requestId,
+        forceUsersRefresh,
+        forceOrdersRefresh,
+        allowWhenDisabled
+    });
+
+    runShuttleReminderJob({
+        requestId,
+        trigger: 'manual-api',
+        forceUsersRefresh,
+        forceOrdersRefresh,
+        allowWhenDisabled
+    })
+        .then((summary) => {
+            if (!summary || summary.status === 'running' || summary.status === 'disabled') {
+                return;
+            }
+            console.log(
+                `[SHUTTLE REMINDER] Manual run ${summary.requestId} | users=${summary.candidateUsers} due=${summary.dueOrders} sent=${summary.sent} failed=${summary.failed} noTarget=${summary.noTarget}`
+            );
+        })
+        .catch((error) => {
+            console.error('[SHUTTLE REMINDER] Manual run failed:', error && error.message ? error.message : error);
+        });
+});
+
 app.get(['/contacts', '/notify/contacts', '/contacts/:user', '/notify/contacts/:user'], async (req, res) => {
     const requestedUser = normalizeUserKey(
         (req.query && req.query.user) ||
@@ -4616,6 +5469,7 @@ async function checkOutgoingQueue() {
 // Start the Timer (10,000 ms = 10 seconds)
 setInterval(checkOutgoingQueue, 10000);
 startSubscriptionAuthRefreshScheduler();
+startShuttleReminderScheduler();
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

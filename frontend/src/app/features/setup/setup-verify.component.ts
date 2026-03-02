@@ -3,6 +3,7 @@ import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
+import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
@@ -10,6 +11,7 @@ import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { ActivatedRoute, Router } from '@angular/router';
 import { ChatStoreService } from '../../core/services/chat-store.service';
+import { InstallGuideDialogComponent } from './install-guide-dialog.component';
 
 @Component({
   selector: 'app-setup-verify',
@@ -18,6 +20,7 @@ import { ChatStoreService } from '../../core/services/chat-store.service';
     CommonModule,
     ReactiveFormsModule,
     MatCardModule,
+    MatDialogModule,
     MatFormFieldModule,
     MatInputModule,
     MatButtonModule,
@@ -35,6 +38,7 @@ export class SetupVerifyComponent implements OnInit, OnDestroy {
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   private readonly snackBar = inject(MatSnackBar);
+  private readonly dialog = inject(MatDialog);
 
   readonly form = this.fb.nonNullable.group({
     code: ['', [Validators.required, Validators.pattern(/^\d{6}$/)]]
@@ -113,6 +117,14 @@ export class SetupVerifyComponent implements OnInit, OnDestroy {
 
   async backToSetup(): Promise<void> {
     await this.router.navigate(['/setup']);
+  }
+
+  openInstallGuide(): void {
+    this.dialog.open(InstallGuideDialogComponent, {
+      width: '520px',
+      maxWidth: '95vw',
+      autoFocus: false
+    });
   }
 
   private normalizePhone(value: string): string {

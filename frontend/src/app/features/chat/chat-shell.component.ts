@@ -219,6 +219,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly shuttleOrdersDashboard = computed<ShuttleOrdersDashboard | null>(() =>
     this.store.getShuttleOrdersDashboard()
   );
+  readonly isLoadingShuttleOrders = computed(() =>
+    this.store.getShuttleOrdersLoading()
+  );
   readonly shuttleDashboardTab = signal<'ongoing' | 'past'>('ongoing');
   readonly isShuttleRoomActive = computed(() =>
     Boolean(this.shuttleOrdersDashboard() || this.shuttleQuickPicker())
@@ -680,10 +683,35 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     this.shuttleDashboardTab.set(tab);
   }
 
+  async refreshShuttleOrders(): Promise<void> {
+    if (this.isLoadingShuttleOrders()) return;
+    try {
+      await this.store.refreshShuttleOrdersForActiveUser();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'טעינת ההזמנות נכשלה';
+      this.snackBar.open(message, 'סגור', { duration: 2800 });
+    }
+  }
+
   async cancelShuttleOrder(orderId: string): Promise<void> {
     const normalizedId = String(orderId || '').trim();
     if (!normalizedId) return;
     if (this.isCancellingShuttleOrder(orderId)) return;
+
+    const dialogRef = this.dialog.open(ConfirmMessageActionDialogComponent, {
+      width: '360px',
+      data: {
+        title: 'מחיקת הזמנה',
+        message: 'האם למחוק (לבטל) את ההזמנה הזו?',
+        confirmLabel: 'כן, מחק',
+        cancelLabel: 'ביטול',
+        confirmColor: 'warn'
+      }
+    });
+    const confirmed = await firstValueFrom(dialogRef.afterClosed());
+    if (!confirmed) {
+      return;
+    }
 
     this.setShuttleOrderCancelling(normalizedId, true);
     try {

@@ -2,9 +2,20 @@ var ssID = "1OWt0Qty9ljn03U6PP32ftY8_wNy8qPl0FBS_Prwv40g"
 var formID = "1vd8BSr2igB55n9sHm7MZ4xIjWCEklKawjjzhNJ29n-w"
 var wsData = SpreadsheetApp.openById(ssID).getSheetByName("עובדים")
 var wsDataPark = SpreadsheetApp.openById(ssID).getSheetByName("תחנות")
+var wsShuttleLog = SpreadsheetApp.openById(ssID).getSheetByName("לוג נסיעות")
 //var form = FormApp.openById(formID)
 function doGet(e) {
   let data = "";
+  var action = String((e.parameter && e.parameter.action) || '').trim();
+
+  if (action === 'get_user_orders' || action === 'get_shuttle_orders') {
+    var currentUser = (e.parameter && (e.parameter.user || e.parameter.username || e.parameter.phone)) || '';
+    data = getCurrentUserOrders(currentUser);
+    return ContentService
+      .createTextOutput(JSON.stringify(data))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
   if (e.parameters.emp != null && e.parameters.emp != '') {
     data = getWorker();
     return ContentService.createTextOutput(JSON.stringify(data));
@@ -265,4 +276,406 @@ function isCellEmptyOrValueEmpty(cell) {
 
   // Check if the value is empty or null.
   return value === '' || value === null;
+}
+
+function getCurrentUserOrders(userValue) {
+  var normalizedUser = normalizeShuttlePhone(userValue);
+  if (!normalizedUser) {
+    return {
+      result: 'error',
+      message: 'Missing or invalid user'
+    };
+  }
+
+  if (!wsShuttleLog) {
+    return {
+      result: 'error',
+      message: 'Sheet לוג נסיעות not found'
+    };
+  }
+
+  var cache = CacheService.getScriptCache();
+  var cacheKey = 'current_user_orders_' + normalizedUser;
+  var cached = cache.get(cacheKey);
+  if (cached) {
+    return JSON.parse(cached);
+  }
+
+  var lastRow = wsShuttleLog.getLastRow();
+  if (lastRow < 2) {
+    return {
+      result: 'success',
+      user: normalizedUser,
+      counts: { total: 0, ongoing: 0, past: 0 },
+      ongoing: [],
+      past: [],
+      orders: []
+    };
+  }
+
+  var rows = wsShuttleLog.getRange(2, 1, lastRow - 1, 7).getValues(); // A..G
+  var orders = [];
+
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var order = mapShuttleOrderRow(row, i + 2);
+    if (!order) continue;
+    var employeePhone = String(order.employeePhone || '').trim();
+    if (!employeePhone || employeePhone !== normalizedUser) {
+      continue;
+    }
+    orders.push(order);
+  }
+
+  orders = applyShuttleCancelPairingLogic(orders);
+
+  orders.sort(function(a, b) {
+    var delta = getShuttleOrderDateTimeSortKey(a) - getShuttleOrderDateTimeSortKey(b);
+    if (delta !== 0) return delta;
+    return Number(a.sheetRow || 0) - Number(b.sheetRow || 0);
+  });
+
+  var ongoing = [];
+  var past = [];
+  for (var j = 0; j < orders.length; j++) {
+    if (orders[j].isOngoing) {
+      ongoing.push(orders[j]);
+    } else {
+      past.push(orders[j]);
+    }
+  }
+
+  var response = {
+    result: 'success',
+    user: normalizedUser,
+    counts: {
+      total: orders.length,
+      ongoing: ongoing.length,
+      past: past.length
+    },
+    ongoing: ongoing,
+    past: past,
+    orders: orders
+  };
+
+  cache.put(cacheKey, JSON.stringify(response), 45);
+  return response;
+}
+
+function applyShuttleCancelPairingLogic(orders) {
+  var grouped = {};
+  var passthrough = [];
+
+  for (var i = 0; i < orders.length; i++) {
+    var order = orders[i];
+    var key = buildShuttleOrderKey(order);
+    if (!key) {
+      passthrough.push(order);
+      continue;
+    }
+    if (!grouped[key]) grouped[key] = [];
+    grouped[key].push(order);
+  }
+
+  var result = passthrough.slice();
+  var groupKeys = Object.keys(grouped);
+  for (var k = 0; k < groupKeys.length; k++) {
+    var group = grouped[groupKeys[k]];
+    if (!group || !group.length) continue;
+
+    var representative = selectGroupRepresentative(group);
+    if (!representative) continue;
+    result.push(representative);
+  }
+
+  return result;
+}
+
+function buildShuttleOrderKey(order) {
+  if (!order) return '';
+  var dateIso = normalizeOrderKeySegment(order.dateIso || toShuttleIsoDate(order.date || ''));
+  var shift = normalizeOrderKeySegment(formatShuttleShift(order.shift || order.shiftValue || ''));
+  var station = normalizeOrderKeySegment(order.station || '');
+  if (!dateIso || !shift || !station) return '';
+  return [dateIso, shift, station].join('|');
+}
+
+function selectGroupRepresentative(group) {
+  var hasCancel = false;
+  var latestOrder = null;
+  var latestCancelOrder = null;
+  var latestActiveOrder = null;
+
+  for (var i = 0; i < group.length; i++) {
+    var order = group[i];
+    var orderTs = Number(order.submittedAt || 0);
+    var statusText = String(order.status || '').toLowerCase();
+    var isCancelled = order.isCancelled === true ||
+      statusText.indexOf('ביטול') >= 0 ||
+      statusText.indexOf('отмена') >= 0;
+
+    if (!latestOrder || orderTs > Number(latestOrder.submittedAt || 0)) {
+      latestOrder = order;
+    }
+    if (isCancelled) {
+      hasCancel = true;
+      if (!latestCancelOrder || orderTs > Number(latestCancelOrder.submittedAt || 0)) {
+        latestCancelOrder = order;
+      }
+    } else {
+      if (!latestActiveOrder || orderTs > Number(latestActiveOrder.submittedAt || 0)) {
+        latestActiveOrder = order;
+      }
+    }
+  }
+
+  if (!hasCancel) {
+    return latestActiveOrder || latestOrder;
+  }
+
+  var base = latestCancelOrder || latestOrder;
+  if (!base) return null;
+  var next = cloneShuttleOrder(base);
+  next.isCancelled = true;
+  next.isOngoing = false;
+  if (!String(next.status || '').trim()) {
+    next.status = 'ביטול נסיעה отмена поезд';
+  }
+  next.statusValue = String(next.status || '').trim() || 'ביטול נסיעה отмена поезд';
+  if (!next.cancelledAt) {
+    next.cancelledAt = Number(next.submittedAt || Date.now());
+  }
+  return next;
+}
+
+function cloneShuttleOrder(order) {
+  var next = {};
+  for (var key in order) {
+    if (Object.prototype.hasOwnProperty.call(order, key)) {
+      next[key] = order[key];
+    }
+  }
+  return next;
+}
+
+function normalizeOrderKeySegment(value) {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function getShuttleOrderDateTimeSortKey(order) {
+  if (!order) return 0;
+  var dateIso = String(order.dateIso || toShuttleIsoDate(order.date || '') || '').trim();
+  var baseTs = 0;
+  if (dateIso) {
+    var parsedDate = new Date(dateIso + 'T00:00:00');
+    if (!isNaN(parsedDate.getTime())) {
+      baseTs = parsedDate.getTime();
+    }
+  }
+  if (!baseTs) {
+    baseTs = Number(order.submittedAt || 0) || 0;
+  }
+
+  var shiftLabel = formatShuttleShift(order.shift || order.shiftValue || '');
+  var shiftMinutes = parseShiftMinutes(shiftLabel);
+  if (baseTs && shiftMinutes >= 0) {
+    return baseTs + (shiftMinutes * 60 * 1000);
+  }
+  return baseTs;
+}
+
+function parseShiftMinutes(value) {
+  var text = String(value || '').trim();
+  var match = text.match(/^(\d{2}):(\d{2})$/);
+  if (!match) return -1;
+  var hh = Number(match[1]);
+  var mm = Number(match[2]);
+  if (isNaN(hh) || isNaN(mm)) return -1;
+  return (hh * 60) + mm;
+}
+
+function mapShuttleOrderRow(row, sheetRow) {
+  var candidateColA = String(row[0] || '').trim();
+  var candidateColB = String(row[1] || '').trim();
+  var phoneColA = extractPhoneFromEmployeeCell(candidateColA);
+  var phoneColB = extractPhoneFromEmployeeCell(candidateColB);
+  var isLegacyLogRow =
+    (Object.prototype.toString.call(row[0]) === '[object Date]' && !isNaN(row[0].getTime())) ||
+    (!phoneColA && Boolean(phoneColB));
+
+  var employee = '';
+  var employeePhone = '';
+  var dateSource = '';
+  var shiftSource = '';
+  var station = '';
+  var statusText = '';
+  var display = '';
+  var submittedAt = 0;
+
+  if (isLegacyLogRow) {
+    employee = candidateColB;
+    employeePhone = phoneColB;
+    dateSource = row[2];
+    shiftSource = row[3];
+    station = String(row[4] || '').trim();
+    statusText = String(row[5] || '').trim();
+    display = String(row[6] || '').trim();
+    submittedAt = (Object.prototype.toString.call(row[0]) === '[object Date]' && !isNaN(row[0].getTime()))
+      ? row[0].getTime()
+      : 0;
+  } else {
+    // Fallback supports previous DataToShow-like layout if still present.
+    employee = candidateColA;
+    employeePhone = phoneColA;
+    dateSource = row[1];
+    shiftSource = row[2];
+    station = String(row[3] || '').trim();
+    statusText = String(row[4] || '').trim();
+    display = String(row[5] || '').trim();
+  }
+
+  if (!employeePhone) return null;
+
+  var dateDisplay = formatShuttleDate(dateSource);
+  var dateIso = toShuttleIsoDate(dateSource);
+  var shift = formatShuttleShift(shiftSource);
+  var shiftValue = formatShuttleShiftValue(shiftSource);
+
+  if (!submittedAt) {
+    submittedAt = dateIso ? new Date(dateIso + 'T00:00:00').getTime() : Date.now();
+    if (isNaN(submittedAt)) submittedAt = Date.now();
+  }
+
+  var statusLower = statusText.toLowerCase();
+  var isCancelled = statusLower.indexOf('ביטול') >= 0 || statusLower.indexOf('отмена') >= 0;
+  var isOngoing = !isCancelled && isIsoDateTodayOrFuture(dateIso);
+
+  return {
+    id: 'sheet-' + sheetRow,
+    sheetRow: sheetRow,
+    employee: employee,
+    employeePhone: employeePhone,
+    date: dateDisplay,
+    dateIso: dateIso,
+    dayName: getShuttleDayName(dateIso),
+    shift: shift,
+    shiftValue: shiftValue,
+    station: station,
+    status: statusText,
+    statusValue: statusText,
+    display: display,
+    submittedAt: submittedAt,
+    isCancelled: isCancelled,
+    isOngoing: isOngoing
+  };
+}
+
+function extractPhoneFromEmployeeCell(employeeCellValue) {
+  var text = String(employeeCellValue || '').trim();
+  if (!text) return '';
+  if (text.charAt(0) === "'") text = text.substring(1);
+
+  var direct = normalizeShuttlePhone(text);
+  if (direct) return direct;
+
+  var matches = text.match(/\d{9,15}/g) || [];
+  for (var i = 0; i < matches.length; i++) {
+    var normalized = normalizeShuttlePhone(matches[i]);
+    if (normalized) return normalized;
+  }
+  return '';
+}
+
+function normalizeShuttlePhone(value) {
+  var digits = String(value || '').replace(/\D/g, '').trim();
+  if (!digits) return '';
+
+  if (/^9725\d{8}$/.test(digits)) {
+    return '0' + digits.substring(3);
+  }
+  if (/^97205\d{8}$/.test(digits)) {
+    return digits.substring(3);
+  }
+  if (/^5\d{8}$/.test(digits)) {
+    return '0' + digits;
+  }
+  if (/^05\d{8}$/.test(digits)) {
+    return digits;
+  }
+  if (digits.length > 10) {
+    var tail = digits.slice(-10);
+    if (/^05\d{8}$/.test(tail)) {
+      return tail;
+    }
+  }
+  return '';
+}
+
+function toShuttleIsoDate(value) {
+  if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime())) {
+    return Utilities.formatDate(value, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  }
+  var raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+  var slashMatch = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!slashMatch) return '';
+  var mm = ('0' + slashMatch[1]).slice(-2);
+  var dd = ('0' + slashMatch[2]).slice(-2);
+  var yyyy = slashMatch[3];
+  return yyyy + '-' + mm + '-' + dd;
+}
+
+function formatShuttleDate(value) {
+  if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime())) {
+    return Utilities.formatDate(value, Session.getScriptTimeZone(), 'M/d/yyyy');
+  }
+  return String(value || '').trim();
+}
+
+function formatShuttleShift(value) {
+  if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime())) {
+    return Utilities.formatDate(value, Session.getScriptTimeZone(), 'HH:mm');
+  }
+
+  var raw = String(value || '').trim();
+  if (!raw) return '';
+
+  var match = raw.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (match) {
+    return ('0' + Number(match[1])).slice(-2) + ':' + match[2];
+  }
+
+  var parsed = new Date(raw);
+  if (!isNaN(parsed.getTime())) {
+    return Utilities.formatDate(parsed, Session.getScriptTimeZone(), 'HH:mm');
+  }
+
+  var embedded = raw.match(/(\d{1,2}):(\d{2})(?::\d{2})?/);
+  if (embedded) {
+    return ('0' + Number(embedded[1])).slice(-2) + ':' + embedded[2];
+  }
+
+  return raw;
+}
+
+function formatShuttleShiftValue(value) {
+  var label = formatShuttleShift(value);
+  if (!label) return '';
+  return "'" + label;
+}
+
+function isIsoDateTodayOrFuture(isoDate) {
+  if (!isoDate) return true;
+  var todayIso = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  return isoDate >= todayIso;
+}
+
+function getShuttleDayName(isoDate) {
+  if (!isoDate) return '';
+  var parsed = new Date(isoDate + 'T00:00:00');
+  if (isNaN(parsed.getTime())) return '';
+  var dayNames = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
+  return dayNames[parsed.getDay()] || '';
 }
