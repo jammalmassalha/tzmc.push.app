@@ -20,7 +20,7 @@ import {
   PersistedChatState,
   ReplyPayload
 } from '../models/chat.models';
-import { ChatApiService, HrActionOption, HrStepOption } from './chat-api.service';
+import { ChatApiService, HrActionOption, HrStepOption, ShuttleUserOrderPayload } from './chat-api.service';
 
 const CONTACTS_TTL_MS = 5 * 60 * 1000;
 const CONTACTS_ACCESS_SYNC_INTERVAL_MS = 60 * 1000;
@@ -47,6 +47,7 @@ const SHUTTLE_WELCOME_KEY_PREFIX = 'shuttle_welcome_sent_';
 const SHUTTLE_STATE_KEY_PREFIX = 'shuttle_state_';
 const SHUTTLE_ORDERS_KEY_PREFIX = 'shuttle_orders_';
 const SHUTTLE_LIST_CACHE_TTL_MS = 5 * 60 * 1000;
+const SHUTTLE_REMOTE_ORDERS_SYNC_TTL_MS = 45 * 1000;
 const SHUTTLE_DATE_CHOICES_COUNT = 10;
 const SHUTTLE_STATUS_ACTIVE_VALUE = 'פעיל активный';
 const SHUTTLE_STATUS_CANCEL_VALUE = 'ביטול נסיעה отмена поезд';
@@ -220,6 +221,8 @@ export class ChatStoreService {
   private shuttleInitInFlight = false;
   private shuttleStationsCache: { at: number; items: string[] } = { at: 0, items: [] };
   private shuttleEmployeesCache: { at: number; items: string[] } = { at: 0, items: [] };
+  private readonly shuttleOrdersSyncAt = new Map<string, number>();
+  private readonly shuttleOrdersSyncInFlight = new Set<string>();
   private readonly shuttlePickerRevision = signal(0);
   private lastAppliedAppBadgeCount = -1;
   private lastServerBadgeResetAt = 0;
@@ -1625,6 +1628,7 @@ export class ChatStoreService {
 
     this.shuttleInitInFlight = true;
     try {
+      await this.refreshShuttleOrdersFromRemote(user);
       if (!this.shouldInitializeShuttleFlowOnOpen(user)) {
         return;
       }
@@ -1944,6 +1948,146 @@ export class ChatStoreService {
     });
   }
 
+  private async refreshShuttleOrdersFromRemote(user: string, options: { force?: boolean } = {}): Promise<void> {
+    const normalizedUser = this.normalizeUser(user);
+    const now = Date.now();
+    const lastSyncedAt = this.shuttleOrdersSyncAt.get(normalizedUser) ?? 0;
+    if (!options.force && now - lastSyncedAt < SHUTTLE_REMOTE_ORDERS_SYNC_TTL_MS) {
+      return;
+    }
+    if (this.shuttleOrdersSyncInFlight.has(normalizedUser)) {
+      return;
+    }
+
+    this.shuttleOrdersSyncInFlight.add(normalizedUser);
+    try {
+      const remoteOrders = await this.api.getShuttleUserOrders(user);
+      const mappedOrders = remoteOrders
+        .map((item, index) => this.mapShuttleRemoteOrder(item, index))
+        .filter((item): item is ShuttleOrderRecord => Boolean(item))
+        .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
+
+      if (mappedOrders.length > 0 || this.loadShuttleOrders(user).length === 0) {
+        this.saveShuttleOrders(user, mappedOrders.slice(0, 300));
+      }
+      this.shuttleOrdersSyncAt.set(normalizedUser, Date.now());
+    } catch {
+      this.shuttleOrdersSyncAt.set(normalizedUser, now);
+    } finally {
+      this.shuttleOrdersSyncInFlight.delete(normalizedUser);
+    }
+  }
+
+  private mapShuttleRemoteOrder(item: ShuttleUserOrderPayload, index: number): ShuttleOrderRecord | null {
+    const rawDate = String(item.dateIso || item.date || '').trim();
+    const dateIso = this.normalizeShuttleDateToIso(rawDate);
+    if (!dateIso) {
+      return null;
+    }
+
+    const dayName = String(item.dayName || '').trim() || this.resolveShuttleDayNameFromIso(dateIso);
+    const shiftLabel = this.normalizeShuttleShiftLabel(String(item.shift || '').trim());
+    const shiftValue = this.normalizeShuttleShiftValue(String(item.shiftValue || '').trim(), shiftLabel);
+    const station = String(item.station || '').trim();
+    if (!shiftLabel || !shiftValue || !station) {
+      return null;
+    }
+
+    const statusValue = String(item.statusValue || item.status || '').trim() || SHUTTLE_STATUS_ACTIVE_VALUE;
+    const isCancelled = item.isCancelled === true || this.isShuttleStatusCancelled(statusValue);
+    const statusLabel = isCancelled ? SHUTTLE_STATUS_CANCEL_LABEL : SHUTTLE_STATUS_ACTIVE_LABEL;
+    const submittedAtRaw = Number(item.submittedAt || 0);
+    const dateTimestamp = this.parseShuttleDate(dateIso)?.getTime() ?? Date.now();
+    const submittedAt = Number.isFinite(submittedAtRaw) && submittedAtRaw > 0
+      ? submittedAtRaw
+      : dateTimestamp + index;
+    const cancelledAtRaw = Number(item.cancelledAt || 0);
+    const explicitId = String(item.id || '').trim();
+    const sheetRow = Number(item.sheetRow || 0);
+
+    return {
+      id: explicitId || (
+        Number.isFinite(sheetRow) && sheetRow > 0
+          ? `sheet-${sheetRow}`
+          : `srv-${dateIso}-${shiftLabel}-${station}-${index}`
+      ),
+      employee: String(item.employee || '').trim(),
+      date: dateIso,
+      dayName,
+      shiftLabel,
+      shiftValue,
+      station,
+      statusValue: isCancelled ? SHUTTLE_STATUS_CANCEL_VALUE : statusValue,
+      statusLabel,
+      submittedAt,
+      cancelledAt: Number.isFinite(cancelledAtRaw) && cancelledAtRaw > 0 ? cancelledAtRaw : undefined
+    };
+  }
+
+  private normalizeShuttleDateToIso(value: string): string {
+    const normalized = String(value || '').trim();
+    if (!normalized) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+      return normalized;
+    }
+
+    const slashMatch = normalized.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (!slashMatch) {
+      return '';
+    }
+    const month = String(Number(slashMatch[1])).padStart(2, '0');
+    const day = String(Number(slashMatch[2])).padStart(2, '0');
+    const year = slashMatch[3];
+    return `${year}-${month}-${day}`;
+  }
+
+  private resolveShuttleDayNameFromIso(dateIso: string): string {
+    const parsed = this.parseShuttleDate(dateIso);
+    if (!parsed) {
+      return '';
+    }
+    return SHUTTLE_DAY_NAMES[parsed.getDay()];
+  }
+
+  private normalizeShuttleShiftLabel(value: string): string {
+    const cleaned = String(value || '').trim().replace(/^'+/, '');
+    const match = cleaned.match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) {
+      return cleaned;
+    }
+    const hours = String(Number(match[1])).padStart(2, '0');
+    return `${hours}:${match[2]}`;
+  }
+
+  private normalizeShuttleShiftValue(rawValue: string, shiftLabel: string): string {
+    const cleanedRaw = String(rawValue || '').trim();
+    if (cleanedRaw) {
+      if (/^'\d{1,2}:\d{2}$/.test(cleanedRaw)) {
+        const noQuote = cleanedRaw.slice(1);
+        const normalizedLabel = this.normalizeShuttleShiftLabel(noQuote);
+        return `'${normalizedLabel}`;
+      }
+      if (/^\d{1,2}:\d{2}$/.test(cleanedRaw)) {
+        const normalizedLabel = this.normalizeShuttleShiftLabel(cleanedRaw);
+        return `'${normalizedLabel}`;
+      }
+      return cleanedRaw;
+    }
+
+    if (/^\d{2}:\d{2}$/.test(shiftLabel)) {
+      return `'${shiftLabel}`;
+    }
+    return shiftLabel;
+  }
+
+  private isShuttleStatusCancelled(statusValue: string): boolean {
+    const normalized = this.normalizeShuttleText(statusValue);
+    if (!normalized) {
+      return false;
+    }
+    return normalized.includes('ביטול') || normalized.includes('отмена');
+  }
+
   private async fetchShuttleStationsCached(): Promise<string[]> {
     const now = Date.now();
     if (this.shuttleStationsCache.items.length && now - this.shuttleStationsCache.at < SHUTTLE_LIST_CACHE_TTL_MS) {
@@ -2205,8 +2349,8 @@ export class ChatStoreService {
   }
 
   private parseShuttleDate(value: string): Date | null {
-    const normalized = String(value || '').trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    const normalized = this.normalizeShuttleDateToIso(String(value || '').trim());
+    if (!normalized) {
       return null;
     }
     const parsed = new Date(`${normalized}T00:00:00`);

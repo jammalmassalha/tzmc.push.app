@@ -119,8 +119,30 @@ export interface ShuttleOrderSubmitPayload {
   status: string;
 }
 
+export interface ShuttleUserOrderPayload {
+  id?: string | number;
+  sheetRow?: string | number;
+  employee?: string;
+  employeePhone?: string;
+  date?: string;
+  dateIso?: string;
+  dayName?: string;
+  shift?: string;
+  shiftLabel?: string;
+  shiftValue?: string;
+  station?: string;
+  status?: string;
+  statusValue?: string;
+  submittedAt?: string | number;
+  cancelledAt?: string | number;
+  isCancelled?: boolean;
+  isOngoing?: boolean;
+}
+
 const SHUTTLE_SHEET_URL =
   'https://script.google.com/macros/s/AKfycbwQ9A-CDiyDA-upacWeVG-ZAbFLowpWyOMiYWwERyL8q82oqvp2IJWjYT1NwREX3Kxk/exec';
+const SHUTTLE_USER_ORDERS_URL =
+  'https://script.google.com/macros/s/AKfycbwywlMI1KFzKfVCb60W95f7gTja1Y_h9ctLNnCJrj74-NJmsIrKAAMff3DgnGL7oaJU/exec';
 
 const SHUTTLE_ENTRY_EMPLOYEE = 'entry.1035269960';
 const SHUTTLE_ENTRY_DATE = 'entry.794242217';
@@ -829,6 +851,21 @@ export class ChatApiService {
     }
   }
 
+  async getShuttleUserOrders(user: string): Promise<ShuttleUserOrderPayload[]> {
+    const normalizedUser = String(user || '').trim();
+    if (!normalizedUser) {
+      return [];
+    }
+
+    const url = `${SHUTTLE_USER_ORDERS_URL}?action=get_user_orders&user=${encodeURIComponent(normalizedUser)}`;
+    const response = await this.fetchWithRetry(url, {}, { retries: 2, timeoutMs: 12000 });
+    if (!response.ok) {
+      throw new Error(`Shuttle user orders request failed with ${response.status}`);
+    }
+    const body = await response.text();
+    return this.parseShuttleUserOrders(body);
+  }
+
   private detectDeviceType(): 'Mobile' | 'PC' {
     if (typeof navigator === 'undefined') {
       return 'PC';
@@ -931,5 +968,35 @@ export class ChatApiService {
     } catch {
       return [];
     }
+  }
+
+  private parseShuttleUserOrders(payloadText: string): ShuttleUserOrderPayload[] {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(payloadText);
+    } catch {
+      throw new Error('Invalid shuttle orders payload');
+    }
+
+    let rows: unknown[] = [];
+    if (Array.isArray(parsed)) {
+      rows = parsed;
+    } else if (parsed && typeof parsed === 'object') {
+      const root = parsed as Record<string, unknown>;
+      const result = String(root['result'] ?? '').trim().toLowerCase();
+      if (result && result !== 'success') {
+        throw new Error(String(root['message'] ?? 'Failed to load shuttle orders'));
+      }
+
+      if (Array.isArray(root['orders'])) {
+        rows = root['orders'];
+      } else if (Array.isArray(root['data'])) {
+        rows = root['data'];
+      }
+    }
+
+    return rows
+      .filter((item) => item && typeof item === 'object')
+      .map((item) => item as ShuttleUserOrderPayload);
   }
 }
