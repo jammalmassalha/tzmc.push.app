@@ -2,7 +2,7 @@ var ssID = "1OWt0Qty9ljn03U6PP32ftY8_wNy8qPl0FBS_Prwv40g"
 var formID = "1vd8BSr2igB55n9sHm7MZ4xIjWCEklKawjjzhNJ29n-w"
 var wsData = SpreadsheetApp.openById(ssID).getSheetByName("עובדים")
 var wsDataPark = SpreadsheetApp.openById(ssID).getSheetByName("תחנות")
-var wsDataToShow = SpreadsheetApp.openById(ssID).getSheetByName("DataToShow")
+var wsShuttleLog = SpreadsheetApp.openById(ssID).getSheetByName("לוג נסיעות")
 //var form = FormApp.openById(formID)
 function doGet(e) {
   let data = "";
@@ -287,10 +287,10 @@ function getCurrentUserOrders(userValue) {
     };
   }
 
-  if (!wsDataToShow) {
+  if (!wsShuttleLog) {
     return {
       result: 'error',
-      message: 'Sheet DataToShow not found'
+      message: 'Sheet לוג נסיעות not found'
     };
   }
 
@@ -301,7 +301,7 @@ function getCurrentUserOrders(userValue) {
     return JSON.parse(cached);
   }
 
-  var lastRow = wsDataToShow.getLastRow();
+  var lastRow = wsShuttleLog.getLastRow();
   if (lastRow < 2) {
     return {
       result: 'success',
@@ -313,46 +313,33 @@ function getCurrentUserOrders(userValue) {
     };
   }
 
-  var rows = wsDataToShow.getRange(2, 1, lastRow - 1, 6).getValues(); // A..F
+  var rows = wsShuttleLog.getRange(2, 1, lastRow - 1, 7).getValues(); // A..G
   var orders = [];
-  var ongoing = [];
-  var past = [];
 
   for (var i = 0; i < rows.length; i++) {
     var row = rows[i];
-    var employee = String(row[0] || '').trim();
-    var employeePhone = extractPhoneFromEmployeeCell(employee);
+    var order = mapShuttleOrderRow(row, i + 2);
+    if (!order) continue;
+    var employeePhone = String(order.employeePhone || '').trim();
     if (!employeePhone || employeePhone !== normalizedUser) {
       continue;
     }
-
-    var dateDisplay = formatShuttleDate(row[1]);
-    var dateIso = toShuttleIsoDate(row[1]);
-    var statusText = String(row[4] || '').trim();
-    var statusLower = statusText.toLowerCase();
-    var isCancelled = statusLower.indexOf('ביטול') >= 0 || statusLower.indexOf('отмена') >= 0;
-    var isOngoing = !isCancelled && isIsoDateTodayOrFuture(dateIso);
-
-    var order = {
-      sheetRow: i + 2,
-      employee: employee,
-      employeePhone: employeePhone,
-      date: dateDisplay,
-      dateIso: dateIso,
-      shift: formatShuttleShift(row[2]),
-      shiftValue: formatShuttleShiftValue(row[2]),
-      station: String(row[3] || '').trim(),
-      status: statusText,
-      display: String(row[5] || '').trim(),
-      isCancelled: isCancelled,
-      isOngoing: isOngoing
-    };
-
     orders.push(order);
-    if (isOngoing) {
-      ongoing.push(order);
+  }
+
+  orders.sort(function(a, b) {
+    var delta = Number(b.submittedAt || 0) - Number(a.submittedAt || 0);
+    if (delta !== 0) return delta;
+    return Number(b.sheetRow || 0) - Number(a.sheetRow || 0);
+  });
+
+  var ongoing = [];
+  var past = [];
+  for (var j = 0; j < orders.length; j++) {
+    if (orders[j].isOngoing) {
+      ongoing.push(orders[j]);
     } else {
-      past.push(order);
+      past.push(orders[j]);
     }
   }
 
@@ -371,6 +358,82 @@ function getCurrentUserOrders(userValue) {
 
   cache.put(cacheKey, JSON.stringify(response), 45);
   return response;
+}
+
+function mapShuttleOrderRow(row, sheetRow) {
+  var candidateColA = String(row[0] || '').trim();
+  var candidateColB = String(row[1] || '').trim();
+  var phoneColA = extractPhoneFromEmployeeCell(candidateColA);
+  var phoneColB = extractPhoneFromEmployeeCell(candidateColB);
+  var isLegacyLogRow =
+    (Object.prototype.toString.call(row[0]) === '[object Date]' && !isNaN(row[0].getTime())) ||
+    (!phoneColA && Boolean(phoneColB));
+
+  var employee = '';
+  var employeePhone = '';
+  var dateSource = '';
+  var shiftSource = '';
+  var station = '';
+  var statusText = '';
+  var display = '';
+  var submittedAt = 0;
+
+  if (isLegacyLogRow) {
+    employee = candidateColB;
+    employeePhone = phoneColB;
+    dateSource = row[2];
+    shiftSource = row[3];
+    station = String(row[4] || '').trim();
+    statusText = String(row[5] || '').trim();
+    display = String(row[6] || '').trim();
+    submittedAt = (Object.prototype.toString.call(row[0]) === '[object Date]' && !isNaN(row[0].getTime()))
+      ? row[0].getTime()
+      : 0;
+  } else {
+    // Fallback supports previous DataToShow-like layout if still present.
+    employee = candidateColA;
+    employeePhone = phoneColA;
+    dateSource = row[1];
+    shiftSource = row[2];
+    station = String(row[3] || '').trim();
+    statusText = String(row[4] || '').trim();
+    display = String(row[5] || '').trim();
+  }
+
+  if (!employeePhone) return null;
+
+  var dateDisplay = formatShuttleDate(dateSource);
+  var dateIso = toShuttleIsoDate(dateSource);
+  var shift = formatShuttleShift(shiftSource);
+  var shiftValue = formatShuttleShiftValue(shiftSource);
+
+  if (!submittedAt) {
+    submittedAt = dateIso ? new Date(dateIso + 'T00:00:00').getTime() : Date.now();
+    if (isNaN(submittedAt)) submittedAt = Date.now();
+  }
+
+  var statusLower = statusText.toLowerCase();
+  var isCancelled = statusLower.indexOf('ביטול') >= 0 || statusLower.indexOf('отмена') >= 0;
+  var isOngoing = !isCancelled && isIsoDateTodayOrFuture(dateIso);
+
+  return {
+    id: 'sheet-' + sheetRow,
+    sheetRow: sheetRow,
+    employee: employee,
+    employeePhone: employeePhone,
+    date: dateDisplay,
+    dateIso: dateIso,
+    dayName: getShuttleDayName(dateIso),
+    shift: shift,
+    shiftValue: shiftValue,
+    station: station,
+    status: statusText,
+    statusValue: statusText,
+    display: display,
+    submittedAt: submittedAt,
+    isCancelled: isCancelled,
+    isOngoing: isOngoing
+  };
 }
 
 function extractPhoneFromEmployeeCell(employeeCellValue) {
@@ -473,4 +536,12 @@ function isIsoDateTodayOrFuture(isoDate) {
   if (!isoDate) return true;
   var todayIso = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
   return isoDate >= todayIso;
+}
+
+function getShuttleDayName(isoDate) {
+  if (!isoDate) return '';
+  var parsed = new Date(isoDate + 'T00:00:00');
+  if (isNaN(parsed.getTime())) return '';
+  var dayNames = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
+  return dayNames[parsed.getDay()] || '';
 }
