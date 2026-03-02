@@ -645,13 +645,26 @@ function doPost(e) {
       }
 
       var setCodeRow = findUserRow(setCodeSheet, setCodeUser);
+      ensureSubscribeOtpHeader(setCodeSheet);
       if (!setCodeRow) {
-        return createJSON({ result: 'error', message: 'User not found' });
+        setCodeSheet.appendRow([
+          new Date(),             // A DateTime
+          "'" + setCodeUser,      // B RegistrationUser
+          '',                     // C Push Type
+          '',                     // D Auth JSON
+          '',                     // E Auth JSON PC
+          '',                     // F Full name (legacy/fallback)
+          '1',                    // G Status (active by default for SMS registration flow)
+          '',                     // H Exception status
+          '',                     // I Alt name
+          '',                     // J Reserved
+          "'" + setCodeValue      // K Login Code
+        ]);
+        return createJSON({ result: 'success', updatedRows: 1, action: 'created' });
       }
 
-      ensureSubscribeOtpHeader(setCodeSheet);
       setCodeSheet.getRange(setCodeRow, 11).setValue("'" + setCodeValue); // K
-      return createJSON({ result: 'success', updatedRows: 1 });
+      return createJSON({ result: 'success', updatedRows: 1, action: 'updated' });
     }
 
     if (data.action === 'verify_login_code') {

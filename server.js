@@ -741,6 +741,9 @@ const AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_USER = Math.max(
     3,
     Number(process.env.AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_USER || 12) || 12
 );
+const AUTH_CODE_REQUIRE_REGISTERED_USER = String(
+    process.env.AUTH_CODE_REQUIRE_REGISTERED_USER || 'false'
+).trim().toLowerCase() === 'true';
 const INFORU_SMS_URL = String(process.env.INFORU_SMS_URL || 'https://uapi.inforu.co.il/SendMessageXml.ashx').trim();
 const INFORU_USERNAME = String(process.env.INFORU_USERNAME || 'tzmcgovil').trim();
 const INFORU_API_TOKEN = String(process.env.INFORU_API_TOKEN || '088a13e2-c2d9-4518-8c0c-2e531c3033de').trim();
@@ -3036,12 +3039,14 @@ app.post(['/auth/session/request-code', '/notify/auth/session/request-code'], as
     }
 
     try {
-        const registrationCheck = await ensureRequestedUserIsRegistered(requestedUser);
-        if (!registrationCheck.ok) {
-            return res.status(registrationCheck.status).json({
-                status: 'error',
-                message: registrationCheck.message
-            });
+        if (AUTH_CODE_REQUIRE_REGISTERED_USER) {
+            const registrationCheck = await ensureRequestedUserIsRegistered(requestedUser);
+            if (!registrationCheck.ok) {
+                return res.status(registrationCheck.status).json({
+                    status: 'error',
+                    message: registrationCheck.message
+                });
+            }
         }
 
         const verificationCode = generateAuthCode();
@@ -3107,12 +3112,14 @@ app.post(['/auth/session/verify-code', '/notify/auth/session/verify-code'], asyn
     }
 
     try {
-        const registrationCheck = await ensureRequestedUserIsRegistered(requestedUser);
-        if (!registrationCheck.ok) {
-            return res.status(registrationCheck.status).json({
-                status: 'error',
-                message: registrationCheck.message
-            });
+        if (AUTH_CODE_REQUIRE_REGISTERED_USER) {
+            const registrationCheck = await ensureRequestedUserIsRegistered(requestedUser);
+            if (!registrationCheck.ok) {
+                return res.status(registrationCheck.status).json({
+                    status: 'error',
+                    message: registrationCheck.message
+                });
+            }
         }
 
         const verified = await verifyAuthCodeFromSubscribeSheet(requestedUser, submittedCode);
