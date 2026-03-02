@@ -2310,8 +2310,10 @@ export class ChatStoreService {
 
   private persistShuttleOrder(user: string, order: ShuttleOrderRecord): void {
     const orders = this.loadShuttleOrders(user);
-    orders.unshift(order);
-    this.saveShuttleOrders(user, orders.slice(0, 300));
+    const newOrderKey = this.buildShuttleOrderStatusGroupKey(order);
+    const deduped = orders.filter((existing) => this.buildShuttleOrderStatusGroupKey(existing) !== newOrderKey);
+    deduped.unshift(order);
+    this.saveShuttleOrders(user, deduped.slice(0, 300));
   }
 
   private markShuttleOrderCancelled(user: string, orderId: string): void {
@@ -2504,6 +2506,20 @@ export class ChatStoreService {
   private saveShuttleOrders(user: string, orders: ShuttleOrderRecord[]): void {
     localStorage.setItem(this.shuttleOrdersKey(user), JSON.stringify(orders));
     this.bumpShuttlePickerRevision();
+  }
+
+  private buildShuttleOrderStatusGroupKey(order: ShuttleOrderRecord): string {
+    const dateKey = this.normalizeShuttleDateToIso(String(order.date || '').trim()) || String(order.date || '').trim();
+    const shiftKey = this.normalizeShuttleShiftLabel(String(order.shiftLabel || order.shiftValue || '').trim())
+      || String(order.shiftValue || '').trim();
+    const stationKey = this.normalizeShuttleText(String(order.station || '').trim());
+    const statusSource = String(order.statusValue || order.statusLabel || '').trim();
+    const statusKey = this.isShuttleStatusCancelled(statusSource) ? 'cancel' : 'active';
+
+    if (!dateKey || !shiftKey || !stationKey) {
+      return `id:${String(order.id || '').trim()}`;
+    }
+    return `${dateKey}|${shiftKey}|${stationKey}|${statusKey}`;
   }
 
   private bumpShuttlePickerRevision(): void {
