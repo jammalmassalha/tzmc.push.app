@@ -796,7 +796,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       await this.store.submitShuttleQuickPickerSelection(normalized);
     } catch (error) {
       const message = error instanceof Error ? error.message : this.shuttleText('pickerOptionFailed');
-      this.snackBar.open(message, 'סגור', { duration: 2800 });
+      this.snackBar.open(message, this.shuttleCloseActionLabel(), { duration: 2800 });
     } finally {
       this.isSubmittingShuttlePicker.set(false);
     }
@@ -806,7 +806,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (!this.shuttleQuickPicker()) return;
     const selectedValue = String(this.shuttlePickerControl.value || '').trim();
     if (!selectedValue) {
-      this.snackBar.open(this.shuttleText('pickerOptionRequired'), 'סגור', { duration: 2200 });
+      this.snackBar.open(this.shuttleText('pickerOptionRequired'), this.shuttleCloseActionLabel(), { duration: 2200 });
       return;
     }
     await this.chooseShuttlePickerOption(selectedValue);
@@ -822,7 +822,6 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   setShuttleLanguage(language: ShuttleLanguage): void {
-    if (this.shuttleLanguage() === language) return;
     this.store.setShuttleLanguage(language);
   }
 
@@ -832,6 +831,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   shuttleText(key: ShuttleUiTextKey): string {
     return SHUTTLE_UI_TEXT[this.shuttleLanguage()][key];
+  }
+
+  shuttleCloseActionLabel(): string {
+    return this.shuttleLanguage() === 'ru' ? 'Закрыть' : 'סגור';
   }
 
   shuttleSearchResultLabel(count: number): string {
@@ -860,7 +863,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       await this.store.refreshShuttleOrdersForActiveUser();
     } catch (error) {
       const message = error instanceof Error ? error.message : this.shuttleText('refreshFailedFallback');
-      this.snackBar.open(message, 'סגור', { duration: 2800 });
+      this.snackBar.open(message, this.shuttleCloseActionLabel(), { duration: 2800 });
     }
   }
 
@@ -887,10 +890,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     this.setShuttleOrderCancelling(normalizedId, true);
     try {
       await this.store.cancelShuttleOrderById(normalizedId);
-      this.snackBar.open(this.shuttleText('orderCancelledToast'), 'סגור', { duration: 2400 });
+      this.snackBar.open(this.shuttleText('orderCancelledToast'), this.shuttleCloseActionLabel(), { duration: 2400 });
     } catch (error) {
       const message = error instanceof Error ? error.message : this.shuttleText('orderCancelFailedFallback');
-      this.snackBar.open(message, 'סגור', { duration: 3200 });
+      this.snackBar.open(message, this.shuttleCloseActionLabel(), { duration: 3200 });
     } finally {
       this.setShuttleOrderCancelling(normalizedId, false);
     }
@@ -1069,7 +1072,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   openImagePicker(): void {
     if (this.shuttleQuickPicker()) {
-      this.snackBar.open('בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.', 'סגור', { duration: 2600 });
+      this.snackBar.open('בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.', this.shuttleCloseActionLabel(), { duration: 2600 });
       return;
     }
     if (!this.store.activeChat() || !this.store.canSendToActiveChat()) {
@@ -1081,7 +1084,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   async shareLocation(): Promise<void> {
     if (this.shuttleQuickPicker()) {
-      this.snackBar.open('בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.', 'סגור', { duration: 2600 });
+      this.snackBar.open('בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.', this.shuttleCloseActionLabel(), { duration: 2600 });
       return;
     }
     if (!this.store.activeChat() || !this.store.canSendToActiveChat()) {
