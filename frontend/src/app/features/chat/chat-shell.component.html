@@ -31,6 +31,10 @@
       <mat-icon>group_add</mat-icon>
       <span>קבוצה חדשה</span>
     </button>
+    <button mat-menu-item type="button" (click)="openInformationSecurityPolicy()">
+      <mat-icon>security</mat-icon>
+      <span>מדיניות אבטחת מידע וסייבר</span>
+    </button>
     <button mat-menu-item type="button" [disabled]="isLoggingOut()" (click)="logout()">
       <mat-icon>logout</mat-icon>
       <span>התנתקות</span>

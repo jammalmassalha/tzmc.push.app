@@ -720,6 +720,14 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     this.snackBar.open('המידע עודכן.', 'סגור', { duration: 2200 });
   }
 
+  openInformationSecurityPolicy(): void {
+    const policyPath = '/notify/uploads/InformationSecurityandCyberPolicy.pdf';
+    const popup = window.open(policyPath, '_blank', 'noopener,noreferrer');
+    if (!popup) {
+      this.snackBar.open('לא ניתן לפתוח את הקובץ כעת.', 'סגור', { duration: 2600 });
+    }
+  }
+
   async flushOutbox(): Promise<void> {
     await this.store.flushOutbox();
     this.snackBar.open('סנכרון הודעות הושלם.', 'סגור', { duration: 2200 });
