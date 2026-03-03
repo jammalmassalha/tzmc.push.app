@@ -402,7 +402,8 @@ function buildShuttleOrderKey(order) {
 
 function selectGroupRepresentative(group) {
   var latestOrder = null;
-  var latestOrderCancelled = false;
+  var activeCount = 0;
+  var nonActiveCount = 0;
 
   for (var i = 0; i < group.length; i++) {
     var order = group[i];
@@ -413,20 +414,25 @@ function selectGroupRepresentative(group) {
       statusText.indexOf('בוטל') >= 0 ||
       statusText.indexOf('отмена') >= 0 ||
       statusText.indexOf('отмен') >= 0;
+    if (isCancelled) {
+      nonActiveCount += 1;
+    } else {
+      activeCount += 1;
+    }
     var orderRow = Number(order.sheetRow || 0);
     var latestTs = latestOrder ? Number(latestOrder.submittedAt || 0) : -1;
     var latestRow = latestOrder ? Number(latestOrder.sheetRow || 0) : -1;
 
     if (!latestOrder || orderTs > latestTs || (orderTs === latestTs && orderRow > latestRow)) {
       latestOrder = order;
-      latestOrderCancelled = isCancelled;
     }
   }
 
   if (!latestOrder) return null;
 
+  var groupIsActive = activeCount > nonActiveCount;
   var next = cloneShuttleOrder(latestOrder);
-  if (latestOrderCancelled) {
+  if (!groupIsActive) {
     next.isCancelled = true;
     next.isOngoing = false;
     if (!String(next.status || '').trim()) {
@@ -440,6 +446,9 @@ function selectGroupRepresentative(group) {
   }
 
   next.isCancelled = false;
+  next.status = 'פעיל активный';
+  next.statusValue = 'פעיל активный';
+  next.cancelledAt = '';
   next.isOngoing = isIsoDateTodayOrFuture(next.dateIso);
   return next;
 }
