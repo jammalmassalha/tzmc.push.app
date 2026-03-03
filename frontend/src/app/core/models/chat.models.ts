@@ -14,6 +14,7 @@ export interface Contact {
   info?: string;
   phone?: string;
   upic?: string;
+  status?: number;
 }
 
 export interface ChatGroup {

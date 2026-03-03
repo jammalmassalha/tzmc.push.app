@@ -26,6 +26,9 @@ interface ContactResponse {
     displayName?: string;
     phone?: string;
     upic?: string;
+    status?: number | string;
+    accessStatus?: number | string;
+    userStatus?: number | string;
   }>;
 }
 
@@ -393,6 +396,7 @@ export class ChatApiService {
 
     return (body.users ?? [])
       .map((contact) => {
+        const record = contact as Record<string, unknown>;
         const hasFullNameField = (
           Object.prototype.hasOwnProperty.call(contact, 'fullName') ||
           Object.prototype.hasOwnProperty.call(contact, 'full_name')
@@ -407,6 +411,9 @@ export class ChatApiService {
         const info = fullNameParsed.info || displayNameParsed.info;
         const phone = String(contact.phone ?? '').trim();
         const upic = String(contact.upic ?? '').trim();
+        const status = this.parseContactStatus(
+          record['status'] ?? record['accessStatus'] ?? record['userStatus']
+        );
 
         return {
           username,
@@ -414,6 +421,7 @@ export class ChatApiService {
           info,
           phone: phone || undefined,
           upic: upic || undefined,
+          status,
           hasFullNameField,
           fullName
         };
@@ -430,7 +438,8 @@ export class ChatApiService {
           displayName: contact.displayName,
           info: contact.info,
           phone: contact.phone,
-          upic: contact.upic
+          upic: contact.upic,
+          status: contact.status
         } satisfies Contact;
       })
       .filter((contact) => {
@@ -464,6 +473,16 @@ export class ChatApiService {
       name: cleanedName,
       info: mergedInfo
     };
+  }
+
+  private parseContactStatus(value: unknown): number | undefined {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return Math.trunc(value);
+    }
+    const normalized = String(value ?? '').trim();
+    if (!normalized) return undefined;
+    const parsed = Number.parseInt(normalized, 10);
+    return Number.isFinite(parsed) ? parsed : undefined;
   }
 
   async getGroups(user?: string): Promise<ChatGroup[]> {

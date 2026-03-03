@@ -56,6 +56,11 @@ const SHUTTLE_REMINDER_HISTORY_KEY_PREFIX = 'shuttle_reminder_2h_sent_';
 const SHUTTLE_REMINDER_HISTORY_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const SHUTTLE_STATUS_ACTIVE_VALUE = 'פעיל активный';
 const SHUTTLE_STATUS_CANCEL_VALUE = 'ביטול נסיעה отмена поезд';
+const DOVRUT_GROUP_NAME = 'דוברות';
+const DOVRUT_GROUP_ID = DOVRUT_GROUP_NAME;
+const DOVRUT_SYSTEM_CREATOR = 'dovrut-system';
+const DOVRUT_ACTIVE_STATUS_VALUE = 1;
+const DOVRUT_ALLOWED_WRITERS = ['0506501040', '0506267447'] as const;
 const SHUTTLE_DAY_NAMES_BY_LANGUAGE: Record<ShuttleLanguage, readonly string[]> = {
   he: ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'] as const,
   ru: ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'] as const
@@ -254,6 +259,9 @@ export class ChatStoreService {
   private readonly shuttleChatIdSet = new Set<string>(
     [SHUTTLE_CHAT_NAME, SHUTTLE_CHAT_TITLE].map((id) => this.normalizeChatId(id)).filter(Boolean)
   );
+  private readonly dovrutWriterSet = new Set<string>(
+    DOVRUT_ALLOWED_WRITERS.map((value) => this.normalizeUser(value)).filter(Boolean)
+  );
   private incomingBatchDepth = 0;
   private pendingPersistAfterIncomingBatch = false;
 
@@ -331,13 +339,21 @@ export class ChatStoreService {
     const group = this.groups().find((item) => item.id === active);
     if (!group) return true;
     if (group.type !== 'community') return true;
-    return this.normalizeUser(group.createdBy) === this.normalizeUser(this.currentUser() ?? '');
+    return this.canUserSendToCommunityGroup(group, this.currentUser());
   });
 
   private readonly appBadgeSyncEffect = effect(() => {
     const unreadMap = this.unreadByChat();
     const unreadTotal = Object.values(unreadMap).reduce((sum, count) => sum + (Number(count) || 0), 0);
     this.syncAppBadge(unreadTotal);
+  });
+
+  private readonly dovrutGroupSyncEffect = effect(() => {
+    const user = this.currentUser();
+    if (!user) return;
+    const contacts = this.contacts();
+    const groups = this.groups();
+    this.syncDovrutCommunityGroup(contacts, groups);
   });
 
   constructor(private readonly api: ChatApiService) {
@@ -775,7 +791,87 @@ export class ChatStoreService {
     const group = this.groups().find((item) => item.id === normalizedChatId);
     if (!group) return true;
     if (group.type !== 'community') return true;
-    return this.normalizeUser(group.createdBy) === this.normalizeUser(this.currentUser() ?? '');
+    return this.canUserSendToCommunityGroup(group, this.currentUser());
+  }
+
+  private canUserSendToCommunityGroup(group: ChatGroup, user: string | null): boolean {
+    const normalizedUser = this.normalizeUser(user ?? '');
+    if (!normalizedUser) return false;
+    if (this.isDovrutGroup(group.id)) {
+      return this.dovrutWriterSet.has(normalizedUser);
+    }
+    return this.normalizeUser(group.createdBy) === normalizedUser;
+  }
+
+  private isDovrutGroup(groupId: string): boolean {
+    return this.normalizeChatId(groupId) === this.normalizeChatId(DOVRUT_GROUP_ID);
+  }
+
+  private syncDovrutCommunityGroup(contacts: Contact[], groups: ChatGroup[]): void {
+    const dovrutId = this.normalizeChatId(DOVRUT_GROUP_ID);
+    const nextMembers = this.computeDovrutMembers(contacts);
+    const existing = groups.find((group) => group.id === dovrutId) ?? null;
+
+    const existingMembers = existing
+      ? Array.from(new Set(existing.members.map((member) => this.normalizeUser(member)).filter(Boolean)))
+        .sort((a, b) => a.localeCompare(b))
+      : [];
+    const shouldUpdate = (
+      !existing ||
+      existing.name !== DOVRUT_GROUP_NAME ||
+      existing.type !== 'community' ||
+      this.normalizeUser(existing.createdBy) !== this.normalizeUser(DOVRUT_SYSTEM_CREATOR) ||
+      !this.areStringArraysEqual(existingMembers, nextMembers)
+    );
+    if (!shouldUpdate) {
+      return;
+    }
+
+    const nextGroup: ChatGroup = {
+      id: dovrutId,
+      name: DOVRUT_GROUP_NAME,
+      members: nextMembers,
+      createdBy: this.normalizeUser(DOVRUT_SYSTEM_CREATOR),
+      updatedAt: Date.now(),
+      type: 'community'
+    };
+    this.groups.update((currentGroups) => {
+      const hasExisting = currentGroups.some((group) => group.id === dovrutId);
+      if (!hasExisting) {
+        return [nextGroup, ...currentGroups];
+      }
+      return currentGroups.map((group) => (group.id === dovrutId ? nextGroup : group));
+    });
+    this.schedulePersist();
+  }
+
+  private computeDovrutMembers(contacts: Contact[]): string[] {
+    return Array.from(
+      new Set(
+        contacts
+          .filter((contact) => this.normalizeContactStatus(contact.status) === DOVRUT_ACTIVE_STATUS_VALUE)
+          .map((contact) => this.normalizeUser(contact.username))
+          .filter(Boolean)
+      )
+    ).sort((a, b) => a.localeCompare(b));
+  }
+
+  private normalizeContactStatus(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return Math.trunc(value);
+    }
+    const normalized = String(value ?? '').trim();
+    if (!normalized) return null;
+    const parsed = Number.parseInt(normalized, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  private areStringArraysEqual(a: string[], b: string[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
   }
 
   getShuttleQuickPickerState(): ShuttleQuickPickerState | null {
@@ -2966,8 +3062,12 @@ export class ChatStoreService {
     }
 
     const group = this.groups().find((item) => item.id === chatId) ?? null;
-    if (group && group.type === 'community' && this.normalizeUser(group.createdBy) !== user) {
-      this.lastError.set('רק מנהל יכול לשלוח בקבוצת קהילה');
+    if (group && group.type === 'community' && !this.canUserSendToCommunityGroup(group, user)) {
+      this.lastError.set(
+        this.isDovrutGroup(group.id)
+          ? 'רק משתמשי דוברות יכולים לשלוח בחדר זה'
+          : 'רק מנהל יכול לשלוח בקבוצת קהילה'
+      );
       return;
     }
 
@@ -3485,10 +3585,10 @@ export class ChatStoreService {
       return true;
     }
     const currentSignature = current
-      .map((item) => `${item.username}|${item.displayName}|${item.info || ''}|${item.phone || ''}|${item.upic || ''}`)
+      .map((item) => `${item.username}|${item.displayName}|${item.info || ''}|${item.phone || ''}|${item.upic || ''}|${this.normalizeContactStatus(item.status) ?? ''}`)
       .join('\n');
     const nextSignature = next
-      .map((item) => `${item.username}|${item.displayName}|${item.info || ''}|${item.phone || ''}|${item.upic || ''}`)
+      .map((item) => `${item.username}|${item.displayName}|${item.info || ''}|${item.phone || ''}|${item.upic || ''}|${this.normalizeContactStatus(item.status) ?? ''}`)
       .join('\n');
     return currentSignature !== nextSignature;
   }
@@ -4716,7 +4816,8 @@ export class ChatStoreService {
           displayName: (parsedName.name || username).trim(),
           info: contact.info?.trim() || fallbackInfo,
           phone: contact.phone?.trim() || undefined,
-          upic: contact.upic?.trim() || undefined
+          upic: contact.upic?.trim() || undefined,
+          status: this.normalizeContactStatus((contact as { status?: unknown }).status) ?? undefined
         } satisfies Contact;
       })
       .filter((contact) => {
