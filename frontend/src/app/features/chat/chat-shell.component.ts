@@ -277,15 +277,32 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly selectedGroupMemberRemoveUsernames = signal<Set<string>>(new Set<string>());
   readonly selectedGroupMemberAddCount = computed(() => this.selectedGroupMemberAddUsernames().size);
   readonly selectedGroupMemberRemoveCount = computed(() => this.selectedGroupMemberRemoveUsernames().size);
+  readonly currentUserDepartment = computed(() => {
+    const currentUser = this.normalizeUsername(this.store.currentUser() || '');
+    if (!currentUser) return '';
+    const currentContact = this.store.contacts().find((contact) => this.normalizeUsername(contact.username) === currentUser);
+    return this.extractDepartmentFromInfo(currentContact?.info);
+  });
   readonly groupMemberAddCandidates = computed<GroupMemberAddCandidate[]>(() => {
     const preview = this.groupMembersPreview();
     if (!preview?.canManageMembers) return [];
+    const currentDepartment = this.currentUserDepartment();
+    if (!currentDepartment) return [];
 
     const existingMembers = new Set(preview.members.map((member) => member.username));
     return this.store.contacts()
-      .filter((contact) => !existingMembers.has(contact.username))
+      .filter(
+        (contact) => {
+          const normalizedUsername = this.normalizeUsername(contact.username);
+          if (!normalizedUsername) return false;
+          return (
+            !existingMembers.has(normalizedUsername) &&
+            this.extractDepartmentFromInfo(contact.info) === currentDepartment
+          );
+        }
+      )
       .map((contact) => ({
-        username: contact.username,
+        username: this.normalizeUsername(contact.username),
         displayName: contact.displayName || contact.username,
         info: contact.info
       }))
@@ -2309,6 +2326,13 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   private normalizeUsername(value: string): string {
     return String(value || '').trim().toLowerCase();
+  }
+
+  private extractDepartmentFromInfo(info?: string): string {
+    const rawInfo = String(info || '').trim();
+    if (!rawInfo) return '';
+    const [department = ''] = rawInfo.split(/\s*[-–—]\s*/, 1);
+    return department.trim().toLowerCase();
   }
 
   private shouldEnableConversationSwipe(event: TouchEvent): boolean {
