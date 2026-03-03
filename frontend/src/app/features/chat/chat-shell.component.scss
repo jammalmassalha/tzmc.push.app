@@ -979,6 +979,40 @@ mat-chip:not(.offline) {
   color: #2a3d7e;
 }
 
+.shuttle-orders-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shuttle-orders-language-switch {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(62, 88, 179, 0.26);
+  border-radius: 999px;
+  padding: 2px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.shuttle-orders-language-btn {
+  border: 0;
+  min-height: 24px;
+  min-width: 32px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: transparent;
+  color: #4a5a89;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.shuttle-orders-language-btn.active {
+  background: rgba(58, 87, 186, 0.2);
+  color: #1f3275;
+}
+
 .shuttle-orders-refresh-btn {
   border: 0;
   border-radius: 999px;

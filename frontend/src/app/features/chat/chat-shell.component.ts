@@ -37,6 +37,7 @@ import {
   ChatStoreService,
   IncomingReactionNotice,
   ShuttleBreadcrumbStep,
+  ShuttleLanguage,
   ShuttleOrdersDashboard,
   ShuttleQuickPickerState
 } from '../../core/services/chat-store.service';
@@ -106,6 +107,129 @@ interface ShuttleOrderMessageCard {
   station: string;
   cancelled: boolean;
 }
+
+type ShuttleUiTextKey =
+  | 'ordersTitle'
+  | 'refresh'
+  | 'loading'
+  | 'ordersTablistAria'
+  | 'ongoingTab'
+  | 'pastTab'
+  | 'ongoingEmpty'
+  | 'pastEmpty'
+  | 'activeStatus'
+  | 'deleteOrder'
+  | 'dateLabel'
+  | 'shiftLabel'
+  | 'stationLabel'
+  | 'pastStatusCancelled'
+  | 'pastStatusDone'
+  | 'pickerStepsAria'
+  | 'stationSearchPlaceholder'
+  | 'stationSearchAria'
+  | 'clearStationSearchAria'
+  | 'noSearchResults'
+  | 'stationListAria'
+  | 'stationSubtitle'
+  | 'selectOption'
+  | 'confirmSelection'
+  | 'backToMenu'
+  | 'searchResults'
+  | 'deleteOrderDialogTitle'
+  | 'deleteOrderDialogMessage'
+  | 'deleteOrderDialogConfirm'
+  | 'deleteOrderDialogCancel'
+  | 'orderCancelledToast'
+  | 'orderCancelFailedFallback'
+  | 'pickerOptionRequired'
+  | 'pickerOptionFailed'
+  | 'refreshFailedFallback'
+  | 'orderSavedFallback'
+  | 'orderCancelledFallback'
+  | 'languageLabel';
+
+const SHUTTLE_UI_TEXT: Record<ShuttleLanguage, Record<ShuttleUiTextKey, string>> = {
+  he: {
+    ordersTitle: 'ההזמנות שלי',
+    refresh: 'רענון',
+    loading: 'טוען נתונים...',
+    ordersTablistAria: 'קטגוריות הזמנות',
+    ongoingTab: 'פעילות',
+    pastTab: 'עבר',
+    ongoingEmpty: 'אין הזמנות פעילות כרגע.',
+    pastEmpty: 'אין הזמנות עבר להצגה.',
+    activeStatus: 'פעילה',
+    deleteOrder: 'מחק הזמנה',
+    dateLabel: 'תאריך',
+    shiftLabel: 'משמרת',
+    stationLabel: 'תחנה',
+    pastStatusCancelled: 'בוטלה',
+    pastStatusDone: 'הסתיימה',
+    pickerStepsAria: 'שלבי הזמנת הסעה',
+    stationSearchPlaceholder: 'חיפוש תחנה',
+    stationSearchAria: 'חיפוש תחנה',
+    clearStationSearchAria: 'נקה חיפוש תחנות',
+    noSearchResults: 'לא נמצאו תוצאות עבור החיפוש.',
+    stationListAria: 'רשימת תחנות',
+    stationSubtitle: 'תחנת איסוף',
+    selectOption: 'בחר אפשרות',
+    confirmSelection: 'אישור בחירה',
+    backToMenu: 'חזרה לתפריט',
+    searchResults: 'נמצאו',
+    deleteOrderDialogTitle: 'מחיקת הזמנה',
+    deleteOrderDialogMessage: 'האם למחוק (לבטל) את ההזמנה הזו?',
+    deleteOrderDialogConfirm: 'כן, מחק',
+    deleteOrderDialogCancel: 'ביטול',
+    orderCancelledToast: 'ההזמנה בוטלה.',
+    orderCancelFailedFallback: 'ביטול ההזמנה נכשל.',
+    pickerOptionRequired: 'יש לבחור אפשרות מהרשימה.',
+    pickerOptionFailed: 'בחירה נכשלה. נסה שוב.',
+    refreshFailedFallback: 'טעינת ההזמנות נכשלה',
+    orderSavedFallback: 'הזמנה נשמרה',
+    orderCancelledFallback: 'הזמנה בוטלה',
+    languageLabel: 'שפה'
+  },
+  ru: {
+    ordersTitle: 'Мои заказы',
+    refresh: 'Обновить',
+    loading: 'Загрузка данных...',
+    ordersTablistAria: 'Категории заказов',
+    ongoingTab: 'Активные',
+    pastTab: 'Прошлые',
+    ongoingEmpty: 'Сейчас нет активных заказов.',
+    pastEmpty: 'Нет прошлых заказов для отображения.',
+    activeStatus: 'Активен',
+    deleteOrder: 'Удалить заказ',
+    dateLabel: 'Дата',
+    shiftLabel: 'Смена',
+    stationLabel: 'Станция',
+    pastStatusCancelled: 'Отменен',
+    pastStatusDone: 'Завершен',
+    pickerStepsAria: 'Шаги заказа трансфера',
+    stationSearchPlaceholder: 'Поиск станции',
+    stationSearchAria: 'Поиск станции',
+    clearStationSearchAria: 'Очистить поиск станций',
+    noSearchResults: 'По вашему запросу ничего не найдено.',
+    stationListAria: 'Список станций',
+    stationSubtitle: 'Станция посадки',
+    selectOption: 'Выберите вариант',
+    confirmSelection: 'Подтвердить выбор',
+    backToMenu: 'Назад в меню',
+    searchResults: 'Найдено',
+    deleteOrderDialogTitle: 'Удаление заказа',
+    deleteOrderDialogMessage: 'Удалить (отменить) этот заказ?',
+    deleteOrderDialogConfirm: 'Да, удалить',
+    deleteOrderDialogCancel: 'Отмена',
+    orderCancelledToast: 'Заказ отменен.',
+    orderCancelFailedFallback: 'Не удалось отменить заказ.',
+    pickerOptionRequired: 'Выберите вариант из списка.',
+    pickerOptionFailed: 'Не удалось выбрать вариант. Попробуйте снова.',
+    refreshFailedFallback: 'Не удалось загрузить заказы',
+    orderSavedFallback: 'Заказ сохранен',
+    orderCancelledFallback: 'Заказ отменен',
+    languageLabel: 'Язык'
+  }
+};
 
 @Component({
   selector: 'app-chat-shell',
@@ -222,6 +346,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly isLoadingShuttleOrders = computed(() =>
     this.store.getShuttleOrdersLoading()
   );
+  readonly shuttleLanguage = computed<ShuttleLanguage>(() => this.store.getShuttleLanguage());
   readonly shuttleDashboardTab = signal<'ongoing' | 'past'>('ongoing');
   readonly isShuttleRoomActive = computed(() =>
     Boolean(this.shuttleOrdersDashboard() || this.shuttleQuickPicker())
@@ -670,7 +795,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     try {
       await this.store.submitShuttleQuickPickerSelection(normalized);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'בחירה נכשלה. נסה שוב.';
+      const message = error instanceof Error ? error.message : this.shuttleText('pickerOptionFailed');
       this.snackBar.open(message, 'סגור', { duration: 2800 });
     } finally {
       this.isSubmittingShuttlePicker.set(false);
@@ -681,19 +806,48 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (!this.shuttleQuickPicker()) return;
     const selectedValue = String(this.shuttlePickerControl.value || '').trim();
     if (!selectedValue) {
-      this.snackBar.open('יש לבחור אפשרות מהרשימה.', 'סגור', { duration: 2200 });
+      this.snackBar.open(this.shuttleText('pickerOptionRequired'), 'סגור', { duration: 2200 });
       return;
     }
     await this.chooseShuttlePickerOption(selectedValue);
   }
 
   async goBackFromShuttlePicker(): Promise<void> {
-    await this.chooseShuttlePickerOption('חזרה לתפריט');
+    await this.chooseShuttlePickerOption('0');
   }
 
   clearShuttlePickerSearch(): void {
     if (!this.shuttlePickerSearchControl.value) return;
     this.shuttlePickerSearchControl.setValue('');
+  }
+
+  setShuttleLanguage(language: ShuttleLanguage): void {
+    if (this.shuttleLanguage() === language) return;
+    this.store.setShuttleLanguage(language);
+  }
+
+  isShuttleLanguage(language: ShuttleLanguage): boolean {
+    return this.shuttleLanguage() === language;
+  }
+
+  shuttleText(key: ShuttleUiTextKey): string {
+    return SHUTTLE_UI_TEXT[this.shuttleLanguage()][key];
+  }
+
+  shuttleSearchResultLabel(count: number): string {
+    return this.shuttleLanguage() === 'ru'
+      ? `Найдено ${count} подходящих станций`
+      : `נמצאו ${count} תחנות תואמות`;
+  }
+
+  shuttleOrderDayDateLabel(dayName: string, date: string): string {
+    return `${String(dayName || '').trim()} ${String(date || '').trim()}`.trim();
+  }
+
+  shuttlePastStatusLabel(order: { statusLabel: string }): string {
+    return String(order.statusLabel || '').toLowerCase().includes('отмен') || String(order.statusLabel || '').includes('בוטל')
+      ? this.shuttleText('pastStatusCancelled')
+      : this.shuttleText('pastStatusDone');
   }
 
   setShuttleDashboardTab(tab: 'ongoing' | 'past'): void {
@@ -705,7 +859,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     try {
       await this.store.refreshShuttleOrdersForActiveUser();
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'טעינת ההזמנות נכשלה';
+      const message = error instanceof Error ? error.message : this.shuttleText('refreshFailedFallback');
       this.snackBar.open(message, 'סגור', { duration: 2800 });
     }
   }
@@ -718,10 +872,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const dialogRef = this.dialog.open(ConfirmMessageActionDialogComponent, {
       width: '360px',
       data: {
-        title: 'מחיקת הזמנה',
-        message: 'האם למחוק (לבטל) את ההזמנה הזו?',
-        confirmLabel: 'כן, מחק',
-        cancelLabel: 'ביטול',
+        title: this.shuttleText('deleteOrderDialogTitle'),
+        message: this.shuttleText('deleteOrderDialogMessage'),
+        confirmLabel: this.shuttleText('deleteOrderDialogConfirm'),
+        cancelLabel: this.shuttleText('deleteOrderDialogCancel'),
         confirmColor: 'warn'
       }
     });
@@ -733,9 +887,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     this.setShuttleOrderCancelling(normalizedId, true);
     try {
       await this.store.cancelShuttleOrderById(normalizedId);
-      this.snackBar.open('ההזמנה בוטלה.', 'סגור', { duration: 2400 });
+      this.snackBar.open(this.shuttleText('orderCancelledToast'), 'סגור', { duration: 2400 });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'ביטול ההזמנה נכשל.';
+      const message = error instanceof Error ? error.message : this.shuttleText('orderCancelFailedFallback');
       this.snackBar.open(message, 'סגור', { duration: 3200 });
     } finally {
       this.setShuttleOrderCancelling(normalizedId, false);
@@ -773,7 +927,11 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const dayDate = String(match[2] || '').trim();
     const shift = String(match[3] || '').trim();
     const station = String(match[4] || '').trim();
-    const title = lines[0] || (recordType === 'shuttle-cancel-success' ? 'הזמנה בוטלה' : 'הזמנה נשמרה');
+    const title = lines[0] || (
+      recordType === 'shuttle-cancel-success'
+        ? this.shuttleText('orderCancelledFallback')
+        : this.shuttleText('orderSavedFallback')
+    );
 
     return {
       title,
@@ -781,7 +939,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       dayDate,
       shift,
       station,
-      cancelled: recordType === 'shuttle-cancel-success' || statusLabel.includes('בוטל')
+      cancelled:
+        recordType === 'shuttle-cancel-success' ||
+        statusLabel.includes('בוטל') ||
+        statusLabel.toLowerCase().includes('отмен')
     };
   }
 
