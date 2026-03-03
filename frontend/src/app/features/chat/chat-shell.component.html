@@ -559,7 +559,7 @@
                     mat-stroked-button
                     type="button"
                     class="shuttle-picker-option-btn"
-                    [disabled]="isSubmittingShuttlePicker()"
+                    [disabled]="isSubmittingShuttlePicker() || !!option.disabled"
                     (click)="chooseShuttlePickerOption(option.value)">
                     {{ option.label }}
                   </button>
@@ -621,7 +621,7 @@
                       [formControl]="shuttlePickerControl"
                       [disabled]="isSubmittingShuttlePicker() || !filteredShuttlePickerOptions().length">
                       @for (option of filteredShuttlePickerOptions(); track option.value + '-' + $index) {
-                        <mat-option [value]="option.value">{{ option.label }}</mat-option>
+                        <mat-option [value]="option.value" [disabled]="!!option.disabled">{{ option.label }}</mat-option>
                       }
                     </mat-select>
                   </mat-form-field>

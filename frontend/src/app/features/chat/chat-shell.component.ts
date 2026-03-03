@@ -142,6 +142,7 @@ type ShuttleUiTextKey =
   | 'orderCancelledToast'
   | 'orderCancelFailedFallback'
   | 'pickerOptionRequired'
+  | 'pickerOptionUnavailable'
   | 'pickerOptionFailed'
   | 'refreshFailedFallback'
   | 'orderSavedFallback'
@@ -183,6 +184,7 @@ const SHUTTLE_UI_TEXT: Record<ShuttleLanguage, Record<ShuttleUiTextKey, string>>
     orderCancelledToast: 'ההזמנה בוטלה.',
     orderCancelFailedFallback: 'ביטול ההזמנה נכשל.',
     pickerOptionRequired: 'יש לבחור אפשרות מהרשימה.',
+    pickerOptionUnavailable: 'האפשרות שבחרת אינה זמינה כרגע.',
     pickerOptionFailed: 'בחירה נכשלה. נסה שוב.',
     refreshFailedFallback: 'טעינת ההזמנות נכשלה',
     orderSavedFallback: 'הזמנה נשמרה',
@@ -223,6 +225,7 @@ const SHUTTLE_UI_TEXT: Record<ShuttleLanguage, Record<ShuttleUiTextKey, string>>
     orderCancelledToast: 'Заказ отменен.',
     orderCancelFailedFallback: 'Не удалось отменить заказ.',
     pickerOptionRequired: 'Выберите вариант из списка.',
+    pickerOptionUnavailable: 'Выбранный вариант сейчас недоступен.',
     pickerOptionFailed: 'Не удалось выбрать вариант. Попробуйте снова.',
     refreshFailedFallback: 'Не удалось загрузить заказы',
     orderSavedFallback: 'Заказ сохранен',
@@ -799,6 +802,14 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   async chooseShuttlePickerOption(value: string): Promise<void> {
     const normalized = String(value || '').trim();
     if (!normalized || this.isSubmittingShuttlePicker()) return;
+    const picker = this.shuttleQuickPicker();
+    if (picker) {
+      const option = picker.options.find((item) => String(item.value || '').trim() === normalized);
+      if (option?.disabled) {
+        this.snackBar.open(this.shuttleText('pickerOptionUnavailable'), this.shuttleCloseActionLabel(), { duration: 2400 });
+        return;
+      }
+    }
     this.isSubmittingShuttlePicker.set(true);
     try {
       await this.store.submitShuttleQuickPickerSelection(normalized);
@@ -811,10 +822,18 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   async submitShuttlePickerSelection(): Promise<void> {
-    if (!this.shuttleQuickPicker()) return;
+    const picker = this.shuttleQuickPicker();
+    if (!picker) return;
     const selectedValue = String(this.shuttlePickerControl.value || '').trim();
     if (!selectedValue) {
       this.snackBar.open(this.shuttleText('pickerOptionRequired'), this.shuttleCloseActionLabel(), { duration: 2200 });
+      return;
+    }
+    const selectedOption = picker.options.find(
+      (option) => String(option.value || '').trim() === selectedValue
+    );
+    if (selectedOption?.disabled) {
+      this.snackBar.open(this.shuttleText('pickerOptionUnavailable'), this.shuttleCloseActionLabel(), { duration: 2400 });
       return;
     }
     await this.chooseShuttlePickerOption(selectedValue);

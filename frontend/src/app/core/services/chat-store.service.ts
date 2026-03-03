@@ -183,6 +183,8 @@ export interface ActivatedChatMeta {
 export interface ShuttleQuickPickerOption {
   value: string;
   label: string;
+  submitValue?: string;
+  disabled?: boolean;
 }
 
 export interface ShuttleQuickPickerState {
@@ -923,15 +925,20 @@ export class ChatStoreService {
     }
 
     if (state.awaiting === 'shift') {
+      const selectedDate = this.normalizeShuttleDateToIso(String(state.draft?.date || '').trim());
+      const shiftOptions = this.getShuttleShiftOptionsForDate(selectedDate);
+      const hasEnabledShift = shiftOptions.some((option) => !option.disabled);
       return {
         key: 'shift',
         title: this.shuttleText('בחר משמרת', 'Выберите смену'),
-        helperText: this.shuttleText('הסעה לעבודה', 'Трансфер на работу'),
+        helperText: hasEnabledShift
+          ? this.shuttleText('הסעה לעבודה', 'Трансфер на работу')
+          : this.shuttleText(
+            'אין משמרות זמינות בשעה הקרובה לתאריך שנבחר. בחר תאריך אחר.',
+            'На ближайший час для выбранной даты нет доступных смен. Выберите другую дату.'
+          ),
         mode: 'buttons',
-        options: SHUTTLE_SHIFT_OPTIONS.map((option) => ({
-          value: option.label,
-          label: option.label
-        })),
+        options: shiftOptions,
         allowBack: true
       };
     }
@@ -1920,10 +1927,29 @@ export class ChatStoreService {
     state: ShuttleConversationState,
     value: string
   ): Promise<boolean> {
+    const selectedDate = this.normalizeShuttleDateToIso(String(state.draft?.date || '').trim());
+    const availableShiftOptions = this.getShuttleShiftOptionsForDate(selectedDate).filter((option) => !option.disabled);
+    if (!availableShiftOptions.length) {
+      this.sendShuttleSystemMessage(
+        this.shuttleText(
+          'אין משמרות זמינות בשעה הקרובה לתאריך שנבחר. בחר תאריך אחר.',
+          'На ближайший час для выбранной даты нет доступных смен. Выберите другую дату.'
+        ),
+        {
+          recordType: 'shuttle-invalid'
+        }
+      );
+      this.saveShuttleState(user, {
+        awaiting: 'date',
+        draft: null,
+        cancelCandidateIds: []
+      });
+      return true;
+    }
     const pickedIndex = this.parseShuttleSelection(
       value,
-      SHUTTLE_SHIFT_OPTIONS.length,
-      SHUTTLE_SHIFT_OPTIONS.map((option) => option.label)
+      availableShiftOptions.length,
+      availableShiftOptions.map((option) => option.label)
     );
     if (pickedIndex < 0) {
       this.sendShuttleSystemMessage(this.shuttleText('בחירה לא תקינה. נא לבחור משמרת מהרשימה.', 'Некорректный выбор. Выберите смену из списка.'), {
@@ -1932,7 +1958,7 @@ export class ChatStoreService {
       return true;
     }
 
-    const shift = SHUTTLE_SHIFT_OPTIONS[pickedIndex];
+    const shift = availableShiftOptions[pickedIndex];
     const stations = await this.fetchShuttleStationsCached();
     if (!stations.length) {
       this.sendShuttleSystemMessage(this.shuttleText('לא ניתן לטעון תחנות כרגע. נסה שוב מאוחר יותר.', 'Сейчас не удалось загрузить станции. Попробуйте позже.'), {
@@ -1948,7 +1974,7 @@ export class ChatStoreService {
       draft: {
         ...(state.draft || {}),
         shiftLabel: shift.label,
-        shiftValue: shift.value
+        shiftValue: shift.submitValue || shift.value
       },
       cancelCandidateIds: []
     });
@@ -1994,6 +2020,26 @@ export class ChatStoreService {
     }
 
     const completeDraft = draft as ShuttleOrderDraft;
+    if (this.shouldDisableShuttleShiftForDate(completeDraft.date, completeDraft.shiftLabel)) {
+      this.sendShuttleSystemMessage(
+        this.shuttleText(
+          'המשמרת שנבחרה כבר לא זמינה להזמנה. בחר משמרת אחרת.',
+          'Выбранная смена уже недоступна для заказа. Выберите другую смену.'
+        ),
+        {
+          recordType: 'shuttle-invalid'
+        }
+      );
+      this.saveShuttleState(user, {
+        awaiting: 'shift',
+        draft: {
+          date: completeDraft.date,
+          dayName: completeDraft.dayName
+        },
+        cancelCandidateIds: []
+      });
+      return true;
+    }
     try {
       const employee = await this.submitShuttleOrder(user, completeDraft, SHUTTLE_STATUS_ACTIVE_VALUE);
       this.persistShuttleOrder(user, {
@@ -2366,6 +2412,30 @@ export class ChatStoreService {
       });
     }
     return choices;
+  }
+
+  private getShuttleShiftOptionsForDate(dateIso: string): ShuttleQuickPickerOption[] {
+    return SHUTTLE_SHIFT_OPTIONS.map((option) => ({
+      value: option.label,
+      label: option.label,
+      submitValue: option.value,
+      disabled: this.shouldDisableShuttleShiftForDate(dateIso, option.label)
+    }));
+  }
+
+  private shouldDisableShuttleShiftForDate(dateIso: string, shiftLabel: string): boolean {
+    const normalizedDate = this.normalizeShuttleDateToIso(String(dateIso || '').trim());
+    if (!normalizedDate || normalizedDate !== this.toIsoDate(new Date())) {
+      return false;
+    }
+    const normalizedShift = this.normalizeShuttleShiftLabel(shiftLabel);
+    const shiftMinutes = this.parseShuttleShiftMinutes(normalizedShift);
+    if (shiftMinutes < 0) {
+      return false;
+    }
+    const now = new Date();
+    const minimumAllowedMinutes = (now.getHours() * 60) + now.getMinutes() + 60;
+    return shiftMinutes <= minimumAllowedMinutes;
   }
 
   private getShuttleMainMenuMessage(): string {
