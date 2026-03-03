@@ -846,10 +846,18 @@ export class ChatStoreService {
   }
 
   private computeDovrutMembers(contacts: Contact[]): string[] {
+    const hasAnyStatusSignal = contacts.some((contact) => this.normalizeContactStatus(contact.status) !== null);
     return Array.from(
       new Set(
         contacts
-          .filter((contact) => this.normalizeContactStatus(contact.status) === DOVRUT_ACTIVE_STATUS_VALUE)
+          .filter((contact) => {
+            const normalizedStatus = this.normalizeContactStatus(contact.status);
+            if (!hasAnyStatusSignal) {
+              // Backward-compatible fallback: if backend has not exposed status yet, avoid empty room.
+              return true;
+            }
+            return normalizedStatus === DOVRUT_ACTIVE_STATUS_VALUE;
+          })
           .map((contact) => this.normalizeUser(contact.username))
           .filter(Boolean)
       )
