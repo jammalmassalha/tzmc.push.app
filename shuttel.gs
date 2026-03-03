@@ -401,10 +401,8 @@ function buildShuttleOrderKey(order) {
 }
 
 function selectGroupRepresentative(group) {
-  var hasCancel = false;
   var latestOrder = null;
-  var latestCancelOrder = null;
-  var latestActiveOrder = null;
+  var latestOrderCancelled = false;
 
   for (var i = 0; i < group.length; i++) {
     var order = group[i];
@@ -412,39 +410,37 @@ function selectGroupRepresentative(group) {
     var statusText = String(order.status || '').toLowerCase();
     var isCancelled = order.isCancelled === true ||
       statusText.indexOf('ביטול') >= 0 ||
-      statusText.indexOf('отмена') >= 0;
+      statusText.indexOf('בוטל') >= 0 ||
+      statusText.indexOf('отмена') >= 0 ||
+      statusText.indexOf('отмен') >= 0;
+    var orderRow = Number(order.sheetRow || 0);
+    var latestTs = latestOrder ? Number(latestOrder.submittedAt || 0) : -1;
+    var latestRow = latestOrder ? Number(latestOrder.sheetRow || 0) : -1;
 
-    if (!latestOrder || orderTs > Number(latestOrder.submittedAt || 0)) {
+    if (!latestOrder || orderTs > latestTs || (orderTs === latestTs && orderRow > latestRow)) {
       latestOrder = order;
-    }
-    if (isCancelled) {
-      hasCancel = true;
-      if (!latestCancelOrder || orderTs > Number(latestCancelOrder.submittedAt || 0)) {
-        latestCancelOrder = order;
-      }
-    } else {
-      if (!latestActiveOrder || orderTs > Number(latestActiveOrder.submittedAt || 0)) {
-        latestActiveOrder = order;
-      }
+      latestOrderCancelled = isCancelled;
     }
   }
 
-  if (!hasCancel) {
-    return latestActiveOrder || latestOrder;
+  if (!latestOrder) return null;
+
+  var next = cloneShuttleOrder(latestOrder);
+  if (latestOrderCancelled) {
+    next.isCancelled = true;
+    next.isOngoing = false;
+    if (!String(next.status || '').trim()) {
+      next.status = 'ביטול נסיעה отмена поезд';
+    }
+    next.statusValue = String(next.status || '').trim() || 'ביטול נסיעה отмена поезд';
+    if (!next.cancelledAt) {
+      next.cancelledAt = Number(next.submittedAt || Date.now());
+    }
+    return next;
   }
 
-  var base = latestCancelOrder || latestOrder;
-  if (!base) return null;
-  var next = cloneShuttleOrder(base);
-  next.isCancelled = true;
-  next.isOngoing = false;
-  if (!String(next.status || '').trim()) {
-    next.status = 'ביטול נסיעה отмена поезд';
-  }
-  next.statusValue = String(next.status || '').trim() || 'ביטול נסיעה отмена поезд';
-  if (!next.cancelledAt) {
-    next.cancelledAt = Number(next.submittedAt || Date.now());
-  }
+  next.isCancelled = false;
+  next.isOngoing = isIsoDateTodayOrFuture(next.dateIso);
   return next;
 }
 
