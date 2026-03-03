@@ -873,11 +873,7 @@
         </button>
         <div class="group-members-title">{{ groupPreview.title }}</div>
         <div class="group-members-meta">
-          @if (groupPreview.type === 'community') {
-            קבוצת קהילה · רק מנהל שולח הודעות
-          } @else {
-            קבוצה רגילה · כל המשתתפים יכולים לשלוח
-          }
+          {{ groupMembersMetaText(groupPreview) }}
         </div>
 
         @if (groupPreview.canManageMembers) {

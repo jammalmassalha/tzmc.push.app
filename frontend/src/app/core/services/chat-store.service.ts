@@ -340,7 +340,7 @@ export class ChatStoreService {
     if (!active) return false;
     const group = this.groups().find((item) => item.id === active);
     if (!group) return true;
-    if (group.type !== 'community') return true;
+    if (group.type !== 'community' && !this.isDovrutGroup(group.id)) return true;
     return this.canUserSendToCommunityGroup(group, this.currentUser());
   });
 
@@ -792,8 +792,18 @@ export class ChatStoreService {
     if (!normalizedChatId) return false;
     const group = this.groups().find((item) => item.id === normalizedChatId);
     if (!group) return true;
-    if (group.type !== 'community') return true;
+    if (group.type !== 'community' && !this.isDovrutGroup(group.id)) return true;
     return this.canUserSendToCommunityGroup(group, this.currentUser());
+  }
+
+  isDovrutGroupChat(chatId: string | null | undefined): boolean {
+    return this.isDovrutGroup(String(chatId || ''));
+  }
+
+  isDovrutAdminUser(user: string | null | undefined): boolean {
+    const normalizedUser = this.normalizeUser(String(user || '').trim());
+    if (!normalizedUser) return false;
+    return this.dovrutWriterSet.has(normalizedUser);
   }
 
   private canUserSendToCommunityGroup(group: ChatGroup, user: string | null): boolean {
@@ -3140,10 +3150,10 @@ export class ChatStoreService {
     }
 
     const group = this.groups().find((item) => item.id === chatId) ?? null;
-    if (group && group.type === 'community' && !this.canUserSendToCommunityGroup(group, user)) {
+    if (group && (group.type === 'community' || this.isDovrutGroup(group.id)) && !this.canUserSendToCommunityGroup(group, user)) {
       this.lastError.set(
         this.isDovrutGroup(group.id)
-          ? 'רק משתמשי דוברות יכולים לשלוח בחדר זה'
+          ? 'רק מנהלי דוברות יכולים לשלוח בחדר זה'
           : 'רק מנהל יכול לשלוח בקבוצת קהילה'
       );
       return;

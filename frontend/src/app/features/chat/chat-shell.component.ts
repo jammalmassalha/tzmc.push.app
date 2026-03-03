@@ -326,13 +326,20 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   });
 
   readonly composerPlaceholder = computed(() => {
-    if (!this.store.activeChat()) {
+    const activeChat = this.store.activeChat();
+    if (!activeChat) {
       return 'בחר צ׳אט כדי להתחיל';
     }
     if (this.store.getShuttleQuickPickerState()) {
       return 'לבחירה השתמש בכפתורים';
     }
-    return this.store.canSendToActiveChat() ? 'הקלד הודעה' : 'רק מנהל יכול לשלוח בקבוצת קהילה';
+    if (this.store.canSendToActiveChat()) {
+      return 'הקלד הודעה';
+    }
+    if (this.store.isDovrutGroupChat(activeChat.id)) {
+      return 'רק מנהלי דוברות יכולים לשלוח בחדר זה';
+    }
+    return 'רק מנהל יכול לשלוח בקבוצת קהילה';
   });
   readonly shuttleQuickPicker = computed<ShuttleQuickPickerState | null>(() =>
     this.store.getShuttleQuickPickerState()
@@ -1382,13 +1389,24 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     return Boolean(member && !member.isAdmin);
   }
 
+  groupMembersMetaText(groupPreview: GroupMembersPreview): string {
+    if (groupPreview.type !== 'community') {
+      return 'קבוצה רגילה · כל המשתתפים יכולים לשלוח';
+    }
+    if (this.store.isDovrutGroupChat(groupPreview.groupId)) {
+      return 'קבוצת קהילה · רק מנהלי דוברות שולחים הודעות';
+    }
+    return 'קבוצת קהילה · רק מנהל שולח הודעות';
+  }
+
   private buildGroupMembersPreview(group: ChatGroup): GroupMembersPreview {
     const contactsByUsername = new Map(
       this.store.contacts().map((contact) => [contact.username, contact])
     );
     const currentUser = String(this.store.currentUser() || '').trim().toLowerCase();
+    const isDovrutGroup = this.store.isDovrutGroupChat(group.id);
     const adminUsername = String(group.createdBy || '').trim().toLowerCase();
-    const canManageMembers = Boolean(adminUsername && currentUser === adminUsername);
+    const canManageMembers = !isDovrutGroup && Boolean(adminUsername && currentUser === adminUsername);
     const members = (group.members ?? [])
       .map((username) => {
         const normalized = String(username || '').trim().toLowerCase();
@@ -1397,7 +1415,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
           username: normalized,
           displayName: contact?.displayName || normalized,
           info: contact?.info,
-          isAdmin: normalized === adminUsername
+          isAdmin: isDovrutGroup
+            ? this.store.isDovrutAdminUser(normalized)
+            : normalized === adminUsername
         };
       })
       .sort((a, b) => a.displayName.localeCompare(b.displayName, 'he'));
