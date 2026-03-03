@@ -380,6 +380,104 @@ function collectCurrentUserRawOrders(normalizedUser) {
     return [];
   }
 
+  var candidateRows = collectUserCandidateRows(normalizedUser, lastRow);
+  if (!candidateRows.length) {
+    // Fallback keeps behavior correct if text search misses a legacy formatting edge case.
+    return collectCurrentUserRawOrdersByFullScan(normalizedUser, lastRow);
+  }
+
+  var batches = buildContiguousRowBatches(candidateRows);
+  var orders = [];
+  for (var b = 0; b < batches.length; b++) {
+    var batch = batches[b];
+    var rows = wsShuttleLog.getRange(batch.startRow, 1, batch.rowCount, 7).getValues(); // A..G
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      var sheetRow = batch.startRow + i;
+      var order = mapShuttleOrderRow(row, sheetRow);
+      if (!order) continue;
+      var employeePhone = String(order.employeePhone || '').trim();
+      if (!employeePhone || employeePhone !== normalizedUser) {
+        continue;
+      }
+      orders.push(order);
+    }
+  }
+  return orders;
+}
+
+function collectUserCandidateRows(normalizedUser, lastRow) {
+  var rowSet = {};
+  var searchTokens = buildUserSearchTokens(normalizedUser);
+  for (var i = 0; i < searchTokens.length; i++) {
+    var token = searchTokens[i];
+    if (!token) continue;
+    addCandidateRowsFromColumn(rowSet, 1, lastRow, token); // A: current / legacy employee
+    addCandidateRowsFromColumn(rowSet, 2, lastRow, token); // B: employee in legacy rows
+  }
+  return Object.keys(rowSet)
+    .map(function(value) { return Number(value); })
+    .filter(function(value) { return Number.isFinite(value) && value >= 2 && value <= lastRow; })
+    .sort(function(a, b) { return a - b; });
+}
+
+function buildUserSearchTokens(normalizedUser) {
+  var tokens = {};
+  var normalized = String(normalizedUser || '').trim();
+  if (!normalized) {
+    return [];
+  }
+  tokens[normalized] = true; // 0501234567
+  if (/^05\d{8}$/.test(normalized)) {
+    tokens['972' + normalized.substring(1)] = true; // 972501234567
+    tokens['+972' + normalized.substring(1)] = true; // +972501234567
+  }
+  return Object.keys(tokens);
+}
+
+function addCandidateRowsFromColumn(rowSet, column, lastRow, token) {
+  if (!token || !lastRow || lastRow < 2) return;
+  var searchRange = wsShuttleLog.getRange(2, column, lastRow - 1, 1);
+  var finder = searchRange.createTextFinder(String(token || '').trim()).matchCase(false);
+  var matches = finder.findAll() || [];
+  for (var i = 0; i < matches.length; i++) {
+    var rowNumber = Number(matches[i].getRow() || 0);
+    if (rowNumber >= 2 && rowNumber <= lastRow) {
+      rowSet[String(rowNumber)] = true;
+    }
+  }
+}
+
+function buildContiguousRowBatches(sortedRows) {
+  if (!sortedRows || !sortedRows.length) {
+    return [];
+  }
+  var batches = [];
+  var startRow = sortedRows[0];
+  var previousRow = sortedRows[0];
+
+  for (var i = 1; i < sortedRows.length; i++) {
+    var row = sortedRows[i];
+    if (row === previousRow + 1) {
+      previousRow = row;
+      continue;
+    }
+    batches.push({
+      startRow: startRow,
+      rowCount: (previousRow - startRow) + 1
+    });
+    startRow = row;
+    previousRow = row;
+  }
+
+  batches.push({
+    startRow: startRow,
+    rowCount: (previousRow - startRow) + 1
+  });
+  return batches;
+}
+
+function collectCurrentUserRawOrdersByFullScan(normalizedUser, lastRow) {
   var rows = wsShuttleLog.getRange(2, 1, lastRow - 1, 7).getValues(); // A..G
   var orders = [];
   for (var i = 0; i < rows.length; i++) {
