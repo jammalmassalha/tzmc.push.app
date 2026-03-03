@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { Component, computed, inject } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
@@ -34,6 +34,7 @@ export class NewChatDialogComponent {
   readonly searchTerm = toSignal(this.searchControl.valueChanges.pipe(startWith('')), {
     initialValue: ''
   });
+  readonly failedAvatarUsers = signal<Set<string>>(new Set<string>());
 
   readonly filteredContacts = computed(() => {
     const current = this.data.currentUser;
@@ -55,5 +56,24 @@ export class NewChatDialogComponent {
 
   startChat(username: string): void {
     this.dialogRef.close(username);
+  }
+
+  avatarUrl(username: string, upic?: string): string | null {
+    if (this.failedAvatarUsers().has(username)) {
+      return null;
+    }
+    const normalized = String(upic || '').trim();
+    return normalized || null;
+  }
+
+  avatarFallback(displayName: string, username: string): string {
+    const source = String(displayName || username || '').trim();
+    return source ? source.charAt(0).toUpperCase() : '?';
+  }
+
+  markAvatarLoadError(username: string): void {
+    const next = new Set(this.failedAvatarUsers());
+    next.add(username);
+    this.failedAvatarUsers.set(next);
   }
 }

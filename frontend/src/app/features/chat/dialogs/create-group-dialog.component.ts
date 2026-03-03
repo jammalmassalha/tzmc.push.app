@@ -3,7 +3,6 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
-import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatDialogModule, MatDialogRef, MAT_DIALOG_DATA } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
@@ -34,7 +33,6 @@ export interface CreateGroupDialogResult {
     MatInputModule,
     MatSelectModule,
     MatButtonModule,
-    MatCheckboxModule,
     MatIconModule
   ],
   templateUrl: './create-group-dialog.component.html',
@@ -55,6 +53,7 @@ export class CreateGroupDialogComponent {
     initialValue: ''
   });
   readonly selectedMembers = signal<Set<string>>(new Set<string>());
+  readonly failedAvatarUsers = signal<Set<string>>(new Set<string>());
   readonly errorMessage = signal<string>('');
 
   readonly filteredContacts = computed(() => {
@@ -90,6 +89,25 @@ export class CreateGroupDialogComponent {
 
   isSelected(username: string): boolean {
     return this.selectedMembers().has(username);
+  }
+
+  avatarUrl(username: string, upic?: string): string | null {
+    if (this.failedAvatarUsers().has(username)) {
+      return null;
+    }
+    const normalized = String(upic || '').trim();
+    return normalized || null;
+  }
+
+  avatarFallback(displayName: string, username: string): string {
+    const source = String(displayName || username || '').trim();
+    return source ? source.charAt(0).toUpperCase() : '?';
+  }
+
+  markAvatarLoadError(username: string): void {
+    const next = new Set(this.failedAvatarUsers());
+    next.add(username);
+    this.failedAvatarUsers.set(next);
   }
 
   submit(): void {

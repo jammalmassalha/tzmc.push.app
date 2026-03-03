@@ -99,6 +99,7 @@
   background: transparent;
   display: flex;
   align-items: center;
+  gap: 10px;
   text-align: right;
   padding: 8px 10px;
   border-bottom: 1px solid rgba(11, 20, 26, 0.06);
@@ -114,11 +115,38 @@
 }
 
 .contact-row-main {
+  flex: 1 1 auto;
   min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 2px;
+}
+
+.contact-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  background: linear-gradient(135deg, #dbe4ff 0%, #c7d6ff 100%);
+  color: #27439d;
+}
+
+.contact-avatar-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.contact-avatar-fallback {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .name {
