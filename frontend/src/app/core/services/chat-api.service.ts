@@ -878,8 +878,8 @@ export class ChatApiService {
 
     const url = `${SHUTTLE_USER_ORDERS_URL}?action=get_user_orders&user=${encodeURIComponent(normalizedUser)}`;
     // Apps Script often responds with an initial 302 redirect and can be slow on cold start.
-    // Use a longer timeout and avoid multi-retry bursts to prevent repeated duplicate requests.
-    const response = await this.fetchWithRetry(url, {}, { retries: 0, timeoutMs: 30000 });
+    // Keep retries disabled to avoid duplicate bursts, but allow more time before aborting.
+    const response = await this.fetchWithRetry(url, {}, { retries: 0, timeoutMs: 60000 });
     if (!response.ok) {
       throw new Error(`Shuttle user orders request failed with ${response.status}`);
     }
