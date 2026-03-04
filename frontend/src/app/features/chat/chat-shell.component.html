@@ -101,7 +101,7 @@
                     class="chat-avatar"
                     [src]="chatAvatarThumb(chat)"
                     [alt]="chat.title"
-                    loading="eager"
+                    loading="lazy"
                     decoding="async"
                     (load)="markAvatarLoaded(chatAvatarThumb(chat))"
                     (error)="markAvatarLoaded(chatAvatarThumb(chat))" />
@@ -322,8 +322,8 @@
             </section>
           }
 
-          @for (message of store.activeMessages(); track message.messageId; let index = $index) {
-            @if (shouldShowMessageDateBadge(index, message.timestamp)) {
+          @for (message of visibleMessages(); track message.messageId; let index = $index) {
+            @if (shouldShowMessageDateBadge(messageAbsoluteIndex(index), message.timestamp)) {
               <div class="message-date-badge">
                 <span>{{ formatMessageDateBadge(message.timestamp) }}</span>
               </div>
@@ -331,7 +331,7 @@
             <article
               class="message-row"
               [class.outgoing]="message.direction === 'outgoing'"
-              [attr.data-message-index]="index">
+              [attr.data-message-index]="messageAbsoluteIndex(index)">
               <div class="message-bubble" [class.deleted]="isMessageDeleted(message)">
                 @if (message.direction === 'incoming' && message.groupId) {
                   <div class="message-sender">{{ message.senderDisplayName || message.sender }}</div>

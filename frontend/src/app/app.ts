@@ -77,7 +77,7 @@ export class App implements OnDestroy {
     private readonly router: Router
   ) {
     this.startStartupLoader();
-    void this.clearCachesOnMobileLoad();
+    this.scheduleCacheCleanupAfterInitialRender();
     this.bindServiceWorkerWindowContextSync();
   }
 
@@ -177,6 +177,16 @@ export class App implements OnDestroy {
       window.clearTimeout(this.startupLoaderTimeoutId);
       this.startupLoaderTimeoutId = null;
     }
+  }
+
+  private scheduleCacheCleanupAfterInitialRender(): void {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    window.setTimeout(() => {
+      void this.clearCachesOnMobileLoad();
+    }, 1200);
   }
 
   private async clearCachesOnMobileLoad(): Promise<void> {

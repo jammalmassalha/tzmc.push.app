@@ -409,17 +409,26 @@ export class ChatStoreService {
     if (this.initializedUser === user) return;
 
     this.initializedUser = user;
-    await this.refresh(true);
-    // Ensure first chat/message snapshot is loaded before startup loader can finish.
+
+    // Open quickly from cached state, then bring latest messages in.
+    this.applyInitialChatSelection(user);
     await this.pullMessages(user);
-    this.clearDeviceAttention({ resetServerBadge: true });
-    // Recover silently if a device lost its push subscription.
-    void this.tryRegisterPush(user, { force: true });
+    if (this.currentUser() !== user) {
+      return;
+    }
+    this.applyInitialChatSelection(user);
+
     this.connectRealtime(user);
-    await this.flushOutbox();
-    this.startBackgroundContactsAccessSync(user);
-    void this.syncContactsAccessInBackground(user);
     this.startDeliveryTelemetry(user);
+    this.startBackgroundContactsAccessSync(user);
+    this.runInitializeBackgroundTasks(user);
+  }
+
+  private applyInitialChatSelection(user: string): void {
+    const currentActive = this.activeChatId();
+    if (currentActive && this.chatItems().some((chat) => chat.id === currentActive)) {
+      return;
+    }
 
     const storedActive = this.getStoredActiveChat(user);
     if (storedActive && this.chatItems().some((chat) => chat.id === storedActive)) {
@@ -429,6 +438,7 @@ export class ChatStoreService {
 
     if (this.shouldOpenHomeOnInit(user)) {
       this.activeChatId.set(null);
+      this.lastActivatedChatMeta.set(null);
       return;
     }
 
@@ -438,6 +448,18 @@ export class ChatStoreService {
         this.setActiveChat(preferredChat);
       }
     }
+  }
+
+  private runInitializeBackgroundTasks(user: string): void {
+    if (this.currentUser() !== user) {
+      return;
+    }
+
+    void this.refresh(true);
+    void this.flushOutbox();
+    this.clearDeviceAttention({ resetServerBadge: true });
+    // Recover silently if a device lost its push subscription.
+    void this.tryRegisterPush(user, { force: true });
   }
 
   async registerUser(rawValue: string): Promise<void> {
