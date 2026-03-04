@@ -60,7 +60,7 @@ const DOVRUT_GROUP_NAME = 'דוברות';
 const DOVRUT_GROUP_ID = DOVRUT_GROUP_NAME;
 const DOVRUT_SYSTEM_CREATOR = 'dovrut-system';
 const DOVRUT_ACTIVE_STATUS_VALUE = 1;
-const DOVRUT_ALLOWED_WRITERS = ['0506501040', '0506267447'] as const;
+const DOVRUT_ALLOWED_WRITERS = ['0506501040', '0506267447', '0543108095'] as const;
 const SHUTTLE_DAY_NAMES_BY_LANGUAGE: Record<ShuttleLanguage, readonly string[]> = {
   he: ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'] as const,
   ru: ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'] as const
@@ -301,7 +301,7 @@ export class ChatStoreService {
       const subtitle = lastMessage ? this.getMessagePreview(lastMessage) : (group ? 'אין הודעות בקבוצה' : '');
       const lastTimestamp = lastMessage?.timestamp ?? 0;
       const unread = unreadMap[chatId] ?? 0;
-      const pinned = this.isSystemChat(chatId);
+      const pinned = this.isSystemChat(chatId) || this.isDovrutGroup(chatId);
 
       items.push({
         id: chatId,
@@ -317,6 +317,10 @@ export class ChatStoreService {
     }
 
     return items.sort((a, b) => {
+      const aIsDovrut = this.isDovrutGroup(a.id);
+      const bIsDovrut = this.isDovrutGroup(b.id);
+      if (aIsDovrut && !bIsDovrut) return -1;
+      if (!aIsDovrut && bIsDovrut) return 1;
       if (a.pinned && !b.pinned) return -1;
       if (!a.pinned && b.pinned) return 1;
       return b.lastTimestamp - a.lastTimestamp;
