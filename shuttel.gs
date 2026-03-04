@@ -34,17 +34,26 @@ function doGet(e) {
   }else if(e.parameter["entry.1035269960"] != null && e.parameter["entry.1035269960"] != ""){
     var sheet = SpreadsheetApp.openById("1OWt0Qty9ljn03U6PP32ftY8_wNy8qPl0FBS_Prwv40g").getSheetByName("לוג נסיעות");
     let time = e.parameter["entry.1992732561"];
+    var incomingOrder = {
+      employee: e.parameter["entry.1035269960"],
+      date: e.parameter["entry.794242217"],
+      time: time,
+      station: e.parameter["entry.1096369604"],
+      status: e.parameter["entry.798637322"]
+    };
+    var conflictResult = checkAndResolveShuttleOrderConflict(sheet, incomingOrder);
     
     var entries = [
       new Date(),
-      e.parameter["entry.1035269960"],
-      e.parameter["entry.794242217"],
+      incomingOrder.employee,
+      incomingOrder.date,
       time,
-      e.parameter["entry.1096369604"],
-      e.parameter["entry.798637322"]
+      incomingOrder.station,
+      incomingOrder.status
     ];
-    
-    sheet.appendRow(entries);
+    if (conflictResult.action === 'insert') {
+      sheet.appendRow(entries);
+    }
     
     return ContentService.createTextOutput("Success");
   }
@@ -57,6 +66,98 @@ function resolveShuttleDebugFlag(value) {
     normalized === 'yes' ||
     normalized === 'on' ||
     normalized === 'debug';
+}
+
+function checkAndResolveShuttleOrderConflict(sheet, incomingOrder) {
+  var normalizedIncoming = normalizeShuttleOrderLookupPayload(incomingOrder);
+  if (!normalizedIncoming.employee || !normalizedIncoming.date || !normalizedIncoming.time || !normalizedIncoming.station) {
+    return { action: 'insert', matchedRows: [] };
+  }
+
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    return { action: 'insert', matchedRows: [] };
+  }
+
+  var values = sheet.getRange(2, 2, lastRow - 1, 5).getValues(); // B..F
+  var matchedRows = [];
+  for (var i = 0; i < values.length; i++) {
+    var row = values[i];
+    var existingOrder = normalizeShuttleOrderLookupPayload({
+      employee: row[0], // B
+      date: row[1],     // C
+      time: row[2],     // D
+      station: row[3],  // E
+      status: row[4]    // F
+    });
+
+    if (
+      existingOrder.employee === normalizedIncoming.employee &&
+      existingOrder.date === normalizedIncoming.date &&
+      existingOrder.time === normalizedIncoming.time &&
+      existingOrder.station === normalizedIncoming.station
+    ) {
+      matchedRows.push({
+        row: i + 2,
+        status: existingOrder.status
+      });
+    }
+  }
+
+  if (!matchedRows.length) {
+    return { action: 'insert', matchedRows: [] };
+  }
+
+  var hasSameStatus = matchedRows.some(function(match) {
+    return match.status === normalizedIncoming.status;
+  });
+  if (hasSameStatus) {
+    return { action: 'skip-same-status', matchedRows: matchedRows };
+  }
+
+  deleteRowsByDescendingIndex(sheet, matchedRows.map(function(match) { return match.row; }));
+  return { action: 'deleted-different-status', matchedRows: matchedRows };
+}
+
+function normalizeShuttleOrderLookupPayload(order) {
+  var employee = normalizeShuttlePhone(order && order.employee);
+  var dateIso = toShuttleIsoDate(order && order.date);
+  var timeLabel = formatShuttleShift(order && order.time);
+  var station = normalizeShuttleOrderLookupText(order && order.station);
+  var status = normalizeShuttleOrderLookupText(order && order.status);
+
+  return {
+    employee: employee,
+    date: dateIso,
+    time: timeLabel,
+    station: station,
+    status: status
+  };
+}
+
+function normalizeShuttleOrderLookupText(value) {
+  var text = String(value || '').trim();
+  if (text.charAt(0) === "'") {
+    text = text.substring(1);
+  }
+  return text.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function deleteRowsByDescendingIndex(sheet, rows) {
+  if (!rows || !rows.length) return;
+  var uniqueRows = {};
+  rows.forEach(function(row) {
+    var rowIndex = Number(row || 0);
+    if (rowIndex >= 2) {
+      uniqueRows[rowIndex] = true;
+    }
+  });
+  var sortedRows = Object.keys(uniqueRows)
+    .map(function(value) { return Number(value); })
+    .sort(function(a, b) { return b - a; });
+  sortedRows.forEach(function(rowIndex) {
+    sheet.deleteRow(rowIndex);
+  });
 }
 
 function main() {
