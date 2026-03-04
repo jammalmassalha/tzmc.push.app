@@ -646,6 +646,16 @@
               </div>
             }
 
+            @if (isSubmittingShuttleOrder()) {
+              <div class="shuttle-picker-processing-overlay" role="status" aria-live="polite" aria-busy="true">
+                <div class="shuttle-picker-processing-card">
+                  <mat-spinner diameter="38"></mat-spinner>
+                  <div class="shuttle-picker-processing-title">{{ shuttleText('processingOrderTitle') }}</div>
+                  <div class="shuttle-picker-processing-subtitle">{{ shuttleText('processingOrderSubtitle') }}</div>
+                </div>
+              </div>
+            }
+
             @if (shuttlePicker.allowBack) {
               <button
                 mat-button

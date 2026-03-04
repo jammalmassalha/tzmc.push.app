@@ -115,6 +115,8 @@ type ShuttleUiTextKey =
   | 'ordersTitle'
   | 'refresh'
   | 'loading'
+  | 'processingOrderTitle'
+  | 'processingOrderSubtitle'
   | 'ordersTablistAria'
   | 'ongoingTab'
   | 'pastTab'
@@ -157,6 +159,8 @@ const SHUTTLE_UI_TEXT: Record<ShuttleLanguage, Record<ShuttleUiTextKey, string>>
     ordersTitle: 'ההזמנות שלי',
     refresh: 'רענון',
     loading: 'טוען נתונים...',
+    processingOrderTitle: 'שומר את ההזמנה...',
+    processingOrderSubtitle: 'הבקשה נשלחה ונמצאת בעיבוד. נא להמתין.',
     ordersTablistAria: 'קטגוריות הזמנות',
     ongoingTab: 'פעילות',
     pastTab: 'עבר',
@@ -198,6 +202,8 @@ const SHUTTLE_UI_TEXT: Record<ShuttleLanguage, Record<ShuttleUiTextKey, string>>
     ordersTitle: 'Мои заказы',
     refresh: 'Обновить',
     loading: 'Загрузка данных...',
+    processingOrderTitle: 'Сохраняем заказ...',
+    processingOrderSubtitle: 'Запрос отправлен и обрабатывается. Пожалуйста, подождите.',
     ordersTablistAria: 'Категории заказов',
     ongoingTab: 'Активные',
     pastTab: 'Прошлые',
@@ -348,6 +354,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     this.store.getShuttleQuickPickerState()
   );
   readonly isSubmittingShuttlePicker = signal(false);
+  readonly isSubmittingShuttleOrder = signal(false);
   readonly isCancellingShuttleOrderIds = signal<Set<string>>(new Set<string>());
   readonly shuttlePickerHasOptions = computed(() => {
     const picker = this.shuttleQuickPicker();
@@ -856,7 +863,13 @@ export class ChatShellComponent implements OnInit, OnDestroy {
         return;
       }
     }
+    const shouldShowOrderLoader = Boolean(
+      picker &&
+      picker.mode === 'select' &&
+      picker.key.startsWith('station-')
+    );
     this.isSubmittingShuttlePicker.set(true);
+    this.isSubmittingShuttleOrder.set(shouldShowOrderLoader);
     try {
       await this.store.submitShuttleQuickPickerSelection(normalized);
     } catch (error) {
@@ -864,6 +877,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       this.snackBar.open(message, this.shuttleCloseActionLabel(), { duration: 2800 });
     } finally {
       this.isSubmittingShuttlePicker.set(false);
+      this.isSubmittingShuttleOrder.set(false);
     }
   }
 
