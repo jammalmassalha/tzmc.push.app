@@ -21,23 +21,68 @@
       </mat-select>
     </mat-form-field>
 
-    <mat-form-field appearance="outline" class="full-width">
-      <mat-label>חיפוש משתתפים</mat-label>
-      <input matInput [formControl]="searchControl" placeholder="שם או מספר" />
-      <mat-icon matSuffix>search</mat-icon>
-    </mat-form-field>
+    <label class="members-search-shell">
+      <mat-icon class="members-search-icon">search</mat-icon>
+      <input
+        class="members-search-input"
+        type="text"
+        [formControl]="searchControl"
+        placeholder="חיפוש משתתפים"
+        aria-label="חיפוש משתתפים"
+        autocomplete="off" />
+      @if (searchControl.value.length > 0) {
+        <button
+          type="button"
+          class="members-search-clear"
+          (click)="searchControl.setValue(''); $event.preventDefault(); $event.stopPropagation()"
+          aria-label="נקה חיפוש משתתפים">
+          <mat-icon>close</mat-icon>
+        </button>
+      }
+    </label>
   </div>
 
-  <div class="members-list">
-    @for (contact of filteredContacts(); track contact.username) {
-      <mat-checkbox
-        [checked]="isSelected(contact.username)"
-        (change)="toggleMember(contact.username, $event.checked)">
-        <span class="member-name">{{ contact.displayName }}</span>
-        <span class="member-user">{{ contact.username }}</span>
-      </mat-checkbox>
-    }
-  </div>
+  @if (!filteredContacts().length) {
+    <div class="members-empty">לא נמצאו אנשי קשר.</div>
+  } @else {
+    <div class="members-list">
+      @for (contact of filteredContacts(); track contact.username) {
+        <button
+          type="button"
+          class="member-item"
+          [class.selected]="isSelected(contact.username)"
+          [attr.aria-pressed]="isSelected(contact.username)"
+          (click)="toggleMember(contact.username, !isSelected(contact.username))">
+          <span class="member-avatar" [class.has-image]="!!avatarUrl(contact.username, contact.upic)">
+            @if (avatarUrl(contact.username, contact.upic); as userAvatar) {
+              <img
+                class="member-avatar-image"
+                [src]="userAvatar"
+                [alt]="contact.displayName"
+                loading="lazy"
+                (error)="markAvatarLoadError(contact.username)" />
+            } @else {
+              <span class="member-avatar-fallback">{{ avatarFallback(contact.displayName, contact.username) }}</span>
+            }
+          </span>
+
+          <span class="member-main">
+            <span class="member-name">{{ contact.displayName }}</span>
+            <span class="member-user">{{ contact.username }}</span>
+            @if (contact.info) {
+              <span class="member-info">{{ contact.info }}</span>
+            }
+          </span>
+
+          <span class="member-select-indicator">
+            <mat-icon>
+              {{ isSelected(contact.username) ? 'check_circle' : 'radio_button_unchecked' }}
+            </mat-icon>
+          </span>
+        </button>
+      }
+    </div>
+  }
 
   @if (errorMessage()) {
     <p class="error-message">{{ errorMessage() }}</p>

@@ -38,6 +38,7 @@ const DELIVERY_TELEMETRY_FLUSH_MIN_EVENTS = 4;
 const DELIVERY_TELEMETRY_DEVICE_ID_KEY = 'modern-chat-delivery-device-id';
 const HR_CHAT_NAME = 'ציפי';
 const SHUTTLE_CHAT_NAME = 'הזמנת הסעה';
+const SHUTTLE_CHAT_TITLE = 'הזמנת הסעה / Заказ шаттла';
 const HR_WELCOME_KEY_PREFIX = 'hr_welcome_sent_';
 const HR_STATE_KEY_PREFIX = 'hr_state_';
 const HR_UPLOAD_BASE_URL = '/notify/uploads/';
@@ -46,6 +47,7 @@ const HR_ACTIONS_CACHE_TTL_MS = 5 * 60 * 1000;
 const SHUTTLE_WELCOME_KEY_PREFIX = 'shuttle_welcome_sent_';
 const SHUTTLE_STATE_KEY_PREFIX = 'shuttle_state_';
 const SHUTTLE_ORDERS_KEY_PREFIX = 'shuttle_orders_';
+const SHUTTLE_LANGUAGE_KEY_PREFIX = 'shuttle_language_';
 const SHUTTLE_LIST_CACHE_TTL_MS = 5 * 60 * 1000;
 const SHUTTLE_REMOTE_ORDERS_SYNC_TTL_MS = 45 * 1000;
 const SHUTTLE_DATE_CHOICES_COUNT = 10;
@@ -54,9 +56,15 @@ const SHUTTLE_REMINDER_HISTORY_KEY_PREFIX = 'shuttle_reminder_2h_sent_';
 const SHUTTLE_REMINDER_HISTORY_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const SHUTTLE_STATUS_ACTIVE_VALUE = 'פעיל активный';
 const SHUTTLE_STATUS_CANCEL_VALUE = 'ביטול נסיעה отмена поезд';
-const SHUTTLE_STATUS_ACTIVE_LABEL = 'פעיל';
-const SHUTTLE_STATUS_CANCEL_LABEL = 'בוטל';
-const SHUTTLE_DAY_NAMES = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'] as const;
+const DOVRUT_GROUP_NAME = 'דוברות';
+const DOVRUT_GROUP_ID = DOVRUT_GROUP_NAME;
+const DOVRUT_SYSTEM_CREATOR = 'dovrut-system';
+const DOVRUT_ACTIVE_STATUS_VALUE = 1;
+const DOVRUT_ALLOWED_WRITERS = ['0506501040', '0506267447'] as const;
+const SHUTTLE_DAY_NAMES_BY_LANGUAGE: Record<ShuttleLanguage, readonly string[]> = {
+  he: ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'] as const,
+  ru: ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'] as const
+};
 const SHUTTLE_SHIFT_OPTIONS = [
   { label: '05:00', value: "'05:00" },
   { label: '06:00', value: "'06:00" },
@@ -77,6 +85,7 @@ interface HrConversationState {
 }
 
 type ShuttleAwaitingState = 'menu' | 'date' | 'shift' | 'station' | 'cancel-select';
+export type ShuttleLanguage = 'he' | 'ru';
 
 interface ShuttleOrderDraft {
   date: string;
@@ -174,6 +183,8 @@ export interface ActivatedChatMeta {
 export interface ShuttleQuickPickerOption {
   value: string;
   label: string;
+  submitValue?: string;
+  disabled?: boolean;
 }
 
 export interface ShuttleQuickPickerState {
@@ -247,6 +258,12 @@ export class ChatStoreService {
   private readonly systemChatIdSet = new Set<string>(
     SYSTEM_CHAT_IDS.map((id) => this.normalizeChatId(id)).filter(Boolean)
   );
+  private readonly shuttleChatIdSet = new Set<string>(
+    [SHUTTLE_CHAT_NAME, SHUTTLE_CHAT_TITLE].map((id) => this.normalizeChatId(id)).filter(Boolean)
+  );
+  private readonly dovrutWriterSet = new Set<string>(
+    DOVRUT_ALLOWED_WRITERS.map((value) => this.normalizeUser(value)).filter(Boolean)
+  );
   private incomingBatchDepth = 0;
   private pendingPersistAfterIncomingBatch = false;
 
@@ -278,8 +295,9 @@ export class ChatStoreService {
       const contact = contactsById.get(chatId);
       const messages = messageMap[chatId] ?? [];
       const lastMessage = messages[messages.length - 1];
+      const isShuttle = this.isShuttleChat(chatId);
 
-      const title = group?.name ?? contact?.displayName ?? chatId;
+      const title = group?.name ?? contact?.displayName ?? (isShuttle ? SHUTTLE_CHAT_TITLE : chatId);
       const subtitle = lastMessage ? this.getMessagePreview(lastMessage) : (group ? 'אין הודעות בקבוצה' : '');
       const lastTimestamp = lastMessage?.timestamp ?? 0;
       const unread = unreadMap[chatId] ?? 0;
@@ -322,14 +340,22 @@ export class ChatStoreService {
     if (!active) return false;
     const group = this.groups().find((item) => item.id === active);
     if (!group) return true;
-    if (group.type !== 'community') return true;
-    return this.normalizeUser(group.createdBy) === this.normalizeUser(this.currentUser() ?? '');
+    if (group.type !== 'community' && !this.isDovrutGroup(group.id)) return true;
+    return this.canUserSendToCommunityGroup(group, this.currentUser());
   });
 
   private readonly appBadgeSyncEffect = effect(() => {
     const unreadMap = this.unreadByChat();
     const unreadTotal = Object.values(unreadMap).reduce((sum, count) => sum + (Number(count) || 0), 0);
     this.syncAppBadge(unreadTotal);
+  });
+
+  private readonly dovrutGroupSyncEffect = effect(() => {
+    const user = this.currentUser();
+    if (!user) return;
+    const contacts = this.contacts();
+    const groups = this.groups();
+    this.syncDovrutCommunityGroup(contacts, groups);
   });
 
   constructor(private readonly api: ChatApiService) {
@@ -766,8 +792,106 @@ export class ChatStoreService {
     if (!normalizedChatId) return false;
     const group = this.groups().find((item) => item.id === normalizedChatId);
     if (!group) return true;
-    if (group.type !== 'community') return true;
-    return this.normalizeUser(group.createdBy) === this.normalizeUser(this.currentUser() ?? '');
+    if (group.type !== 'community' && !this.isDovrutGroup(group.id)) return true;
+    return this.canUserSendToCommunityGroup(group, this.currentUser());
+  }
+
+  isDovrutGroupChat(chatId: string | null | undefined): boolean {
+    return this.isDovrutGroup(String(chatId || ''));
+  }
+
+  isDovrutAdminUser(user: string | null | undefined): boolean {
+    const normalizedUser = this.normalizeUser(String(user || '').trim());
+    if (!normalizedUser) return false;
+    return this.dovrutWriterSet.has(normalizedUser);
+  }
+
+  private canUserSendToCommunityGroup(group: ChatGroup, user: string | null): boolean {
+    const normalizedUser = this.normalizeUser(user ?? '');
+    if (!normalizedUser) return false;
+    if (this.isDovrutGroup(group.id)) {
+      return this.dovrutWriterSet.has(normalizedUser);
+    }
+    return this.normalizeUser(group.createdBy) === normalizedUser;
+  }
+
+  private isDovrutGroup(groupId: string): boolean {
+    return this.normalizeChatId(groupId) === this.normalizeChatId(DOVRUT_GROUP_ID);
+  }
+
+  private syncDovrutCommunityGroup(contacts: Contact[], groups: ChatGroup[]): void {
+    const dovrutId = this.normalizeChatId(DOVRUT_GROUP_ID);
+    const nextMembers = this.computeDovrutMembers(contacts);
+    const existing = groups.find((group) => group.id === dovrutId) ?? null;
+
+    const existingMembers = existing
+      ? Array.from(new Set(existing.members.map((member) => this.normalizeUser(member)).filter(Boolean)))
+        .sort((a, b) => a.localeCompare(b))
+      : [];
+    const shouldUpdate = (
+      !existing ||
+      existing.name !== DOVRUT_GROUP_NAME ||
+      existing.type !== 'community' ||
+      this.normalizeUser(existing.createdBy) !== this.normalizeUser(DOVRUT_SYSTEM_CREATOR) ||
+      !this.areStringArraysEqual(existingMembers, nextMembers)
+    );
+    if (!shouldUpdate) {
+      return;
+    }
+
+    const nextGroup: ChatGroup = {
+      id: dovrutId,
+      name: DOVRUT_GROUP_NAME,
+      members: nextMembers,
+      createdBy: this.normalizeUser(DOVRUT_SYSTEM_CREATOR),
+      updatedAt: Date.now(),
+      type: 'community'
+    };
+    this.groups.update((currentGroups) => {
+      const hasExisting = currentGroups.some((group) => group.id === dovrutId);
+      if (!hasExisting) {
+        return [nextGroup, ...currentGroups];
+      }
+      return currentGroups.map((group) => (group.id === dovrutId ? nextGroup : group));
+    });
+    this.schedulePersist();
+  }
+
+  private computeDovrutMembers(contacts: Contact[]): string[] {
+    const hasAnyStatusSignal = contacts.some((contact) => this.normalizeContactStatus(contact.status) !== null);
+    return Array.from(
+      new Set(
+        contacts
+          .filter((contact) => {
+            const normalizedStatus = this.normalizeContactStatus(contact.status);
+            if (!hasAnyStatusSignal) {
+              // Backward-compatible fallback: if backend has not exposed status yet, avoid empty room.
+              return true;
+            }
+            return normalizedStatus === DOVRUT_ACTIVE_STATUS_VALUE;
+          })
+          .map((contact) => this.normalizeUser(contact.username))
+          .filter(Boolean)
+      )
+    ).sort((a, b) => a.localeCompare(b));
+  }
+
+  private normalizeContactStatus(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return Math.trunc(value);
+    }
+    const normalized = String(value ?? '').trim();
+    if (!normalized) return null;
+    const parsed = Number.parseInt(normalized, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  private areStringArraysEqual(a: string[], b: string[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
   }
 
   getShuttleQuickPickerState(): ShuttleQuickPickerState | null {
@@ -781,15 +905,16 @@ export class ChatStoreService {
       return null;
     }
 
+    const newOrderLabel = this.shuttleText('הזמנה חדשה', 'Новый заказ');
     const state = this.loadShuttleState(user) ?? this.defaultShuttleState();
     if (state.awaiting === 'menu') {
       return {
         key: 'menu',
-        title: 'מה תרצה לבצע?',
-        helperText: 'הזמנה חדשה בלחיצה אחת',
+        title: this.shuttleText('מה תרצה לבצע?', 'Что хотите сделать?'),
+        helperText: this.shuttleText('הזמנה חדשה בלחיצה אחת', 'Новый заказ в одно нажатие'),
         mode: 'buttons',
         options: [
-          { value: 'הזמנה חדשה', label: 'הזמנה חדשה' }
+          { value: newOrderLabel, label: newOrderLabel }
         ],
         allowBack: false
       };
@@ -798,8 +923,8 @@ export class ChatStoreService {
     if (state.awaiting === 'date') {
       return {
         key: 'date',
-        title: 'בחר תאריך נסיעה',
-        helperText: 'התאריכים זמינים ל-10 הימים הקרובים',
+        title: this.shuttleText('בחר תאריך נסיעה', 'Выберите дату поездки'),
+        helperText: this.shuttleText('התאריכים זמינים ל-10 הימים הקרובים', 'Доступны даты на ближайшие 10 дней'),
         mode: 'buttons',
         options: this.getShuttleDateChoices().map((choice) => ({
           value: choice.label,
@@ -810,15 +935,20 @@ export class ChatStoreService {
     }
 
     if (state.awaiting === 'shift') {
+      const selectedDate = this.normalizeShuttleDateToIso(String(state.draft?.date || '').trim());
+      const shiftOptions = this.getShuttleShiftOptionsForDate(selectedDate);
+      const hasEnabledShift = shiftOptions.some((option) => !option.disabled);
       return {
         key: 'shift',
-        title: 'בחר משמרת',
-        helperText: 'הסעה לעבודה',
+        title: this.shuttleText('בחר משמרת', 'Выберите смену'),
+        helperText: hasEnabledShift
+          ? this.shuttleText('הסעה לעבודה', 'Трансфер на работу')
+          : this.shuttleText(
+            'אין משמרות זמינות בשעה הקרובה לתאריך שנבחר. בחר תאריך אחר.',
+            'На ближайший час для выбранной даты нет доступных смен. Выберите другую дату.'
+          ),
         mode: 'buttons',
-        options: SHUTTLE_SHIFT_OPTIONS.map((option) => ({
-          value: option.label,
-          label: option.label
-        })),
+        options: shiftOptions,
         allowBack: true
       };
     }
@@ -827,8 +957,8 @@ export class ChatStoreService {
       const stations = this.shuttleStationsCache.items;
       return {
         key: `station-${stations.length}`,
-        title: 'בחר תחנה',
-        helperText: 'לחץ על הרשימה ובחר תחנה',
+        title: this.shuttleText('בחר תחנה', 'Выберите станцию'),
+        helperText: this.shuttleText('לחץ על הרשימה ובחר תחנה', 'Выберите станцию из списка'),
         mode: 'select',
         options: stations.map((station) => ({
           value: station,
@@ -853,6 +983,11 @@ export class ChatStoreService {
     }
 
     const orders = this.loadShuttleOrders(user)
+      .map((order) => ({
+        ...order,
+        dayName: this.resolveShuttleDayNameFromIso(order.date) || order.dayName,
+        statusLabel: this.resolveShuttleStatusLabel(order.statusValue || order.statusLabel)
+      }))
       .slice()
       .sort((a, b) => this.compareShuttleOrdersByDateTimeAsc(a, b));
     const ongoing: ShuttleOrderRecord[] = [];
@@ -880,6 +1015,25 @@ export class ChatStoreService {
     return this.shuttleOrdersSyncInFlight.has(this.normalizeUser(user));
   }
 
+  getShuttleLanguage(): ShuttleLanguage {
+    this.shuttlePickerRevision();
+    const user = this.currentUser();
+    if (!user) {
+      return this.defaultShuttleLanguage();
+    }
+    return this.loadShuttleLanguage(user);
+  }
+
+  setShuttleLanguage(language: ShuttleLanguage): void {
+    const user = this.currentUser();
+    if (!user) {
+      return;
+    }
+    const normalizedLanguage = this.resolveShuttleLanguage(language);
+    localStorage.setItem(this.shuttleLanguageKey(user), normalizedLanguage);
+    this.bumpShuttlePickerRevision();
+  }
+
   async refreshShuttleOrdersForActiveUser(): Promise<void> {
     const activeChatId = this.activeChatId();
     if (!this.isShuttleChat(activeChatId)) {
@@ -887,7 +1041,7 @@ export class ChatStoreService {
     }
     const user = this.currentUser();
     if (!user) {
-      throw new Error('יש להתחבר לפני טעינת הזמנות');
+      throw new Error(this.shuttleText('יש להתחבר לפני טעינת הזמנות', 'Войдите в систему перед загрузкой заказов'));
     }
     await this.refreshShuttleOrdersFromRemote(user, { force: true });
   }
@@ -907,8 +1061,10 @@ export class ChatStoreService {
     const state = this.loadShuttleState(user) ?? this.defaultShuttleState();
     const draft = state.draft || {};
 
-    const dateValue = String(draft.dayName || '').trim() && String(draft.date || '').trim()
-      ? `${String(draft.dayName || '').trim()} ${String(draft.date || '').trim()}`
+    const draftDate = String(draft.date || '').trim();
+    const draftDayName = this.resolveShuttleDayNameFromIso(draftDate) || String(draft.dayName || '').trim();
+    const dateValue = draftDayName && draftDate
+      ? `${draftDayName} ${draftDate}`
       : '';
     const shiftValue = String(draft.shiftLabel || '').trim();
     const stationValue = String(draft.station || '').trim();
@@ -919,7 +1075,7 @@ export class ChatStoreService {
       breadcrumbs.push({
         key: 'menu',
         label: '',
-        value: 'הזמנה חדשה',
+        value: this.shuttleText('הזמנה חדשה', 'Новый заказ'),
         active: false,
         completed: true
       });
@@ -967,46 +1123,46 @@ export class ChatStoreService {
   async submitShuttleQuickPickerSelection(rawValue: string): Promise<void> {
     const activeChatId = this.activeChatId();
     if (!this.isShuttleChat(activeChatId)) {
-      throw new Error('הצ׳אט הפעיל אינו הזמנת הסעה');
+      throw new Error(this.shuttleText('הצ׳אט הפעיל אינו הזמנת הסעה', 'Активный чат не является чатом трансфера'));
     }
 
     const value = String(rawValue || '').trim();
     if (!value) {
-      throw new Error('בחירה חסרה');
+      throw new Error(this.shuttleText('בחירה חסרה', 'Выбор не выполнен'));
     }
 
     const handledByShuttleFlow = await this.handleShuttleOutgoing(value);
     if (!handledByShuttleFlow) {
-      throw new Error('הבחירה לא עובדה. נסה שוב.');
+      throw new Error(this.shuttleText('הבחירה לא עובדה. נסה שוב.', 'Выбор не обработан. Попробуйте снова.'));
     }
   }
 
   async cancelShuttleOrderById(orderId: string): Promise<void> {
     const user = this.currentUser();
     if (!user) {
-      throw new Error('יש להתחבר לפני ביטול הזמנה');
+      throw new Error(this.shuttleText('יש להתחבר לפני ביטול הזמנה', 'Войдите в систему перед отменой заказа'));
     }
 
     const normalizedId = String(orderId || '').trim();
     if (!normalizedId) {
-      throw new Error('הזמנה לא תקינה');
+      throw new Error(this.shuttleText('הזמנה לא תקינה', 'Некорректный заказ'));
     }
 
     const targetOrder = this.loadShuttleOrders(user).find((order) => order.id === normalizedId);
     if (!targetOrder) {
-      throw new Error('הזמנה לא נמצאה');
+      throw new Error(this.shuttleText('הזמנה לא נמצאה', 'Заказ не найден'));
     }
     if (!this.isShuttleOrderOngoing(targetOrder)) {
-      throw new Error('ניתן למחוק רק הזמנה פעילה');
+      throw new Error(this.shuttleText('ניתן למחוק רק הזמנה פעילה', 'Можно удалить только активный заказ'));
     }
 
     await this.submitShuttleOrder(user, targetOrder, SHUTTLE_STATUS_CANCEL_VALUE);
     this.markShuttleOrderCancelled(user, targetOrder.id);
     this.sendShuttleSystemMessage(
-      `ההזמנה בוטלה בהצלחה ✅\n${this.buildShuttleOrderSummary({
+      `${this.shuttleText('ההזמנה בוטלה בהצלחה ✅', 'Заказ успешно отменен ✅')}\n${this.buildShuttleOrderSummary({
         ...targetOrder,
         statusValue: SHUTTLE_STATUS_CANCEL_VALUE,
-        statusLabel: SHUTTLE_STATUS_CANCEL_LABEL
+        statusLabel: this.resolveShuttleStatusLabel(SHUTTLE_STATUS_CANCEL_VALUE)
       })}`,
       { recordType: 'shuttle-cancel-success' }
     );
@@ -1387,7 +1543,8 @@ export class ChatStoreService {
   }
 
   private isShuttleChat(chatId: string | null): boolean {
-    return this.normalizeChatId(chatId ?? '') === this.normalizeChatId(SHUTTLE_CHAT_NAME);
+    const normalized = this.normalizeChatId(chatId ?? '');
+    return Boolean(normalized && this.shuttleChatIdSet.has(normalized));
   }
 
   private async ensureHrFlowOnOpen(): Promise<void> {
@@ -1697,7 +1854,7 @@ export class ChatStoreService {
     const trimmed = String(messageBody || '').trim();
     if (!trimmed) return false;
 
-    if (trimmed === '0' || trimmed.includes('חזרה')) {
+    if (trimmed === '0' || trimmed.includes('חזרה') || this.normalizeShuttleText(trimmed).includes('назад')) {
       this.saveShuttleState(user, this.defaultShuttleState());
       this.sendShuttleMenu();
       return true;
@@ -1726,9 +1883,12 @@ export class ChatStoreService {
   private async handleShuttleMenuSelection(user: string, value: string): Promise<boolean> {
     const command = this.parseShuttleMenuCommand(value);
     if (command !== 'new') {
-      this.sendShuttleSystemMessage('בחירה לא תקינה. נא לבחור אחת מהאפשרויות המוצגות.', {
+      this.sendShuttleSystemMessage(
+        this.shuttleText('בחירה לא תקינה. נא לבחור אחת מהאפשרויות המוצגות.', 'Некорректный выбор. Выберите один из предложенных вариантов.'),
+        {
         recordType: 'shuttle-invalid'
-      });
+        }
+      );
       this.saveShuttleState(user, this.defaultShuttleState());
       this.sendShuttleMenu();
       return true;
@@ -1754,7 +1914,7 @@ export class ChatStoreService {
       choices.map((choice) => choice.label)
     );
     if (pickedIndex < 0) {
-      this.sendShuttleSystemMessage('בחירה לא תקינה. נא לבחור תאריך מהרשימה.', {
+      this.sendShuttleSystemMessage(this.shuttleText('בחירה לא תקינה. נא לבחור תאריך מהרשימה.', 'Некорректный выбор. Выберите дату из списка.'), {
         recordType: 'shuttle-invalid'
       });
       return true;
@@ -1777,22 +1937,41 @@ export class ChatStoreService {
     state: ShuttleConversationState,
     value: string
   ): Promise<boolean> {
+    const selectedDate = this.normalizeShuttleDateToIso(String(state.draft?.date || '').trim());
+    const availableShiftOptions = this.getShuttleShiftOptionsForDate(selectedDate).filter((option) => !option.disabled);
+    if (!availableShiftOptions.length) {
+      this.sendShuttleSystemMessage(
+        this.shuttleText(
+          'אין משמרות זמינות בשעה הקרובה לתאריך שנבחר. בחר תאריך אחר.',
+          'На ближайший час для выбранной даты нет доступных смен. Выберите другую дату.'
+        ),
+        {
+          recordType: 'shuttle-invalid'
+        }
+      );
+      this.saveShuttleState(user, {
+        awaiting: 'date',
+        draft: null,
+        cancelCandidateIds: []
+      });
+      return true;
+    }
     const pickedIndex = this.parseShuttleSelection(
       value,
-      SHUTTLE_SHIFT_OPTIONS.length,
-      SHUTTLE_SHIFT_OPTIONS.map((option) => option.label)
+      availableShiftOptions.length,
+      availableShiftOptions.map((option) => option.label)
     );
     if (pickedIndex < 0) {
-      this.sendShuttleSystemMessage('בחירה לא תקינה. נא לבחור משמרת מהרשימה.', {
+      this.sendShuttleSystemMessage(this.shuttleText('בחירה לא תקינה. נא לבחור משמרת מהרשימה.', 'Некорректный выбор. Выберите смену из списка.'), {
         recordType: 'shuttle-invalid'
       });
       return true;
     }
 
-    const shift = SHUTTLE_SHIFT_OPTIONS[pickedIndex];
+    const shift = availableShiftOptions[pickedIndex];
     const stations = await this.fetchShuttleStationsCached();
     if (!stations.length) {
-      this.sendShuttleSystemMessage('לא ניתן לטעון תחנות כרגע. נסה שוב מאוחר יותר.', {
+      this.sendShuttleSystemMessage(this.shuttleText('לא ניתן לטעון תחנות כרגע. נסה שוב מאוחר יותר.', 'Сейчас не удалось загрузить станции. Попробуйте позже.'), {
         recordType: 'shuttle-error'
       });
       this.saveShuttleState(user, this.defaultShuttleState());
@@ -1805,7 +1984,7 @@ export class ChatStoreService {
       draft: {
         ...(state.draft || {}),
         shiftLabel: shift.label,
-        shiftValue: shift.value
+        shiftValue: shift.submitValue || shift.value
       },
       cancelCandidateIds: []
     });
@@ -1819,7 +1998,7 @@ export class ChatStoreService {
   ): Promise<boolean> {
     const stations = await this.fetchShuttleStationsCached();
     if (!stations.length) {
-      this.sendShuttleSystemMessage('לא ניתן לטעון תחנות כרגע. נסה שוב מאוחר יותר.', {
+      this.sendShuttleSystemMessage(this.shuttleText('לא ניתן לטעון תחנות כרגע. נסה שוב מאוחר יותר.', 'Сейчас не удалось загрузить станции. Попробуйте позже.'), {
         recordType: 'shuttle-error'
       });
       this.saveShuttleState(user, this.defaultShuttleState());
@@ -1829,7 +2008,7 @@ export class ChatStoreService {
 
     const pickedIndex = this.parseShuttleSelection(value, stations.length, stations);
     if (pickedIndex < 0) {
-      this.sendShuttleSystemMessage('בחירה לא תקינה. נא לבחור תחנה מהרשימה.', {
+      this.sendShuttleSystemMessage(this.shuttleText('בחירה לא תקינה. נא לבחור תחנה מהרשימה.', 'Некорректный выбор. Выберите станцию из списка.'), {
         recordType: 'shuttle-invalid'
       });
       return true;
@@ -1842,7 +2021,7 @@ export class ChatStoreService {
     };
     const isDraftReady = Boolean(draft.date && draft.dayName && draft.shiftLabel && draft.shiftValue && draft.station);
     if (!isDraftReady) {
-      this.sendShuttleSystemMessage('חסרים נתוני הזמנה. מתחילים מחדש.', {
+      this.sendShuttleSystemMessage(this.shuttleText('חסרים נתוני הזמנה. מתחילים מחדש.', 'Недостаточно данных заказа. Начинаем заново.'), {
         recordType: 'shuttle-error'
       });
       this.saveShuttleState(user, this.defaultShuttleState());
@@ -1851,6 +2030,26 @@ export class ChatStoreService {
     }
 
     const completeDraft = draft as ShuttleOrderDraft;
+    if (this.shouldDisableShuttleShiftForDate(completeDraft.date, completeDraft.shiftLabel)) {
+      this.sendShuttleSystemMessage(
+        this.shuttleText(
+          'המשמרת שנבחרה כבר לא זמינה להזמנה. בחר משמרת אחרת.',
+          'Выбранная смена уже недоступна для заказа. Выберите другую смену.'
+        ),
+        {
+          recordType: 'shuttle-invalid'
+        }
+      );
+      this.saveShuttleState(user, {
+        awaiting: 'shift',
+        draft: {
+          date: completeDraft.date,
+          dayName: completeDraft.dayName
+        },
+        cancelCandidateIds: []
+      });
+      return true;
+    }
     try {
       const employee = await this.submitShuttleOrder(user, completeDraft, SHUTTLE_STATUS_ACTIVE_VALUE);
       this.persistShuttleOrder(user, {
@@ -1862,22 +2061,22 @@ export class ChatStoreService {
         shiftValue: completeDraft.shiftValue,
         station: completeDraft.station,
         statusValue: SHUTTLE_STATUS_ACTIVE_VALUE,
-        statusLabel: SHUTTLE_STATUS_ACTIVE_LABEL,
+        statusLabel: this.resolveShuttleStatusLabel(SHUTTLE_STATUS_ACTIVE_VALUE),
         submittedAt: Date.now()
       });
       this.sendShuttleSystemMessage(
-        `הבקשה נשלחה בהצלחה ✅\n${this.buildShuttleOrderSummary({
+        `${this.shuttleText('הבקשה נשלחה בהצלחה ✅', 'Запрос успешно отправлен ✅')}\n${this.buildShuttleOrderSummary({
           ...completeDraft,
           id: '',
           employee,
           statusValue: SHUTTLE_STATUS_ACTIVE_VALUE,
-          statusLabel: SHUTTLE_STATUS_ACTIVE_LABEL,
+          statusLabel: this.resolveShuttleStatusLabel(SHUTTLE_STATUS_ACTIVE_VALUE),
           submittedAt: Date.now()
         })}`,
         { recordType: 'shuttle-submit-success' }
       );
     } catch {
-      this.sendShuttleSystemMessage('שליחת הבקשה נכשלה. נסה שוב בעוד מספר רגעים.', {
+      this.sendShuttleSystemMessage(this.shuttleText('שליחת הבקשה נכשלה. נסה שוב בעוד מספר רגעים.', 'Не удалось отправить запрос. Попробуйте снова через пару минут.'), {
         recordType: 'shuttle-submit-failed'
       });
     }
@@ -1894,7 +2093,9 @@ export class ChatStoreService {
   ): Promise<boolean> {
     const candidateOrders = this.getShuttleCancelCandidateOrders(user, state);
     if (!candidateOrders.length) {
-      this.sendShuttleSystemMessage('אין הזמנות פעילות לביטול.', { recordType: 'shuttle-cancel-empty' });
+      this.sendShuttleSystemMessage(this.shuttleText('אין הזמנות פעילות לביטול.', 'Нет активных заказов для отмены.'), {
+        recordType: 'shuttle-cancel-empty'
+      });
       this.saveShuttleState(user, this.defaultShuttleState());
       this.sendShuttleMenu();
       return true;
@@ -1906,7 +2107,7 @@ export class ChatStoreService {
       candidateOrders.map((order) => this.buildShuttleOrderSummary(order))
     );
     if (pickedIndex < 0) {
-      this.sendShuttleSystemMessage('בחירה לא תקינה. נא לבחור הזמנה לביטול מתוך הרשימה.', {
+      this.sendShuttleSystemMessage(this.shuttleText('בחירה לא תקינה. נא לבחור הזמנה לביטול מתוך הרשימה.', 'Некорректный выбор. Выберите заказ для отмены из списка.'), {
         recordType: 'shuttle-invalid'
       });
       return true;
@@ -1914,7 +2115,7 @@ export class ChatStoreService {
 
     const targetOrder = candidateOrders[pickedIndex];
     if (!targetOrder) {
-      this.sendShuttleSystemMessage('ההזמנה לא נמצאה. מתחילים מחדש.', {
+      this.sendShuttleSystemMessage(this.shuttleText('ההזמנה לא נמצאה. מתחילים מחדש.', 'Заказ не найден. Начинаем заново.'), {
         recordType: 'shuttle-cancel-missing'
       });
       this.saveShuttleState(user, this.defaultShuttleState());
@@ -1926,15 +2127,15 @@ export class ChatStoreService {
       await this.submitShuttleOrder(user, targetOrder, SHUTTLE_STATUS_CANCEL_VALUE);
       this.markShuttleOrderCancelled(user, targetOrder.id);
       this.sendShuttleSystemMessage(
-        `ההזמנה בוטלה בהצלחה ✅\n${this.buildShuttleOrderSummary({
+        `${this.shuttleText('ההזמנה בוטלה בהצלחה ✅', 'Заказ успешно отменен ✅')}\n${this.buildShuttleOrderSummary({
           ...targetOrder,
           statusValue: SHUTTLE_STATUS_CANCEL_VALUE,
-          statusLabel: SHUTTLE_STATUS_CANCEL_LABEL
+          statusLabel: this.resolveShuttleStatusLabel(SHUTTLE_STATUS_CANCEL_VALUE)
         })}`,
         { recordType: 'shuttle-cancel-success' }
       );
     } catch {
-      this.sendShuttleSystemMessage('ביטול ההזמנה נכשל. נסה שוב בעוד מספר רגעים.', {
+      this.sendShuttleSystemMessage(this.shuttleText('ביטול ההזמנה נכשל. נסה שוב בעוד מספר רגעים.', 'Не удалось отменить заказ. Попробуйте снова через пару минут.'), {
         recordType: 'shuttle-cancel-failed'
       });
     }
@@ -1951,7 +2152,10 @@ export class ChatStoreService {
     if (!options.skipWelcome) {
       const contactName = this.getDisplayName(user);
       this.sendShuttleSystemMessage(
-        `${contactName} שלום, ברוך/ה הבא/ה להזמנת הסעה.\nכאן ניתן להזמין הסעה, לצפות בבקשות שלך ולבטל בקשה קיימת.`,
+        this.shuttleText(
+          `${contactName} שלום, ברוך/ה הבא/ה להזמנת הסעה.\nכאן ניתן להזמין הסעה, לצפות בבקשות שלך ולבטל בקשה קיימת.`,
+          `Здравствуйте, ${contactName}! Добро пожаловать в чат заказа трансфера.\nЗдесь можно оформить трансфер, просмотреть свои заявки и отменить существующую заявку.`
+        ),
         { recordType: 'shuttle-welcome' }
       );
       localStorage.setItem(this.shuttleWelcomeKey(user), '1');
@@ -1972,7 +2176,9 @@ export class ChatStoreService {
       .sort((a, b) => this.compareShuttleOrdersByDateTimeAsc(a, b));
 
     if (!activeOrders.length) {
-      this.sendShuttleSystemMessage('אין בקשות פעילות לביטול.', { recordType: 'shuttle-cancel-empty' });
+      this.sendShuttleSystemMessage(this.shuttleText('אין בקשות פעילות לביטול.', 'Нет активных заявок для отмены.'), {
+        recordType: 'shuttle-cancel-empty'
+      });
       this.saveShuttleState(user, this.defaultShuttleState());
       this.sendShuttleMenu();
       return;
@@ -2024,7 +2230,7 @@ export class ChatStoreService {
       return null;
     }
 
-    const dayName = String(item.dayName || '').trim() || this.resolveShuttleDayNameFromIso(dateIso);
+    const dayName = this.resolveShuttleDayNameFromIso(dateIso) || String(item.dayName || '').trim();
     const shiftLabel = this.normalizeShuttleShiftLabel(String(item.shift || '').trim());
     const shiftValue = this.normalizeShuttleShiftValue(String(item.shiftValue || '').trim(), shiftLabel);
     const station = String(item.station || '').trim();
@@ -2034,7 +2240,7 @@ export class ChatStoreService {
 
     const statusValue = String(item.statusValue || item.status || '').trim() || SHUTTLE_STATUS_ACTIVE_VALUE;
     const isCancelled = item.isCancelled === true || this.isShuttleStatusCancelled(statusValue);
-    const statusLabel = isCancelled ? SHUTTLE_STATUS_CANCEL_LABEL : SHUTTLE_STATUS_ACTIVE_LABEL;
+    const statusLabel = this.resolveShuttleStatusLabel(isCancelled ? SHUTTLE_STATUS_CANCEL_VALUE : statusValue);
     const submittedAtRaw = Number(item.submittedAt || 0);
     const dateTimestamp = this.parseShuttleDate(dateIso)?.getTime() ?? Date.now();
     const submittedAt = Number.isFinite(submittedAtRaw) && submittedAtRaw > 0
@@ -2085,7 +2291,8 @@ export class ChatStoreService {
     if (!parsed) {
       return '';
     }
-    return SHUTTLE_DAY_NAMES[parsed.getDay()];
+    const dayNames = SHUTTLE_DAY_NAMES_BY_LANGUAGE[this.getShuttleLanguage()];
+    return dayNames[parsed.getDay()] || '';
   }
 
   private normalizeShuttleShiftLabel(value: string): string {
@@ -2155,7 +2362,12 @@ export class ChatStoreService {
     if (!normalized) {
       return false;
     }
-    return normalized.includes('ביטול') || normalized.includes('отмена');
+    return (
+      normalized.includes('ביטול') ||
+      normalized.includes('בוטל') ||
+      normalized.includes('отмена') ||
+      normalized.includes('отмен')
+    );
   }
 
   private async fetchShuttleStationsCached(): Promise<string[]> {
@@ -2195,13 +2407,14 @@ export class ChatStoreService {
   }
 
   private getShuttleDateChoices(): ShuttleDateChoice[] {
+    const dayNames = SHUTTLE_DAY_NAMES_BY_LANGUAGE[this.getShuttleLanguage()];
     const today = new Date();
     const choices: ShuttleDateChoice[] = [];
     for (let i = 0; i < SHUTTLE_DATE_CHOICES_COUNT; i += 1) {
       const date = new Date(today);
       date.setDate(today.getDate() + i);
       const value = this.toIsoDate(date);
-      const dayName = SHUTTLE_DAY_NAMES[date.getDay()];
+      const dayName = dayNames[date.getDay()] || '';
       choices.push({
         value,
         dayName,
@@ -2211,39 +2424,60 @@ export class ChatStoreService {
     return choices;
   }
 
+  private getShuttleShiftOptionsForDate(dateIso: string): ShuttleQuickPickerOption[] {
+    return SHUTTLE_SHIFT_OPTIONS.map((option) => ({
+      value: option.label,
+      label: option.label,
+      submitValue: option.value,
+      disabled: this.shouldDisableShuttleShiftForDate(dateIso, option.label)
+    }));
+  }
+
+  private shouldDisableShuttleShiftForDate(dateIso: string, shiftLabel: string): boolean {
+    const normalizedDate = this.normalizeShuttleDateToIso(String(dateIso || '').trim());
+    if (!normalizedDate || normalizedDate !== this.toIsoDate(new Date())) {
+      return false;
+    }
+    const normalizedShift = this.normalizeShuttleShiftLabel(shiftLabel);
+    const shiftMinutes = this.parseShuttleShiftMinutes(normalizedShift);
+    if (shiftMinutes < 0) {
+      return false;
+    }
+    const now = new Date();
+    const minimumAllowedMinutes = (now.getHours() * 60) + now.getMinutes() + 60;
+    return shiftMinutes <= minimumAllowedMinutes;
+  }
+
   private getShuttleMainMenuMessage(): string {
     return [
-      'היי, זהו חדר הזמנת ההסעה.',
-      'בחר פעולה:',
-      '1. הזמנה חדשה',
-      '2. הבקשות שלי',
-      '3. ביטול הזמנה קיימת',
-      'אפשר להקליד 0 בכל שלב כדי לחזור לתפריט הראשי.'
+      this.shuttleText('היי, זהו חדר הזמנת ההסעה.', 'Здравствуйте, это чат заказа трансфера.'),
+      this.shuttleText('בחר פעולה:', 'Выберите действие:'),
+      `1. ${this.shuttleText('הזמנה חדשה', 'Новый заказ')}`,
+      `2. ${this.shuttleText('הבקשות שלי', 'Мои заявки')}`,
+      `3. ${this.shuttleText('ביטול הזמנה קיימת', 'Отменить существующий заказ')}`,
+      this.shuttleText('אפשר להקליד 0 בכל שלב כדי לחזור לתפריט הראשי.', 'Можно ввести 0 на любом шаге, чтобы вернуться в главное меню.')
     ].join('\n');
   }
 
   private getShuttleDatePromptMessage(): string {
     const lines = this.getShuttleDateChoices().map((choice, index) => `${index + 1}. ${choice.label}`);
-    return ['בחר תאריך נסיעה:', ...lines].join('\n');
+    return [this.shuttleText('בחר תאריך נסיעה:', 'Выберите дату поездки:'), ...lines].join('\n');
   }
 
   private getShuttleShiftPromptMessage(): string {
     const lines = SHUTTLE_SHIFT_OPTIONS.map((shift, index) => `${index + 1}. ${shift.label}`);
-    return ['בחר משמרת (הסעה לעבודה):', ...lines].join('\n');
+    return [this.shuttleText('בחר משמרת (הסעה לעבודה):', 'Выберите смену (трансфер на работу):'), ...lines].join('\n');
   }
 
   private getShuttleStationsPromptMessage(stations: string[]): string {
     const lines = stations.map((station, index) => `${index + 1}. ${station}`);
-    return ['בחר תחנה:', ...lines].join('\n');
+    return [this.shuttleText('בחר תחנה:', 'Выберите станцию:'), ...lines].join('\n');
   }
 
   private buildShuttleOrderSummary(order: ShuttleOrderRecord): string {
-    const statusLabel = order.statusLabel || (
-      order.statusValue === SHUTTLE_STATUS_CANCEL_VALUE
-        ? SHUTTLE_STATUS_CANCEL_LABEL
-        : SHUTTLE_STATUS_ACTIVE_LABEL
-    );
-    const dayAndDate = `${String(order.dayName || '').trim()} ${String(order.date || '').trim()}`.trim();
+    const statusLabel = this.resolveShuttleStatusLabel(order.statusValue || order.statusLabel);
+    const dayName = this.resolveShuttleDayNameFromIso(String(order.date || '').trim()) || String(order.dayName || '').trim();
+    const dayAndDate = `${dayName} ${String(order.date || '').trim()}`.trim();
     const shift = String(order.shiftLabel || '').trim();
     const station = String(order.station || '').trim();
     return `[${statusLabel}] ${dayAndDate} | ${shift} | ${station}`.trim();
@@ -2310,7 +2544,15 @@ export class ChatStoreService {
   private parseShuttleMenuCommand(input: string): 'new' | '' {
     const trimmed = String(input || '').trim();
     if (!trimmed) return '';
-    if (trimmed === '1' || trimmed.includes('חדש')) return 'new';
+    const normalized = this.normalizeShuttleText(trimmed);
+    if (
+      trimmed === '1' ||
+      normalized.includes('חדש') ||
+      normalized.includes('нов') ||
+      normalized.includes('new')
+    ) {
+      return 'new';
+    }
     return '';
   }
 
@@ -2374,7 +2616,7 @@ export class ChatStoreService {
       return {
         ...order,
         statusValue: SHUTTLE_STATUS_CANCEL_VALUE,
-        statusLabel: SHUTTLE_STATUS_CANCEL_LABEL,
+        statusLabel: this.resolveShuttleStatusLabel(SHUTTLE_STATUS_CANCEL_VALUE),
         cancelledAt: Date.now()
       };
     });
@@ -2480,6 +2722,47 @@ export class ChatStoreService {
 
   private shuttleOrdersKey(user: string): string {
     return `${SHUTTLE_ORDERS_KEY_PREFIX}${this.normalizeUser(user)}`;
+  }
+
+  private shuttleLanguageKey(user: string): string {
+    return `${SHUTTLE_LANGUAGE_KEY_PREFIX}${this.normalizeUser(user)}`;
+  }
+
+  private loadShuttleLanguage(user: string): ShuttleLanguage {
+    const raw = localStorage.getItem(this.shuttleLanguageKey(user));
+    return this.resolveShuttleLanguage(raw);
+  }
+
+  private resolveShuttleLanguage(rawValue: unknown): ShuttleLanguage {
+    const normalized = String(rawValue || '').trim().toLowerCase();
+    if (normalized === 'ru') {
+      return 'ru';
+    }
+    if (normalized === 'he') {
+      return 'he';
+    }
+    return this.defaultShuttleLanguage();
+  }
+
+  private defaultShuttleLanguage(): ShuttleLanguage {
+    if (typeof navigator === 'undefined') {
+      return 'he';
+    }
+    const languages = [navigator.language, ...(Array.isArray(navigator.languages) ? navigator.languages : [])]
+      .map((value) => String(value || '').trim().toLowerCase())
+      .filter(Boolean);
+    return languages.some((value) => value.startsWith('ru')) ? 'ru' : 'he';
+  }
+
+  private shuttleText(he: string, ru: string): string {
+    return this.getShuttleLanguage() === 'ru' ? ru : he;
+  }
+
+  private resolveShuttleStatusLabel(statusValue: string): string {
+    const isCancelled = this.isShuttleStatusCancelled(statusValue);
+    return isCancelled
+      ? this.shuttleText('בוטל', 'Отменен')
+      : this.shuttleText('פעיל', 'Активен');
   }
 
   private loadShuttleState(user: string): ShuttleConversationState | null {
@@ -2656,9 +2939,9 @@ export class ChatStoreService {
     const activeSummary = this.buildShuttleOrderSummary({
       ...order,
       statusValue: SHUTTLE_STATUS_ACTIVE_VALUE,
-      statusLabel: SHUTTLE_STATUS_ACTIVE_LABEL
+      statusLabel: this.resolveShuttleStatusLabel(SHUTTLE_STATUS_ACTIVE_VALUE)
     });
-    this.sendShuttleSystemMessage(`⏰ תזכורת: נותרו כשעתיים להסעה שלך.\n${activeSummary}`, {
+    this.sendShuttleSystemMessage(`${this.shuttleText('⏰ תזכורת: נותרו כשעתיים להסעה שלך.', '⏰ Напоминание: до вашего трансфера осталось около двух часов.')}\n${activeSummary}`, {
       recordType: 'shuttle-reminder-2h'
     });
     this.showShuttleReminderBrowserNotification(order, reminderKey);
@@ -2672,14 +2955,16 @@ export class ChatStoreService {
       return;
     }
 
-    const dayAndDate = `${String(order.dayName || '').trim()} ${String(order.date || '').trim()}`.trim();
+    const dayAndDate = `${this.resolveShuttleDayNameFromIso(String(order.date || '').trim()) || String(order.dayName || '').trim()} ${String(order.date || '').trim()}`.trim();
     const shift = String(order.shiftLabel || '').trim();
     const station = String(order.station || '').trim();
     const detailLine = [dayAndDate, shift, station].filter(Boolean).join(' | ');
 
     try {
-      const notification = new Notification('תזכורת להסעה בעוד שעתיים', {
-        body: detailLine || 'בדוק את פרטי ההזמנה בצ׳אט.',
+      const notification = new Notification(
+        this.shuttleText('תזכורת להסעה בעוד שעתיים', 'Напоминание о трансфере через 2 часа'),
+        {
+        body: detailLine || this.shuttleText('בדוק את פרטי ההזמנה בצ׳אט.', 'Проверьте детали заказа в чате.'),
         tag: `shuttle-reminder-2h:${reminderKey}`
       });
       notification.onclick = () => {
@@ -2827,7 +3112,7 @@ export class ChatStoreService {
       messageId: this.generateId('shuttle'),
       chatId,
       sender: chatId,
-      senderDisplayName: SHUTTLE_CHAT_NAME,
+      senderDisplayName: SHUTTLE_CHAT_TITLE,
       recordType: options.recordType,
       body,
       imageUrl: options.imageUrl ?? null,
@@ -2865,8 +3150,12 @@ export class ChatStoreService {
     }
 
     const group = this.groups().find((item) => item.id === chatId) ?? null;
-    if (group && group.type === 'community' && this.normalizeUser(group.createdBy) !== user) {
-      this.lastError.set('רק מנהל יכול לשלוח בקבוצת קהילה');
+    if (group && (group.type === 'community' || this.isDovrutGroup(group.id)) && !this.canUserSendToCommunityGroup(group, user)) {
+      this.lastError.set(
+        this.isDovrutGroup(group.id)
+          ? 'רק מנהלי דוברות יכולים לשלוח בחדר זה'
+          : 'רק מנהל יכול לשלוח בקבוצת קהילה'
+      );
       return;
     }
 
@@ -3384,10 +3673,10 @@ export class ChatStoreService {
       return true;
     }
     const currentSignature = current
-      .map((item) => `${item.username}|${item.displayName}|${item.info || ''}|${item.phone || ''}|${item.upic || ''}`)
+      .map((item) => `${item.username}|${item.displayName}|${item.info || ''}|${item.phone || ''}|${item.upic || ''}|${this.normalizeContactStatus(item.status) ?? ''}`)
       .join('\n');
     const nextSignature = next
-      .map((item) => `${item.username}|${item.displayName}|${item.info || ''}|${item.phone || ''}|${item.upic || ''}`)
+      .map((item) => `${item.username}|${item.displayName}|${item.info || ''}|${item.phone || ''}|${item.upic || ''}|${this.normalizeContactStatus(item.status) ?? ''}`)
       .join('\n');
     return currentSignature !== nextSignature;
   }
@@ -4591,6 +4880,9 @@ export class ChatStoreService {
 
   private getDisplayName(username: string): string {
     const normalized = this.normalizeUser(username);
+    if (this.isShuttleChat(normalized)) {
+      return SHUTTLE_CHAT_TITLE;
+    }
     const contact = this.contacts().find((item) => item.username === normalized);
     if (contact?.displayName) return contact.displayName;
 
@@ -4612,7 +4904,8 @@ export class ChatStoreService {
           displayName: (parsedName.name || username).trim(),
           info: contact.info?.trim() || fallbackInfo,
           phone: contact.phone?.trim() || undefined,
-          upic: contact.upic?.trim() || undefined
+          upic: contact.upic?.trim() || undefined,
+          status: this.normalizeContactStatus((contact as { status?: unknown }).status) ?? undefined
         } satisfies Contact;
       })
       .filter((contact) => {

@@ -7,10 +7,19 @@ var wsShuttleLog = SpreadsheetApp.openById(ssID).getSheetByName("לוג נסיע
 function doGet(e) {
   let data = "";
   var action = String((e.parameter && e.parameter.action) || '').trim();
+  var debugMode = resolveShuttleDebugFlag(e && e.parameter ? e.parameter.debug : '');
 
   if (action === 'get_user_orders' || action === 'get_shuttle_orders') {
     var currentUser = (e.parameter && (e.parameter.user || e.parameter.username || e.parameter.phone)) || '';
-    data = getCurrentUserOrders(currentUser);
+    data = getCurrentUserOrders(currentUser, { debug: debugMode });
+    return ContentService
+      .createTextOutput(JSON.stringify(data))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
+  if (action === 'check_get_user_orders' || action === 'check_user_orders') {
+    var checkUser = (e.parameter && (e.parameter.user || e.parameter.username || e.parameter.phone)) || '';
+    data = checkGetUserOrders(checkUser, { debug: debugMode });
     return ContentService
       .createTextOutput(JSON.stringify(data))
       .setMimeType(ContentService.MimeType.JSON);
@@ -40,6 +49,16 @@ function doGet(e) {
     return ContentService.createTextOutput("Success");
   }
 }
+
+function resolveShuttleDebugFlag(value) {
+  var normalized = String(value || '').trim().toLowerCase();
+  return normalized === '1' ||
+    normalized === 'true' ||
+    normalized === 'yes' ||
+    normalized === 'on' ||
+    normalized === 'debug';
+}
+
 function main() {
   /*
    var item = form.getItemById(716547780)
@@ -278,7 +297,106 @@ function isCellEmptyOrValueEmpty(cell) {
   return value === '' || value === null;
 }
 
-function getCurrentUserOrders(userValue) {
+function getCurrentUserOrders(userValue, options) {
+  var startedAt = Date.now();
+  var debugInfo = (options && options.debug === true)
+    ? {
+      enabled: true,
+      requestStartedAt: new Date(startedAt).toISOString(),
+      phasesMs: {},
+      cacheHit: false
+    }
+    : null;
+  var normalizedUser = normalizeShuttlePhone(userValue);
+  if (!normalizedUser) {
+    return attachShuttleDebugTimings({
+      result: 'error',
+      message: 'Missing or invalid user'
+    }, debugInfo, startedAt);
+  }
+
+  if (!wsShuttleLog) {
+    return attachShuttleDebugTimings({
+      result: 'error',
+      message: 'Sheet לוג נסיעות not found'
+    }, debugInfo, startedAt);
+  }
+
+  var cache = CacheService.getScriptCache();
+  var cacheKey = 'current_user_orders_' + normalizedUser;
+  var cacheLookupStartedAt = Date.now();
+  var cached = cache.get(cacheKey);
+  if (debugInfo) {
+    debugInfo.phasesMs.cacheLookup = Date.now() - cacheLookupStartedAt;
+  }
+  if (cached) {
+    var cachedResponse = JSON.parse(cached);
+    if (!debugInfo) {
+      return cachedResponse;
+    }
+    debugInfo.cacheHit = true;
+    debugInfo.path = 'cache';
+    debugInfo.counts = {
+      groupedOrders: Array.isArray(cachedResponse.orders) ? cachedResponse.orders.length : 0
+    };
+    return attachShuttleDebugTimings(cachedResponse, debugInfo, startedAt);
+  }
+
+  var collectStats = {};
+  var collectStartedAt = Date.now();
+  var orders = collectCurrentUserRawOrders(normalizedUser, collectStats);
+  if (debugInfo) {
+    debugInfo.phasesMs.collectRawOrders = Date.now() - collectStartedAt;
+    debugInfo.rawCollection = collectStats;
+    debugInfo.counts = {
+      rawOrders: orders.length
+    };
+  }
+
+  var pairingStartedAt = Date.now();
+  orders = applyShuttleCancelPairingLogic(orders);
+  if (debugInfo) {
+    debugInfo.phasesMs.applyGrouping = Date.now() - pairingStartedAt;
+  }
+
+  var sortStartedAt = Date.now();
+  orders.sort(function(a, b) {
+    var delta = getShuttleOrderDateTimeSortKey(a) - getShuttleOrderDateTimeSortKey(b);
+    if (delta !== 0) return delta;
+    return Number(a.sheetRow || 0) - Number(b.sheetRow || 0);
+  });
+  if (debugInfo) {
+    debugInfo.phasesMs.sortOrders = Date.now() - sortStartedAt;
+  }
+
+  var buildResponseStartedAt = Date.now();
+  var response = buildCurrentUserOrdersResponse(normalizedUser, orders);
+  if (debugInfo) {
+    debugInfo.phasesMs.buildResponse = Date.now() - buildResponseStartedAt;
+    debugInfo.counts.groupedOrders = orders.length;
+    debugInfo.path = 'fresh';
+  }
+
+  var cacheWriteStartedAt = Date.now();
+  cache.put(cacheKey, JSON.stringify(response), 45);
+  if (debugInfo) {
+    debugInfo.phasesMs.cacheWrite = Date.now() - cacheWriteStartedAt;
+  }
+  return attachShuttleDebugTimings(response, debugInfo, startedAt);
+}
+
+function attachShuttleDebugTimings(response, debugInfo, startedAt) {
+  if (!debugInfo) {
+    return response;
+  }
+  debugInfo.requestFinishedAt = new Date().toISOString();
+  debugInfo.totalMs = Date.now() - startedAt;
+  response.debug = debugInfo;
+  return response;
+}
+
+function checkGetUserOrders(userValue, options) {
+  var debugMode = Boolean(options && options.debug === true);
   var normalizedUser = normalizeShuttlePhone(userValue);
   if (!normalizedUser) {
     return {
@@ -294,28 +412,180 @@ function getCurrentUserOrders(userValue) {
     };
   }
 
-  var cache = CacheService.getScriptCache();
   var cacheKey = 'current_user_orders_' + normalizedUser;
-  var cached = cache.get(cacheKey);
-  if (cached) {
-    return JSON.parse(cached);
-  }
+  CacheService.getScriptCache().remove(cacheKey);
 
-  var lastRow = wsShuttleLog.getLastRow();
-  if (lastRow < 2) {
-    return {
-      result: 'success',
-      user: normalizedUser,
-      counts: { total: 0, ongoing: 0, past: 0 },
-      ongoing: [],
-      past: [],
-      orders: []
+  var endpointResponse = getCurrentUserOrders(normalizedUser, { debug: debugMode });
+  if (!endpointResponse || endpointResponse.result !== 'success') {
+    return endpointResponse || {
+      result: 'error',
+      message: 'Unable to check get_user_orders'
     };
   }
 
+  var rawCollectionDebug = {};
+  var rawOrders = collectCurrentUserRawOrders(normalizedUser, rawCollectionDebug);
+  var groupChecks = summarizeCurrentUserOrderGroups(rawOrders);
+  var mismatchedGroups = groupChecks.filter(function(groupCheck) {
+    return groupCheck.matchesMajorityRule !== true;
+  });
+
+  var result = {
+    result: 'success',
+    user: normalizedUser,
+    checkedAt: new Date().toISOString(),
+    cacheCleared: true,
+    rawOrdersCount: rawOrders.length,
+    groupedOrdersCount: (endpointResponse.orders || []).length,
+    mismatchedGroupsCount: mismatchedGroups.length,
+    groupChecks: groupChecks,
+    getUserOrders: endpointResponse
+  };
+  if (debugMode) {
+    result.debug = {
+      rawCollection: rawCollectionDebug
+    };
+  }
+
+  Logger.log(JSON.stringify(result));
+  return result;
+}
+
+function collectCurrentUserRawOrders(normalizedUser, debugInfo) {
+  var lastRow = wsShuttleLog.getLastRow();
+  if (debugInfo) {
+    debugInfo.lastRow = lastRow;
+  }
+  if (lastRow < 2) {
+    if (debugInfo) {
+      debugInfo.scanStrategy = 'empty';
+      debugInfo.scannedRowsCount = 0;
+      debugInfo.candidateRowsCount = 0;
+      debugInfo.batchCount = 0;
+    }
+    return [];
+  }
+
+  var candidateRows = collectUserCandidateRows(normalizedUser, lastRow);
+  if (debugInfo) {
+    debugInfo.candidateRowsCount = candidateRows.length;
+  }
+  if (!candidateRows.length) {
+    // Fallback keeps behavior correct if text search misses a legacy formatting edge case.
+    if (debugInfo) {
+      debugInfo.fallbackToFullScan = true;
+      debugInfo.batchCount = 0;
+    }
+    return collectCurrentUserRawOrdersByFullScan(normalizedUser, lastRow, debugInfo);
+  }
+
+  var batches = buildContiguousRowBatches(candidateRows);
+  if (debugInfo) {
+    debugInfo.scanStrategy = 'candidate-batches';
+    debugInfo.batchCount = batches.length;
+  }
+  var orders = [];
+  var scannedRowsCount = 0;
+  for (var b = 0; b < batches.length; b++) {
+    var batch = batches[b];
+    scannedRowsCount += Number(batch.rowCount || 0);
+    var rows = wsShuttleLog.getRange(batch.startRow, 1, batch.rowCount, 7).getValues(); // A..G
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      var sheetRow = batch.startRow + i;
+      var order = mapShuttleOrderRow(row, sheetRow);
+      if (!order) continue;
+      var employeePhone = String(order.employeePhone || '').trim();
+      if (!employeePhone || employeePhone !== normalizedUser) {
+        continue;
+      }
+      orders.push(order);
+    }
+  }
+  if (debugInfo) {
+    debugInfo.scannedRowsCount = scannedRowsCount;
+  }
+  return orders;
+}
+
+function collectUserCandidateRows(normalizedUser, lastRow) {
+  var rowSet = {};
+  var searchTokens = buildUserSearchTokens(normalizedUser);
+  for (var i = 0; i < searchTokens.length; i++) {
+    var token = searchTokens[i];
+    if (!token) continue;
+    addCandidateRowsFromColumn(rowSet, 1, lastRow, token); // A: current / legacy employee
+    addCandidateRowsFromColumn(rowSet, 2, lastRow, token); // B: employee in legacy rows
+  }
+  return Object.keys(rowSet)
+    .map(function(value) { return Number(value); })
+    .filter(function(value) { return Number.isFinite(value) && value >= 2 && value <= lastRow; })
+    .sort(function(a, b) { return a - b; });
+}
+
+function buildUserSearchTokens(normalizedUser) {
+  var tokens = {};
+  var normalized = String(normalizedUser || '').trim();
+  if (!normalized) {
+    return [];
+  }
+  tokens[normalized] = true; // 0501234567
+  if (/^05\d{8}$/.test(normalized)) {
+    tokens['972' + normalized.substring(1)] = true; // 972501234567
+    tokens['+972' + normalized.substring(1)] = true; // +972501234567
+  }
+  return Object.keys(tokens);
+}
+
+function addCandidateRowsFromColumn(rowSet, column, lastRow, token) {
+  if (!token || !lastRow || lastRow < 2) return;
+  var searchRange = wsShuttleLog.getRange(2, column, lastRow - 1, 1);
+  var finder = searchRange.createTextFinder(String(token || '').trim()).matchCase(false);
+  var matches = finder.findAll() || [];
+  for (var i = 0; i < matches.length; i++) {
+    var rowNumber = Number(matches[i].getRow() || 0);
+    if (rowNumber >= 2 && rowNumber <= lastRow) {
+      rowSet[String(rowNumber)] = true;
+    }
+  }
+}
+
+function buildContiguousRowBatches(sortedRows) {
+  if (!sortedRows || !sortedRows.length) {
+    return [];
+  }
+  var batches = [];
+  var startRow = sortedRows[0];
+  var previousRow = sortedRows[0];
+
+  for (var i = 1; i < sortedRows.length; i++) {
+    var row = sortedRows[i];
+    if (row === previousRow + 1) {
+      previousRow = row;
+      continue;
+    }
+    batches.push({
+      startRow: startRow,
+      rowCount: (previousRow - startRow) + 1
+    });
+    startRow = row;
+    previousRow = row;
+  }
+
+  batches.push({
+    startRow: startRow,
+    rowCount: (previousRow - startRow) + 1
+  });
+  return batches;
+}
+
+function collectCurrentUserRawOrdersByFullScan(normalizedUser, lastRow, debugInfo) {
+  if (debugInfo) {
+    debugInfo.scanStrategy = 'full-scan';
+    debugInfo.scannedRowsCount = Math.max(0, Number(lastRow || 0) - 1);
+  }
   var rows = wsShuttleLog.getRange(2, 1, lastRow - 1, 7).getValues(); // A..G
   var orders = [];
-
   for (var i = 0; i < rows.length; i++) {
     var row = rows[i];
     var order = mapShuttleOrderRow(row, i + 2);
@@ -326,26 +596,21 @@ function getCurrentUserOrders(userValue) {
     }
     orders.push(order);
   }
+  return orders;
+}
 
-  orders = applyShuttleCancelPairingLogic(orders);
-
-  orders.sort(function(a, b) {
-    var delta = getShuttleOrderDateTimeSortKey(a) - getShuttleOrderDateTimeSortKey(b);
-    if (delta !== 0) return delta;
-    return Number(a.sheetRow || 0) - Number(b.sheetRow || 0);
-  });
-
+function buildCurrentUserOrdersResponse(normalizedUser, orders) {
   var ongoing = [];
   var past = [];
-  for (var j = 0; j < orders.length; j++) {
-    if (orders[j].isOngoing) {
-      ongoing.push(orders[j]);
+  for (var i = 0; i < orders.length; i++) {
+    if (orders[i].isOngoing) {
+      ongoing.push(orders[i]);
     } else {
-      past.push(orders[j]);
+      past.push(orders[i]);
     }
   }
 
-  var response = {
+  return {
     result: 'success',
     user: normalizedUser,
     counts: {
@@ -357,9 +622,54 @@ function getCurrentUserOrders(userValue) {
     past: past,
     orders: orders
   };
+}
 
-  cache.put(cacheKey, JSON.stringify(response), 45);
-  return response;
+function summarizeCurrentUserOrderGroups(rawOrders) {
+  var grouped = {};
+  for (var i = 0; i < rawOrders.length; i++) {
+    var order = rawOrders[i];
+    var key = buildShuttleOrderKey(order) || ('no-key-' + String(order.sheetRow || i));
+    if (!grouped[key]) grouped[key] = [];
+    grouped[key].push(order);
+  }
+
+  var keys = Object.keys(grouped);
+  var summary = [];
+  for (var k = 0; k < keys.length; k++) {
+    var key = keys[k];
+    var group = grouped[key];
+    if (!group || !group.length) continue;
+
+    var activeCount = 0;
+    var nonActiveCount = 0;
+    for (var j = 0; j < group.length; j++) {
+      if (isShuttleOrderCancelledState(group[j])) {
+        nonActiveCount += 1;
+      } else {
+        activeCount += 1;
+      }
+    }
+
+    var representative = selectGroupRepresentative(group);
+    var expectedActive = activeCount > nonActiveCount;
+    var actualActive = representative ? !isShuttleOrderCancelledState(representative) : false;
+
+    summary.push({
+      key: key,
+      total: group.length,
+      activeCount: activeCount,
+      nonActiveCount: nonActiveCount,
+      expectedMajorityStatus: expectedActive ? 'active' : 'not_active',
+      actualRepresentativeStatus: actualActive ? 'active' : 'not_active',
+      representativeSheetRow: representative ? Number(representative.sheetRow || 0) : 0,
+      matchesMajorityRule: expectedActive === actualActive
+    });
+  }
+
+  summary.sort(function(a, b) {
+    return String(a.key || '').localeCompare(String(b.key || ''));
+  });
+  return summary;
 }
 
 function applyShuttleCancelPairingLogic(orders) {
@@ -401,51 +711,61 @@ function buildShuttleOrderKey(order) {
 }
 
 function selectGroupRepresentative(group) {
-  var hasCancel = false;
   var latestOrder = null;
-  var latestCancelOrder = null;
-  var latestActiveOrder = null;
+  var activeCount = 0;
+  var nonActiveCount = 0;
 
   for (var i = 0; i < group.length; i++) {
     var order = group[i];
     var orderTs = Number(order.submittedAt || 0);
-    var statusText = String(order.status || '').toLowerCase();
-    var isCancelled = order.isCancelled === true ||
-      statusText.indexOf('ביטול') >= 0 ||
-      statusText.indexOf('отмена') >= 0;
+    var isCancelled = isShuttleOrderCancelledState(order);
+    if (isCancelled) {
+      nonActiveCount += 1;
+    } else {
+      activeCount += 1;
+    }
+    var orderRow = Number(order.sheetRow || 0);
+    var latestTs = latestOrder ? Number(latestOrder.submittedAt || 0) : -1;
+    var latestRow = latestOrder ? Number(latestOrder.sheetRow || 0) : -1;
 
-    if (!latestOrder || orderTs > Number(latestOrder.submittedAt || 0)) {
+    if (!latestOrder || orderTs > latestTs || (orderTs === latestTs && orderRow > latestRow)) {
       latestOrder = order;
     }
-    if (isCancelled) {
-      hasCancel = true;
-      if (!latestCancelOrder || orderTs > Number(latestCancelOrder.submittedAt || 0)) {
-        latestCancelOrder = order;
-      }
-    } else {
-      if (!latestActiveOrder || orderTs > Number(latestActiveOrder.submittedAt || 0)) {
-        latestActiveOrder = order;
-      }
+  }
+
+  if (!latestOrder) return null;
+
+  var groupIsActive = activeCount > nonActiveCount;
+  var next = cloneShuttleOrder(latestOrder);
+  if (!groupIsActive) {
+    next.isCancelled = true;
+    next.isOngoing = false;
+    if (!String(next.status || '').trim()) {
+      next.status = 'ביטול נסיעה отмена поезд';
     }
+    next.statusValue = String(next.status || '').trim() || 'ביטול נסיעה отмена поезд';
+    if (!next.cancelledAt) {
+      next.cancelledAt = Number(next.submittedAt || Date.now());
+    }
+    return next;
   }
 
-  if (!hasCancel) {
-    return latestActiveOrder || latestOrder;
-  }
-
-  var base = latestCancelOrder || latestOrder;
-  if (!base) return null;
-  var next = cloneShuttleOrder(base);
-  next.isCancelled = true;
-  next.isOngoing = false;
-  if (!String(next.status || '').trim()) {
-    next.status = 'ביטול נסיעה отмена поезд';
-  }
-  next.statusValue = String(next.status || '').trim() || 'ביטול נסיעה отмена поезд';
-  if (!next.cancelledAt) {
-    next.cancelledAt = Number(next.submittedAt || Date.now());
-  }
+  next.isCancelled = false;
+  next.status = 'פעיל активный';
+  next.statusValue = 'פעיל активный';
+  next.cancelledAt = '';
+  next.isOngoing = isIsoDateTodayOrFuture(next.dateIso);
   return next;
+}
+
+function isShuttleOrderCancelledState(order) {
+  if (!order) return false;
+  if (order.isCancelled === true) return true;
+  var statusText = String(order.statusValue || order.status || '').toLowerCase();
+  return statusText.indexOf('ביטול') >= 0 ||
+    statusText.indexOf('בוטל') >= 0 ||
+    statusText.indexOf('отмена') >= 0 ||
+    statusText.indexOf('отмен') >= 0;
 }
 
 function cloneShuttleOrder(order) {
@@ -546,8 +866,10 @@ function mapShuttleOrderRow(row, sheetRow) {
     if (isNaN(submittedAt)) submittedAt = Date.now();
   }
 
-  var statusLower = statusText.toLowerCase();
-  var isCancelled = statusLower.indexOf('ביטול') >= 0 || statusLower.indexOf('отмена') >= 0;
+  var isCancelled = isShuttleOrderCancelledState({
+    status: statusText,
+    statusValue: statusText
+  });
   var isOngoing = !isCancelled && isIsoDateTodayOrFuture(dateIso);
 
   return {

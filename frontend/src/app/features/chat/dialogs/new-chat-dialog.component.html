@@ -28,6 +28,18 @@
       <div class="contacts-list">
         @for (contact of filteredContacts(); track contact.username) {
           <button type="button" class="contact-row" (click)="startChat(contact.username)">
+            <span class="contact-avatar" [class.has-image]="!!avatarUrl(contact.username, contact.upic)">
+              @if (avatarUrl(contact.username, contact.upic); as userAvatar) {
+                <img
+                  class="contact-avatar-image"
+                  [src]="userAvatar"
+                  [alt]="contact.displayName"
+                  loading="lazy"
+                  (error)="markAvatarLoadError(contact.username)" />
+              } @else {
+                <span class="contact-avatar-fallback">{{ avatarFallback(contact.displayName, contact.username) }}</span>
+              }
+            </span>
             <div class="contact-row-main">
               <span class="name">{{ contact.displayName }}</span>
               <span class="meta">{{ contact.username }}</span>

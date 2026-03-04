@@ -427,17 +427,21 @@ function doGet(e) {
 
         // --- NEW NAME LOGIC ---
         var nameColF = String(data[i][4] || '').trim(); // Col F (Index 5)
+        var statusColG = String(data[i][5] || '').trim(); // Col G (Index 6)
+        var exceptionStatusColH = String(data[i][6] || '').trim(); // Col H (Index 7)
         var nameColI = String(data[i][7] || '').trim(); // Col I (Index 8) - Fallback
         var upic = String(data[i][8] || '').trim();
         // Use F if it exists, otherwise try I
         var finalName = nameColF !== "" ? nameColF : nameColI;
+        var normalizedStatus = (statusColG === '1' || exceptionStatusColH === '1') ? 1 : 0;
 
         users.push({
           username: user,
           // Display the found name, or fallback to phone number if both F and I are empty
           displayName: finalName !== "" ? finalName : user,
           fullName: finalName,
-          upic: upic
+          upic: upic,
+          status: normalizedStatus
         });
       }
 

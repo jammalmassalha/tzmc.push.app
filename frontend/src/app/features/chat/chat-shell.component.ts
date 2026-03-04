@@ -37,6 +37,7 @@ import {
   ChatStoreService,
   IncomingReactionNotice,
   ShuttleBreadcrumbStep,
+  ShuttleLanguage,
   ShuttleOrdersDashboard,
   ShuttleQuickPickerState
 } from '../../core/services/chat-store.service';
@@ -106,6 +107,132 @@ interface ShuttleOrderMessageCard {
   station: string;
   cancelled: boolean;
 }
+
+type ShuttleUiTextKey =
+  | 'ordersTitle'
+  | 'refresh'
+  | 'loading'
+  | 'ordersTablistAria'
+  | 'ongoingTab'
+  | 'pastTab'
+  | 'ongoingEmpty'
+  | 'pastEmpty'
+  | 'activeStatus'
+  | 'deleteOrder'
+  | 'dateLabel'
+  | 'shiftLabel'
+  | 'stationLabel'
+  | 'pastStatusCancelled'
+  | 'pastStatusDone'
+  | 'pickerStepsAria'
+  | 'stationSearchPlaceholder'
+  | 'stationSearchAria'
+  | 'clearStationSearchAria'
+  | 'noSearchResults'
+  | 'stationListAria'
+  | 'stationSubtitle'
+  | 'selectOption'
+  | 'confirmSelection'
+  | 'backToMenu'
+  | 'searchResults'
+  | 'deleteOrderDialogTitle'
+  | 'deleteOrderDialogMessage'
+  | 'deleteOrderDialogConfirm'
+  | 'deleteOrderDialogCancel'
+  | 'orderCancelledToast'
+  | 'orderCancelFailedFallback'
+  | 'pickerOptionRequired'
+  | 'pickerOptionUnavailable'
+  | 'pickerOptionFailed'
+  | 'refreshFailedFallback'
+  | 'orderSavedFallback'
+  | 'orderCancelledFallback'
+  | 'languageLabel';
+
+const SHUTTLE_UI_TEXT: Record<ShuttleLanguage, Record<ShuttleUiTextKey, string>> = {
+  he: {
+    ordersTitle: 'ההזמנות שלי',
+    refresh: 'רענון',
+    loading: 'טוען נתונים...',
+    ordersTablistAria: 'קטגוריות הזמנות',
+    ongoingTab: 'פעילות',
+    pastTab: 'עבר',
+    ongoingEmpty: 'אין הזמנות פעילות כרגע.',
+    pastEmpty: 'אין הזמנות עבר להצגה.',
+    activeStatus: 'פעילה',
+    deleteOrder: 'מחק הזמנה',
+    dateLabel: 'תאריך',
+    shiftLabel: 'משמרת',
+    stationLabel: 'תחנה',
+    pastStatusCancelled: 'בוטלה',
+    pastStatusDone: 'הסתיימה',
+    pickerStepsAria: 'שלבי הזמנת הסעה',
+    stationSearchPlaceholder: 'חיפוש תחנה',
+    stationSearchAria: 'חיפוש תחנה',
+    clearStationSearchAria: 'נקה חיפוש תחנות',
+    noSearchResults: 'לא נמצאו תוצאות עבור החיפוש.',
+    stationListAria: 'רשימת תחנות',
+    stationSubtitle: 'תחנת איסוף',
+    selectOption: 'בחר אפשרות',
+    confirmSelection: 'אישור בחירה',
+    backToMenu: 'חזרה לתפריט',
+    searchResults: 'נמצאו',
+    deleteOrderDialogTitle: 'מחיקת הזמנה',
+    deleteOrderDialogMessage: 'האם למחוק (לבטל) את ההזמנה הזו?',
+    deleteOrderDialogConfirm: 'כן, מחק',
+    deleteOrderDialogCancel: 'ביטול',
+    orderCancelledToast: 'ההזמנה בוטלה.',
+    orderCancelFailedFallback: 'ביטול ההזמנה נכשל.',
+    pickerOptionRequired: 'יש לבחור אפשרות מהרשימה.',
+    pickerOptionUnavailable: 'האפשרות שבחרת אינה זמינה כרגע.',
+    pickerOptionFailed: 'בחירה נכשלה. נסה שוב.',
+    refreshFailedFallback: 'טעינת ההזמנות נכשלה',
+    orderSavedFallback: 'הזמנה נשמרה',
+    orderCancelledFallback: 'הזמנה בוטלה',
+    languageLabel: 'שפה'
+  },
+  ru: {
+    ordersTitle: 'Мои заказы',
+    refresh: 'Обновить',
+    loading: 'Загрузка данных...',
+    ordersTablistAria: 'Категории заказов',
+    ongoingTab: 'Активные',
+    pastTab: 'Прошлые',
+    ongoingEmpty: 'Сейчас нет активных заказов.',
+    pastEmpty: 'Нет прошлых заказов для отображения.',
+    activeStatus: 'Активен',
+    deleteOrder: 'Удалить заказ',
+    dateLabel: 'Дата',
+    shiftLabel: 'Смена',
+    stationLabel: 'Станция',
+    pastStatusCancelled: 'Отменен',
+    pastStatusDone: 'Завершен',
+    pickerStepsAria: 'Шаги заказа трансфера',
+    stationSearchPlaceholder: 'Поиск станции',
+    stationSearchAria: 'Поиск станции',
+    clearStationSearchAria: 'Очистить поиск станций',
+    noSearchResults: 'По вашему запросу ничего не найдено.',
+    stationListAria: 'Список станций',
+    stationSubtitle: 'Станция посадки',
+    selectOption: 'Выберите вариант',
+    confirmSelection: 'Подтвердить выбор',
+    backToMenu: 'Назад в меню',
+    searchResults: 'Найдено',
+    deleteOrderDialogTitle: 'Удаление заказа',
+    deleteOrderDialogMessage: 'Удалить (отменить) этот заказ?',
+    deleteOrderDialogConfirm: 'Да, удалить',
+    deleteOrderDialogCancel: 'Отмена',
+    orderCancelledToast: 'Заказ отменен.',
+    orderCancelFailedFallback: 'Не удалось отменить заказ.',
+    pickerOptionRequired: 'Выберите вариант из списка.',
+    pickerOptionUnavailable: 'Выбранный вариант сейчас недоступен.',
+    pickerOptionFailed: 'Не удалось выбрать вариант. Попробуйте снова.',
+    refreshFailedFallback: 'Не удалось загрузить заказы',
+    orderSavedFallback: 'Заказ сохранен',
+    orderCancelledFallback: 'Заказ отменен',
+    languageLabel: 'Язык'
+  }
+};
 
 @Component({
   selector: 'app-chat-shell',
@@ -199,13 +326,20 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   });
 
   readonly composerPlaceholder = computed(() => {
-    if (!this.store.activeChat()) {
+    const activeChat = this.store.activeChat();
+    if (!activeChat) {
       return 'בחר צ׳אט כדי להתחיל';
     }
     if (this.store.getShuttleQuickPickerState()) {
       return 'לבחירה השתמש בכפתורים';
     }
-    return this.store.canSendToActiveChat() ? 'הקלד הודעה' : 'רק מנהל יכול לשלוח בקבוצת קהילה';
+    if (this.store.canSendToActiveChat()) {
+      return 'הקלד הודעה';
+    }
+    if (this.store.isDovrutGroupChat(activeChat.id)) {
+      return 'רק מנהלי דוברות יכולים לשלוח בחדר זה';
+    }
+    return 'רק מנהל יכול לשלוח בקבוצת קהילה';
   });
   readonly shuttleQuickPicker = computed<ShuttleQuickPickerState | null>(() =>
     this.store.getShuttleQuickPickerState()
@@ -222,6 +356,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly isLoadingShuttleOrders = computed(() =>
     this.store.getShuttleOrdersLoading()
   );
+  readonly shuttleLanguage = computed<ShuttleLanguage>(() => this.store.getShuttleLanguage());
   readonly shuttleDashboardTab = signal<'ongoing' | 'past'>('ongoing');
   readonly isShuttleRoomActive = computed(() =>
     Boolean(this.shuttleOrdersDashboard() || this.shuttleQuickPicker())
@@ -277,15 +412,32 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly selectedGroupMemberRemoveUsernames = signal<Set<string>>(new Set<string>());
   readonly selectedGroupMemberAddCount = computed(() => this.selectedGroupMemberAddUsernames().size);
   readonly selectedGroupMemberRemoveCount = computed(() => this.selectedGroupMemberRemoveUsernames().size);
+  readonly currentUserDepartment = computed(() => {
+    const currentUser = this.normalizeUsername(this.store.currentUser() || '');
+    if (!currentUser) return '';
+    const currentContact = this.store.contacts().find((contact) => this.normalizeUsername(contact.username) === currentUser);
+    return this.extractDepartmentFromInfo(currentContact?.info);
+  });
   readonly groupMemberAddCandidates = computed<GroupMemberAddCandidate[]>(() => {
     const preview = this.groupMembersPreview();
     if (!preview?.canManageMembers) return [];
+    const currentDepartment = this.currentUserDepartment();
+    if (!currentDepartment) return [];
 
     const existingMembers = new Set(preview.members.map((member) => member.username));
     return this.store.contacts()
-      .filter((contact) => !existingMembers.has(contact.username))
+      .filter(
+        (contact) => {
+          const normalizedUsername = this.normalizeUsername(contact.username);
+          if (!normalizedUsername) return false;
+          return (
+            !existingMembers.has(normalizedUsername) &&
+            this.extractDepartmentFromInfo(contact.info) === currentDepartment
+          );
+        }
+      )
       .map((contact) => ({
-        username: contact.username,
+        username: this.normalizeUsername(contact.username),
         displayName: contact.displayName || contact.username,
         info: contact.info
       }))
@@ -578,6 +730,14 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     this.snackBar.open('המידע עודכן.', 'סגור', { duration: 2200 });
   }
 
+  openInformationSecurityPolicy(): void {
+    const policyPath = '/notify/uploads/InformationSecurityandCyberPolicy.pdf';
+    const popup = window.open(policyPath, '_blank', 'noopener,noreferrer');
+    if (!popup) {
+      this.snackBar.open('לא ניתן לפתוח את הקובץ כעת.', 'סגור', { duration: 2600 });
+    }
+  }
+
   async flushOutbox(): Promise<void> {
     await this.store.flushOutbox();
     this.snackBar.open('סנכרון הודעות הושלם.', 'סגור', { duration: 2200 });
@@ -649,34 +809,82 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   async chooseShuttlePickerOption(value: string): Promise<void> {
     const normalized = String(value || '').trim();
     if (!normalized || this.isSubmittingShuttlePicker()) return;
+    const picker = this.shuttleQuickPicker();
+    if (picker) {
+      const option = picker.options.find((item) => String(item.value || '').trim() === normalized);
+      if (option?.disabled) {
+        this.snackBar.open(this.shuttleText('pickerOptionUnavailable'), this.shuttleCloseActionLabel(), { duration: 2400 });
+        return;
+      }
+    }
     this.isSubmittingShuttlePicker.set(true);
     try {
       await this.store.submitShuttleQuickPickerSelection(normalized);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'בחירה נכשלה. נסה שוב.';
-      this.snackBar.open(message, 'סגור', { duration: 2800 });
+      const message = error instanceof Error ? error.message : this.shuttleText('pickerOptionFailed');
+      this.snackBar.open(message, this.shuttleCloseActionLabel(), { duration: 2800 });
     } finally {
       this.isSubmittingShuttlePicker.set(false);
     }
   }
 
   async submitShuttlePickerSelection(): Promise<void> {
-    if (!this.shuttleQuickPicker()) return;
+    const picker = this.shuttleQuickPicker();
+    if (!picker) return;
     const selectedValue = String(this.shuttlePickerControl.value || '').trim();
     if (!selectedValue) {
-      this.snackBar.open('יש לבחור אפשרות מהרשימה.', 'סגור', { duration: 2200 });
+      this.snackBar.open(this.shuttleText('pickerOptionRequired'), this.shuttleCloseActionLabel(), { duration: 2200 });
+      return;
+    }
+    const selectedOption = picker.options.find(
+      (option) => String(option.value || '').trim() === selectedValue
+    );
+    if (selectedOption?.disabled) {
+      this.snackBar.open(this.shuttleText('pickerOptionUnavailable'), this.shuttleCloseActionLabel(), { duration: 2400 });
       return;
     }
     await this.chooseShuttlePickerOption(selectedValue);
   }
 
   async goBackFromShuttlePicker(): Promise<void> {
-    await this.chooseShuttlePickerOption('חזרה לתפריט');
+    await this.chooseShuttlePickerOption('0');
   }
 
   clearShuttlePickerSearch(): void {
     if (!this.shuttlePickerSearchControl.value) return;
     this.shuttlePickerSearchControl.setValue('');
+  }
+
+  setShuttleLanguage(language: ShuttleLanguage): void {
+    this.store.setShuttleLanguage(language);
+  }
+
+  isShuttleLanguage(language: ShuttleLanguage): boolean {
+    return this.shuttleLanguage() === language;
+  }
+
+  shuttleText(key: ShuttleUiTextKey): string {
+    return SHUTTLE_UI_TEXT[this.shuttleLanguage()][key];
+  }
+
+  shuttleCloseActionLabel(): string {
+    return this.shuttleLanguage() === 'ru' ? 'Закрыть' : 'סגור';
+  }
+
+  shuttleSearchResultLabel(count: number): string {
+    return this.shuttleLanguage() === 'ru'
+      ? `Найдено ${count} подходящих станций`
+      : `נמצאו ${count} תחנות תואמות`;
+  }
+
+  shuttleOrderDayDateLabel(dayName: string, date: string): string {
+    return `${String(dayName || '').trim()} ${String(date || '').trim()}`.trim();
+  }
+
+  shuttlePastStatusLabel(order: { statusLabel: string }): string {
+    return String(order.statusLabel || '').toLowerCase().includes('отмен') || String(order.statusLabel || '').includes('בוטל')
+      ? this.shuttleText('pastStatusCancelled')
+      : this.shuttleText('pastStatusDone');
   }
 
   setShuttleDashboardTab(tab: 'ongoing' | 'past'): void {
@@ -688,8 +896,8 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     try {
       await this.store.refreshShuttleOrdersForActiveUser();
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'טעינת ההזמנות נכשלה';
-      this.snackBar.open(message, 'סגור', { duration: 2800 });
+      const message = error instanceof Error ? error.message : this.shuttleText('refreshFailedFallback');
+      this.snackBar.open(message, this.shuttleCloseActionLabel(), { duration: 2800 });
     }
   }
 
@@ -701,10 +909,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const dialogRef = this.dialog.open(ConfirmMessageActionDialogComponent, {
       width: '360px',
       data: {
-        title: 'מחיקת הזמנה',
-        message: 'האם למחוק (לבטל) את ההזמנה הזו?',
-        confirmLabel: 'כן, מחק',
-        cancelLabel: 'ביטול',
+        title: this.shuttleText('deleteOrderDialogTitle'),
+        message: this.shuttleText('deleteOrderDialogMessage'),
+        confirmLabel: this.shuttleText('deleteOrderDialogConfirm'),
+        cancelLabel: this.shuttleText('deleteOrderDialogCancel'),
         confirmColor: 'warn'
       }
     });
@@ -716,10 +924,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     this.setShuttleOrderCancelling(normalizedId, true);
     try {
       await this.store.cancelShuttleOrderById(normalizedId);
-      this.snackBar.open('ההזמנה בוטלה.', 'סגור', { duration: 2400 });
+      this.snackBar.open(this.shuttleText('orderCancelledToast'), this.shuttleCloseActionLabel(), { duration: 2400 });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'ביטול ההזמנה נכשל.';
-      this.snackBar.open(message, 'סגור', { duration: 3200 });
+      const message = error instanceof Error ? error.message : this.shuttleText('orderCancelFailedFallback');
+      this.snackBar.open(message, this.shuttleCloseActionLabel(), { duration: 3200 });
     } finally {
       this.setShuttleOrderCancelling(normalizedId, false);
     }
@@ -756,7 +964,11 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const dayDate = String(match[2] || '').trim();
     const shift = String(match[3] || '').trim();
     const station = String(match[4] || '').trim();
-    const title = lines[0] || (recordType === 'shuttle-cancel-success' ? 'הזמנה בוטלה' : 'הזמנה נשמרה');
+    const title = lines[0] || (
+      recordType === 'shuttle-cancel-success'
+        ? this.shuttleText('orderCancelledFallback')
+        : this.shuttleText('orderSavedFallback')
+    );
 
     return {
       title,
@@ -764,7 +976,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       dayDate,
       shift,
       station,
-      cancelled: recordType === 'shuttle-cancel-success' || statusLabel.includes('בוטל')
+      cancelled:
+        recordType === 'shuttle-cancel-success' ||
+        statusLabel.includes('בוטל') ||
+        statusLabel.toLowerCase().includes('отмен')
     };
   }
 
@@ -891,7 +1106,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   openImagePicker(): void {
     if (this.shuttleQuickPicker()) {
-      this.snackBar.open('בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.', 'סגור', { duration: 2600 });
+      this.snackBar.open('בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.', this.shuttleCloseActionLabel(), { duration: 2600 });
       return;
     }
     if (!this.store.activeChat() || !this.store.canSendToActiveChat()) {
@@ -903,7 +1118,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   async shareLocation(): Promise<void> {
     if (this.shuttleQuickPicker()) {
-      this.snackBar.open('בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.', 'סגור', { duration: 2600 });
+      this.snackBar.open('בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.', this.shuttleCloseActionLabel(), { duration: 2600 });
       return;
     }
     if (!this.store.activeChat() || !this.store.canSendToActiveChat()) {
@@ -1174,13 +1389,24 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     return Boolean(member && !member.isAdmin);
   }
 
+  groupMembersMetaText(groupPreview: GroupMembersPreview): string {
+    if (groupPreview.type !== 'community') {
+      return 'קבוצה רגילה · כל המשתתפים יכולים לשלוח';
+    }
+    if (this.store.isDovrutGroupChat(groupPreview.groupId)) {
+      return 'קבוצת קהילה · רק מנהלי דוברות שולחים הודעות';
+    }
+    return 'קבוצת קהילה · רק מנהל שולח הודעות';
+  }
+
   private buildGroupMembersPreview(group: ChatGroup): GroupMembersPreview {
     const contactsByUsername = new Map(
       this.store.contacts().map((contact) => [contact.username, contact])
     );
     const currentUser = String(this.store.currentUser() || '').trim().toLowerCase();
+    const isDovrutGroup = this.store.isDovrutGroupChat(group.id);
     const adminUsername = String(group.createdBy || '').trim().toLowerCase();
-    const canManageMembers = Boolean(adminUsername && currentUser === adminUsername);
+    const canManageMembers = !isDovrutGroup && Boolean(adminUsername && currentUser === adminUsername);
     const members = (group.members ?? [])
       .map((username) => {
         const normalized = String(username || '').trim().toLowerCase();
@@ -1189,7 +1415,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
           username: normalized,
           displayName: contact?.displayName || normalized,
           info: contact?.info,
-          isAdmin: normalized === adminUsername
+          isAdmin: isDovrutGroup
+            ? this.store.isDovrutAdminUser(normalized)
+            : normalized === adminUsername
         };
       })
       .sort((a, b) => a.displayName.localeCompare(b.displayName, 'he'));
@@ -2309,6 +2537,13 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   private normalizeUsername(value: string): string {
     return String(value || '').trim().toLowerCase();
+  }
+
+  private extractDepartmentFromInfo(info?: string): string {
+    const rawInfo = String(info || '').trim();
+    if (!rawInfo) return '';
+    const [department = ''] = rawInfo.split(/\s*[-–—]\s*/, 1);
+    return department.trim().toLowerCase();
   }
 
   private shouldEnableConversationSwipe(event: TouchEvent): boolean {

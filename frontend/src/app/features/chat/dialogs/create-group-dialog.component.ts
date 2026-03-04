@@ -3,7 +3,6 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
-import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatDialogModule, MatDialogRef, MAT_DIALOG_DATA } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
@@ -34,7 +33,6 @@ export interface CreateGroupDialogResult {
     MatInputModule,
     MatSelectModule,
     MatButtonModule,
-    MatCheckboxModule,
     MatIconModule
   ],
   templateUrl: './create-group-dialog.component.html',
@@ -55,14 +53,24 @@ export class CreateGroupDialogComponent {
     initialValue: ''
   });
   readonly selectedMembers = signal<Set<string>>(new Set<string>());
+  readonly failedAvatarUsers = signal<Set<string>>(new Set<string>());
   readonly errorMessage = signal<string>('');
+  readonly currentUserDepartment = computed(() => {
+    const currentUser = this.data.currentUser;
+    if (!currentUser) return '';
+    const currentContact = this.data.contacts.find((contact) => contact.username === currentUser);
+    return this.extractDepartment(currentContact?.info);
+  });
 
   readonly filteredContacts = computed(() => {
     const query = this.searchTerm().trim().toLowerCase();
     const currentUser = this.data.currentUser;
+    const currentDepartment = this.currentUserDepartment();
 
     return this.data.contacts.filter((contact) => {
       if (currentUser && contact.username === currentUser) return false;
+      if (!currentDepartment) return false;
+      if (this.extractDepartment(contact.info) !== currentDepartment) return false;
       if (!query) return true;
       const info = String(contact.info || '').toLowerCase();
       const phone = String(contact.phone || '').toLowerCase();
@@ -74,6 +82,13 @@ export class CreateGroupDialogComponent {
       );
     });
   });
+
+  private extractDepartment(info?: string): string {
+    const rawInfo = String(info || '').trim();
+    if (!rawInfo) return '';
+    const [department = ''] = rawInfo.split(/\s*[-–—]\s*/, 1);
+    return department.trim().toLowerCase();
+  }
 
   toggleMember(username: string, checked: boolean): void {
     const next = new Set(this.selectedMembers());
@@ -90,6 +105,25 @@ export class CreateGroupDialogComponent {
 
   isSelected(username: string): boolean {
     return this.selectedMembers().has(username);
+  }
+
+  avatarUrl(username: string, upic?: string): string | null {
+    if (this.failedAvatarUsers().has(username)) {
+      return null;
+    }
+    const normalized = String(upic || '').trim();
+    return normalized || null;
+  }
+
+  avatarFallback(displayName: string, username: string): string {
+    const source = String(displayName || username || '').trim();
+    return source ? source.charAt(0).toUpperCase() : '?';
+  }
+
+  markAvatarLoadError(username: string): void {
+    const next = new Set(this.failedAvatarUsers());
+    next.add(username);
+    this.failedAvatarUsers.set(next);
   }
 
   submit(): void {
