@@ -11,7 +11,10 @@ function doGet(e) {
 
   if (action === 'get_user_orders' || action === 'get_shuttle_orders') {
     var currentUser = (e.parameter && (e.parameter.user || e.parameter.username || e.parameter.phone)) || '';
-    data = getCurrentUserOrders(currentUser, { debug: debugMode });
+    data = getCurrentUserOrders(currentUser, {
+      debug: debugMode,
+      includeBuckets: resolveShuttleIncludeBucketsFlag(e && e.parameter ? e.parameter.includeBuckets : '')
+    });
     return ContentService
       .createTextOutput(JSON.stringify(data))
       .setMimeType(ContentService.MimeType.JSON);
@@ -54,6 +57,7 @@ function doGet(e) {
     if (conflictResult.action === 'insert') {
       sheet.appendRow(entries);
     }
+    invalidateCurrentUserOrdersCache(incomingOrder.employee);
     
     return ContentService.createTextOutput("Success");
   }
@@ -66,6 +70,26 @@ function resolveShuttleDebugFlag(value) {
     normalized === 'yes' ||
     normalized === 'on' ||
     normalized === 'debug';
+}
+
+function resolveShuttleIncludeBucketsFlag(value) {
+  var normalized = String(value || '').trim().toLowerCase();
+  return normalized === '1' ||
+    normalized === 'true' ||
+    normalized === 'yes' ||
+    normalized === 'on' ||
+    normalized === 'buckets';
+}
+
+function invalidateCurrentUserOrdersCache(userValue) {
+  var normalizedUser = normalizeShuttlePhone(userValue);
+  if (!normalizedUser) return;
+  var cache = CacheService.getScriptCache();
+  cache.removeAll([
+    'current_user_orders_' + normalizedUser,
+    'current_user_orders_' + normalizedUser + '_b0',
+    'current_user_orders_' + normalizedUser + '_b1'
+  ]);
 }
 
 function checkAndResolveShuttleOrderConflict(sheet, incomingOrder) {
@@ -400,6 +424,10 @@ function isCellEmptyOrValueEmpty(cell) {
 
 function getCurrentUserOrders(userValue, options) {
   var startedAt = Date.now();
+  var includeBuckets = Boolean(
+    options &&
+    (options.includeBuckets === true || options.debug === true)
+  );
   var debugInfo = (options && options.debug === true)
     ? {
       enabled: true,
@@ -424,7 +452,7 @@ function getCurrentUserOrders(userValue, options) {
   }
 
   var cache = CacheService.getScriptCache();
-  var cacheKey = 'current_user_orders_' + normalizedUser;
+  var cacheKey = 'current_user_orders_' + normalizedUser + '_' + (includeBuckets ? 'b1' : 'b0');
   var cacheLookupStartedAt = Date.now();
   var cached = cache.get(cacheKey);
   if (debugInfo) {
@@ -471,7 +499,9 @@ function getCurrentUserOrders(userValue, options) {
   }
 
   var buildResponseStartedAt = Date.now();
-  var response = buildCurrentUserOrdersResponse(normalizedUser, orders);
+  var response = buildCurrentUserOrdersResponse(normalizedUser, orders, {
+    includeBuckets: includeBuckets
+  });
   if (debugInfo) {
     debugInfo.phasesMs.buildResponse = Date.now() - buildResponseStartedAt;
     debugInfo.counts.groupedOrders = orders.length;
@@ -479,7 +509,7 @@ function getCurrentUserOrders(userValue, options) {
   }
 
   var cacheWriteStartedAt = Date.now();
-  cache.put(cacheKey, JSON.stringify(response), 45);
+  cache.put(cacheKey, JSON.stringify(response), 120);
   if (debugInfo) {
     debugInfo.phasesMs.cacheWrite = Date.now() - cacheWriteStartedAt;
   }
@@ -513,8 +543,7 @@ function checkGetUserOrders(userValue, options) {
     };
   }
 
-  var cacheKey = 'current_user_orders_' + normalizedUser;
-  CacheService.getScriptCache().remove(cacheKey);
+  invalidateCurrentUserOrdersCache(normalizedUser);
 
   var endpointResponse = getCurrentUserOrders(normalizedUser, { debug: debugMode });
   if (!endpointResponse || endpointResponse.result !== 'success') {
@@ -567,44 +596,41 @@ function collectCurrentUserRawOrders(normalizedUser, debugInfo) {
     return [];
   }
 
-  var candidateRows = collectUserCandidateRows(normalizedUser, lastRow);
-  if (debugInfo) {
-    debugInfo.candidateRowsCount = candidateRows.length;
-  }
-  if (!candidateRows.length) {
-    // Fallback keeps behavior correct if text search misses a legacy formatting edge case.
-    if (debugInfo) {
-      debugInfo.fallbackToFullScan = true;
-      debugInfo.batchCount = 0;
-    }
-    return collectCurrentUserRawOrdersByFullScan(normalizedUser, lastRow, debugInfo);
-  }
+  var readStartedAt = Date.now();
+  var rows = wsShuttleLog.getRange(2, 1, lastRow - 1, 7).getValues(); // A..G
+  var readRowsMs = Date.now() - readStartedAt;
 
-  var batches = buildContiguousRowBatches(candidateRows);
-  if (debugInfo) {
-    debugInfo.scanStrategy = 'candidate-batches';
-    debugInfo.batchCount = batches.length;
-  }
+  var tokenBuildStartedAt = Date.now();
+  var digitTokens = buildUserDigitSearchTokens(normalizedUser);
+  var buildTokensMs = Date.now() - tokenBuildStartedAt;
+
+  var filterStartedAt = Date.now();
   var orders = [];
-  var scannedRowsCount = 0;
-  for (var b = 0; b < batches.length; b++) {
-    var batch = batches[b];
-    scannedRowsCount += Number(batch.rowCount || 0);
-    var rows = wsShuttleLog.getRange(batch.startRow, 1, batch.rowCount, 7).getValues(); // A..G
-    for (var i = 0; i < rows.length; i++) {
-      var row = rows[i];
-      var sheetRow = batch.startRow + i;
-      var order = mapShuttleOrderRow(row, sheetRow);
-      if (!order) continue;
-      var employeePhone = String(order.employeePhone || '').trim();
-      if (!employeePhone || employeePhone !== normalizedUser) {
-        continue;
-      }
-      orders.push(order);
+  var candidateRowsCount = 0;
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    if (!rowMayMatchUserPhone(row, digitTokens)) {
+      continue;
     }
+    candidateRowsCount += 1;
+    var order = mapShuttleOrderRow(row, i + 2);
+    if (!order) continue;
+    var employeePhone = String(order.employeePhone || '').trim();
+    if (!employeePhone || employeePhone !== normalizedUser) {
+      continue;
+    }
+    orders.push(order);
   }
+  var filterRowsMs = Date.now() - filterStartedAt;
+
   if (debugInfo) {
-    debugInfo.scannedRowsCount = scannedRowsCount;
+    debugInfo.scanStrategy = 'single-pass-full-read';
+    debugInfo.batchCount = 1;
+    debugInfo.scannedRowsCount = rows.length;
+    debugInfo.candidateRowsCount = candidateRowsCount;
+    debugInfo.readRowsMs = readRowsMs;
+    debugInfo.buildTokensMs = buildTokensMs;
+    debugInfo.filterRowsMs = filterRowsMs;
   }
   return orders;
 }
@@ -636,6 +662,49 @@ function buildUserSearchTokens(normalizedUser) {
     tokens['+972' + normalized.substring(1)] = true; // +972501234567
   }
   return Object.keys(tokens);
+}
+
+function buildUserDigitSearchTokens(normalizedUser) {
+  var tokens = buildUserSearchTokens(normalizedUser);
+  var uniqueDigits = {};
+  var addTokenDigits = function(tokenValue) {
+    var digits = String(tokenValue || '').replace(/\D/g, '').trim();
+    if (digits) {
+      uniqueDigits[digits] = true;
+    }
+  };
+  for (var i = 0; i < tokens.length; i++) {
+    var token = String(tokens[i] || '').trim();
+    addTokenDigits(token);
+    var tokenDigits = token.replace(/\D/g, '');
+    if (/^05\d{8}$/.test(tokenDigits)) {
+      addTokenDigits(tokenDigits.substring(1)); // Numeric cells may drop the leading zero.
+    } else if (/^9725\d{8}$/.test(tokenDigits)) {
+      addTokenDigits(tokenDigits.substring(3)); // Local Israeli format without country code.
+    } else if (/^97205\d{8}$/.test(tokenDigits)) {
+      addTokenDigits(tokenDigits.substring(4));
+    }
+  }
+  return Object.keys(uniqueDigits);
+}
+
+function rowMayMatchUserPhone(row, digitTokens) {
+  if (!digitTokens || !digitTokens.length) {
+    return true;
+  }
+  var colADigits = String(row && row[0] || '').replace(/\D/g, '');
+  var colBDigits = String(row && row[1] || '').replace(/\D/g, '');
+  if (!colADigits && !colBDigits) {
+    return false;
+  }
+  for (var i = 0; i < digitTokens.length; i++) {
+    var token = String(digitTokens[i] || '').trim();
+    if (!token) continue;
+    if (colADigits.indexOf(token) >= 0 || colBDigits.indexOf(token) >= 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function addCandidateRowsFromColumn(rowSet, column, lastRow, token) {
@@ -700,29 +769,41 @@ function collectCurrentUserRawOrdersByFullScan(normalizedUser, lastRow, debugInf
   return orders;
 }
 
-function buildCurrentUserOrdersResponse(normalizedUser, orders) {
-  var ongoing = [];
-  var past = [];
+function buildCurrentUserOrdersResponse(normalizedUser, orders, options) {
+  var includeBuckets = Boolean(options && options.includeBuckets === true);
+  var ongoing = includeBuckets ? [] : null;
+  var past = includeBuckets ? [] : null;
+  var ongoingCount = 0;
+  var pastCount = 0;
   for (var i = 0; i < orders.length; i++) {
     if (orders[i].isOngoing) {
-      ongoing.push(orders[i]);
+      ongoingCount += 1;
+      if (includeBuckets) {
+        ongoing.push(orders[i]);
+      }
     } else {
-      past.push(orders[i]);
+      pastCount += 1;
+      if (includeBuckets) {
+        past.push(orders[i]);
+      }
     }
   }
 
-  return {
+  var response = {
     result: 'success',
     user: normalizedUser,
     counts: {
       total: orders.length,
-      ongoing: ongoing.length,
-      past: past.length
+      ongoing: ongoingCount,
+      past: pastCount
     },
-    ongoing: ongoing,
-    past: past,
     orders: orders
   };
+  if (includeBuckets) {
+    response.ongoing = ongoing;
+    response.past = past;
+  }
+  return response;
 }
 
 function summarizeCurrentUserOrderGroups(rawOrders) {
