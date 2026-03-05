@@ -712,6 +712,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     }, 60_000);
 
     void this.store.initialize();
+    void this.enforceMandatoryPushRegistrationOnEntry();
     this.routeQueryParamsSub?.unsubscribe();
     this.routeQueryParamsSub = this.route.queryParamMap.subscribe((queryParams) => {
       const chatFromUrl = queryParams.get('chat');
@@ -724,6 +725,26 @@ export class ChatShellComponent implements OnInit, OnDestroy {
         this.showContactsPane.set(false);
       }
     });
+  }
+
+  private async enforceMandatoryPushRegistrationOnEntry(): Promise<void> {
+    await this.store.ensureSessionReady();
+    if (!this.store.isAuthenticated()) {
+      return;
+    }
+    if (!this.store.networkOnline()) {
+      return;
+    }
+    try {
+      await this.store.ensurePushRegistrationReadyForCurrentUser({ promptIfNeeded: true });
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : 'נדרש רישום מחדש להתראות Push לפני המשך שימוש.';
+      this.snackBar.open(message, 'סגור', { duration: 5200 });
+      await this.store.logout();
+      await this.router.navigate(['/setup']);
+    }
   }
 
   ngOnDestroy(): void {
