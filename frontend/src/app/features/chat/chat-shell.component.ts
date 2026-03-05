@@ -108,6 +108,18 @@ interface ShuttleOrderMessageCard {
   cancelled: boolean;
 }
 
+type HrInquiryStatus = 'active' | 'closed';
+
+interface HrInquiryView {
+  id: string;
+  title: string;
+  preview: string;
+  status: HrInquiryStatus;
+  openedAt: number;
+  lastActivityAt: number;
+  messages: ChatMessage[];
+}
+
 const MESSAGE_PAGE_SIZE = 15;
 const LOAD_OLDER_MESSAGES_SCROLL_THRESHOLD_PX = 56;
 const HR_CHAT_ROOM_ID = 'ציפי';
@@ -377,6 +389,41 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (!activeChat) return false;
     return this.normalizeUsername(activeChat.id) === this.normalizeUsername(HR_CHAT_ROOM_ID);
   });
+  readonly hrInquiriesTab = signal<HrInquiryStatus>('active');
+  readonly selectedHrInquiryId = signal<string | null>(null);
+  readonly hrInquiries = computed<HrInquiryView[]>(() => {
+    if (!this.isHrRoomActive()) {
+      return [];
+    }
+    return this.buildHrInquiries(this.store.activeMessages(), this.store.currentUser() || '');
+  });
+  readonly hrInquiryBuckets = computed<{ active: HrInquiryView[]; closed: HrInquiryView[] }>(() => {
+    const active: HrInquiryView[] = [];
+    const closed: HrInquiryView[] = [];
+    this.hrInquiries().forEach((inquiry) => {
+      if (inquiry.status === 'closed') {
+        closed.push(inquiry);
+      } else {
+        active.push(inquiry);
+      }
+    });
+    return { active, closed };
+  });
+  readonly hrVisibleInquiries = computed<HrInquiryView[]>(() =>
+    this.hrInquiriesTab() === 'active'
+      ? this.hrInquiryBuckets().active
+      : this.hrInquiryBuckets().closed
+  );
+  readonly selectedHrInquiry = computed<HrInquiryView | null>(() => {
+    const selectedId = String(this.selectedHrInquiryId() || '').trim();
+    if (!selectedId) {
+      return null;
+    }
+    return this.hrInquiries().find((inquiry) => inquiry.id === selectedId) ?? null;
+  });
+  readonly selectedHrInquiryMessages = computed<ChatMessage[]>(() =>
+    this.selectedHrInquiry()?.messages ?? []
+  );
   readonly shuttleBreadcrumbs = computed<ShuttleBreadcrumbStep[] | null>(() =>
     this.store.getShuttleFlowBreadcrumbs()
   );
@@ -488,6 +535,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     () =>
       Boolean(this.store.activeChatId()) &&
       !this.isShuttleRoomActive() &&
+      !this.isHrRoomActive() &&
       this.store.activeMessages().length > 0 &&
       !this.isMessagesPanelAtBottom()
   );
@@ -648,6 +696,30 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const visibleOptions = this.filteredShuttlePickerOptions();
     if (!visibleOptions.some((option) => option.value === selected)) {
       this.shuttlePickerControl.setValue('');
+    }
+  });
+
+  private readonly hrInquirySelectionEffect = effect(() => {
+    const isHrRoom = this.isHrRoomActive();
+    const visibleInquiries = this.hrVisibleInquiries();
+    const selectedId = this.selectedHrInquiryId();
+
+    if (!isHrRoom) {
+      if (selectedId !== null) {
+        this.selectedHrInquiryId.set(null);
+      }
+      return;
+    }
+
+    if (!visibleInquiries.length) {
+      if (selectedId !== null) {
+        this.selectedHrInquiryId.set(null);
+      }
+      return;
+    }
+
+    if (!selectedId || !visibleInquiries.some((inquiry) => inquiry.id === selectedId)) {
+      this.selectedHrInquiryId.set(visibleInquiries[0].id);
     }
   });
 
@@ -969,6 +1041,40 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   setShuttleDashboardTab(tab: 'ongoing' | 'past'): void {
     this.shuttleDashboardTab.set(tab);
+  }
+
+  setHrInquiriesTab(tab: HrInquiryStatus): void {
+    this.hrInquiriesTab.set(tab);
+  }
+
+  selectHrInquiry(inquiryId: string): void {
+    const normalizedId = String(inquiryId || '').trim();
+    if (!normalizedId) return;
+    if (!this.hrVisibleInquiries().some((inquiry) => inquiry.id === normalizedId)) {
+      return;
+    }
+    this.selectedHrInquiryId.set(normalizedId);
+  }
+
+  isHrInquirySelected(inquiryId: string): boolean {
+    const normalizedId = String(inquiryId || '').trim();
+    if (!normalizedId) return false;
+    return this.selectedHrInquiryId() === normalizedId;
+  }
+
+  hrInquiryStatusLabel(status: HrInquiryStatus): string {
+    return status === 'closed' ? 'סגורה' : 'פעילה';
+  }
+
+  hrInquiryTimeLabel(inquiry: HrInquiryView): string {
+    return this.formatChatListTime(inquiry.lastActivityAt);
+  }
+
+  hrInquiryMessageSender(message: ChatMessage): string {
+    if (message.direction === 'outgoing') {
+      return 'אני';
+    }
+    return String(message.senderDisplayName || message.sender || 'משאבי אנוש').trim();
   }
 
   async refreshShuttleOrders(): Promise<void> {
@@ -2571,6 +2677,198 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (/^\+9725\d{8}$/.test(source)) return source;
     if (/^\+97205\d{8}$/.test(source)) return source;
     return '';
+  }
+
+  private buildHrInquiries(messages: ChatMessage[], currentUser: string): HrInquiryView[] {
+    const normalizedCurrentUser = this.normalizeUsername(currentUser);
+    if (!messages.length || !normalizedCurrentUser) {
+      return [];
+    }
+
+    const inquiries: HrInquiryView[] = [];
+    let currentInquiryId = '';
+    let currentInquiryMessages: ChatMessage[] = [];
+
+    const flushCurrentInquiry = (): void => {
+      if (!currentInquiryId || !currentInquiryMessages.length) {
+        return;
+      }
+      const inquiry = this.toHrInquiryView(currentInquiryId, currentInquiryMessages, inquiries.length + 1);
+      if (inquiry) {
+        inquiries.push(inquiry);
+      }
+      currentInquiryId = '';
+      currentInquiryMessages = [];
+    };
+
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index];
+      if (this.shouldStartNewHrInquiry(messages, index, currentInquiryMessages)) {
+        flushCurrentInquiry();
+        currentInquiryId = String(message.messageId || `hr-inquiry-${index + 1}`).trim();
+      }
+
+      if (!currentInquiryId) {
+        if (this.shouldSkipHrSystemMessageOutsideInquiry(message)) {
+          continue;
+        }
+        currentInquiryId = String(message.messageId || `hr-inquiry-${index + 1}`).trim();
+      }
+
+      currentInquiryMessages.push(message);
+    }
+
+    flushCurrentInquiry();
+    return inquiries.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+  }
+
+  private shouldStartNewHrInquiry(
+    messages: ChatMessage[],
+    index: number,
+    currentInquiryMessages: ChatMessage[]
+  ): boolean {
+    const message = messages[index];
+    if (!this.isHrInquiryCandidateMessage(message)) {
+      return false;
+    }
+    if (!currentInquiryMessages.length) {
+      return true;
+    }
+    if (this.hasHrFreeTextPromptBefore(messages, index)) {
+      return true;
+    }
+    return this.isHrInquiryMarkedClosed(currentInquiryMessages);
+  }
+
+  private shouldSkipHrSystemMessageOutsideInquiry(message: ChatMessage): boolean {
+    if (message.direction !== 'incoming') {
+      return false;
+    }
+    const recordType = String(message.recordType || '').trim();
+    if (recordType === 'hr-welcome' || recordType === 'hr-steps') {
+      return true;
+    }
+    const normalizedBody = this.normalizeHrText(message.body);
+    return (
+      normalizedBody.includes('יש לבחור באמצעות מענה בהודעת ווטסאפ') ||
+      normalizedBody.includes('נא כתוב את הודעתך')
+    );
+  }
+
+  private hasHrFreeTextPromptBefore(messages: ChatMessage[], index: number): boolean {
+    const from = Math.max(0, index - 6);
+    for (let cursor = index - 1; cursor >= from; cursor -= 1) {
+      const candidate = messages[cursor];
+      if (candidate.direction !== 'incoming') {
+        continue;
+      }
+      const normalizedBody = this.normalizeHrText(candidate.body);
+      if (normalizedBody.includes('נא כתוב את הודעתך')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private isHrInquiryCandidateMessage(message: ChatMessage): boolean {
+    if (message.direction !== 'outgoing' || this.isMessageDeleted(message)) {
+      return false;
+    }
+    const body = String(message.body || '').trim();
+    if (!body) {
+      return Boolean(message.imageUrl);
+    }
+    if (body === '0') {
+      return false;
+    }
+    if (/^\d+$/.test(body)) {
+      return false;
+    }
+    const normalized = this.normalizeHrText(body);
+    if (normalized === 'חזרה' || normalized.includes('назад')) {
+      return false;
+    }
+    return true;
+  }
+
+  private toHrInquiryView(
+    inquiryId: string,
+    messages: ChatMessage[],
+    fallbackOrdinal: number
+  ): HrInquiryView | null {
+    if (!messages.length) {
+      return null;
+    }
+
+    const firstMessage = messages[0];
+    const lastMessage = messages[messages.length - 1];
+    const openingMessage =
+      messages.find((message) => this.isHrInquiryCandidateMessage(message))
+      ?? messages.find((message) => message.direction === 'outgoing')
+      ?? firstMessage;
+    const titlePreview = this.getHrMessagePreview(openingMessage);
+    const latestPreviewMessage = [...messages]
+      .reverse()
+      .find((message) => Boolean(this.getHrMessagePreview(message)));
+
+    return {
+      id: inquiryId || `hr-inquiry-${fallbackOrdinal}`,
+      title: this.clampPreview(titlePreview || `פנייה ${fallbackOrdinal}`, 72),
+      preview: this.clampPreview(this.getHrMessagePreview(latestPreviewMessage || lastMessage) || 'ללא תוכן', 96),
+      status: this.isHrInquiryMarkedClosed(messages) ? 'closed' : 'active',
+      openedAt: Number(firstMessage.timestamp || Date.now()),
+      lastActivityAt: Number(lastMessage.timestamp || firstMessage.timestamp || Date.now()),
+      messages: [...messages]
+    };
+  }
+
+  private isHrInquiryMarkedClosed(messages: ChatMessage[]): boolean {
+    return messages.some((message) => {
+      const normalizedContent = this.normalizeHrText(
+        `${String(message.recordType || '')} ${String(message.body || '')}`
+      );
+      if (!normalizedContent) {
+        return false;
+      }
+      return (
+        normalizedContent.includes('נסגר') ||
+        normalizedContent.includes('נסגרה') ||
+        normalizedContent.includes('סגורה') ||
+        normalizedContent.includes('פניה סגורה') ||
+        normalizedContent.includes('closed') ||
+        normalizedContent.includes('ticket closed') ||
+        normalizedContent.includes('inquiry closed') ||
+        normalizedContent.includes('закрыт') ||
+        normalizedContent.includes('закрыта') ||
+        normalizedContent.includes('обращение закрыто') ||
+        normalizedContent.includes('завершен') ||
+        normalizedContent.includes('завершена')
+      );
+    });
+  }
+
+  private getHrMessagePreview(message: ChatMessage | null): string {
+    if (!message) {
+      return '';
+    }
+    if (this.isMessageDeleted(message)) {
+      return 'הודעה נמחקה';
+    }
+    const body = String(message.body || '').replace(/\s+/g, ' ').trim();
+    if (body) {
+      return body;
+    }
+    if (message.imageUrl) {
+      return 'תמונה';
+    }
+    return '';
+  }
+
+  private normalizeHrText(value: string): string {
+    return String(value || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
   }
 
   private buildReplyReference(message: ChatMessage): MessageReference | null {

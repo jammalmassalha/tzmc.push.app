@@ -184,7 +184,7 @@
           [class.shuttle-no-scroll]="isShuttleRoomActive()"
           [class.hr-room-active]="isHrRoomActive()"
           (scroll)="onMessagesPanelScroll()">
-          @if (stickyMessageDateLabel(); as stickyDateLabel) {
+          @if (!isHrRoomActive() && stickyMessageDateLabel(); as stickyDateLabel) {
             <div class="messages-sticky-date">
               <span>{{ stickyDateLabel }}</span>
             </div>
@@ -324,166 +324,295 @@
             </section>
           }
 
-          @for (message of visibleMessages(); track message.messageId; let index = $index) {
-            @if (shouldShowMessageDateBadge(messageAbsoluteIndex(index), message.timestamp)) {
-              <div class="message-date-badge">
-                <span>{{ formatMessageDateBadge(message.timestamp) }}</span>
+          @if (isHrRoomActive()) {
+            <section class="hr-inquiries-dashboard">
+              <div class="hr-inquiries-toolbar">
+                <div class="hr-inquiries-title">פניות למשאבי אנוש</div>
               </div>
-            }
-            <article
-              class="message-row"
-              [class.outgoing]="message.direction === 'outgoing'"
-              [attr.data-message-index]="messageAbsoluteIndex(index)">
-              <div class="message-bubble" [class.deleted]="isMessageDeleted(message)">
-                @if (message.direction === 'incoming' && message.groupId) {
-                  <div class="message-sender">{{ message.senderDisplayName || message.sender }}</div>
-                }
 
-                @if (canOpenMessageActions(message)) {
-                  <div class="message-actions">
-                    <button
-                      type="button"
-                      class="message-action-btn"
-                      [class.pending]="isMessageActionPending(message)"
-                      [matMenuTriggerFor]="messageActionsMenu"
-                      [disabled]="isMessageActionPending(message)"
-                      (click)="setMessageActionTarget(message)"
-                      aria-label="פעולות הודעה">
-                      @if (isMessageActionPending(message)) {
-                        <mat-spinner class="message-action-spinner" diameter="16"></mat-spinner>
+              <div class="hr-inquiries-tabs" role="tablist" aria-label="קטגוריות פניות">
+                <button
+                  type="button"
+                  role="tab"
+                  class="hr-inquiries-tab-btn active"
+                  [class.selected]="hrInquiriesTab() === 'active'"
+                  [attr.aria-selected]="hrInquiriesTab() === 'active'"
+                  (click)="setHrInquiriesTab('active')">
+                  פעילות ({{ hrInquiryBuckets().active.length }})
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  class="hr-inquiries-tab-btn closed"
+                  [class.selected]="hrInquiriesTab() === 'closed'"
+                  [attr.aria-selected]="hrInquiriesTab() === 'closed'"
+                  (click)="setHrInquiriesTab('closed')">
+                  סגורות ({{ hrInquiryBuckets().closed.length }})
+                </button>
+              </div>
+
+              <div class="hr-inquiries-content">
+                <div class="hr-inquiries-list">
+                  @if (!hrVisibleInquiries().length) {
+                    <div class="hr-inquiries-empty">
+                      @if (hrInquiriesTab() === 'active') {
+                        אין פניות פעילות להצגה.
                       } @else {
-                        <mat-icon>more_horiz</mat-icon>
+                        אין פניות סגורות להצגה.
                       }
-                    </button>
-                  </div>
-                }
-
-                @if (isMessageForwarded(message)) {
-                  <div class="message-forwarded-label">
-                    <mat-icon>forward</mat-icon>
-                    <span>הועברה</span>
-                  </div>
-                }
-
-                @if (message.replyTo; as replyReference) {
-                  <div class="message-reply-quote">
-                    <span class="message-reply-author">{{ replyAuthorLabel(replyReference) }}</span>
-                    <span class="message-reply-preview">{{ replyPreviewLabel(replyReference) }}</span>
-                  </div>
-                }
-
-                @if (message.imageUrl) {
-                  <button
-                    type="button"
-                    class="message-image-btn"
-                    (click)="openFullImage(message.imageUrl)"
-                    aria-label="Open full image">
-                    <img class="message-image" [src]="message.imageUrl" alt="Attachment" loading="lazy" />
-                  </button>
-                }
-
-                @if (shuttleOrderMessageCard(message); as shuttleCard) {
-                  <div class="shuttle-message-card" [class.cancelled]="shuttleCard.cancelled">
-                    <div class="shuttle-message-card-title">{{ shuttleCard.title }}</div>
-                    <div class="shuttle-message-card-status">{{ shuttleCard.statusLabel }}</div>
-                    <div class="shuttle-message-card-row">
-                      <span class="label">{{ shuttleText('dateLabel') }}</span>
-                      <span class="value">{{ shuttleCard.dayDate }}</span>
                     </div>
-                    <div class="shuttle-message-card-row">
-                      <span class="label">{{ shuttleText('shiftLabel') }}</span>
-                      <span class="value">{{ shuttleCard.shift }}</span>
-                    </div>
-                    <div class="shuttle-message-card-row">
-                      <span class="label">{{ shuttleText('stationLabel') }}</span>
-                      <span class="value">{{ shuttleCard.station }}</span>
-                    </div>
-                  </div>
-                } @else if (message.body) {
-                  <div class="message-content">
-                    @for (part of getMessageRenderParts(message.messageId, message.body); track $index) {
-                      @if (part.kind === 'text') {
-                        <span class="message-text">{{ part.text }}</span>
-                      } @else if (part.kind === 'phone') {
-                        <button
-                          type="button"
-                          class="message-phone"
-                          (click)="openPhoneActions(part)"
-                          aria-label="פעולות מספר טלפון">
-                          {{ part.display }}
-                        </button>
-                      } @else if (part.kind === 'image') {
-                        <button
-                          type="button"
-                          class="message-image-btn"
-                          (click)="openFullImage(part.url)"
-                          aria-label="Open full image">
-                          <img class="message-image" [src]="part.url" alt="Image" loading="lazy" />
-                        </button>
-                      } @else {
-                        <a [href]="part.url" target="_blank" rel="noopener" class="message-link">
-                          {{ part.label }}
-                        </a>
-                      }
+                  } @else {
+                    @for (inquiry of hrVisibleInquiries(); track inquiry.id) {
+                      <button
+                        type="button"
+                        class="hr-inquiry-list-item"
+                        [class.selected]="isHrInquirySelected(inquiry.id)"
+                        (click)="selectHrInquiry(inquiry.id)">
+                        <div class="hr-inquiry-list-top">
+                          <span class="hr-inquiry-title">{{ inquiry.title }}</span>
+                          <span class="hr-inquiry-time">{{ hrInquiryTimeLabel(inquiry) }}</span>
+                        </div>
+                        <div class="hr-inquiry-list-bottom">
+                          <span class="hr-inquiry-status" [class.closed]="inquiry.status === 'closed'">
+                            {{ hrInquiryStatusLabel(inquiry.status) }}
+                          </span>
+                          <span class="hr-inquiry-preview">{{ inquiry.preview }}</span>
+                        </div>
+                      </button>
                     }
-                  </div>
-                }
-
-                <div class="message-meta">
-                  <span>{{ formatTime(message.timestamp) }}</span>
-                  @if (isMessageEdited(message)) {
-                    <span class="message-edited-label">נערך</span>
-                  }
-                  @if (isMessageActionSyncing(message)) {
-                    <span class="message-syncing-label">מסנכרן...</span>
-                  }
-                  @if (message.direction === 'outgoing') {
-                    <span
-                      class="message-status"
-                      [class.read]="isOutgoingStatusRead(message.deliveryStatus)"
-                      [class.failed]="message.deliveryStatus === 'failed'"
-                      [attr.aria-label]="outgoingStatusLabel(message.deliveryStatus)"
-                      [attr.title]="outgoingStatusLabel(message.deliveryStatus)">
-                      <mat-icon>{{ outgoingStatusIcon(message.deliveryStatus) }}</mat-icon>
-                    </span>
                   }
                 </div>
 
-                @if (reactionBuckets(message).length) {
-                  <div class="message-reactions">
-                    @for (bucket of reactionBuckets(message); track bucket.emoji) {
-                      <span class="reaction-chip">
-                        {{ bucket.count > 1 ? bucket.emoji + ' ' + bucket.count : bucket.emoji }}
-                      </span>
-                    }
-                    <span class="reaction-total">{{ reactionTotal(message) }}</span>
-                    @if (canViewReactionDetails(message)) {
+                <div class="hr-inquiry-details" role="tabpanel">
+                  @if (selectedHrInquiry(); as selectedInquiry) {
+                    <header class="hr-inquiry-details-header">
+                      <div class="hr-inquiry-details-title">{{ selectedInquiry.title }}</div>
+                      <div class="hr-inquiry-details-meta">
+                        <span class="hr-inquiry-status" [class.closed]="selectedInquiry.status === 'closed'">
+                          {{ hrInquiryStatusLabel(selectedInquiry.status) }}
+                        </span>
+                        <span>{{ formatMessageDateBadge(selectedInquiry.openedAt) }} · {{ formatTime(selectedInquiry.openedAt) }}</span>
+                      </div>
+                    </header>
+
+                    <div class="hr-inquiry-details-messages">
+                      @for (message of selectedHrInquiryMessages(); track message.messageId + '-' + $index) {
+                        <article class="hr-inquiry-message" [class.outgoing]="message.direction === 'outgoing'">
+                          <div class="hr-inquiry-message-head">
+                            <span class="hr-inquiry-message-sender">{{ hrInquiryMessageSender(message) }}</span>
+                            <span class="hr-inquiry-message-time">{{ formatTime(message.timestamp) }}</span>
+                          </div>
+                          <div class="hr-inquiry-message-body" [class.deleted]="isMessageDeleted(message)">
+                            @if (message.imageUrl) {
+                              <button
+                                type="button"
+                                class="message-image-btn"
+                                (click)="openFullImage(message.imageUrl)"
+                                aria-label="Open full image">
+                                <img class="message-image" [src]="message.imageUrl" alt="Attachment" loading="lazy" />
+                              </button>
+                            }
+                            @if (message.body) {
+                              <div class="message-content">
+                                @for (part of getMessageRenderParts(message.messageId, message.body); track $index) {
+                                  @if (part.kind === 'text') {
+                                    <span class="message-text">{{ part.text }}</span>
+                                  } @else if (part.kind === 'phone') {
+                                    <button
+                                      type="button"
+                                      class="message-phone"
+                                      (click)="openPhoneActions(part)"
+                                      aria-label="פעולות מספר טלפון">
+                                      {{ part.display }}
+                                    </button>
+                                  } @else if (part.kind === 'image') {
+                                    <button
+                                      type="button"
+                                      class="message-image-btn"
+                                      (click)="openFullImage(part.url)"
+                                      aria-label="Open full image">
+                                      <img class="message-image" [src]="part.url" alt="Image" loading="lazy" />
+                                    </button>
+                                  } @else {
+                                    <a [href]="part.url" target="_blank" rel="noopener" class="message-link">
+                                      {{ part.label }}
+                                    </a>
+                                  }
+                                }
+                              </div>
+                            }
+                          </div>
+                        </article>
+                      }
+                    </div>
+                  } @else {
+                    <div class="hr-inquiry-details-empty">בחר פנייה מהרשימה כדי להציג את ההתכתבות.</div>
+                  }
+                </div>
+              </div>
+            </section>
+          } @else {
+            @for (message of visibleMessages(); track message.messageId; let index = $index) {
+              @if (shouldShowMessageDateBadge(messageAbsoluteIndex(index), message.timestamp)) {
+                <div class="message-date-badge">
+                  <span>{{ formatMessageDateBadge(message.timestamp) }}</span>
+                </div>
+              }
+              <article
+                class="message-row"
+                [class.outgoing]="message.direction === 'outgoing'"
+                [attr.data-message-index]="messageAbsoluteIndex(index)">
+                <div class="message-bubble" [class.deleted]="isMessageDeleted(message)">
+                  @if (message.direction === 'incoming' && message.groupId) {
+                    <div class="message-sender">{{ message.senderDisplayName || message.sender }}</div>
+                  }
+  
+                  @if (canOpenMessageActions(message)) {
+                    <div class="message-actions">
                       <button
                         type="button"
-                        class="reaction-details-btn"
-                        (click)="openReactionDetails(message)"
-                        aria-label="הצג רשימת מגיבים">
-                        <mat-icon>groups</mat-icon>
-                        <span>מגיבים</span>
+                        class="message-action-btn"
+                        [class.pending]="isMessageActionPending(message)"
+                        [matMenuTriggerFor]="messageActionsMenu"
+                        [disabled]="isMessageActionPending(message)"
+                        (click)="setMessageActionTarget(message)"
+                        aria-label="פעולות הודעה">
+                        @if (isMessageActionPending(message)) {
+                          <mat-spinner class="message-action-spinner" diameter="16"></mat-spinner>
+                        } @else {
+                          <mat-icon>more_horiz</mat-icon>
+                        }
                       </button>
-                    }
-                  </div>
-                }
-
-                @if (canReactToMessage(message)) {
-                  <div class="message-react-action">
+                    </div>
+                  }
+  
+                  @if (isMessageForwarded(message)) {
+                    <div class="message-forwarded-label">
+                      <mat-icon>forward</mat-icon>
+                      <span>הועברה</span>
+                    </div>
+                  }
+  
+                  @if (message.replyTo; as replyReference) {
+                    <div class="message-reply-quote">
+                      <span class="message-reply-author">{{ replyAuthorLabel(replyReference) }}</span>
+                      <span class="message-reply-preview">{{ replyPreviewLabel(replyReference) }}</span>
+                    </div>
+                  }
+  
+                  @if (message.imageUrl) {
                     <button
                       type="button"
-                      class="message-react-btn"
-                      [matMenuTriggerFor]="reactionMenu"
-                      (click)="setReactionTarget(message)"
-                      aria-label="הוסף תגובה">
-                      <span>😊</span>
+                      class="message-image-btn"
+                      (click)="openFullImage(message.imageUrl)"
+                      aria-label="Open full image">
+                      <img class="message-image" [src]="message.imageUrl" alt="Attachment" loading="lazy" />
                     </button>
+                  }
+  
+                  @if (shuttleOrderMessageCard(message); as shuttleCard) {
+                    <div class="shuttle-message-card" [class.cancelled]="shuttleCard.cancelled">
+                      <div class="shuttle-message-card-title">{{ shuttleCard.title }}</div>
+                      <div class="shuttle-message-card-status">{{ shuttleCard.statusLabel }}</div>
+                      <div class="shuttle-message-card-row">
+                        <span class="label">{{ shuttleText('dateLabel') }}</span>
+                        <span class="value">{{ shuttleCard.dayDate }}</span>
+                      </div>
+                      <div class="shuttle-message-card-row">
+                        <span class="label">{{ shuttleText('shiftLabel') }}</span>
+                        <span class="value">{{ shuttleCard.shift }}</span>
+                      </div>
+                      <div class="shuttle-message-card-row">
+                        <span class="label">{{ shuttleText('stationLabel') }}</span>
+                        <span class="value">{{ shuttleCard.station }}</span>
+                      </div>
+                    </div>
+                  } @else if (message.body) {
+                    <div class="message-content">
+                      @for (part of getMessageRenderParts(message.messageId, message.body); track $index) {
+                        @if (part.kind === 'text') {
+                          <span class="message-text">{{ part.text }}</span>
+                        } @else if (part.kind === 'phone') {
+                          <button
+                            type="button"
+                            class="message-phone"
+                            (click)="openPhoneActions(part)"
+                            aria-label="פעולות מספר טלפון">
+                            {{ part.display }}
+                          </button>
+                        } @else if (part.kind === 'image') {
+                          <button
+                            type="button"
+                            class="message-image-btn"
+                            (click)="openFullImage(part.url)"
+                            aria-label="Open full image">
+                            <img class="message-image" [src]="part.url" alt="Image" loading="lazy" />
+                          </button>
+                        } @else {
+                          <a [href]="part.url" target="_blank" rel="noopener" class="message-link">
+                            {{ part.label }}
+                          </a>
+                        }
+                      }
+                    </div>
+                  }
+  
+                  <div class="message-meta">
+                    <span>{{ formatTime(message.timestamp) }}</span>
+                    @if (isMessageEdited(message)) {
+                      <span class="message-edited-label">נערך</span>
+                    }
+                    @if (isMessageActionSyncing(message)) {
+                      <span class="message-syncing-label">מסנכרן...</span>
+                    }
+                    @if (message.direction === 'outgoing') {
+                      <span
+                        class="message-status"
+                        [class.read]="isOutgoingStatusRead(message.deliveryStatus)"
+                        [class.failed]="message.deliveryStatus === 'failed'"
+                        [attr.aria-label]="outgoingStatusLabel(message.deliveryStatus)"
+                        [attr.title]="outgoingStatusLabel(message.deliveryStatus)">
+                        <mat-icon>{{ outgoingStatusIcon(message.deliveryStatus) }}</mat-icon>
+                      </span>
+                    }
                   </div>
-                }
-              </div>
-            </article>
+  
+                  @if (reactionBuckets(message).length) {
+                    <div class="message-reactions">
+                      @for (bucket of reactionBuckets(message); track bucket.emoji) {
+                        <span class="reaction-chip">
+                          {{ bucket.count > 1 ? bucket.emoji + ' ' + bucket.count : bucket.emoji }}
+                        </span>
+                      }
+                      <span class="reaction-total">{{ reactionTotal(message) }}</span>
+                      @if (canViewReactionDetails(message)) {
+                        <button
+                          type="button"
+                          class="reaction-details-btn"
+                          (click)="openReactionDetails(message)"
+                          aria-label="הצג רשימת מגיבים">
+                          <mat-icon>groups</mat-icon>
+                          <span>מגיבים</span>
+                        </button>
+                      }
+                    </div>
+                  }
+  
+                  @if (canReactToMessage(message)) {
+                    <div class="message-react-action">
+                      <button
+                        type="button"
+                        class="message-react-btn"
+                        [matMenuTriggerFor]="reactionMenu"
+                        (click)="setReactionTarget(message)"
+                        aria-label="הוסף תגובה">
+                        <span>😊</span>
+                      </button>
+                    </div>
+                  }
+                </div>
+              </article>
+            }
           }
         </div>
 
