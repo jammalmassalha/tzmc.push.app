@@ -20,7 +20,13 @@ import {
   PersistedChatState,
   ReplyPayload
 } from '../models/chat.models';
-import { ChatApiService, HrActionOption, HrStepOption, ShuttleUserOrderPayload } from './chat-api.service';
+import {
+  ChatApiService,
+  HrActionOption,
+  HrStepOption,
+  ShuttleUserOrderPayload,
+  UserPushSubscriptionPayload
+} from './chat-api.service';
 
 const CONTACTS_TTL_MS = 5 * 60 * 1000;
 const CONTACTS_ACCESS_SYNC_INTERVAL_MS = 60 * 1000;
@@ -463,7 +469,11 @@ export class ChatStoreService {
     void this.flushOutbox();
     this.clearDeviceAttention({ resetServerBadge: true });
     // Recover silently if a device lost its push subscription.
-    void this.tryRegisterPush(user, { force: true });
+    void this.ensurePushRegistrationHealth(user, {
+      forceRegister: true,
+      promptIfNeeded: false,
+      requireStandaloneOnMobile: true
+    }).catch(() => undefined);
   }
 
   async registerUser(rawValue: string): Promise<void> {
@@ -500,6 +510,22 @@ export class ChatStoreService {
     await this.applyAuthenticatedSessionUser(user);
   }
 
+  requiresHomeScreenInstallForPush(): boolean {
+    return this.shouldRequireStandaloneInstallForPush() && !this.isRunningStandaloneApp();
+  }
+
+  async ensurePushRegistrationReadyForCurrentUser(options: { promptIfNeeded?: boolean } = {}): Promise<void> {
+    const user = this.currentUser();
+    if (!user) {
+      throw new Error('יש להתחבר מחדש לפני השלמת רישום התראות');
+    }
+    await this.ensurePushRegistrationHealth(user, {
+      forceRegister: true,
+      promptIfNeeded: options.promptIfNeeded !== false,
+      requireStandaloneOnMobile: true
+    });
+  }
+
   private async applyAuthenticatedSessionUser(user: string): Promise<void> {
     this.stopRealtime();
     this.stopBackgroundContactsAccessSync();
@@ -523,7 +549,15 @@ export class ChatStoreService {
 
     this.restoreState(user);
     this.rescheduleShuttleRemindersForUser(user);
-    await this.tryRegisterPush(user, { force: true });
+    try {
+      await this.ensurePushRegistrationHealth(user, {
+        forceRegister: true,
+        promptIfNeeded: false,
+        requireStandaloneOnMobile: true
+      });
+    } catch {
+      // Keep login resilient; strict completion is enforced in setup flow.
+    }
     await this.initialize();
   }
 
@@ -4759,13 +4793,127 @@ export class ChatStoreService {
     return true;
   }
 
+  private async ensurePushRegistrationHealth(
+    user: string,
+    options: {
+      forceRegister?: boolean;
+      promptIfNeeded?: boolean;
+      requireStandaloneOnMobile?: boolean;
+    } = {}
+  ): Promise<void> {
+    const normalizedUser = this.normalizeUser(user);
+    if (!normalizedUser) {
+      throw new Error('יש להתחבר מחדש לפני השלמת רישום התראות');
+    }
+
+    const requireStandaloneOnMobile = Boolean(options.requireStandaloneOnMobile);
+    if (
+      requireStandaloneOnMobile &&
+      this.shouldRequireStandaloneInstallForPush() &&
+      !this.isRunningStandaloneApp()
+    ) {
+      throw new Error('יש להתקין את האפליקציה למסך הבית לפני השלמת ההרשמה.');
+    }
+
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      if (this.shouldRequireStandaloneInstallForPush()) {
+        throw new Error('המכשיר אינו תומך בהתראות דחיפה.');
+      }
+      return;
+    }
+
+    const forceRegister = options.forceRegister !== false;
+    const localBefore = await this.hasValidLocalPushRegistration();
+    const remoteBefore = await this.hasValidRemotePushRegistration(normalizedUser);
+    if (localBefore && remoteBefore && !forceRegister) {
+      return;
+    }
+
+    await this.tryRegisterPush(normalizedUser, {
+      force: forceRegister,
+      allowPermissionPrompt: options.promptIfNeeded !== false,
+      requireStandaloneOnMobile
+    });
+
+    const localAfter = await this.hasValidLocalPushRegistration();
+    if (!localAfter) {
+      throw new Error('לא נמצאה הרשאת Push פעילה במכשיר. אשר התראות ונסה שוב.');
+    }
+
+    let remoteAfter = await this.hasValidRemotePushRegistration(normalizedUser);
+    if (!remoteAfter) {
+      await this.wait(900);
+      remoteAfter = await this.hasValidRemotePushRegistration(normalizedUser);
+    }
+    if (!remoteAfter) {
+      throw new Error('רישום Push לשרת לא הושלם. נסה שוב בעוד כמה שניות.');
+    }
+  }
+
+  private async hasValidRemotePushRegistration(user: string): Promise<boolean> {
+    try {
+      const subscriptions = await this.api.getUserPushSubscriptions(user);
+      return subscriptions.some((subscription) => this.isValidSheetPushSubscription(subscription));
+    } catch {
+      return false;
+    }
+  }
+
+  private isValidSheetPushSubscription(subscription: UserPushSubscriptionPayload): boolean {
+    const endpoint = String(subscription?.endpoint || '').trim();
+    const p256dh = String(subscription?.keys?.p256dh || '').trim();
+    const auth = String(subscription?.keys?.auth || '').trim();
+    return Boolean(endpoint && p256dh && auth);
+  }
+
+  private async hasValidLocalPushRegistration(): Promise<boolean> {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      return false;
+    }
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.getSubscription();
+      return this.isValidLocalPushSubscription(subscription);
+    } catch {
+      return false;
+    }
+  }
+
+  private isValidLocalPushSubscription(subscription: PushSubscription | null): boolean {
+    if (!subscription) return false;
+    const payload = subscription.toJSON();
+    const endpoint = String(payload.endpoint || '').trim();
+    const p256dh = String(payload.keys?.['p256dh'] || '').trim();
+    const auth = String(payload.keys?.['auth'] || '').trim();
+    return Boolean(endpoint && p256dh && auth);
+  }
+
+  private wait(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+  }
+
   private tryRegisterPush = async (
     user: string,
-    options: { force?: boolean } = {}
+    options: {
+      force?: boolean;
+      allowPermissionPrompt?: boolean;
+      requireStandaloneOnMobile?: boolean;
+    } = {}
   ): Promise<void> => {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
     if (!user) return;
+
+    const requireStandaloneOnMobile = Boolean(options.requireStandaloneOnMobile);
+    if (
+      requireStandaloneOnMobile &&
+      this.shouldRequireStandaloneInstallForPush() &&
+      !this.isRunningStandaloneApp()
+    ) {
+      return;
+    }
+
     const force = Boolean(options.force);
+    const allowPermissionPrompt = options.allowPermissionPrompt !== false;
     const now = Date.now();
     if (
       this.pushRegisterInFlight ||
@@ -4777,9 +4925,16 @@ export class ChatStoreService {
     this.pushRegisterInFlight = true;
 
     try {
+      if (typeof Notification === 'undefined') {
+        return;
+      }
       const permission = Notification.permission === 'granted'
         ? 'granted'
-        : await Notification.requestPermission();
+        : (
+          allowPermissionPrompt
+            ? await Notification.requestPermission()
+            : Notification.permission
+        );
       if (permission !== 'granted') return;
 
       const registration = await navigator.serviceWorker.ready;
@@ -4792,9 +4947,7 @@ export class ChatStoreService {
       const lastRegisteredAt = Number(this.safeStorageGet(storedRegisteredAtKey) || 0);
 
       let subscription = await registration.pushManager.getSubscription();
-      const hasValidSubscriptionKeys = Boolean(
-        subscription?.toJSON()?.keys?.['p256dh'] && subscription?.toJSON()?.keys?.['auth']
-      );
+      const hasValidSubscriptionKeys = this.isValidLocalPushSubscription(subscription);
       const shouldRefreshSubscription = !subscription || !hasValidSubscriptionKeys;
       if (shouldRefreshSubscription && subscription) {
         try {
@@ -5175,7 +5328,11 @@ export class ChatStoreService {
     const user = this.currentUser();
     if (!user) return;
     this.clearDeviceAttention({ resetServerBadge: true });
-    void this.tryRegisterPush(user, { force: true });
+    void this.tryRegisterPush(user, {
+      force: true,
+      allowPermissionPrompt: false,
+      requireStandaloneOnMobile: true
+    });
     this.connectRealtime(user);
     this.syncForegroundState({ forceRefresh: true });
   };
@@ -5500,7 +5657,11 @@ export class ChatStoreService {
   private refreshPushRegistrationForCurrentUser(force: boolean): void {
     const user = this.currentUser();
     if (!user) return;
-    void this.tryRegisterPush(user, { force });
+    void this.tryRegisterPush(user, {
+      force,
+      allowPermissionPrompt: false,
+      requireStandaloneOnMobile: true
+    });
   }
 
   private pushEndpointStorageKey(user: string): string {
@@ -5509,6 +5670,26 @@ export class ChatStoreService {
 
   private pushRegisteredAtStorageKey(user: string): string {
     return `modern-chat-push-registered-at:${this.normalizeUser(user)}`;
+  }
+
+  private shouldRequireStandaloneInstallForPush(): boolean {
+    if (typeof navigator === 'undefined') return false;
+    const ua = navigator.userAgent || '';
+    const isMobileUa = /Android|iP(hone|ad|od)|IEMobile|BlackBerry|Opera Mini/i.test(ua);
+    const isIpadOsDesktopUa = /Macintosh/i.test(ua) && navigator.maxTouchPoints > 1;
+    return isMobileUa || isIpadOsDesktopUa;
+  }
+
+  private isRunningStandaloneApp(): boolean {
+    if (typeof window === 'undefined') return false;
+    const mediaStandalone = typeof window.matchMedia === 'function'
+      ? window.matchMedia('(display-mode: standalone)').matches
+      : false;
+    const iosStandalone = Boolean((navigator as Navigator & { standalone?: boolean }).standalone);
+    const androidTwa = typeof document !== 'undefined'
+      ? String(document.referrer || '').startsWith('android-app://')
+      : false;
+    return mediaStandalone || iosStandalone || androidTwa;
   }
 
   private isIosDevice(): boolean {

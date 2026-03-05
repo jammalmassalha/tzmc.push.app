@@ -29,6 +29,17 @@
   color: #495057;
 }
 
+.install-required-alert {
+  margin: 0 0 14px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  border: 1px solid rgba(173, 61, 61, 0.3);
+  background: rgba(252, 238, 238, 0.92);
+  color: #8d2d35;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .setup-form {
   display: flex;
   flex-direction: column;

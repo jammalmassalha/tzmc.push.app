@@ -51,6 +51,7 @@ export class SetupComponent implements OnInit, OnDestroy {
   readonly submitting = signal(false);
   readonly deferredPrompt = signal<BeforeInstallPromptEvent | null>(null);
   readonly canInstall = computed(() => Boolean(this.deferredPrompt()));
+  readonly requiresInstallBeforeRegistration = computed(() => this.store.requiresHomeScreenInstallForPush());
 
   private readonly onBeforeInstallPromptBound = this.onBeforeInstallPrompt.bind(this);
 
@@ -73,6 +74,16 @@ export class SetupComponent implements OnInit, OnDestroy {
   async submit(): Promise<void> {
     if (this.form.invalid) {
       this.form.markAllAsTouched();
+      return;
+    }
+
+    if (this.requiresInstallBeforeRegistration()) {
+      this.openInstallGuide();
+      this.snackBar.open(
+        'כדי להשלים רישום והתראות Push יש להתקין קודם את האפליקציה למסך הבית.',
+        'סגור',
+        { duration: 5200 }
+      );
       return;
     }
 

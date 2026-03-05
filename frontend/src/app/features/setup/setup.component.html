@@ -13,6 +13,12 @@
         הזן מספר נייד (ללא מקפים) כדי להפעיל את חוויית הצ'אט המודרנית.
       </p>
 
+      @if (requiresInstallBeforeRegistration()) {
+        <div class="install-required-alert" role="alert">
+          במובייל חייבים קודם להתקין את האפליקציה למסך הבית ורק לאחר מכן לבצע רישום.
+        </div>
+      }
+
       <form class="setup-form" [formGroup]="form" (ngSubmit)="submit()">
         <mat-form-field appearance="outline">
           <mat-label>מספר נייד</mat-label>
