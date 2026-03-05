@@ -2631,7 +2631,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       return [];
     }
 
-    const urlRegex = /(https?:\/\/[^\s<>"']+)/gi;
+    const urlRegex = /(https?:\/\/[^\s<>"']+|\/?notify\/uploads\/[^\s<>"']+|www\.[^\s<>"']+)/gi;
     const parts: MessageRenderPart[] = [];
     let lastIndex = 0;
     let match: RegExpExecArray | null;
@@ -2645,13 +2645,14 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       }
 
       const { cleanUrl, trailingText } = this.stripTrailingPunctuation(rawMatch);
+      const normalizedUrl = this.normalizeMessageUrl(cleanUrl);
 
-      if (this.isImageUrl(cleanUrl)) {
-        parts.push({ kind: 'image', url: cleanUrl });
-      } else if (this.isLocationUrl(cleanUrl)) {
-        parts.push({ kind: 'location', url: cleanUrl, label: 'המיקום שלי' });
+      if (this.isImageUrl(normalizedUrl)) {
+        parts.push({ kind: 'image', url: normalizedUrl });
+      } else if (this.isLocationUrl(normalizedUrl)) {
+        parts.push({ kind: 'location', url: normalizedUrl, label: 'המיקום שלי' });
       } else {
-        parts.push({ kind: 'link', url: cleanUrl, label: 'לחץ כאן למעבר לכתובת' });
+        parts.push({ kind: 'link', url: normalizedUrl, label: 'לחץ כאן לפתיחת קובץ/קישור' });
       }
 
       if (trailingText) {
@@ -2670,6 +2671,24 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     }
 
     return parts;
+  }
+
+  private normalizeMessageUrl(url: string): string {
+    const value = String(url || '').trim();
+    if (!value) return '';
+
+    let normalized = value;
+    if (/^www\./i.test(normalized)) {
+      normalized = `https://${normalized}`;
+    } else if (/^\/?notify\/uploads\//i.test(normalized)) {
+      normalized = normalized.startsWith('/') ? normalized : `/${normalized}`;
+    }
+
+    normalized = normalized.replace(
+      /(\.(?:pdf|doc|docx|xls|xlsx|ppt|pptx|txt|csv|zip|rar|7z|jpeg|jpg|png|gif|webp))\/(?=$|[?#])/i,
+      '$1'
+    );
+    return normalized;
   }
 
   private appendTextAndPhoneParts(parts: MessageRenderPart[], text: string): void {
