@@ -1446,10 +1446,36 @@ mat-chip:not(.offline) {
   border-bottom: 1px solid rgba(80, 103, 179, 0.15);
 }
 
+.hr-inquiry-details-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .hr-inquiry-details-title {
   font-size: 14px;
   font-weight: 800;
   color: #223165;
+}
+
+.hr-inquiry-close-btn {
+  border: 0;
+  border-radius: 999px;
+  min-height: 28px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  background: rgba(227, 68, 83, 0.12);
+  color: #a93544;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.hr-inquiry-close-btn:hover {
+  background: rgba(227, 68, 83, 0.18);
 }
 
 .hr-inquiry-details-meta {

@@ -403,6 +403,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   );
   readonly hrInquiriesTab = signal<HrInquiryStatus>('active');
   readonly selectedHrInquiryId = signal<string | null>(null);
+  readonly closedHrInquiryIds = signal<Set<string>>(new Set<string>());
   readonly hrInquiries = computed<HrInquiryView[]>(() => {
     if (!this.isHrRoomActive()) {
       return [];
@@ -566,6 +567,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   private conversationSwipeTracking = false;
   private lastShuttlePickerKey: string | null = null;
   private lastHrPickerKey: string | null = null;
+  private lastHrClosedInquiryUserKey: string | null = null;
   private lastAutoScrollChatId: string | null = null;
   private lastAutoScrollMessageCount = 0;
   private pendingOpenScroll: { chatId: string; unreadBeforeOpen: number } | null = null;
@@ -759,6 +761,15 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (!selectedId || !visibleInquiries.some((inquiry) => inquiry.id === selectedId)) {
       this.selectedHrInquiryId.set(visibleInquiries[0].id);
     }
+  });
+
+  private readonly hrClosedInquirySyncEffect = effect(() => {
+    const currentUser = this.normalizeUsername(this.store.currentUser() || '');
+    if (currentUser === this.lastHrClosedInquiryUserKey) {
+      return;
+    }
+    this.lastHrClosedInquiryUserKey = currentUser;
+    this.closedHrInquiryIds.set(this.loadClosedHrInquiryIds(currentUser));
   });
 
   private readonly editingMessageGuardEffect = effect(() => {
@@ -1146,6 +1157,24 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   hrInquiryStatusLabel(status: HrInquiryStatus): string {
     return status === 'closed' ? 'סגורה' : 'פעילה';
+  }
+
+  isHrInquiryClosable(inquiry: HrInquiryView | null): boolean {
+    return Boolean(inquiry && inquiry.status === 'active');
+  }
+
+  closeHrInquiry(inquiry: HrInquiryView): void {
+    const inquiryId = String(inquiry?.id || '').trim();
+    if (!inquiryId) return;
+    if (inquiry.status === 'closed') return;
+
+    const next = new Set(this.closedHrInquiryIds());
+    next.add(inquiryId);
+    this.closedHrInquiryIds.set(next);
+    this.saveClosedHrInquiryIds(this.normalizeUsername(this.store.currentUser() || ''), next);
+    this.hrInquiriesTab.set('closed');
+    this.selectedHrInquiryId.set(inquiryId);
+    this.snackBar.open('הפנייה נסגרה.', 'סגור', { duration: 2000 });
   }
 
   hrInquiryTimeLabel(inquiry: HrInquiryView): string {
@@ -2809,7 +2838,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
         currentInquiryId = String(message.messageId || `hr-inquiry-${index + 1}`).trim();
       }
 
-      if (this.shouldStartNewHrInquiry(message, currentInquiryMessages)) {
+      if (this.shouldStartNewHrInquiry(message, currentInquiryId, currentInquiryMessages)) {
         flushCurrentInquiry();
         currentInquiryId = String(message.messageId || `hr-inquiry-${index + 1}`).trim();
       }
@@ -2828,11 +2857,18 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     return inquiries.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
   }
 
-  private shouldStartNewHrInquiry(message: ChatMessage, currentInquiryMessages: ChatMessage[]): boolean {
+  private shouldStartNewHrInquiry(
+    message: ChatMessage,
+    currentInquiryId: string,
+    currentInquiryMessages: ChatMessage[]
+  ): boolean {
     if (!this.isHrInquiryCandidateMessage(message)) {
       return false;
     }
     if (!currentInquiryMessages.length) {
+      return true;
+    }
+    if (currentInquiryId && this.closedHrInquiryIds().has(currentInquiryId)) {
       return true;
     }
     return this.isHrInquiryMarkedClosed(currentInquiryMessages);
@@ -2913,11 +2949,19 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       id: inquiryId || `hr-inquiry-${fallbackOrdinal}`,
       title: this.clampPreview(titlePreview || `פנייה ${fallbackOrdinal}`, 72),
       preview: this.clampPreview(this.getHrMessagePreview(latestPreviewMessage || lastMessage) || 'ללא תוכן', 96),
-      status: this.isHrInquiryMarkedClosed(messages) ? 'closed' : 'active',
+      status: this.isHrInquiryClosed(inquiryId, messages) ? 'closed' : 'active',
       openedAt: Number(firstMessage.timestamp || Date.now()),
       lastActivityAt: Number(lastMessage.timestamp || firstMessage.timestamp || Date.now()),
       messages: [...messages]
     };
+  }
+
+  private isHrInquiryClosed(inquiryId: string, messages: ChatMessage[]): boolean {
+    const normalizedId = String(inquiryId || '').trim();
+    if (normalizedId && this.closedHrInquiryIds().has(normalizedId)) {
+      return true;
+    }
+    return this.isHrInquiryMarkedClosed(messages);
   }
 
   private isHrInquiryMarkedClosed(messages: ChatMessage[]): boolean {
@@ -2967,6 +3011,45 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       .replace(/\s+/g, ' ')
       .trim()
       .toLowerCase();
+  }
+
+  private hrClosedInquiryStorageKey(user: string): string {
+    return `hr-closed-inquiries:${this.normalizeUsername(user)}`;
+  }
+
+  private loadClosedHrInquiryIds(user: string): Set<string> {
+    const normalizedUser = this.normalizeUsername(user);
+    if (!normalizedUser) {
+      return new Set<string>();
+    }
+    try {
+      const raw = localStorage.getItem(this.hrClosedInquiryStorageKey(normalizedUser));
+      if (!raw) {
+        return new Set<string>();
+      }
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) {
+        return new Set<string>();
+      }
+      return new Set(
+        parsed
+          .map((item) => String(item || '').trim())
+          .filter(Boolean)
+      );
+    } catch {
+      return new Set<string>();
+    }
+  }
+
+  private saveClosedHrInquiryIds(user: string, inquiryIds: Set<string>): void {
+    const normalizedUser = this.normalizeUsername(user);
+    if (!normalizedUser) {
+      return;
+    }
+    const nextIds = Array.from(inquiryIds)
+      .map((item) => String(item || '').trim())
+      .filter(Boolean);
+    localStorage.setItem(this.hrClosedInquiryStorageKey(normalizedUser), JSON.stringify(nextIds));
   }
 
   private buildReplyReference(message: ChatMessage): MessageReference | null {

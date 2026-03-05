@@ -388,7 +388,17 @@
                 <div class="hr-inquiry-details" role="tabpanel">
                   @if (selectedHrInquiry(); as selectedInquiry) {
                     <header class="hr-inquiry-details-header">
-                      <div class="hr-inquiry-details-title">{{ selectedInquiry.title }}</div>
+                      <div class="hr-inquiry-details-title-row">
+                        <div class="hr-inquiry-details-title">{{ selectedInquiry.title }}</div>
+                        @if (isHrInquiryClosable(selectedInquiry)) {
+                          <button
+                            type="button"
+                            class="hr-inquiry-close-btn"
+                            (click)="closeHrInquiry(selectedInquiry)">
+                            סגור פנייה
+                          </button>
+                        }
+                      </div>
                       <div class="hr-inquiry-details-meta">
                         <span class="hr-inquiry-status" [class.closed]="selectedInquiry.status === 'closed'">
                           {{ hrInquiryStatusLabel(selectedInquiry.status) }}
