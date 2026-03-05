@@ -1528,12 +1528,18 @@ export class ChatStoreService {
         }
 
         if (item.kind === 'group') {
-          for (const recipient of item.recipients) {
-            await this.api.sendDirectMessage({
-              ...item.payload,
-              originalSender: recipient
-            });
+          const recipients = Array.from(
+            new Set(item.recipients.map((recipient) => this.normalizeUser(recipient)).filter(Boolean))
+          ).filter((recipient) => recipient !== this.normalizeUser(item.payload.user));
+          if (!recipients.length) {
+            this.setMessageStatus(item.messageId, 'sent');
+            continue;
           }
+          await this.api.sendDirectMessage({
+            ...item.payload,
+            originalSender: recipients[0],
+            membersToNotify: recipients
+          });
           this.setMessageStatus(item.messageId, 'sent');
           continue;
         }
@@ -3354,26 +3360,23 @@ export class ChatStoreService {
       forwardedFromName: metadata.forwardedFromName || undefined
     };
 
-    const recipients = group.members.filter((member) => this.normalizeUser(member) !== user);
+    const recipients = Array.from(
+      new Set(group.members.map((member) => this.normalizeUser(member)).filter(Boolean))
+    ).filter((member) => member !== user);
     if (!recipients.length) {
       this.setMessageStatus(messageId, 'sent');
       return;
     }
 
-    const failedRecipients: string[] = [];
-    for (const recipient of recipients) {
-      try {
-        await this.api.sendDirectMessage({
-          ...basePayload,
-          originalSender: recipient
-        });
-      } catch {
-        failedRecipients.push(recipient);
-      }
-    }
-
-    if (failedRecipients.length) {
-      this.queueGroupMessage(group, messageId, body, imageUrl, failedRecipients, metadata);
+    try {
+      await this.api.sendDirectMessage({
+        ...basePayload,
+        // Backward-compatible fallback if backend ignores membersToNotify.
+        originalSender: recipients[0] || group.id,
+        membersToNotify: recipients
+      });
+    } catch {
+      this.queueGroupMessage(group, messageId, body, imageUrl, recipients, metadata);
       this.setMessageStatus(messageId, 'queued');
       return;
     }
@@ -3580,9 +3583,13 @@ export class ChatStoreService {
     if (!user) return;
 
     const metadata = this.normalizeSendMessageOptions(options);
-    const targets = recipients
-      ? recipients
-      : group.members.filter((member) => this.normalizeUser(member) !== user);
+    const targets = Array.from(
+      new Set(
+        (recipients ? recipients : group.members)
+          .map((member) => this.normalizeUser(member))
+          .filter(Boolean)
+      )
+    ).filter((member) => member !== user);
     if (!targets.length) return;
 
     const item: OutboxGroupItem = {

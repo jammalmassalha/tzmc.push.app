@@ -5023,6 +5023,18 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
         targetToNotify = Array.isArray(targetToNotify)
             ? targetToNotify.filter(member => normalizeUserKey(member) !== normalizeUserKey(user))
             : targetToNotify;
+        if (Array.isArray(targetToNotify)) {
+            const dedupedTargetsByUser = new Map();
+            targetToNotify.forEach((member) => {
+                const rawMember = String(member || '').trim();
+                const memberKey = normalizeUserKey(rawMember);
+                if (!memberKey || memberKey === normalizeUserKey(user)) return;
+                if (!dedupedTargetsByUser.has(memberKey)) {
+                    dedupedTargetsByUser.set(memberKey, rawMember);
+                }
+            });
+            targetToNotify = Array.from(dedupedTargetsByUser.values());
+        }
         if (Array.isArray(targetToNotify) && targetToNotify.length === 0) {
             return res.json({ status: 'success', details: { success: 0, failed: 0 } });
         }
