@@ -218,6 +218,10 @@ export interface HrQuickPickerState {
   allowBack: boolean;
 }
 
+export interface HrQuickPickerSelectionResult {
+  openedUrl?: string;
+}
+
 export interface ShuttleBreadcrumbStep {
   key: string;
   label: string;
@@ -1085,7 +1089,7 @@ export class ChatStoreService {
     return true;
   }
 
-  async submitHrQuickPickerSelection(rawValue: string): Promise<void> {
+  async submitHrQuickPickerSelection(rawValue: string): Promise<HrQuickPickerSelectionResult> {
     const activeChatId = this.activeChatId();
     if (!this.isHrChat(activeChatId)) {
       throw new Error('הצ׳אט הפעיל אינו ציפי');
@@ -1104,14 +1108,16 @@ export class ChatStoreService {
       this.resetHrState(user);
       await this.startHrFlow({ skipWelcome: this.hasHrWelcomeMessage(user) });
       this.bumpHrPickerRevision();
-      return;
+      return {};
     }
 
+    const openedUrl = this.resolveHrQuickPickerOpenedUrl(user, value);
     const handledByHrFlow = await this.handleHrOutgoing(value);
     if (!handledByHrFlow) {
       throw new Error('הבחירה לא עובדה. נסה שוב.');
     }
     this.bumpHrPickerRevision();
+    return openedUrl ? { openedUrl } : {};
   }
 
   getShuttleQuickPickerState(): ShuttleQuickPickerState | null {
@@ -2823,6 +2829,38 @@ export class ChatStoreService {
       return -1;
     }
     return index;
+  }
+
+  private resolveHrQuickPickerOpenedUrl(user: string, selectedValue: string): string {
+    const state = this.loadHrState(user);
+    if (!state || state.awaiting !== 'action') {
+      return '';
+    }
+    const index = Number.parseInt(String(selectedValue || '').trim(), 10) - 1;
+    if (Number.isNaN(index) || index < 0 || index >= state.actions.length) {
+      return '';
+    }
+
+    const selectedAction = state.actions[index];
+    const returnValue = String(selectedAction.returnValue || '').trim();
+    if (!returnValue || returnValue.toUpperCase() === 'FREE TEXT') {
+      return '';
+    }
+
+    const lower = returnValue.toLowerCase();
+    const isImage = /\.(jpeg|jpg|gif|png|webp)(\?|$)/.test(lower);
+    const isDoc = /\.(pdf|doc|docx|xls|xlsx|ppt|pptx|txt|csv|zip|rar|7z)(\?|$)/.test(lower);
+    const isHttp = /^https?:\/\//i.test(returnValue);
+    const isWww = /^www\./i.test(returnValue);
+    const isRelativeUpload = /^\/?notify\/uploads\//i.test(returnValue);
+    const isUrlLike = isHttp || isWww || isRelativeUpload;
+    if (!isImage && !isDoc && !isUrlLike) {
+      return '';
+    }
+    if (isWww) {
+      return `https://${returnValue}`;
+    }
+    return this.buildHrAssetUrl(returnValue);
   }
 
   private async submitShuttleOrder(

@@ -36,6 +36,7 @@ import {
   ActivatedChatMeta,
   ChatStoreService,
   HrQuickPickerState,
+  HrQuickPickerSelectionResult,
   IncomingReactionNotice,
   ShuttleBreadcrumbStep,
   ShuttleLanguage,
@@ -1085,7 +1086,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     }
     this.isSubmittingHrPicker.set(true);
     try {
-      await this.store.submitHrQuickPickerSelection(normalized);
+      const result: HrQuickPickerSelectionResult = await this.store.submitHrQuickPickerSelection(normalized);
+      if (result.openedUrl) {
+        window.open(result.openedUrl, '_blank', 'noopener,noreferrer');
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'בחירה נכשלה. נסה שוב.';
       this.snackBar.open(message, 'סגור', { duration: 2800 });
@@ -2924,7 +2928,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (currentInquiryId && this.closedHrInquiryIds().has(currentInquiryId)) {
       return true;
     }
-    return this.isHrInquiryMarkedClosed(currentInquiryMessages);
+    return false;
   }
 
   private shouldSkipHrSystemMessageOutsideInquiry(message: ChatMessage): boolean {
