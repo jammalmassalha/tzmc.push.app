@@ -110,6 +110,7 @@ interface ShuttleOrderMessageCard {
 
 const MESSAGE_PAGE_SIZE = 15;
 const LOAD_OLDER_MESSAGES_SCROLL_THRESHOLD_PX = 56;
+const HR_CHAT_ROOM_ID = 'ציפי';
 
 type ShuttleUiTextKey =
   | 'ordersTitle'
@@ -371,6 +372,11 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly isShuttleRoomActive = computed(() =>
     Boolean(this.shuttleOrdersDashboard() || this.shuttleQuickPicker())
   );
+  readonly isHrRoomActive = computed(() => {
+    const activeChat = this.store.activeChat();
+    if (!activeChat) return false;
+    return this.normalizeUsername(activeChat.id) === this.normalizeUsername(HR_CHAT_ROOM_ID);
+  });
   readonly shuttleBreadcrumbs = computed<ShuttleBreadcrumbStep[] | null>(() =>
     this.store.getShuttleFlowBreadcrumbs()
   );

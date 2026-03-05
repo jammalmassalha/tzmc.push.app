@@ -136,6 +136,7 @@
       class="conversation-pane"
       [class.hidden-mobile]="isMobile() && showContactsPane()"
       [class.shuttle-room-active]="isShuttleRoomActive()"
+      [class.hr-room-active]="isHrRoomActive()"
       (touchstart)="onConversationTouchStart($event)"
       (touchmove)="onConversationTouchMove($event)"
       (touchend)="onConversationTouchEnd($event)"
@@ -181,6 +182,7 @@
           #messagesPanel
           class="messages-panel"
           [class.shuttle-no-scroll]="isShuttleRoomActive()"
+          [class.hr-room-active]="isHrRoomActive()"
           (scroll)="onMessagesPanelScroll()">
           @if (stickyMessageDateLabel(); as stickyDateLabel) {
             <div class="messages-sticky-date">

@@ -478,6 +478,11 @@ mat-chip:not(.offline) {
   grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
+.conversation-pane.shuttle-room-active,
+.conversation-pane.hr-room-active {
+  background: linear-gradient(180deg, #f7f9ff 0%, #eef3ff 100%);
+}
+
 .conversation-header {
   position: relative;
   z-index: 6;
@@ -546,6 +551,15 @@ mat-chip:not(.offline) {
   overscroll-behavior: none;
   display: flex;
   flex-direction: column;
+}
+
+.messages-panel.hr-room-active {
+  margin: 6px 8px 10px;
+  padding: 20px 10px 16px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #f7f9fffa, #eff4fff5);
+  border: 1px solid rgba(71, 97, 188, .18);
+  box-shadow: 0 10px 24px #14287017;
 }
 
 .messages-sticky-date {
