@@ -2882,11 +2882,6 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
     for (let index = 0; index < messages.length; index += 1) {
       const message = messages[index];
-      if (this.shouldForceNewHrInquiryBoundary(message, currentInquiryMessages)) {
-        flushCurrentInquiry();
-        currentInquiryId = String(message.messageId || `hr-inquiry-${index + 1}`).trim();
-      }
-
       if (this.shouldStartNewHrInquiry(message, currentInquiryId, currentInquiryMessages)) {
         flushCurrentInquiry();
         currentInquiryId = String(message.messageId || `hr-inquiry-${index + 1}`).trim();
@@ -2923,17 +2918,6 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     return this.isHrInquiryMarkedClosed(currentInquiryMessages);
   }
 
-  private shouldForceNewHrInquiryBoundary(message: ChatMessage, currentInquiryMessages: ChatMessage[]): boolean {
-    if (!currentInquiryMessages.length) {
-      return false;
-    }
-    const recordType = String(message.recordType || '').trim();
-    if (recordType !== 'hr-steps') {
-      return false;
-    }
-    return this.hrInquiryHasCandidateMessage(currentInquiryMessages);
-  }
-
   private shouldSkipHrSystemMessageOutsideInquiry(message: ChatMessage): boolean {
     if (message.direction !== 'incoming') {
       return false;
@@ -2968,10 +2952,6 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       return false;
     }
     return true;
-  }
-
-  private hrInquiryHasCandidateMessage(messages: ChatMessage[]): boolean {
-    return messages.some((message) => this.isHrInquiryCandidateMessage(message));
   }
 
   private toHrInquiryView(

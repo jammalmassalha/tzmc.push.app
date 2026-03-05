@@ -33,9 +33,9 @@
                     <img class="image" [src]="part.url" alt="Image" loading="lazy" />
                   </button>
                 } @else {
-                  <a class="link" [href]="part.url" target="_blank" rel="noopener">
+                  <button type="button" class="link-btn" (click)="openUrl(part.url)">
                     {{ part.label }}
-                  </a>
+                  </button>
                 }
               }
             </div>
