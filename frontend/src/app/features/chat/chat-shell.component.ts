@@ -1179,12 +1179,14 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const normalizedId = String(inquiry?.id || '').trim();
     if (!normalizedId) return;
     this.selectHrInquiry(normalizedId);
+    const canContinueWrite = this.isHrInquiryFreeTextThread(inquiry);
 
     const dialogData: HrInquiryDetailsDialogData = {
       title: inquiry.title,
       status: inquiry.status,
       openedAt: inquiry.openedAt,
-      messages: inquiry.messages
+      messages: inquiry.messages,
+      canContinueWrite
     };
     const dialogRef = this.dialog.open(HrInquiryDetailsDialogComponent, {
       width: 'min(92vw, 760px)',
@@ -1195,6 +1197,13 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const result = await firstValueFrom(dialogRef.afterClosed());
     if (result === 'close') {
       this.closeHrInquiry(inquiry);
+      return;
+    }
+    if (result === 'continue-write') {
+      const activated = this.store.activateHrFreeTextModeForCurrentUser();
+      if (!activated) {
+        this.snackBar.open('לא ניתן להמשיך כתיבה כרגע. נסה שוב.', 'סגור', { duration: 2400 });
+      }
     }
   }
 
@@ -2995,6 +3004,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   private isHrInquiryMarkedClosed(messages: ChatMessage[]): boolean {
     return messages.some((message) => {
+      if (String(message.recordType || '').trim() === 'hr-asset') {
+        // Choosing a file/document action should automatically close the inquiry.
+        return true;
+      }
       const normalizedContent = this.normalizeHrText(
         `${String(message.recordType || '')} ${String(message.body || '')}`
       );
@@ -3016,6 +3029,23 @@ export class ChatShellComponent implements OnInit, OnDestroy {
         normalizedContent.includes('завершена')
       );
     });
+  }
+
+  private isHrInquiryFreeTextThread(inquiry: HrInquiryView): boolean {
+    if (!inquiry || inquiry.status === 'closed') {
+      return false;
+    }
+    let sawFreeTextPrompt = false;
+    for (const message of inquiry.messages) {
+      const normalizedBody = this.normalizeHrText(message.body || '');
+      if (message.direction === 'incoming' && normalizedBody.includes('נא כתוב את הודעתך')) {
+        sawFreeTextPrompt = true;
+      }
+      if (sawFreeTextPrompt && this.isHrInquiryCandidateMessage(message)) {
+        return true;
+      }
+    }
+    return sawFreeTextPrompt;
   }
 
   private getHrMessagePreview(message: ChatMessage | null): string {

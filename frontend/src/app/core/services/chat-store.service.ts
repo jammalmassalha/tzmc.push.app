@@ -1067,6 +1067,24 @@ export class ChatStoreService {
     return state?.awaiting === 'free-text';
   }
 
+  activateHrFreeTextModeForCurrentUser(): boolean {
+    const user = this.currentUser();
+    if (!user) {
+      return false;
+    }
+    const state = this.loadHrState(user) ?? { awaiting: 'step' as HrAwaitingState, stepId: null, actions: [] };
+    if (state.awaiting === 'free-text') {
+      return true;
+    }
+    this.saveHrState(user, {
+      awaiting: 'free-text',
+      stepId: state.stepId ?? null,
+      actions: Array.isArray(state.actions) ? state.actions : []
+    });
+    this.bumpHrPickerRevision();
+    return true;
+  }
+
   async submitHrQuickPickerSelection(rawValue: string): Promise<void> {
     const activeChatId = this.activeChatId();
     if (!this.isHrChat(activeChatId)) {

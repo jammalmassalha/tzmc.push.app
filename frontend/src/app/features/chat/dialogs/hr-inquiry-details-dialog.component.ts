@@ -15,9 +15,10 @@ export interface HrInquiryDetailsDialogData {
   status: 'active' | 'closed';
   openedAt: number;
   messages: ChatMessage[];
+  canContinueWrite?: boolean;
 }
 
-export type HrInquiryDetailsDialogResult = 'close' | null;
+export type HrInquiryDetailsDialogResult = 'close' | 'continue-write' | null;
 
 @Component({
   selector: 'app-hr-inquiry-details-dialog',
@@ -64,6 +65,10 @@ export class HrInquiryDetailsDialogComponent {
 
   closeInquiry(): void {
     this.dialogRef.close('close');
+  }
+
+  continueWrite(): void {
+    this.dialogRef.close('continue-write');
   }
 
   openUrl(url: string): void {

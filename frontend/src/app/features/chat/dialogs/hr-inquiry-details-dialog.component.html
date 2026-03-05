@@ -47,6 +47,9 @@
 </mat-dialog-content>
 
 <mat-dialog-actions align="end">
+  @if (data.canContinueWrite && !isClosed()) {
+    <button mat-flat-button color="primary" type="button" (click)="continueWrite()">המשך כתיבה</button>
+  }
   @if (!isClosed()) {
     <button mat-flat-button color="warn" type="button" (click)="closeInquiry()">סגור פנייה</button>
   }
