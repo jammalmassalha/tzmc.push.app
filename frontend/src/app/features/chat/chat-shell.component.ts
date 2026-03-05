@@ -321,6 +321,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly shuttlePickerControl = new FormControl('', { nonNullable: true });
   readonly shuttlePickerSearchControl = new FormControl('', { nonNullable: true });
   readonly hrPickerControl = new FormControl('', { nonNullable: true });
+  readonly hrPickerSearchControl = new FormControl('', { nonNullable: true });
 
   readonly searchTerm = toSignal(this.searchControl.valueChanges.pipe(startWith('')), {
     initialValue: ''
@@ -329,6 +330,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     initialValue: ''
   });
   readonly shuttlePickerSearchValue = toSignal(this.shuttlePickerSearchControl.valueChanges.pipe(startWith('')), {
+    initialValue: ''
+  });
+  readonly hrPickerSearchValue = toSignal(this.hrPickerSearchControl.valueChanges.pipe(startWith('')), {
     initialValue: ''
   });
 
@@ -460,6 +464,18 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       return options;
     }
 
+    return options.filter((option) => String(option.label || '').toLowerCase().includes(query));
+  });
+  readonly filteredHrPickerOptions = computed(() => {
+    const picker = this.hrQuickPicker();
+    if (!picker || picker.mode !== 'select') {
+      return [];
+    }
+    const options = picker.options;
+    const query = String(this.hrPickerSearchValue() || '').trim().toLowerCase();
+    if (!query) {
+      return options;
+    }
     return options.filter((option) => String(option.label || '').toLowerCase().includes(query));
   });
 
@@ -720,6 +736,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (key !== this.lastHrPickerKey) {
       this.lastHrPickerKey = key;
       this.hrPickerControl.setValue('');
+      this.hrPickerSearchControl.setValue('');
     }
   });
 
@@ -1093,6 +1110,11 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   async goBackFromHrPicker(): Promise<void> {
     await this.chooseHrPickerOption('0');
+  }
+
+  clearHrPickerSearch(): void {
+    if (!this.hrPickerSearchControl.value) return;
+    this.hrPickerSearchControl.setValue('');
   }
 
   clearShuttlePickerSearch(): void {
