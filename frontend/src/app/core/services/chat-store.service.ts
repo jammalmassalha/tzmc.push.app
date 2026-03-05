@@ -50,7 +50,6 @@ const HR_STATE_KEY_PREFIX = 'hr_state_';
 const HR_UPLOAD_BASE_URL = '/notify/uploads/';
 const HR_STEPS_CACHE_TTL_MS = 5 * 60 * 1000;
 const HR_ACTIONS_CACHE_TTL_MS = 5 * 60 * 1000;
-const HR_PICKER_NEW_INQUIRY_VALUE = '__hr_new_inquiry__';
 const HR_PICKER_SELECT_THRESHOLD = 8;
 const SHUTTLE_WELCOME_KEY_PREFIX = 'shuttle_welcome_sent_';
 const SHUTTLE_STATE_KEY_PREFIX = 'shuttle_state_';
@@ -985,18 +984,16 @@ export class ChatStoreService {
     }
 
     const state = this.loadHrState(user);
-    const newInquiryOption: HrQuickPickerOption = {
-      value: HR_PICKER_NEW_INQUIRY_VALUE,
-      label: 'פנייה חדשה'
-    };
-
     if (!state) {
+      if (!this.hrStepsCache.steps.length) {
+        void this.warmHrStepsCache();
+      }
       return {
-        key: 'hr-menu',
-        title: 'בחר פעולה',
-        helperText: 'להתחלת פנייה חדשה לחץ על הכפתור',
+        key: 'hr-menu-loading',
+        title: 'טוען אפשרויות פנייה...',
+        helperText: 'נא להמתין',
         mode: 'buttons',
-        options: [newInquiryOption],
+        options: [],
         allowBack: false
       };
     }
@@ -1015,7 +1012,7 @@ export class ChatStoreService {
         title: 'בחר נושא לפנייה',
         helperText: options.length ? 'לחץ על אפשרות מהרשימה' : 'טוען אפשרויות...',
         mode,
-        options: [newInquiryOption, ...options],
+        options,
         allowBack: false
       };
     }
@@ -1031,7 +1028,7 @@ export class ChatStoreService {
         title: 'בחר סוג פנייה',
         helperText: options.length ? 'בחר אפשרות כדי להמשיך' : 'אין פעולות זמינות כרגע',
         mode,
-        options: [newInquiryOption, ...options],
+        options,
         allowBack: true
       };
     }
@@ -1042,7 +1039,7 @@ export class ChatStoreService {
         title: 'כתיבת פנייה חופשית',
         helperText: 'כעת ניתן להקליד הודעה',
         mode: 'buttons',
-        options: [newInquiryOption],
+        options: [],
         allowBack: true
       };
     }
@@ -1051,7 +1048,7 @@ export class ChatStoreService {
       key: 'hr-menu-fallback',
       title: 'בחר פעולה',
       mode: 'buttons',
-      options: [newInquiryOption],
+      options: [],
       allowBack: false
     };
   }
@@ -1085,7 +1082,7 @@ export class ChatStoreService {
       throw new Error('בחירה חסרה');
     }
 
-    if (value === HR_PICKER_NEW_INQUIRY_VALUE || value === '0') {
+    if (value === '0') {
       this.resetHrState(user);
       await this.startHrFlow({ skipWelcome: this.hasHrWelcomeMessage(user) });
       this.bumpHrPickerRevision();
