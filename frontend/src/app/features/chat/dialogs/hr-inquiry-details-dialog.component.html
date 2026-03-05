@@ -1,0 +1,54 @@
+<h2 mat-dialog-title class="dialog-title">
+  <span>{{ data.title }}</span>
+  <span class="status-chip" [class.closed]="isClosed()">{{ statusLabel() }}</span>
+</h2>
+
+<mat-dialog-content class="dialog-content">
+  <div class="dialog-meta">נפתח: {{ formatDateTime(data.openedAt) }}</div>
+
+  @if (!data.messages.length) {
+    <div class="empty-state">אין הודעות להצגה.</div>
+  } @else {
+    <div class="message-list">
+      @for (message of data.messages; track message.messageId + '-' + $index) {
+        <article class="message-item" [class.outgoing]="message.direction === 'outgoing'">
+          <div class="message-head">
+            <span class="sender">{{ senderLabel(message) }}</span>
+            <span class="time">{{ formatTime(message.timestamp) }}</span>
+          </div>
+
+          @if (message.imageUrl) {
+            <button type="button" class="image-btn" (click)="openUrl(message.imageUrl)" aria-label="Open image">
+              <img class="image" [src]="message.imageUrl" alt="Attachment" loading="lazy" />
+            </button>
+          }
+
+          @if (message.body) {
+            <div class="body">
+              @for (part of messageParts(message); track $index) {
+                @if (part.kind === 'text') {
+                  <span>{{ part.text }}</span>
+                } @else if (part.kind === 'image') {
+                  <button type="button" class="image-btn inline" (click)="openUrl(part.url)" aria-label="Open image">
+                    <img class="image" [src]="part.url" alt="Image" loading="lazy" />
+                  </button>
+                } @else {
+                  <a class="link" [href]="part.url" target="_blank" rel="noopener">
+                    {{ part.label }}
+                  </a>
+                }
+              }
+            </div>
+          }
+        </article>
+      }
+    </div>
+  }
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  @if (!isClosed()) {
+    <button mat-flat-button color="warn" type="button" (click)="closeInquiry()">סגור פנייה</button>
+  }
+  <button mat-stroked-button mat-dialog-close>סגור</button>
+</mat-dialog-actions>

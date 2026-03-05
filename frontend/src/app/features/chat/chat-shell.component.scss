@@ -1335,9 +1335,7 @@ mat-chip:not(.offline) {
 }
 
 .hr-inquiries-content {
-  display: grid;
-  grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
-  gap: 10px;
+  display: block;
   min-height: 0;
 }
 
@@ -1345,7 +1343,7 @@ mat-chip:not(.offline) {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 440px;
+  max-height: min(58vh, 520px);
   overflow: auto;
   padding-inline-end: 2px;
 }

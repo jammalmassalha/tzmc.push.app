@@ -46,6 +46,10 @@ import { CreateGroupDialogComponent } from './dialogs/create-group-dialog.compon
 import { NewChatDialogComponent } from './dialogs/new-chat-dialog.component';
 import { ConfirmMessageActionDialogComponent } from './dialogs/confirm-message-action-dialog.component';
 import { ForwardMessageDialogComponent } from './dialogs/forward-message-dialog.component';
+import {
+  HrInquiryDetailsDialogComponent,
+  HrInquiryDetailsDialogData
+} from './dialogs/hr-inquiry-details-dialog.component';
 
 type MessageRenderPart =
   | { kind: 'text'; text: string }
@@ -1169,6 +1173,29 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       return;
     }
     this.selectedHrInquiryId.set(normalizedId);
+  }
+
+  async openHrInquiryDetailsDialog(inquiry: HrInquiryView): Promise<void> {
+    const normalizedId = String(inquiry?.id || '').trim();
+    if (!normalizedId) return;
+    this.selectHrInquiry(normalizedId);
+
+    const dialogData: HrInquiryDetailsDialogData = {
+      title: inquiry.title,
+      status: inquiry.status,
+      openedAt: inquiry.openedAt,
+      messages: inquiry.messages
+    };
+    const dialogRef = this.dialog.open(HrInquiryDetailsDialogComponent, {
+      width: 'min(92vw, 760px)',
+      maxWidth: '92vw',
+      data: dialogData,
+      autoFocus: false
+    });
+    const result = await firstValueFrom(dialogRef.afterClosed());
+    if (result === 'close') {
+      this.closeHrInquiry(inquiry);
+    }
   }
 
   isHrInquirySelected(inquiryId: string): boolean {

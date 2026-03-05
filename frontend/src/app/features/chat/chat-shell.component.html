@@ -369,7 +369,7 @@
                         type="button"
                         class="hr-inquiry-list-item"
                         [class.selected]="isHrInquirySelected(inquiry.id)"
-                        (click)="selectHrInquiry(inquiry.id)">
+                        (click)="openHrInquiryDetailsDialog(inquiry)">
                         <div class="hr-inquiry-list-top">
                           <span class="hr-inquiry-title">{{ inquiry.title }}</span>
                           <span class="hr-inquiry-time">{{ hrInquiryTimeLabel(inquiry) }}</span>
@@ -382,83 +382,6 @@
                         </div>
                       </button>
                     }
-                  }
-                </div>
-
-                <div class="hr-inquiry-details" role="tabpanel">
-                  @if (selectedHrInquiry(); as selectedInquiry) {
-                    <header class="hr-inquiry-details-header">
-                      <div class="hr-inquiry-details-title-row">
-                        <div class="hr-inquiry-details-title">{{ selectedInquiry.title }}</div>
-                        @if (isHrInquiryClosable(selectedInquiry)) {
-                          <button
-                            type="button"
-                            class="hr-inquiry-close-btn"
-                            (click)="closeHrInquiry(selectedInquiry)">
-                            סגור פנייה
-                          </button>
-                        }
-                      </div>
-                      <div class="hr-inquiry-details-meta">
-                        <span class="hr-inquiry-status" [class.closed]="selectedInquiry.status === 'closed'">
-                          {{ hrInquiryStatusLabel(selectedInquiry.status) }}
-                        </span>
-                        <span>{{ formatMessageDateBadge(selectedInquiry.openedAt) }} · {{ formatTime(selectedInquiry.openedAt) }}</span>
-                      </div>
-                    </header>
-
-                    <div class="hr-inquiry-details-messages">
-                      @for (message of selectedHrInquiryMessages(); track message.messageId + '-' + $index) {
-                        <article class="hr-inquiry-message" [class.outgoing]="message.direction === 'outgoing'">
-                          <div class="hr-inquiry-message-head">
-                            <span class="hr-inquiry-message-sender">{{ hrInquiryMessageSender(message) }}</span>
-                            <span class="hr-inquiry-message-time">{{ formatTime(message.timestamp) }}</span>
-                          </div>
-                          <div class="hr-inquiry-message-body" [class.deleted]="isMessageDeleted(message)">
-                            @if (message.imageUrl) {
-                              <button
-                                type="button"
-                                class="message-image-btn"
-                                (click)="openFullImage(message.imageUrl)"
-                                aria-label="Open full image">
-                                <img class="message-image" [src]="message.imageUrl" alt="Attachment" loading="lazy" />
-                              </button>
-                            }
-                            @if (message.body) {
-                              <div class="message-content">
-                                @for (part of getMessageRenderParts(message.messageId, message.body); track $index) {
-                                  @if (part.kind === 'text') {
-                                    <span class="message-text">{{ part.text }}</span>
-                                  } @else if (part.kind === 'phone') {
-                                    <button
-                                      type="button"
-                                      class="message-phone"
-                                      (click)="openPhoneActions(part)"
-                                      aria-label="פעולות מספר טלפון">
-                                      {{ part.display }}
-                                    </button>
-                                  } @else if (part.kind === 'image') {
-                                    <button
-                                      type="button"
-                                      class="message-image-btn"
-                                      (click)="openFullImage(part.url)"
-                                      aria-label="Open full image">
-                                      <img class="message-image" [src]="part.url" alt="Image" loading="lazy" />
-                                    </button>
-                                  } @else {
-                                    <a [href]="part.url" target="_blank" rel="noopener" class="message-link">
-                                      {{ part.label }}
-                                    </a>
-                                  }
-                                }
-                              </div>
-                            }
-                          </div>
-                        </article>
-                      }
-                    </div>
-                  } @else {
-                    <div class="hr-inquiry-details-empty">בחר פנייה מהרשימה כדי להציג את ההתכתבות.</div>
                   }
                 </div>
               </div>
