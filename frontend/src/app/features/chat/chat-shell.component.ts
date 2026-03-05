@@ -35,6 +35,7 @@ import {
 import {
   ActivatedChatMeta,
   ChatStoreService,
+  HrQuickPickerState,
   IncomingReactionNotice,
   ShuttleBreadcrumbStep,
   ShuttleLanguage,
@@ -319,6 +320,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly messageControl = new FormControl('', { nonNullable: true });
   readonly shuttlePickerControl = new FormControl('', { nonNullable: true });
   readonly shuttlePickerSearchControl = new FormControl('', { nonNullable: true });
+  readonly hrPickerControl = new FormControl('', { nonNullable: true });
 
   readonly searchTerm = toSignal(this.searchControl.valueChanges.pipe(startWith('')), {
     initialValue: ''
@@ -355,6 +357,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (this.store.getShuttleQuickPickerState()) {
       return 'לבחירה השתמש בכפתורים';
     }
+    if (this.isHrRoomActive() && !this.store.getHrAllowsFreeTextInput()) {
+      return 'לבחירה השתמש בכפתורים';
+    }
     if (this.store.canSendToActiveChat()) {
       return 'הקלד הודעה';
     }
@@ -366,7 +371,11 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly shuttleQuickPicker = computed<ShuttleQuickPickerState | null>(() =>
     this.store.getShuttleQuickPickerState()
   );
+  readonly hrQuickPicker = computed<HrQuickPickerState | null>(() =>
+    this.store.getHrQuickPickerState()
+  );
   readonly isSubmittingShuttlePicker = signal(false);
+  readonly isSubmittingHrPicker = signal(false);
   readonly isSubmittingShuttleOrder = signal(false);
   readonly isCancellingShuttleOrderIds = signal<Set<string>>(new Set<string>());
   readonly shuttlePickerHasOptions = computed(() => {
@@ -389,6 +398,9 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (!activeChat) return false;
     return this.normalizeUsername(activeChat.id) === this.normalizeUsername(HR_CHAT_ROOM_ID);
   });
+  readonly isHrGuidedModeActive = computed(() =>
+    this.isHrRoomActive() && !this.store.getHrAllowsFreeTextInput()
+  );
   readonly hrInquiriesTab = signal<HrInquiryStatus>('active');
   readonly selectedHrInquiryId = signal<string | null>(null);
   readonly hrInquiries = computed<HrInquiryView[]>(() => {
@@ -553,6 +565,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   private conversationSwipeStartedAt: number | null = null;
   private conversationSwipeTracking = false;
   private lastShuttlePickerKey: string | null = null;
+  private lastHrPickerKey: string | null = null;
   private lastAutoScrollChatId: string | null = null;
   private lastAutoScrollMessageCount = 0;
   private pendingOpenScroll: { chatId: string; unreadBeforeOpen: number } | null = null;
@@ -696,6 +709,31 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const visibleOptions = this.filteredShuttlePickerOptions();
     if (!visibleOptions.some((option) => option.value === selected)) {
       this.shuttlePickerControl.setValue('');
+    }
+  });
+
+  private readonly hrPickerSyncEffect = effect(() => {
+    const picker = this.hrQuickPicker();
+    const key = picker?.key ?? null;
+    if (key !== this.lastHrPickerKey) {
+      this.lastHrPickerKey = key;
+      this.hrPickerControl.setValue('');
+    }
+  });
+
+  private readonly hrPickerOptionValidityEffect = effect(() => {
+    const picker = this.hrQuickPicker();
+    if (!picker || picker.mode !== 'select') {
+      return;
+    }
+
+    const selected = String(this.hrPickerControl.value || '').trim();
+    if (!selected) {
+      return;
+    }
+
+    if (!picker.options.some((option) => option.value === selected)) {
+      this.hrPickerControl.setValue('');
     }
   });
 
@@ -889,7 +927,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   async sendMessage(): Promise<void> {
-    if (this.shuttleQuickPicker() && !this.editingMessageTarget()) {
+    if ((this.shuttleQuickPicker() || this.isHrGuidedModeActive()) && !this.editingMessageTarget()) {
       return;
     }
     if (!this.canSendMessage()) return;
@@ -1000,6 +1038,50 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   async goBackFromShuttlePicker(): Promise<void> {
     await this.chooseShuttlePickerOption('0');
+  }
+
+  async chooseHrPickerOption(value: string): Promise<void> {
+    const normalized = String(value || '').trim();
+    if (!normalized || this.isSubmittingHrPicker()) return;
+    const picker = this.hrQuickPicker();
+    if (picker) {
+      const option = picker.options.find((item) => String(item.value || '').trim() === normalized);
+      if (option?.disabled) {
+        this.snackBar.open('האפשרות שבחרת אינה זמינה כרגע.', 'סגור', { duration: 2400 });
+        return;
+      }
+    }
+    this.isSubmittingHrPicker.set(true);
+    try {
+      await this.store.submitHrQuickPickerSelection(normalized);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'בחירה נכשלה. נסה שוב.';
+      this.snackBar.open(message, 'סגור', { duration: 2800 });
+    } finally {
+      this.isSubmittingHrPicker.set(false);
+    }
+  }
+
+  async submitHrPickerSelection(): Promise<void> {
+    const picker = this.hrQuickPicker();
+    if (!picker) return;
+    const selectedValue = String(this.hrPickerControl.value || '').trim();
+    if (!selectedValue) {
+      this.snackBar.open('יש לבחור אפשרות מהרשימה.', 'סגור', { duration: 2200 });
+      return;
+    }
+    const selectedOption = picker.options.find(
+      (option) => String(option.value || '').trim() === selectedValue
+    );
+    if (selectedOption?.disabled) {
+      this.snackBar.open('האפשרות שבחרת אינה זמינה כרגע.', 'סגור', { duration: 2400 });
+      return;
+    }
+    await this.chooseHrPickerOption(selectedValue);
+  }
+
+  async goBackFromHrPicker(): Promise<void> {
+    await this.chooseHrPickerOption('0');
   }
 
   clearShuttlePickerSearch(): void {
@@ -1296,7 +1378,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   openImagePicker(): void {
-    if (this.shuttleQuickPicker()) {
+    if (this.shuttleQuickPicker() || this.isHrGuidedModeActive()) {
       this.snackBar.open('בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.', this.shuttleCloseActionLabel(), { duration: 2600 });
       return;
     }
@@ -1308,7 +1390,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   async shareLocation(): Promise<void> {
-    if (this.shuttleQuickPicker()) {
+    if (this.shuttleQuickPicker() || this.isHrGuidedModeActive()) {
       this.snackBar.open('בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.', this.shuttleCloseActionLabel(), { duration: 2600 });
       return;
     }
@@ -1334,7 +1416,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   canSendMessage(): boolean {
-    if (this.shuttleQuickPicker() && !this.editingMessageTarget()) {
+    if ((this.shuttleQuickPicker() || this.isHrGuidedModeActive()) && !this.editingMessageTarget()) {
       return false;
     }
     return Boolean(this.messageValue().trim()) && this.store.canSendToActiveChat() && !!this.store.activeChat();
