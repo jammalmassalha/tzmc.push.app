@@ -2804,7 +2804,12 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
     for (let index = 0; index < messages.length; index += 1) {
       const message = messages[index];
-      if (this.shouldStartNewHrInquiry(messages, index, currentInquiryMessages)) {
+      if (this.shouldForceNewHrInquiryBoundary(message, currentInquiryMessages)) {
+        flushCurrentInquiry();
+        currentInquiryId = String(message.messageId || `hr-inquiry-${index + 1}`).trim();
+      }
+
+      if (this.shouldStartNewHrInquiry(message, currentInquiryMessages)) {
         flushCurrentInquiry();
         currentInquiryId = String(message.messageId || `hr-inquiry-${index + 1}`).trim();
       }
@@ -2823,22 +2828,25 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     return inquiries.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
   }
 
-  private shouldStartNewHrInquiry(
-    messages: ChatMessage[],
-    index: number,
-    currentInquiryMessages: ChatMessage[]
-  ): boolean {
-    const message = messages[index];
+  private shouldStartNewHrInquiry(message: ChatMessage, currentInquiryMessages: ChatMessage[]): boolean {
     if (!this.isHrInquiryCandidateMessage(message)) {
       return false;
     }
     if (!currentInquiryMessages.length) {
       return true;
     }
-    if (this.hasHrFreeTextPromptBefore(messages, index)) {
-      return true;
-    }
     return this.isHrInquiryMarkedClosed(currentInquiryMessages);
+  }
+
+  private shouldForceNewHrInquiryBoundary(message: ChatMessage, currentInquiryMessages: ChatMessage[]): boolean {
+    if (!currentInquiryMessages.length) {
+      return false;
+    }
+    const recordType = String(message.recordType || '').trim();
+    if (recordType !== 'hr-steps') {
+      return false;
+    }
+    return this.hrInquiryHasCandidateMessage(currentInquiryMessages);
   }
 
   private shouldSkipHrSystemMessageOutsideInquiry(message: ChatMessage): boolean {
@@ -2854,21 +2862,6 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       normalizedBody.includes('יש לבחור באמצעות מענה בהודעת ווטסאפ') ||
       normalizedBody.includes('נא כתוב את הודעתך')
     );
-  }
-
-  private hasHrFreeTextPromptBefore(messages: ChatMessage[], index: number): boolean {
-    const from = Math.max(0, index - 6);
-    for (let cursor = index - 1; cursor >= from; cursor -= 1) {
-      const candidate = messages[cursor];
-      if (candidate.direction !== 'incoming') {
-        continue;
-      }
-      const normalizedBody = this.normalizeHrText(candidate.body);
-      if (normalizedBody.includes('נא כתוב את הודעתך')) {
-        return true;
-      }
-    }
-    return false;
   }
 
   private isHrInquiryCandidateMessage(message: ChatMessage): boolean {
@@ -2890,6 +2883,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       return false;
     }
     return true;
+  }
+
+  private hrInquiryHasCandidateMessage(messages: ChatMessage[]): boolean {
+    return messages.some((message) => this.isHrInquiryCandidateMessage(message));
   }
 
   private toHrInquiryView(
