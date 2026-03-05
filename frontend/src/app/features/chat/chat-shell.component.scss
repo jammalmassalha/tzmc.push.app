@@ -1272,6 +1272,16 @@ mat-chip:not(.offline) {
   gap: 10px;
 }
 
+.hr-inquiries-sticky-head {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  margin: -12px -12px 0;
+  padding: 12px 12px 8px;
+  background: linear-gradient(180deg, #f7f9fffa, #eff4fff5);
+  border-bottom: 1px solid rgba(71, 97, 188, 0.16);
+}
+
 .hr-inquiries-toolbar {
   display: flex;
   align-items: center;

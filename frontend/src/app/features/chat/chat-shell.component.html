@@ -326,29 +326,31 @@
 
           @if (isHrRoomActive()) {
             <section class="hr-inquiries-dashboard">
-              <div class="hr-inquiries-toolbar">
-                <div class="hr-inquiries-title">פניות למשאבי אנוש</div>
-              </div>
+              <div class="hr-inquiries-sticky-head">
+                <div class="hr-inquiries-toolbar">
+                  <div class="hr-inquiries-title">פניות למשאבי אנוש</div>
+                </div>
 
-              <div class="hr-inquiries-tabs" role="tablist" aria-label="קטגוריות פניות">
-                <button
-                  type="button"
-                  role="tab"
-                  class="hr-inquiries-tab-btn active"
-                  [class.selected]="hrInquiriesTab() === 'active'"
-                  [attr.aria-selected]="hrInquiriesTab() === 'active'"
-                  (click)="setHrInquiriesTab('active')">
-                  פעילות ({{ hrInquiryBuckets().active.length }})
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  class="hr-inquiries-tab-btn closed"
-                  [class.selected]="hrInquiriesTab() === 'closed'"
-                  [attr.aria-selected]="hrInquiriesTab() === 'closed'"
-                  (click)="setHrInquiriesTab('closed')">
-                  סגורות ({{ hrInquiryBuckets().closed.length }})
-                </button>
+                <div class="hr-inquiries-tabs" role="tablist" aria-label="קטגוריות פניות">
+                  <button
+                    type="button"
+                    role="tab"
+                    class="hr-inquiries-tab-btn active"
+                    [class.selected]="hrInquiriesTab() === 'active'"
+                    [attr.aria-selected]="hrInquiriesTab() === 'active'"
+                    (click)="setHrInquiriesTab('active')">
+                    פעילות ({{ hrInquiryBuckets().active.length }})
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    class="hr-inquiries-tab-btn closed"
+                    [class.selected]="hrInquiriesTab() === 'closed'"
+                    [attr.aria-selected]="hrInquiriesTab() === 'closed'"
+                    (click)="setHrInquiriesTab('closed')">
+                    סגורות ({{ hrInquiryBuckets().closed.length }})
+                  </button>
+                </div>
               </div>
 
               <div class="hr-inquiries-content">
