@@ -225,6 +225,7 @@ export class ChatStoreService {
   readonly networkOnline = signal(typeof navigator !== 'undefined' ? navigator.onLine : true);
   readonly lastError = signal<string | null>(null);
   readonly incomingReactionNotice = signal<IncomingReactionNotice | null>(null);
+  readonly shuttleAccessAllowed = signal(false);
 
   private readonly messagesByChat = signal<Record<string, ChatMessage[]>>({});
   private stream: EventSource | null = null;
@@ -292,7 +293,11 @@ export class ChatStoreService {
     for (const id of Object.keys(messageMap)) {
       chatIds.add(id);
     }
+    const canAccessShuttle = this.shuttleAccessAllowed();
     for (const systemId of this.systemChatIdSet) {
+      if (this.isShuttleChat(systemId) && !canAccessShuttle) {
+        continue;
+      }
       chatIds.add(systemId);
     }
     const items: ChatListItem[] = [];
@@ -303,6 +308,9 @@ export class ChatStoreService {
       const messages = messageMap[chatId] ?? [];
       const lastMessage = messages[messages.length - 1];
       const isShuttle = this.isShuttleChat(chatId);
+      if (isShuttle && !canAccessShuttle) {
+        continue;
+      }
 
       const title = group?.name ?? contact?.displayName ?? (isShuttle ? SHUTTLE_CHAT_TITLE : chatId);
       const subtitle = lastMessage ? this.getMessagePreview(lastMessage) : (group ? 'אין הודעות בקבוצה' : '');
@@ -420,6 +428,7 @@ export class ChatStoreService {
     if (this.initializedUser === user) return;
 
     this.initializedUser = user;
+    await this.refreshShuttleAccessForCurrentUser(user, { force: true });
 
     // Open quickly from cached state, then bring latest messages in.
     this.applyInitialChatSelection(user);
@@ -544,6 +553,7 @@ export class ChatStoreService {
     this.groups.set([]);
     this.messagesByChat.set({});
     this.unreadByChat.set({});
+    this.shuttleAccessAllowed.set(false);
     this.resetReadReceiptTrackingState();
     this.activeChatId.set(null);
     this.lastError.set(null);
@@ -584,6 +594,7 @@ export class ChatStoreService {
     this.groups.set([]);
     this.messagesByChat.set({});
     this.unreadByChat.set({});
+    this.shuttleAccessAllowed.set(false);
     this.resetReadReceiptTrackingState();
     this.activeChatId.set(null);
     this.lastError.set(null);
@@ -621,6 +632,8 @@ export class ChatStoreService {
       this.lastError.set('טעינת קבוצות נכשלה');
     }
 
+    await this.refreshShuttleAccessForCurrentUser(user, { force });
+
     this.loading.set(false);
     this.schedulePersist();
   }
@@ -656,6 +669,9 @@ export class ChatStoreService {
     }
 
     const normalized = this.normalizeChatId(chatId);
+    if (this.isShuttleChat(normalized) && !this.shuttleAccessAllowed()) {
+      return;
+    }
     const unreadBeforeOpen = Math.max(0, Math.floor(Number(this.unreadByChat()[normalized] ?? 0)));
     this.lastActivatedChatMeta.set({
       chatId: normalized,
@@ -851,6 +867,9 @@ export class ChatStoreService {
   canSendToChat(chatId: string): boolean {
     const normalizedChatId = this.normalizeChatId(chatId);
     if (!normalizedChatId) return false;
+    if (this.isShuttleChat(normalizedChatId) && !this.shuttleAccessAllowed()) {
+      return false;
+    }
     const group = this.groups().find((item) => item.id === normalizedChatId);
     if (!group) return true;
     if (group.type !== 'community' && !this.isDovrutGroup(group.id)) return true;
@@ -1601,6 +1620,9 @@ export class ChatStoreService {
       return;
     }
     if (this.isShuttleChat(chatId)) {
+      if (!this.shuttleAccessAllowed()) {
+        return;
+      }
       await this.ensureShuttleFlowOnOpen();
     }
   }
@@ -2437,6 +2459,105 @@ export class ChatStoreService {
     );
   }
 
+  private async refreshShuttleAccessForCurrentUser(
+    user: string,
+    options: { force?: boolean } = {}
+  ): Promise<void> {
+    const normalizedUser = this.normalizeUser(user);
+    if (!normalizedUser) {
+      this.shuttleAccessAllowed.set(false);
+      return;
+    }
+
+    try {
+      let employees: string[] = [];
+      const now = Date.now();
+      const hasFreshCache =
+        !options.force &&
+        this.shuttleEmployeesCache.items.length > 0 &&
+        now - this.shuttleEmployeesCache.at < SHUTTLE_LIST_CACHE_TTL_MS;
+      if (hasFreshCache) {
+        employees = this.shuttleEmployeesCache.items;
+      } else {
+        employees = await this.fetchShuttleEmployeesCached();
+      }
+
+      const allowed = this.isUserAllowedForShuttle(normalizedUser, employees);
+      this.shuttleAccessAllowed.set(allowed);
+      this.enforceShuttleAccessVisibility(normalizedUser, allowed);
+    } catch {
+      this.shuttleAccessAllowed.set(false);
+      this.enforceShuttleAccessVisibility(normalizedUser, false);
+    }
+  }
+
+  private isUserAllowedForShuttle(user: string, employees: string[]): boolean {
+    const normalizedUser = this.normalizeUser(user);
+    if (!normalizedUser) return false;
+    if (!Array.isArray(employees) || employees.length === 0) {
+      return false;
+    }
+
+    const userPhone = this.extractShuttlePhone(normalizedUser) || this.normalizePhone(normalizedUser);
+    return employees.some((entry) => {
+      const normalizedEntry = this.normalizeUser(String(entry || '').trim());
+      if (!normalizedEntry) {
+        return false;
+      }
+      if (normalizedEntry === normalizedUser) {
+        return true;
+      }
+      const entryPhone = this.extractShuttlePhone(normalizedEntry);
+      return Boolean(userPhone && entryPhone && userPhone === entryPhone);
+    });
+  }
+
+  private enforceShuttleAccessVisibility(user: string, allowed: boolean): void {
+    if (allowed) {
+      return;
+    }
+
+    const active = this.activeChatId();
+    if (active && this.isShuttleChat(active)) {
+      this.activeChatId.set(null);
+      this.lastActivatedChatMeta.set(null);
+    }
+
+    const shuttleIds = Array.from(this.shuttleChatIdSet);
+    this.unreadByChat.update((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const chatId of shuttleIds) {
+        if (Object.prototype.hasOwnProperty.call(next, chatId)) {
+          delete next[chatId];
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+    this.messagesByChat.update((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const chatId of shuttleIds) {
+        if (Object.prototype.hasOwnProperty.call(next, chatId)) {
+          delete next[chatId];
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+
+    this.clearShuttleReminderTimersForUser(user);
+    localStorage.removeItem(this.shuttleWelcomeKey(user));
+    localStorage.removeItem(this.shuttleStateKey(user));
+    localStorage.removeItem(this.shuttleOrdersKey(user));
+    localStorage.removeItem(this.shuttleLanguageKey(user));
+    const storedActive = this.getStoredActiveChat(user);
+    if (storedActive && this.isShuttleChat(storedActive)) {
+      localStorage.removeItem(this.activeChatKey(user));
+    }
+  }
+
   private async fetchShuttleStationsCached(): Promise<string[]> {
     const now = Date.now();
     if (this.shuttleStationsCache.items.length && now - this.shuttleStationsCache.at < SHUTTLE_LIST_CACHE_TTL_MS) {
@@ -3173,6 +3294,9 @@ export class ChatStoreService {
     body: string,
     options: { imageUrl?: string | null; recordType?: string } = {}
   ): void {
+    if (!this.shuttleAccessAllowed()) {
+      return;
+    }
     const chatId = this.normalizeChatId(SHUTTLE_CHAT_NAME);
     const message: ChatMessage = {
       id: this.generateId('rec'),
@@ -3214,6 +3338,9 @@ export class ChatStoreService {
     const chatId = this.normalizeChatId(chatIdRaw);
     if (!user || !chatId) {
       throw new Error('No active chat');
+    }
+    if (this.isShuttleChat(chatId) && !this.shuttleAccessAllowed()) {
+      throw new Error('אין הרשאה לחדר הזמנת הסעות');
     }
 
     const group = this.groups().find((item) => item.id === chatId) ?? null;
@@ -3960,6 +4087,9 @@ export class ChatStoreService {
         ? this.normalizeChatId(incoming.groupId ?? '')
         : this.normalizeChatId(sender);
       if (!chatId) continue;
+      if (this.isShuttleChat(chatId) && !this.shuttleAccessAllowed()) {
+        continue;
+      }
 
       const messageId = String(incoming.messageId ?? this.generateId('srv')).trim();
       if (!messageId) continue;
@@ -4099,6 +4229,9 @@ export class ChatStoreService {
       ? this.normalizeChatId(incoming.groupId ?? '')
       : this.normalizeChatId(sender);
     if (!chatId) return false;
+    if (this.isShuttleChat(chatId) && !this.shuttleAccessAllowed()) {
+      return false;
+    }
 
     const messageId = String(incoming.messageId ?? this.generateId('srv')).trim();
     if (!messageId) return false;
@@ -4671,6 +4804,9 @@ export class ChatStoreService {
   private appendMessage(message: ChatMessage): void {
     const chatId = this.normalizeChatId(message.chatId);
     if (!chatId) return;
+    if (this.isShuttleChat(chatId) && !this.shuttleAccessAllowed()) {
+      return;
+    }
 
     const normalizedSender = this.normalizeUser(message.sender);
     const normalizedReplyTo = this.normalizeMessageReference(message.replyTo ?? null);
@@ -5151,6 +5287,9 @@ export class ChatStoreService {
 
   private isSystemChat(chatId: string): boolean {
     const normalized = this.normalizeChatId(chatId);
+    if (this.isShuttleChat(normalized) && !this.shuttleAccessAllowed()) {
+      return false;
+    }
     return Boolean(normalized && this.systemChatIdSet.has(normalized));
   }
 
