@@ -108,10 +108,15 @@ interface ShuttleOrderMessageCard {
   cancelled: boolean;
 }
 
+const MESSAGE_PAGE_SIZE = 15;
+const LOAD_OLDER_MESSAGES_SCROLL_THRESHOLD_PX = 56;
+
 type ShuttleUiTextKey =
   | 'ordersTitle'
   | 'refresh'
   | 'loading'
+  | 'processingOrderTitle'
+  | 'processingOrderSubtitle'
   | 'ordersTablistAria'
   | 'ongoingTab'
   | 'pastTab'
@@ -154,6 +159,8 @@ const SHUTTLE_UI_TEXT: Record<ShuttleLanguage, Record<ShuttleUiTextKey, string>>
     ordersTitle: 'ההזמנות שלי',
     refresh: 'רענון',
     loading: 'טוען נתונים...',
+    processingOrderTitle: 'שומר את ההזמנה...',
+    processingOrderSubtitle: 'הבקשה נשלחה ונמצאת בעיבוד. נא להמתין.',
     ordersTablistAria: 'קטגוריות הזמנות',
     ongoingTab: 'פעילות',
     pastTab: 'עבר',
@@ -195,6 +202,8 @@ const SHUTTLE_UI_TEXT: Record<ShuttleLanguage, Record<ShuttleUiTextKey, string>>
     ordersTitle: 'Мои заказы',
     refresh: 'Обновить',
     loading: 'Загрузка данных...',
+    processingOrderTitle: 'Сохраняем заказ...',
+    processingOrderSubtitle: 'Запрос отправлен и обрабатывается. Пожалуйста, подождите.',
     ordersTablistAria: 'Категории заказов',
     ongoingTab: 'Активные',
     pastTab: 'Прошлые',
@@ -345,6 +354,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     this.store.getShuttleQuickPickerState()
   );
   readonly isSubmittingShuttlePicker = signal(false);
+  readonly isSubmittingShuttleOrder = signal(false);
   readonly isCancellingShuttleOrderIds = signal<Set<string>>(new Set<string>());
   readonly shuttlePickerHasOptions = computed(() => {
     const picker = this.shuttleQuickPicker();
@@ -457,6 +467,17 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const timestamp = this.stickyMessageTimestamp();
     return timestamp ? this.formatMessageDateBadge(timestamp) : '';
   });
+  readonly visibleMessageCount = signal(MESSAGE_PAGE_SIZE);
+  readonly visibleMessageStartIndex = computed(() => {
+    const total = this.store.activeMessages().length;
+    const count = this.visibleMessageCount();
+    return Math.max(0, total - count);
+  });
+  readonly visibleMessages = computed<ChatMessage[]>(() => {
+    const messages = this.store.activeMessages();
+    return messages.slice(this.visibleMessageStartIndex());
+  });
+  readonly hasOlderMessages = computed(() => this.visibleMessageStartIndex() > 0);
   readonly showScrollToBottomButton = computed(
     () =>
       Boolean(this.store.activeChatId()) &&
@@ -466,6 +487,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   );
   private readonly messagePartsCache = new Map<string, ParsedMessageCacheEntry>();
   private readonly scrollBottomThresholdPx = 44;
+  private readonly loadOlderMessagesScrollThresholdPx = LOAD_OLDER_MESSAGES_SCROLL_THRESHOLD_PX;
   private readonly conversationSwipeMinDistancePx = 80;
   private readonly conversationSwipeMaxDurationMs = 800;
   private readonly conversationSwipeHorizontalBias = 1.35;
@@ -484,11 +506,12 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   private relativeTimeRefreshId: number | null = null;
   private logoutProgressIntervalId: number | null = null;
   private routeQueryParamsSub: Subscription | null = null;
+  private isLoadingOlderMessages = false;
+  private lastPaginatedChatId: string | null = null;
 
   private readonly autoScrollEffect = effect(() => {
     const activeChatId = this.store.activeChatId();
     const size = this.store.activeMessages().length;
-    const activationMeta = this.store.lastActivatedChatMeta();
     if (!activeChatId || size === 0) {
       this.pendingOpenScroll = null;
       if (this.openBoundaryScrollRafId !== null) {
@@ -508,12 +531,14 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     this.lastAutoScrollMessageCount = size;
 
     if (chatChanged) {
-      const unreadBeforeOpen = this.resolveUnreadBeforeOpen(activeChatId, activationMeta);
-      this.pendingOpenScroll = {
-        chatId: activeChatId,
-        unreadBeforeOpen
-      };
-      queueMicrotask(() => this.scheduleOpenBoundaryScroll());
+      this.pendingOpenScroll = null;
+      if (this.openBoundaryScrollRafId !== null) {
+        window.cancelAnimationFrame(this.openBoundaryScrollRafId);
+        this.openBoundaryScrollRafId = null;
+      }
+      queueMicrotask(() => {
+        window.requestAnimationFrame(() => this.scrollMessagesToBottom('auto'));
+      });
       return;
     }
 
@@ -531,6 +556,27 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     const count = this.filteredChats().length;
     if (!visible || count === 0) return;
     queueMicrotask(() => this.contactsViewport?.checkViewportSize());
+  });
+
+  private readonly messagePaginationEffect = effect(() => {
+    const activeChatId = this.store.activeChatId();
+    const totalMessages = this.store.activeMessages().length;
+
+    if (activeChatId !== this.lastPaginatedChatId) {
+      this.lastPaginatedChatId = activeChatId;
+      this.visibleMessageCount.set(MESSAGE_PAGE_SIZE);
+      return;
+    }
+
+    if (!activeChatId) {
+      this.visibleMessageCount.set(MESSAGE_PAGE_SIZE);
+      return;
+    }
+
+    const maxVisibleCount = Math.max(MESSAGE_PAGE_SIZE, totalMessages);
+    if (this.visibleMessageCount() > maxVisibleCount) {
+      this.visibleMessageCount.set(maxVisibleCount);
+    }
   });
 
   private readonly mobileActiveChatPaneEffect = effect(() => {
@@ -665,7 +711,8 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       this.nowTimestamp.set(Date.now());
     }, 60_000);
 
-    await this.store.initialize();
+    void this.store.initialize();
+    void this.enforceMandatoryPushRegistrationOnEntry();
     this.routeQueryParamsSub?.unsubscribe();
     this.routeQueryParamsSub = this.route.queryParamMap.subscribe((queryParams) => {
       const chatFromUrl = queryParams.get('chat');
@@ -678,6 +725,26 @@ export class ChatShellComponent implements OnInit, OnDestroy {
         this.showContactsPane.set(false);
       }
     });
+  }
+
+  private async enforceMandatoryPushRegistrationOnEntry(): Promise<void> {
+    await this.store.ensureSessionReady();
+    if (!this.store.isAuthenticated()) {
+      return;
+    }
+    if (!this.store.networkOnline()) {
+      return;
+    }
+    try {
+      await this.store.ensurePushRegistrationReadyForCurrentUser({ promptIfNeeded: true });
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : 'נדרש רישום מחדש להתראות Push לפני המשך שימוש.';
+      this.snackBar.open(message, 'סגור', { duration: 5200 });
+      await this.store.logout();
+      await this.router.navigate(['/setup']);
+    }
   }
 
   ngOnDestroy(): void {
@@ -817,7 +884,13 @@ export class ChatShellComponent implements OnInit, OnDestroy {
         return;
       }
     }
+    const shouldShowOrderLoader = Boolean(
+      picker &&
+      picker.mode === 'select' &&
+      picker.key.startsWith('station-')
+    );
     this.isSubmittingShuttlePicker.set(true);
+    this.isSubmittingShuttleOrder.set(shouldShowOrderLoader);
     try {
       await this.store.submitShuttleQuickPickerSelection(normalized);
     } catch (error) {
@@ -825,6 +898,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       this.snackBar.open(message, this.shuttleCloseActionLabel(), { duration: 2800 });
     } finally {
       this.isSubmittingShuttlePicker.set(false);
+      this.isSubmittingShuttleOrder.set(false);
     }
   }
 
@@ -984,8 +1058,13 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   onMessagesPanelScroll(): void {
+    this.tryLoadOlderMessagesOnScroll();
     this.updateStickyMessageDateFromViewport();
     this.updateMessagesBottomState();
+  }
+
+  messageAbsoluteIndex(index: number): number {
+    return this.visibleMessageStartIndex() + Math.max(0, Math.trunc(index));
   }
 
   onConversationTouchStart(event: TouchEvent): void {
@@ -2073,6 +2152,40 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     return chat.lastTimestamp > 0 || chat.unread > 0;
   }
 
+  private tryLoadOlderMessagesOnScroll(): void {
+    const panel = this.messagesPanel?.nativeElement;
+    if (!panel) return;
+    if (this.isLoadingOlderMessages) return;
+    if (!this.hasOlderMessages()) return;
+    if (panel.scrollTop > this.loadOlderMessagesScrollThresholdPx) return;
+
+    this.loadOlderMessagesPage();
+  }
+
+  private loadOlderMessagesPage(): void {
+    const panel = this.messagesPanel?.nativeElement;
+    if (!panel) return;
+    if (this.isLoadingOlderMessages) return;
+    if (!this.hasOlderMessages()) return;
+
+    const previousScrollHeight = panel.scrollHeight;
+    const previousScrollTop = panel.scrollTop;
+    this.isLoadingOlderMessages = true;
+    this.visibleMessageCount.update((count) => count + MESSAGE_PAGE_SIZE);
+
+    window.requestAnimationFrame(() => {
+      const refreshedPanel = this.messagesPanel?.nativeElement;
+      if (refreshedPanel) {
+        const nextScrollHeight = refreshedPanel.scrollHeight;
+        const heightDelta = Math.max(0, nextScrollHeight - previousScrollHeight);
+        refreshedPanel.scrollTop = previousScrollTop + heightDelta;
+      }
+      this.isLoadingOlderMessages = false;
+      this.updateStickyMessageDateFromViewport();
+      this.updateMessagesBottomState();
+    });
+  }
+
   private scrollMessagesToBottom(behavior: ScrollBehavior = 'auto'): void {
     const panel = this.messagesPanel?.nativeElement;
     if (!panel) return;
@@ -2324,7 +2437,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       return [];
     }
 
-    const urlRegex = /(https?:\/\/[^\s<>"']+)/gi;
+    const urlRegex = /(https?:\/\/[^\s<>"']+|\/?notify\/uploads\/[^\s<>"']+|www\.[^\s<>"']+)/gi;
     const parts: MessageRenderPart[] = [];
     let lastIndex = 0;
     let match: RegExpExecArray | null;
@@ -2338,13 +2451,14 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       }
 
       const { cleanUrl, trailingText } = this.stripTrailingPunctuation(rawMatch);
+      const normalizedUrl = this.normalizeMessageUrl(cleanUrl);
 
-      if (this.isImageUrl(cleanUrl)) {
-        parts.push({ kind: 'image', url: cleanUrl });
-      } else if (this.isLocationUrl(cleanUrl)) {
-        parts.push({ kind: 'location', url: cleanUrl, label: 'המיקום שלי' });
+      if (this.isImageUrl(normalizedUrl)) {
+        parts.push({ kind: 'image', url: normalizedUrl });
+      } else if (this.isLocationUrl(normalizedUrl)) {
+        parts.push({ kind: 'location', url: normalizedUrl, label: 'המיקום שלי' });
       } else {
-        parts.push({ kind: 'link', url: cleanUrl, label: 'לחץ כאן למעבר לכתובת' });
+        parts.push({ kind: 'link', url: normalizedUrl, label: 'לחץ כאן לפתיחת קובץ/קישור' });
       }
 
       if (trailingText) {
@@ -2363,6 +2477,24 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     }
 
     return parts;
+  }
+
+  private normalizeMessageUrl(url: string): string {
+    const value = String(url || '').trim();
+    if (!value) return '';
+
+    let normalized = value;
+    if (/^www\./i.test(normalized)) {
+      normalized = `https://${normalized}`;
+    } else if (/^\/?notify\/uploads\//i.test(normalized)) {
+      normalized = normalized.startsWith('/') ? normalized : `/${normalized}`;
+    }
+
+    normalized = normalized.replace(
+      /(\.(?:pdf|doc|docx|xls|xlsx|ppt|pptx|txt|csv|zip|rar|7z|jpeg|jpg|png|gif|webp))\/(?=$|[?#])/i,
+      '$1'
+    );
+    return normalized;
   }
 
   private appendTextAndPhoneParts(parts: MessageRenderPart[], text: string): void {

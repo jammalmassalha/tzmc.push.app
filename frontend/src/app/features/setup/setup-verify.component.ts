@@ -48,6 +48,8 @@ export class SetupVerifyComponent implements OnInit, OnDestroy {
   readonly submitting = signal(false);
   readonly resending = signal(false);
   readonly resendCooldownSeconds = signal(0);
+  readonly verificationCompleted = signal(false);
+  readonly requiresInstallBeforeVerify = computed(() => this.store.requiresHomeScreenInstallForPush());
   readonly maskedPhone = computed(() => this.maskPhone(this.phone()));
   readonly canResendCode = computed(() => !this.resending() && this.resendCooldownSeconds() <= 0);
   readonly resendCodeButtonLabel = computed(() => {
@@ -86,9 +88,23 @@ export class SetupVerifyComponent implements OnInit, OnDestroy {
       return;
     }
 
+    if (!this.verificationCompleted() && this.requiresInstallBeforeVerify()) {
+      this.openInstallGuide();
+      this.snackBar.open(
+        'לפני האימות חובה להתקין את האפליקציה למסך הבית כדי לאפשר רישום Push תקין.',
+        'סגור',
+        { duration: 5200 }
+      );
+      return;
+    }
+
     this.submitting.set(true);
     try {
-      await this.store.verifyUserVerificationCode(phone, this.form.controls.code.value);
+      if (!this.verificationCompleted()) {
+        await this.store.verifyUserVerificationCode(phone, this.form.controls.code.value);
+        this.verificationCompleted.set(true);
+      }
+      await this.store.ensurePushRegistrationReadyForCurrentUser({ promptIfNeeded: true });
       await this.router.navigate(['/chats']);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'אימות הקוד נכשל';

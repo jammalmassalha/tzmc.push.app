@@ -1352,6 +1352,47 @@ mat-chip:not(.offline) {
   z-index: 11;
 }
 
+.shuttle-picker-processing-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 12;
+  display: grid;
+  place-items: center;
+  padding: 14px;
+  border-radius: inherit;
+  background: rgba(242, 246, 255, 0.86);
+  backdrop-filter: blur(2px);
+}
+
+.shuttle-picker-processing-card {
+  width: min(100%, 320px);
+  border-radius: 14px;
+  padding: 16px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(60, 87, 179, 0.24);
+  box-shadow: 0 8px 20px rgba(23, 44, 119, 0.14);
+  text-align: center;
+}
+
+.shuttle-picker-processing-card mat-spinner {
+  --mdc-circular-progress-active-indicator-color: #2f56b7;
+}
+
+.shuttle-picker-processing-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #22326c;
+}
+
+.shuttle-picker-processing-subtitle {
+  font-size: 12px;
+  color: #5a678b;
+}
+
 .shuttle-picker-breadcrumbs {
   display: flex;
   align-items: center;

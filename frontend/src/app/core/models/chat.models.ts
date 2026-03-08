@@ -110,6 +110,7 @@ export interface ReplyPayload {
   imageUrl: string | null;
   originalSender: string;
   messageId: string;
+  membersToNotify?: string[];
   groupId?: string;
   groupName?: string;
   groupMembers?: string[];

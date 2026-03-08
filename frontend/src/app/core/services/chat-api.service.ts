@@ -142,10 +142,22 @@ export interface ShuttleUserOrderPayload {
   isOngoing?: boolean;
 }
 
+export interface UserPushSubscriptionPayload {
+  endpoint?: string;
+  expirationTime?: number | null;
+  keys?: {
+    p256dh?: string;
+    auth?: string;
+  };
+  type?: string;
+  username?: string;
+  user?: string;
+}
+
 const SHUTTLE_SHEET_URL =
-  'https://script.google.com/macros/s/AKfycbwhLs1qeoTqJrN5t_FteAclD-mz7utpgvAfAYPbvv5jx-PFpFLCcsCmCz1Wj3GSZfUi/exec';
+  'https://script.google.com/macros/s/AKfycbwSzLMPPxelgWDFQAKcpw1vgMf3S8UoVgCTVZa4d4GqtKep8LuhNgrg_v5Az_4xFzW-/exec';
 const SHUTTLE_USER_ORDERS_URL =
-  'https://script.google.com/macros/s/AKfycbwhLs1qeoTqJrN5t_FteAclD-mz7utpgvAfAYPbvv5jx-PFpFLCcsCmCz1Wj3GSZfUi/exec';
+  'https://script.google.com/macros/s/AKfycbwSzLMPPxelgWDFQAKcpw1vgMf3S8UoVgCTVZa4d4GqtKep8LuhNgrg_v5Az_4xFzW-/exec';
 
 const SHUTTLE_ENTRY_EMPLOYEE = 'entry.1035269960';
 const SHUTTLE_ENTRY_DATE = 'entry.794242217';
@@ -878,13 +890,41 @@ export class ChatApiService {
 
     const url = `${SHUTTLE_USER_ORDERS_URL}?action=get_user_orders&user=${encodeURIComponent(normalizedUser)}`;
     // Apps Script often responds with an initial 302 redirect and can be slow on cold start.
-    // Use a longer timeout and avoid multi-retry bursts to prevent repeated duplicate requests.
-    const response = await this.fetchWithRetry(url, {}, { retries: 0, timeoutMs: 30000 });
+    // Keep retries disabled to avoid duplicate bursts, but allow more time before aborting.
+    const response = await this.fetchWithRetry(url, {}, { retries: 0, timeoutMs: 60000 });
     if (!response.ok) {
       throw new Error(`Shuttle user orders request failed with ${response.status}`);
     }
     const body = await response.text();
     return this.parseShuttleUserOrders(body);
+  }
+
+  async getUserPushSubscriptions(user: string): Promise<UserPushSubscriptionPayload[]> {
+    const normalizedUser = String(user || '').trim();
+    if (!normalizedUser) {
+      return [];
+    }
+
+    const url = `${this.config.subscriptionUrl}?action=get_subscriptions&username=${encodeURIComponent(normalizedUser)}`;
+    const response = await this.fetchWithRetry(url, {}, { retries: 1, timeoutMs: 12000 });
+    if (!response.ok) {
+      throw new Error(`User subscriptions request failed with ${response.status}`);
+    }
+
+    const body = await response.json() as {
+      result?: string;
+      subscriptions?: unknown;
+      message?: string;
+    };
+    const result = String(body?.result ?? '').trim().toLowerCase();
+    if (result && result !== 'success') {
+      throw new Error(String(body?.message ?? 'Failed to fetch user subscriptions'));
+    }
+
+    const rawSubscriptions = Array.isArray(body?.subscriptions) ? body.subscriptions : [];
+    return rawSubscriptions
+      .filter((item) => item && typeof item === 'object')
+      .map((item) => item as UserPushSubscriptionPayload);
   }
 
   private detectDeviceType(): 'Mobile' | 'PC' {

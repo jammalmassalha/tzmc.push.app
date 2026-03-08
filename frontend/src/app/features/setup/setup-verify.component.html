@@ -14,6 +14,12 @@
         שלחנו קוד אל {{ maskedPhone() }}.
       </p>
 
+      @if (requiresInstallBeforeVerify()) {
+        <div class="install-required-alert" role="alert">
+          יש להתקין את האפליקציה למסך הבית לפני אימות ההרשמה כדי לאפשר התראות Push.
+        </div>
+      }
+
       <form class="setup-form" [formGroup]="form" (ngSubmit)="submit()">
         <mat-form-field appearance="outline">
           <mat-label>קוד אימות</mat-label>

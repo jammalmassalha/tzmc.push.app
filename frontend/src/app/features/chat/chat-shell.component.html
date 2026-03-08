@@ -101,7 +101,7 @@
                     class="chat-avatar"
                     [src]="chatAvatarThumb(chat)"
                     [alt]="chat.title"
-                    loading="eager"
+                    loading="lazy"
                     decoding="async"
                     (load)="markAvatarLoaded(chatAvatarThumb(chat))"
                     (error)="markAvatarLoaded(chatAvatarThumb(chat))" />
@@ -200,7 +200,7 @@
                       [class.active]="isShuttleLanguage('he')"
                       [attr.aria-pressed]="isShuttleLanguage('he')"
                       (click)="setShuttleLanguage('he')">
-                      HE
+                      עב
                     </button>
                     <button
                       type="button"
@@ -322,8 +322,8 @@
             </section>
           }
 
-          @for (message of store.activeMessages(); track message.messageId; let index = $index) {
-            @if (shouldShowMessageDateBadge(index, message.timestamp)) {
+          @for (message of visibleMessages(); track message.messageId; let index = $index) {
+            @if (shouldShowMessageDateBadge(messageAbsoluteIndex(index), message.timestamp)) {
               <div class="message-date-badge">
                 <span>{{ formatMessageDateBadge(message.timestamp) }}</span>
               </div>
@@ -331,7 +331,7 @@
             <article
               class="message-row"
               [class.outgoing]="message.direction === 'outgoing'"
-              [attr.data-message-index]="index">
+              [attr.data-message-index]="messageAbsoluteIndex(index)">
               <div class="message-bubble" [class.deleted]="isMessageDeleted(message)">
                 @if (message.direction === 'incoming' && message.groupId) {
                   <div class="message-sender">{{ message.senderDisplayName || message.sender }}</div>
@@ -643,6 +643,16 @@
                     {{ shuttleText('confirmSelection') }}
                   </button>
                 }
+              </div>
+            }
+
+            @if (isSubmittingShuttleOrder()) {
+              <div class="shuttle-picker-processing-overlay" role="status" aria-live="polite" aria-busy="true">
+                <div class="shuttle-picker-processing-card">
+                  <mat-spinner diameter="38"></mat-spinner>
+                  <div class="shuttle-picker-processing-title">{{ shuttleText('processingOrderTitle') }}</div>
+                  <div class="shuttle-picker-processing-subtitle">{{ shuttleText('processingOrderSubtitle') }}</div>
+                </div>
               </div>
             }
 
