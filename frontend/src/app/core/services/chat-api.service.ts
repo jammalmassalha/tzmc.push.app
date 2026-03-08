@@ -899,6 +899,33 @@ export class ChatApiService {
     if (!response.ok) {
       throw new Error(`Shuttle submit failed with ${response.status}`);
     }
+
+    // Apps Script should return a small success payload/text.
+    // If we receive an HTML/login page with 200, treat it as failure
+    // so UI does not optimistically persist a non-written order.
+    const bodyText = String(await response.text()).trim();
+    const normalized = bodyText.toLowerCase();
+    if (!bodyText) {
+      throw new Error('Shuttle submit returned empty response');
+    }
+    if (normalized === 'success' || normalized === '"success"') {
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(bodyText) as { result?: string; status?: string; success?: boolean };
+      const result = String(parsed.result ?? parsed.status ?? '').trim().toLowerCase();
+      if (parsed.success === true || result === 'success' || result === 'ok') {
+        return;
+      }
+    } catch {
+      // Keep string validation below.
+    }
+
+    if (/<html[\s>]/i.test(bodyText) || /accounts\.google\.com/i.test(bodyText)) {
+      throw new Error('Shuttle submit was not authorized by Apps Script deployment');
+    }
+    throw new Error('Shuttle submit returned unexpected response');
   }
 
   async getShuttleUserOrders(user: string): Promise<ShuttleUserOrderPayload[]> {
