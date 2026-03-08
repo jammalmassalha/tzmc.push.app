@@ -225,7 +225,7 @@ export class ChatStoreService {
   readonly networkOnline = signal(typeof navigator !== 'undefined' ? navigator.onLine : true);
   readonly lastError = signal<string | null>(null);
   readonly incomingReactionNotice = signal<IncomingReactionNotice | null>(null);
-  readonly shuttleAccessAllowed = signal(false);
+  readonly shuttleAccessAllowed = signal(true);
 
   private readonly messagesByChat = signal<Record<string, ChatMessage[]>>({});
   private stream: EventSource | null = null;
@@ -553,7 +553,7 @@ export class ChatStoreService {
     this.groups.set([]);
     this.messagesByChat.set({});
     this.unreadByChat.set({});
-    this.shuttleAccessAllowed.set(false);
+    this.shuttleAccessAllowed.set(true);
     this.resetReadReceiptTrackingState();
     this.activeChatId.set(null);
     this.lastError.set(null);
@@ -594,7 +594,7 @@ export class ChatStoreService {
     this.groups.set([]);
     this.messagesByChat.set({});
     this.unreadByChat.set({});
-    this.shuttleAccessAllowed.set(false);
+    this.shuttleAccessAllowed.set(true);
     this.resetReadReceiptTrackingState();
     this.activeChatId.set(null);
     this.lastError.set(null);
@@ -2464,6 +2464,7 @@ export class ChatStoreService {
     options: { force?: boolean } = {}
   ): Promise<void> {
     const normalizedUser = this.normalizeUser(user);
+    const previousAccess = this.shuttleAccessAllowed();
     if (!normalizedUser) {
       this.shuttleAccessAllowed.set(false);
       return;
@@ -2482,12 +2483,18 @@ export class ChatStoreService {
         employees = await this.fetchShuttleEmployeesCached();
       }
 
+      if (!Array.isArray(employees) || employees.length === 0) {
+        // Do not hide shuttle room on transient list fetch failures.
+        this.shuttleAccessAllowed.set(previousAccess);
+        return;
+      }
+
       const allowed = this.isUserAllowedForShuttle(normalizedUser, employees);
       this.shuttleAccessAllowed.set(allowed);
       this.enforceShuttleAccessVisibility(normalizedUser, allowed);
     } catch {
-      this.shuttleAccessAllowed.set(false);
-      this.enforceShuttleAccessVisibility(normalizedUser, false);
+      // Keep previous visibility on network/script errors.
+      this.shuttleAccessAllowed.set(previousAccess);
     }
   }
 
