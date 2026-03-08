@@ -702,6 +702,13 @@ const fetchWithRetry = async (url, options = {}, retryOptions = {}) => {
 
 const normalizeUserKey = (value) => String(value || '').trim().toLowerCase();
 const normalizeGroupType = (value) => (value === 'community' ? 'community' : 'group');
+const DOVRUT_GROUP_ID = String(process.env.DOVRUT_GROUP_ID || 'דוברות').trim() || 'דוברות';
+const DOVRUT_ALLOWED_WRITERS = parseUsernamesInput(
+    process.env.DOVRUT_ALLOWED_WRITERS || '0506501040,0506267447,0543108095'
+);
+const dovrutWriterUserSet = new Set(
+    DOVRUT_ALLOWED_WRITERS.map((value) => normalizeUserKey(value)).filter(Boolean)
+);
 const SUBSCRIPTION_CACHE_TTL_MS = 2 * 60 * 1000;
 const subscriptionCache = new Map();
 const AUTH_REFRESH_PUSH_TYPE = 'subscription-auth-refresh';
@@ -1603,6 +1610,42 @@ function parseUsernamesInput(rawValue) {
     const normalized = new Set();
     collectUsernamesFromUnknown(normalized, rawValue);
     return Array.from(normalized);
+}
+
+function isDovrutGroupTarget(groupRecord, groupId, groupName) {
+    const dovrutKey = normalizeUserKey(DOVRUT_GROUP_ID);
+    if (!dovrutKey) return false;
+
+    const candidates = [
+        groupRecord && groupRecord.id,
+        groupRecord && groupRecord.name,
+        groupId,
+        groupName
+    ];
+    return candidates.some((value) => normalizeUserKey(value) === dovrutKey);
+}
+
+function canSendToCommunityGroup(sender, groupRecord, groupId, groupName) {
+    if (!groupRecord || groupRecord.type !== 'community') {
+        return true;
+    }
+
+    const senderKey = normalizeUserKey(sender);
+    if (!senderKey) {
+        return false;
+    }
+
+    const creatorKey = normalizeUserKey(groupRecord.createdBy);
+    if (creatorKey && senderKey === creatorKey) {
+        return true;
+    }
+
+    if (isDovrutGroupTarget(groupRecord, groupId, groupName)) {
+        return dovrutWriterUserSet.has(senderKey);
+    }
+
+    // Legacy behavior: community groups without creator remain sendable.
+    return !creatorKey;
 }
 
 function getClientIpAddress(req) {
@@ -5186,7 +5229,7 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
                 groupUpdatedAt,
                 groupType: req.body.groupType
             });
-            if (groupRecord && groupRecord.type === 'community' && groupRecord.createdBy && normalizeUserKey(user) !== normalizeUserKey(groupRecord.createdBy)) {
+            if (!canSendToCommunityGroup(user, groupRecord, groupId, groupName)) {
                 return res.status(403).json({ error: 'Only admins can send to this group' });
             }
         }
