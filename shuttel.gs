@@ -446,6 +446,60 @@ function isCellEmptyOrValueEmpty(cell) {
   return value === '' || value === null;
 }
 
+function backfillShuttleDisplayFlags() {
+  if (!wsShuttleLog) {
+    return {
+      result: 'error',
+      message: 'Sheet לוג נסיעות not found',
+      updatedRows: 0
+    };
+  }
+
+  var lastRow = wsShuttleLog.getLastRow();
+  if (lastRow < 2) {
+    return {
+      result: 'success',
+      message: 'No historical rows to process',
+      updatedRows: 0
+    };
+  }
+
+  var rowCount = lastRow - 1;
+  var rows = wsShuttleLog.getRange(2, 1, rowCount, 7).getValues(); // A..G
+  var nextDisplayValues = [];
+  var updatedRows = 0;
+
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var normalizedDisplay = normalizeShuttleDisplayFlag(row[6]); // G
+    var hasHistoricalOrderData = String(row[0] || '').trim() !== '' || // A
+      String(row[1] || '').trim() !== '' || // B
+      String(row[2] || '').trim() !== '' || // C
+      String(row[3] || '').trim() !== '' || // D
+      String(row[4] || '').trim() !== '' || // E
+      String(row[5] || '').trim() !== '';   // F
+
+    if (!normalizedDisplay && hasHistoricalOrderData) {
+      nextDisplayValues.push(['1']);
+      updatedRows += 1;
+      continue;
+    }
+
+    nextDisplayValues.push([normalizedDisplay || '']);
+  }
+
+  if (updatedRows > 0) {
+    wsShuttleLog.getRange(2, 7, rowCount, 1).setValues(nextDisplayValues);
+  }
+
+  return {
+    result: 'success',
+    message: 'Backfill completed',
+    updatedRows: updatedRows,
+    scannedRows: rowCount
+  };
+}
+
 function getCurrentUserOrders(userValue, options) {
   var startedAt = Date.now();
   var includeBuckets = Boolean(
