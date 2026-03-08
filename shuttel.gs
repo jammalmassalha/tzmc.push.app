@@ -52,7 +52,8 @@ function doGet(e) {
       incomingOrder.date,
       time,
       incomingOrder.station,
-      incomingOrder.status
+      incomingOrder.status,
+      '1'
     ];
     if (conflictResult.action === 'insert') {
       sheet.appendRow(entries);
@@ -103,7 +104,7 @@ function checkAndResolveShuttleOrderConflict(sheet, incomingOrder) {
     return { action: 'insert', matchedRows: [] };
   }
 
-  var values = sheet.getRange(2, 2, lastRow - 1, 5).getValues(); // B..F
+  var values = sheet.getRange(2, 2, lastRow - 1, 6).getValues(); // B..G
   var matchedRows = [];
   for (var i = 0; i < values.length; i++) {
     var row = values[i];
@@ -112,8 +113,12 @@ function checkAndResolveShuttleOrderConflict(sheet, incomingOrder) {
       date: row[1],     // C
       time: row[2],     // D
       station: row[3],  // E
-      status: row[4]    // F
+      status: row[4],   // F
+      display: row[5]   // G
     });
+    if (!isShuttleDisplayVisible(existingOrder.display)) {
+      continue;
+    }
 
     if (
       existingOrder.employee === normalizedIncoming.employee &&
@@ -149,13 +154,15 @@ function normalizeShuttleOrderLookupPayload(order) {
   var timeLabel = formatShuttleShift(order && order.time);
   var station = normalizeShuttleOrderLookupText(order && order.station);
   var status = normalizeShuttleOrderLookupText(order && order.status);
+  var display = normalizeShuttleDisplayFlag(order && order.display);
 
   return {
     employee: employee,
     date: dateIso,
     time: timeLabel,
     station: station,
-    status: status
+    status: status,
+    display: display
   };
 }
 
@@ -165,6 +172,22 @@ function normalizeShuttleOrderLookupText(value) {
     text = text.substring(1);
   }
   return text.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function normalizeShuttleDisplayFlag(value) {
+  var text = String(value || '').trim().toLowerCase();
+  if (!text) return '';
+  if (text === '1' || text === 'true' || text === 'yes' || text === 'on') return '1';
+  if (text === '0' || text === 'false' || text === 'no' || text === 'off') return '0';
+  var numeric = Number(text);
+  if (!isNaN(numeric)) {
+    return numeric === 0 ? '0' : '1';
+  }
+  return '';
+}
+
+function isShuttleDisplayVisible(value) {
+  return normalizeShuttleDisplayFlag(value) !== '0';
 }
 
 function deleteRowsByDescendingIndex(sheet, rows) {
@@ -180,7 +203,8 @@ function deleteRowsByDescendingIndex(sheet, rows) {
     .map(function(value) { return Number(value); })
     .sort(function(a, b) { return b - a; });
   sortedRows.forEach(function(rowIndex) {
-    sheet.deleteRow(rowIndex);
+    // Soft delete: keep history row and hide it from queries/UI.
+    sheet.getRange(rowIndex, 7).setValue('0');
   });
 }
 
@@ -619,6 +643,9 @@ function collectCurrentUserRawOrders(normalizedUser, debugInfo) {
     if (!employeePhone || employeePhone !== normalizedUser) {
       continue;
     }
+    if (!isShuttleDisplayVisible(order.display)) {
+      continue;
+    }
     orders.push(order);
   }
   var filterRowsMs = Date.now() - filterStartedAt;
@@ -762,6 +789,9 @@ function collectCurrentUserRawOrdersByFullScan(normalizedUser, lastRow, debugInf
     if (!order) continue;
     var employeePhone = String(order.employeePhone || '').trim();
     if (!employeePhone || employeePhone !== normalizedUser) {
+      continue;
+    }
+    if (!isShuttleDisplayVisible(order.display)) {
       continue;
     }
     orders.push(order);
@@ -1054,6 +1084,8 @@ function mapShuttleOrderRow(row, sheetRow) {
   });
   var isOngoing = !isCancelled && isIsoDateTodayOrFuture(dateIso);
 
+  var normalizedDisplay = normalizeShuttleDisplayFlag(display);
+
   return {
     id: 'sheet-' + sheetRow,
     sheetRow: sheetRow,
@@ -1067,7 +1099,7 @@ function mapShuttleOrderRow(row, sheetRow) {
     station: station,
     status: statusText,
     statusValue: statusText,
-    display: display,
+    display: normalizedDisplay || '1',
     submittedAt: submittedAt,
     isCancelled: isCancelled,
     isOngoing: isOngoing
