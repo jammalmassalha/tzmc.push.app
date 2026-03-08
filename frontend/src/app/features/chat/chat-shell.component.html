@@ -684,10 +684,12 @@
 
           <div class="composer-input-shell">
             <textarea
+              #composerTextarea
               class="composer-textarea"
               rows="1"
               [formControl]="messageControl"
               [disabled]="!!shuttleQuickPicker()"
+              (input)="onComposerInput()"
               (focus)="handleTextInputFocus()"
               [placeholder]="composerPlaceholder()"></textarea>
             <button

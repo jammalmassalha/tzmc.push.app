@@ -1,6 +1,7 @@
 import { CdkVirtualScrollViewport, ScrollingModule } from '@angular/cdk/scrolling';
 import { CommonModule } from '@angular/common';
 import {
+  AfterViewInit,
   Component,
   ElementRef,
   OnDestroy,
@@ -265,14 +266,17 @@ const SHUTTLE_UI_TEXT: Record<ShuttleLanguage, Record<ShuttleUiTextKey, string>>
   templateUrl: './chat-shell.component.html',
   styleUrl: './chat-shell.component.scss'
 })
-export class ChatShellComponent implements OnInit, OnDestroy {
+export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   @ViewChild(CdkVirtualScrollViewport) contactsViewport?: CdkVirtualScrollViewport;
   @ViewChild('messagesPanel') messagesPanel?: ElementRef<HTMLDivElement>;
   @ViewChild('fileInput') fileInputRef?: ElementRef<HTMLInputElement>;
+  @ViewChild('composerTextarea') composerTextareaRef?: ElementRef<HTMLTextAreaElement>;
   private readonly avatarThumbCache = new Map<string, string>();
   private readonly avatarLqipCache = new Map<string, string>();
   readonly loadedAvatarUrls = signal<Set<string>>(new Set<string>());
   readonly previewAvatarLoaded = signal(false);
+  private readonly composerTextareaMinHeightPx = 22;
+  private readonly composerTextareaMaxHeightPx = 132;
 
   private readonly mobileQuery = window.matchMedia('(max-width: 960px)');
   private readonly onMediaChange = (event: MediaQueryListEvent): void => {
@@ -609,6 +613,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       document.documentElement.classList.toggle('chat-room-active', shouldLockBodyScroll);
     }
   });
+  private readonly composerTextareaResizeEffect = effect(() => {
+    this.messageValue();
+    queueMicrotask(() => this.syncComposerTextareaHeight());
+  });
 
   private readonly reactionToastEffect = effect(() => {
     const notice = this.store.incomingReactionNotice();
@@ -725,6 +733,10 @@ export class ChatShellComponent implements OnInit, OnDestroy {
         this.showContactsPane.set(false);
       }
     });
+  }
+
+  ngAfterViewInit(): void {
+    queueMicrotask(() => this.syncComposerTextareaHeight());
   }
 
   private async enforceMandatoryPushRegistrationOnEntry(): Promise<void> {
@@ -1158,10 +1170,15 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   handleTextInputFocus(): void {
+    this.syncComposerTextareaHeight();
     if (!this.shouldApplyIosKeyboardWorkaround()) return;
     this.resetIosViewportPosition();
     window.setTimeout(() => this.resetIosViewportPosition(), 90);
     window.setTimeout(() => this.resetIosViewportPosition(), 220);
+  }
+
+  onComposerInput(): void {
+    this.syncComposerTextareaHeight();
   }
 
   scrollToBottomFromButton(): void {
@@ -2336,6 +2353,20 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     document.documentElement.scrollTop = 0;
     document.body.scrollTop = 0;
     this.updateViewportHeight();
+  }
+
+  private syncComposerTextareaHeight(): void {
+    const textarea = this.composerTextareaRef?.nativeElement;
+    if (!textarea) return;
+
+    textarea.style.height = 'auto';
+    const nextHeight = Math.max(
+      this.composerTextareaMinHeightPx,
+      Math.min(textarea.scrollHeight, this.composerTextareaMaxHeightPx)
+    );
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > this.composerTextareaMaxHeightPx ? 'auto' : 'hidden';
+    textarea.scrollTop = textarea.scrollHeight;
   }
 
   private isSameCalendarDay(a: Date, b: Date): boolean {
