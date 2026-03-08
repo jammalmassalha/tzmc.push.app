@@ -60,6 +60,14 @@ function doGet(e) {
       station: e.parameter["entry.1096369604"],
       status: incomingStatus
     };
+    if (!isShuttleEmployeeAllowedToOrder(incomingOrder.employee)) {
+      return ContentService
+        .createTextOutput(JSON.stringify({
+          result: 'error',
+          message: 'המשתמש לא מורשה להזמין הסעה'
+        }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
     var conflictResult = checkAndResolveShuttleOrderConflict(sheet, incomingOrder);
     var displayFlag = resolveShuttleDisplayFlagByStatus(incomingStatus);
     
@@ -319,6 +327,35 @@ function getParks() {
 
   })
   return options;
+}
+
+function isShuttleEmployeeAllowedToOrder(employeeValue) {
+  var normalizedEmployeeText = normalizeShuttleOrderLookupText(employeeValue);
+  var normalizedEmployeePhone = normalizeShuttlePhone(employeeValue);
+  if (!normalizedEmployeeText && !normalizedEmployeePhone) {
+    return false;
+  }
+
+  var workers = getWorker();
+  if (!Array.isArray(workers) || !workers.length) {
+    return false;
+  }
+
+  for (var i = 0; i < workers.length; i++) {
+    var workerRaw = String(workers[i] || '').trim();
+    if (!workerRaw) continue;
+
+    var workerText = normalizeShuttleOrderLookupText(workerRaw);
+    var workerPhone = normalizeShuttlePhone(workerRaw);
+
+    if (normalizedEmployeePhone && workerPhone && normalizedEmployeePhone === workerPhone) {
+      return true;
+    }
+    if (normalizedEmployeeText && workerText && normalizedEmployeeText === workerText) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function updateDropDown(id, values) {
