@@ -148,9 +148,6 @@ function checkAndResolveShuttleOrderConflict(sheet, incomingOrder) {
       status: row[4],   // F
       display: row[5]   // G
     });
-    if (!isShuttleDisplayVisible(existingOrder.display)) {
-      continue;
-    }
 
     if (
       existingOrder.employee === normalizedIncoming.employee &&
