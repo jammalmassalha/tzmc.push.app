@@ -709,6 +709,10 @@ const DOVRUT_ALLOWED_WRITERS = parseUsernamesInput(
 const dovrutWriterUserSet = new Set(
     DOVRUT_ALLOWED_WRITERS.map((value) => normalizeUserKey(value)).filter(Boolean)
 );
+const SUBSCRIPTION_LOOKUP_BATCH_SIZE = Math.max(
+    10,
+    Number(process.env.SUBSCRIPTION_LOOKUP_BATCH_SIZE || 40) || 40
+);
 const SUBSCRIPTION_CACHE_TTL_MS = 2 * 60 * 1000;
 const subscriptionCache = new Map();
 const AUTH_REFRESH_PUSH_TYPE = 'subscription-auth-refresh';
@@ -3868,9 +3872,13 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
         return cached.subscriptions;
     }
 
-    const requestedUsersSet = new Set(
-        parseUsernamesInput(requestUserList).map(normalizeUserKey).filter(Boolean)
+    const requestedUsers = Array.from(
+        new Set(parseUsernamesInput(requestUserList).map(normalizeUserKey).filter(Boolean))
     );
+    const requestedUsersSet = new Set(requestedUsers);
+    if (!requestedUsers.length) {
+        return cached ? cached.subscriptions : [];
+    }
     const normalizeLookupSubscriptions = (payload) => {
         const extracted = extractSubscriptionsFromSheetResponse(payload);
         if (!extracted.length) return [];
@@ -3885,13 +3893,30 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
     };
 
     try {
-        const response = await fetchWithRetry(
-            buildGoogleSheetGetUrl({ usernames: requestUserList }),
-            {},
-            { timeoutMs: 12000, retries: 2, backoffMs: 500 }
-        );
-        const result = await response.json();
-        const subscriptions = normalizeLookupSubscriptions(result);
+        let subscriptions = [];
+        if (requestedUsers.length <= SUBSCRIPTION_LOOKUP_BATCH_SIZE) {
+            const response = await fetchWithRetry(
+                buildGoogleSheetGetUrl({ usernames: requestUserList }),
+                {},
+                { timeoutMs: 12000, retries: 2, backoffMs: 500 }
+            );
+            const result = await response.json();
+            subscriptions = normalizeLookupSubscriptions(result);
+        } else {
+            const collected = [];
+            for (let i = 0; i < requestedUsers.length; i += SUBSCRIPTION_LOOKUP_BATCH_SIZE) {
+                const batch = requestedUsers.slice(i, i + SUBSCRIPTION_LOOKUP_BATCH_SIZE);
+                if (!batch.length) continue;
+                const response = await fetchWithRetry(
+                    buildGoogleSheetGetUrl({ usernames: batch.join(',') }),
+                    {},
+                    { timeoutMs: 12000, retries: 2, backoffMs: 500 }
+                );
+                const result = await response.json();
+                collected.push(...normalizeLookupSubscriptions(result));
+            }
+            subscriptions = dedupeSubscriptionsByEndpoint(collected);
+        }
         if (subscriptions.length) {
             subscriptionCache.set(cacheKey, { at: now, subscriptions });
             return subscriptions;
