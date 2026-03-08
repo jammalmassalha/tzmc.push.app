@@ -28,6 +28,21 @@ function doGet(e) {
       .setMimeType(ContentService.MimeType.JSON);
   }
 
+  if (action === 'normalize_duplicate_display_flags' || action === 'admin_normalize_duplicate_display_flags') {
+    if (!isShuttleAdminActionAuthorized(e)) {
+      return ContentService
+        .createTextOutput(JSON.stringify({
+          result: 'error',
+          message: 'Unauthorized admin action'
+        }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+    data = normalizeHistoricalDuplicateStatusToDisplayFlags();
+    return ContentService
+      .createTextOutput(JSON.stringify(data))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
   if (e.parameters.emp != null && e.parameters.emp != '') {
     data = getWorker();
     return ContentService.createTextOutput(JSON.stringify(data));
@@ -82,6 +97,21 @@ function resolveShuttleIncludeBucketsFlag(value) {
     normalized === 'yes' ||
     normalized === 'on' ||
     normalized === 'buckets';
+}
+
+function getShuttleAdminToken() {
+  return String(
+    (PropertiesService.getScriptProperties().getProperty('SHUTTLE_ADMIN_TOKEN') || '')
+  ).trim();
+}
+
+function isShuttleAdminActionAuthorized(e) {
+  var expectedToken = getShuttleAdminToken();
+  if (!expectedToken) return false;
+  var providedToken = String(
+    (e && e.parameter && (e.parameter.token || e.parameter.adminToken)) || ''
+  ).trim();
+  return Boolean(providedToken && providedToken === expectedToken);
 }
 
 function invalidateCurrentUserOrdersCache(userValue) {
@@ -546,6 +576,93 @@ function backfillShuttleDisplayFlags() {
     message: 'Backfill completed',
     updatedRows: updatedRows,
     scannedRows: rowCount
+  };
+}
+
+function normalizeHistoricalDuplicateStatusToDisplayFlags() {
+  if (!wsShuttleLog) {
+    return {
+      result: 'error',
+      message: 'Sheet לוג נסיעות not found',
+      updatedRows: 0,
+      duplicateGroups: 0
+    };
+  }
+
+  var lastRow = wsShuttleLog.getLastRow();
+  if (lastRow < 2) {
+    return {
+      result: 'success',
+      message: 'No historical rows to process',
+      updatedRows: 0,
+      duplicateGroups: 0,
+      scannedRows: 0
+    };
+  }
+
+  var rows = wsShuttleLog.getRange(2, 2, lastRow - 1, 6).getValues(); // B..G
+  var groupsByKey = {};
+  var scannedRows = 0;
+
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var normalized = normalizeShuttleOrderLookupPayload({
+      employee: row[0], // B
+      date: row[1],     // C
+      time: row[2],     // D
+      station: row[3],  // E
+      status: row[4],   // F
+      display: row[5]   // G
+    });
+
+    if (!normalized.employee || !normalized.date || !normalized.time || !normalized.station) {
+      continue;
+    }
+
+    scannedRows += 1;
+    var key = [
+      normalized.employee,
+      normalized.date,
+      normalized.time,
+      normalized.station
+    ].join('|');
+    if (!groupsByKey[key]) {
+      groupsByKey[key] = [];
+    }
+    groupsByKey[key].push({
+      rowIndex: i + 2,
+      statusValue: String(row[4] || '').trim(),
+      currentDisplay: normalizeShuttleDisplayFlag(row[5])
+    });
+  }
+
+  var duplicateGroups = 0;
+  var updates = [];
+  Object.keys(groupsByKey).forEach(function(key) {
+    var groupRows = groupsByKey[key];
+    if (!groupRows || groupRows.length < 2) return;
+    duplicateGroups += 1;
+    groupRows.forEach(function(groupRow) {
+      var expectedDisplay = resolveShuttleDisplayFlagByStatus(groupRow.statusValue);
+      if (groupRow.currentDisplay !== expectedDisplay) {
+        updates.push({
+          rowIndex: groupRow.rowIndex,
+          displayValue: expectedDisplay
+        });
+      }
+    });
+  });
+
+  for (var u = 0; u < updates.length; u++) {
+    wsShuttleLog.getRange(updates[u].rowIndex, 7).setValue(updates[u].displayValue);
+  }
+
+  return {
+    result: 'success',
+    message: 'Duplicate-group display normalization completed',
+    scannedRows: scannedRows,
+    duplicateGroups: duplicateGroups,
+    updatedRows: updates.length
   };
 }
 
