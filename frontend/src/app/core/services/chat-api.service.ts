@@ -1,4 +1,4 @@
-import { Injectable } from '@angular/core';
+import { Injectable, Signal, resource, ResourceRef } from '@angular/core';
 import { getNotifyBaseUrl, runtimeConfig } from '../config/runtime-config';
 import {
   ChatGroup,
@@ -153,11 +153,6 @@ export interface UserPushSubscriptionPayload {
   username?: string;
   user?: string;
 }
-
-const SHUTTLE_SHEET_URL =
-  'https://script.google.com/macros/s/AKfycbwSzLMPPxelgWDFQAKcpw1vgMf3S8UoVgCTVZa4d4GqtKep8LuhNgrg_v5Az_4xFzW-/exec';
-const SHUTTLE_USER_ORDERS_URL =
-  'https://script.google.com/macros/s/AKfycbwSzLMPPxelgWDFQAKcpw1vgMf3S8UoVgCTVZa4d4GqtKep8LuhNgrg_v5Az_4xFzW-/exec';
 
 const SHUTTLE_ENTRY_EMPLOYEE = 'entry.1035269960';
 const SHUTTLE_ENTRY_DATE = 'entry.794242217';
@@ -464,6 +459,14 @@ export class ChatApiService {
       });
   }
 
+  createContactsResource(user: Signal<string | null | undefined>): ResourceRef<Contact[]> {
+    return resource({
+      params: () => String(user() || '').trim().toLowerCase(),
+      loader: async ({ params }) => this.getContacts(params || undefined),
+      defaultValue: []
+    });
+  }
+
   private parseNameAndInfo(value: string): { name: string; info?: string } {
     const source = String(value || '').trim();
     if (!source) {
@@ -544,6 +547,14 @@ export class ChatApiService {
       .filter((group) => Boolean(group.id && group.name));
   }
 
+  createGroupsResource(user: Signal<string | null | undefined>): ResourceRef<ChatGroup[]> {
+    return resource({
+      params: () => String(user() || '').trim().toLowerCase(),
+      loader: async ({ params }) => this.getGroups(params || undefined),
+      defaultValue: []
+    });
+  }
+
   async pollMessages(user?: string): Promise<IncomingServerMessage[]> {
     const normalizedUser = String(user || '').trim().toLowerCase();
     const candidateUrls = normalizedUser
@@ -566,6 +577,14 @@ export class ChatApiService {
 
     const body = (await response.json()) as PollResponse;
     return Array.isArray(body.messages) ? body.messages : [];
+  }
+
+  createMessagesResource(user: Signal<string | null | undefined>): ResourceRef<IncomingServerMessage[]> {
+    return resource({
+      params: () => String(user() || '').trim().toLowerCase(),
+      loader: async ({ params }) => this.pollMessages(params || undefined),
+      defaultValue: []
+    });
   }
 
   createMessageStream(user?: string): EventSource {
@@ -828,7 +847,7 @@ export class ChatApiService {
 
   async getShuttleEmployees(): Promise<string[]> {
     const response = await this.fetchWithRetry(
-      `${SHUTTLE_SHEET_URL}?emp=test`,
+      `${this.config.shuttleSheetUrl}?emp=test`,
       {},
       { retries: 2, timeoutMs: 12000 }
     );
@@ -841,7 +860,7 @@ export class ChatApiService {
 
   async getShuttleStations(): Promise<string[]> {
     const response = await this.fetchWithRetry(
-      `${SHUTTLE_SHEET_URL}?park=test`,
+      `${this.config.shuttleSheetUrl}?park=test`,
       {},
       { retries: 2, timeoutMs: 12000 }
     );
@@ -873,7 +892,7 @@ export class ChatApiService {
     params.set(SHUTTLE_ENTRY_STATUS, status);
 
     const response = await this.fetchWithRetry(
-      `${SHUTTLE_SHEET_URL}?${params.toString()}`,
+      `${this.config.shuttleSheetUrl}?${params.toString()}`,
       {},
       { retries: 2, timeoutMs: 12000 }
     );
@@ -888,7 +907,7 @@ export class ChatApiService {
       return [];
     }
 
-    const url = `${SHUTTLE_USER_ORDERS_URL}?action=get_user_orders&user=${encodeURIComponent(normalizedUser)}`;
+    const url = `${this.config.shuttleUserOrdersUrl}?action=get_user_orders&user=${encodeURIComponent(normalizedUser)}`;
     // Apps Script often responds with an initial 302 redirect and can be slow on cold start.
     // Keep retries disabled to avoid duplicate bursts, but allow more time before aborting.
     const response = await this.fetchWithRetry(url, {}, { retries: 0, timeoutMs: 60000 });

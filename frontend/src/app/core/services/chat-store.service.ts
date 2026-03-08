@@ -170,7 +170,8 @@ type BadgeCapableNavigator = Navigator & {
 type BadgeMessage =
   | { action: 'set-app-badge-count'; count: number }
   | { action: 'clear-app-badge' }
-  | { action: 'clear-device-attention' };
+  | { action: 'clear-device-attention' }
+  | { action: 'flush-offline-replies' };
 
 export interface IncomingReactionNotice {
   id: string;
@@ -5335,6 +5336,7 @@ export class ChatStoreService {
     this.networkOnline.set(true);
     const user = this.currentUser();
     if (!user) return;
+    this.postBadgeMessageToServiceWorker({ action: 'flush-offline-replies' });
     this.clearDeviceAttention({ resetServerBadge: true });
     void this.tryRegisterPush(user, {
       force: true,
