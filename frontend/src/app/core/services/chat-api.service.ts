@@ -908,13 +908,20 @@ export class ChatApiService {
     if (!bodyText) {
       throw new Error('Shuttle submit returned empty response');
     }
-    if (normalized === 'success' || normalized === '"success"') {
+    if (
+      normalized === 'success' ||
+      normalized === '"success"' ||
+      normalized === 'ok' ||
+      normalized === '"ok"' ||
+      normalized.startsWith('updated-existing-')
+    ) {
       return;
     }
 
     let parsed: {
       result?: string;
       status?: string;
+      action?: string;
       success?: boolean;
       message?: string;
       error?: string;
@@ -923,6 +930,7 @@ export class ChatApiService {
       parsed = JSON.parse(bodyText) as {
         result?: string;
         status?: string;
+        action?: string;
         success?: boolean;
         message?: string;
         error?: string;
@@ -931,8 +939,16 @@ export class ChatApiService {
       parsed = null;
     }
     if (parsed) {
-      const result = String(parsed.result ?? parsed.status ?? '').trim().toLowerCase();
-      if (parsed.success === true || result === 'success' || result === 'ok') {
+      const result = String(parsed.result ?? parsed.status ?? parsed.action ?? '').trim().toLowerCase();
+      if (
+        parsed.success === true ||
+        result === 'success' ||
+        result === 'ok' ||
+        result === 'insert' ||
+        result === 'inserted' ||
+        result === 'updated' ||
+        result.startsWith('updated-existing-')
+      ) {
         return;
       }
       const backendMessage = String(parsed.message ?? parsed.error ?? '').trim();
