@@ -1494,29 +1494,60 @@ function normalizeUserCandidate(rawValue) {
 
 function addUserToSet(targetSet, rawValue) {
     if (!targetSet) return;
-    const normalized = normalizeUserCandidate(rawValue);
+    if (rawValue === null || rawValue === undefined) return;
+    if (
+        typeof rawValue !== 'string' &&
+        typeof rawValue !== 'number' &&
+        typeof rawValue !== 'bigint'
+    ) {
+        return;
+    }
+    const normalized = normalizeUserCandidate(String(rawValue));
     if (normalized) {
         targetSet.add(normalized);
     }
 }
 
-function parseUsernamesInput(rawValue) {
-    const values = [];
-    if (Array.isArray(rawValue)) {
-        values.push(...rawValue);
-    } else if (typeof rawValue === 'string') {
-        values.push(...rawValue.split(','));
-    } else if (rawValue && typeof rawValue === 'object') {
-        if (Array.isArray(rawValue.users)) {
-            values.push(...rawValue.users);
-        }
-        if (Array.isArray(rawValue.usernames)) {
-            values.push(...rawValue.usernames);
-        }
+function collectUsernamesFromUnknown(targetSet, rawValue, depth = 0) {
+    if (!targetSet || rawValue === null || rawValue === undefined || depth > 4) {
+        return;
     }
 
+    if (
+        typeof rawValue === 'string' ||
+        typeof rawValue === 'number' ||
+        typeof rawValue === 'bigint'
+    ) {
+        const source = String(rawValue);
+        source.split(',').forEach((token) => addUserToSet(targetSet, token));
+        return;
+    }
+
+    if (Array.isArray(rawValue)) {
+        rawValue.forEach((entry) => collectUsernamesFromUnknown(targetSet, entry, depth + 1));
+        return;
+    }
+
+    if (typeof rawValue !== 'object') {
+        return;
+    }
+
+    const value = rawValue;
+    ['username', 'user', 'phone', 'id', 'value'].forEach((field) => {
+        if (Object.prototype.hasOwnProperty.call(value, field)) {
+            collectUsernamesFromUnknown(targetSet, value[field], depth + 1);
+        }
+    });
+    ['users', 'usernames', 'members', 'groupMembers', 'recipients', 'targets'].forEach((field) => {
+        if (Object.prototype.hasOwnProperty.call(value, field)) {
+            collectUsernamesFromUnknown(targetSet, value[field], depth + 1);
+        }
+    });
+}
+
+function parseUsernamesInput(rawValue) {
     const normalized = new Set();
-    values.forEach((value) => addUserToSet(normalized, value));
+    collectUsernamesFromUnknown(normalized, rawValue);
     return Array.from(normalized);
 }
 
@@ -5009,31 +5040,29 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
             }
         }
 
+        const senderUserKey = normalizeUserKey(user);
         let targetToNotify = [];
-        if (Array.isArray(membersToNotify) && membersToNotify.length) {
-            targetToNotify = membersToNotify;
+        const requestedMembersToNotify = parseUsernamesInput(membersToNotify);
+        if (requestedMembersToNotify.length) {
+            targetToNotify = requestedMembersToNotify;
         } else if (groupId) {
             const groupList = groupRecord && Array.isArray(groupRecord.members) ? groupRecord.members : groupMembers;
-            targetToNotify = Array.isArray(groupList) ? groupList : [];
+            targetToNotify = parseUsernamesInput(groupList);
         } else if (originalSender && originalSender !== 'System') {
-            targetToNotify = [originalSender];
+            targetToNotify = parseUsernamesInput([originalSender]);
         } else {
-            targetToNotify = ['Jmassalha'];
+            targetToNotify = ['jmassalha'];
         }
-        targetToNotify = Array.isArray(targetToNotify)
-            ? targetToNotify.filter(member => normalizeUserKey(member) !== normalizeUserKey(user))
-            : targetToNotify;
-        if (Array.isArray(targetToNotify)) {
-            const dedupedTargetsByUser = new Map();
-            targetToNotify.forEach((member) => {
-                const rawMember = String(member || '').trim();
-                const memberKey = normalizeUserKey(rawMember);
-                if (!memberKey || memberKey === normalizeUserKey(user)) return;
-                if (!dedupedTargetsByUser.has(memberKey)) {
-                    dedupedTargetsByUser.set(memberKey, rawMember);
-                }
-            });
-            targetToNotify = Array.from(dedupedTargetsByUser.values());
+
+        targetToNotify = parseUsernamesInput(targetToNotify)
+            .filter((memberKey) => memberKey && memberKey !== senderUserKey);
+        if (!targetToNotify.length && groupId) {
+            // Safety fallback: if malformed membersToNotify arrived, rebuild from known group members.
+            const fallbackGroupMembers = groupRecord && Array.isArray(groupRecord.members)
+                ? groupRecord.members
+                : groupMembers;
+            targetToNotify = parseUsernamesInput(fallbackGroupMembers)
+                .filter((memberKey) => memberKey && memberKey !== senderUserKey);
         }
         if (Array.isArray(targetToNotify) && targetToNotify.length === 0) {
             return res.json({ status: 'success', details: { success: 0, failed: 0 } });

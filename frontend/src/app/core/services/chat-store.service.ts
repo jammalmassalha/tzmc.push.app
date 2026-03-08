@@ -3360,9 +3360,10 @@ export class ChatStoreService {
       forwardedFromName: metadata.forwardedFromName || undefined
     };
 
+    const normalizedUser = this.normalizeUser(user);
     const recipients = Array.from(
       new Set(group.members.map((member) => this.normalizeUser(member)).filter(Boolean))
-    ).filter((member) => member !== user);
+    ).filter((member) => member !== normalizedUser);
     if (!recipients.length) {
       this.setMessageStatus(messageId, 'sent');
       return;
