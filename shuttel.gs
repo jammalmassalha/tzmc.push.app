@@ -360,8 +360,8 @@ function buildShuttleWorkerEntryFromRow(row) {
   if (!cells.length) return '';
 
   var phone = '';
-  var name = '';
   var combinedCell = '';
+  var nonPhoneCells = [];
 
   for (var i = 0; i < cells.length; i++) {
     var cell = cells[i];
@@ -379,20 +379,80 @@ function buildShuttleWorkerEntryFromRow(row) {
       var normalizedCellText = normalizeShuttleOrderLookupText(cell);
       var normalizedPhoneText = normalizeShuttleOrderLookupText(phone);
       if (normalizedCellText && normalizedCellText !== normalizedPhoneText) {
-        combinedCell = cell;
+        var extractedFromMixedCell = sanitizeShuttleWorkerNameCell(cell);
+        if (extractedFromMixedCell) {
+          combinedCell = extractedFromMixedCell + ' ' + phone;
+        }
       }
       continue;
     }
 
-    if (!name && !normalizeShuttlePhone(cell)) {
-      name = cell;
+    if (!normalizeShuttlePhone(cell)) {
+      nonPhoneCells.push(cell);
     }
   }
 
   if (!phone) return '';
-  if (combinedCell) return combinedCell;
-  if (name) return name + ' ' + phone;
+  if (combinedCell) return normalizeShuttleWorkerLabel(combinedCell, phone);
+
+  var resolvedName = resolveShuttleWorkerNameFromCells(nonPhoneCells);
+  if (resolvedName) {
+    return normalizeShuttleWorkerLabel(resolvedName, phone);
+  }
+
   return phone;
+}
+
+function resolveShuttleWorkerNameFromCells(nonPhoneCells) {
+  if (!Array.isArray(nonPhoneCells) || !nonPhoneCells.length) return '';
+
+  var first = sanitizeShuttleWorkerNameCell(nonPhoneCells[0]);
+  if (!first) return '';
+  if (countShuttleWorkerNameWords(first) >= 2) {
+    return first;
+  }
+
+  var second = sanitizeShuttleWorkerNameCell(nonPhoneCells[1] || '');
+  if (!second) {
+    return first;
+  }
+
+  // Typical worker sheets keep first/last names in adjacent cells.
+  if (countShuttleWorkerNameWords(second) <= 2) {
+    return (first + ' ' + second).replace(/\s+/g, ' ').trim();
+  }
+
+  return first;
+}
+
+function sanitizeShuttleWorkerNameCell(value) {
+  var text = String(value || '').trim();
+  if (!text) return '';
+  if (text.charAt(0) === "'") {
+    text = text.substring(1);
+  }
+  return text
+    .replace(/\(([^)]*)\)/g, ' ')
+    .replace(/\d+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function countShuttleWorkerNameWords(value) {
+  var normalized = sanitizeShuttleWorkerNameCell(value);
+  if (!normalized) return 0;
+  return normalized.split(/\s+/).filter(function(part) { return Boolean(part); }).length;
+}
+
+function normalizeShuttleWorkerLabel(rawValue, phoneValue) {
+  var phone = normalizeShuttlePhone(phoneValue || rawValue);
+  var name = sanitizeShuttleWorkerNameCell(rawValue);
+  if (name && phone) {
+    return (name + ' ' + phone).replace(/\s+/g, ' ').trim();
+  }
+  if (name) return name;
+  if (phone) return phone;
+  return String(rawValue || '').replace(/\s+/g, ' ').trim();
 }
 
 function isShuttleEmployeeAllowedToOrder(employeeValue) {

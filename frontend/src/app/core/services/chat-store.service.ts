@@ -2826,15 +2826,16 @@ export class ChatStoreService {
     const normalizedUser = this.normalizeUser(user);
     const userPhone = this.extractShuttlePhone(user);
     const displayName = String(this.getDisplayName(user) || '').trim();
+    const preferredFullName = this.normalizeShuttleEmployeeName(displayName);
     const employees = await this.fetchShuttleEmployeesCached();
 
     if (employees.length) {
       const exact = employees.find((entry) => this.normalizeUser(entry) === normalizedUser);
-      if (exact) return exact;
+      if (exact) return this.formatShuttleEmployeeLabel(exact, userPhone || normalizedUser, preferredFullName);
 
       if (userPhone) {
         const byPhone = employees.find((entry) => this.extractShuttlePhone(entry) === userPhone);
-        if (byPhone) return byPhone;
+        if (byPhone) return this.formatShuttleEmployeeLabel(byPhone, userPhone, preferredFullName);
       }
 
       if (displayName) {
@@ -2842,15 +2843,59 @@ export class ChatStoreService {
         const byName = employees.find((entry) =>
           this.normalizeUser(entry).includes(normalizedDisplayName)
         );
-        if (byName) return byName;
+        if (byName) return this.formatShuttleEmployeeLabel(byName, userPhone || normalizedUser, preferredFullName);
       }
     }
 
-    if (displayName && userPhone && !displayName.includes(userPhone)) {
-      return `${displayName} ${userPhone}`;
+    if (preferredFullName && userPhone && !preferredFullName.includes(userPhone)) {
+      return `${preferredFullName} ${userPhone}`;
     }
-    if (displayName) return displayName;
+    if (preferredFullName) return preferredFullName;
     return user;
+  }
+
+  private formatShuttleEmployeeLabel(
+    value: string,
+    fallbackPhone: string,
+    preferredName: string
+  ): string {
+    const normalizedPhone = this.extractShuttlePhone(value) || this.extractShuttlePhone(fallbackPhone);
+    const normalizedName = this.normalizeShuttleEmployeeName(value);
+    const preferred = this.normalizeShuttleEmployeeName(preferredName);
+    const bestName = this.shuttleNameWordCount(normalizedName) >= 2
+      ? normalizedName
+      : (
+          this.shuttleNameWordCount(preferred) >= 2
+            ? preferred
+            : (normalizedName || preferred)
+        );
+
+    if (bestName && normalizedPhone) {
+      return `${bestName} ${normalizedPhone}`;
+    }
+    if (bestName) {
+      return bestName;
+    }
+    if (normalizedPhone) {
+      return normalizedPhone;
+    }
+    return String(value || '').trim();
+  }
+
+  private normalizeShuttleEmployeeName(value: string): string {
+    const source = String(value || '').trim();
+    if (!source) return '';
+    return source
+      .replace(/\(([^)]*)\)/g, ' ')
+      .replace(/\d+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private shuttleNameWordCount(value: string): number {
+    const normalized = this.normalizeShuttleEmployeeName(value);
+    if (!normalized) return 0;
+    return normalized.split(/\s+/).filter(Boolean).length;
   }
 
   private extractShuttlePhone(value: string): string {
