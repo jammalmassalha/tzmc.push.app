@@ -319,25 +319,80 @@ function main() {
   })
 }
 function getWorker() {
-  var labels = wsData.getRange(1, 1, 1, wsData.getLastColumn()).getValues();
-  var options = [];
-  labels.forEach(function (label, i) {
-    options = wsData.getRange(2, label.length, wsData.getLastRow() - 1, 1).getValues().map(function (o) { return o[0] });
+  if (!wsData) return [];
+  var lastRow = wsData.getLastRow();
+  var lastCol = wsData.getLastColumn();
+  if (lastRow < 2 || lastCol < 1) return [];
 
-  })
-  return options;
+  // Read all worker rows and build a normalized display entry per row.
+  var rows = wsData.getRange(2, 1, lastRow - 1, lastCol).getDisplayValues();
+  var results = [];
+  var seen = {};
+
+  for (var i = 0; i < rows.length; i++) {
+    var entry = buildShuttleWorkerEntryFromRow(rows[i]);
+    if (!entry) continue;
+    var key = normalizeShuttlePhone(entry) || normalizeShuttleOrderLookupText(entry);
+    if (!key || seen[key]) continue;
+    seen[key] = true;
+    results.push(entry);
+  }
+
+  return results;
 }
-function getParks() {
-  var labels = wsDataPark.getRange(1, 1, 1, 1).getValues();
-  var options = [];
-  labels.forEach(function (label, i) {
-    options = wsDataPark.getRange(2, label.length, wsDataPark.getLastRow() - 1, 1).getValues().map(function (o) {
-      let io = 0;
-      return o[0];
-    });
 
-  })
-  return options;
+function getParks() {
+  if (!wsDataPark) return [];
+  var lastRow = wsDataPark.getLastRow();
+  if (lastRow < 2) return [];
+
+  return wsDataPark.getRange(2, 1, lastRow - 1, 1).getDisplayValues()
+    .map(function (row) { return String(row[0] || '').trim(); })
+    .filter(function (value) { return Boolean(value); });
+}
+
+function buildShuttleWorkerEntryFromRow(row) {
+  if (!Array.isArray(row) || !row.length) return '';
+
+  var cells = row
+    .map(function(cell) { return String(cell || '').replace(/\s+/g, ' ').trim(); })
+    .filter(function(cell) { return Boolean(cell); });
+  if (!cells.length) return '';
+
+  var phone = '';
+  var name = '';
+  var combinedCell = '';
+
+  for (var i = 0; i < cells.length; i++) {
+    var cell = cells[i];
+    var normalizedPhone = normalizeShuttlePhone(cell);
+    if (!normalizedPhone) {
+      var digitChunks = cell.match(/\d{9,15}/g) || [];
+      for (var d = 0; d < digitChunks.length; d++) {
+        normalizedPhone = normalizeShuttlePhone(digitChunks[d]);
+        if (normalizedPhone) break;
+      }
+    }
+
+    if (normalizedPhone && !phone) {
+      phone = normalizedPhone;
+      var normalizedCellText = normalizeShuttleOrderLookupText(cell);
+      var normalizedPhoneText = normalizeShuttleOrderLookupText(phone);
+      if (normalizedCellText && normalizedCellText !== normalizedPhoneText) {
+        combinedCell = cell;
+      }
+      continue;
+    }
+
+    if (!name && !normalizeShuttlePhone(cell)) {
+      name = cell;
+    }
+  }
+
+  if (!phone) return '';
+  if (combinedCell) return combinedCell;
+  if (name) return name + ' ' + phone;
+  return phone;
 }
 
 function isShuttleEmployeeAllowedToOrder(employeeValue) {

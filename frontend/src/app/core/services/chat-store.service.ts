@@ -2164,8 +2164,10 @@ export class ChatStoreService {
         })}`,
         { recordType: 'shuttle-submit-success' }
       );
-    } catch {
-      this.sendShuttleSystemMessage(this.shuttleText('שליחת הבקשה נכשלה. נסה שוב בעוד מספר רגעים.', 'Не удалось отправить запрос. Попробуйте снова через пару минут.'), {
+    } catch (error) {
+      const fallbackMessage = this.shuttleText('שליחת הבקשה נכשלה. נסה שוב בעוד מספר רגעים.', 'Не удалось отправить запрос. Попробуйте снова через пару минут.');
+      const errorMessage = error instanceof Error ? String(error.message || '').trim() : '';
+      this.sendShuttleSystemMessage(errorMessage || fallbackMessage, {
         recordType: 'shuttle-submit-failed'
       });
     }
@@ -2223,8 +2225,10 @@ export class ChatStoreService {
         })}`,
         { recordType: 'shuttle-cancel-success' }
       );
-    } catch {
-      this.sendShuttleSystemMessage(this.shuttleText('ביטול ההזמנה נכשל. נסה שוב בעוד מספר רגעים.', 'Не удалось отменить заказ. Попробуйте снова через пару минут.'), {
+    } catch (error) {
+      const fallbackMessage = this.shuttleText('ביטול ההזמנה נכשל. נסה שוב בעוד מספר רגעים.', 'Не удалось отменить заказ. Попробуйте снова через пару минут.');
+      const errorMessage = error instanceof Error ? String(error.message || '').trim() : '';
+      this.sendShuttleSystemMessage(errorMessage || fallbackMessage, {
         recordType: 'shuttle-cancel-failed'
       });
     }
