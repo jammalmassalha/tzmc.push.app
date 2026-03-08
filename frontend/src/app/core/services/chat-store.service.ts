@@ -50,7 +50,6 @@ const HR_STATE_KEY_PREFIX = 'hr_state_';
 const HR_UPLOAD_BASE_URL = '/notify/uploads/';
 const HR_STEPS_CACHE_TTL_MS = 5 * 60 * 1000;
 const HR_ACTIONS_CACHE_TTL_MS = 5 * 60 * 1000;
-const HR_PICKER_SELECT_THRESHOLD = 8;
 const SHUTTLE_WELCOME_KEY_PREFIX = 'shuttle_welcome_sent_';
 const SHUTTLE_STATE_KEY_PREFIX = 'shuttle_state_';
 const SHUTTLE_ORDERS_KEY_PREFIX = 'shuttle_orders_';
@@ -203,25 +202,6 @@ export interface ShuttleQuickPickerState {
   allowBack: boolean;
 }
 
-export interface HrQuickPickerOption {
-  value: string;
-  label: string;
-  disabled?: boolean;
-}
-
-export interface HrQuickPickerState {
-  key: string;
-  title: string;
-  helperText?: string;
-  mode: 'buttons' | 'select';
-  options: HrQuickPickerOption[];
-  allowBack: boolean;
-}
-
-export interface HrQuickPickerSelectionResult {
-  openedUrl?: string;
-}
-
 export interface ShuttleBreadcrumbStep {
   key: string;
   label: string;
@@ -264,9 +244,7 @@ export class ChatStoreService {
   private readonly shuttleOrdersSyncAt = new Map<string, number>();
   private readonly shuttleOrdersSyncInFlight = new Set<string>();
   private readonly shuttleReminderTimersByKey = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly hrPickerRevision = signal(0);
   private readonly shuttlePickerRevision = signal(0);
-  private hrStepsWarmupInFlight = false;
   private lastAppliedAppBadgeCount = -1;
   private lastServerBadgeResetAt = 0;
   private lastForegroundSyncAt = 0;
@@ -974,150 +952,6 @@ export class ChatStoreService {
       if (a[i] !== b[i]) return false;
     }
     return true;
-  }
-
-  getHrQuickPickerState(): HrQuickPickerState | null {
-    this.hrPickerRevision();
-    const activeChatId = this.activeChatId();
-    if (!this.isHrChat(activeChatId)) {
-      return null;
-    }
-    const user = this.currentUser();
-    if (!user) {
-      return null;
-    }
-
-    const state = this.loadHrState(user);
-    if (!state) {
-      if (!this.hrStepsCache.steps.length) {
-        void this.warmHrStepsCache();
-      }
-      return {
-        key: 'hr-menu-loading',
-        title: 'טוען אפשרויות פנייה...',
-        helperText: 'נא להמתין',
-        mode: 'buttons',
-        options: [],
-        allowBack: false
-      };
-    }
-
-    if (state.awaiting === 'step') {
-      if (!this.hrStepsCache.steps.length) {
-        void this.warmHrStepsCache();
-      }
-      const options = this.hrStepsCache.steps.map((step, index) => ({
-        value: String(index + 1),
-        label: step.name || `נושא ${index + 1}`
-      }));
-      const mode: HrQuickPickerState['mode'] = options.length > HR_PICKER_SELECT_THRESHOLD ? 'select' : 'buttons';
-      return {
-        key: `hr-step-${this.hrStepsCache.at}-${options.length}`,
-        title: 'בחר נושא לפנייה',
-        helperText: options.length ? 'לחץ על אפשרות מהרשימה' : 'טוען אפשרויות...',
-        mode,
-        options,
-        allowBack: false
-      };
-    }
-
-    if (state.awaiting === 'action') {
-      const options = state.actions.map((action, index) => ({
-        value: String(index + 1),
-        label: action.stepName || `פעולה ${index + 1}`
-      }));
-      const mode: HrQuickPickerState['mode'] = options.length > HR_PICKER_SELECT_THRESHOLD ? 'select' : 'buttons';
-      return {
-        key: `hr-action-${state.stepId || 'unknown'}-${options.length}`,
-        title: 'בחר סוג פנייה',
-        helperText: options.length ? 'בחר אפשרות כדי להמשיך' : 'אין פעולות זמינות כרגע',
-        mode,
-        options,
-        allowBack: true
-      };
-    }
-
-    if (state.awaiting === 'free-text') {
-      return {
-        key: 'hr-free-text',
-        title: 'כתיבת פנייה חופשית',
-        helperText: 'כעת ניתן להקליד הודעה',
-        mode: 'buttons',
-        options: [],
-        allowBack: true
-      };
-    }
-
-    return {
-      key: 'hr-menu-fallback',
-      title: 'בחר פעולה',
-      mode: 'buttons',
-      options: [],
-      allowBack: false
-    };
-  }
-
-  getHrAllowsFreeTextInput(): boolean {
-    this.hrPickerRevision();
-    const activeChatId = this.activeChatId();
-    if (!this.isHrChat(activeChatId)) {
-      return true;
-    }
-    const user = this.currentUser();
-    if (!user) {
-      return false;
-    }
-    const state = this.loadHrState(user);
-    return state?.awaiting === 'free-text';
-  }
-
-  activateHrFreeTextModeForCurrentUser(): boolean {
-    const user = this.currentUser();
-    if (!user) {
-      return false;
-    }
-    const state = this.loadHrState(user) ?? { awaiting: 'step' as HrAwaitingState, stepId: null, actions: [] };
-    if (state.awaiting === 'free-text') {
-      return true;
-    }
-    this.saveHrState(user, {
-      awaiting: 'free-text',
-      stepId: state.stepId ?? null,
-      actions: Array.isArray(state.actions) ? state.actions : []
-    });
-    this.bumpHrPickerRevision();
-    return true;
-  }
-
-  async submitHrQuickPickerSelection(rawValue: string): Promise<HrQuickPickerSelectionResult> {
-    const activeChatId = this.activeChatId();
-    if (!this.isHrChat(activeChatId)) {
-      throw new Error('הצ׳אט הפעיל אינו ציפי');
-    }
-    const user = this.currentUser();
-    if (!user) {
-      throw new Error('יש להתחבר לפני בחירה');
-    }
-
-    const value = String(rawValue || '').trim();
-    if (!value) {
-      throw new Error('בחירה חסרה');
-    }
-
-    if (value === '0') {
-      this.resetHrState(user);
-      await this.startHrFlow({ skipWelcome: this.hasHrWelcomeMessage(user) });
-      this.bumpHrPickerRevision();
-      return {};
-    }
-
-    const openedUrl = this.resolveHrQuickPickerOpenedUrl(user, value);
-    const handledByHrFlow = await this.handleHrOutgoing(value);
-    if (!handledByHrFlow) {
-      throw new Error('הבחירה לא עובדה. נסה שוב.');
-    }
-    this.bumpHrPickerRevision();
-    return openedUrl ? { openedUrl } : {};
   }
 
   getShuttleQuickPickerState(): ShuttleQuickPickerState | null {
@@ -1905,7 +1739,6 @@ export class ChatStoreService {
     try {
       const steps = await this.api.getHrSteps();
       this.hrStepsCache = { at: now, steps };
-      this.bumpHrPickerRevision();
       return steps;
     } catch {
       return [];
@@ -1925,23 +1758,9 @@ export class ChatStoreService {
     try {
       const actions = await this.api.getHrActions(key);
       this.hrActionsCache[key] = { at: now, actions };
-      this.bumpHrPickerRevision();
       return actions;
     } catch {
       return [];
-    }
-  }
-
-  private async warmHrStepsCache(): Promise<void> {
-    if (this.hrStepsWarmupInFlight) {
-      return;
-    }
-    this.hrStepsWarmupInFlight = true;
-    try {
-      await this.fetchHrStepsCached();
-    } finally {
-      this.hrStepsWarmupInFlight = false;
-      this.bumpHrPickerRevision();
     }
   }
 
@@ -2038,13 +1857,11 @@ export class ChatStoreService {
 
   private saveHrState(user: string, state: HrConversationState): void {
     localStorage.setItem(this.hrStateKey(user), JSON.stringify(state));
-    this.bumpHrPickerRevision();
   }
 
   private resetHrState(user: string): void {
     localStorage.removeItem(this.hrStateKey(user));
     localStorage.removeItem(this.hrWelcomeKey(user));
-    this.bumpHrPickerRevision();
   }
 
   private buildHrAssetUrl(value: string): string {
@@ -2831,38 +2648,6 @@ export class ChatStoreService {
     return index;
   }
 
-  private resolveHrQuickPickerOpenedUrl(user: string, selectedValue: string): string {
-    const state = this.loadHrState(user);
-    if (!state || state.awaiting !== 'action') {
-      return '';
-    }
-    const index = Number.parseInt(String(selectedValue || '').trim(), 10) - 1;
-    if (Number.isNaN(index) || index < 0 || index >= state.actions.length) {
-      return '';
-    }
-
-    const selectedAction = state.actions[index];
-    const returnValue = String(selectedAction.returnValue || '').trim();
-    if (!returnValue || returnValue.toUpperCase() === 'FREE TEXT') {
-      return '';
-    }
-
-    const lower = returnValue.toLowerCase();
-    const isImage = /\.(jpeg|jpg|gif|png|webp)(\?|$)/.test(lower);
-    const isDoc = /\.(pdf|doc|docx|xls|xlsx|ppt|pptx|txt|csv|zip|rar|7z)(\?|$)/.test(lower);
-    const isHttp = /^https?:\/\//i.test(returnValue);
-    const isWww = /^www\./i.test(returnValue);
-    const isRelativeUpload = /^\/?notify\/uploads\//i.test(returnValue);
-    const isUrlLike = isHttp || isWww || isRelativeUpload;
-    if (!isImage && !isDoc && !isUrlLike) {
-      return '';
-    }
-    if (isWww) {
-      return `https://${returnValue}`;
-    }
-    return this.buildHrAssetUrl(returnValue);
-  }
-
   private async submitShuttleOrder(
     user: string,
     draft: ShuttleOrderDraft,
@@ -3381,10 +3166,6 @@ export class ChatStoreService {
 
   private bumpShuttlePickerRevision(): void {
     this.shuttlePickerRevision.update((value) => value + 1);
-  }
-
-  private bumpHrPickerRevision(): void {
-    this.hrPickerRevision.update((value) => value + 1);
   }
 
   private sendShuttleSystemMessage(

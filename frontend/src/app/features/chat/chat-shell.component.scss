@@ -478,11 +478,6 @@ mat-chip:not(.offline) {
   grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
-.conversation-pane.shuttle-room-active,
-.conversation-pane.hr-room-active {
-  background: linear-gradient(180deg, #f7f9ff 0%, #eef3ff 100%);
-}
-
 .conversation-header {
   position: relative;
   z-index: 6;
@@ -551,15 +546,6 @@ mat-chip:not(.offline) {
   overscroll-behavior: none;
   display: flex;
   flex-direction: column;
-}
-
-.messages-panel.hr-room-active {
-  margin: 6px 8px 10px;
-  padding: 20px 10px 16px;
-  border-radius: 16px;
-  background: linear-gradient(180deg, #f7f9fffa, #eff4fff5);
-  border: 1px solid rgba(71, 97, 188, .18);
-  box-shadow: 0 10px 24px #14287017;
 }
 
 .messages-sticky-date {
@@ -1260,276 +1246,6 @@ mat-chip:not(.offline) {
   color: #273158;
 }
 
-.hr-inquiries-dashboard {
-  margin: 6px 8px 10px;
-  padding: 12px;
-  border-radius: 16px;
-  background: linear-gradient(180deg, #f7f9fffa, #eff4fff5);
-  border: 1px solid rgba(71, 97, 188, 0.18);
-  box-shadow: 0 10px 24px #14287017;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.hr-inquiries-sticky-head {
-  position: sticky;
-  top: 0;
-  z-index: 6;
-  margin: -12px -12px 0;
-  padding: 12px 12px 8px;
-  background: linear-gradient(180deg, #f7f9fffa, #eff4fff5);
-  border-bottom: 1px solid rgba(71, 97, 188, 0.16);
-}
-
-.hr-inquiries-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.hr-inquiries-title {
-  font-size: 14px;
-  font-weight: 800;
-  color: #2a3d7e;
-}
-
-.hr-inquiries-tabs {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.hr-inquiries-tab-btn {
-  flex: 1 1 0;
-  min-height: 34px;
-  border-radius: 10px;
-  border: 1px solid rgba(63, 87, 172, 0.2);
-  background: rgba(255, 255, 255, 0.76);
-  color: #2d3f7d;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.hr-inquiries-tab-btn.active {
-  border-color: rgba(27, 133, 90, 0.28);
-  color: #1f6b4f;
-}
-
-.hr-inquiries-tab-btn.active.selected {
-  border-color: rgba(20, 123, 82, 0.5);
-  background: rgba(22, 151, 101, 0.18);
-  color: #15533d;
-}
-
-.hr-inquiries-tab-btn.closed {
-  border-color: rgba(176, 63, 74, 0.28);
-  color: #943340;
-}
-
-.hr-inquiries-tab-btn.closed.selected {
-  border-color: rgba(163, 45, 57, 0.5);
-  background: rgba(200, 62, 78, 0.17);
-  color: #7e2733;
-}
-
-.hr-inquiries-content {
-  display: block;
-  min-height: 0;
-}
-
-.hr-inquiries-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: min(58vh, 520px);
-  overflow: auto;
-  padding-inline-end: 2px;
-}
-
-.hr-inquiries-empty,
-.hr-inquiry-details-empty {
-  font-size: 12px;
-  color: #62709a;
-  background: rgba(255, 255, 255, 0.74);
-  border: 1px dashed rgba(71, 97, 188, 0.24);
-  border-radius: 12px;
-  padding: 10px;
-}
-
-.hr-inquiry-list-item {
-  width: 100%;
-  border-radius: 12px;
-  border: 1px solid rgba(64, 89, 179, 0.2);
-  background: rgba(255, 255, 255, 0.95);
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  text-align: right;
-  cursor: pointer;
-}
-
-.hr-inquiry-list-item.selected {
-  border-color: rgba(42, 76, 186, 0.42);
-  box-shadow: inset 0 0 0 1px rgba(42, 76, 186, 0.1);
-  background: linear-gradient(180deg, rgba(244, 248, 255, 0.95), rgba(235, 243, 255, 0.95));
-}
-
-.hr-inquiry-list-top,
-.hr-inquiry-list-bottom {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.hr-inquiry-title {
-  font-size: 13px;
-  font-weight: 700;
-  color: #263057;
-}
-
-.hr-inquiry-time {
-  font-size: 11px;
-  color: #667799;
-  white-space: nowrap;
-}
-
-.hr-inquiry-preview {
-  min-width: 0;
-  flex: 1 1 auto;
-  color: #59688d;
-  font-size: 11px;
-  text-align: right;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.hr-inquiry-status {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 999px;
-  padding: 2px 8px;
-  font-size: 10px;
-  font-weight: 700;
-  color: #1d6d52;
-  background: rgba(24, 167, 111, 0.16);
-  white-space: nowrap;
-}
-
-.hr-inquiry-status.closed {
-  color: #7e2733;
-  background: rgba(200, 62, 78, 0.17);
-}
-
-.hr-inquiry-details {
-  border-radius: 12px;
-  border: 1px solid rgba(64, 89, 179, 0.2);
-  background: rgba(255, 255, 255, 0.94);
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-height: 220px;
-}
-
-.hr-inquiry-details-header {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid rgba(80, 103, 179, 0.15);
-}
-
-.hr-inquiry-details-title-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.hr-inquiry-details-title {
-  font-size: 14px;
-  font-weight: 800;
-  color: #223165;
-}
-
-.hr-inquiry-close-btn {
-  border: 0;
-  border-radius: 999px;
-  min-height: 28px;
-  padding: 0 10px;
-  display: inline-flex;
-  align-items: center;
-  background: rgba(227, 68, 83, 0.12);
-  color: #a93544;
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.hr-inquiry-close-btn:hover {
-  background: rgba(227, 68, 83, 0.18);
-}
-
-.hr-inquiry-details-meta {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-  color: #617196;
-}
-
-.hr-inquiry-details-messages {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 420px;
-  overflow: auto;
-  padding-inline-end: 2px;
-}
-
-.hr-inquiry-message {
-  border-radius: 12px;
-  border: 1px solid rgba(64, 89, 179, 0.2);
-  background: rgba(247, 250, 255, 0.9);
-  padding: 8px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.hr-inquiry-message.outgoing {
-  border-color: rgba(35, 115, 84, 0.24);
-  background: rgba(241, 255, 249, 0.9);
-}
-
-.hr-inquiry-message-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.hr-inquiry-message-sender {
-  font-size: 11px;
-  font-weight: 700;
-  color: #2d3f7b;
-}
-
-.hr-inquiry-message-time {
-  font-size: 10px;
-  color: #6f7fa3;
-}
-
-.hr-inquiry-message-body.deleted {
-  opacity: 0.75;
-}
-
 .composer-edit-banner {
   margin: 6px 10px 0;
   padding: 6px 8px;
@@ -1634,11 +1350,6 @@ mat-chip:not(.offline) {
   gap: 10px;
   position: relative;
   z-index: 11;
-}
-
-.hr-picker-panel {
-  border-color: rgba(45, 93, 175, 0.24);
-  background: linear-gradient(180deg, rgba(247, 250, 255, 0.98) 0%, rgba(238, 244, 255, 0.96) 100%);
 }
 
 .shuttle-picker-processing-overlay {
@@ -2647,21 +2358,5 @@ mat-chip:not(.offline) {
     bottom: calc(80px + env(safe-area-inset-bottom));
     width: 40px;
     height: 40px;
-  }
-
-  .hr-inquiries-content {
-    grid-template-columns: 1fr;
-  }
-
-  .hr-inquiries-list {
-    max-height: 240px;
-  }
-
-  .hr-inquiry-details {
-    min-height: 180px;
-  }
-
-  .hr-inquiry-details-messages {
-    max-height: 320px;
   }
 }

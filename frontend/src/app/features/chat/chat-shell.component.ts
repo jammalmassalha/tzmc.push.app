@@ -35,8 +35,6 @@ import {
 import {
   ActivatedChatMeta,
   ChatStoreService,
-  HrQuickPickerState,
-  HrQuickPickerSelectionResult,
   IncomingReactionNotice,
   ShuttleBreadcrumbStep,
   ShuttleLanguage,
@@ -47,10 +45,6 @@ import { CreateGroupDialogComponent } from './dialogs/create-group-dialog.compon
 import { NewChatDialogComponent } from './dialogs/new-chat-dialog.component';
 import { ConfirmMessageActionDialogComponent } from './dialogs/confirm-message-action-dialog.component';
 import { ForwardMessageDialogComponent } from './dialogs/forward-message-dialog.component';
-import {
-  HrInquiryDetailsDialogComponent,
-  HrInquiryDetailsDialogData
-} from './dialogs/hr-inquiry-details-dialog.component';
 
 type MessageRenderPart =
   | { kind: 'text'; text: string }
@@ -114,21 +108,8 @@ interface ShuttleOrderMessageCard {
   cancelled: boolean;
 }
 
-type HrInquiryStatus = 'active' | 'closed';
-
-interface HrInquiryView {
-  id: string;
-  title: string;
-  preview: string;
-  status: HrInquiryStatus;
-  openedAt: number;
-  lastActivityAt: number;
-  messages: ChatMessage[];
-}
-
 const MESSAGE_PAGE_SIZE = 15;
 const LOAD_OLDER_MESSAGES_SCROLL_THRESHOLD_PX = 56;
-const HR_CHAT_ROOM_ID = 'ציפי';
 
 type ShuttleUiTextKey =
   | 'ordersTitle'
@@ -325,8 +306,6 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly messageControl = new FormControl('', { nonNullable: true });
   readonly shuttlePickerControl = new FormControl('', { nonNullable: true });
   readonly shuttlePickerSearchControl = new FormControl('', { nonNullable: true });
-  readonly hrPickerControl = new FormControl('', { nonNullable: true });
-  readonly hrPickerSearchControl = new FormControl('', { nonNullable: true });
 
   readonly searchTerm = toSignal(this.searchControl.valueChanges.pipe(startWith('')), {
     initialValue: ''
@@ -335,9 +314,6 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     initialValue: ''
   });
   readonly shuttlePickerSearchValue = toSignal(this.shuttlePickerSearchControl.valueChanges.pipe(startWith('')), {
-    initialValue: ''
-  });
-  readonly hrPickerSearchValue = toSignal(this.hrPickerSearchControl.valueChanges.pipe(startWith('')), {
     initialValue: ''
   });
 
@@ -366,9 +342,6 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (this.store.getShuttleQuickPickerState()) {
       return 'לבחירה השתמש בכפתורים';
     }
-    if (this.isHrRoomActive() && !this.store.getHrAllowsFreeTextInput()) {
-      return 'לבחירה השתמש בכפתורים';
-    }
     if (this.store.canSendToActiveChat()) {
       return 'הקלד הודעה';
     }
@@ -380,11 +353,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly shuttleQuickPicker = computed<ShuttleQuickPickerState | null>(() =>
     this.store.getShuttleQuickPickerState()
   );
-  readonly hrQuickPicker = computed<HrQuickPickerState | null>(() =>
-    this.store.getHrQuickPickerState()
-  );
   readonly isSubmittingShuttlePicker = signal(false);
-  readonly isSubmittingHrPicker = signal(false);
   readonly isSubmittingShuttleOrder = signal(false);
   readonly isCancellingShuttleOrderIds = signal<Set<string>>(new Set<string>());
   readonly shuttlePickerHasOptions = computed(() => {
@@ -401,50 +370,6 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   readonly shuttleDashboardTab = signal<'ongoing' | 'past'>('ongoing');
   readonly isShuttleRoomActive = computed(() =>
     Boolean(this.shuttleOrdersDashboard() || this.shuttleQuickPicker())
-  );
-  readonly isHrRoomActive = computed(() => {
-    const activeChat = this.store.activeChat();
-    if (!activeChat) return false;
-    return this.normalizeUsername(activeChat.id) === this.normalizeUsername(HR_CHAT_ROOM_ID);
-  });
-  readonly isHrGuidedModeActive = computed(() =>
-    this.isHrRoomActive() && !this.store.getHrAllowsFreeTextInput()
-  );
-  readonly hrInquiriesTab = signal<HrInquiryStatus>('active');
-  readonly selectedHrInquiryId = signal<string | null>(null);
-  readonly closedHrInquiryIds = signal<Set<string>>(new Set<string>());
-  readonly hrInquiries = computed<HrInquiryView[]>(() => {
-    if (!this.isHrRoomActive()) {
-      return [];
-    }
-    return this.buildHrInquiries(this.store.activeMessages(), this.store.currentUser() || '');
-  });
-  readonly hrInquiryBuckets = computed<{ active: HrInquiryView[]; closed: HrInquiryView[] }>(() => {
-    const active: HrInquiryView[] = [];
-    const closed: HrInquiryView[] = [];
-    this.hrInquiries().forEach((inquiry) => {
-      if (inquiry.status === 'closed') {
-        closed.push(inquiry);
-      } else {
-        active.push(inquiry);
-      }
-    });
-    return { active, closed };
-  });
-  readonly hrVisibleInquiries = computed<HrInquiryView[]>(() =>
-    this.hrInquiriesTab() === 'active'
-      ? this.hrInquiryBuckets().active
-      : this.hrInquiryBuckets().closed
-  );
-  readonly selectedHrInquiry = computed<HrInquiryView | null>(() => {
-    const selectedId = String(this.selectedHrInquiryId() || '').trim();
-    if (!selectedId) {
-      return null;
-    }
-    return this.hrInquiries().find((inquiry) => inquiry.id === selectedId) ?? null;
-  });
-  readonly selectedHrInquiryMessages = computed<ChatMessage[]>(() =>
-    this.selectedHrInquiry()?.messages ?? []
   );
   readonly shuttleBreadcrumbs = computed<ShuttleBreadcrumbStep[] | null>(() =>
     this.store.getShuttleFlowBreadcrumbs()
@@ -469,18 +394,6 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       return options;
     }
 
-    return options.filter((option) => String(option.label || '').toLowerCase().includes(query));
-  });
-  readonly filteredHrPickerOptions = computed(() => {
-    const picker = this.hrQuickPicker();
-    if (!picker || picker.mode !== 'select') {
-      return [];
-    }
-    const options = picker.options;
-    const query = String(this.hrPickerSearchValue() || '').trim().toLowerCase();
-    if (!query) {
-      return options;
-    }
     return options.filter((option) => String(option.label || '').toLowerCase().includes(query));
   });
 
@@ -569,7 +482,6 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     () =>
       Boolean(this.store.activeChatId()) &&
       !this.isShuttleRoomActive() &&
-      !this.isHrRoomActive() &&
       this.store.activeMessages().length > 0 &&
       !this.isMessagesPanelAtBottom()
   );
@@ -587,8 +499,6 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   private conversationSwipeStartedAt: number | null = null;
   private conversationSwipeTracking = false;
   private lastShuttlePickerKey: string | null = null;
-  private lastHrPickerKey: string | null = null;
-  private lastHrClosedInquiryUserKey: string | null = null;
   private lastAutoScrollChatId: string | null = null;
   private lastAutoScrollMessageCount = 0;
   private pendingOpenScroll: { chatId: string; unreadBeforeOpen: number } | null = null;
@@ -733,65 +643,6 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (!visibleOptions.some((option) => option.value === selected)) {
       this.shuttlePickerControl.setValue('');
     }
-  });
-
-  private readonly hrPickerSyncEffect = effect(() => {
-    const picker = this.hrQuickPicker();
-    const key = picker?.key ?? null;
-    if (key !== this.lastHrPickerKey) {
-      this.lastHrPickerKey = key;
-      this.hrPickerControl.setValue('');
-      this.hrPickerSearchControl.setValue('');
-    }
-  });
-
-  private readonly hrPickerOptionValidityEffect = effect(() => {
-    const picker = this.hrQuickPicker();
-    if (!picker || picker.mode !== 'select') {
-      return;
-    }
-
-    const selected = String(this.hrPickerControl.value || '').trim();
-    if (!selected) {
-      return;
-    }
-
-    if (!picker.options.some((option) => option.value === selected)) {
-      this.hrPickerControl.setValue('');
-    }
-  });
-
-  private readonly hrInquirySelectionEffect = effect(() => {
-    const isHrRoom = this.isHrRoomActive();
-    const visibleInquiries = this.hrVisibleInquiries();
-    const selectedId = this.selectedHrInquiryId();
-
-    if (!isHrRoom) {
-      if (selectedId !== null) {
-        this.selectedHrInquiryId.set(null);
-      }
-      return;
-    }
-
-    if (!visibleInquiries.length) {
-      if (selectedId !== null) {
-        this.selectedHrInquiryId.set(null);
-      }
-      return;
-    }
-
-    if (!selectedId || !visibleInquiries.some((inquiry) => inquiry.id === selectedId)) {
-      this.selectedHrInquiryId.set(visibleInquiries[0].id);
-    }
-  });
-
-  private readonly hrClosedInquirySyncEffect = effect(() => {
-    const currentUser = this.normalizeUsername(this.store.currentUser() || '');
-    if (currentUser === this.lastHrClosedInquiryUserKey) {
-      return;
-    }
-    this.lastHrClosedInquiryUserKey = currentUser;
-    this.closedHrInquiryIds.set(this.loadClosedHrInquiryIds(currentUser));
   });
 
   private readonly editingMessageGuardEffect = effect(() => {
@@ -960,7 +811,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   async sendMessage(): Promise<void> {
-    if ((this.shuttleQuickPicker() || this.isHrGuidedModeActive()) && !this.editingMessageTarget()) {
+    if (this.shuttleQuickPicker() && !this.editingMessageTarget()) {
       return;
     }
     if (!this.canSendMessage()) return;
@@ -1073,58 +924,6 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     await this.chooseShuttlePickerOption('0');
   }
 
-  async chooseHrPickerOption(value: string): Promise<void> {
-    const normalized = String(value || '').trim();
-    if (!normalized || this.isSubmittingHrPicker()) return;
-    const picker = this.hrQuickPicker();
-    if (picker) {
-      const option = picker.options.find((item) => String(item.value || '').trim() === normalized);
-      if (option?.disabled) {
-        this.snackBar.open('האפשרות שבחרת אינה זמינה כרגע.', 'סגור', { duration: 2400 });
-        return;
-      }
-    }
-    this.isSubmittingHrPicker.set(true);
-    try {
-      const result: HrQuickPickerSelectionResult = await this.store.submitHrQuickPickerSelection(normalized);
-      if (result.openedUrl) {
-        window.open(result.openedUrl, '_blank', 'noopener,noreferrer');
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'בחירה נכשלה. נסה שוב.';
-      this.snackBar.open(message, 'סגור', { duration: 2800 });
-    } finally {
-      this.isSubmittingHrPicker.set(false);
-    }
-  }
-
-  async submitHrPickerSelection(): Promise<void> {
-    const picker = this.hrQuickPicker();
-    if (!picker) return;
-    const selectedValue = String(this.hrPickerControl.value || '').trim();
-    if (!selectedValue) {
-      this.snackBar.open('יש לבחור אפשרות מהרשימה.', 'סגור', { duration: 2200 });
-      return;
-    }
-    const selectedOption = picker.options.find(
-      (option) => String(option.value || '').trim() === selectedValue
-    );
-    if (selectedOption?.disabled) {
-      this.snackBar.open('האפשרות שבחרת אינה זמינה כרגע.', 'סגור', { duration: 2400 });
-      return;
-    }
-    await this.chooseHrPickerOption(selectedValue);
-  }
-
-  async goBackFromHrPicker(): Promise<void> {
-    await this.chooseHrPickerOption('0');
-  }
-
-  clearHrPickerSearch(): void {
-    if (!this.hrPickerSearchControl.value) return;
-    this.hrPickerSearchControl.setValue('');
-  }
-
   clearShuttlePickerSearch(): void {
     if (!this.shuttlePickerSearchControl.value) return;
     this.shuttlePickerSearchControl.setValue('');
@@ -1164,90 +963,6 @@ export class ChatShellComponent implements OnInit, OnDestroy {
 
   setShuttleDashboardTab(tab: 'ongoing' | 'past'): void {
     this.shuttleDashboardTab.set(tab);
-  }
-
-  setHrInquiriesTab(tab: HrInquiryStatus): void {
-    this.hrInquiriesTab.set(tab);
-  }
-
-  selectHrInquiry(inquiryId: string): void {
-    const normalizedId = String(inquiryId || '').trim();
-    if (!normalizedId) return;
-    if (!this.hrVisibleInquiries().some((inquiry) => inquiry.id === normalizedId)) {
-      return;
-    }
-    this.selectedHrInquiryId.set(normalizedId);
-  }
-
-  async openHrInquiryDetailsDialog(inquiry: HrInquiryView): Promise<void> {
-    const normalizedId = String(inquiry?.id || '').trim();
-    if (!normalizedId) return;
-    this.selectHrInquiry(normalizedId);
-    const canContinueWrite = this.isHrInquiryFreeTextThread(inquiry);
-
-    const dialogData: HrInquiryDetailsDialogData = {
-      title: inquiry.title,
-      status: inquiry.status,
-      openedAt: inquiry.openedAt,
-      messages: inquiry.messages,
-      canContinueWrite
-    };
-    const dialogRef = this.dialog.open(HrInquiryDetailsDialogComponent, {
-      width: 'min(92vw, 760px)',
-      maxWidth: '92vw',
-      data: dialogData,
-      autoFocus: false
-    });
-    const result = await firstValueFrom(dialogRef.afterClosed());
-    if (result === 'close') {
-      this.closeHrInquiry(inquiry);
-      return;
-    }
-    if (result === 'continue-write') {
-      const activated = this.store.activateHrFreeTextModeForCurrentUser();
-      if (!activated) {
-        this.snackBar.open('לא ניתן להמשיך כתיבה כרגע. נסה שוב.', 'סגור', { duration: 2400 });
-      }
-    }
-  }
-
-  isHrInquirySelected(inquiryId: string): boolean {
-    const normalizedId = String(inquiryId || '').trim();
-    if (!normalizedId) return false;
-    return this.selectedHrInquiryId() === normalizedId;
-  }
-
-  hrInquiryStatusLabel(status: HrInquiryStatus): string {
-    return status === 'closed' ? 'סגורה' : 'פעילה';
-  }
-
-  isHrInquiryClosable(inquiry: HrInquiryView | null): boolean {
-    return Boolean(inquiry && inquiry.status === 'active');
-  }
-
-  closeHrInquiry(inquiry: HrInquiryView): void {
-    const inquiryId = String(inquiry?.id || '').trim();
-    if (!inquiryId) return;
-    if (inquiry.status === 'closed') return;
-
-    const next = new Set(this.closedHrInquiryIds());
-    next.add(inquiryId);
-    this.closedHrInquiryIds.set(next);
-    this.saveClosedHrInquiryIds(this.normalizeUsername(this.store.currentUser() || ''), next);
-    this.hrInquiriesTab.set('closed');
-    this.selectedHrInquiryId.set(inquiryId);
-    this.snackBar.open('הפנייה נסגרה.', 'סגור', { duration: 2000 });
-  }
-
-  hrInquiryTimeLabel(inquiry: HrInquiryView): string {
-    return this.formatChatListTime(inquiry.lastActivityAt);
-  }
-
-  hrInquiryMessageSender(message: ChatMessage): string {
-    if (message.direction === 'outgoing') {
-      return 'אני';
-    }
-    return String(message.senderDisplayName || message.sender || 'משאבי אנוש').trim();
   }
 
   async refreshShuttleOrders(): Promise<void> {
@@ -1469,7 +1184,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   openImagePicker(): void {
-    if (this.shuttleQuickPicker() || this.isHrGuidedModeActive()) {
+    if (this.shuttleQuickPicker()) {
       this.snackBar.open('בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.', this.shuttleCloseActionLabel(), { duration: 2600 });
       return;
     }
@@ -1481,7 +1196,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   async shareLocation(): Promise<void> {
-    if (this.shuttleQuickPicker() || this.isHrGuidedModeActive()) {
+    if (this.shuttleQuickPicker()) {
       this.snackBar.open('בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.', this.shuttleCloseActionLabel(), { duration: 2600 });
       return;
     }
@@ -1507,7 +1222,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
   }
 
   canSendMessage(): boolean {
-    if ((this.shuttleQuickPicker() || this.isHrGuidedModeActive()) && !this.editingMessageTarget()) {
+    if (this.shuttleQuickPicker() && !this.editingMessageTarget()) {
       return false;
     }
     return Boolean(this.messageValue().trim()) && this.store.canSendToActiveChat() && !!this.store.activeChat();
@@ -2722,7 +2437,7 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       return [];
     }
 
-    const urlRegex = /(https?:\/\/[^\s<>"']+|\/?notify\/uploads\/[^\s<>"']+|www\.[^\s<>"']+)/gi;
+    const urlRegex = /(https?:\/\/[^\s<>"']+)/gi;
     const parts: MessageRenderPart[] = [];
     let lastIndex = 0;
     let match: RegExpExecArray | null;
@@ -2736,14 +2451,13 @@ export class ChatShellComponent implements OnInit, OnDestroy {
       }
 
       const { cleanUrl, trailingText } = this.stripTrailingPunctuation(rawMatch);
-      const normalizedUrl = this.normalizeMessageUrl(cleanUrl);
 
-      if (this.isImageUrl(normalizedUrl)) {
-        parts.push({ kind: 'image', url: normalizedUrl });
-      } else if (this.isLocationUrl(normalizedUrl)) {
-        parts.push({ kind: 'location', url: normalizedUrl, label: 'המיקום שלי' });
+      if (this.isImageUrl(cleanUrl)) {
+        parts.push({ kind: 'image', url: cleanUrl });
+      } else if (this.isLocationUrl(cleanUrl)) {
+        parts.push({ kind: 'location', url: cleanUrl, label: 'המיקום שלי' });
       } else {
-        parts.push({ kind: 'link', url: normalizedUrl, label: 'לחץ כאן לפתיחת קובץ/קישור' });
+        parts.push({ kind: 'link', url: cleanUrl, label: 'לחץ כאן למעבר לכתובת' });
       }
 
       if (trailingText) {
@@ -2762,24 +2476,6 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     }
 
     return parts;
-  }
-
-  private normalizeMessageUrl(url: string): string {
-    const value = String(url || '').trim();
-    if (!value) return '';
-
-    let normalized = value;
-    if (/^www\./i.test(normalized)) {
-      normalized = `https://${normalized}`;
-    } else if (/^\/?notify\/uploads\//i.test(normalized)) {
-      normalized = normalized.startsWith('/') ? normalized : `/${normalized}`;
-    }
-
-    normalized = normalized.replace(
-      /(\.(?:pdf|doc|docx|xls|xlsx|ppt|pptx|txt|csv|zip|rar|7z|jpeg|jpg|png|gif|webp))\/(?=$|[?#])/i,
-      '$1'
-    );
-    return normalized;
   }
 
   private appendTextAndPhoneParts(parts: MessageRenderPart[], text: string): void {
@@ -2869,250 +2565,6 @@ export class ChatShellComponent implements OnInit, OnDestroy {
     if (/^\+9725\d{8}$/.test(source)) return source;
     if (/^\+97205\d{8}$/.test(source)) return source;
     return '';
-  }
-
-  private buildHrInquiries(messages: ChatMessage[], currentUser: string): HrInquiryView[] {
-    const normalizedCurrentUser = this.normalizeUsername(currentUser);
-    if (!messages.length || !normalizedCurrentUser) {
-      return [];
-    }
-
-    const inquiries: HrInquiryView[] = [];
-    let currentInquiryId = '';
-    let currentInquiryMessages: ChatMessage[] = [];
-
-    const flushCurrentInquiry = (): void => {
-      if (!currentInquiryId || !currentInquiryMessages.length) {
-        return;
-      }
-      const inquiry = this.toHrInquiryView(currentInquiryId, currentInquiryMessages, inquiries.length + 1);
-      if (inquiry) {
-        inquiries.push(inquiry);
-      }
-      currentInquiryId = '';
-      currentInquiryMessages = [];
-    };
-
-    for (let index = 0; index < messages.length; index += 1) {
-      const message = messages[index];
-      if (this.shouldStartNewHrInquiry(message, currentInquiryId, currentInquiryMessages)) {
-        flushCurrentInquiry();
-        currentInquiryId = String(message.messageId || `hr-inquiry-${index + 1}`).trim();
-      }
-
-      if (!currentInquiryId) {
-        if (this.shouldSkipHrSystemMessageOutsideInquiry(message)) {
-          continue;
-        }
-        currentInquiryId = String(message.messageId || `hr-inquiry-${index + 1}`).trim();
-      }
-
-      currentInquiryMessages.push(message);
-    }
-
-    flushCurrentInquiry();
-    return inquiries.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
-  }
-
-  private shouldStartNewHrInquiry(
-    message: ChatMessage,
-    currentInquiryId: string,
-    currentInquiryMessages: ChatMessage[]
-  ): boolean {
-    if (!this.isHrInquiryCandidateMessage(message)) {
-      return false;
-    }
-    if (!currentInquiryMessages.length) {
-      return true;
-    }
-    if (currentInquiryId && this.closedHrInquiryIds().has(currentInquiryId)) {
-      return true;
-    }
-    return false;
-  }
-
-  private shouldSkipHrSystemMessageOutsideInquiry(message: ChatMessage): boolean {
-    if (message.direction !== 'incoming') {
-      return false;
-    }
-    const recordType = String(message.recordType || '').trim();
-    if (recordType === 'hr-welcome' || recordType === 'hr-steps') {
-      return true;
-    }
-    const normalizedBody = this.normalizeHrText(message.body);
-    return (
-      normalizedBody.includes('יש לבחור באמצעות מענה בהודעת ווטסאפ') ||
-      normalizedBody.includes('נא כתוב את הודעתך')
-    );
-  }
-
-  private isHrInquiryCandidateMessage(message: ChatMessage): boolean {
-    if (message.direction !== 'outgoing' || this.isMessageDeleted(message)) {
-      return false;
-    }
-    const body = String(message.body || '').trim();
-    if (!body) {
-      return Boolean(message.imageUrl);
-    }
-    if (body === '0') {
-      return false;
-    }
-    if (/^\d+$/.test(body)) {
-      return false;
-    }
-    const normalized = this.normalizeHrText(body);
-    if (normalized === 'חזרה' || normalized.includes('назад')) {
-      return false;
-    }
-    return true;
-  }
-
-  private toHrInquiryView(
-    inquiryId: string,
-    messages: ChatMessage[],
-    fallbackOrdinal: number
-  ): HrInquiryView | null {
-    if (!messages.length) {
-      return null;
-    }
-
-    const firstMessage = messages[0];
-    const lastMessage = messages[messages.length - 1];
-    const openingMessage =
-      messages.find((message) => this.isHrInquiryCandidateMessage(message))
-      ?? messages.find((message) => message.direction === 'outgoing')
-      ?? firstMessage;
-    const titlePreview = this.getHrMessagePreview(openingMessage);
-    const latestPreviewMessage = [...messages]
-      .reverse()
-      .find((message) => Boolean(this.getHrMessagePreview(message)));
-
-    return {
-      id: inquiryId || `hr-inquiry-${fallbackOrdinal}`,
-      title: this.clampPreview(titlePreview || `פנייה ${fallbackOrdinal}`, 72),
-      preview: this.clampPreview(this.getHrMessagePreview(latestPreviewMessage || lastMessage) || 'ללא תוכן', 96),
-      status: this.isHrInquiryClosed(inquiryId, messages) ? 'closed' : 'active',
-      openedAt: Number(firstMessage.timestamp || Date.now()),
-      lastActivityAt: Number(lastMessage.timestamp || firstMessage.timestamp || Date.now()),
-      messages: [...messages]
-    };
-  }
-
-  private isHrInquiryClosed(inquiryId: string, messages: ChatMessage[]): boolean {
-    const normalizedId = String(inquiryId || '').trim();
-    if (normalizedId && this.closedHrInquiryIds().has(normalizedId)) {
-      return true;
-    }
-    return this.isHrInquiryMarkedClosed(messages);
-  }
-
-  private isHrInquiryMarkedClosed(messages: ChatMessage[]): boolean {
-    return messages.some((message) => {
-      if (String(message.recordType || '').trim() === 'hr-asset') {
-        // Choosing a file/document action should automatically close the inquiry.
-        return true;
-      }
-      const normalizedContent = this.normalizeHrText(
-        `${String(message.recordType || '')} ${String(message.body || '')}`
-      );
-      if (!normalizedContent) {
-        return false;
-      }
-      return (
-        normalizedContent.includes('נסגר') ||
-        normalizedContent.includes('נסגרה') ||
-        normalizedContent.includes('סגורה') ||
-        normalizedContent.includes('פניה סגורה') ||
-        normalizedContent.includes('closed') ||
-        normalizedContent.includes('ticket closed') ||
-        normalizedContent.includes('inquiry closed') ||
-        normalizedContent.includes('закрыт') ||
-        normalizedContent.includes('закрыта') ||
-        normalizedContent.includes('обращение закрыто') ||
-        normalizedContent.includes('завершен') ||
-        normalizedContent.includes('завершена')
-      );
-    });
-  }
-
-  private isHrInquiryFreeTextThread(inquiry: HrInquiryView): boolean {
-    if (!inquiry || inquiry.status === 'closed') {
-      return false;
-    }
-    let sawFreeTextPrompt = false;
-    for (const message of inquiry.messages) {
-      const normalizedBody = this.normalizeHrText(message.body || '');
-      if (message.direction === 'incoming' && normalizedBody.includes('נא כתוב את הודעתך')) {
-        sawFreeTextPrompt = true;
-      }
-      if (sawFreeTextPrompt && this.isHrInquiryCandidateMessage(message)) {
-        return true;
-      }
-    }
-    return sawFreeTextPrompt;
-  }
-
-  private getHrMessagePreview(message: ChatMessage | null): string {
-    if (!message) {
-      return '';
-    }
-    if (this.isMessageDeleted(message)) {
-      return 'הודעה נמחקה';
-    }
-    const body = String(message.body || '').replace(/\s+/g, ' ').trim();
-    if (body) {
-      return body;
-    }
-    if (message.imageUrl) {
-      return 'תמונה';
-    }
-    return '';
-  }
-
-  private normalizeHrText(value: string): string {
-    return String(value || '')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .toLowerCase();
-  }
-
-  private hrClosedInquiryStorageKey(user: string): string {
-    return `hr-closed-inquiries:${this.normalizeUsername(user)}`;
-  }
-
-  private loadClosedHrInquiryIds(user: string): Set<string> {
-    const normalizedUser = this.normalizeUsername(user);
-    if (!normalizedUser) {
-      return new Set<string>();
-    }
-    try {
-      const raw = localStorage.getItem(this.hrClosedInquiryStorageKey(normalizedUser));
-      if (!raw) {
-        return new Set<string>();
-      }
-      const parsed = JSON.parse(raw) as unknown;
-      if (!Array.isArray(parsed)) {
-        return new Set<string>();
-      }
-      return new Set(
-        parsed
-          .map((item) => String(item || '').trim())
-          .filter(Boolean)
-      );
-    } catch {
-      return new Set<string>();
-    }
-  }
-
-  private saveClosedHrInquiryIds(user: string, inquiryIds: Set<string>): void {
-    const normalizedUser = this.normalizeUsername(user);
-    if (!normalizedUser) {
-      return;
-    }
-    const nextIds = Array.from(inquiryIds)
-      .map((item) => String(item || '').trim())
-      .filter(Boolean);
-    localStorage.setItem(this.hrClosedInquiryStorageKey(normalizedUser), JSON.stringify(nextIds));
   }
 
   private buildReplyReference(message: ChatMessage): MessageReference | null {
