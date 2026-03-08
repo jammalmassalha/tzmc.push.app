@@ -953,7 +953,7 @@ export class ChatApiService {
       return [];
     }
 
-    const url = `${this.config.shuttleUserOrdersUrl}?action=get_user_orders&user=${encodeURIComponent(normalizedUser)}`;
+    const url = `${this.config.shuttleUserOrdersUrl}?action=get_user_orders&user=${encodeURIComponent(normalizedUser)}&force=1`;
     // Apps Script often responds with an initial 302 redirect and can be slow on cold start.
     // Keep retries disabled to avoid duplicate bursts, but allow more time before aborting.
     const response = await this.fetchWithRetry(url, {}, { retries: 0, timeoutMs: 60000 });

@@ -13,7 +13,8 @@ function doGet(e) {
     var currentUser = (e.parameter && (e.parameter.user || e.parameter.username || e.parameter.phone)) || '';
     data = getCurrentUserOrders(currentUser, {
       debug: debugMode,
-      includeBuckets: resolveShuttleIncludeBucketsFlag(e && e.parameter ? e.parameter.includeBuckets : '')
+      includeBuckets: resolveShuttleIncludeBucketsFlag(e && e.parameter ? e.parameter.includeBuckets : ''),
+      forceRefresh: resolveShuttleForceRefreshFlag(e && e.parameter ? e.parameter.force : '')
     });
     return ContentService
       .createTextOutput(JSON.stringify(data))
@@ -105,6 +106,16 @@ function resolveShuttleIncludeBucketsFlag(value) {
     normalized === 'yes' ||
     normalized === 'on' ||
     normalized === 'buckets';
+}
+
+function resolveShuttleForceRefreshFlag(value) {
+  var normalized = String(value || '').trim().toLowerCase();
+  return normalized === '1' ||
+    normalized === 'true' ||
+    normalized === 'yes' ||
+    normalized === 'on' ||
+    normalized === 'force' ||
+    normalized === 'refresh';
 }
 
 function getShuttleAdminToken() {
@@ -731,10 +742,14 @@ function getCurrentUserOrders(userValue, options) {
 
   var cache = CacheService.getScriptCache();
   var cacheKey = 'current_user_orders_' + normalizedUser + '_' + (includeBuckets ? 'b1' : 'b0');
+  var forceRefresh = Boolean(options && options.forceRefresh === true);
   var cacheLookupStartedAt = Date.now();
-  var cached = cache.get(cacheKey);
+  var cached = forceRefresh ? null : cache.get(cacheKey);
   if (debugInfo) {
     debugInfo.phasesMs.cacheLookup = Date.now() - cacheLookupStartedAt;
+    if (forceRefresh) {
+      debugInfo.forceRefresh = true;
+    }
   }
   if (cached) {
     var cachedResponse = JSON.parse(cached);
