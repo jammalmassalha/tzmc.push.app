@@ -271,7 +271,7 @@ app.use(cors({
     ]
 }));
 
-app.options('*', cors());
+app.options(/.*/, cors());
 
 // [FIX] INCREASE LIMIT TO 50MB (Default is only 100kb)
 app.use(bodyParser.json({ limit: '350mb' }));
