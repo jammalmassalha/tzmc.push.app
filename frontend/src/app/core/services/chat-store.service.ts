@@ -1123,7 +1123,7 @@ export class ChatStoreService {
     if (!user) {
       throw new Error(this.shuttleText('יש להתחבר לפני טעינת הזמנות', 'Войдите в систему перед загрузкой заказов'));
     }
-    await this.refreshShuttleOrdersFromRemote(user, { force: true });
+    await this.refreshShuttleOrdersFromRemote(user, { force: true, throwOnError: true });
   }
 
   getShuttleFlowBreadcrumbs(): ShuttleBreadcrumbStep[] | null {
@@ -1911,7 +1911,11 @@ export class ChatStoreService {
 
     this.shuttleInitInFlight = true;
     try {
-      await this.refreshShuttleOrdersFromRemote(user);
+      try {
+        await this.refreshShuttleOrdersFromRemote(user);
+      } catch {
+        // Keep shuttle room usable with locally cached orders.
+      }
       if (!this.shouldInitializeShuttleFlowOnOpen(user)) {
         return;
       }
@@ -2284,7 +2288,10 @@ export class ChatStoreService {
     });
   }
 
-  private async refreshShuttleOrdersFromRemote(user: string, options: { force?: boolean } = {}): Promise<void> {
+  private async refreshShuttleOrdersFromRemote(
+    user: string,
+    options: { force?: boolean; throwOnError?: boolean } = {}
+  ): Promise<void> {
     const normalizedUser = this.normalizeUser(user);
     const now = Date.now();
     const lastSyncedAt = this.shuttleOrdersSyncAt.get(normalizedUser) ?? 0;
@@ -2304,12 +2311,17 @@ export class ChatStoreService {
         .filter((item): item is ShuttleOrderRecord => Boolean(item))
         .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
 
-      if (mappedOrders.length > 0 || this.loadShuttleOrders(user).length === 0) {
+      if (mappedOrders.length > 0 || this.loadShuttleOrders(user).length === 0 || options.force) {
         this.saveShuttleOrders(user, mappedOrders.slice(0, 300));
       }
       this.shuttleOrdersSyncAt.set(normalizedUser, Date.now());
-    } catch {
-      this.shuttleOrdersSyncAt.set(normalizedUser, now);
+    } catch (error) {
+      if (!options.force) {
+        this.shuttleOrdersSyncAt.set(normalizedUser, now);
+      }
+      if (options.throwOnError) {
+        throw error;
+      }
     } finally {
       this.shuttleOrdersSyncInFlight.delete(normalizedUser);
       this.bumpShuttlePickerRevision();
