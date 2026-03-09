@@ -2477,8 +2477,10 @@ export class ChatStoreService {
     try {
       let employees: string[] = [];
       const now = Date.now();
+      const mustRevalidateWhileDenied = !previousAccess;
       const hasFreshCache =
         !options.force &&
+        !mustRevalidateWhileDenied &&
         this.shuttleEmployeesCache.items.length > 0 &&
         now - this.shuttleEmployeesCache.at < SHUTTLE_LIST_CACHE_TTL_MS;
       if (hasFreshCache) {
@@ -3913,6 +3915,7 @@ export class ChatStoreService {
         this.schedulePersist();
       }
       this.lastContactsFetchAt = Date.now();
+      await this.refreshShuttleAccessForCurrentUser(user, { force: true });
     } catch {
       // Silent background check to avoid noisy UX.
     } finally {
