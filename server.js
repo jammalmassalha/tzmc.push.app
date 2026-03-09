@@ -10,6 +10,11 @@ const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
 const crypto = require('crypto');
+const { Worker } = require('node:worker_threads');
+const { createAuthorizedUserMiddleware } = require('./backend/middleware/authorized-user.middleware');
+const { registerAuthController } = require('./backend/controllers/auth.controller');
+const { registerMessageController } = require('./backend/controllers/message.controller');
+const { registerShuttleController } = require('./backend/controllers/shuttle.controller');
 const {
     createSheetIntegrationServiceFromEnv,
     createWebhookRegistryFromEnv,
@@ -42,6 +47,7 @@ const redisStateStorePromise = createRedisStateStoreFromEnv(process.env)
 
 // --- 1. SETUP UPLOADS FOLDER ---
 const uploadDir = path.join(__dirname, 'uploads');
+const uploadSecurityWorkerPath = path.join(__dirname, 'backend', 'dist', 'services', 'upload-security-worker.js');
 const app = express();
 app.disable('x-powered-by');
 
@@ -205,6 +211,8 @@ const stateDir = path.join(__dirname, 'data');
 const stateFile = path.join(stateDir, 'state.json');
 let stateSaveTimer = null;
 let activeRedisStateStore = null;
+let redisQueuePubSubActive = false;
+let redisQueuePubSubStartPromise = null;
 
 let unreadCounts = {};
 let groups = {};
@@ -508,7 +516,7 @@ async function safelyDeleteUploadedFile(file = null) {
     }
 }
 
-async function validateUploadedFileSecurity(file = {}, options = {}) {
+async function validateUploadedFileSecurityInProcess(file = {}, options = {}) {
     const allowImage = options.allowImage !== false;
     const allowPdf = options.allowPdf !== false;
     if (!file || !file.path) {
@@ -547,6 +555,85 @@ async function validateUploadedFileSecurity(file = {}, options = {}) {
     }
 
     return { ok: false, message: 'Only secure image and PDF files are allowed' };
+}
+
+function normalizeUploadValidationResult(result) {
+    if (!result || typeof result !== 'object') {
+        return { ok: false, message: 'File content validation failed' };
+    }
+    return {
+        ok: result.ok === true,
+        message: typeof result.message === 'string' ? result.message : ''
+    };
+}
+
+function runUploadValidationWorker(file = {}, options = {}) {
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(uploadSecurityWorkerPath, {
+            workerData: {
+                file: {
+                    path: file.path,
+                    size: file.size,
+                    mimetype: file.mimetype,
+                    originalname: file.originalname
+                },
+                options,
+                maxInspectionBytes: MAX_UPLOAD_INSPECTION_BYTES
+            }
+        });
+
+        let settled = false;
+        const finish = (handler, value) => {
+            if (settled) return;
+            settled = true;
+            handler(value);
+        };
+
+        const timeoutId = setTimeout(() => {
+            try {
+                worker.terminate();
+            } catch (_error) {
+                // Ignore termination errors.
+            }
+            finish(reject, new Error('Upload security validation timed out'));
+        }, 90000);
+
+        worker.once('message', (payload) => {
+            clearTimeout(timeoutId);
+            finish(resolve, normalizeUploadValidationResult(payload));
+        });
+        worker.once('error', (error) => {
+            clearTimeout(timeoutId);
+            finish(reject, error);
+        });
+        worker.once('exit', (code) => {
+            if (settled) {
+                return;
+            }
+            clearTimeout(timeoutId);
+            if (code === 0) {
+                finish(resolve, { ok: false, message: 'File content validation failed' });
+                return;
+            }
+            finish(reject, new Error(`Upload validation worker exited with code ${code}`));
+        });
+    });
+}
+
+async function validateUploadedFileSecurity(file = {}, options = {}) {
+    if (!file || !file.path) {
+        return { ok: false, message: 'Invalid uploaded file data' };
+    }
+
+    if (Worker && fs.existsSync(uploadSecurityWorkerPath)) {
+        try {
+            return await runUploadValidationWorker(file, options);
+        } catch (error) {
+            console.warn('[UPLOAD SECURITY] Worker validation failed, falling back to in-process scan:', error && error.message ? error.message : error);
+        }
+    }
+
+    return validateUploadedFileSecurityInProcess(file, options);
 }
 
 // --- 2. STORAGE CONFIG ---
@@ -600,7 +687,7 @@ webpush.setVapidDetails(
 
 
 // ======================================================
-// [NEW] 4. POLLING MAILBOX (IN-MEMORY STORAGE)
+// [NEW] 4. POLLING MAILBOX (REDIS STREAMS + FALLBACK MEMORY)
 // ======================================================
 let messageQueue = {}; 
 const sseClients = new Map();
@@ -629,6 +716,47 @@ function dispatchRegisteredWebhookAsync(messageObj) {
     });
 }
 
+async function ensureRedisQueuePubSubBridge() {
+    if (redisQueuePubSubActive) {
+        return true;
+    }
+    if (redisQueuePubSubStartPromise) {
+        return redisQueuePubSubStartPromise;
+    }
+    if (!activeRedisStateStore || !activeRedisStateStore.isEnabled || typeof activeRedisStateStore.subscribeToQueueEvents !== 'function') {
+        return false;
+    }
+
+    redisQueuePubSubStartPromise = activeRedisStateStore.subscribeToQueueEvents((event) => {
+        const sourceId = String(event && event.sourceId ? event.sourceId : '').trim();
+        const localPublisherId = activeRedisStateStore && activeRedisStateStore.queuePublisherId
+            ? String(activeRedisStateStore.queuePublisherId).trim()
+            : '';
+        if (sourceId && localPublisherId && sourceId === localPublisherId) {
+            return;
+        }
+
+        const normalizedUser = normalizeUserCandidate(event && event.user);
+        if (!normalizedUser) return;
+        const messageObj = event && event.message && typeof event.message === 'object'
+            ? event.message
+            : null;
+        if (!messageObj) return;
+        notifySseClients(normalizedUser, messageObj);
+    }).then((subscribed) => {
+        redisQueuePubSubActive = Boolean(subscribed);
+        return redisQueuePubSubActive;
+    }).catch((error) => {
+        console.warn('[REDIS] Queue pub/sub bridge failed:', error && error.message ? error.message : error);
+        redisQueuePubSubActive = false;
+        return false;
+    }).finally(() => {
+        redisQueuePubSubStartPromise = null;
+    });
+
+    return redisQueuePubSubStartPromise;
+}
+
 // Helper: Add message to queue (NORMALIZED TO LOWERCASE)
 function addToQueue(targetUser, messageObj) {
     const recipients = Array.isArray(targetUser) ? targetUser : [targetUser];
@@ -645,14 +773,21 @@ function addToQueue(targetUser, messageObj) {
                 timestamp: Date.now()
             };
 
-        if (!messageQueue[normalizedUser]) {
-            messageQueue[normalizedUser] = [];
-        }
-        messageQueue[normalizedUser].push(queueEntry);
-        if (activeRedisStateStore && activeRedisStateStore.isEnabled) {
+        const hasRedisQueue = Boolean(activeRedisStateStore && activeRedisStateStore.isEnabled);
+        if (hasRedisQueue) {
             activeRedisStateStore.enqueueMessages(normalizedUser, [queueEntry]).catch((error) => {
                 console.warn('[REDIS] enqueue failed:', error && error.message ? error.message : error);
+                if (!messageQueue[normalizedUser]) {
+                    messageQueue[normalizedUser] = [];
+                }
+                messageQueue[normalizedUser].push(queueEntry);
+                scheduleStateSave();
             });
+        } else {
+            if (!messageQueue[normalizedUser]) {
+                messageQueue[normalizedUser] = [];
+            }
+            messageQueue[normalizedUser].push(queueEntry);
         }
         dispatchRegisteredWebhookAsync(queueEntry);
         notifySseClients(normalizedUser, queueEntry);
@@ -1952,6 +2087,14 @@ function resolveAuthorizedUser(req, candidateUser, options = {}) {
 
     return { user: requestedUser, error: '', status: 200 };
 }
+
+const authorizedUserMiddleware = createAuthorizedUserMiddleware({
+    resolveAuthorizedUser,
+    normalizeUserCandidate,
+    defaultCandidateKeys: ['user', 'username', 'phone', 'sender', 'reader', 'reactor']
+});
+const attachResolvedUser = authorizedUserMiddleware.attachResolvedUser;
+const requireAuthorizedUser = authorizedUserMiddleware.requireAuthorizedUser;
 
 function normalizeDeliveryTelemetryValue(rawValue) {
     const value = Number(rawValue);
@@ -3608,13 +3751,14 @@ async function loadState() {
     const redisStore = await redisStateStorePromise;
     if (redisStore && redisStore.isEnabled) {
         activeRedisStateStore = redisStore;
+        await ensureRedisQueuePubSubBridge();
         try {
             const redisState = await redisStore.loadState();
             if (redisState) {
                 unreadCounts = (redisState.unreadCounts && typeof redisState.unreadCounts === 'object')
                     ? redisState.unreadCounts
                     : {};
-                messageQueue = await redisStore.loadQueueSnapshot();
+                messageQueue = {};
                 groups = (redisState.groups && typeof redisState.groups === 'object')
                     ? redisState.groups
                     : {};
@@ -3934,6 +4078,7 @@ app.use((req, _res, next) => {
     req.authUser = authSession && authSession.user ? authSession.user : '';
     next();
 });
+app.use(attachResolvedUser);
 
 app.use((req, res, next) => {
     if (!CSRF_PROTECTION_ENABLED) {
@@ -3966,229 +4111,39 @@ app.use((req, res, next) => {
     return next();
 });
 
-app.get(['/auth/session', '/notify/auth/session'], (req, res) => {
-    const user = normalizeUserCandidate(req.authUser);
-    const authSession = req.authSession && typeof req.authSession === 'object' ? req.authSession : null;
-    if (!user) {
-        return res.json({ authenticated: false, user: null });
-    }
-    return res.json({
-        authenticated: true,
-        user,
-        csrfToken: authSession && authSession.csrfToken ? authSession.csrfToken : null
-    });
-});
-
-app.post(['/auth/session', '/notify/auth/session'], (_req, res) => {
-    return res.status(410).json({
-        status: 'error',
-        message: 'Direct login is disabled. Use SMS verification code flow.',
-        verificationRequired: true,
-        legacyLoginDisabled: true
-    });
-});
-
-app.post(['/auth/session/request-code', '/notify/auth/session/request-code'], async (req, res) => {
-    const payload = req.body && typeof req.body === 'object' ? req.body : {};
-    const requestedUser = normalizeUserCandidate(payload.username || payload.user || payload.phone);
-    if (!SESSION_USER_PATTERN.test(requestedUser)) {
-        return res.status(400).json({ status: 'error', message: 'Invalid user' });
-    }
-    const registrationFlowCheck = ensureRegistrationFlowOnly(req, requestedUser);
-    if (!registrationFlowCheck.ok) {
-        return res.status(registrationFlowCheck.status).json({
-            status: 'error',
-            message: registrationFlowCheck.message
-        });
-    }
-
-    const clientIp = getClientIpAddress(req);
-    const ipLimit = consumeRateLimitEntry(
-        authCodeRequestRateLimitByIp,
-        clientIp,
-        AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_IP,
-        AUTH_CODE_RATE_LIMIT_WINDOW_MS
-    );
-    const userLimit = consumeRateLimitEntry(
-        authCodeRequestRateLimitByUser,
-        requestedUser,
-        AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_USER,
-        AUTH_CODE_RATE_LIMIT_WINDOW_MS
-    );
-    if (!ipLimit.allowed || !userLimit.allowed) {
-        const retryAfterSeconds = Math.max(ipLimit.retryAfterSeconds || 0, userLimit.retryAfterSeconds || 0, 1);
-        res.setHeader('Retry-After', String(retryAfterSeconds));
-        return res.status(429).json({
-            status: 'error',
-            message: 'Too many verification attempts. Please try again later.',
-            retryAfterSeconds
-        });
-    }
-
-    try {
-        if (AUTH_CODE_REQUIRE_REGISTERED_USER) {
-            const registrationCheck = await ensureRequestedUserIsRegistered(requestedUser);
-            if (!registrationCheck.ok) {
-                return res.status(registrationCheck.status).json({
-                    status: 'error',
-                    message: registrationCheck.message
-                });
-            }
-        }
-
-        const verificationCode = generateAuthCode();
-        await setAuthCodeOnSubscribeSheet(requestedUser, verificationCode);
-        await sendAuthCodeSms(requestedUser, verificationCode);
-
-        return res.json({
-            status: 'success',
-            verificationRequired: true,
-            codeSent: true,
-            user: requestedUser,
-            expiresInSeconds: AUTH_CODE_TTL_SECONDS
-        });
-    } catch (error) {
-        const reason = error && error.message ? String(error.message) : 'Unable to send verification code';
-        console.error('[AUTH CODE] Failed to send verification code:', reason);
-        return res.status(502).json({ status: 'error', message: reason });
-    }
-});
-
-app.post(['/auth/session/verify-code', '/notify/auth/session/verify-code'], async (req, res) => {
-    const payload = req.body && typeof req.body === 'object' ? req.body : {};
-    const requestedUser = normalizeUserCandidate(payload.username || payload.user || payload.phone);
-    const submittedCode = normalizeAuthCode(payload.code || payload.otp || payload.verificationCode);
-    if (!SESSION_USER_PATTERN.test(requestedUser)) {
-        return res.status(400).json({ status: 'error', message: 'Invalid user' });
-    }
-    if (!AUTH_CODE_PATTERN.test(submittedCode)) {
-        return res.status(400).json({ status: 'error', message: 'Invalid verification code' });
-    }
-    if (!SESSION_SIGNING_SECRET) {
-        return res.status(500).json({ status: 'error', message: 'Session configuration missing' });
-    }
-    const registrationFlowCheck = ensureRegistrationFlowOnly(req, requestedUser);
-    if (!registrationFlowCheck.ok) {
-        return res.status(registrationFlowCheck.status).json({
-            status: 'error',
-            message: registrationFlowCheck.message
-        });
-    }
-
-    const clientIp = getClientIpAddress(req);
-    const ipLimit = consumeRateLimitEntry(
-        authCodeVerifyRateLimitByIp,
-        clientIp,
-        AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_IP,
-        AUTH_CODE_RATE_LIMIT_WINDOW_MS
-    );
-    const userLimit = consumeRateLimitEntry(
-        authCodeVerifyRateLimitByUser,
-        requestedUser,
-        AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_USER,
-        AUTH_CODE_RATE_LIMIT_WINDOW_MS
-    );
-    if (!ipLimit.allowed || !userLimit.allowed) {
-        const retryAfterSeconds = Math.max(ipLimit.retryAfterSeconds || 0, userLimit.retryAfterSeconds || 0, 1);
-        res.setHeader('Retry-After', String(retryAfterSeconds));
-        return res.status(429).json({
-            status: 'error',
-            message: 'Too many verification attempts. Please try again later.',
-            retryAfterSeconds
-        });
-    }
-
-    try {
-        if (AUTH_CODE_REQUIRE_REGISTERED_USER) {
-            const registrationCheck = await ensureRequestedUserIsRegistered(requestedUser);
-            if (!registrationCheck.ok) {
-                return res.status(registrationCheck.status).json({
-                    status: 'error',
-                    message: registrationCheck.message
-                });
-            }
-        }
-
-        const verified = await verifyAuthCodeFromSubscribeSheet(requestedUser, submittedCode);
-        if (!verified) {
-            return res.status(401).json({ status: 'error', message: 'Invalid verification code' });
-        }
-
-        const sessionToken = createSessionToken(requestedUser);
-        if (!sessionToken) {
-            return res.status(500).json({ status: 'error', message: 'Failed to create session' });
-        }
-
-        setSessionCookie(res, req, sessionToken.token, sessionToken.expiresAt);
-        return res.json({
-            status: 'success',
-            authenticated: true,
-            user: requestedUser,
-            expiresAt: sessionToken.expiresAt,
-            csrfToken: sessionToken.csrfToken
-        });
-    } catch (error) {
-        const reason = error && error.message ? String(error.message) : 'Unable to verify code';
-        console.error('[AUTH CODE] Failed to verify code:', reason);
-        return res.status(502).json({ status: 'error', message: reason });
-    }
-});
-
-app.delete(['/auth/session', '/notify/auth/session'], (req, res) => {
-    const authSession = req.authSession && typeof req.authSession === 'object' ? req.authSession : null;
-    if (authSession && authSession.user) {
-        const currentSessionId = String(activeSessionIdByUser.get(authSession.user) || '').trim();
-        if (!currentSessionId || currentSessionId === String(authSession.sessionId || '')) {
-            activeSessionIdByUser.delete(authSession.user);
-        }
-    }
-    clearSessionCookie(res, req);
-    return res.json({ status: 'success', authenticated: false });
-});
-
-app.post(['/register-device', '/notify/register-device'], (req, res) => {
-    try {
-        const payload = req.body && typeof req.body === 'object' ? req.body : {};
-        const resolvedUser = resolveAuthorizedUser(req, payload.username || payload.user, { required: true });
-        if (resolvedUser.error) {
-            return res.status(resolvedUser.status).json({ status: 'error', message: resolvedUser.error });
-        }
-        const username = resolvedUser.user;
-
-        const trackedSubscriptions = upsertLocalDeviceSubscriptionsFromRegistration({
-            ...payload,
-            username
-        });
-        if (!trackedSubscriptions) {
-            return res.status(400).json({ status: 'error', message: 'Missing valid subscription payload' });
-        }
-
-        scheduleStateSave();
-        res.json({
-            status: 'success',
-            username,
-            trackedSubscriptions
-        });
-    } catch (error) {
-        console.error('[REGISTER DEVICE] Failed:', error.message);
-        res.status(500).json({ status: 'error', message: error.message });
-    }
-});
-// --- RESET BADGE ENDPOINT ---
-app.post(['/reset-badge', '/notify/reset-badge'], (req, res) => {
-    const { user: requestedUser } = req.body || {};
-    const resolvedUser = resolveAuthorizedUser(req, requestedUser, { required: false });
-    if (resolvedUser.error) {
-        return res.status(resolvedUser.status).json({ status: 'error', message: resolvedUser.error });
-    }
-    const user = resolvedUser.user;
-    if (user) {
-        // Reset count for this user
-        unreadCounts[user] = 0;
-        console.log(`[BADGE] Reset count for ${user}`);
-        scheduleStateSave();
-    }
-    res.json({ status: 'success' });
+registerAuthController(app, {
+    normalizeUserCandidate,
+    activeSessionIdByUser,
+    clearSessionCookie,
+    SESSION_USER_PATTERN,
+    ensureRegistrationFlowOnly,
+    getClientIpAddress,
+    consumeRateLimitEntry,
+    authCodeRequestRateLimitByIp,
+    AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_IP,
+    AUTH_CODE_RATE_LIMIT_WINDOW_MS,
+    authCodeRequestRateLimitByUser,
+    AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_USER,
+    AUTH_CODE_REQUIRE_REGISTERED_USER,
+    ensureRequestedUserIsRegistered,
+    generateAuthCode,
+    setAuthCodeOnSubscribeSheet,
+    sendAuthCodeSms,
+    AUTH_CODE_TTL_SECONDS,
+    normalizeAuthCode,
+    AUTH_CODE_PATTERN,
+    SESSION_SIGNING_SECRET,
+    authCodeVerifyRateLimitByIp,
+    AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_IP,
+    authCodeVerifyRateLimitByUser,
+    AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_USER,
+    verifyAuthCodeFromSubscribeSheet,
+    createSessionToken,
+    setSessionCookie,
+    upsertLocalDeviceSubscriptionsFromRegistration,
+    scheduleStateSave,
+    unreadCounts,
+    requireAuthorizedUser
 });
 
 // --- CLIENT TELEMETRY ---
@@ -4282,14 +4237,17 @@ app.post(['/backup', '/notify/backup'], (req, res) => {
     }
 });
 // --- MESSAGE ACTION ENDPOINTS (EDIT / DELETE FOR EVERYONE) ---
-app.post(['/delete', '/notify/delete'], async (req, res) => {
+app.post(
+    ['/delete', '/notify/delete'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['sender', 'user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
     try {
         const body = req.body || {};
-        const resolvedSender = resolveAuthorizedUser(req, body.sender || body.user, { required: true });
-        if (resolvedSender.error) {
-            return res.status(resolvedSender.status).json({ error: resolvedSender.error });
-        }
-        const sender = resolvedSender.user;
+        const sender = req.resolvedUser;
         const messageId = String(body.messageId || '').trim();
         const deletedAtRaw = Number(body.deletedAt || body.timestamp || Date.now());
         const deletedAt = Number.isFinite(deletedAtRaw) ? deletedAtRaw : Date.now();
@@ -4369,14 +4327,17 @@ app.post(['/delete', '/notify/delete'], async (req, res) => {
     }
 });
 
-app.post(['/edit', '/notify/edit'], async (req, res) => {
+app.post(
+    ['/edit', '/notify/edit'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['sender', 'user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
     try {
         const body = req.body || {};
-        const resolvedSender = resolveAuthorizedUser(req, body.sender || body.user, { required: true });
-        if (resolvedSender.error) {
-            return res.status(resolvedSender.status).json({ error: resolvedSender.error });
-        }
-        const sender = resolvedSender.user;
+        const sender = req.resolvedUser;
         const messageId = String(body.messageId || '').trim();
         const editedBody = String(body.body || body.editedBody || '').trim();
         const editedAtRaw = Number(body.editedAt || body.timestamp || Date.now());
@@ -4935,240 +4896,37 @@ app.post(['/mobile-reregister-campaign', '/notify/mobile-reregister-campaign'], 
         });
 });
 
-app.get(['/shuttle-reminders/status', '/notify/shuttle-reminders/status'], (req, res) => {
-    if (!isSchedulerOpsRequestAuthorized(req)) {
-        return res.status(403).json({ error: 'Forbidden' });
-    }
-    const effectiveTimeZone = getShuttleReminderEffectiveTimeZone();
-    return res.json({
-        enabled: SHUTTLE_REMINDER_ENABLED,
-        running: shuttleReminderState.running,
-        lastRunAt: shuttleReminderState.lastRunAt || null,
-        lastResult: shuttleReminderState.lastResult || null,
-        schedulerStarted: shuttleReminderSchedulerStarted,
-        intervalMs: SHUTTLE_REMINDER_INTERVAL_MS,
-        leadMs: SHUTTLE_REMINDER_LEAD_MS,
-        userRefreshMs: SHUTTLE_REMINDER_USER_REFRESH_MS,
-        usersDiscoveryRefreshMs: SHUTTLE_REMINDER_USERS_DISCOVERY_REFRESH_MS,
-        fetchTimeoutMs: SHUTTLE_REMINDER_FETCH_TIMEOUT_MS,
-        fetchRetries: SHUTTLE_REMINDER_FETCH_RETRIES,
-        ordersUrlConfigured: Boolean(SHUTTLE_USER_ORDERS_URL),
-        timezone: effectiveTimeZone,
-        trackedSentReminders: Object.keys(shuttleReminderSentAtByKey).length,
-        cachedUsers: Array.isArray(shuttleReminderKnownUsersCache.users)
-            ? shuttleReminderKnownUsersCache.users.length
-            : 0,
-        cachedOrderUsers: Object.keys(shuttleReminderOrdersCacheByUser).length
-    });
+registerShuttleController(app, {
+    isSchedulerOpsRequestAuthorized,
+    getShuttleReminderEffectiveTimeZone,
+    SHUTTLE_REMINDER_ENABLED,
+    shuttleReminderState,
+    getShuttleReminderSchedulerStarted: () => shuttleReminderSchedulerStarted,
+    SHUTTLE_REMINDER_INTERVAL_MS,
+    SHUTTLE_REMINDER_LEAD_MS,
+    SHUTTLE_REMINDER_USER_REFRESH_MS,
+    SHUTTLE_REMINDER_USERS_DISCOVERY_REFRESH_MS,
+    SHUTTLE_REMINDER_FETCH_TIMEOUT_MS,
+    SHUTTLE_REMINDER_FETCH_RETRIES,
+    SHUTTLE_USER_ORDERS_URL,
+    shuttleReminderSentAtByKey,
+    shuttleReminderKnownUsersCache,
+    shuttleReminderOrdersCacheByUser,
+    parseBooleanInput,
+    generateMessageId,
+    runShuttleReminderJob
 });
 
-app.post(['/shuttle-reminders/run', '/notify/shuttle-reminders/run'], (req, res) => {
-    if (!isSchedulerOpsRequestAuthorized(req)) {
-        return res.status(403).json({ error: 'Forbidden' });
-    }
-    if (shuttleReminderState.running) {
-        return res.status(409).json({
-            status: 'running',
-            message: 'Shuttle reminder scheduler is already running.',
-            lastResult: shuttleReminderState.lastResult || null
-        });
-    }
-
-    const payload = req.body && typeof req.body === 'object' ? req.body : {};
-    const requestId = generateMessageId();
-    const forceUsersRefresh = parseBooleanInput(payload.forceUsersRefresh, false);
-    const forceOrdersRefresh = parseBooleanInput(payload.forceOrdersRefresh, false);
-    const allowWhenDisabled = parseBooleanInput(payload.allowWhenDisabled, false);
-
-    res.json({
-        status: 'queued',
-        requestId,
-        forceUsersRefresh,
-        forceOrdersRefresh,
-        allowWhenDisabled
-    });
-
-    runShuttleReminderJob({
-        requestId,
-        trigger: 'manual-api',
-        forceUsersRefresh,
-        forceOrdersRefresh,
-        allowWhenDisabled
-    })
-        .then((summary) => {
-            if (!summary || summary.status === 'running' || summary.status === 'disabled') {
-                return;
-            }
-            console.log(
-                `[SHUTTLE REMINDER] Manual run ${summary.requestId} | users=${summary.candidateUsers} due=${summary.dueOrders} sent=${summary.sent} failed=${summary.failed} noTarget=${summary.noTarget}`
-            );
-        })
-        .catch((error) => {
-            console.error('[SHUTTLE REMINDER] Manual run failed:', error && error.message ? error.message : error);
-        });
-});
-
-app.get(['/contacts', '/notify/contacts', '/contacts/:user', '/notify/contacts/:user'], async (req, res) => {
-    const requestedUser = normalizeUserKey(
-        (req.query && req.query.user) ||
-        (req.params && req.params.user) ||
-        ''
-    );
-    const resolvedUser = resolveAuthorizedUser(req, requestedUser, { required: true });
-    if (resolvedUser.error) {
-        return res.status(resolvedUser.status).json({ users: [], error: resolvedUser.error });
-    }
-    const user = resolvedUser.user;
-    if (!user) {
-        return res.status(400).json({ users: [], error: 'Missing user' });
-    }
-
-    try {
-        const response = await fetchWithRetry(
-            buildGoogleSheetGetUrl({ action: 'get_contacts', user }),
-            {},
-            { timeoutMs: 10000, retries: 2 }
-        );
-        if (!response.ok) {
-            return res.status(response.status).json({ users: [] });
-        }
-        const payload = await response.json();
-        const users = Array.isArray(payload && payload.users) ? payload.users : [];
-        return res.json({
-            result: 'success',
-            users
-        });
-    } catch (error) {
-        console.error('[CONTACTS] Failed to load contacts:', error && error.message ? error.message : error);
-        return res.status(502).json({ users: [], error: 'Contacts fetch failed' });
-    }
-});
-
-app.get(['/groups', '/notify/groups'], (req, res) => {
-    const requestedUser = req.query.user ? normalizeUserKey(req.query.user) : '';
-    const resolvedUser = resolveAuthorizedUser(req, requestedUser, { required: true });
-    if (resolvedUser.error) {
-        return res.status(resolvedUser.status).json({ groups: [], error: resolvedUser.error });
-    }
-    const user = resolvedUser.user;
-    if (!user) return res.json({ groups: [] });
-    const result = Object.values(groups || {}).filter(group => {
-        if (!group || !Array.isArray(group.members)) return false;
-        return group.members.map(normalizeUserKey).includes(user);
-    });
-    res.json({ groups: result });
-});
-
-// ======================================================
-// [NEW] GET MESSAGES (For Flutter Polling)
-// ======================================================
-app.get(['/messages', '/notify/messages'], async (req, res) => {
-    // [CHANGE] Force Lowercase Lookup
-    const requestedUser = req.query.user ? normalizeUserKey(req.query.user) : '';
-    const resolvedUser = resolveAuthorizedUser(req, requestedUser, { required: true });
-    if (resolvedUser.error) {
-        return res.status(resolvedUser.status).json({ messages: [] });
-    }
-    const user = resolvedUser.user;
-    
-    if (!user) return res.json({ messages: [] });
-
-    let mailbox = [];
-    if (activeRedisStateStore && activeRedisStateStore.isEnabled) {
-        try {
-            const redisMailbox = await activeRedisStateStore.drainQueue(user);
-            if (Array.isArray(redisMailbox) && redisMailbox.length > 0) {
-                mailbox = redisMailbox;
-            }
-        } catch (error) {
-            console.warn('[REDIS] Drain queue failed:', error && error.message ? error.message : error);
-        }
-    }
-    if (!mailbox.length && messageQueue[user] && messageQueue[user].length > 0) {
-        mailbox = Array.isArray(messageQueue[user]) ? messageQueue[user] : [];
-    }
-
-    // Check mailbox (using lowercase key)
-    if (mailbox.length > 0) {
-        const waitingMessages = mailbox.filter((message) => {
-            if (!message || typeof message !== 'object') {
-                return true;
-            }
-            const recipient = normalizeUserKey(message.recipient || message.user || '');
-            return !recipient || recipient === user;
-        });
-        const droppedCount = mailbox.length - waitingMessages.length;
-        
-        // Clear mailbox after picking up
-        messageQueue[user] = []; 
-        scheduleStateSave();
-        
-        if (droppedCount > 0) {
-            console.warn(`[POLLING] Dropped ${droppedCount} mismatched queued messages for ${user}`);
-        }
-        console.log(`[POLLING] Delivered ${waitingMessages.length} msgs to ${user}`);
-        return res.json({ messages: waitingMessages });
-    }
-
-    return res.json({ messages: [] });
-});
-
-// ======================================================
-// [NEW] SSE STREAM (REAL-TIME)
-// ======================================================
-app.get(['/stream', '/notify/stream'], (req, res) => {
-    const requestedUser = req.query.user ? String(req.query.user).trim().toLowerCase() : '';
-    const resolvedUser = resolveAuthorizedUser(req, requestedUser, { required: true });
-    if (resolvedUser.error) {
-        return res.status(resolvedUser.status).json({ error: resolvedUser.error });
-    }
-    const user = resolvedUser.user || null;
-    if (!user) {
-        return res.status(400).json({ error: 'Missing user' });
-    }
-
-    res.set({
-        'Content-Type': 'text/event-stream; charset=utf-8',
-        'Cache-Control': 'no-cache, no-transform',
-        Connection: 'keep-alive',
-        'X-Accel-Buffering': 'no',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization, Cache-Control, Pragma, Last-Event-ID, X-CSRF-Token'
-    });
-    req.socket.setTimeout(0);
-    res.setTimeout(0);
-    if (typeof res.flushHeaders === 'function') {
-        res.flushHeaders();
-    }
-    res.write(`event: connected\ndata: ${JSON.stringify({ user })}\n\n`);
-    if (typeof res.flush === 'function') {
-        res.flush();
-    }
-
-    const existing = sseClients.get(user) || new Set();
-    existing.add(res);
-    sseClients.set(user, existing);
-
-    const keepAlive = setInterval(() => {
-        res.write(`event: ping\ndata: ${Date.now()}\n\n`);
-        if (typeof res.flush === 'function') {
-            res.flush();
-        }
-    }, 15000);
-
-    const cleanup = () => {
-        clearInterval(keepAlive);
-        const set = sseClients.get(user);
-        if (set) {
-            set.delete(res);
-            if (set.size === 0) {
-                sseClients.delete(user);
-            }
-        }
-    };
-
-    req.on('close', cleanup);
-    req.on('error', cleanup);
+registerMessageController(app, {
+    requireAuthorizedUser,
+    normalizeUserKey,
+    fetchWithRetry,
+    buildGoogleSheetGetUrl,
+    getGroups: () => groups,
+    getActiveRedisStateStore: () => activeRedisStateStore,
+    getMessageQueue: () => messageQueue,
+    scheduleStateSave,
+    sseClients
 });
 
 app.post(['/upload', '/notify/upload'], uploadFieldsValidated, async (req, res) => {
@@ -5212,10 +4970,16 @@ app.post(['/upload', '/notify/upload'], uploadFieldsValidated, async (req, res) 
     res.json({ status: 'success', url: fileUrl, thumbUrl, type: file.mimetype });
 });
 
-app.post(['/reply', '/notify/reply'], async (req, res) => {
+app.post(
+    ['/reply', '/notify/reply'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
     try {
         const {
-            user: requestedUser,
             reply,
             originalSender,
             imageUrl,
@@ -5237,11 +5001,7 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
             forwardedFrom,
             forwardedFromName
         } = req.body;
-        const resolvedSender = resolveAuthorizedUser(req, requestedUser, { required: true });
-        if (resolvedSender.error) {
-            return res.status(resolvedSender.status).json({ error: resolvedSender.error });
-        }
-        const user = resolvedSender.user;
+        const user = req.resolvedUser;
         console.log(`[REPLY] From: ${user} | To: ${originalSender}`);
 
         let groupRecord = null;
@@ -5467,7 +5227,14 @@ app.post(['/group-update', '/notify/group-update'], async (req, res) => {
     }
 });
 
-app.post(['/reaction', '/notify/reaction'], async (req, res) => {
+app.post(
+    ['/reaction', '/notify/reaction'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['reactor'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
     try {
         const {
             groupId,
@@ -5483,11 +5250,7 @@ app.post(['/reaction', '/notify/reaction'], async (req, res) => {
         } = req.body || {};
         const normalizedTargetMessageId = String(targetMessageId || '').trim();
         const normalizedEmoji = String(emoji || '').trim();
-        const resolvedReactor = resolveAuthorizedUser(req, reactor, { required: true });
-        if (resolvedReactor.error) {
-            return res.status(resolvedReactor.status).json({ error: resolvedReactor.error });
-        }
-        const normalizedReactor = resolvedReactor.user;
+        const normalizedReactor = req.resolvedUser;
         if (!groupId || !normalizedTargetMessageId || !normalizedEmoji) {
             return res.status(400).json({ error: 'Missing reaction fields' });
         }
@@ -5576,18 +5339,20 @@ app.post(['/reaction', '/notify/reaction'], async (req, res) => {
     }
 });
 
-app.post(['/read', '/notify/read'], async (req, res) => {
+app.post(
+    ['/read', '/notify/read'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['reader'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ status: 'error', message: resolution.error })
+    }),
+    async (req, res) => {
     try {
         const { reader: requestedReader, sender, messageIds, readAt } = req.body;
         if (!requestedReader || !sender || !Array.isArray(messageIds) || messageIds.length === 0) {
             return res.status(400).json({ status: 'error', message: 'Missing fields' });
         }
-        const resolvedReader = resolveAuthorizedUser(req, requestedReader, { required: true });
-        if (resolvedReader.error) {
-            return res.status(resolvedReader.status).json({ status: 'error', message: resolvedReader.error });
-        }
-
-        const normalizedReader = resolvedReader.user;
+        const normalizedReader = req.resolvedUser;
         const normalizedSender = String(sender).trim();
         const uniqueMessageIds = Array.from(
             new Set(
