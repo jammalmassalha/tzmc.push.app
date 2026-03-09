@@ -245,6 +245,7 @@ export class ChatStoreService {
   private shuttleEmployeesCache: { at: number; items: string[] } = { at: 0, items: [] };
   private readonly shuttleOrdersSyncAt = new Map<string, number>();
   private readonly shuttleOrdersSyncInFlight = new Set<string>();
+  private readonly shuttleOrdersSyncPromiseByUser = new Map<string, Promise<void>>();
   private readonly shuttleReminderTimersByKey = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly shuttlePickerRevision = signal(0);
   private lastAppliedAppBadgeCount = -1;
@@ -1237,7 +1238,7 @@ export class ChatStoreService {
     }
 
     await this.submitShuttleOrder(user, targetOrder, SHUTTLE_STATUS_CANCEL_VALUE);
-    this.markShuttleOrderCancelled(user, targetOrder.id);
+    await this.confirmShuttleOrderCancellationSynced(user, targetOrder);
     this.sendShuttleSystemMessage(
       `${this.shuttleText('ההזמנה בוטלה בהצלחה ✅', 'Заказ успешно отменен ✅')}\n${this.buildShuttleOrderSummary({
         ...targetOrder,
@@ -2220,7 +2221,7 @@ export class ChatStoreService {
 
     try {
       await this.submitShuttleOrder(user, targetOrder, SHUTTLE_STATUS_CANCEL_VALUE);
-      this.markShuttleOrderCancelled(user, targetOrder.id);
+      await this.confirmShuttleOrderCancellationSynced(user, targetOrder);
       this.sendShuttleSystemMessage(
         `${this.shuttleText('ההזמנה בוטלה בהצלחה ✅', 'Заказ успешно отменен ✅')}\n${this.buildShuttleOrderSummary({
           ...targetOrder,
@@ -2299,12 +2300,20 @@ export class ChatStoreService {
       return;
     }
     if (this.shuttleOrdersSyncInFlight.has(normalizedUser)) {
-      return;
+      const activeSync = this.shuttleOrdersSyncPromiseByUser.get(normalizedUser);
+      if (activeSync) {
+        await activeSync.catch(() => undefined);
+      } else {
+        return;
+      }
+      if (!options.force) {
+        return;
+      }
     }
 
     this.shuttleOrdersSyncInFlight.add(normalizedUser);
     this.bumpShuttlePickerRevision();
-    try {
+    const syncTask = (async () => {
       const remoteOrders = await this.api.getShuttleUserOrders(user);
       const mappedOrders = remoteOrders
         .map((item, index) => this.mapShuttleRemoteOrder(item, index))
@@ -2315,6 +2324,10 @@ export class ChatStoreService {
         this.saveShuttleOrders(user, mappedOrders.slice(0, 300));
       }
       this.shuttleOrdersSyncAt.set(normalizedUser, Date.now());
+    })();
+    this.shuttleOrdersSyncPromiseByUser.set(normalizedUser, syncTask);
+    try {
+      await syncTask;
     } catch (error) {
       if (!options.force) {
         this.shuttleOrdersSyncAt.set(normalizedUser, now);
@@ -2324,6 +2337,7 @@ export class ChatStoreService {
       }
     } finally {
       this.shuttleOrdersSyncInFlight.delete(normalizedUser);
+      this.shuttleOrdersSyncPromiseByUser.delete(normalizedUser);
       this.bumpShuttlePickerRevision();
     }
   }
@@ -2343,9 +2357,9 @@ export class ChatStoreService {
       return null;
     }
 
-    const rawStatusValue = item.statusValue ?? item.status ?? '';
-    const statusValue = String(rawStatusValue).trim() || SHUTTLE_STATUS_ACTIVE_VALUE;
-    const isCancelled = item.isCancelled === true || this.isShuttleStatusCancelled(statusValue);
+    const statusValue = this.resolveShuttleRemoteStatusValue(item);
+    const cancelHint = this.resolveShuttleRemoteCancelHint(item);
+    const isCancelled = cancelHint ?? this.isShuttleStatusCancelled(statusValue);
     const statusLabel = this.resolveShuttleStatusLabel(isCancelled ? SHUTTLE_STATUS_CANCEL_VALUE : statusValue);
     const submittedAtRaw = Number(item.submittedAt || 0);
     const dateTimestamp = this.parseShuttleDate(dateIso)?.getTime() ?? Date.now();
@@ -2373,6 +2387,137 @@ export class ChatStoreService {
       submittedAt,
       cancelledAt: Number.isFinite(cancelledAtRaw) && cancelledAtRaw > 0 ? cancelledAtRaw : undefined
     };
+  }
+
+  private resolveShuttleRemoteStatusValue(item: ShuttleUserOrderPayload): string {
+    const record = item as Record<string, unknown>;
+    const candidateKeys = [
+      'statusValue',
+      'status',
+      'status_value',
+      'statusvalue',
+      'tripStatus',
+      'trip_status',
+      'state',
+      'סטטוס',
+      'מצב'
+    ] as const;
+
+    for (const key of candidateKeys) {
+      const value = record[key];
+      if (value !== undefined && value !== null && String(value).trim()) {
+        return String(value).trim();
+      }
+    }
+
+    return SHUTTLE_STATUS_ACTIVE_VALUE;
+  }
+
+  private resolveShuttleRemoteCancelHint(item: ShuttleUserOrderPayload): boolean | null {
+    const record = item as Record<string, unknown>;
+    const cancelCandidates = [
+      item.isCancelled,
+      record['isCancelled'],
+      record['isCanceled'],
+      record['cancelled'],
+      record['canceled']
+    ];
+    for (const value of cancelCandidates) {
+      const normalized = this.parseShuttleBoolean(value);
+      if (normalized !== null) {
+        return normalized;
+      }
+    }
+
+    const activeCandidates = [
+      record['isActive'],
+      record['active']
+    ];
+    for (const value of activeCandidates) {
+      const normalized = this.parseShuttleBoolean(value);
+      if (normalized !== null) {
+        return !normalized;
+      }
+    }
+
+    return null;
+  }
+
+  private parseShuttleBoolean(value: unknown): boolean | null {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value !== 0;
+    }
+    const normalized = String(value ?? '').trim().toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+    if (['1', 'true', 'yes', 'y'].includes(normalized)) {
+      return true;
+    }
+    if (['0', 'false', 'no', 'n'].includes(normalized)) {
+      return false;
+    }
+    return null;
+  }
+
+  private async confirmShuttleOrderCancellationSynced(user: string, targetOrder: ShuttleOrderRecord): Promise<void> {
+    const maxAttempts = 3;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      await this.refreshShuttleOrdersFromRemote(user, { force: true, throwOnError: true });
+      const latestOrders = this.loadShuttleOrders(user);
+      const matchedOrder = this.findShuttleOrderByIdentity(latestOrders, targetOrder);
+
+      // Some sheet deployments only return active orders. Missing entry after cancel is acceptable.
+      if (!matchedOrder) {
+        return;
+      }
+
+      const cancelled = this.isShuttleStatusCancelled(String(matchedOrder.statusValue || matchedOrder.statusLabel || ''));
+      if (cancelled) {
+        return;
+      }
+
+      if (attempt < maxAttempts - 1) {
+        await this.waitForShuttleSyncRetry(700);
+      }
+    }
+
+    throw new Error(
+      this.shuttleText(
+        'העדכון לגליון לא אושר. נסה שוב בעוד רגע.',
+        'Обновление в таблице не подтверждено. Повторите попытку через минуту.'
+      )
+    );
+  }
+
+  private findShuttleOrderByIdentity(
+    orders: ShuttleOrderRecord[],
+    targetOrder: ShuttleOrderRecord
+  ): ShuttleOrderRecord | null {
+    const targetDate = this.normalizeShuttleDateToIso(String(targetOrder.date || '').trim());
+    const targetShift = this.normalizeShuttleShiftLabel(String(targetOrder.shiftLabel || targetOrder.shiftValue || '').trim());
+    const targetStation = this.normalizeShuttleText(String(targetOrder.station || '').trim());
+
+    for (const order of Array.isArray(orders) ? orders : []) {
+      const orderDate = this.normalizeShuttleDateToIso(String(order.date || '').trim());
+      const orderShift = this.normalizeShuttleShiftLabel(String(order.shiftLabel || order.shiftValue || '').trim());
+      const orderStation = this.normalizeShuttleText(String(order.station || '').trim());
+      if (orderDate === targetDate && orderShift === targetShift && orderStation === targetStation) {
+        return order;
+      }
+    }
+
+    return null;
+  }
+
+  private waitForShuttleSyncRetry(ms: number): Promise<void> {
+    const delay = Math.max(0, Number(ms) || 0);
+    return new Promise((resolve) => {
+      setTimeout(resolve, delay);
+    });
   }
 
   private normalizeShuttleDateToIso(value: string): string {

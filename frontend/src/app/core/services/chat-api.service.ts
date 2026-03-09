@@ -890,10 +890,11 @@ export class ChatApiService {
     params.set(SHUTTLE_ENTRY_SHIFT, shift);
     params.set(SHUTTLE_ENTRY_STATION, station);
     params.set(SHUTTLE_ENTRY_STATUS, status);
+    params.set('_ts', String(Date.now()));
 
     const response = await this.fetchWithRetry(
       `${this.config.shuttleSheetUrl}?${params.toString()}`,
-      {},
+      { cache: 'no-store' },
       { retries: 2, timeoutMs: 12000 }
     );
     if (!response.ok) {
@@ -969,10 +970,10 @@ export class ChatApiService {
       return [];
     }
 
-    const url = `${this.config.shuttleUserOrdersUrl}?action=get_user_orders&user=${encodeURIComponent(normalizedUser)}&force=1`;
+    const url = `${this.config.shuttleUserOrdersUrl}?action=get_user_orders&user=${encodeURIComponent(normalizedUser)}&force=1&_ts=${Date.now()}`;
     // Apps Script often responds with an initial 302 redirect and can be slow on cold start.
     // Keep retries disabled to avoid duplicate bursts, but allow more time before aborting.
-    const response = await this.fetchWithRetry(url, {}, { retries: 0, timeoutMs: 60000 });
+    const response = await this.fetchWithRetry(url, { cache: 'no-store' }, { retries: 0, timeoutMs: 60000 });
     if (!response.ok) {
       throw new Error(`Shuttle user orders request failed with ${response.status}`);
     }
