@@ -10,6 +10,7 @@ const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
 const crypto = require('crypto');
+const { Worker } = require('node:worker_threads');
 const {
     createSheetIntegrationServiceFromEnv,
     createWebhookRegistryFromEnv,
@@ -42,6 +43,7 @@ const redisStateStorePromise = createRedisStateStoreFromEnv(process.env)
 
 // --- 1. SETUP UPLOADS FOLDER ---
 const uploadDir = path.join(__dirname, 'uploads');
+const uploadSecurityWorkerPath = path.join(__dirname, 'backend', 'dist', 'services', 'upload-security-worker.js');
 const app = express();
 app.disable('x-powered-by');
 
@@ -205,6 +207,8 @@ const stateDir = path.join(__dirname, 'data');
 const stateFile = path.join(stateDir, 'state.json');
 let stateSaveTimer = null;
 let activeRedisStateStore = null;
+let redisQueuePubSubActive = false;
+let redisQueuePubSubStartPromise = null;
 
 let unreadCounts = {};
 let groups = {};
@@ -508,7 +512,7 @@ async function safelyDeleteUploadedFile(file = null) {
     }
 }
 
-async function validateUploadedFileSecurity(file = {}, options = {}) {
+async function validateUploadedFileSecurityInProcess(file = {}, options = {}) {
     const allowImage = options.allowImage !== false;
     const allowPdf = options.allowPdf !== false;
     if (!file || !file.path) {
@@ -547,6 +551,85 @@ async function validateUploadedFileSecurity(file = {}, options = {}) {
     }
 
     return { ok: false, message: 'Only secure image and PDF files are allowed' };
+}
+
+function normalizeUploadValidationResult(result) {
+    if (!result || typeof result !== 'object') {
+        return { ok: false, message: 'File content validation failed' };
+    }
+    return {
+        ok: result.ok === true,
+        message: typeof result.message === 'string' ? result.message : ''
+    };
+}
+
+function runUploadValidationWorker(file = {}, options = {}) {
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(uploadSecurityWorkerPath, {
+            workerData: {
+                file: {
+                    path: file.path,
+                    size: file.size,
+                    mimetype: file.mimetype,
+                    originalname: file.originalname
+                },
+                options,
+                maxInspectionBytes: MAX_UPLOAD_INSPECTION_BYTES
+            }
+        });
+
+        let settled = false;
+        const finish = (handler, value) => {
+            if (settled) return;
+            settled = true;
+            handler(value);
+        };
+
+        const timeoutId = setTimeout(() => {
+            try {
+                worker.terminate();
+            } catch (_error) {
+                // Ignore termination errors.
+            }
+            finish(reject, new Error('Upload security validation timed out'));
+        }, 90000);
+
+        worker.once('message', (payload) => {
+            clearTimeout(timeoutId);
+            finish(resolve, normalizeUploadValidationResult(payload));
+        });
+        worker.once('error', (error) => {
+            clearTimeout(timeoutId);
+            finish(reject, error);
+        });
+        worker.once('exit', (code) => {
+            if (settled) {
+                return;
+            }
+            clearTimeout(timeoutId);
+            if (code === 0) {
+                finish(resolve, { ok: false, message: 'File content validation failed' });
+                return;
+            }
+            finish(reject, new Error(`Upload validation worker exited with code ${code}`));
+        });
+    });
+}
+
+async function validateUploadedFileSecurity(file = {}, options = {}) {
+    if (!file || !file.path) {
+        return { ok: false, message: 'Invalid uploaded file data' };
+    }
+
+    if (Worker && fs.existsSync(uploadSecurityWorkerPath)) {
+        try {
+            return await runUploadValidationWorker(file, options);
+        } catch (error) {
+            console.warn('[UPLOAD SECURITY] Worker validation failed, falling back to in-process scan:', error && error.message ? error.message : error);
+        }
+    }
+
+    return validateUploadedFileSecurityInProcess(file, options);
 }
 
 // --- 2. STORAGE CONFIG ---
@@ -600,7 +683,7 @@ webpush.setVapidDetails(
 
 
 // ======================================================
-// [NEW] 4. POLLING MAILBOX (IN-MEMORY STORAGE)
+// [NEW] 4. POLLING MAILBOX (REDIS STREAMS + FALLBACK MEMORY)
 // ======================================================
 let messageQueue = {}; 
 const sseClients = new Map();
@@ -629,6 +712,47 @@ function dispatchRegisteredWebhookAsync(messageObj) {
     });
 }
 
+async function ensureRedisQueuePubSubBridge() {
+    if (redisQueuePubSubActive) {
+        return true;
+    }
+    if (redisQueuePubSubStartPromise) {
+        return redisQueuePubSubStartPromise;
+    }
+    if (!activeRedisStateStore || !activeRedisStateStore.isEnabled || typeof activeRedisStateStore.subscribeToQueueEvents !== 'function') {
+        return false;
+    }
+
+    redisQueuePubSubStartPromise = activeRedisStateStore.subscribeToQueueEvents((event) => {
+        const sourceId = String(event && event.sourceId ? event.sourceId : '').trim();
+        const localPublisherId = activeRedisStateStore && activeRedisStateStore.queuePublisherId
+            ? String(activeRedisStateStore.queuePublisherId).trim()
+            : '';
+        if (sourceId && localPublisherId && sourceId === localPublisherId) {
+            return;
+        }
+
+        const normalizedUser = normalizeUserCandidate(event && event.user);
+        if (!normalizedUser) return;
+        const messageObj = event && event.message && typeof event.message === 'object'
+            ? event.message
+            : null;
+        if (!messageObj) return;
+        notifySseClients(normalizedUser, messageObj);
+    }).then((subscribed) => {
+        redisQueuePubSubActive = Boolean(subscribed);
+        return redisQueuePubSubActive;
+    }).catch((error) => {
+        console.warn('[REDIS] Queue pub/sub bridge failed:', error && error.message ? error.message : error);
+        redisQueuePubSubActive = false;
+        return false;
+    }).finally(() => {
+        redisQueuePubSubStartPromise = null;
+    });
+
+    return redisQueuePubSubStartPromise;
+}
+
 // Helper: Add message to queue (NORMALIZED TO LOWERCASE)
 function addToQueue(targetUser, messageObj) {
     const recipients = Array.isArray(targetUser) ? targetUser : [targetUser];
@@ -645,14 +769,21 @@ function addToQueue(targetUser, messageObj) {
                 timestamp: Date.now()
             };
 
-        if (!messageQueue[normalizedUser]) {
-            messageQueue[normalizedUser] = [];
-        }
-        messageQueue[normalizedUser].push(queueEntry);
-        if (activeRedisStateStore && activeRedisStateStore.isEnabled) {
+        const hasRedisQueue = Boolean(activeRedisStateStore && activeRedisStateStore.isEnabled);
+        if (hasRedisQueue) {
             activeRedisStateStore.enqueueMessages(normalizedUser, [queueEntry]).catch((error) => {
                 console.warn('[REDIS] enqueue failed:', error && error.message ? error.message : error);
+                if (!messageQueue[normalizedUser]) {
+                    messageQueue[normalizedUser] = [];
+                }
+                messageQueue[normalizedUser].push(queueEntry);
+                scheduleStateSave();
             });
+        } else {
+            if (!messageQueue[normalizedUser]) {
+                messageQueue[normalizedUser] = [];
+            }
+            messageQueue[normalizedUser].push(queueEntry);
         }
         dispatchRegisteredWebhookAsync(queueEntry);
         notifySseClients(normalizedUser, queueEntry);
@@ -3608,13 +3739,14 @@ async function loadState() {
     const redisStore = await redisStateStorePromise;
     if (redisStore && redisStore.isEnabled) {
         activeRedisStateStore = redisStore;
+        await ensureRedisQueuePubSubBridge();
         try {
             const redisState = await redisStore.loadState();
             if (redisState) {
                 unreadCounts = (redisState.unreadCounts && typeof redisState.unreadCounts === 'object')
                     ? redisState.unreadCounts
                     : {};
-                messageQueue = await redisStore.loadQueueSnapshot();
+                messageQueue = {};
                 groups = (redisState.groups && typeof redisState.groups === 'object')
                     ? redisState.groups
                     : {};

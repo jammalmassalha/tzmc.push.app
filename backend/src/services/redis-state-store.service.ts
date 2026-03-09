@@ -13,6 +13,14 @@ interface RedisStateStoreConfig {
   keyPrefix?: string;
 }
 
+interface RedisQueueEventPayload {
+  user: string;
+  message: unknown;
+  sourceId: string;
+}
+
+type QueueEventHandler = (event: RedisQueueEventPayload) => void;
+
 function toTrimmedString(value: unknown): string {
   return String(value ?? '').trim();
 }
@@ -31,12 +39,20 @@ function safeJsonParse<T>(payload: unknown, fallback: T): T {
 export class RedisStateStore {
   private readonly redisUrl: string;
   private readonly keyPrefix: string;
+  private readonly queueStreamMaxLen: number;
+  private readonly publisherId: string;
   private client: RedisClientType | null = null;
+  private subscriber: RedisClientType | null = null;
   private connected = false;
 
   constructor(config: RedisStateStoreConfig = {}) {
     this.redisUrl = toTrimmedString(config.url || process.env.REDIS_URL || '');
     this.keyPrefix = toTrimmedString(config.keyPrefix || process.env.REDIS_KEY_PREFIX || 'tzmc:notify');
+    this.queueStreamMaxLen = Math.max(
+      100,
+      Number(process.env.REDIS_QUEUE_STREAM_MAXLEN || 5000) || 5000
+    );
+    this.publisherId = toTrimmedString(process.env.REDIS_QUEUE_PUBLISHER_ID || '') || `srv-${process.pid}`;
   }
 
   get isEnabled(): boolean {
@@ -53,6 +69,14 @@ export class RedisStateStore {
 
   private queueKeyForUser(user: string): string {
     return `${this.keyPrefix}:queue:${user}`;
+  }
+
+  private queueEventsChannel(): string {
+    return `${this.keyPrefix}:queue:events`;
+  }
+
+  get queuePublisherId(): string {
+    return this.publisherId;
   }
 
   async connect(): Promise<boolean> {
@@ -128,12 +152,29 @@ export class RedisStateStore {
     if (!normalizedUser || !Array.isArray(messages) || messages.length === 0) {
       return;
     }
-    const encodedPayloads = messages.map((entry) => JSON.stringify(entry ?? {}));
     const queueKey = this.queueKeyForUser(normalizedUser);
-    const tx = this.client.multi();
-    tx.rPush(queueKey, encodedPayloads);
-    tx.sAdd(this.queueUsersKey(), normalizedUser);
-    await tx.exec();
+    await this.client.sAdd(this.queueUsersKey(), normalizedUser);
+    for (const entry of messages) {
+      const payload = JSON.stringify(entry ?? {});
+      await this.client.sendCommand([
+        'XADD',
+        queueKey,
+        'MAXLEN',
+        '~',
+        String(this.queueStreamMaxLen),
+        '*',
+        'payload',
+        payload
+      ]);
+      await this.client.publish(
+        this.queueEventsChannel(),
+        JSON.stringify({
+          user: normalizedUser,
+          message: entry ?? {},
+          sourceId: this.publisherId
+        } satisfies RedisQueueEventPayload)
+      );
+    }
   }
 
   async drainQueue(user: string): Promise<unknown[]> {
@@ -145,14 +186,21 @@ export class RedisStateStore {
       return [];
     }
     const queueKey = this.queueKeyForUser(normalizedUser);
-    const tx = this.client.multi();
-    tx.lRange(queueKey, 0, -1);
-    tx.del(queueKey);
-    tx.sRem(this.queueUsersKey(), normalizedUser);
-    const result = await tx.exec();
-    const listResult = Array.isArray(result) ? result[0] : null;
-    const rawEntries = Array.isArray(listResult) ? listResult : [];
-    return rawEntries.map((entry) => safeJsonParse(entry, null)).filter((entry) => entry !== null);
+    const lua = `
+      local entries = redis.call('XRANGE', KEYS[1], '-', '+')
+      redis.call('DEL', KEYS[1])
+      redis.call('SREM', KEYS[2], ARGV[1])
+      return entries
+    `;
+    const rawEntries = await this.client.sendCommand([
+      'EVAL',
+      lua,
+      '2',
+      queueKey,
+      this.queueUsersKey(),
+      normalizedUser
+    ]);
+    return this.decodeStreamEntries(rawEntries);
   }
 
   async getQueueUsers(): Promise<string[]> {
@@ -171,10 +219,86 @@ export class RedisStateStore {
     const snapshot: Record<string, unknown[]> = {};
     for (const user of users) {
       const queueKey = this.queueKeyForUser(user);
-      const rawEntries = await this.client.lRange(queueKey, 0, -1);
-      snapshot[user] = rawEntries.map((entry) => safeJsonParse(entry, null)).filter((entry) => entry !== null);
+      const rawEntries = await this.client.sendCommand(['XRANGE', queueKey, '-', '+']);
+      const decoded = this.decodeStreamEntries(rawEntries);
+      if (decoded.length > 0) {
+        snapshot[user] = decoded;
+      }
     }
     return snapshot;
+  }
+
+  async subscribeToQueueEvents(handler: QueueEventHandler): Promise<boolean> {
+    if (!this.connected || !this.client) {
+      return false;
+    }
+    try {
+      if (!this.subscriber) {
+        this.subscriber = this.client.duplicate();
+        this.subscriber.on('error', (error) => {
+          console.warn('[REDIS] Queue subscriber error:', error instanceof Error ? error.message : String(error));
+        });
+        await this.subscriber.connect();
+      }
+      await this.subscriber.subscribe(this.queueEventsChannel(), (rawPayload) => {
+        const payload = safeJsonParse<RedisQueueEventPayload | null>(rawPayload, null);
+        if (!payload || typeof payload !== 'object') {
+          return;
+        }
+        const user = toTrimmedString(payload.user).toLowerCase();
+        if (!user) {
+          return;
+        }
+        handler({
+          user,
+          message: payload.message,
+          sourceId: toTrimmedString(payload.sourceId)
+        });
+      });
+      return true;
+    } catch (error) {
+      console.warn('[REDIS] Queue subscribe failed:', error instanceof Error ? error.message : String(error));
+      return false;
+    }
+  }
+
+  private decodeStreamEntries(rawEntries: unknown): unknown[] {
+    if (!Array.isArray(rawEntries)) {
+      return [];
+    }
+    const decoded: unknown[] = [];
+    for (const rawEntry of rawEntries) {
+      if (!Array.isArray(rawEntry) || rawEntry.length < 2) {
+        continue;
+      }
+      const fields = rawEntry[1];
+      const payloadRaw = this.extractPayloadField(fields);
+      if (!payloadRaw) {
+        continue;
+      }
+      const parsed = safeJsonParse(payloadRaw, null);
+      if (parsed !== null) {
+        decoded.push(parsed);
+      }
+    }
+    return decoded;
+  }
+
+  private extractPayloadField(rawFields: unknown): string {
+    if (Array.isArray(rawFields)) {
+      for (let index = 0; index < rawFields.length - 1; index += 2) {
+        const key = toTrimmedString(rawFields[index]);
+        if (key === 'payload') {
+          return String(rawFields[index + 1] ?? '');
+        }
+      }
+      return '';
+    }
+    if (rawFields && typeof rawFields === 'object') {
+      const candidate = (rawFields as { payload?: unknown }).payload;
+      return typeof candidate === 'string' ? candidate : '';
+    }
+    return '';
   }
 }
 
