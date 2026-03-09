@@ -2343,7 +2343,8 @@ export class ChatStoreService {
       return null;
     }
 
-    const statusValue = String(item.statusValue || item.status || '').trim() || SHUTTLE_STATUS_ACTIVE_VALUE;
+    const rawStatusValue = item.statusValue ?? item.status ?? '';
+    const statusValue = String(rawStatusValue).trim() || SHUTTLE_STATUS_ACTIVE_VALUE;
     const isCancelled = item.isCancelled === true || this.isShuttleStatusCancelled(statusValue);
     const statusLabel = this.resolveShuttleStatusLabel(isCancelled ? SHUTTLE_STATUS_CANCEL_VALUE : statusValue);
     const submittedAtRaw = Number(item.submittedAt || 0);
@@ -2463,11 +2464,27 @@ export class ChatStoreService {
   }
 
   private isShuttleStatusCancelled(statusValue: string): boolean {
+    const rawStatus = String(statusValue ?? '').trim();
+    if (!rawStatus) {
+      return false;
+    }
+    if (/^0(?:\.0+)?$/.test(rawStatus)) {
+      return true;
+    }
+    if (/^1(?:\.0+)?$/.test(rawStatus)) {
+      return false;
+    }
+
     const normalized = this.normalizeShuttleText(statusValue);
     if (!normalized) {
       return false;
     }
     return (
+      normalized === 'cancel' ||
+      normalized === 'cancelled' ||
+      normalized === 'canceled' ||
+      normalized === 'inactive' ||
+      normalized === 'false' ||
       normalized.includes('ביטול') ||
       normalized.includes('בוטל') ||
       normalized.includes('отмена') ||
@@ -2945,7 +2962,7 @@ export class ChatStoreService {
   }
 
   private isShuttleOrderOngoing(order: ShuttleOrderRecord): boolean {
-    if (String(order.statusValue || '').trim() === SHUTTLE_STATUS_CANCEL_VALUE) {
+    if (this.isShuttleStatusCancelled(String(order.statusValue || '').trim())) {
       return false;
     }
     const orderDate = this.parseShuttleDate(order.date);
@@ -3082,7 +3099,7 @@ export class ChatStoreService {
           shiftLabel: String(item.shiftLabel || '').trim(),
           shiftValue: String(item.shiftValue || '').trim(),
           station: String(item.station || '').trim(),
-          statusValue: String(item.statusValue || SHUTTLE_STATUS_ACTIVE_VALUE).trim(),
+          statusValue: String(item.statusValue ?? SHUTTLE_STATUS_ACTIVE_VALUE).trim(),
           statusLabel: String(item.statusLabel || '').trim(),
           submittedAt: Number(item.submittedAt || 0),
           cancelledAt: item.cancelledAt ? Number(item.cancelledAt) : undefined
