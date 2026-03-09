@@ -1127,6 +1127,33 @@ export class ChatStoreService {
     await this.refreshShuttleOrdersFromRemote(user, { force: true, throwOnError: true });
   }
 
+  async forceSyncAllMessagesAndClearCache(): Promise<void> {
+    const user = this.currentUser();
+    if (!user) {
+      throw new Error('יש להתחבר לפני סנכרון מלא');
+    }
+    if (!this.networkOnline()) {
+      throw new Error('אין חיבור לרשת');
+    }
+
+    // First, try sending pending outgoing items before cache reset.
+    await this.flushOutbox();
+
+    this.clearLocalChatCacheForUser(user, { keepOutbox: true });
+    this.resetRuntimeStateAfterCacheClear(user);
+
+    await this.refresh(true);
+    await this.pullMessages(user);
+
+    await this.refreshShuttleAccessForCurrentUser(user, { force: true });
+    if (this.shuttleAccessAllowed()) {
+      await this.refreshShuttleOrdersFromRemote(user, { force: true, throwOnError: true });
+    }
+
+    this.applyInitialChatSelection(user);
+    this.schedulePersist();
+  }
+
   getShuttleFlowBreadcrumbs(): ShuttleBreadcrumbStep[] | null {
     this.shuttlePickerRevision();
     const activeChatId = this.activeChatId();
@@ -5551,6 +5578,41 @@ export class ChatStoreService {
 
   private outboxKey(user: string): string {
     return `modern-chat-outbox:${user}`;
+  }
+
+  private clearLocalChatCacheForUser(user: string, options: { keepOutbox?: boolean } = {}): void {
+    const keepOutbox = options.keepOutbox !== false;
+    localStorage.removeItem(this.stateKey(user));
+    if (!keepOutbox) {
+      localStorage.removeItem(this.outboxKey(user));
+    }
+    localStorage.removeItem(this.activeChatKey(user));
+    localStorage.removeItem(this.homeViewKey(user));
+    localStorage.removeItem(this.hrStateKey(user));
+    localStorage.removeItem(this.hrWelcomeKey(user));
+    localStorage.removeItem(this.shuttleStateKey(user));
+    localStorage.removeItem(this.shuttleWelcomeKey(user));
+    localStorage.removeItem(this.shuttleOrdersKey(user));
+    localStorage.removeItem(this.shuttleLanguageKey(user));
+    localStorage.removeItem(this.shuttleReminderHistoryKey(user));
+  }
+
+  private resetRuntimeStateAfterCacheClear(user: string): void {
+    this.contacts.set([]);
+    this.groups.set([]);
+    this.messagesByChat.set({});
+    this.unreadByChat.set({});
+    this.activeChatId.set(null);
+    this.lastActivatedChatMeta.set(null);
+    this.lastContactsFetchAt = 0;
+    this.lastGroupsFetchAt = 0;
+    this.hrStepsCache = { at: 0, steps: [] };
+    this.hrActionsCache = {};
+    this.shuttleStationsCache = { at: 0, items: [] };
+    this.shuttleEmployeesCache = { at: 0, items: [] };
+    this.shuttleOrdersSyncAt.delete(this.normalizeUser(user));
+    this.clearShuttleReminderTimersForUser(user);
+    this.resetReadReceiptTrackingState();
   }
 
   private restoreState(user: string): void {

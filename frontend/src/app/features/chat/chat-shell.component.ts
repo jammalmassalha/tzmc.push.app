@@ -818,8 +818,13 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   async flushOutbox(): Promise<void> {
-    await this.store.flushOutbox();
-    this.snackBar.open('סנכרון הודעות הושלם.', 'סגור', { duration: 2200 });
+    try {
+      await this.store.forceSyncAllMessagesAndClearCache();
+      this.snackBar.open('סנכרון מלא הושלם.', 'סגור', { duration: 2200 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'הסנכרון נכשל. נסה שוב.';
+      this.snackBar.open(message, 'סגור', { duration: 2800 });
+    }
   }
 
   async sendMessage(): Promise<void> {
