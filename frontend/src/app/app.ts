@@ -30,10 +30,11 @@ type StartupLoaderPhase = 'auth' | 'contacts' | 'chats' | 'finalizing' | 'ready'
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class App implements OnDestroy {
-  private static readonly MOBILE_CACHE_SESSION_KEY = 'mobile-cache-cleanup-v4';
+  private static readonly MOBILE_CACHE_MAJOR_VERSION_KEY = 'mobile-cache-major-version-v1';
   private static readonly STARTUP_SYNC_TIMEOUT_MS = 7000;
   private static readonly STARTUP_LOADER_TIMEOUT_MS = 30000;
   private static readonly STARTUP_HIDE_DELAY_MS = 220;
+  private static readonly APP_VERSION_FETCH_TIMEOUT_MS = 2500;
   // Customize these labels to change startup loader text.
   private static readonly STARTUP_TEXT_BY_PHASE: Record<StartupLoaderPhase, string> = {
     auth: 'מאמת משתמש…',
@@ -194,7 +195,12 @@ export class App implements OnDestroy {
       return;
     }
 
-    if (!this.isMobileDevice() || !this.shouldRunCacheCleanup()) {
+    if (!this.isMobileDevice()) {
+      return;
+    }
+
+    const cleanupDecision = await this.getCacheCleanupDecision();
+    if (!cleanupDecision.shouldCleanup) {
       return;
     }
 
@@ -208,7 +214,7 @@ export class App implements OnDestroy {
       }
 
       await this.clearIndexedDatabases();
-      this.markCacheCleanupDone();
+      this.markCacheCleanupVersion(cleanupDecision.currentMajorVersion);
     } catch {
       // Keep app startup resilient even if cache cleanup fails.
     }
@@ -281,24 +287,80 @@ export class App implements OnDestroy {
     );
   }
 
-  private shouldRunCacheCleanup(): boolean {
-    if (this.isReloadNavigation()) {
-      return true;
+  private async getCacheCleanupDecision(): Promise<{
+    shouldCleanup: boolean;
+    currentMajorVersion: string;
+  }> {
+    const currentMajorVersion = await this.resolveCurrentMajorAppVersion();
+    if (!currentMajorVersion) {
+      return { shouldCleanup: false, currentMajorVersion: '' };
     }
 
+    const previousMajorVersion = this.readMarkedCacheCleanupVersion();
+    if (!previousMajorVersion) {
+      this.markCacheCleanupVersion(currentMajorVersion);
+      return { shouldCleanup: false, currentMajorVersion };
+    }
+
+    return {
+      shouldCleanup: previousMajorVersion !== currentMajorVersion,
+      currentMajorVersion
+    };
+  }
+
+  private readMarkedCacheCleanupVersion(): string | null {
     try {
-      return !sessionStorage.getItem(App.MOBILE_CACHE_SESSION_KEY);
+      const value = localStorage.getItem(App.MOBILE_CACHE_MAJOR_VERSION_KEY);
+      return value ? value.trim() : null;
     } catch {
-      return false;
+      return null;
     }
   }
 
-  private markCacheCleanupDone(): void {
-    try {
-      sessionStorage.setItem(App.MOBILE_CACHE_SESSION_KEY, '1');
-    } catch {
-      // Ignore session storage write failures.
+  private markCacheCleanupVersion(majorVersion: string): void {
+    if (!majorVersion) {
+      return;
     }
+    try {
+      localStorage.setItem(App.MOBILE_CACHE_MAJOR_VERSION_KEY, majorVersion);
+    } catch {
+      // Ignore storage write failures.
+    }
+  }
+
+  private async resolveCurrentMajorAppVersion(): Promise<string | null> {
+    const version = await this.fetchCurrentAppVersion();
+    if (!version) {
+      return null;
+    }
+    return this.extractMajorVersion(version);
+  }
+
+  private async fetchCurrentAppVersion(): Promise<string | null> {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), App.APP_VERSION_FETCH_TIMEOUT_MS);
+    try {
+      const response = await fetch(`${runtimeConfig.versionUrl}?t=${Date.now()}`, {
+        cache: 'no-store',
+        signal: controller.signal
+      });
+      if (!response.ok) {
+        return null;
+      }
+      const body = (await response.json()) as { version?: unknown };
+      const value = String(body?.version ?? '').trim();
+      return value || null;
+    } catch {
+      return null;
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  }
+
+  private extractMajorVersion(version: string): string | null {
+    const normalized = version.trim();
+    const match = normalized.match(/^v?(\d+)(?:[.\-+_]|$)/i);
+    return match?.[1] ?? null;
   }
 
   private async refreshServiceWorkers(): Promise<void> {
@@ -357,15 +419,5 @@ export class App implements OnDestroy {
 
   private isMobileDevice(): boolean {
     return /Android|iPhone|iPad|iPod|Mobile|IEMobile|Opera Mini/i.test(navigator.userAgent);
-  }
-
-  private isReloadNavigation(): boolean {
-    const entries = performance.getEntriesByType('navigation') as PerformanceNavigationTiming[];
-    if (entries.length > 0) {
-      return entries[0].type === 'reload';
-    }
-
-    const legacyNavigation = (performance as Performance & { navigation?: { type?: number } }).navigation;
-    return legacyNavigation?.type === 1;
   }
 }
