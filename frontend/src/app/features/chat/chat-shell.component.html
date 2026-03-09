@@ -1,6 +1,6 @@
-<div class="chat-root">
-  <mat-toolbar class="app-toolbar">
-    <div class="brand">
+<div class="chat-root flex h-full flex-col overflow-hidden">
+  <mat-toolbar class="app-toolbar px-2 md:px-4">
+    <div class="brand gap-2">
       <mat-icon>forum</mat-icon>
       <span>מרכז רפואי צפון</span>
     </div>
@@ -41,9 +41,9 @@
     </button>
   </mat-menu>
 
-  <div class="chat-layout">
+  <div class="chat-layout p-2 md:p-3">
     <aside class="contacts-pane" [class.hidden-mobile]="isMobile() && !showContactsPane()">
-      <div class="contacts-toolbar">
+      <div class="contacts-toolbar p-2 md:p-3">
         <label class="search-shell">
           <mat-icon class="search-icon">search</mat-icon>
           <input
@@ -65,7 +65,7 @@
           }
         </label>
 
-        <div class="contacts-actions">
+        <div class="contacts-actions gap-2">
           <button mat-stroked-button type="button" (click)="openNewChatDialog()">
             <mat-icon>chat</mat-icon>
             <span>צ'אט חדש</span>
@@ -133,7 +133,7 @@
     </aside>
 
     <section
-      class="conversation-pane"
+      class="conversation-pane min-w-0"
       [class.hidden-mobile]="isMobile() && showContactsPane()"
       [class.shuttle-room-active]="isShuttleRoomActive()"
       (touchstart)="onConversationTouchStart($event)"
@@ -684,10 +684,12 @@
 
           <div class="composer-input-shell">
             <textarea
+              #composerTextarea
               class="composer-textarea"
               rows="1"
               [formControl]="messageControl"
               [disabled]="!!shuttleQuickPicker()"
+              (input)="onComposerInput()"
               (focus)="handleTextInputFocus()"
               [placeholder]="composerPlaceholder()"></textarea>
             <button

@@ -1615,7 +1615,7 @@ mat-chip:not(.offline) {
   display: flex;
   direction: ltr;
   gap: 6px;
-  align-items: center;
+  align-items: flex-end;
   padding: 5px 10px;
   background: #fff;
   border: 1px solid rgba(11, 20, 26, 0.1);
@@ -1659,10 +1659,13 @@ mat-chip:not(.offline) {
 .composer-textarea {
   flex: 1 1 auto;
   min-height: 21px;
-  max-height: 118px;
+  max-height: 132px;
+  height: 22px;
   border: 0;
   outline: none;
   resize: none;
+  overflow-y: hidden;
+  overflow-x: hidden;
   background: transparent;
   font: inherit;
   line-height: 1.35;
@@ -1673,6 +1676,9 @@ mat-chip:not(.offline) {
   direction: rtl;
   text-align: right;
   padding: 6px 0 5px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  -webkit-overflow-scrolling: touch;
 }
 
 .composer-textarea::placeholder {

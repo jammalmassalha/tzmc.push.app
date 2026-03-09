@@ -13,7 +13,8 @@ function doGet(e) {
     var currentUser = (e.parameter && (e.parameter.user || e.parameter.username || e.parameter.phone)) || '';
     data = getCurrentUserOrders(currentUser, {
       debug: debugMode,
-      includeBuckets: resolveShuttleIncludeBucketsFlag(e && e.parameter ? e.parameter.includeBuckets : '')
+      includeBuckets: resolveShuttleIncludeBucketsFlag(e && e.parameter ? e.parameter.includeBuckets : ''),
+      forceRefresh: resolveShuttleForceRefreshFlag(e && e.parameter ? e.parameter.force : '')
     });
     return ContentService
       .createTextOutput(JSON.stringify(data))
@@ -28,6 +29,21 @@ function doGet(e) {
       .setMimeType(ContentService.MimeType.JSON);
   }
 
+  if (action === 'normalize_duplicate_display_flags' || action === 'admin_normalize_duplicate_display_flags') {
+    if (!isShuttleAdminActionAuthorized(e)) {
+      return ContentService
+        .createTextOutput(JSON.stringify({
+          result: 'error',
+          message: 'Unauthorized admin action'
+        }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+    data = normalizeHistoricalDuplicateStatusToDisplayFlags();
+    return ContentService
+      .createTextOutput(JSON.stringify(data))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
   if (e.parameters.emp != null && e.parameters.emp != '') {
     data = getWorker();
     return ContentService.createTextOutput(JSON.stringify(data));
@@ -37,14 +53,24 @@ function doGet(e) {
   }else if(e.parameter["entry.1035269960"] != null && e.parameter["entry.1035269960"] != ""){
     var sheet = SpreadsheetApp.openById("1OWt0Qty9ljn03U6PP32ftY8_wNy8qPl0FBS_Prwv40g").getSheetByName("לוג נסיעות");
     let time = e.parameter["entry.1992732561"];
+    var incomingStatus = String(e.parameter["entry.798637322"] || '').trim();
     var incomingOrder = {
       employee: e.parameter["entry.1035269960"],
       date: e.parameter["entry.794242217"],
       time: time,
       station: e.parameter["entry.1096369604"],
-      status: e.parameter["entry.798637322"]
+      status: incomingStatus
     };
+    if (!isShuttleEmployeeAllowedToOrder(incomingOrder.employee)) {
+      return ContentService
+        .createTextOutput(JSON.stringify({
+          result: 'error',
+          message: 'המשתמש לא מורשה להזמין הסעה'
+        }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
     var conflictResult = checkAndResolveShuttleOrderConflict(sheet, incomingOrder);
+    var displayFlag = resolveShuttleDisplayFlagByStatus(incomingStatus);
     
     var entries = [
       new Date(),
@@ -52,7 +78,8 @@ function doGet(e) {
       incomingOrder.date,
       time,
       incomingOrder.station,
-      incomingOrder.status
+      incomingStatus,
+      displayFlag
     ];
     if (conflictResult.action === 'insert') {
       sheet.appendRow(entries);
@@ -81,6 +108,31 @@ function resolveShuttleIncludeBucketsFlag(value) {
     normalized === 'buckets';
 }
 
+function resolveShuttleForceRefreshFlag(value) {
+  var normalized = String(value || '').trim().toLowerCase();
+  return normalized === '1' ||
+    normalized === 'true' ||
+    normalized === 'yes' ||
+    normalized === 'on' ||
+    normalized === 'force' ||
+    normalized === 'refresh';
+}
+
+function getShuttleAdminToken() {
+  return String(
+    (PropertiesService.getScriptProperties().getProperty('SHUTTLE_ADMIN_TOKEN') || '')
+  ).trim();
+}
+
+function isShuttleAdminActionAuthorized(e) {
+  var expectedToken = getShuttleAdminToken();
+  if (!expectedToken) return false;
+  var providedToken = String(
+    (e && e.parameter && (e.parameter.token || e.parameter.adminToken)) || ''
+  ).trim();
+  return Boolean(providedToken && providedToken === expectedToken);
+}
+
 function invalidateCurrentUserOrdersCache(userValue) {
   var normalizedUser = normalizeShuttlePhone(userValue);
   if (!normalizedUser) return;
@@ -103,7 +155,7 @@ function checkAndResolveShuttleOrderConflict(sheet, incomingOrder) {
     return { action: 'insert', matchedRows: [] };
   }
 
-  var values = sheet.getRange(2, 2, lastRow - 1, 5).getValues(); // B..F
+  var values = sheet.getRange(2, 2, lastRow - 1, 6).getValues(); // B..G
   var matchedRows = [];
   for (var i = 0; i < values.length; i++) {
     var row = values[i];
@@ -112,7 +164,8 @@ function checkAndResolveShuttleOrderConflict(sheet, incomingOrder) {
       date: row[1],     // C
       time: row[2],     // D
       station: row[3],  // E
-      status: row[4]    // F
+      status: row[4],   // F
+      display: row[5]   // G
     });
 
     if (
@@ -132,15 +185,31 @@ function checkAndResolveShuttleOrderConflict(sheet, incomingOrder) {
     return { action: 'insert', matchedRows: [] };
   }
 
+  var incomingStatus = String(incomingOrder && incomingOrder.status || '').trim();
+  var displayFlag = resolveShuttleDisplayFlagByStatus(incomingStatus);
+  updateShuttleRowsStatusAndDisplay(
+    sheet,
+    matchedRows.map(function(match) { return match.row; }),
+    incomingStatus,
+    displayFlag
+  );
+
   var hasSameStatus = matchedRows.some(function(match) {
     return match.status === normalizedIncoming.status;
   });
   if (hasSameStatus) {
-    return { action: 'skip-same-status', matchedRows: matchedRows };
+    return {
+      action: 'updated-existing-same-status',
+      matchedRows: matchedRows,
+      displayFlag: displayFlag
+    };
   }
 
-  deleteRowsByDescendingIndex(sheet, matchedRows.map(function(match) { return match.row; }));
-  return { action: 'deleted-different-status', matchedRows: matchedRows };
+  return {
+    action: 'updated-existing-new-status',
+    matchedRows: matchedRows,
+    displayFlag: displayFlag
+  };
 }
 
 function normalizeShuttleOrderLookupPayload(order) {
@@ -149,13 +218,15 @@ function normalizeShuttleOrderLookupPayload(order) {
   var timeLabel = formatShuttleShift(order && order.time);
   var station = normalizeShuttleOrderLookupText(order && order.station);
   var status = normalizeShuttleOrderLookupText(order && order.status);
+  var display = normalizeShuttleDisplayFlag(order && order.display);
 
   return {
     employee: employee,
     date: dateIso,
     time: timeLabel,
     station: station,
-    status: status
+    status: status,
+    display: display
   };
 }
 
@@ -165,6 +236,53 @@ function normalizeShuttleOrderLookupText(value) {
     text = text.substring(1);
   }
   return text.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function normalizeShuttleDisplayFlag(value) {
+  var text = String(value || '').trim().toLowerCase();
+  if (!text) return '';
+  if (text === '1' || text === 'true' || text === 'yes' || text === 'on') return '1';
+  if (text === '0' || text === 'false' || text === 'no' || text === 'off') return '0';
+  var numeric = Number(text);
+  if (!isNaN(numeric)) {
+    return numeric === 0 ? '0' : '1';
+  }
+  return '';
+}
+
+function isShuttleDisplayVisible(value) {
+  return normalizeShuttleDisplayFlag(value) !== '0';
+}
+
+function isShuttleActiveStatusValue(value) {
+  var normalized = normalizeShuttleOrderLookupText(value);
+  if (!normalized) return false;
+  return normalized.indexOf('פעיל') >= 0 || normalized.indexOf('актив') >= 0;
+}
+
+function resolveShuttleDisplayFlagByStatus(statusValue) {
+  return isShuttleActiveStatusValue(statusValue) ? '1' : '0';
+}
+
+function updateShuttleRowsStatusAndDisplay(sheet, rows, statusValue, displayFlag) {
+  if (!sheet || !rows || !rows.length) return;
+  var safeStatus = String(statusValue || '').trim();
+  var safeDisplay = normalizeShuttleDisplayFlag(displayFlag) || resolveShuttleDisplayFlagByStatus(safeStatus);
+  var uniqueRows = {};
+  rows.forEach(function(row) {
+    var rowIndex = Number(row || 0);
+    if (rowIndex >= 2) {
+      uniqueRows[rowIndex] = true;
+    }
+  });
+  Object.keys(uniqueRows).forEach(function(rowKey) {
+    var rowIndex = Number(rowKey || 0);
+    if (rowIndex < 2) return;
+    if (safeStatus) {
+      sheet.getRange(rowIndex, 6).setValue(safeStatus); // F: status
+    }
+    sheet.getRange(rowIndex, 7).setValue(safeDisplay); // G: display flag
+  });
 }
 
 function deleteRowsByDescendingIndex(sheet, rows) {
@@ -180,7 +298,8 @@ function deleteRowsByDescendingIndex(sheet, rows) {
     .map(function(value) { return Number(value); })
     .sort(function(a, b) { return b - a; });
   sortedRows.forEach(function(rowIndex) {
-    sheet.deleteRow(rowIndex);
+    // Soft delete: keep history row and hide it from queries/UI.
+    sheet.getRange(rowIndex, 7).setValue('0');
   });
 }
 
@@ -200,25 +319,169 @@ function main() {
   })
 }
 function getWorker() {
-  var labels = wsData.getRange(1, 1, 1, wsData.getLastColumn()).getValues();
-  var options = [];
-  labels.forEach(function (label, i) {
-    options = wsData.getRange(2, label.length, wsData.getLastRow() - 1, 1).getValues().map(function (o) { return o[0] });
+  if (!wsData) return [];
+  var lastRow = wsData.getLastRow();
+  var lastCol = wsData.getLastColumn();
+  if (lastRow < 2 || lastCol < 1) return [];
 
-  })
-  return options;
+  // Read all worker rows and build a normalized display entry per row.
+  var rows = wsData.getRange(2, 1, lastRow - 1, lastCol).getDisplayValues();
+  var results = [];
+  var seen = {};
+
+  for (var i = 0; i < rows.length; i++) {
+    var entry = buildShuttleWorkerEntryFromRow(rows[i]);
+    if (!entry) continue;
+    var key = normalizeShuttlePhone(entry) || normalizeShuttleOrderLookupText(entry);
+    if (!key || seen[key]) continue;
+    seen[key] = true;
+    results.push(entry);
+  }
+
+  return results;
 }
-function getParks() {
-  var labels = wsDataPark.getRange(1, 1, 1, 1).getValues();
-  var options = [];
-  labels.forEach(function (label, i) {
-    options = wsDataPark.getRange(2, label.length, wsDataPark.getLastRow() - 1, 1).getValues().map(function (o) {
-      let io = 0;
-      return o[0];
-    });
 
-  })
-  return options;
+function getParks() {
+  if (!wsDataPark) return [];
+  var lastRow = wsDataPark.getLastRow();
+  if (lastRow < 2) return [];
+
+  return wsDataPark.getRange(2, 1, lastRow - 1, 1).getDisplayValues()
+    .map(function (row) { return String(row[0] || '').trim(); })
+    .filter(function (value) { return Boolean(value); });
+}
+
+function buildShuttleWorkerEntryFromRow(row) {
+  if (!Array.isArray(row) || !row.length) return '';
+
+  var cells = row
+    .map(function(cell) { return String(cell || '').replace(/\s+/g, ' ').trim(); })
+    .filter(function(cell) { return Boolean(cell); });
+  if (!cells.length) return '';
+
+  var phone = '';
+  var combinedCell = '';
+  var nonPhoneCells = [];
+
+  for (var i = 0; i < cells.length; i++) {
+    var cell = cells[i];
+    var normalizedPhone = normalizeShuttlePhone(cell);
+    if (!normalizedPhone) {
+      var digitChunks = cell.match(/\d{9,15}/g) || [];
+      for (var d = 0; d < digitChunks.length; d++) {
+        normalizedPhone = normalizeShuttlePhone(digitChunks[d]);
+        if (normalizedPhone) break;
+      }
+    }
+
+    if (normalizedPhone && !phone) {
+      phone = normalizedPhone;
+      var normalizedCellText = normalizeShuttleOrderLookupText(cell);
+      var normalizedPhoneText = normalizeShuttleOrderLookupText(phone);
+      if (normalizedCellText && normalizedCellText !== normalizedPhoneText) {
+        var extractedFromMixedCell = sanitizeShuttleWorkerNameCell(cell);
+        if (extractedFromMixedCell) {
+          combinedCell = extractedFromMixedCell + ' ' + phone;
+        }
+      }
+      continue;
+    }
+
+    if (!normalizeShuttlePhone(cell)) {
+      nonPhoneCells.push(cell);
+    }
+  }
+
+  if (!phone) return '';
+  if (combinedCell) return normalizeShuttleWorkerLabel(combinedCell, phone);
+
+  var resolvedName = resolveShuttleWorkerNameFromCells(nonPhoneCells);
+  if (resolvedName) {
+    return normalizeShuttleWorkerLabel(resolvedName, phone);
+  }
+
+  return phone;
+}
+
+function resolveShuttleWorkerNameFromCells(nonPhoneCells) {
+  if (!Array.isArray(nonPhoneCells) || !nonPhoneCells.length) return '';
+
+  var first = sanitizeShuttleWorkerNameCell(nonPhoneCells[0]);
+  if (!first) return '';
+  if (countShuttleWorkerNameWords(first) >= 2) {
+    return first;
+  }
+
+  var second = sanitizeShuttleWorkerNameCell(nonPhoneCells[1] || '');
+  if (!second) {
+    return first;
+  }
+
+  // Typical worker sheets keep first/last names in adjacent cells.
+  if (countShuttleWorkerNameWords(second) <= 2) {
+    return (first + ' ' + second).replace(/\s+/g, ' ').trim();
+  }
+
+  return first;
+}
+
+function sanitizeShuttleWorkerNameCell(value) {
+  var text = String(value || '').trim();
+  if (!text) return '';
+  if (text.charAt(0) === "'") {
+    text = text.substring(1);
+  }
+  return text
+    .replace(/\(([^)]*)\)/g, ' ')
+    .replace(/\d+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function countShuttleWorkerNameWords(value) {
+  var normalized = sanitizeShuttleWorkerNameCell(value);
+  if (!normalized) return 0;
+  return normalized.split(/\s+/).filter(function(part) { return Boolean(part); }).length;
+}
+
+function normalizeShuttleWorkerLabel(rawValue, phoneValue) {
+  var phone = normalizeShuttlePhone(phoneValue || rawValue);
+  var name = sanitizeShuttleWorkerNameCell(rawValue);
+  if (name && phone) {
+    return (name + ' ' + phone).replace(/\s+/g, ' ').trim();
+  }
+  if (name) return name;
+  if (phone) return phone;
+  return String(rawValue || '').replace(/\s+/g, ' ').trim();
+}
+
+function isShuttleEmployeeAllowedToOrder(employeeValue) {
+  var normalizedEmployeeText = normalizeShuttleOrderLookupText(employeeValue);
+  var normalizedEmployeePhone = normalizeShuttlePhone(employeeValue);
+  if (!normalizedEmployeeText && !normalizedEmployeePhone) {
+    return false;
+  }
+
+  var workers = getWorker();
+  if (!Array.isArray(workers) || !workers.length) {
+    return false;
+  }
+
+  for (var i = 0; i < workers.length; i++) {
+    var workerRaw = String(workers[i] || '').trim();
+    if (!workerRaw) continue;
+
+    var workerText = normalizeShuttleOrderLookupText(workerRaw);
+    var workerPhone = normalizeShuttlePhone(workerRaw);
+
+    if (normalizedEmployeePhone && workerPhone && normalizedEmployeePhone === workerPhone) {
+      return true;
+    }
+    if (normalizedEmployeeText && workerText && normalizedEmployeeText === workerText) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function updateDropDown(id, values) {
@@ -422,6 +685,147 @@ function isCellEmptyOrValueEmpty(cell) {
   return value === '' || value === null;
 }
 
+function backfillShuttleDisplayFlags() {
+  if (!wsShuttleLog) {
+    return {
+      result: 'error',
+      message: 'Sheet לוג נסיעות not found',
+      updatedRows: 0
+    };
+  }
+
+  var lastRow = wsShuttleLog.getLastRow();
+  if (lastRow < 2) {
+    return {
+      result: 'success',
+      message: 'No historical rows to process',
+      updatedRows: 0
+    };
+  }
+
+  var rowCount = lastRow - 1;
+  var rows = wsShuttleLog.getRange(2, 1, rowCount, 7).getValues(); // A..G
+  var nextDisplayValues = [];
+  var updatedRows = 0;
+
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var normalizedDisplay = normalizeShuttleDisplayFlag(row[6]); // G
+    var hasHistoricalOrderData = String(row[0] || '').trim() !== '' || // A
+      String(row[1] || '').trim() !== '' || // B
+      String(row[2] || '').trim() !== '' || // C
+      String(row[3] || '').trim() !== '' || // D
+      String(row[4] || '').trim() !== '' || // E
+      String(row[5] || '').trim() !== '';   // F
+
+    if (!normalizedDisplay && hasHistoricalOrderData) {
+      nextDisplayValues.push(['1']);
+      updatedRows += 1;
+      continue;
+    }
+
+    nextDisplayValues.push([normalizedDisplay || '']);
+  }
+
+  if (updatedRows > 0) {
+    wsShuttleLog.getRange(2, 7, rowCount, 1).setValues(nextDisplayValues);
+  }
+
+  return {
+    result: 'success',
+    message: 'Backfill completed',
+    updatedRows: updatedRows,
+    scannedRows: rowCount
+  };
+}
+
+function normalizeHistoricalDuplicateStatusToDisplayFlags() {
+  if (!wsShuttleLog) {
+    return {
+      result: 'error',
+      message: 'Sheet לוג נסיעות not found',
+      updatedRows: 0,
+      duplicateGroups: 0
+    };
+  }
+
+  var lastRow = wsShuttleLog.getLastRow();
+  if (lastRow < 2) {
+    return {
+      result: 'success',
+      message: 'No historical rows to process',
+      updatedRows: 0,
+      duplicateGroups: 0,
+      scannedRows: 0
+    };
+  }
+
+  var rows = wsShuttleLog.getRange(2, 2, lastRow - 1, 6).getValues(); // B..G
+  var groupsByKey = {};
+  var scannedRows = 0;
+
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var normalized = normalizeShuttleOrderLookupPayload({
+      employee: row[0], // B
+      date: row[1],     // C
+      time: row[2],     // D
+      station: row[3],  // E
+      status: row[4],   // F
+      display: row[5]   // G
+    });
+
+    if (!normalized.employee || !normalized.date || !normalized.time || !normalized.station) {
+      continue;
+    }
+
+    scannedRows += 1;
+    var key = [
+      normalized.employee,
+      normalized.date,
+      normalized.time,
+      normalized.station
+    ].join('|');
+    if (!groupsByKey[key]) {
+      groupsByKey[key] = [];
+    }
+    groupsByKey[key].push({
+      rowIndex: i + 2,
+      statusValue: String(row[4] || '').trim(),
+      currentDisplay: normalizeShuttleDisplayFlag(row[5])
+    });
+  }
+
+  var duplicateGroups = 0;
+  var updates = [];
+  Object.keys(groupsByKey).forEach(function(key) {
+    var groupRows = groupsByKey[key];
+    if (!groupRows || groupRows.length < 2) return;
+    duplicateGroups += 1;
+    groupRows.forEach(function(groupRow) {
+      var expectedDisplay = resolveShuttleDisplayFlagByStatus(groupRow.statusValue);
+      if (groupRow.currentDisplay !== expectedDisplay) {
+        updates.push({
+          rowIndex: groupRow.rowIndex,
+          displayValue: expectedDisplay
+        });
+      }
+    });
+  });
+
+  for (var u = 0; u < updates.length; u++) {
+    wsShuttleLog.getRange(updates[u].rowIndex, 7).setValue(updates[u].displayValue);
+  }
+
+  return {
+    result: 'success',
+    message: 'Duplicate-group display normalization completed',
+    scannedRows: scannedRows,
+    duplicateGroups: duplicateGroups,
+    updatedRows: updates.length
+  };
+}
+
 function getCurrentUserOrders(userValue, options) {
   var startedAt = Date.now();
   var includeBuckets = Boolean(
@@ -453,10 +857,14 @@ function getCurrentUserOrders(userValue, options) {
 
   var cache = CacheService.getScriptCache();
   var cacheKey = 'current_user_orders_' + normalizedUser + '_' + (includeBuckets ? 'b1' : 'b0');
+  var forceRefresh = Boolean(options && options.forceRefresh === true);
   var cacheLookupStartedAt = Date.now();
-  var cached = cache.get(cacheKey);
+  var cached = forceRefresh ? null : cache.get(cacheKey);
   if (debugInfo) {
     debugInfo.phasesMs.cacheLookup = Date.now() - cacheLookupStartedAt;
+    if (forceRefresh) {
+      debugInfo.forceRefresh = true;
+    }
   }
   if (cached) {
     var cachedResponse = JSON.parse(cached);
@@ -619,6 +1027,9 @@ function collectCurrentUserRawOrders(normalizedUser, debugInfo) {
     if (!employeePhone || employeePhone !== normalizedUser) {
       continue;
     }
+    if (!isShuttleDisplayVisible(order.display)) {
+      continue;
+    }
     orders.push(order);
   }
   var filterRowsMs = Date.now() - filterStartedAt;
@@ -762,6 +1173,9 @@ function collectCurrentUserRawOrdersByFullScan(normalizedUser, lastRow, debugInf
     if (!order) continue;
     var employeePhone = String(order.employeePhone || '').trim();
     if (!employeePhone || employeePhone !== normalizedUser) {
+      continue;
+    }
+    if (!isShuttleDisplayVisible(order.display)) {
       continue;
     }
     orders.push(order);
@@ -1054,6 +1468,8 @@ function mapShuttleOrderRow(row, sheetRow) {
   });
   var isOngoing = !isCancelled && isIsoDateTodayOrFuture(dateIso);
 
+  var normalizedDisplay = normalizeShuttleDisplayFlag(display);
+
   return {
     id: 'sheet-' + sheetRow,
     sheetRow: sheetRow,
@@ -1067,7 +1483,7 @@ function mapShuttleOrderRow(row, sheetRow) {
     station: station,
     status: statusText,
     statusValue: statusText,
-    display: display,
+    display: normalizedDisplay || '1',
     submittedAt: submittedAt,
     isCancelled: isCancelled,
     isOngoing: isOngoing

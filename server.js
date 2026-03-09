@@ -2,17 +2,43 @@ const vapidKeys = {
     publicKey: "BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk",
     privateKey: "fMQqCaakMboV7LEV57wJhxPAdyppOBRDBjRDVQBxg1s"
 };
-const GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbyPaGmKWjN-bITa9i96QVkqkeU71BidSvObzMw-klaFJ-8u7oJRv1_Ay5_wRQa8eKH2eA/exec';
-
 const express = require('express');
 const webpush = require('web-push');
-const fetch = require('node-fetch');
 const bodyParser = require('body-parser');
 const multer = require('multer'); 
 const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
 const crypto = require('crypto');
+const {
+    createSheetIntegrationServiceFromEnv,
+    createWebhookRegistryFromEnv,
+    createRedisStateStoreFromEnv,
+    SessionTokenJweService,
+    looksLikeJweCompactToken
+} = require('./backend/dist/services');
+
+const fetch = (...args) => {
+    if (typeof globalThis.fetch === 'function') {
+        return globalThis.fetch(...args);
+    }
+    return import('node-fetch').then((module) => module.default(...args));
+};
+
+const sheetIntegrationService = createSheetIntegrationServiceFromEnv(process.env);
+const webhookRegistryService = createWebhookRegistryFromEnv(process.env);
+const GOOGLE_SHEET_URL = sheetIntegrationService.googleSheetUrl;
+const redisStateStorePromise = createRedisStateStoreFromEnv(process.env)
+    .then((store) => {
+        if (store && store.isEnabled) {
+            console.log('[REDIS] Connected state store.');
+        }
+        return store;
+    })
+    .catch((error) => {
+        console.warn('[REDIS] Running without Redis:', error && error.message ? error.message : error);
+        return null;
+    });
 
 // --- 1. SETUP UPLOADS FOLDER ---
 const uploadDir = path.join(__dirname, 'uploads');
@@ -178,6 +204,7 @@ const fsp = fs.promises;
 const stateDir = path.join(__dirname, 'data');
 const stateFile = path.join(stateDir, 'state.json');
 let stateSaveTimer = null;
+let activeRedisStateStore = null;
 
 let unreadCounts = {};
 let groups = {};
@@ -244,7 +271,7 @@ app.use(cors({
     ]
 }));
 
-app.options('*', cors());
+app.options(/.*/, cors());
 
 // [FIX] INCREASE LIMIT TO 50MB (Default is only 100kb)
 app.use(bodyParser.json({ limit: '350mb' }));
@@ -585,6 +612,23 @@ function notifySseClients(username, messageObj) {
     clientSet.forEach(res => res.write(payload));
 }
 
+function dispatchRegisteredWebhookAsync(messageObj) {
+    const webhookUrl = webhookRegistryService.resolveFromMessage(messageObj);
+    if (!webhookUrl) {
+        return;
+    }
+    fetchWithRetry(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(messageObj || {})
+    }, { timeoutMs: 10000, retries: 1, backoffMs: 400 }).catch((error) => {
+        console.warn(
+            `[WEBHOOK] Failed dispatch to ${webhookUrl}:`,
+            error && error.message ? error.message : error
+        );
+    });
+}
+
 // Helper: Add message to queue (NORMALIZED TO LOWERCASE)
 function addToQueue(targetUser, messageObj) {
     const recipients = Array.isArray(targetUser) ? targetUser : [targetUser];
@@ -605,6 +649,12 @@ function addToQueue(targetUser, messageObj) {
             messageQueue[normalizedUser] = [];
         }
         messageQueue[normalizedUser].push(queueEntry);
+        if (activeRedisStateStore && activeRedisStateStore.isEnabled) {
+            activeRedisStateStore.enqueueMessages(normalizedUser, [queueEntry]).catch((error) => {
+                console.warn('[REDIS] enqueue failed:', error && error.message ? error.message : error);
+            });
+        }
+        dispatchRegisteredWebhookAsync(queueEntry);
         notifySseClients(normalizedUser, queueEntry);
     });
     scheduleStateSave();
@@ -652,6 +702,17 @@ const fetchWithRetry = async (url, options = {}, retryOptions = {}) => {
 
 const normalizeUserKey = (value) => String(value || '').trim().toLowerCase();
 const normalizeGroupType = (value) => (value === 'community' ? 'community' : 'group');
+const DOVRUT_GROUP_ID = String(process.env.DOVRUT_GROUP_ID || 'דוברות').trim() || 'דוברות';
+const DOVRUT_ALLOWED_WRITERS = parseUsernamesInput(
+    process.env.DOVRUT_ALLOWED_WRITERS || '0506501040,0506267447,0543108095'
+);
+const dovrutWriterUserSet = new Set(
+    DOVRUT_ALLOWED_WRITERS.map((value) => normalizeUserKey(value)).filter(Boolean)
+);
+const SUBSCRIPTION_LOOKUP_BATCH_SIZE = Math.max(
+    10,
+    Number(process.env.SUBSCRIPTION_LOOKUP_BATCH_SIZE || 40) || 40
+);
 const SUBSCRIPTION_CACHE_TTL_MS = 2 * 60 * 1000;
 const subscriptionCache = new Map();
 const AUTH_REFRESH_PUSH_TYPE = 'subscription-auth-refresh';
@@ -699,6 +760,13 @@ const SESSION_SIGNING_SECRET = String(
     vapidKeys.privateKey ||
     ''
 ).trim();
+const SESSION_JWE_SECRET = String(
+    process.env.SESSION_JWE_SECRET ||
+    SESSION_SIGNING_SECRET
+).trim();
+const sessionTokenJweService = SESSION_JWE_SECRET
+    ? new SessionTokenJweService(SESSION_JWE_SECRET)
+    : null;
 const SESSION_USER_PATTERN = /^0\d{9}$/;
 const AUTH_SESSION_RATE_LIMIT_WINDOW_MS = Math.max(
     60 * 1000,
@@ -780,10 +848,7 @@ const MOBILE_REREGISTER_PUSH_TTL_SECONDS = 24 * 60 * 60;
 const MOBILE_REREGISTER_SEND_CONCURRENCY = 20;
 const MOBILE_REREGISTER_MAX_TRACKED_CAMPAIGNS = 20;
 const SHUTTLE_CHAT_NAME = 'הזמנת הסעה';
-const SHUTTLE_USER_ORDERS_URL = String(
-    process.env.SHUTTLE_USER_ORDERS_URL ||
-    'https://script.google.com/macros/s/AKfycbyIWpm_EFxcvtR0zaDQQWYo0rjIK0kdaBl8VVG2rC2OSi8wXgMZQ3duwf6lj8R4Rxif/exec'
-).trim();
+const SHUTTLE_USER_ORDERS_URL = sheetIntegrationService.shuttleUserOrdersUrl;
 const SHUTTLE_REMINDER_ENABLED = String(process.env.SHUTTLE_REMINDER_ENABLED || 'true').trim().toLowerCase() !== 'false';
 const SHUTTLE_REMINDER_INTERVAL_MS = Math.max(
     15 * 1000,
@@ -1551,6 +1616,42 @@ function parseUsernamesInput(rawValue) {
     return Array.from(normalized);
 }
 
+function isDovrutGroupTarget(groupRecord, groupId, groupName) {
+    const dovrutKey = normalizeUserKey(DOVRUT_GROUP_ID);
+    if (!dovrutKey) return false;
+
+    const candidates = [
+        groupRecord && groupRecord.id,
+        groupRecord && groupRecord.name,
+        groupId,
+        groupName
+    ];
+    return candidates.some((value) => normalizeUserKey(value) === dovrutKey);
+}
+
+function canSendToCommunityGroup(sender, groupRecord, groupId, groupName) {
+    if (!groupRecord || groupRecord.type !== 'community') {
+        return true;
+    }
+
+    const senderKey = normalizeUserKey(sender);
+    if (!senderKey) {
+        return false;
+    }
+
+    const creatorKey = normalizeUserKey(groupRecord.createdBy);
+    if (creatorKey && senderKey === creatorKey) {
+        return true;
+    }
+
+    if (isDovrutGroupTarget(groupRecord, groupId, groupName)) {
+        return dovrutWriterUserSet.has(senderKey);
+    }
+
+    // Legacy behavior: community groups without creator remain sendable.
+    return !creatorKey;
+}
+
 function getClientIpAddress(req) {
     const forwardedFor = String((req && req.headers && req.headers['x-forwarded-for']) || '').trim();
     if (forwardedFor) {
@@ -1684,21 +1785,29 @@ function generateRandomToken(byteLength = 24) {
 
 function createSessionToken(user) {
     const normalizedUser = normalizeUserCandidate(user);
-    if (!normalizedUser || !SESSION_SIGNING_SECRET) {
+    if (!normalizedUser || (!SESSION_SIGNING_SECRET && !sessionTokenJweService)) {
         return null;
     }
     const sessionId = generateRandomToken(18);
     const csrfToken = generateRandomToken(24);
     const expiresAt = Date.now() + SESSION_COOKIE_TTL_MS;
     activeSessionIdByUser.set(normalizedUser, sessionId);
-    const payload = encodeBase64Url(
-        JSON.stringify({
-            user: normalizedUser,
+    const payloadObject = {
+        user: normalizedUser,
+        expiresAt,
+        sid: sessionId,
+        csrfToken
+    };
+    const jweToken = sessionTokenJweService ? sessionTokenJweService.encrypt(payloadObject) : '';
+    if (jweToken) {
+        return {
+            token: jweToken,
             expiresAt,
-            sid: sessionId,
+            sessionId,
             csrfToken
-        })
-    );
+        };
+    }
+    const payload = encodeBase64Url(JSON.stringify(payloadObject));
     const signature = signSessionPayload(payload);
     if (!signature) {
         activeSessionIdByUser.delete(normalizedUser);
@@ -1714,23 +1823,35 @@ function createSessionToken(user) {
 
 function getSessionFromToken(rawToken) {
     const token = String(rawToken || '').trim();
-    if (!token || !SESSION_SIGNING_SECRET) {
+    if (!token) {
         return null;
     }
 
-    const parts = token.split('.');
-    if (parts.length !== 2) {
-        return null;
+    let parsed = null;
+    if (sessionTokenJweService && looksLikeJweCompactToken(token)) {
+        parsed = sessionTokenJweService.decrypt(token);
+    } else if (SESSION_SIGNING_SECRET) {
+        const parts = token.split('.');
+        if (parts.length !== 2) {
+            return null;
+        }
+        const payloadEncoded = parts[0];
+        const providedSignature = parts[1];
+        const expectedSignature = signSessionPayload(payloadEncoded);
+        if (!expectedSignature || !safeTimingCompare(providedSignature, expectedSignature)) {
+            return null;
+        }
+        try {
+            parsed = JSON.parse(decodeBase64Url(payloadEncoded));
+        } catch (error) {
+            parsed = null;
+        }
     }
-    const payloadEncoded = parts[0];
-    const providedSignature = parts[1];
-    const expectedSignature = signSessionPayload(payloadEncoded);
-    if (!expectedSignature || !safeTimingCompare(providedSignature, expectedSignature)) {
+    if (!parsed || typeof parsed !== 'object') {
         return null;
     }
 
     try {
-        const parsed = JSON.parse(decodeBase64Url(payloadEncoded));
         const user = normalizeUserCandidate(parsed && parsed.user);
         const expiresAt = Number(parsed && parsed.expiresAt);
         const sessionId = String((parsed && parsed.sid) || '').trim();
@@ -1926,22 +2047,11 @@ function recordDeliveryTelemetryLog({ user = '', payload = {}, timestamp = 0, re
 }
 
 function buildGoogleSheetGetUrl(queryParams = {}, options = {}) {
-    const url = new URL(GOOGLE_SHEET_URL);
-    Object.entries(queryParams || {}).forEach(([key, value]) => {
-        if (value === undefined || value === null) return;
-        const normalizedValue = String(value).trim();
-        if (!normalizedValue) return;
-        url.searchParams.set(key, normalizedValue);
-    });
-    const token = String(
-        Object.prototype.hasOwnProperty.call(options, 'token')
+    return sheetIntegrationService.buildGoogleSheetGetUrl(queryParams, {
+        token: Object.prototype.hasOwnProperty.call(options, 'token')
             ? (options && options.token)
             : APP_SERVER_TOKEN
-    ).trim();
-    if (token) {
-        url.searchParams.set('token', token);
-    }
-    return url.toString();
+    });
 }
 
 function normalizeAuthCode(value) {
@@ -2419,12 +2529,13 @@ async function fetchShuttleReminderOrdersForUser(userKey) {
     if (!normalizedUser || !SESSION_USER_PATTERN.test(normalizedUser)) {
         return [];
     }
-    const requestUrl = new URL(SHUTTLE_USER_ORDERS_URL);
-    requestUrl.searchParams.set('action', 'get_user_orders');
-    requestUrl.searchParams.set('user', normalizedUser);
+    const requestUrl = sheetIntegrationService.buildShuttleUserOrdersUrl({
+        action: 'get_user_orders',
+        user: normalizedUser
+    });
 
     const response = await fetchWithRetry(
-        requestUrl.toString(),
+        requestUrl,
         {},
         {
             timeoutMs: SHUTTLE_REMINDER_FETCH_TIMEOUT_MS,
@@ -3494,6 +3605,42 @@ function upsertGroup(payload = {}) {
 }
 
 async function loadState() {
+    const redisStore = await redisStateStorePromise;
+    if (redisStore && redisStore.isEnabled) {
+        activeRedisStateStore = redisStore;
+        try {
+            const redisState = await redisStore.loadState();
+            if (redisState) {
+                unreadCounts = (redisState.unreadCounts && typeof redisState.unreadCounts === 'object')
+                    ? redisState.unreadCounts
+                    : {};
+                messageQueue = await redisStore.loadQueueSnapshot();
+                groups = (redisState.groups && typeof redisState.groups === 'object')
+                    ? redisState.groups
+                    : {};
+                deviceSubscriptionsByUser = normalizeLocalDeviceSubscriptionsRegistry(
+                    (redisState.deviceSubscriptionsByUser && typeof redisState.deviceSubscriptionsByUser === 'object')
+                        ? redisState.deviceSubscriptionsByUser
+                        : {}
+                );
+                shuttleReminderSentAtByKey = normalizeShuttleReminderSentState(
+                    (redisState.shuttleReminderSentAtByKey && typeof redisState.shuttleReminderSentAtByKey === 'object')
+                        ? redisState.shuttleReminderSentAtByKey
+                        : {}
+                );
+                shuttleReminderKnownUsersCache.at = 0;
+                shuttleReminderKnownUsersCache.users = [];
+                Object.keys(shuttleReminderOrdersCacheByUser).forEach((userKey) => {
+                    delete shuttleReminderOrdersCacheByUser[userKey];
+                });
+                console.log('[STATE] Loaded persisted state from Redis.');
+                return;
+            }
+        } catch (error) {
+            console.warn('[STATE] Redis load failed, falling back to file state:', error && error.message ? error.message : error);
+        }
+    }
+
     try {
         await fsp.mkdir(stateDir, { recursive: true });
         const raw = await fsp.readFile(stateFile, 'utf8');
@@ -3525,6 +3672,21 @@ async function loadState() {
 }
 
 async function persistState() {
+    if (activeRedisStateStore && activeRedisStateStore.isEnabled) {
+        try {
+            await activeRedisStateStore.persistState({
+                unreadCounts,
+                messageQueue,
+                groups,
+                deviceSubscriptionsByUser,
+                shuttleReminderSentAtByKey
+            });
+            return;
+        } catch (error) {
+            console.warn('[STATE] Redis persist failed, falling back to file state:', error && error.message ? error.message : error);
+        }
+    }
+
     try {
         const payload = JSON.stringify({
             unreadCounts,
@@ -3710,9 +3872,13 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
         return cached.subscriptions;
     }
 
-    const requestedUsersSet = new Set(
-        parseUsernamesInput(requestUserList).map(normalizeUserKey).filter(Boolean)
+    const requestedUsers = Array.from(
+        new Set(parseUsernamesInput(requestUserList).map(normalizeUserKey).filter(Boolean))
     );
+    const requestedUsersSet = new Set(requestedUsers);
+    if (!requestedUsers.length) {
+        return cached ? cached.subscriptions : [];
+    }
     const normalizeLookupSubscriptions = (payload) => {
         const extracted = extractSubscriptionsFromSheetResponse(payload);
         if (!extracted.length) return [];
@@ -3727,13 +3893,30 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
     };
 
     try {
-        const response = await fetchWithRetry(
-            buildGoogleSheetGetUrl({ usernames: requestUserList }),
-            {},
-            { timeoutMs: 12000, retries: 2, backoffMs: 500 }
-        );
-        const result = await response.json();
-        const subscriptions = normalizeLookupSubscriptions(result);
+        let subscriptions = [];
+        if (requestedUsers.length <= SUBSCRIPTION_LOOKUP_BATCH_SIZE) {
+            const response = await fetchWithRetry(
+                buildGoogleSheetGetUrl({ usernames: requestUserList }),
+                {},
+                { timeoutMs: 12000, retries: 2, backoffMs: 500 }
+            );
+            const result = await response.json();
+            subscriptions = normalizeLookupSubscriptions(result);
+        } else {
+            const collected = [];
+            for (let i = 0; i < requestedUsers.length; i += SUBSCRIPTION_LOOKUP_BATCH_SIZE) {
+                const batch = requestedUsers.slice(i, i + SUBSCRIPTION_LOOKUP_BATCH_SIZE);
+                if (!batch.length) continue;
+                const response = await fetchWithRetry(
+                    buildGoogleSheetGetUrl({ usernames: batch.join(',') }),
+                    {},
+                    { timeoutMs: 12000, retries: 2, backoffMs: 500 }
+                );
+                const result = await response.json();
+                collected.push(...normalizeLookupSubscriptions(result));
+            }
+            subscriptions = dedupeSubscriptionsByEndpoint(collected);
+        }
         if (subscriptions.length) {
             subscriptionCache.set(cacheKey, { at: now, subscriptions });
             return subscriptions;
@@ -4599,6 +4782,28 @@ app.get(['/version', '/notify/version'], (req, res) => {
     res.json({ version: SERVER_VERSION, notes: SERVER_RELEASE_NOTES });
 });
 
+app.get(['/webhook-registry', '/notify/webhook-registry'], (_req, res) => {
+    res.json({
+        webhooks: webhookRegistryService.list()
+    });
+});
+
+app.post(['/webhook-registry', '/notify/webhook-registry'], (req, res) => {
+    if (!isSchedulerOpsRequestAuthorized(req)) {
+        return res.status(403).json({ error: 'Forbidden' });
+    }
+    const type = String(req.body && req.body.type || '').trim();
+    const url = String(req.body && req.body.url || '').trim();
+    if (!type || !url) {
+        return res.status(400).json({ error: 'Both type and url are required' });
+    }
+    webhookRegistryService.register(type, url);
+    return res.json({
+        status: 'ok',
+        webhooks: webhookRegistryService.list()
+    });
+});
+
 app.get(['/refresh-subscribe-auth/status', '/notify/refresh-subscribe-auth/status'], (req, res) => {
     res.json({
         running: subscriptionAuthRefreshState.running,
@@ -4857,7 +5062,7 @@ app.get(['/groups', '/notify/groups'], (req, res) => {
 // ======================================================
 // [NEW] GET MESSAGES (For Flutter Polling)
 // ======================================================
-app.get(['/messages', '/notify/messages'], (req, res) => {
+app.get(['/messages', '/notify/messages'], async (req, res) => {
     // [CHANGE] Force Lowercase Lookup
     const requestedUser = req.query.user ? normalizeUserKey(req.query.user) : '';
     const resolvedUser = resolveAuthorizedUser(req, requestedUser, { required: true });
@@ -4868,9 +5073,23 @@ app.get(['/messages', '/notify/messages'], (req, res) => {
     
     if (!user) return res.json({ messages: [] });
 
+    let mailbox = [];
+    if (activeRedisStateStore && activeRedisStateStore.isEnabled) {
+        try {
+            const redisMailbox = await activeRedisStateStore.drainQueue(user);
+            if (Array.isArray(redisMailbox) && redisMailbox.length > 0) {
+                mailbox = redisMailbox;
+            }
+        } catch (error) {
+            console.warn('[REDIS] Drain queue failed:', error && error.message ? error.message : error);
+        }
+    }
+    if (!mailbox.length && messageQueue[user] && messageQueue[user].length > 0) {
+        mailbox = Array.isArray(messageQueue[user]) ? messageQueue[user] : [];
+    }
+
     // Check mailbox (using lowercase key)
-    if (messageQueue[user] && messageQueue[user].length > 0) {
-        const mailbox = Array.isArray(messageQueue[user]) ? messageQueue[user] : [];
+    if (mailbox.length > 0) {
         const waitingMessages = mailbox.filter((message) => {
             if (!message || typeof message !== 'object') {
                 return true;
@@ -5035,7 +5254,7 @@ app.post(['/reply', '/notify/reply'], async (req, res) => {
                 groupUpdatedAt,
                 groupType: req.body.groupType
             });
-            if (groupRecord && groupRecord.type === 'community' && groupRecord.createdBy && normalizeUserKey(user) !== normalizeUserKey(groupRecord.createdBy)) {
+            if (!canSendToCommunityGroup(user, groupRecord, groupId, groupName)) {
                 return res.status(403).json({ error: 'Only admins can send to this group' });
             }
         }

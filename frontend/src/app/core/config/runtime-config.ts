@@ -4,6 +4,8 @@ export interface RuntimeConfig {
   outboxStore: string;
   vapidPublicKey: string;
   subscriptionUrl: string;
+  shuttleSheetUrl: string;
+  shuttleUserOrdersUrl: string;
   notifyReplyUrl: string;
   uploadUrl: string;
   groupUpdateUrl: string;
@@ -29,18 +31,48 @@ function resolveBackendOrigin(): string {
 
 const backendOrigin = resolveBackendOrigin();
 
+type RuntimeConfigOverrides = Partial<RuntimeConfig>;
+
+function getRuntimeOverrides(): RuntimeConfigOverrides {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+  const candidate = (window as Window & { __TZMC_RUNTIME_CONFIG__?: RuntimeConfigOverrides }).__TZMC_RUNTIME_CONFIG__;
+  if (!candidate || typeof candidate !== 'object') {
+    return {};
+  }
+  return candidate;
+}
+
+function withOverride<K extends keyof RuntimeConfig>(
+  key: K,
+  fallback: RuntimeConfig[K]
+): RuntimeConfig[K] {
+  const overrides = getRuntimeOverrides();
+  const value = overrides[key];
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    if (normalized) {
+      return normalized as RuntimeConfig[K];
+    }
+  }
+  return fallback;
+}
+
 export const runtimeConfig: RuntimeConfig = {
   dbName: 'PushNotificationsDB',
   storeName: 'history',
   outboxStore: 'outbox',
-  vapidPublicKey: 'BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk',
-  subscriptionUrl: 'https://script.google.com/macros/s/AKfycbwvnlvHlDCEpMZmKRfXbaxwiO61I9AxIZcyMEyZsgRoYb4HbsflTXGmFpANkXj4QKcYLA/exec',
-  notifyReplyUrl: `${backendOrigin}/notify/reply`,
-  uploadUrl: `${backendOrigin}/notify/upload`,
-  groupUpdateUrl: `${backendOrigin}/notify/group-update`,
-  reactionUrl: `${backendOrigin}/notify/reaction`,
-  groupsUrl: `${backendOrigin}/notify/groups`,
-  versionUrl: `${backendOrigin}/notify/version`
+  vapidPublicKey: withOverride('vapidPublicKey', 'BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk'),
+  subscriptionUrl: withOverride('subscriptionUrl', 'https://script.google.com/macros/s/AKfycbwvnlvHlDCEpMZmKRfXbaxwiO61I9AxIZcyMEyZsgRoYb4HbsflTXGmFpANkXj4QKcYLA/exec'),
+  shuttleSheetUrl: withOverride('shuttleSheetUrl', 'https://script.google.com/macros/s/AKfycbxXXz7QG-l_wwWW44aiVtp_ZWzinllmMzYhaRAh0mSzTOGmTbIlgmZZ4EdqvfowmMik/exec'),
+  shuttleUserOrdersUrl: withOverride('shuttleUserOrdersUrl', 'https://script.google.com/macros/s/AKfycbxXXz7QG-l_wwWW44aiVtp_ZWzinllmMzYhaRAh0mSzTOGmTbIlgmZZ4EdqvfowmMik/exec'),
+  notifyReplyUrl: withOverride('notifyReplyUrl', `${backendOrigin}/notify/reply`),
+  uploadUrl: withOverride('uploadUrl', `${backendOrigin}/notify/upload`),
+  groupUpdateUrl: withOverride('groupUpdateUrl', `${backendOrigin}/notify/group-update`),
+  reactionUrl: withOverride('reactionUrl', `${backendOrigin}/notify/reaction`),
+  groupsUrl: withOverride('groupsUrl', `${backendOrigin}/notify/groups`),
+  versionUrl: withOverride('versionUrl', `${backendOrigin}/notify/version`)
 };
 
 export const SYSTEM_CHAT_IDS = ['ציפי', 'הזמנת הסעה'] as const;

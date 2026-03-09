@@ -170,7 +170,8 @@ type BadgeCapableNavigator = Navigator & {
 type BadgeMessage =
   | { action: 'set-app-badge-count'; count: number }
   | { action: 'clear-app-badge' }
-  | { action: 'clear-device-attention' };
+  | { action: 'clear-device-attention' }
+  | { action: 'flush-offline-replies' };
 
 export interface IncomingReactionNotice {
   id: string;
@@ -224,6 +225,7 @@ export class ChatStoreService {
   readonly networkOnline = signal(typeof navigator !== 'undefined' ? navigator.onLine : true);
   readonly lastError = signal<string | null>(null);
   readonly incomingReactionNotice = signal<IncomingReactionNotice | null>(null);
+  readonly shuttleAccessAllowed = signal(true);
 
   private readonly messagesByChat = signal<Record<string, ChatMessage[]>>({});
   private stream: EventSource | null = null;
@@ -291,7 +293,11 @@ export class ChatStoreService {
     for (const id of Object.keys(messageMap)) {
       chatIds.add(id);
     }
+    const canAccessShuttle = this.shuttleAccessAllowed();
     for (const systemId of this.systemChatIdSet) {
+      if (this.isShuttleChat(systemId) && !canAccessShuttle) {
+        continue;
+      }
       chatIds.add(systemId);
     }
     const items: ChatListItem[] = [];
@@ -302,6 +308,9 @@ export class ChatStoreService {
       const messages = messageMap[chatId] ?? [];
       const lastMessage = messages[messages.length - 1];
       const isShuttle = this.isShuttleChat(chatId);
+      if (isShuttle && !canAccessShuttle) {
+        continue;
+      }
 
       const title = group?.name ?? contact?.displayName ?? (isShuttle ? SHUTTLE_CHAT_TITLE : chatId);
       const subtitle = lastMessage ? this.getMessagePreview(lastMessage) : (group ? 'אין הודעות בקבוצה' : '');
@@ -419,6 +428,7 @@ export class ChatStoreService {
     if (this.initializedUser === user) return;
 
     this.initializedUser = user;
+    await this.refreshShuttleAccessForCurrentUser(user, { force: true });
 
     // Open quickly from cached state, then bring latest messages in.
     this.applyInitialChatSelection(user);
@@ -543,6 +553,7 @@ export class ChatStoreService {
     this.groups.set([]);
     this.messagesByChat.set({});
     this.unreadByChat.set({});
+    this.shuttleAccessAllowed.set(true);
     this.resetReadReceiptTrackingState();
     this.activeChatId.set(null);
     this.lastError.set(null);
@@ -583,6 +594,7 @@ export class ChatStoreService {
     this.groups.set([]);
     this.messagesByChat.set({});
     this.unreadByChat.set({});
+    this.shuttleAccessAllowed.set(true);
     this.resetReadReceiptTrackingState();
     this.activeChatId.set(null);
     this.lastError.set(null);
@@ -620,6 +632,8 @@ export class ChatStoreService {
       this.lastError.set('טעינת קבוצות נכשלה');
     }
 
+    await this.refreshShuttleAccessForCurrentUser(user, { force });
+
     this.loading.set(false);
     this.schedulePersist();
   }
@@ -655,6 +669,9 @@ export class ChatStoreService {
     }
 
     const normalized = this.normalizeChatId(chatId);
+    if (this.isShuttleChat(normalized) && !this.shuttleAccessAllowed()) {
+      return;
+    }
     const unreadBeforeOpen = Math.max(0, Math.floor(Number(this.unreadByChat()[normalized] ?? 0)));
     this.lastActivatedChatMeta.set({
       chatId: normalized,
@@ -850,6 +867,9 @@ export class ChatStoreService {
   canSendToChat(chatId: string): boolean {
     const normalizedChatId = this.normalizeChatId(chatId);
     if (!normalizedChatId) return false;
+    if (this.isShuttleChat(normalizedChatId) && !this.shuttleAccessAllowed()) {
+      return false;
+    }
     const group = this.groups().find((item) => item.id === normalizedChatId);
     if (!group) return true;
     if (group.type !== 'community' && !this.isDovrutGroup(group.id)) return true;
@@ -1600,6 +1620,9 @@ export class ChatStoreService {
       return;
     }
     if (this.isShuttleChat(chatId)) {
+      if (!this.shuttleAccessAllowed()) {
+        return;
+      }
       await this.ensureShuttleFlowOnOpen();
     }
   }
@@ -2141,8 +2164,10 @@ export class ChatStoreService {
         })}`,
         { recordType: 'shuttle-submit-success' }
       );
-    } catch {
-      this.sendShuttleSystemMessage(this.shuttleText('שליחת הבקשה נכשלה. נסה שוב בעוד מספר רגעים.', 'Не удалось отправить запрос. Попробуйте снова через пару минут.'), {
+    } catch (error) {
+      const fallbackMessage = this.shuttleText('שליחת הבקשה נכשלה. נסה שוב בעוד מספר רגעים.', 'Не удалось отправить запрос. Попробуйте снова через пару минут.');
+      const errorMessage = error instanceof Error ? String(error.message || '').trim() : '';
+      this.sendShuttleSystemMessage(errorMessage || fallbackMessage, {
         recordType: 'shuttle-submit-failed'
       });
     }
@@ -2200,8 +2225,10 @@ export class ChatStoreService {
         })}`,
         { recordType: 'shuttle-cancel-success' }
       );
-    } catch {
-      this.sendShuttleSystemMessage(this.shuttleText('ביטול ההזמנה נכשל. נסה שוב בעוד מספר רגעים.', 'Не удалось отменить заказ. Попробуйте снова через пару минут.'), {
+    } catch (error) {
+      const fallbackMessage = this.shuttleText('ביטול ההזמנה נכשל. נסה שוב בעוד מספר רגעים.', 'Не удалось отменить заказ. Попробуйте снова через пару минут.');
+      const errorMessage = error instanceof Error ? String(error.message || '').trim() : '';
+      this.sendShuttleSystemMessage(errorMessage || fallbackMessage, {
         recordType: 'shuttle-cancel-failed'
       });
     }
@@ -2434,6 +2461,112 @@ export class ChatStoreService {
       normalized.includes('отмена') ||
       normalized.includes('отмен')
     );
+  }
+
+  private async refreshShuttleAccessForCurrentUser(
+    user: string,
+    options: { force?: boolean } = {}
+  ): Promise<void> {
+    const normalizedUser = this.normalizeUser(user);
+    const previousAccess = this.shuttleAccessAllowed();
+    if (!normalizedUser) {
+      this.shuttleAccessAllowed.set(false);
+      return;
+    }
+
+    try {
+      let employees: string[] = [];
+      const now = Date.now();
+      const hasFreshCache =
+        !options.force &&
+        this.shuttleEmployeesCache.items.length > 0 &&
+        now - this.shuttleEmployeesCache.at < SHUTTLE_LIST_CACHE_TTL_MS;
+      if (hasFreshCache) {
+        employees = this.shuttleEmployeesCache.items;
+      } else {
+        employees = await this.fetchShuttleEmployeesCached();
+      }
+
+      if (!Array.isArray(employees) || employees.length === 0) {
+        // Do not hide shuttle room on transient list fetch failures.
+        this.shuttleAccessAllowed.set(previousAccess);
+        return;
+      }
+
+      const allowed = this.isUserAllowedForShuttle(normalizedUser, employees);
+      this.shuttleAccessAllowed.set(allowed);
+      this.enforceShuttleAccessVisibility(normalizedUser, allowed);
+    } catch {
+      // Keep previous visibility on network/script errors.
+      this.shuttleAccessAllowed.set(previousAccess);
+    }
+  }
+
+  private isUserAllowedForShuttle(user: string, employees: string[]): boolean {
+    const normalizedUser = this.normalizeUser(user);
+    if (!normalizedUser) return false;
+    if (!Array.isArray(employees) || employees.length === 0) {
+      return false;
+    }
+
+    const userPhone = this.extractShuttlePhone(normalizedUser) || this.normalizePhone(normalizedUser);
+    return employees.some((entry) => {
+      const normalizedEntry = this.normalizeUser(String(entry || '').trim());
+      if (!normalizedEntry) {
+        return false;
+      }
+      if (normalizedEntry === normalizedUser) {
+        return true;
+      }
+      const entryPhone = this.extractShuttlePhone(normalizedEntry);
+      return Boolean(userPhone && entryPhone && userPhone === entryPhone);
+    });
+  }
+
+  private enforceShuttleAccessVisibility(user: string, allowed: boolean): void {
+    if (allowed) {
+      return;
+    }
+
+    const active = this.activeChatId();
+    if (active && this.isShuttleChat(active)) {
+      this.activeChatId.set(null);
+      this.lastActivatedChatMeta.set(null);
+    }
+
+    const shuttleIds = Array.from(this.shuttleChatIdSet);
+    this.unreadByChat.update((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const chatId of shuttleIds) {
+        if (Object.prototype.hasOwnProperty.call(next, chatId)) {
+          delete next[chatId];
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+    this.messagesByChat.update((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const chatId of shuttleIds) {
+        if (Object.prototype.hasOwnProperty.call(next, chatId)) {
+          delete next[chatId];
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+
+    this.clearShuttleReminderTimersForUser(user);
+    localStorage.removeItem(this.shuttleWelcomeKey(user));
+    localStorage.removeItem(this.shuttleStateKey(user));
+    localStorage.removeItem(this.shuttleOrdersKey(user));
+    localStorage.removeItem(this.shuttleLanguageKey(user));
+    const storedActive = this.getStoredActiveChat(user);
+    if (storedActive && this.isShuttleChat(storedActive)) {
+      localStorage.removeItem(this.activeChatKey(user));
+    }
   }
 
   private async fetchShuttleStationsCached(): Promise<string[]> {
@@ -2693,15 +2826,16 @@ export class ChatStoreService {
     const normalizedUser = this.normalizeUser(user);
     const userPhone = this.extractShuttlePhone(user);
     const displayName = String(this.getDisplayName(user) || '').trim();
+    const preferredFullName = this.normalizeShuttleEmployeeName(displayName);
     const employees = await this.fetchShuttleEmployeesCached();
 
     if (employees.length) {
       const exact = employees.find((entry) => this.normalizeUser(entry) === normalizedUser);
-      if (exact) return exact;
+      if (exact) return this.formatShuttleEmployeeLabel(exact, userPhone || normalizedUser, preferredFullName);
 
       if (userPhone) {
         const byPhone = employees.find((entry) => this.extractShuttlePhone(entry) === userPhone);
-        if (byPhone) return byPhone;
+        if (byPhone) return this.formatShuttleEmployeeLabel(byPhone, userPhone, preferredFullName);
       }
 
       if (displayName) {
@@ -2709,15 +2843,59 @@ export class ChatStoreService {
         const byName = employees.find((entry) =>
           this.normalizeUser(entry).includes(normalizedDisplayName)
         );
-        if (byName) return byName;
+        if (byName) return this.formatShuttleEmployeeLabel(byName, userPhone || normalizedUser, preferredFullName);
       }
     }
 
-    if (displayName && userPhone && !displayName.includes(userPhone)) {
-      return `${displayName} ${userPhone}`;
+    if (preferredFullName && userPhone && !preferredFullName.includes(userPhone)) {
+      return `${preferredFullName} ${userPhone}`;
     }
-    if (displayName) return displayName;
+    if (preferredFullName) return preferredFullName;
     return user;
+  }
+
+  private formatShuttleEmployeeLabel(
+    value: string,
+    fallbackPhone: string,
+    preferredName: string
+  ): string {
+    const normalizedPhone = this.extractShuttlePhone(value) || this.extractShuttlePhone(fallbackPhone);
+    const normalizedName = this.normalizeShuttleEmployeeName(value);
+    const preferred = this.normalizeShuttleEmployeeName(preferredName);
+    const bestName = this.shuttleNameWordCount(normalizedName) >= 2
+      ? normalizedName
+      : (
+          this.shuttleNameWordCount(preferred) >= 2
+            ? preferred
+            : (normalizedName || preferred)
+        );
+
+    if (bestName && normalizedPhone) {
+      return `${bestName} ${normalizedPhone}`;
+    }
+    if (bestName) {
+      return bestName;
+    }
+    if (normalizedPhone) {
+      return normalizedPhone;
+    }
+    return String(value || '').trim();
+  }
+
+  private normalizeShuttleEmployeeName(value: string): string {
+    const source = String(value || '').trim();
+    if (!source) return '';
+    return source
+      .replace(/\(([^)]*)\)/g, ' ')
+      .replace(/\d+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private shuttleNameWordCount(value: string): number {
+    const normalized = this.normalizeShuttleEmployeeName(value);
+    if (!normalized) return 0;
+    return normalized.split(/\s+/).filter(Boolean).length;
   }
 
   private extractShuttlePhone(value: string): string {
@@ -3172,6 +3350,9 @@ export class ChatStoreService {
     body: string,
     options: { imageUrl?: string | null; recordType?: string } = {}
   ): void {
+    if (!this.shuttleAccessAllowed()) {
+      return;
+    }
     const chatId = this.normalizeChatId(SHUTTLE_CHAT_NAME);
     const message: ChatMessage = {
       id: this.generateId('rec'),
@@ -3213,6 +3394,9 @@ export class ChatStoreService {
     const chatId = this.normalizeChatId(chatIdRaw);
     if (!user || !chatId) {
       throw new Error('No active chat');
+    }
+    if (this.isShuttleChat(chatId) && !this.shuttleAccessAllowed()) {
+      throw new Error('אין הרשאה לחדר הזמנת הסעות');
     }
 
     const group = this.groups().find((item) => item.id === chatId) ?? null;
@@ -3959,6 +4143,9 @@ export class ChatStoreService {
         ? this.normalizeChatId(incoming.groupId ?? '')
         : this.normalizeChatId(sender);
       if (!chatId) continue;
+      if (this.isShuttleChat(chatId) && !this.shuttleAccessAllowed()) {
+        continue;
+      }
 
       const messageId = String(incoming.messageId ?? this.generateId('srv')).trim();
       if (!messageId) continue;
@@ -4098,6 +4285,9 @@ export class ChatStoreService {
       ? this.normalizeChatId(incoming.groupId ?? '')
       : this.normalizeChatId(sender);
     if (!chatId) return false;
+    if (this.isShuttleChat(chatId) && !this.shuttleAccessAllowed()) {
+      return false;
+    }
 
     const messageId = String(incoming.messageId ?? this.generateId('srv')).trim();
     if (!messageId) return false;
@@ -4670,6 +4860,9 @@ export class ChatStoreService {
   private appendMessage(message: ChatMessage): void {
     const chatId = this.normalizeChatId(message.chatId);
     if (!chatId) return;
+    if (this.isShuttleChat(chatId) && !this.shuttleAccessAllowed()) {
+      return;
+    }
 
     const normalizedSender = this.normalizeUser(message.sender);
     const normalizedReplyTo = this.normalizeMessageReference(message.replyTo ?? null);
@@ -5150,6 +5343,9 @@ export class ChatStoreService {
 
   private isSystemChat(chatId: string): boolean {
     const normalized = this.normalizeChatId(chatId);
+    if (this.isShuttleChat(normalized) && !this.shuttleAccessAllowed()) {
+      return false;
+    }
     return Boolean(normalized && this.systemChatIdSet.has(normalized));
   }
 
@@ -5335,6 +5531,7 @@ export class ChatStoreService {
     this.networkOnline.set(true);
     const user = this.currentUser();
     if (!user) return;
+    this.postBadgeMessageToServiceWorker({ action: 'flush-offline-replies' });
     this.clearDeviceAttention({ resetServerBadge: true });
     void this.tryRegisterPush(user, {
       force: true,

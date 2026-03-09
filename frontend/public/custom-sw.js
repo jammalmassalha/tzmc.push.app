@@ -8,6 +8,9 @@ const CLIENT_CONTEXT_TTL_MS = 10 * 60 * 1000;
 const AUTH_REFRESH_PUSH_TYPE = 'subscription-auth-refresh';
 const SW_SUBSCRIPTION_CONTEXT_CACHE = 'tzmc-sw-subscription-context-v6';
 const SW_SUBSCRIPTION_CONTEXT_KEY = new URL('./__subscription_context__', self.registration.scope).toString();
+const SW_OFFLINE_REPLY_CACHE = 'tzmc-sw-offline-replies-v1';
+const SW_OFFLINE_REPLY_KEY = new URL('./__offline_replies__', self.registration.scope).toString();
+const OFFLINE_REPLY_SYNC_TAG = 'tzmc-offline-reply-sync-v1';
 const clientContextById = new Map();
 
 function sleep(ms) {
@@ -46,6 +49,115 @@ async function fetchWithRetry(url, options = {}, retryOptions = {}) {
   }
 
   throw lastError || new Error('Network request failed');
+}
+
+function isReplyMutationRequest(request) {
+  if (!request || String(request.method || '').toUpperCase() !== 'POST') {
+    return false;
+  }
+  try {
+    const requestUrl = new URL(request.url, self.registration.scope);
+    return /\/notify\/reply$/i.test(requestUrl.pathname) || /\/reply$/i.test(requestUrl.pathname);
+  } catch (_) {
+    return false;
+  }
+}
+
+async function readOfflineReplyQueue() {
+  try {
+    const cache = await caches.open(SW_OFFLINE_REPLY_CACHE);
+    const response = await cache.match(SW_OFFLINE_REPLY_KEY);
+    if (!response) return [];
+    const payload = await response.json();
+    return Array.isArray(payload) ? payload : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+async function persistOfflineReplyQueue(items) {
+  const queue = Array.isArray(items) ? items.slice(-120) : [];
+  const cache = await caches.open(SW_OFFLINE_REPLY_CACHE);
+  await cache.put(
+    SW_OFFLINE_REPLY_KEY,
+    new Response(JSON.stringify(queue), {
+      headers: { 'Content-Type': 'application/json' }
+    })
+  );
+}
+
+async function registerOfflineReplySync() {
+  if (!self.registration || !self.registration.sync || typeof self.registration.sync.register !== 'function') {
+    return false;
+  }
+  try {
+    await self.registration.sync.register(OFFLINE_REPLY_SYNC_TAG);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function enqueueOfflineReplyRequest(request) {
+  try {
+    const body = await request.clone().text();
+    const queue = await readOfflineReplyQueue();
+    queue.push({
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      url: request.url,
+      method: 'POST',
+      contentType: request.headers.get('Content-Type') || 'application/json',
+      csrfToken: request.headers.get('X-CSRF-Token') || '',
+      credentials: request.credentials || 'same-origin',
+      body,
+      queuedAt: Date.now()
+    });
+    await persistOfflineReplyQueue(queue);
+    const syncRegistered = await registerOfflineReplySync();
+    if (!syncRegistered) {
+      // Browsers without SyncManager still get best-effort retry while SW is alive.
+      setTimeout(() => {
+        void flushOfflineReplyQueue();
+      }, 3000);
+    }
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function flushOfflineReplyQueue() {
+  const queue = await readOfflineReplyQueue();
+  if (!queue.length) {
+    return { sent: 0, remaining: 0 };
+  }
+
+  const remaining = [];
+  let sent = 0;
+  for (const entry of queue) {
+    try {
+      const headers = { 'Content-Type': entry.contentType || 'application/json' };
+      if (entry.csrfToken) {
+        headers['X-CSRF-Token'] = entry.csrfToken;
+      }
+      const response = await fetchWithRetry(entry.url, {
+        method: 'POST',
+        headers,
+        body: typeof entry.body === 'string' ? entry.body : '',
+        credentials: entry.credentials || 'same-origin'
+      }, { retries: 1, timeoutMs: 12000, backoffMs: 500 });
+      if (response && response.ok) {
+        sent += 1;
+      } else {
+        remaining.push(entry);
+      }
+    } catch (_) {
+      remaining.push(entry);
+    }
+  }
+
+  await persistOfflineReplyQueue(remaining);
+  return { sent, remaining: remaining.length };
 }
 
 function parsePushPayload(event) {
@@ -552,6 +664,37 @@ self.addEventListener('push', (event) => {
   event.waitUntil(Promise.all(tasks));
 });
 
+self.addEventListener('fetch', (event) => {
+  const request = event.request;
+  if (!isReplyMutationRequest(request)) {
+    return;
+  }
+
+  event.respondWith((async () => {
+    try {
+      return await fetch(request.clone());
+    } catch (_) {
+      const queued = await enqueueOfflineReplyRequest(request);
+      return new Response(
+        JSON.stringify({
+          status: queued ? 'queued-offline' : 'offline-failed'
+        }),
+        {
+          status: queued ? 202 : 503,
+          headers: { 'Content-Type': 'application/json' }
+        }
+      );
+    }
+  })());
+});
+
+self.addEventListener('sync', (event) => {
+  if (!event || event.tag !== OFFLINE_REPLY_SYNC_TAG) {
+    return;
+  }
+  event.waitUntil(flushOfflineReplyQueue());
+});
+
 self.addEventListener('message', (event) => {
   const data = event.data && typeof event.data === 'object' ? event.data : null;
   if (!data) {
@@ -595,6 +738,11 @@ self.addEventListener('message', (event) => {
         clearVisibleNotifications()
       ])
     );
+    return;
+  }
+
+  if (data.action === 'flush-offline-replies') {
+    event.waitUntil(flushOfflineReplyQueue());
   }
 });
 
