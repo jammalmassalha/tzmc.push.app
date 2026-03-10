@@ -152,6 +152,14 @@ function registerMessageController(app, deps = {}) {
                 }
 
                 const payload = await response.json();
+                const payloadResult = String(payload && payload.result ? payload.result : '').trim().toLowerCase();
+                if (payloadResult && payloadResult !== 'success') {
+                    const payloadError = String(
+                        (payload && (payload.message || payload.error)) || 'Logs sync failed'
+                    ).trim();
+                    const statusCode = /unauthorized|forbidden/i.test(payloadError) ? 403 : 502;
+                    return res.status(statusCode).json({ messages: [], error: payloadError || 'Logs sync failed' });
+                }
                 const rawMessages = Array.isArray(payload && payload.messages) ? payload.messages : [];
                 const messages = rawMessages
                     .map((message, index) => {
