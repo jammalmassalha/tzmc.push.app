@@ -55,7 +55,7 @@ class SheetIntegrationService {
 exports.SheetIntegrationService = SheetIntegrationService;
 function createSheetIntegrationServiceFromEnv(env = process.env) {
     const googleSheetUrl = toTrimmedString(env.GOOGLE_SHEET_URL)
-        || 'https://script.google.com/macros/s/AKfycbyPaGmKWjN-bITa9i96QVkqkeU71BidSvObzMw-klaFJ-8u7oJRv1_Ay5_wRQa8eKH2eA/exec';
+        || 'https://script.google.com/macros/s/AKfycbxboaLX2ULcRJxD2Qpso-Z8J60FnlC_gwMbqed4MKxdD29Bkr3xOYDpEd8SahQoggliZw/exec';
     const shuttleUserOrdersUrl = toTrimmedString(env.SHUTTLE_USER_ORDERS_URL)
         || 'https://script.google.com/macros/s/AKfycbxXXz7QG-l_wwWW44aiVtp_ZWzinllmMzYhaRAh0mSzTOGmTbIlgmZZ4EdqvfowmMik/exec';
     const defaultToken = toTrimmedString(env.APP_SERVER_TOKEN || env.GOOGLE_SHEET_APP_SERVER_TOKEN || '');
