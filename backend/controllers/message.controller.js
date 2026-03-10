@@ -128,10 +128,15 @@ function registerMessageController(app, deps = {}) {
                 res.status(resolution.status).json({ messages: [], error: resolution.error })
         }),
         async (req, res) => {
-            const user = req.resolvedUser;
-            if (!user) {
-                return res.status(400).json({ messages: [], error: 'Missing user' });
+            const sessionUser = normalizeUserKey(req && req.authUser);
+            if (!sessionUser) {
+                return res.status(401).json({ messages: [], error: 'Authentication required' });
             }
+            const requestedUser = normalizeUserKey(req && req.query ? req.query.user : '');
+            if (requestedUser && requestedUser !== sessionUser) {
+                return res.status(403).json({ messages: [], error: 'User mismatch' });
+            }
+            const user = sessionUser;
 
             const limitRaw = Number(req.query && req.query.limit);
             const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.floor(limitRaw)), 1000) : 700;
