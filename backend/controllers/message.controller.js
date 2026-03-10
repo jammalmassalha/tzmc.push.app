@@ -174,6 +174,9 @@ function registerMessageController(app, deps = {}) {
                         if (!body) {
                             return null;
                         }
+                        if (body.toLowerCase() === 'new notification') {
+                            return null;
+                        }
 
                         const timestampRaw = Number(message.timestamp ?? message.sentAt ?? message.at ?? 0);
                         const timestamp = Number.isFinite(timestampRaw) && timestampRaw > 0

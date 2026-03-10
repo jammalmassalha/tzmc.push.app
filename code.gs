@@ -505,6 +505,10 @@ function doGet(e) {
 
         var body = String(row[3] || '').trim();
         if (!body) continue;
+        var normalizedBody = body.toLowerCase();
+        if (normalizedBody === 'new notification') {
+          continue;
+        }
 
         var status = String(row[4] || '').trim().toLowerCase();
         if (status.indexOf('fail') === 0 || status.indexOf('error') === 0) {
