@@ -1,6 +1,6 @@
 {
-  "name": "TZMC | Medical Center",
-  "short_name": "TZMC",
+  "name": "מרכז רפואי צפון | Medical Center",
+  "short_name": "מרכז רפואי צפון",
   "start_url": "/subscribes/index.html",
   "scope": "/subscribes/",
   "display": "standalone",
