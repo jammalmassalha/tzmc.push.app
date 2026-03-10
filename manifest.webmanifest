@@ -7,7 +7,7 @@
   "orientation": "portrait",
   "background_color": "#ffffff",
   "theme_color": "#293B8F",
-  "description": "A simple app to subscribe to push notifications.",
+  "description": "Secure staff messaging app for TZMC with real-time alerts, group chats, and operational updates.",
   "icons": [
     {
       "src": "/subscribes/assets/icon-128.png",
