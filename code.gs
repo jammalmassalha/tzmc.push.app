@@ -457,7 +457,92 @@ function doGet(e) {
     }
 
     // ======================================================
-    // 4. CHECK QUEUE (Polling)
+    // 4. GET LOGS MESSAGES (From Sheet: Logs)
+    // ======================================================
+    if (action === 'get_logs_messages') {
+      var requestedLogsUser = normalizePhone(e.parameter.user || e.parameter.username || '');
+      var configuredLogsToken = getServerGuardToken();
+      var providedLogsToken = String(e.parameter.token || e.parameter.serverToken || '').trim();
+      if (configuredLogsToken && providedLogsToken !== configuredLogsToken) {
+        return createError('Unauthorized get_logs_messages read');
+      }
+      if (!requestedLogsUser) {
+        return createJSON({ result: 'success', messages: [] });
+      }
+
+      var logsSheet = spreadsheet.getSheetByName('Logs');
+      if (!logsSheet) {
+        return createJSON({ result: 'success', messages: [] });
+      }
+
+      var logsLastRow = getLastDataRow(logsSheet);
+      if (!logsLastRow) {
+        return createJSON({ result: 'success', messages: [] });
+      }
+
+      var rawLimit = parseInt(String(e.parameter.limit || '700'), 10);
+      var limit = isNaN(rawLimit) ? 700 : Math.max(1, Math.min(rawLimit, 2000));
+      var excludeSystem = String(e.parameter.excludeSystem || '1').toLowerCase() !== '0';
+
+      // A..F => Date, Recipient, Sender, Message, Status, Details
+      var logsRows = getRangeValues(logsSheet, 2, 1, logsLastRow - 1, 6);
+      var messages = [];
+
+      for (var rowIndex = logsRows.length - 1; rowIndex >= 0 && messages.length < limit; rowIndex--) {
+        var row = logsRows[rowIndex];
+        var recipientRaw = row[1];
+        var recipients = parseRecipientUsernames(recipientRaw);
+        if (recipients.indexOf(requestedLogsUser) === -1) {
+          continue;
+        }
+
+        var senderRaw = String(row[2] || '').trim();
+        var sender = normalizePhone(senderRaw) || senderRaw;
+        if (!sender) continue;
+        if (excludeSystem && String(sender).trim().toLowerCase() === 'system') {
+          continue;
+        }
+
+        var body = String(row[3] || '').trim();
+        if (!body) continue;
+        var normalizedBody = body.toLowerCase();
+        if (normalizedBody === 'new notification') {
+          continue;
+        }
+
+        var status = String(row[4] || '').trim().toLowerCase();
+        if (status.indexOf('fail') === 0 || status.indexOf('error') === 0) {
+          continue;
+        }
+
+        var timestamp = 0;
+        if (row[0] && Object.prototype.toString.call(row[0]) === '[object Date]') {
+          timestamp = row[0].getTime();
+        } else {
+          var parsedTimestamp = new Date(row[0]).getTime();
+          timestamp = isNaN(parsedTimestamp) ? 0 : parsedTimestamp;
+        }
+        if (!timestamp || isNaN(timestamp)) {
+          timestamp = Date.now();
+        }
+
+        var absoluteRow = rowIndex + 2;
+        messages.push({
+          id: 'logs-' + absoluteRow,
+          messageId: 'logs-' + absoluteRow,
+          sender: sender,
+          body: body,
+          timestamp: timestamp,
+          recipient: requestedLogsUser
+        });
+      }
+
+      messages.reverse();
+      return createJSON({ result: 'success', messages: messages });
+    }
+
+    // ======================================================
+    // 5. CHECK QUEUE (Polling)
     // ======================================================
     if (action === 'check_queue') {
       var requestedUser = normalizePhone(e.parameter.user || e.parameter.username || '');

@@ -120,6 +120,94 @@ function registerMessageController(app, deps = {}) {
     );
 
     app.get(
+        ['/messages/logs', '/notify/messages/logs'],
+        requireAuthorizedUser({
+            required: true,
+            candidateKeys: ['user'],
+            onError: (_req, res, resolution) =>
+                res.status(resolution.status).json({ messages: [], error: resolution.error })
+        }),
+        async (req, res) => {
+            const sessionUser = normalizeUserKey(req && req.authUser);
+            if (!sessionUser) {
+                return res.status(401).json({ messages: [], error: 'Authentication required' });
+            }
+            const requestedUser = normalizeUserKey(req && req.query ? req.query.user : '');
+            if (requestedUser && requestedUser !== sessionUser) {
+                return res.status(403).json({ messages: [], error: 'User mismatch' });
+            }
+            const user = sessionUser;
+
+            const limitRaw = Number(req.query && req.query.limit);
+            const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.floor(limitRaw)), 1000) : 700;
+
+            try {
+                const response = await fetchWithRetry(
+                    buildGoogleSheetGetUrl({
+                        action: 'get_logs_messages',
+                        user,
+                        excludeSystem: '1',
+                        limit: String(limit)
+                    }),
+                    {},
+                    { timeoutMs: 15000, retries: 1 }
+                );
+                if (!response.ok) {
+                    return res.status(response.status).json({ messages: [] });
+                }
+
+                const payload = await response.json();
+                const payloadResult = String(payload && payload.result ? payload.result : '').trim().toLowerCase();
+                if (payloadResult && payloadResult !== 'success') {
+                    const payloadError = String(
+                        (payload && (payload.message || payload.error)) || 'Logs sync failed'
+                    ).trim();
+                    const statusCode = /unauthorized|forbidden/i.test(payloadError) ? 403 : 502;
+                    return res.status(statusCode).json({ messages: [], error: payloadError || 'Logs sync failed' });
+                }
+                const rawMessages = Array.isArray(payload && payload.messages) ? payload.messages : [];
+                const messages = rawMessages
+                    .map((message, index) => {
+                        if (!message || typeof message !== 'object') {
+                            return null;
+                        }
+                        const sender = normalizeUserKey(message.sender || message.from || '');
+                        if (!sender || sender === 'system') {
+                            return null;
+                        }
+                        const body = String(message.body ?? message.message ?? message.content ?? '').trim();
+                        if (!body) {
+                            return null;
+                        }
+                        if (body.toLowerCase() === 'new notification') {
+                            return null;
+                        }
+
+                        const timestampRaw = Number(message.timestamp ?? message.sentAt ?? message.at ?? 0);
+                        const timestamp = Number.isFinite(timestampRaw) && timestampRaw > 0
+                            ? timestampRaw
+                            : Date.now() + index;
+                        const messageIdRaw = String(message.messageId ?? message.id ?? '').trim();
+                        const messageId = messageIdRaw || `logs-${sender}-${timestamp}-${index}`;
+
+                        return {
+                            messageId,
+                            sender,
+                            body,
+                            timestamp
+                        };
+                    })
+                    .filter(Boolean);
+
+                return res.json({ result: 'success', messages });
+            } catch (error) {
+                console.error('[LOGS SYNC] Failed to load logs messages:', error && error.message ? error.message : error);
+                return res.status(502).json({ messages: [], error: 'Logs sync failed' });
+            }
+        }
+    );
+
+    app.get(
         ['/stream', '/notify/stream'],
         requireAuthorizedUser({
             required: true,

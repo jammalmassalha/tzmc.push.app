@@ -64,9 +64,31 @@ const SHUTTLE_STATUS_ACTIVE_VALUE = 'פעיל активный';
 const SHUTTLE_STATUS_CANCEL_VALUE = 'ביטול נסיעה отмена поезд';
 const DOVRUT_GROUP_NAME = 'דוברות';
 const DOVRUT_GROUP_ID = DOVRUT_GROUP_NAME;
+const DOVRUT_TEST_GROUP_NAME = 'בדיקה - דוברות';
+const DOVRUT_TEST_GROUP_ID = DOVRUT_TEST_GROUP_NAME;
 const DOVRUT_SYSTEM_CREATOR = 'dovrut-system';
-const DOVRUT_ACTIVE_STATUS_VALUE = 1;
 const DOVRUT_ALLOWED_WRITERS = ['0506501040', '0506267447', '0543108095'] as const;
+const DOVRUT_TEST_ALLOWED_WRITERS = ['0546799693'] as const;
+const DOVRUT_TEST_GROUP_MEMBERS = ['0546799693', '0550000001', '0547997273', '0505203520'] as const;
+interface HardcodedCommunityGroupConfig {
+  id: string;
+  name: string;
+  staticMembers?: readonly string[];
+  allowedWriters: readonly string[];
+}
+const HARDCODED_COMMUNITY_GROUPS: readonly HardcodedCommunityGroupConfig[] = [
+  {
+    id: DOVRUT_GROUP_ID,
+    name: DOVRUT_GROUP_NAME,
+    allowedWriters: DOVRUT_ALLOWED_WRITERS
+  },
+  {
+    id: DOVRUT_TEST_GROUP_ID,
+    name: DOVRUT_TEST_GROUP_NAME,
+    staticMembers: DOVRUT_TEST_GROUP_MEMBERS,
+    allowedWriters: DOVRUT_TEST_ALLOWED_WRITERS
+  }
+];
 const SHUTTLE_DAY_NAMES_BY_LANGUAGE: Record<ShuttleLanguage, readonly string[]> = {
   he: ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'] as const,
   ru: ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'] as const
@@ -245,6 +267,7 @@ export class ChatStoreService {
   private shuttleEmployeesCache: { at: number; items: string[] } = { at: 0, items: [] };
   private readonly shuttleOrdersSyncAt = new Map<string, number>();
   private readonly shuttleOrdersSyncInFlight = new Set<string>();
+  private readonly shuttleOrdersSyncPromiseByUser = new Map<string, Promise<void>>();
   private readonly shuttleReminderTimersByKey = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly shuttlePickerRevision = signal(0);
   private lastAppliedAppBadgeCount = -1;
@@ -269,8 +292,17 @@ export class ChatStoreService {
   private readonly shuttleChatIdSet = new Set<string>(
     [SHUTTLE_CHAT_NAME, SHUTTLE_CHAT_TITLE].map((id) => this.normalizeChatId(id)).filter(Boolean)
   );
+  private readonly communityWriterSetByGroupId = new Map<string, Set<string>>(
+    HARDCODED_COMMUNITY_GROUPS.map((group) => [
+      this.normalizeChatId(group.id),
+      new Set(group.allowedWriters.map((value) => this.normalizeUser(value)).filter(Boolean))
+    ])
+  );
   private readonly dovrutWriterSet = new Set<string>(
-    DOVRUT_ALLOWED_WRITERS.map((value) => this.normalizeUser(value)).filter(Boolean)
+    HARDCODED_COMMUNITY_GROUPS
+      .flatMap((group) => group.allowedWriters)
+      .map((value) => this.normalizeUser(value))
+      .filter(Boolean)
   );
   private incomingBatchDepth = 0;
   private pendingPersistAfterIncomingBatch = false;
@@ -374,7 +406,7 @@ export class ChatStoreService {
     if (!user) return;
     const contacts = this.contacts();
     const groups = this.groups();
-    this.syncDovrutCommunityGroup(contacts, groups);
+    this.syncHardcodedCommunityGroups(contacts, groups);
   });
 
   constructor(private readonly api: ChatApiService) {
@@ -450,15 +482,15 @@ export class ChatStoreService {
       return;
     }
 
-    const storedActive = this.getStoredActiveChat(user);
-    if (storedActive && this.chatItems().some((chat) => chat.id === storedActive)) {
-      this.setActiveChat(storedActive);
-      return;
-    }
-
     if (this.shouldOpenHomeOnInit(user)) {
       this.activeChatId.set(null);
       this.lastActivatedChatMeta.set(null);
+      return;
+    }
+
+    const storedActive = this.getStoredActiveChat(user);
+    if (storedActive && this.chatItems().some((chat) => chat.id === storedActive)) {
+      this.setActiveChat(storedActive);
       return;
     }
 
@@ -889,67 +921,93 @@ export class ChatStoreService {
   private canUserSendToCommunityGroup(group: ChatGroup, user: string | null): boolean {
     const normalizedUser = this.normalizeUser(user ?? '');
     if (!normalizedUser) return false;
-    if (this.isDovrutGroup(group.id)) {
-      return this.dovrutWriterSet.has(normalizedUser);
+    const writerSet = this.communityWriterSetByGroupId.get(this.normalizeChatId(group.id));
+    if (writerSet) {
+      return writerSet.has(normalizedUser);
     }
     return this.normalizeUser(group.createdBy) === normalizedUser;
   }
 
   private isDovrutGroup(groupId: string): boolean {
-    return this.normalizeChatId(groupId) === this.normalizeChatId(DOVRUT_GROUP_ID);
+    return this.communityWriterSetByGroupId.has(this.normalizeChatId(groupId));
   }
 
-  private syncDovrutCommunityGroup(contacts: Contact[], groups: ChatGroup[]): void {
-    const dovrutId = this.normalizeChatId(DOVRUT_GROUP_ID);
-    const nextMembers = this.computeDovrutMembers(contacts);
-    const existing = groups.find((group) => group.id === dovrutId) ?? null;
+  private syncHardcodedCommunityGroups(contacts: Contact[], groups: ChatGroup[]): void {
+    let nextGroups = groups.slice();
+    let changed = false;
+    const creator = this.normalizeUser(DOVRUT_SYSTEM_CREATOR);
+    const currentUser = this.normalizeUser(this.currentUser() ?? '');
+    const hardcodedGroupIds = HARDCODED_COMMUNITY_GROUPS.map((group) => this.normalizeChatId(group.id));
+    for (const hardcodedGroup of HARDCODED_COMMUNITY_GROUPS) {
+      const normalizedId = this.normalizeChatId(hardcodedGroup.id);
+      const expectedMembers = this.resolveHardcodedCommunityMembers(hardcodedGroup, contacts);
+      const existingIndex = nextGroups.findIndex((group) => group.id === normalizedId);
+      const existing = existingIndex >= 0 ? nextGroups[existingIndex] : null;
+      const shouldIncludeForCurrentUser = !Array.isArray(hardcodedGroup.staticMembers)
+        || expectedMembers.includes(currentUser);
+      if (!shouldIncludeForCurrentUser) {
+        if (existingIndex >= 0) {
+          nextGroups.splice(existingIndex, 1);
+          changed = true;
+        }
+        continue;
+      }
+      const existingMembers = existing
+        ? Array.from(new Set(existing.members.map((member) => this.normalizeUser(member)).filter(Boolean)))
+          .sort((a, b) => a.localeCompare(b))
+        : [];
+      const shouldUpdate = (
+        !existing ||
+        existing.name !== hardcodedGroup.name ||
+        existing.type !== 'community' ||
+        this.normalizeUser(existing.createdBy) !== creator ||
+        !this.areStringArraysEqual(existingMembers, expectedMembers)
+      );
+      if (!shouldUpdate) {
+        continue;
+      }
 
-    const existingMembers = existing
-      ? Array.from(new Set(existing.members.map((member) => this.normalizeUser(member)).filter(Boolean)))
-        .sort((a, b) => a.localeCompare(b))
-      : [];
-    const shouldUpdate = (
-      !existing ||
-      existing.name !== DOVRUT_GROUP_NAME ||
-      existing.type !== 'community' ||
-      this.normalizeUser(existing.createdBy) !== this.normalizeUser(DOVRUT_SYSTEM_CREATOR) ||
-      !this.areStringArraysEqual(existingMembers, nextMembers)
-    );
-    if (!shouldUpdate) {
+      changed = true;
+      const nextGroup: ChatGroup = {
+        id: normalizedId,
+        name: hardcodedGroup.name,
+        members: expectedMembers,
+        createdBy: creator,
+        updatedAt: Date.now(),
+        type: 'community'
+      };
+      if (existingIndex >= 0) {
+        nextGroups[existingIndex] = nextGroup;
+      } else {
+        nextGroups = [nextGroup, ...nextGroups];
+      }
+    }
+
+    if (!changed) {
       return;
     }
 
-    const nextGroup: ChatGroup = {
-      id: dovrutId,
-      name: DOVRUT_GROUP_NAME,
-      members: nextMembers,
-      createdBy: this.normalizeUser(DOVRUT_SYSTEM_CREATOR),
-      updatedAt: Date.now(),
-      type: 'community'
-    };
-    this.groups.update((currentGroups) => {
-      const hasExisting = currentGroups.some((group) => group.id === dovrutId);
-      if (!hasExisting) {
-        return [nextGroup, ...currentGroups];
-      }
-      return currentGroups.map((group) => (group.id === dovrutId ? nextGroup : group));
-    });
+    const hardcodedGroupsInOrder = hardcodedGroupIds
+      .map((groupId) => nextGroups.find((group) => group.id === groupId))
+      .filter((group): group is ChatGroup => Boolean(group));
+    const remainingGroups = nextGroups.filter((group) => !hardcodedGroupIds.includes(group.id));
+    this.groups.set([...hardcodedGroupsInOrder, ...remainingGroups]);
     this.schedulePersist();
   }
 
+  private resolveHardcodedCommunityMembers(config: HardcodedCommunityGroupConfig, contacts: Contact[]): string[] {
+    if (Array.isArray(config.staticMembers) && config.staticMembers.length) {
+      return Array.from(
+        new Set(config.staticMembers.map((member) => this.normalizeUser(member)).filter(Boolean))
+      ).sort((a, b) => a.localeCompare(b));
+    }
+    return this.computeDovrutMembers(contacts);
+  }
+
   private computeDovrutMembers(contacts: Contact[]): string[] {
-    const hasAnyStatusSignal = contacts.some((contact) => this.normalizeContactStatus(contact.status) !== null);
     return Array.from(
       new Set(
         contacts
-          .filter((contact) => {
-            const normalizedStatus = this.normalizeContactStatus(contact.status);
-            if (!hasAnyStatusSignal) {
-              // Backward-compatible fallback: if backend has not exposed status yet, avoid empty room.
-              return true;
-            }
-            return normalizedStatus === DOVRUT_ACTIVE_STATUS_VALUE;
-          })
           .map((contact) => this.normalizeUser(contact.username))
           .filter(Boolean)
       )
@@ -1123,7 +1181,42 @@ export class ChatStoreService {
     if (!user) {
       throw new Error(this.shuttleText('יש להתחבר לפני טעינת הזמנות', 'Войдите в систему перед загрузкой заказов'));
     }
-    await this.refreshShuttleOrdersFromRemote(user, { force: true });
+    await this.refreshShuttleOrdersFromRemote(user, { force: true, throwOnError: true });
+  }
+
+  async forceSyncAllMessagesAndClearCache(): Promise<void> {
+    const user = this.currentUser();
+    if (!user) {
+      throw new Error('יש להתחבר לפני סנכרון מלא');
+    }
+    if (!this.networkOnline()) {
+      throw new Error('אין חיבור לרשת');
+    }
+
+    // First, try sending pending outgoing items before cache reset.
+    await this.flushOutbox();
+
+    this.clearLocalChatCacheForUser(user, { keepOutbox: true });
+    this.resetRuntimeStateAfterCacheClear(user);
+
+    await this.refresh(true);
+    await this.pullMessages(user);
+    const logsMessages = await this.api.getMessagesFromLogs(user);
+    if (logsMessages.length) {
+      const nonSystemLogs = logsMessages.filter((message) => {
+        const sender = this.normalizeUser(String(message.sender ?? '').trim());
+        return Boolean(sender && sender !== 'system');
+      });
+      this.applyIncomingMessagesBatch(nonSystemLogs);
+    }
+
+    await this.refreshShuttleAccessForCurrentUser(user, { force: true });
+    if (this.shuttleAccessAllowed()) {
+      await this.refreshShuttleOrdersFromRemote(user, { force: true, throwOnError: true });
+    }
+
+    this.applyInitialChatSelection(user);
+    this.schedulePersist();
   }
 
   getShuttleFlowBreadcrumbs(): ShuttleBreadcrumbStep[] | null {
@@ -1237,7 +1330,7 @@ export class ChatStoreService {
     }
 
     await this.submitShuttleOrder(user, targetOrder, SHUTTLE_STATUS_CANCEL_VALUE);
-    this.markShuttleOrderCancelled(user, targetOrder.id);
+    await this.confirmShuttleOrderCancellationSynced(user, targetOrder);
     this.sendShuttleSystemMessage(
       `${this.shuttleText('ההזמנה בוטלה בהצלחה ✅', 'Заказ успешно отменен ✅')}\n${this.buildShuttleOrderSummary({
         ...targetOrder,
@@ -1611,7 +1704,8 @@ export class ChatStoreService {
   }
 
   private shouldOpenHomeOnInit(user: string): boolean {
-    return localStorage.getItem(this.homeViewKey(user)) === '1';
+    // Default startup behavior should open the main/home page.
+    return localStorage.getItem(this.homeViewKey(user)) !== '0';
   }
 
   private async onChatActivated(chatId: string): Promise<void> {
@@ -1911,7 +2005,11 @@ export class ChatStoreService {
 
     this.shuttleInitInFlight = true;
     try {
-      await this.refreshShuttleOrdersFromRemote(user);
+      try {
+        await this.refreshShuttleOrdersFromRemote(user);
+      } catch {
+        // Keep shuttle room usable with locally cached orders.
+      }
       if (!this.shouldInitializeShuttleFlowOnOpen(user)) {
         return;
       }
@@ -2216,7 +2314,7 @@ export class ChatStoreService {
 
     try {
       await this.submitShuttleOrder(user, targetOrder, SHUTTLE_STATUS_CANCEL_VALUE);
-      this.markShuttleOrderCancelled(user, targetOrder.id);
+      await this.confirmShuttleOrderCancellationSynced(user, targetOrder);
       this.sendShuttleSystemMessage(
         `${this.shuttleText('ההזמנה בוטלה בהצלחה ✅', 'Заказ успешно отменен ✅')}\n${this.buildShuttleOrderSummary({
           ...targetOrder,
@@ -2284,7 +2382,10 @@ export class ChatStoreService {
     });
   }
 
-  private async refreshShuttleOrdersFromRemote(user: string, options: { force?: boolean } = {}): Promise<void> {
+  private async refreshShuttleOrdersFromRemote(
+    user: string,
+    options: { force?: boolean; throwOnError?: boolean } = {}
+  ): Promise<void> {
     const normalizedUser = this.normalizeUser(user);
     const now = Date.now();
     const lastSyncedAt = this.shuttleOrdersSyncAt.get(normalizedUser) ?? 0;
@@ -2292,26 +2393,44 @@ export class ChatStoreService {
       return;
     }
     if (this.shuttleOrdersSyncInFlight.has(normalizedUser)) {
-      return;
+      const activeSync = this.shuttleOrdersSyncPromiseByUser.get(normalizedUser);
+      if (activeSync) {
+        await activeSync.catch(() => undefined);
+      } else {
+        return;
+      }
+      if (!options.force) {
+        return;
+      }
     }
 
     this.shuttleOrdersSyncInFlight.add(normalizedUser);
     this.bumpShuttlePickerRevision();
-    try {
+    const syncTask = (async () => {
       const remoteOrders = await this.api.getShuttleUserOrders(user);
       const mappedOrders = remoteOrders
         .map((item, index) => this.mapShuttleRemoteOrder(item, index))
         .filter((item): item is ShuttleOrderRecord => Boolean(item))
         .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
 
-      if (mappedOrders.length > 0 || this.loadShuttleOrders(user).length === 0) {
+      if (mappedOrders.length > 0 || this.loadShuttleOrders(user).length === 0 || options.force) {
         this.saveShuttleOrders(user, mappedOrders.slice(0, 300));
       }
       this.shuttleOrdersSyncAt.set(normalizedUser, Date.now());
-    } catch {
-      this.shuttleOrdersSyncAt.set(normalizedUser, now);
+    })();
+    this.shuttleOrdersSyncPromiseByUser.set(normalizedUser, syncTask);
+    try {
+      await syncTask;
+    } catch (error) {
+      if (!options.force) {
+        this.shuttleOrdersSyncAt.set(normalizedUser, now);
+      }
+      if (options.throwOnError) {
+        throw error;
+      }
     } finally {
       this.shuttleOrdersSyncInFlight.delete(normalizedUser);
+      this.shuttleOrdersSyncPromiseByUser.delete(normalizedUser);
       this.bumpShuttlePickerRevision();
     }
   }
@@ -2331,8 +2450,9 @@ export class ChatStoreService {
       return null;
     }
 
-    const statusValue = String(item.statusValue || item.status || '').trim() || SHUTTLE_STATUS_ACTIVE_VALUE;
-    const isCancelled = item.isCancelled === true || this.isShuttleStatusCancelled(statusValue);
+    const statusValue = this.resolveShuttleRemoteStatusValue(item);
+    const cancelHint = this.resolveShuttleRemoteCancelHint(item);
+    const isCancelled = cancelHint ?? this.isShuttleStatusCancelled(statusValue);
     const statusLabel = this.resolveShuttleStatusLabel(isCancelled ? SHUTTLE_STATUS_CANCEL_VALUE : statusValue);
     const submittedAtRaw = Number(item.submittedAt || 0);
     const dateTimestamp = this.parseShuttleDate(dateIso)?.getTime() ?? Date.now();
@@ -2360,6 +2480,137 @@ export class ChatStoreService {
       submittedAt,
       cancelledAt: Number.isFinite(cancelledAtRaw) && cancelledAtRaw > 0 ? cancelledAtRaw : undefined
     };
+  }
+
+  private resolveShuttleRemoteStatusValue(item: ShuttleUserOrderPayload): string {
+    const record = item as Record<string, unknown>;
+    const candidateKeys = [
+      'statusValue',
+      'status',
+      'status_value',
+      'statusvalue',
+      'tripStatus',
+      'trip_status',
+      'state',
+      'סטטוס',
+      'מצב'
+    ] as const;
+
+    for (const key of candidateKeys) {
+      const value = record[key];
+      if (value !== undefined && value !== null && String(value).trim()) {
+        return String(value).trim();
+      }
+    }
+
+    return SHUTTLE_STATUS_ACTIVE_VALUE;
+  }
+
+  private resolveShuttleRemoteCancelHint(item: ShuttleUserOrderPayload): boolean | null {
+    const record = item as Record<string, unknown>;
+    const cancelCandidates = [
+      item.isCancelled,
+      record['isCancelled'],
+      record['isCanceled'],
+      record['cancelled'],
+      record['canceled']
+    ];
+    for (const value of cancelCandidates) {
+      const normalized = this.parseShuttleBoolean(value);
+      if (normalized !== null) {
+        return normalized;
+      }
+    }
+
+    const activeCandidates = [
+      record['isActive'],
+      record['active']
+    ];
+    for (const value of activeCandidates) {
+      const normalized = this.parseShuttleBoolean(value);
+      if (normalized !== null) {
+        return !normalized;
+      }
+    }
+
+    return null;
+  }
+
+  private parseShuttleBoolean(value: unknown): boolean | null {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value !== 0;
+    }
+    const normalized = String(value ?? '').trim().toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+    if (['1', 'true', 'yes', 'y'].includes(normalized)) {
+      return true;
+    }
+    if (['0', 'false', 'no', 'n'].includes(normalized)) {
+      return false;
+    }
+    return null;
+  }
+
+  private async confirmShuttleOrderCancellationSynced(user: string, targetOrder: ShuttleOrderRecord): Promise<void> {
+    const maxAttempts = 3;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      await this.refreshShuttleOrdersFromRemote(user, { force: true, throwOnError: true });
+      const latestOrders = this.loadShuttleOrders(user);
+      const matchedOrder = this.findShuttleOrderByIdentity(latestOrders, targetOrder);
+
+      // Some sheet deployments only return active orders. Missing entry after cancel is acceptable.
+      if (!matchedOrder) {
+        return;
+      }
+
+      const cancelled = this.isShuttleStatusCancelled(String(matchedOrder.statusValue || matchedOrder.statusLabel || ''));
+      if (cancelled) {
+        return;
+      }
+
+      if (attempt < maxAttempts - 1) {
+        await this.waitForShuttleSyncRetry(700);
+      }
+    }
+
+    throw new Error(
+      this.shuttleText(
+        'העדכון לגליון לא אושר. נסה שוב בעוד רגע.',
+        'Обновление в таблице не подтверждено. Повторите попытку через минуту.'
+      )
+    );
+  }
+
+  private findShuttleOrderByIdentity(
+    orders: ShuttleOrderRecord[],
+    targetOrder: ShuttleOrderRecord
+  ): ShuttleOrderRecord | null {
+    const targetDate = this.normalizeShuttleDateToIso(String(targetOrder.date || '').trim());
+    const targetShift = this.normalizeShuttleShiftLabel(String(targetOrder.shiftLabel || targetOrder.shiftValue || '').trim());
+    const targetStation = this.normalizeShuttleText(String(targetOrder.station || '').trim());
+
+    for (const order of Array.isArray(orders) ? orders : []) {
+      const orderDate = this.normalizeShuttleDateToIso(String(order.date || '').trim());
+      const orderShift = this.normalizeShuttleShiftLabel(String(order.shiftLabel || order.shiftValue || '').trim());
+      const orderStation = this.normalizeShuttleText(String(order.station || '').trim());
+      if (orderDate === targetDate && orderShift === targetShift && orderStation === targetStation) {
+        return order;
+      }
+    }
+
+    return null;
+  }
+
+  private waitForShuttleSyncRetry(ms: number): Promise<void> {
+    const delay = Math.max(0, Number(ms) || 0);
+    return new Promise((resolve) => {
+      setTimeout(resolve, delay);
+    });
   }
 
   private normalizeShuttleDateToIso(value: string): string {
@@ -2451,11 +2702,27 @@ export class ChatStoreService {
   }
 
   private isShuttleStatusCancelled(statusValue: string): boolean {
+    const rawStatus = String(statusValue ?? '').trim();
+    if (!rawStatus) {
+      return false;
+    }
+    if (/^0(?:\.0+)?$/.test(rawStatus)) {
+      return true;
+    }
+    if (/^1(?:\.0+)?$/.test(rawStatus)) {
+      return false;
+    }
+
     const normalized = this.normalizeShuttleText(statusValue);
     if (!normalized) {
       return false;
     }
     return (
+      normalized === 'cancel' ||
+      normalized === 'cancelled' ||
+      normalized === 'canceled' ||
+      normalized === 'inactive' ||
+      normalized === 'false' ||
       normalized.includes('ביטול') ||
       normalized.includes('בוטל') ||
       normalized.includes('отмена') ||
@@ -2933,7 +3200,7 @@ export class ChatStoreService {
   }
 
   private isShuttleOrderOngoing(order: ShuttleOrderRecord): boolean {
-    if (String(order.statusValue || '').trim() === SHUTTLE_STATUS_CANCEL_VALUE) {
+    if (this.isShuttleStatusCancelled(String(order.statusValue || '').trim())) {
       return false;
     }
     const orderDate = this.parseShuttleDate(order.date);
@@ -3070,7 +3337,7 @@ export class ChatStoreService {
           shiftLabel: String(item.shiftLabel || '').trim(),
           shiftValue: String(item.shiftValue || '').trim(),
           station: String(item.station || '').trim(),
-          statusValue: String(item.statusValue || SHUTTLE_STATUS_ACTIVE_VALUE).trim(),
+          statusValue: String(item.statusValue ?? SHUTTLE_STATUS_ACTIVE_VALUE).trim(),
           statusLabel: String(item.statusLabel || '').trim(),
           submittedAt: Number(item.submittedAt || 0),
           cancelledAt: item.cancelledAt ? Number(item.cancelledAt) : undefined
@@ -4065,36 +4332,46 @@ export class ChatStoreService {
     try {
       const messages = await this.api.pollMessages();
       this.incrementDeliveryTelemetry('pollMessagesFetched', messages.length);
-      let appliedCount = 0;
-      this.runIncomingBatch(() => {
-        const bufferedRegularMessages: IncomingServerMessage[] = [];
-        const flushBufferedRegularMessages = (): void => {
-          if (!bufferedRegularMessages.length) return;
-          appliedCount += this.applyRegularIncomingMessagesBulk(bufferedRegularMessages);
-          bufferedRegularMessages.length = 0;
-        };
-
-        for (const message of messages) {
-          const incomingType = String(message.type ?? '').trim().toLowerCase();
-          if (this.isIncomingActionType(incomingType)) {
-            flushBufferedRegularMessages();
-            if (this.applyIncomingMessage(message)) {
-              appliedCount += 1;
-            }
-            continue;
-          }
-
-          bufferedRegularMessages.push(message);
-        }
-
-        flushBufferedRegularMessages();
-      });
+      const appliedCount = this.applyIncomingMessagesBatch(messages);
       this.incrementDeliveryTelemetry('pollMessagesApplied', appliedCount);
     } catch {
       // Polling failures are expected during network interruptions.
     } finally {
       this.pullInFlight = false;
     }
+  }
+
+  private applyIncomingMessagesBatch(messages: IncomingServerMessage[]): number {
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return 0;
+    }
+
+    let appliedCount = 0;
+    this.runIncomingBatch(() => {
+      const bufferedRegularMessages: IncomingServerMessage[] = [];
+      const flushBufferedRegularMessages = (): void => {
+        if (!bufferedRegularMessages.length) return;
+        appliedCount += this.applyRegularIncomingMessagesBulk(bufferedRegularMessages);
+        bufferedRegularMessages.length = 0;
+      };
+
+      for (const message of messages) {
+        const incomingType = String(message.type ?? '').trim().toLowerCase();
+        if (this.isIncomingActionType(incomingType)) {
+          flushBufferedRegularMessages();
+          if (this.applyIncomingMessage(message)) {
+            appliedCount += 1;
+          }
+          continue;
+        }
+
+        bufferedRegularMessages.push(message);
+      }
+
+      flushBufferedRegularMessages();
+    });
+
+    return appliedCount;
   }
 
   private isIncomingActionType(incomingType: string): boolean {
@@ -5377,6 +5654,41 @@ export class ChatStoreService {
 
   private outboxKey(user: string): string {
     return `modern-chat-outbox:${user}`;
+  }
+
+  private clearLocalChatCacheForUser(user: string, options: { keepOutbox?: boolean } = {}): void {
+    const keepOutbox = options.keepOutbox !== false;
+    localStorage.removeItem(this.stateKey(user));
+    if (!keepOutbox) {
+      localStorage.removeItem(this.outboxKey(user));
+    }
+    localStorage.removeItem(this.activeChatKey(user));
+    localStorage.removeItem(this.homeViewKey(user));
+    localStorage.removeItem(this.hrStateKey(user));
+    localStorage.removeItem(this.hrWelcomeKey(user));
+    localStorage.removeItem(this.shuttleStateKey(user));
+    localStorage.removeItem(this.shuttleWelcomeKey(user));
+    localStorage.removeItem(this.shuttleOrdersKey(user));
+    localStorage.removeItem(this.shuttleLanguageKey(user));
+    localStorage.removeItem(this.shuttleReminderHistoryKey(user));
+  }
+
+  private resetRuntimeStateAfterCacheClear(user: string): void {
+    this.contacts.set([]);
+    this.groups.set([]);
+    this.messagesByChat.set({});
+    this.unreadByChat.set({});
+    this.activeChatId.set(null);
+    this.lastActivatedChatMeta.set(null);
+    this.lastContactsFetchAt = 0;
+    this.lastGroupsFetchAt = 0;
+    this.hrStepsCache = { at: 0, steps: [] };
+    this.hrActionsCache = {};
+    this.shuttleStationsCache = { at: 0, items: [] };
+    this.shuttleEmployeesCache = { at: 0, items: [] };
+    this.shuttleOrdersSyncAt.delete(this.normalizeUser(user));
+    this.clearShuttleReminderTimersForUser(user);
+    this.resetReadReceiptTrackingState();
   }
 
   private restoreState(user: string): void {

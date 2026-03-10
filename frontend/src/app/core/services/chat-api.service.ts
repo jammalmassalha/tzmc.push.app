@@ -53,6 +53,12 @@ interface PollResponse {
   messages?: IncomingServerMessage[];
 }
 
+interface LogsMessagesResponse {
+  result?: string;
+  messages?: IncomingServerMessage[];
+  error?: string;
+}
+
 interface UploadResponse {
   status?: string;
   url?: string;
@@ -579,6 +585,26 @@ export class ChatApiService {
     return Array.isArray(body.messages) ? body.messages : [];
   }
 
+  async getMessagesFromLogs(user?: string): Promise<IncomingServerMessage[]> {
+    const normalizedUser = String(user || '').trim().toLowerCase();
+    if (!normalizedUser) {
+      return [];
+    }
+
+    const url = `${this.notifyBaseUrl}/messages/logs?user=${encodeURIComponent(normalizedUser)}&excludeSystem=1&limit=700&_ts=${Date.now()}`;
+    const response = await this.fetchWithRetry(
+      url,
+      { cache: 'no-store' },
+      { retries: 1, timeoutMs: 20000, backoffMs: 500 }
+    );
+    if (!response.ok) {
+      throw new Error(`Logs messages request failed with ${response.status}`);
+    }
+
+    const body = (await response.json()) as LogsMessagesResponse;
+    return Array.isArray(body.messages) ? body.messages : [];
+  }
+
   createMessagesResource(user: Signal<string | null | undefined>): ResourceRef<IncomingServerMessage[]> {
     return resource({
       params: () => String(user() || '').trim().toLowerCase(),
@@ -890,10 +916,11 @@ export class ChatApiService {
     params.set(SHUTTLE_ENTRY_SHIFT, shift);
     params.set(SHUTTLE_ENTRY_STATION, station);
     params.set(SHUTTLE_ENTRY_STATUS, status);
+    params.set('_ts', String(Date.now()));
 
     const response = await this.fetchWithRetry(
       `${this.config.shuttleSheetUrl}?${params.toString()}`,
-      {},
+      { cache: 'no-store' },
       { retries: 2, timeoutMs: 12000 }
     );
     if (!response.ok) {
@@ -969,10 +996,10 @@ export class ChatApiService {
       return [];
     }
 
-    const url = `${this.config.shuttleUserOrdersUrl}?action=get_user_orders&user=${encodeURIComponent(normalizedUser)}&force=1`;
+    const url = `${this.config.shuttleUserOrdersUrl}?action=get_user_orders&user=${encodeURIComponent(normalizedUser)}&force=1&_ts=${Date.now()}`;
     // Apps Script often responds with an initial 302 redirect and can be slow on cold start.
     // Keep retries disabled to avoid duplicate bursts, but allow more time before aborting.
-    const response = await this.fetchWithRetry(url, {}, { retries: 0, timeoutMs: 60000 });
+    const response = await this.fetchWithRetry(url, { cache: 'no-store' }, { retries: 0, timeoutMs: 60000 });
     if (!response.ok) {
       throw new Error(`Shuttle user orders request failed with ${response.status}`);
     }

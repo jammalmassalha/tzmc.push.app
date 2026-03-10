@@ -64,7 +64,7 @@ export const runtimeConfig: RuntimeConfig = {
   storeName: 'history',
   outboxStore: 'outbox',
   vapidPublicKey: withOverride('vapidPublicKey', 'BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk'),
-  subscriptionUrl: withOverride('subscriptionUrl', 'https://script.google.com/macros/s/AKfycbwvnlvHlDCEpMZmKRfXbaxwiO61I9AxIZcyMEyZsgRoYb4HbsflTXGmFpANkXj4QKcYLA/exec'),
+  subscriptionUrl: withOverride('subscriptionUrl', 'https://script.google.com/macros/s/AKfycbylA-hf-zUbRVieJuGeY-FLlmYHnKgkkebWgEXfOZnamtB7zf_CpWqJOt99RRmmPcpP/exec'),
   shuttleSheetUrl: withOverride('shuttleSheetUrl', 'https://script.google.com/macros/s/AKfycbxXXz7QG-l_wwWW44aiVtp_ZWzinllmMzYhaRAh0mSzTOGmTbIlgmZZ4EdqvfowmMik/exec'),
   shuttleUserOrdersUrl: withOverride('shuttleUserOrdersUrl', 'https://script.google.com/macros/s/AKfycbxXXz7QG-l_wwWW44aiVtp_ZWzinllmMzYhaRAh0mSzTOGmTbIlgmZZ4EdqvfowmMik/exec'),
   notifyReplyUrl: withOverride('notifyReplyUrl', `${backendOrigin}/notify/reply`),

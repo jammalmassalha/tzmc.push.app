@@ -844,6 +844,40 @@ const DOVRUT_ALLOWED_WRITERS = parseUsernamesInput(
 const dovrutWriterUserSet = new Set(
     DOVRUT_ALLOWED_WRITERS.map((value) => normalizeUserKey(value)).filter(Boolean)
 );
+const DOVRUT_TEST_GROUP_ID = String(process.env.DOVRUT_TEST_GROUP_ID || 'בדיקה - דוברות').trim() || 'בדיקה - דוברות';
+const DOVRUT_TEST_ALLOWED_WRITERS = parseUsernamesInput(
+    process.env.DOVRUT_TEST_ALLOWED_WRITERS || '0546799693'
+);
+const DOVRUT_TEST_GROUP_MEMBERS = parseUsernamesInput(
+    process.env.DOVRUT_TEST_GROUP_MEMBERS || '0546799693,0550000001,0547997273,0505203520'
+);
+const dovrutTestWriterUserSet = new Set(
+    DOVRUT_TEST_ALLOWED_WRITERS.map((value) => normalizeUserKey(value)).filter(Boolean)
+);
+const hardcodedCommunityGroupsByKey = new Map();
+function registerHardcodedCommunityGroup(groupKeys, writerSet, options = {}) {
+    const keys = Array.isArray(groupKeys) ? groupKeys : [groupKeys];
+    const normalizedKeys = Array.from(new Set(keys.map((value) => normalizeUserKey(value)).filter(Boolean)));
+    if (!normalizedKeys.length) return;
+    const normalizedWriters = new Set(
+        Array.from(writerSet || []).map((value) => normalizeUserKey(value)).filter(Boolean)
+    );
+    const normalizedMembers = Array.isArray(options.members)
+        ? Array.from(new Set(options.members.map((value) => normalizeUserKey(value)).filter(Boolean)))
+        : [];
+    const policy = {
+        key: normalizedKeys[0],
+        writers: normalizedWriters,
+        members: normalizedMembers
+    };
+    normalizedKeys.forEach((key) => {
+        hardcodedCommunityGroupsByKey.set(key, policy);
+    });
+}
+registerHardcodedCommunityGroup(DOVRUT_GROUP_ID, dovrutWriterUserSet);
+registerHardcodedCommunityGroup(DOVRUT_TEST_GROUP_ID, dovrutTestWriterUserSet, {
+    members: DOVRUT_TEST_GROUP_MEMBERS
+});
 const SUBSCRIPTION_LOOKUP_BATCH_SIZE = Math.max(
     10,
     Number(process.env.SUBSCRIPTION_LOOKUP_BATCH_SIZE || 40) || 40
@@ -1599,19 +1633,26 @@ function getLocalDeviceSubscriptionsForUsers(usernames = []) {
     const requestedUsers = parseUsernamesInput(usernames);
     if (!requestedUsers.length) return [];
 
+    const aliasToCanonical = buildUserAliasLookupMap(requestedUsers);
+    const keyCandidates = new Set([
+        ...requestedUsers.map((value) => normalizeUserKey(value)).filter(Boolean),
+        ...aliasToCanonical.keys()
+    ]);
     const collected = [];
-    requestedUsers.forEach((userKey) => {
-        const userSubscriptions = Array.isArray(deviceSubscriptionsByUser[userKey])
-            ? deviceSubscriptionsByUser[userKey]
+    keyCandidates.forEach((lookupKey) => {
+        const userSubscriptions = Array.isArray(deviceSubscriptionsByUser[lookupKey])
+            ? deviceSubscriptionsByUser[lookupKey]
             : [];
+        const canonicalUser = resolveCanonicalUserFromLookup(lookupKey, aliasToCanonical) || normalizeUserKey(lookupKey);
+        if (!canonicalUser) return;
         userSubscriptions.forEach((subscription) => {
             const normalized = normalizeSubscriptionRecord(
                 subscription,
-                userKey,
+                canonicalUser,
                 subscription && subscription.type
             );
             if (normalized) {
-                normalized.username = userKey;
+                normalized.username = canonicalUser;
                 collected.push(normalized);
             }
         });
@@ -1692,6 +1733,55 @@ function normalizeUserCandidate(rawValue) {
     return normalized;
 }
 
+function buildUserLookupAliases(rawValue) {
+    const normalized = normalizeUserKey(rawValue);
+    if (!normalized) return [];
+    const aliases = new Set([normalized]);
+    const digits = normalized.replace(/\D/g, '');
+    if (digits) {
+        aliases.add(digits);
+        if (digits.length === 9) {
+            aliases.add(`0${digits}`);
+        }
+        if (digits.length === 10 && digits.startsWith('0')) {
+            aliases.add(digits.slice(1));
+        }
+        if (digits.length === 12 && digits.startsWith('972')) {
+            aliases.add(`0${digits.slice(3)}`);
+        }
+        if (digits.length === 13 && digits.startsWith('00972')) {
+            aliases.add(`0${digits.slice(5)}`);
+        }
+    }
+    return Array.from(aliases).filter(Boolean);
+}
+
+function buildUserAliasLookupMap(rawUsers) {
+    const values = Array.isArray(rawUsers) ? rawUsers : [rawUsers];
+    const aliasToCanonical = new Map();
+    values.forEach((value) => {
+        const canonical = normalizeUserKey(value);
+        if (!canonical) return;
+        const aliases = buildUserLookupAliases(canonical);
+        aliases.forEach((alias) => {
+            if (!aliasToCanonical.has(alias)) {
+                aliasToCanonical.set(alias, canonical);
+            }
+        });
+    });
+    return aliasToCanonical;
+}
+
+function resolveCanonicalUserFromLookup(rawValue, aliasToCanonical) {
+    const aliases = buildUserLookupAliases(rawValue);
+    for (const alias of aliases) {
+        if (aliasToCanonical.has(alias)) {
+            return aliasToCanonical.get(alias);
+        }
+    }
+    return '';
+}
+
 function addUserToSet(targetSet, rawValue) {
     if (!targetSet) return;
     if (rawValue === null || rawValue === undefined) return;
@@ -1751,17 +1841,22 @@ function parseUsernamesInput(rawValue) {
     return Array.from(normalized);
 }
 
-function isDovrutGroupTarget(groupRecord, groupId, groupName) {
-    const dovrutKey = normalizeUserKey(DOVRUT_GROUP_ID);
-    if (!dovrutKey) return false;
-
+function resolveHardcodedCommunityPolicy(groupRecord, groupId, groupName) {
     const candidates = [
         groupRecord && groupRecord.id,
         groupRecord && groupRecord.name,
         groupId,
         groupName
     ];
-    return candidates.some((value) => normalizeUserKey(value) === dovrutKey);
+    for (const candidate of candidates) {
+        const key = normalizeUserKey(candidate);
+        if (!key) continue;
+        const policy = hardcodedCommunityGroupsByKey.get(key);
+        if (policy) {
+            return policy;
+        }
+    }
+    return null;
 }
 
 function canSendToCommunityGroup(sender, groupRecord, groupId, groupName) {
@@ -1779,8 +1874,9 @@ function canSendToCommunityGroup(sender, groupRecord, groupId, groupName) {
         return true;
     }
 
-    if (isDovrutGroupTarget(groupRecord, groupId, groupName)) {
-        return dovrutWriterUserSet.has(senderKey);
+    const hardcodedPolicy = resolveHardcodedCommunityPolicy(groupRecord, groupId, groupName);
+    if (hardcodedPolicy && hardcodedPolicy.writers) {
+        return hardcodedPolicy.writers.has(senderKey);
     }
 
     // Legacy behavior: community groups without creator remain sendable.
@@ -4019,21 +4115,28 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
     const requestedUsers = Array.from(
         new Set(parseUsernamesInput(requestUserList).map(normalizeUserKey).filter(Boolean))
     );
-    const requestedUsersSet = new Set(requestedUsers);
+    const requestedAliasToCanonical = buildUserAliasLookupMap(requestedUsers);
     if (!requestedUsers.length) {
         return cached ? cached.subscriptions : [];
     }
     const normalizeLookupSubscriptions = (payload) => {
         const extracted = extractSubscriptionsFromSheetResponse(payload);
         if (!extracted.length) return [];
-        return extracted.filter((subscription) => {
-            const subscriptionUser = normalizeUserKey(
-                subscription && (subscription.username || subscription.user)
-            );
-            if (!subscriptionUser) return false;
-            if (!requestedUsersSet.size) return true;
-            return requestedUsersSet.has(subscriptionUser);
-        });
+        return extracted
+            .map((subscription) => {
+                const canonicalUser = resolveCanonicalUserFromLookup(
+                    subscription && (subscription.username || subscription.user),
+                    requestedAliasToCanonical
+                );
+                if (!canonicalUser) {
+                    return null;
+                }
+                return {
+                    ...subscription,
+                    username: canonicalUser
+                };
+            })
+            .filter(Boolean);
     };
 
     try {
@@ -4502,25 +4605,23 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     const normalizedTargetUsers = Array.from(
         new Set(targetUsersArray.map(normalizeUserKey).filter(Boolean))
     );
+    const targetAliasToCanonical = buildUserAliasLookupMap(normalizedTargetUsers);
     const targetUsersSet = new Set(normalizedTargetUsers);
     const normalizeAndFilterTargetSubscriptions = (subscriptions) => {
         const normalized = dedupeSubscriptionsByEndpoint(subscriptions || []);
         return normalized
             .map((subscription) => {
-                const subscriptionUser = normalizeUserKey(
-                    subscription && (subscription.username || subscription.user)
+                const canonicalUser = resolveCanonicalUserFromLookup(
+                    subscription && (subscription.username || subscription.user),
+                    targetAliasToCanonical
                 );
-                if (!subscriptionUser) return null;
+                if (!canonicalUser) return null;
                 return {
                     ...subscription,
-                    username: subscriptionUser
+                    username: canonicalUser
                 };
             })
-            .filter(Boolean)
-            .filter((subscription) => {
-                const subscriptionUser = normalizeUserKey(subscription && (subscription.username || subscription.user));
-                return subscriptionUser && targetUsersSet.has(subscriptionUser);
-            });
+            .filter(Boolean);
     };
 
     console.log(`[PUSH] Searching subs for: ${targetUsersArray.join(', ')} from ${finalSender}`);
@@ -5021,8 +5122,13 @@ app.post(
 
         const senderUserKey = normalizeUserKey(user);
         let targetToNotify = [];
+        const hardcodedCommunityPolicy = groupId
+            ? resolveHardcodedCommunityPolicy(groupRecord, groupId, groupName)
+            : null;
         const requestedMembersToNotify = parseUsernamesInput(membersToNotify);
-        if (requestedMembersToNotify.length) {
+        if (hardcodedCommunityPolicy && Array.isArray(hardcodedCommunityPolicy.members) && hardcodedCommunityPolicy.members.length) {
+            targetToNotify = hardcodedCommunityPolicy.members;
+        } else if (requestedMembersToNotify.length) {
             targetToNotify = requestedMembersToNotify;
         } else if (groupId) {
             const groupList = groupRecord && Array.isArray(groupRecord.members) ? groupRecord.members : groupMembers;
@@ -5161,12 +5267,19 @@ app.post(
 app.post(['/group-update', '/notify/group-update'], async (req, res) => {
     try {
         const { groupId, groupName, groupMembers, groupCreatedBy, groupUpdatedAt, groupType, membersToNotify } = req.body || {};
-        if (!groupId || !groupName || !Array.isArray(membersToNotify) || membersToNotify.length === 0) {
+        if (!groupId || !groupName) {
             return res.status(400).json({ error: 'Missing group update fields' });
+        }
+        const hardcodedCommunityPolicy = resolveHardcodedCommunityPolicy(null, groupId, groupName);
+        const requestedRecipients = (hardcodedCommunityPolicy && Array.isArray(hardcodedCommunityPolicy.members) && hardcodedCommunityPolicy.members.length)
+            ? hardcodedCommunityPolicy.members
+            : membersToNotify;
+        if (!Array.isArray(requestedRecipients) || requestedRecipients.length === 0) {
+            return res.status(400).json({ error: 'Missing group update recipients' });
         }
         const groupRecord = upsertGroup({ groupId, groupName, groupMembers, groupCreatedBy, groupUpdatedAt, groupType });
         const recipientByKey = new Map();
-        membersToNotify.forEach(member => {
+        requestedRecipients.forEach(member => {
             const rawMember = String(member || '').trim();
             const memberKey = normalizeUserKey(rawMember);
             if (!memberKey) return;

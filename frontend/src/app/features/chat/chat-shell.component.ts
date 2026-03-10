@@ -818,8 +818,13 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   async flushOutbox(): Promise<void> {
-    await this.store.flushOutbox();
-    this.snackBar.open('סנכרון הודעות הושלם.', 'סגור', { duration: 2200 });
+    try {
+      await this.store.forceSyncAllMessagesAndClearCache();
+      this.snackBar.open('סנכרון מלא הושלם.', 'סגור', { duration: 2200 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'הסנכרון נכשל. נסה שוב.';
+      this.snackBar.open(message, 'סגור', { duration: 2800 });
+    }
   }
 
   async sendMessage(): Promise<void> {
@@ -1609,8 +1614,15 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
 
   canViewReactionDetails(message: ChatMessage): boolean {
     const activeGroup = this.findActiveGroup();
+    if (!activeGroup) return false;
+    const currentUser = this.normalizeUsername(this.store.currentUser() || '');
+    if (!currentUser) return false;
+    const isGroupAdmin = this.store.isDovrutGroupChat(activeGroup.id)
+      ? this.store.isDovrutAdminUser(currentUser)
+      : this.normalizeUsername(activeGroup.createdBy || '') === currentUser;
     const isCommunityMessage = message.groupType === 'community' || Boolean(activeGroup && activeGroup.type === 'community');
     return Boolean(
+      isGroupAdmin &&
       isCommunityMessage &&
       Array.isArray(message.reactions) &&
       message.reactions.length
