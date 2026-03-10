@@ -64,9 +64,31 @@ const SHUTTLE_STATUS_ACTIVE_VALUE = 'פעיל активный';
 const SHUTTLE_STATUS_CANCEL_VALUE = 'ביטול נסיעה отмена поезд';
 const DOVRUT_GROUP_NAME = 'דוברות';
 const DOVRUT_GROUP_ID = DOVRUT_GROUP_NAME;
+const DOVRUT_TEST_GROUP_NAME = 'בדיקה - דוברות';
+const DOVRUT_TEST_GROUP_ID = DOVRUT_TEST_GROUP_NAME;
 const DOVRUT_SYSTEM_CREATOR = 'dovrut-system';
-const DOVRUT_ACTIVE_STATUS_VALUE = 1;
 const DOVRUT_ALLOWED_WRITERS = ['0506501040', '0506267447', '0543108095'] as const;
+const DOVRUT_TEST_ALLOWED_WRITERS = ['0546799693'] as const;
+const DOVRUT_TEST_GROUP_MEMBERS = ['0546799693', '0550000001', '0547997273', '0505203520'] as const;
+interface HardcodedCommunityGroupConfig {
+  id: string;
+  name: string;
+  staticMembers?: readonly string[];
+  allowedWriters: readonly string[];
+}
+const HARDCODED_COMMUNITY_GROUPS: readonly HardcodedCommunityGroupConfig[] = [
+  {
+    id: DOVRUT_GROUP_ID,
+    name: DOVRUT_GROUP_NAME,
+    allowedWriters: DOVRUT_ALLOWED_WRITERS
+  },
+  {
+    id: DOVRUT_TEST_GROUP_ID,
+    name: DOVRUT_TEST_GROUP_NAME,
+    staticMembers: DOVRUT_TEST_GROUP_MEMBERS,
+    allowedWriters: DOVRUT_TEST_ALLOWED_WRITERS
+  }
+];
 const SHUTTLE_DAY_NAMES_BY_LANGUAGE: Record<ShuttleLanguage, readonly string[]> = {
   he: ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'] as const,
   ru: ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'] as const
@@ -270,8 +292,17 @@ export class ChatStoreService {
   private readonly shuttleChatIdSet = new Set<string>(
     [SHUTTLE_CHAT_NAME, SHUTTLE_CHAT_TITLE].map((id) => this.normalizeChatId(id)).filter(Boolean)
   );
+  private readonly communityWriterSetByGroupId = new Map<string, Set<string>>(
+    HARDCODED_COMMUNITY_GROUPS.map((group) => [
+      this.normalizeChatId(group.id),
+      new Set(group.allowedWriters.map((value) => this.normalizeUser(value)).filter(Boolean))
+    ])
+  );
   private readonly dovrutWriterSet = new Set<string>(
-    DOVRUT_ALLOWED_WRITERS.map((value) => this.normalizeUser(value)).filter(Boolean)
+    HARDCODED_COMMUNITY_GROUPS
+      .flatMap((group) => group.allowedWriters)
+      .map((value) => this.normalizeUser(value))
+      .filter(Boolean)
   );
   private incomingBatchDepth = 0;
   private pendingPersistAfterIncomingBatch = false;
@@ -375,7 +406,7 @@ export class ChatStoreService {
     if (!user) return;
     const contacts = this.contacts();
     const groups = this.groups();
-    this.syncDovrutCommunityGroup(contacts, groups);
+    this.syncHardcodedCommunityGroups(contacts, groups);
   });
 
   constructor(private readonly api: ChatApiService) {
@@ -890,67 +921,93 @@ export class ChatStoreService {
   private canUserSendToCommunityGroup(group: ChatGroup, user: string | null): boolean {
     const normalizedUser = this.normalizeUser(user ?? '');
     if (!normalizedUser) return false;
-    if (this.isDovrutGroup(group.id)) {
-      return this.dovrutWriterSet.has(normalizedUser);
+    const writerSet = this.communityWriterSetByGroupId.get(this.normalizeChatId(group.id));
+    if (writerSet) {
+      return writerSet.has(normalizedUser);
     }
     return this.normalizeUser(group.createdBy) === normalizedUser;
   }
 
   private isDovrutGroup(groupId: string): boolean {
-    return this.normalizeChatId(groupId) === this.normalizeChatId(DOVRUT_GROUP_ID);
+    return this.communityWriterSetByGroupId.has(this.normalizeChatId(groupId));
   }
 
-  private syncDovrutCommunityGroup(contacts: Contact[], groups: ChatGroup[]): void {
-    const dovrutId = this.normalizeChatId(DOVRUT_GROUP_ID);
-    const nextMembers = this.computeDovrutMembers(contacts);
-    const existing = groups.find((group) => group.id === dovrutId) ?? null;
+  private syncHardcodedCommunityGroups(contacts: Contact[], groups: ChatGroup[]): void {
+    let nextGroups = groups.slice();
+    let changed = false;
+    const creator = this.normalizeUser(DOVRUT_SYSTEM_CREATOR);
+    const currentUser = this.normalizeUser(this.currentUser() ?? '');
+    const hardcodedGroupIds = HARDCODED_COMMUNITY_GROUPS.map((group) => this.normalizeChatId(group.id));
+    for (const hardcodedGroup of HARDCODED_COMMUNITY_GROUPS) {
+      const normalizedId = this.normalizeChatId(hardcodedGroup.id);
+      const expectedMembers = this.resolveHardcodedCommunityMembers(hardcodedGroup, contacts);
+      const existingIndex = nextGroups.findIndex((group) => group.id === normalizedId);
+      const existing = existingIndex >= 0 ? nextGroups[existingIndex] : null;
+      const shouldIncludeForCurrentUser = !Array.isArray(hardcodedGroup.staticMembers)
+        || expectedMembers.includes(currentUser);
+      if (!shouldIncludeForCurrentUser) {
+        if (existingIndex >= 0) {
+          nextGroups.splice(existingIndex, 1);
+          changed = true;
+        }
+        continue;
+      }
+      const existingMembers = existing
+        ? Array.from(new Set(existing.members.map((member) => this.normalizeUser(member)).filter(Boolean)))
+          .sort((a, b) => a.localeCompare(b))
+        : [];
+      const shouldUpdate = (
+        !existing ||
+        existing.name !== hardcodedGroup.name ||
+        existing.type !== 'community' ||
+        this.normalizeUser(existing.createdBy) !== creator ||
+        !this.areStringArraysEqual(existingMembers, expectedMembers)
+      );
+      if (!shouldUpdate) {
+        continue;
+      }
 
-    const existingMembers = existing
-      ? Array.from(new Set(existing.members.map((member) => this.normalizeUser(member)).filter(Boolean)))
-        .sort((a, b) => a.localeCompare(b))
-      : [];
-    const shouldUpdate = (
-      !existing ||
-      existing.name !== DOVRUT_GROUP_NAME ||
-      existing.type !== 'community' ||
-      this.normalizeUser(existing.createdBy) !== this.normalizeUser(DOVRUT_SYSTEM_CREATOR) ||
-      !this.areStringArraysEqual(existingMembers, nextMembers)
-    );
-    if (!shouldUpdate) {
+      changed = true;
+      const nextGroup: ChatGroup = {
+        id: normalizedId,
+        name: hardcodedGroup.name,
+        members: expectedMembers,
+        createdBy: creator,
+        updatedAt: Date.now(),
+        type: 'community'
+      };
+      if (existingIndex >= 0) {
+        nextGroups[existingIndex] = nextGroup;
+      } else {
+        nextGroups = [nextGroup, ...nextGroups];
+      }
+    }
+
+    if (!changed) {
       return;
     }
 
-    const nextGroup: ChatGroup = {
-      id: dovrutId,
-      name: DOVRUT_GROUP_NAME,
-      members: nextMembers,
-      createdBy: this.normalizeUser(DOVRUT_SYSTEM_CREATOR),
-      updatedAt: Date.now(),
-      type: 'community'
-    };
-    this.groups.update((currentGroups) => {
-      const hasExisting = currentGroups.some((group) => group.id === dovrutId);
-      if (!hasExisting) {
-        return [nextGroup, ...currentGroups];
-      }
-      return currentGroups.map((group) => (group.id === dovrutId ? nextGroup : group));
-    });
+    const hardcodedGroupsInOrder = hardcodedGroupIds
+      .map((groupId) => nextGroups.find((group) => group.id === groupId))
+      .filter((group): group is ChatGroup => Boolean(group));
+    const remainingGroups = nextGroups.filter((group) => !hardcodedGroupIds.includes(group.id));
+    this.groups.set([...hardcodedGroupsInOrder, ...remainingGroups]);
     this.schedulePersist();
   }
 
+  private resolveHardcodedCommunityMembers(config: HardcodedCommunityGroupConfig, contacts: Contact[]): string[] {
+    if (Array.isArray(config.staticMembers) && config.staticMembers.length) {
+      return Array.from(
+        new Set(config.staticMembers.map((member) => this.normalizeUser(member)).filter(Boolean))
+      ).sort((a, b) => a.localeCompare(b));
+    }
+    return this.computeDovrutMembers(contacts);
+  }
+
   private computeDovrutMembers(contacts: Contact[]): string[] {
-    const hasAnyStatusSignal = contacts.some((contact) => this.normalizeContactStatus(contact.status) !== null);
     return Array.from(
       new Set(
         contacts
-          .filter((contact) => {
-            const normalizedStatus = this.normalizeContactStatus(contact.status);
-            if (!hasAnyStatusSignal) {
-              // Backward-compatible fallback: if backend has not exposed status yet, avoid empty room.
-              return true;
-            }
-            return normalizedStatus === DOVRUT_ACTIVE_STATUS_VALUE;
-          })
           .map((contact) => this.normalizeUser(contact.username))
           .filter(Boolean)
       )
