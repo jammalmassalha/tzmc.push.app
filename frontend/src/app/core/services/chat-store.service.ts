@@ -451,15 +451,15 @@ export class ChatStoreService {
       return;
     }
 
-    const storedActive = this.getStoredActiveChat(user);
-    if (storedActive && this.chatItems().some((chat) => chat.id === storedActive)) {
-      this.setActiveChat(storedActive);
-      return;
-    }
-
     if (this.shouldOpenHomeOnInit(user)) {
       this.activeChatId.set(null);
       this.lastActivatedChatMeta.set(null);
+      return;
+    }
+
+    const storedActive = this.getStoredActiveChat(user);
+    if (storedActive && this.chatItems().some((chat) => chat.id === storedActive)) {
+      this.setActiveChat(storedActive);
       return;
     }
 
@@ -1647,7 +1647,8 @@ export class ChatStoreService {
   }
 
   private shouldOpenHomeOnInit(user: string): boolean {
-    return localStorage.getItem(this.homeViewKey(user)) === '1';
+    // Default startup behavior should open the main/home page.
+    return localStorage.getItem(this.homeViewKey(user)) !== '0';
   }
 
   private async onChatActivated(chatId: string): Promise<void> {
