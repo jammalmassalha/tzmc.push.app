@@ -45,6 +45,7 @@ const DELIVERY_TELEMETRY_DEVICE_ID_KEY = 'modern-chat-delivery-device-id';
 const HR_CHAT_NAME = 'ציפי';
 const SHUTTLE_CHAT_NAME = 'הזמנת הסעה';
 const SHUTTLE_CHAT_TITLE = 'הזמנת הסעה / Заказ шаттла';
+const SHUTTLE_OPERATIONS_CHAT_NAME = 'הסעות';
 const HR_WELCOME_KEY_PREFIX = 'hr_welcome_sent_';
 const HR_STATE_KEY_PREFIX = 'hr_state_';
 const HR_UPLOAD_BASE_URL = '/notify/uploads/';
@@ -70,6 +71,8 @@ const DOVRUT_SYSTEM_CREATOR = 'dovrut-system';
 const DOVRUT_ALLOWED_WRITERS = ['0506501040', '0506267447', '0543108095'] as const;
 const DOVRUT_TEST_ALLOWED_WRITERS = ['0546799693'] as const;
 const DOVRUT_TEST_GROUP_MEMBERS = ['0546799693', '0550000001', '0547997273', '0505203520'] as const;
+const SHUTTLE_OPERATIONS_ALLOWED_WRITERS = ['0546799693', '0550000001'] as const;
+const SHUTTLE_OPERATIONS_GROUP_MEMBERS = ['0546799693', '0550000001', '0506267410', '0505203520'] as const;
 interface HardcodedCommunityGroupConfig {
   id: string;
   name: string;
@@ -87,6 +90,12 @@ const HARDCODED_COMMUNITY_GROUPS: readonly HardcodedCommunityGroupConfig[] = [
     name: DOVRUT_TEST_GROUP_NAME,
     staticMembers: DOVRUT_TEST_GROUP_MEMBERS,
     allowedWriters: DOVRUT_TEST_ALLOWED_WRITERS
+  },
+  {
+    id: SHUTTLE_OPERATIONS_CHAT_NAME,
+    name: SHUTTLE_OPERATIONS_CHAT_NAME,
+    staticMembers: SHUTTLE_OPERATIONS_GROUP_MEMBERS,
+    allowedWriters: SHUTTLE_OPERATIONS_ALLOWED_WRITERS
   }
 ];
 const SHUTTLE_DAY_NAMES_BY_LANGUAGE: Record<ShuttleLanguage, readonly string[]> = {
@@ -135,6 +144,20 @@ export interface ShuttleOrderRecord extends ShuttleOrderDraft {
 export interface ShuttleOrdersDashboard {
   ongoing: ShuttleOrderRecord[];
   past: ShuttleOrderRecord[];
+}
+
+export interface ShuttleOperationsOrderRecord extends ShuttleOrderRecord {
+  sourceUser: string;
+  sourceDisplayName: string;
+  sourceOrderId: string;
+  compositeId: string;
+}
+
+export interface ShuttleOperationsDateGroup {
+  date: string;
+  dayName: string;
+  orderCount: number;
+  orders: ShuttleOperationsOrderRecord[];
 }
 
 interface ShuttleDateChoice {
@@ -265,6 +288,11 @@ export class ChatStoreService {
   private shuttleInitInFlight = false;
   private shuttleStationsCache: { at: number; items: string[] } = { at: 0, items: [] };
   private shuttleEmployeesCache: { at: number; items: string[] } = { at: 0, items: [] };
+  private shuttleOperationsInitInFlight = false;
+  private readonly shuttleOperationsOrders = signal<ShuttleOperationsOrderRecord[]>([]);
+  private readonly shuttleOperationsOrdersLoading = signal(false);
+  private shuttleOperationsLastSyncedAt = 0;
+  private shuttleOperationsSyncPromise: Promise<void> | null = null;
   private readonly shuttleOrdersSyncAt = new Map<string, number>();
   private readonly shuttleOrdersSyncInFlight = new Set<string>();
   private readonly shuttleOrdersSyncPromiseByUser = new Map<string, Promise<void>>();
@@ -586,6 +614,10 @@ export class ChatStoreService {
     this.messagesByChat.set({});
     this.unreadByChat.set({});
     this.shuttleAccessAllowed.set(true);
+    this.shuttleOperationsOrders.set([]);
+    this.shuttleOperationsOrdersLoading.set(false);
+    this.shuttleOperationsLastSyncedAt = 0;
+    this.shuttleOperationsSyncPromise = null;
     this.resetReadReceiptTrackingState();
     this.activeChatId.set(null);
     this.lastError.set(null);
@@ -627,6 +659,10 @@ export class ChatStoreService {
     this.messagesByChat.set({});
     this.unreadByChat.set({});
     this.shuttleAccessAllowed.set(true);
+    this.shuttleOperationsOrders.set([]);
+    this.shuttleOperationsOrdersLoading.set(false);
+    this.shuttleOperationsLastSyncedAt = 0;
+    this.shuttleOperationsSyncPromise = null;
     this.resetReadReceiptTrackingState();
     this.activeChatId.set(null);
     this.lastError.set(null);
@@ -899,6 +935,9 @@ export class ChatStoreService {
   canSendToChat(chatId: string): boolean {
     const normalizedChatId = this.normalizeChatId(chatId);
     if (!normalizedChatId) return false;
+    if (this.isShuttleOperationsRoomChat(normalizedChatId)) {
+      return false;
+    }
     if (this.isShuttleChat(normalizedChatId) && !this.shuttleAccessAllowed()) {
       return false;
     }
@@ -916,6 +955,23 @@ export class ChatStoreService {
     const normalizedUser = this.normalizeUser(String(user || '').trim());
     if (!normalizedUser) return false;
     return this.dovrutWriterSet.has(normalizedUser);
+  }
+
+  isShuttleOperationsRoomChat(chatId: string | null | undefined): boolean {
+    return this.normalizeChatId(String(chatId || '')) === this.normalizeChatId(SHUTTLE_OPERATIONS_CHAT_NAME);
+  }
+
+  canCurrentUserManageShuttleOperationsOrders(): boolean {
+    const currentUser = this.currentUser();
+    if (!currentUser) return false;
+    return this.isShuttleOperationsAdminUser(currentUser);
+  }
+
+  private isShuttleOperationsAdminUser(user: string | null | undefined): boolean {
+    const normalizedUser = this.normalizeUser(String(user || '').trim());
+    if (!normalizedUser) return false;
+    const writerSet = this.communityWriterSetByGroupId.get(this.normalizeChatId(SHUTTLE_OPERATIONS_CHAT_NAME));
+    return Boolean(writerSet && writerSet.has(normalizedUser));
   }
 
   private canUserSendToCommunityGroup(group: ChatGroup, user: string | null): boolean {
@@ -1153,6 +1209,77 @@ export class ChatStoreService {
     return this.shuttleOrdersSyncInFlight.has(this.normalizeUser(user));
   }
 
+  getShuttleOperationsDateGroupsForActiveChat(): ShuttleOperationsDateGroup[] | null {
+    this.shuttlePickerRevision();
+    const activeChatId = this.activeChatId();
+    if (!this.isShuttleOperationsRoomChat(activeChatId)) {
+      return null;
+    }
+    const orders = this.shuttleOperationsOrders();
+    if (!orders.length) {
+      return [];
+    }
+    const groupsByDate = new Map<string, ShuttleOperationsOrderRecord[]>();
+    orders.forEach((order) => {
+      const dateKey = this.normalizeShuttleDateToIso(String(order.date || '').trim()) || String(order.date || '').trim();
+      if (!dateKey) return;
+      const list = groupsByDate.get(dateKey) ?? [];
+      list.push(order);
+      groupsByDate.set(dateKey, list);
+    });
+    return Array.from(groupsByDate.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([date, list]) => {
+        const sortedOrders = list.slice().sort((a, b) => this.compareShuttleOrdersByDateTimeAsc(a, b));
+        const dayName = this.resolveShuttleDayNameFromIso(date) || (sortedOrders[0]?.dayName ?? '');
+        return {
+          date,
+          dayName,
+          orderCount: sortedOrders.length,
+          orders: sortedOrders
+        };
+      });
+  }
+
+  getShuttleOperationsOrdersLoading(): boolean {
+    this.shuttlePickerRevision();
+    return this.shuttleOperationsOrdersLoading();
+  }
+
+  async refreshShuttleOperationsOrdersForActiveUser(options: { force?: boolean; throwOnError?: boolean } = {}): Promise<void> {
+    const activeChatId = this.activeChatId();
+    if (!this.isShuttleOperationsRoomChat(activeChatId)) {
+      return;
+    }
+    await this.refreshShuttleOperationsOrders(options);
+  }
+
+  async cancelShuttleOperationsOrderByCompositeId(orderCompositeId: string): Promise<void> {
+    const currentUser = this.currentUser();
+    if (!currentUser) {
+      throw new Error(this.shuttleText('יש להתחבר לפני ביטול הזמנה', 'Войдите в систему перед отменой заказа'));
+    }
+    if (!this.isShuttleOperationsAdminUser(currentUser)) {
+      throw new Error(this.shuttleText('רק מנהל חדר ההסעות יכול לבטל הזמנות', 'Только админ комнаты трансферов может отменять заказы'));
+    }
+    const normalizedId = String(orderCompositeId || '').trim();
+    if (!normalizedId) {
+      throw new Error(this.shuttleText('הזמנה לא תקינה', 'Некорректный заказ'));
+    }
+
+    const targetOrder = this.shuttleOperationsOrders().find((order) => order.compositeId === normalizedId);
+    if (!targetOrder) {
+      throw new Error(this.shuttleText('הזמנה לא נמצאה', 'Заказ не найден'));
+    }
+    if (!this.isShuttleOrderOngoing(targetOrder)) {
+      throw new Error(this.shuttleText('ניתן למחוק רק הזמנה פעילה', 'Можно удалить только активный заказ'));
+    }
+
+    await this.submitShuttleOrder(targetOrder.sourceUser, targetOrder, SHUTTLE_STATUS_CANCEL_VALUE);
+    await this.confirmShuttleOrderCancellationSynced(targetOrder.sourceUser, targetOrder);
+    await this.refreshShuttleOperationsOrders({ force: true, throwOnError: true });
+  }
+
   getShuttleLanguage(): ShuttleLanguage {
     this.shuttlePickerRevision();
     const user = this.currentUser();
@@ -1214,6 +1341,7 @@ export class ChatStoreService {
     if (this.shuttleAccessAllowed()) {
       await this.refreshShuttleOrdersFromRemote(user, { force: true, throwOnError: true });
     }
+    await this.refreshShuttleOperationsOrders({ force: true });
 
     this.applyInitialChatSelection(user);
     this.schedulePersist();
@@ -1713,6 +1841,10 @@ export class ChatStoreService {
       await this.ensureHrFlowOnOpen();
       return;
     }
+    if (this.isShuttleOperationsRoomChat(chatId)) {
+      await this.ensureShuttleOperationsFlowOnOpen();
+      return;
+    }
     if (this.isShuttleChat(chatId)) {
       if (!this.shuttleAccessAllowed()) {
         return;
@@ -2016,6 +2148,104 @@ export class ChatStoreService {
       await this.startShuttleFlow({ skipWelcome: false });
     } finally {
       this.shuttleInitInFlight = false;
+    }
+  }
+
+  private async ensureShuttleOperationsFlowOnOpen(): Promise<void> {
+    const user = this.currentUser();
+    if (!user || this.shuttleOperationsInitInFlight) {
+      return;
+    }
+    this.shuttleOperationsInitInFlight = true;
+    try {
+      await this.refreshShuttleOperationsOrders({ force: false });
+    } finally {
+      this.shuttleOperationsInitInFlight = false;
+    }
+  }
+
+  private getShuttleOperationsMembers(): string[] {
+    return Array.from(
+      new Set(SHUTTLE_OPERATIONS_GROUP_MEMBERS.map((member) => this.normalizeUser(member)).filter(Boolean))
+    );
+  }
+
+  private async refreshShuttleOperationsOrders(
+    options: { force?: boolean; throwOnError?: boolean } = {}
+  ): Promise<void> {
+    const currentUser = this.currentUser();
+    if (!currentUser) {
+      this.shuttleOperationsOrders.set([]);
+      return;
+    }
+    const normalizedCurrentUser = this.normalizeUser(currentUser);
+    const memberList = this.getShuttleOperationsMembers();
+    if (!memberList.includes(normalizedCurrentUser)) {
+      this.shuttleOperationsOrders.set([]);
+      return;
+    }
+
+    const now = Date.now();
+    if (!options.force && now - this.shuttleOperationsLastSyncedAt < SHUTTLE_REMOTE_ORDERS_SYNC_TTL_MS) {
+      return;
+    }
+    if (this.shuttleOperationsSyncPromise) {
+      if (options.force) {
+        await this.shuttleOperationsSyncPromise.catch(() => undefined);
+      } else {
+        return this.shuttleOperationsSyncPromise;
+      }
+    }
+
+    this.shuttleOperationsOrdersLoading.set(true);
+    this.bumpShuttlePickerRevision();
+    const syncTask = (async () => {
+      const loadedOrders: ShuttleOperationsOrderRecord[] = [];
+      for (const member of memberList) {
+        const remoteOrders = await this.api.getShuttleUserOrders(member);
+        const mappedOrders = remoteOrders
+          .map((item, index) => this.mapShuttleRemoteOrder(item, index))
+          .filter((item): item is ShuttleOrderRecord => Boolean(item))
+          .filter((item) => this.isShuttleOrderOngoing(item));
+        mappedOrders.forEach((order) => {
+          const sourceDisplayName = this.getDisplayName(member) || member;
+          loadedOrders.push({
+            ...order,
+            sourceUser: member,
+            sourceDisplayName,
+            sourceOrderId: order.id,
+            compositeId: `${member}::${order.id}`
+          });
+        });
+      }
+
+      const dedupedByIdentity = new Map<string, ShuttleOperationsOrderRecord>();
+      loadedOrders.forEach((order, index) => {
+        const dateKey = this.normalizeShuttleDateToIso(String(order.date || '').trim()) || String(order.date || '').trim();
+        const shiftKey = this.normalizeShuttleShiftLabel(String(order.shiftLabel || order.shiftValue || '').trim());
+        const stationKey = this.normalizeShuttleText(String(order.station || '').trim());
+        const identity = `${order.sourceUser}|${dateKey}|${shiftKey}|${stationKey}|${order.sourceOrderId || index}`;
+        if (!dedupedByIdentity.has(identity)) {
+          dedupedByIdentity.set(identity, order);
+        }
+      });
+      const nextOrders = Array.from(dedupedByIdentity.values())
+        .sort((a, b) => this.compareShuttleOrdersByDateTimeAsc(a, b));
+      this.shuttleOperationsOrders.set(nextOrders);
+      this.shuttleOperationsLastSyncedAt = Date.now();
+    })();
+
+    this.shuttleOperationsSyncPromise = syncTask;
+    try {
+      await syncTask;
+    } catch (error) {
+      if (options.throwOnError) {
+        throw error;
+      }
+    } finally {
+      this.shuttleOperationsSyncPromise = null;
+      this.shuttleOperationsOrdersLoading.set(false);
+      this.bumpShuttlePickerRevision();
     }
   }
 
@@ -3672,7 +3902,7 @@ export class ChatStoreService {
     if (group && (group.type === 'community' || this.isDovrutGroup(group.id)) && !this.canUserSendToCommunityGroup(group, user)) {
       this.lastError.set(
         this.isDovrutGroup(group.id)
-          ? 'רק מנהלי דוברות יכולים לשלוח בחדר זה'
+          ? 'רק מנהלי החדר יכולים לשלוח בחדר זה'
           : 'רק מנהל יכול לשלוח בקבוצת קהילה'
       );
       return;
@@ -5687,6 +5917,10 @@ export class ChatStoreService {
     this.shuttleStationsCache = { at: 0, items: [] };
     this.shuttleEmployeesCache = { at: 0, items: [] };
     this.shuttleOrdersSyncAt.delete(this.normalizeUser(user));
+    this.shuttleOperationsOrders.set([]);
+    this.shuttleOperationsOrdersLoading.set(false);
+    this.shuttleOperationsLastSyncedAt = 0;
+    this.shuttleOperationsSyncPromise = null;
     this.clearShuttleReminderTimersForUser(user);
     this.resetReadReceiptTrackingState();
   }
