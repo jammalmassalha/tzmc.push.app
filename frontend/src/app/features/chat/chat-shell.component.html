@@ -367,10 +367,10 @@
 
                       <div class="shuttle-orders-cards shuttle-ops-cards">
                         @for (order of group.orders; track order.compositeId) {
-                          <article class="shuttle-order-card ongoing">
+                          <article class="shuttle-order-card" [class.ongoing]="order.canCancel" [class.past]="!order.canCancel">
                             <div class="shuttle-order-card-top">
                               <span class="shuttle-order-status ongoing">{{ order.sourceDisplayName }}</span>
-                              @if (canCancelShuttleOperationsOrder()) {
+                              @if (canCancelShuttleOperationsOrder() && order.canCancel) {
                                 <button
                                   type="button"
                                   class="shuttle-order-delete-btn"
@@ -392,6 +392,10 @@
                             <div class="shuttle-order-row">
                               <span class="label">{{ shuttleText('stationLabel') }}</span>
                               <span class="value">{{ order.station }}</span>
+                            </div>
+                            <div class="shuttle-order-row">
+                              <span class="label">סטטוס</span>
+                              <span class="value">{{ order.statusLabel || (order.canCancel ? shuttleText('activeStatus') : shuttleText('pastStatusCancelled')) }}</span>
                             </div>
                           </article>
                         }
