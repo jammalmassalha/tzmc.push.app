@@ -322,6 +322,87 @@
             </section>
           }
 
+          @if (shuttleOperationsDateGroups(); as shuttleOpsGroups) {
+            <section class="shuttle-orders-dashboard shuttle-ops-dashboard">
+              <div class="shuttle-orders-toolbar">
+                <div class="shuttle-orders-title">הסעות · הזמנות פעילות</div>
+                <div class="shuttle-orders-toolbar-actions">
+                  <button
+                    type="button"
+                    class="shuttle-orders-refresh-btn"
+                    [disabled]="isLoadingShuttleOperationsOrders()"
+                    (click)="refreshShuttleOperationsOrders()">
+                    @if (isLoadingShuttleOperationsOrders()) {
+                      <mat-spinner diameter="14"></mat-spinner>
+                    } @else {
+                      <mat-icon>refresh</mat-icon>
+                    }
+                    <span>{{ shuttleText('refresh') }}</span>
+                  </button>
+                </div>
+              </div>
+
+              @if (isLoadingShuttleOperationsOrders()) {
+                <div class="shuttle-orders-hint" aria-live="polite">{{ shuttleText('loading') }}</div>
+              }
+
+              @if (!shuttleOpsGroups.length) {
+                <div class="shuttle-orders-empty">אין הזמנות פעילות כרגע.</div>
+              } @else {
+                <mat-accordion class="shuttle-ops-accordion" multi>
+                  @for (group of shuttleOpsGroups; track group.date) {
+                    <mat-expansion-panel
+                      class="shuttle-ops-panel"
+                      [expanded]="isShuttleOperationsDateExpanded(group.date)"
+                      (opened)="setShuttleOperationsDateExpanded(group.date, true)"
+                      (closed)="setShuttleOperationsDateExpanded(group.date, false)">
+                      <mat-expansion-panel-header>
+                        <mat-panel-title>
+                          {{ shuttleOrderDayDateLabel(group.dayName, group.date) }}
+                        </mat-panel-title>
+                        <mat-panel-description>
+                          <span class="shuttle-ops-count-badge">{{ group.orderCount }}</span>
+                        </mat-panel-description>
+                      </mat-expansion-panel-header>
+
+                      <div class="shuttle-orders-cards shuttle-ops-cards">
+                        @for (order of group.orders; track order.compositeId) {
+                          <article class="shuttle-order-card ongoing">
+                            <div class="shuttle-order-card-top">
+                              <span class="shuttle-order-status ongoing">{{ order.sourceDisplayName }}</span>
+                              @if (canCancelShuttleOperationsOrder()) {
+                                <button
+                                  type="button"
+                                  class="shuttle-order-delete-btn"
+                                  [disabled]="isCancellingShuttleOrder(order.compositeId)"
+                                  (click)="cancelShuttleOperationsOrder(order.compositeId)">
+                                  @if (isCancellingShuttleOrder(order.compositeId)) {
+                                    <mat-spinner diameter="14"></mat-spinner>
+                                  } @else {
+                                    <mat-icon>delete</mat-icon>
+                                  }
+                                  <span>{{ shuttleText('deleteOrder') }}</span>
+                                </button>
+                              }
+                            </div>
+                            <div class="shuttle-order-row">
+                              <span class="label">{{ shuttleText('shiftLabel') }}</span>
+                              <span class="value">{{ order.shiftLabel }}</span>
+                            </div>
+                            <div class="shuttle-order-row">
+                              <span class="label">{{ shuttleText('stationLabel') }}</span>
+                              <span class="value">{{ order.station }}</span>
+                            </div>
+                          </article>
+                        }
+                      </div>
+                    </mat-expansion-panel>
+                  }
+                </mat-accordion>
+              }
+            </section>
+          }
+
           @for (message of visibleMessages(); track message.messageId; let index = $index) {
             @if (shouldShowMessageDateBadge(messageAbsoluteIndex(index), message.timestamp)) {
               <div class="message-date-badge">
@@ -672,7 +753,7 @@
 
         <form
           class="composer"
-          [class.shuttle-composer-hidden]="!!shuttleQuickPicker()"
+          [class.shuttle-composer-hidden]="isComposerHidden()"
           (submit)="handleComposerSubmit($event)"
           novalidate>
           <input
@@ -688,7 +769,7 @@
               class="composer-textarea"
               rows="1"
               [formControl]="messageControl"
-              [disabled]="!!shuttleQuickPicker()"
+              [disabled]="isComposerHidden()"
               (input)="onComposerInput()"
               (focus)="handleTextInputFocus()"
               [placeholder]="composerPlaceholder()"></textarea>
@@ -696,7 +777,7 @@
               type="button"
               class="attach-btn"
               [matMenuTriggerFor]="attachMenu"
-              [disabled]="!!shuttleQuickPicker() || !store.activeChat() || !store.canSendToActiveChat()"
+              [disabled]="isComposerHidden() || !store.activeChat() || !store.canSendToActiveChat()"
               aria-label="Attach">
               <span class="attach-plus">+</span>
             </button>
