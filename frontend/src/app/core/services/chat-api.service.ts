@@ -53,6 +53,12 @@ interface PollResponse {
   messages?: IncomingServerMessage[];
 }
 
+interface LogsMessagesResponse {
+  result?: string;
+  messages?: IncomingServerMessage[];
+  error?: string;
+}
+
 interface UploadResponse {
   status?: string;
   url?: string;
@@ -576,6 +582,26 @@ export class ChatApiService {
     }
 
     const body = (await response.json()) as PollResponse;
+    return Array.isArray(body.messages) ? body.messages : [];
+  }
+
+  async getMessagesFromLogs(user?: string): Promise<IncomingServerMessage[]> {
+    const normalizedUser = String(user || '').trim().toLowerCase();
+    if (!normalizedUser) {
+      return [];
+    }
+
+    const url = `${this.notifyBaseUrl}/messages/logs?user=${encodeURIComponent(normalizedUser)}&excludeSystem=1&limit=700&_ts=${Date.now()}`;
+    const response = await this.fetchWithRetry(
+      url,
+      { cache: 'no-store' },
+      { retries: 1, timeoutMs: 20000, backoffMs: 500 }
+    );
+    if (!response.ok) {
+      throw new Error(`Logs messages request failed with ${response.status}`);
+    }
+
+    const body = (await response.json()) as LogsMessagesResponse;
     return Array.isArray(body.messages) ? body.messages : [];
   }
 

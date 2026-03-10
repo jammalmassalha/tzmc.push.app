@@ -1144,6 +1144,14 @@ export class ChatStoreService {
 
     await this.refresh(true);
     await this.pullMessages(user);
+    const logsMessages = await this.api.getMessagesFromLogs(user);
+    if (logsMessages.length) {
+      const nonSystemLogs = logsMessages.filter((message) => {
+        const sender = this.normalizeUser(String(message.sender ?? '').trim());
+        return Boolean(sender && sender !== 'system');
+      });
+      this.applyIncomingMessagesBatch(nonSystemLogs);
+    }
 
     await this.refreshShuttleAccessForCurrentUser(user, { force: true });
     if (this.shuttleAccessAllowed()) {
@@ -4266,36 +4274,46 @@ export class ChatStoreService {
     try {
       const messages = await this.api.pollMessages();
       this.incrementDeliveryTelemetry('pollMessagesFetched', messages.length);
-      let appliedCount = 0;
-      this.runIncomingBatch(() => {
-        const bufferedRegularMessages: IncomingServerMessage[] = [];
-        const flushBufferedRegularMessages = (): void => {
-          if (!bufferedRegularMessages.length) return;
-          appliedCount += this.applyRegularIncomingMessagesBulk(bufferedRegularMessages);
-          bufferedRegularMessages.length = 0;
-        };
-
-        for (const message of messages) {
-          const incomingType = String(message.type ?? '').trim().toLowerCase();
-          if (this.isIncomingActionType(incomingType)) {
-            flushBufferedRegularMessages();
-            if (this.applyIncomingMessage(message)) {
-              appliedCount += 1;
-            }
-            continue;
-          }
-
-          bufferedRegularMessages.push(message);
-        }
-
-        flushBufferedRegularMessages();
-      });
+      const appliedCount = this.applyIncomingMessagesBatch(messages);
       this.incrementDeliveryTelemetry('pollMessagesApplied', appliedCount);
     } catch {
       // Polling failures are expected during network interruptions.
     } finally {
       this.pullInFlight = false;
     }
+  }
+
+  private applyIncomingMessagesBatch(messages: IncomingServerMessage[]): number {
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return 0;
+    }
+
+    let appliedCount = 0;
+    this.runIncomingBatch(() => {
+      const bufferedRegularMessages: IncomingServerMessage[] = [];
+      const flushBufferedRegularMessages = (): void => {
+        if (!bufferedRegularMessages.length) return;
+        appliedCount += this.applyRegularIncomingMessagesBulk(bufferedRegularMessages);
+        bufferedRegularMessages.length = 0;
+      };
+
+      for (const message of messages) {
+        const incomingType = String(message.type ?? '').trim().toLowerCase();
+        if (this.isIncomingActionType(incomingType)) {
+          flushBufferedRegularMessages();
+          if (this.applyIncomingMessage(message)) {
+            appliedCount += 1;
+          }
+          continue;
+        }
+
+        bufferedRegularMessages.push(message);
+      }
+
+      flushBufferedRegularMessages();
+    });
+
+    return appliedCount;
   }
 
   private isIncomingActionType(incomingType: string): boolean {
