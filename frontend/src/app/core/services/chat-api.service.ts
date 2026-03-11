@@ -637,7 +637,8 @@ export class ChatApiService {
     const { io } = await import('socket.io-client');
     const socket = io(socketServerBase, {
       path: '/notify/socket.io',
-      transports: ['websocket', 'polling'],
+      transports: ['polling', 'websocket'],
+      reconnection: false,
       withCredentials: true,
       autoConnect: false,
       auth: normalizedUser ? { user: normalizedUser } : {},

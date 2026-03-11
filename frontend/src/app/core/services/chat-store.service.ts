@@ -39,6 +39,8 @@ const STREAM_RETRY_MS = 5000;
 const SOCKET_RETRY_MS = 3500;
 const SOCKET_FALLBACK_TO_SSE_DELAY_MS = 1800;
 const SOCKET_ACK_TIMEOUT_MS = 6000;
+const SOCKET_MAX_FAILURES_BEFORE_COOLDOWN = 3;
+const SOCKET_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
 const MAX_PERSISTED_MESSAGES = 2500;
 const PUSH_REGISTER_MIN_INTERVAL_MS = 30000;
 const PUSH_REGISTER_REFRESH_MS = 6 * 60 * 60 * 1000;
@@ -310,6 +312,8 @@ export class ChatStoreService {
   private socketReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private socketSseFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   private shuttingDownRealtime = false;
+  private socketConsecutiveFailures = 0;
+  private socketDisabledUntil = 0;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private typingStopTimer: ReturnType<typeof setTimeout> | null = null;
   private typingStateChatId: string | null = null;
@@ -4752,8 +4756,33 @@ export class ChatStoreService {
     this.realtimeTransportMode.set(mode);
   }
 
+  private resetSocketFailureState(): void {
+    this.socketConsecutiveFailures = 0;
+    this.socketDisabledUntil = 0;
+  }
+
+  private handleSocketConnectFailure(user: string): void {
+    if (this.currentUser() !== user) {
+      return;
+    }
+    this.socketConsecutiveFailures += 1;
+    this.startSseFallback(user);
+
+    if (this.socketConsecutiveFailures >= SOCKET_MAX_FAILURES_BEFORE_COOLDOWN) {
+      this.socketConsecutiveFailures = 0;
+      this.socketDisabledUntil = Date.now() + SOCKET_FAILURE_COOLDOWN_MS;
+    }
+
+    this.scheduleSocketReconnect(user);
+  }
+
   private async connectSocketPreferred(user: string): Promise<void> {
     this.shuttingDownRealtime = false;
+    if (this.socketDisabledUntil > Date.now()) {
+      this.startSseFallback(user);
+      this.scheduleSocketReconnect(user);
+      return;
+    }
     if (!this.isNetworkReachable()) {
       this.startSseFallback(user);
       return;
@@ -4788,6 +4817,7 @@ export class ChatStoreService {
 
       socket.on('connect', () => {
         if (this.currentUser() !== user) return;
+        this.resetSocketFailureState();
         this.socketConnected = true;
         this.socketConnecting = false;
         this.setRealtimeTransportMode('socket');
@@ -4807,6 +4837,7 @@ export class ChatStoreService {
 
       socket.on('chat:connected', () => {
         if (this.currentUser() !== user) return;
+        this.resetSocketFailureState();
         this.socketConnected = true;
         this.setRealtimeTransportMode('socket');
         this.stopStreamOnly();
@@ -4815,29 +4846,35 @@ export class ChatStoreService {
 
       socket.on('disconnect', () => {
         if (this.shuttingDownRealtime || this.currentUser() !== user) return;
+        this.shuttingDownRealtime = true;
+        this.stopSocketOnly();
+        this.shuttingDownRealtime = false;
         this.socketConnected = false;
         this.socketConnecting = false;
         this.setRealtimeTransportMode('polling');
-        this.startSseFallback(user);
-        this.scheduleSocketReconnect(user);
+        this.handleSocketConnectFailure(user);
       });
 
       socket.on('connect_error', () => {
         if (this.shuttingDownRealtime || this.currentUser() !== user) return;
+        this.shuttingDownRealtime = true;
+        this.stopSocketOnly();
+        this.shuttingDownRealtime = false;
         this.socketConnected = false;
         this.socketConnecting = false;
         this.setRealtimeTransportMode('polling');
-        this.startSseFallback(user);
-        this.scheduleSocketReconnect(user);
+        this.handleSocketConnectFailure(user);
       });
 
       socket.connect();
     } catch {
+      this.shuttingDownRealtime = true;
+      this.stopSocketOnly();
+      this.shuttingDownRealtime = false;
       this.socketConnecting = false;
       this.socketConnected = false;
       this.setRealtimeTransportMode('polling');
-      this.startSseFallback(user);
-      this.scheduleSocketReconnect(user);
+      this.handleSocketConnectFailure(user);
     }
   }
 
@@ -5109,11 +5146,14 @@ export class ChatStoreService {
 
   private scheduleSocketReconnect(user: string): void {
     if (this.socketReconnectTimer) return;
+    const waitMs = this.socketDisabledUntil > Date.now()
+      ? Math.max(SOCKET_RETRY_MS, this.socketDisabledUntil - Date.now())
+      : SOCKET_RETRY_MS;
     this.socketReconnectTimer = setTimeout(() => {
       this.socketReconnectTimer = null;
       if (this.currentUser() !== user || !this.isNetworkReachable()) return;
       void this.connectSocketPreferred(user);
-    }, SOCKET_RETRY_MS);
+    }, waitMs);
   }
 
   private async pullMessages(user: string): Promise<void> {
