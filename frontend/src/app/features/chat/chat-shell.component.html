@@ -588,6 +588,10 @@
           <mat-icon>keyboard_arrow_down</mat-icon>
         </button>
 
+        @if (store.activeTypingLabel(); as typingLabel) {
+          <div class="typing-indicator" aria-live="polite">{{ typingLabel }}</div>
+        }
+
         @if (editingMessageTarget(); as editingMessage) {
           <div class="composer-edit-banner">
             <div class="composer-edit-text">

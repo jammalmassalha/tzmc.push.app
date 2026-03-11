@@ -1310,6 +1310,15 @@ mat-chip:not(.offline) {
   color: #273158;
 }
 
+.typing-indicator {
+  margin: 6px 14px 0;
+  font-size: 12px;
+  color: #5f6f91;
+  min-height: 18px;
+  display: flex;
+  align-items: center;
+}
+
 .composer-edit-banner {
   margin: 6px 10px 0;
   padding: 6px 8px;

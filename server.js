@@ -3,6 +3,7 @@ const vapidKeys = {
     privateKey: "fMQqCaakMboV7LEV57wJhxPAdyppOBRDBjRDVQBxg1s"
 };
 const express = require('express');
+const http = require('http');
 const webpush = require('web-push');
 const bodyParser = require('body-parser');
 const multer = require('multer'); 
@@ -10,6 +11,7 @@ const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
 const crypto = require('crypto');
+const { Server: SocketIOServer } = require('socket.io');
 const { Worker } = require('node:worker_threads');
 const { createAuthorizedUserMiddleware } = require('./backend/middleware/authorized-user.middleware');
 const { registerAuthController } = require('./backend/controllers/auth.controller');
@@ -49,6 +51,7 @@ const redisStateStorePromise = createRedisStateStoreFromEnv(process.env)
 const uploadDir = path.join(__dirname, 'uploads');
 const uploadSecurityWorkerPath = path.join(__dirname, 'backend', 'dist', 'services', 'upload-security-worker.js');
 const app = express();
+const httpServer = http.createServer(app);
 app.disable('x-powered-by');
 
 const DEFAULT_ALLOWED_HOSTS = ['tzmc.co.il', 'www.tzmc.co.il', 'localhost', '127.0.0.1', '::1'];
@@ -691,12 +694,47 @@ webpush.setVapidDetails(
 // ======================================================
 let messageQueue = {}; 
 const sseClients = new Map();
+const websocketClients = new Map();
+
+function addWebsocketClient(username, socket) {
+    if (!username || !socket) return;
+    const existing = websocketClients.get(username) || new Set();
+    existing.add(socket);
+    websocketClients.set(username, existing);
+}
+
+function removeWebsocketClient(username, socket) {
+    if (!username || !socket) return;
+    const existing = websocketClients.get(username);
+    if (!existing) return;
+    existing.delete(socket);
+    if (existing.size === 0) {
+        websocketClients.delete(username);
+    }
+}
 
 function notifySseClients(username, messageObj) {
     const clientSet = sseClients.get(username);
     if (!clientSet) return;
     const payload = `event: message\ndata: ${JSON.stringify(messageObj)}\n\n`;
     clientSet.forEach(res => res.write(payload));
+}
+
+function notifyWebsocketClients(username, messageObj) {
+    const clientSet = websocketClients.get(username);
+    if (!clientSet || !clientSet.size) return;
+    clientSet.forEach((socket) => {
+        try {
+            socket.emit('chat:message', messageObj);
+        } catch (error) {
+            // Ignore per-socket emission failures and continue.
+        }
+    });
+}
+
+function notifyRealtimeClients(username, messageObj) {
+    notifySseClients(username, messageObj);
+    notifyWebsocketClients(username, messageObj);
 }
 
 function dispatchRegisteredWebhookAsync(messageObj) {
@@ -742,7 +780,7 @@ async function ensureRedisQueuePubSubBridge() {
             ? event.message
             : null;
         if (!messageObj) return;
-        notifySseClients(normalizedUser, messageObj);
+        notifyRealtimeClients(normalizedUser, messageObj);
     }).then((subscribed) => {
         redisQueuePubSubActive = Boolean(subscribed);
         return redisQueuePubSubActive;
@@ -790,7 +828,7 @@ function addToQueue(targetUser, messageObj) {
             messageQueue[normalizedUser].push(queueEntry);
         }
         dispatchRegisteredWebhookAsync(queueEntry);
-        notifySseClients(normalizedUser, queueEntry);
+        notifyRealtimeClients(normalizedUser, queueEntry);
     });
     scheduleStateSave();
 }
@@ -2191,6 +2229,372 @@ const authorizedUserMiddleware = createAuthorizedUserMiddleware({
 });
 const attachResolvedUser = authorizedUserMiddleware.attachResolvedUser;
 const requireAuthorizedUser = authorizedUserMiddleware.requireAuthorizedUser;
+
+function createHttpError(status, message) {
+    const error = new Error(String(message || 'Request failed'));
+    error.status = Number(status) || 500;
+    return error;
+}
+
+function resolveSocketAuthorizedUser(socket) {
+    const handshake = socket && socket.handshake ? socket.handshake : {};
+    const headers = handshake && handshake.headers ? handshake.headers : {};
+    const cookieMap = parseCookiesFromHeader(headers.cookie || '');
+    const session = getSessionFromToken(cookieMap[SESSION_COOKIE_NAME]);
+    const sessionUser = normalizeUserCandidate(session && session.user);
+    const handshakeAuth = handshake && handshake.auth && typeof handshake.auth === 'object'
+        ? handshake.auth
+        : {};
+    const handshakeQuery = handshake && handshake.query && typeof handshake.query === 'object'
+        ? handshake.query
+        : {};
+    const requestedUser = normalizeUserCandidate(
+        handshakeAuth.user ||
+        handshakeQuery.user ||
+        ''
+    );
+    const resolution = resolveAuthorizedUser(
+        { authUser: sessionUser },
+        requestedUser,
+        { required: true }
+    );
+    if (resolution && resolution.error) {
+        throw createHttpError(resolution.status || 401, resolution.error);
+    }
+    return normalizeUserCandidate(resolution && resolution.user);
+}
+
+function resolveTypingRecipients(payload = {}, senderUser = '') {
+    const sender = normalizeUserKey(senderUser);
+    const groupId = String(payload.groupId || '').trim();
+    let recipients = [];
+
+    if (groupId) {
+        const groupRecord = groups[groupId] && typeof groups[groupId] === 'object'
+            ? groups[groupId]
+            : null;
+        const payloadMembers = parseUsernamesInput(payload.groupMembers);
+        const groupMembers = groupRecord ? parseUsernamesInput(groupRecord.members) : [];
+        recipients = payloadMembers.length ? payloadMembers : groupMembers;
+    } else {
+        recipients = parseUsernamesInput(
+            payload.targetUser ||
+            payload.originalSender ||
+            payload.chatId ||
+            payload.recipient ||
+            payload.recipients
+        );
+    }
+
+    return Array.from(new Set(recipients))
+        .filter((userKey) => userKey && userKey !== sender);
+}
+
+function emitTypingSignalToRecipients(payload = {}, senderUser = '') {
+    const sender = normalizeUserKey(senderUser);
+    if (!sender) {
+        throw createHttpError(400, 'Missing sender');
+    }
+    const isTyping = parseBooleanInput(payload.isTyping, true);
+    const groupId = String(payload.groupId || '').trim();
+    const groupName = String(payload.groupName || '').trim();
+    const recipients = resolveTypingRecipients(payload, sender);
+    if (!recipients.length) {
+        return { status: 'success', deliveredTo: 0 };
+    }
+
+    const realtimePayload = {
+        type: 'typing',
+        sender,
+        isTyping,
+        chatId: groupId || sender,
+        groupId: groupId || undefined,
+        groupName: groupName || undefined,
+        timestamp: Date.now()
+    };
+    recipients.forEach((recipientUser) => notifyRealtimeClients(recipientUser, realtimePayload));
+    return { status: 'success', deliveredTo: recipients.length };
+}
+
+async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
+    const {
+        reply,
+        originalSender,
+        imageUrl,
+        senderName,
+        messageId: clientMessageId,
+        groupId,
+        groupName,
+        groupMembers,
+        groupCreatedBy,
+        groupUpdatedAt,
+        groupType,
+        groupSenderName,
+        membersToNotify,
+        replyToMessageId,
+        replyToSender,
+        replyToSenderName,
+        replyToBody,
+        replyToImageUrl,
+        forwarded,
+        forwardedFrom,
+        forwardedFromName
+    } = rawPayload || {};
+    const user = normalizeUserKey(resolvedUser || rawPayload.user || '');
+    if (!user) {
+        throw createHttpError(400, 'Missing user');
+    }
+    console.log(`[REPLY] From: ${user} | To: ${originalSender}`);
+
+    let groupRecord = null;
+    if (groupId) {
+        groupRecord = upsertGroup({
+            groupId,
+            groupName,
+            groupMembers,
+            groupCreatedBy,
+            groupUpdatedAt,
+            groupType
+        });
+        if (!canSendToCommunityGroup(user, groupRecord, groupId, groupName)) {
+            throw createHttpError(403, 'Only admins can send to this group');
+        }
+    }
+
+    const senderUserKey = normalizeUserKey(user);
+    let targetToNotify = [];
+    const hardcodedCommunityPolicy = groupId
+        ? resolveHardcodedCommunityPolicy(groupRecord, groupId, groupName)
+        : null;
+    const requestedMembersToNotify = parseUsernamesInput(membersToNotify);
+    if (hardcodedCommunityPolicy && Array.isArray(hardcodedCommunityPolicy.members) && hardcodedCommunityPolicy.members.length) {
+        targetToNotify = hardcodedCommunityPolicy.members;
+    } else if (requestedMembersToNotify.length) {
+        targetToNotify = requestedMembersToNotify;
+    } else if (groupId) {
+        const groupList = groupRecord && Array.isArray(groupRecord.members) ? groupRecord.members : groupMembers;
+        targetToNotify = parseUsernamesInput(groupList);
+    } else if (originalSender && originalSender !== 'System') {
+        targetToNotify = parseUsernamesInput([originalSender]);
+    } else {
+        targetToNotify = ['jmassalha'];
+    }
+
+    targetToNotify = parseUsernamesInput(targetToNotify)
+        .filter((memberKey) => memberKey && memberKey !== senderUserKey);
+    if (!targetToNotify.length && groupId) {
+        const fallbackGroupMembers = groupRecord && Array.isArray(groupRecord.members)
+            ? groupRecord.members
+            : groupMembers;
+        targetToNotify = parseUsernamesInput(fallbackGroupMembers)
+            .filter((memberKey) => memberKey && memberKey !== senderUserKey);
+    }
+    if (Array.isArray(targetToNotify) && targetToNotify.length === 0) {
+        return { status: 'success', details: { success: 0, failed: 0 } };
+    }
+
+    let messageContent = reply;
+    if (!messageContent && imageUrl) {
+        messageContent = `[Image Sent]: ${imageUrl}`;
+    }
+    const normalizedReplyToMessageId = String(replyToMessageId || '').trim();
+    const normalizedReplyToSender = normalizeUserKey(replyToSender || '');
+    const normalizedReplyToSenderName = String(replyToSenderName || '').trim();
+    const normalizedReplyToBody = typeof replyToBody === 'string' ? replyToBody : '';
+    const normalizedReplyToImageUrl = String(replyToImageUrl || '').trim();
+    const hasReplyContext = Boolean(
+        normalizedReplyToMessageId &&
+        normalizedReplyToSender &&
+        (normalizedReplyToBody.trim() || normalizedReplyToImageUrl)
+    );
+    const normalizedForwarded = parseBooleanInput(forwarded, false);
+    const normalizedForwardedFrom = normalizeUserKey(forwardedFrom || '');
+    const normalizedForwardedFromName = String(forwardedFromName || '').trim();
+    const messageMetadata = {};
+    if (hasReplyContext) {
+        messageMetadata.replyToMessageId = normalizedReplyToMessageId;
+        messageMetadata.replyToSender = normalizedReplyToSender;
+        messageMetadata.replyToBody = normalizedReplyToBody;
+        messageMetadata.replyToImageUrl = normalizedReplyToImageUrl || null;
+        if (normalizedReplyToSenderName) {
+            messageMetadata.replyToSenderName = normalizedReplyToSenderName;
+        }
+    }
+    if (normalizedForwarded) {
+        messageMetadata.forwarded = true;
+        if (normalizedForwardedFrom) {
+            messageMetadata.forwardedFrom = normalizedForwardedFrom;
+        }
+        if (normalizedForwardedFromName) {
+            messageMetadata.forwardedFromName = normalizedForwardedFromName;
+        }
+    }
+
+    fetchWithRetry(GOOGLE_SHEET_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            action: 'save_reply',
+            fromUser: user,
+            toUser: groupId ? groupId : (originalSender || 'System'),
+            message: messageContent
+        })
+    }, { timeoutMs: 10000, retries: 2 }).catch(err => console.error('[SHEET ERROR] Failed to save reply:', err.message));
+
+    const messageId = clientMessageId || generateMessageId();
+    const isGroup = Boolean(groupId);
+    const senderLabel = groupSenderName || senderName || user;
+    const normalizedGroupName = (typeof groupName === 'string') ? groupName.trim() : groupName;
+    const shortText = reply || (imageUrl ? 'Sent an image' : 'New Message');
+    const normalizedGroupType = groupRecord ? groupRecord.type : normalizeGroupType(groupType || 'group');
+    const notificationTitle = isGroup ? (normalizedGroupName || 'Group message') : `New message from ${senderLabel}`;
+    const notificationExtraData = {
+        ...(isGroup ? {
+            groupId,
+            groupName: normalizedGroupName,
+            groupMembers,
+            groupCreatedBy,
+            groupUpdatedAt,
+            groupType: normalizedGroupType,
+            groupMessageText: shortText,
+            groupSenderName: senderLabel
+        } : {}),
+        ...messageMetadata
+    };
+    const notificationData = {
+        messageId,
+        title: notificationTitle,
+        body: {
+            shortText: isGroup ? `${senderLabel}: ${shortText}` : shortText,
+            longText: reply
+        },
+        image: imageUrl,
+        data: Object.keys(notificationExtraData).length ? notificationExtraData : undefined
+    };
+
+    const pollingMessage = {
+        messageId,
+        sender: isGroup ? groupId : user,
+        body: reply,
+        timestamp: Date.now(),
+        imageUrl: imageUrl || null,
+        groupId: groupId || null,
+        groupName: groupName || null,
+        groupMembers: groupMembers || null,
+        groupCreatedBy: groupCreatedBy || null,
+        groupUpdatedAt: groupUpdatedAt || null,
+        groupType: normalizedGroupType,
+        groupSenderName: senderLabel,
+        ...messageMetadata
+    };
+    addToQueue(targetToNotify, pollingMessage);
+
+    const senderForPush = isGroup ? groupId : user;
+    const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, { messageId });
+    return { status: 'success', details: result };
+}
+
+async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
+    const {
+        groupId,
+        groupName,
+        groupMembers,
+        groupCreatedBy,
+        groupUpdatedAt,
+        groupType,
+        targetMessageId,
+        emoji,
+        reactor,
+        reactorName
+    } = rawPayload || {};
+    const normalizedTargetMessageId = String(targetMessageId || '').trim();
+    const normalizedEmoji = String(emoji || '').trim();
+    const normalizedReactor = normalizeUserKey(resolvedUser || reactor || '');
+    if (!groupId || !normalizedTargetMessageId || !normalizedEmoji) {
+        throw createHttpError(400, 'Missing reaction fields');
+    }
+    if (!normalizedReactor) {
+        throw createHttpError(400, 'Missing reaction user');
+    }
+
+    const groupRecord = upsertGroup({ groupId, groupName, groupMembers, groupCreatedBy, groupUpdatedAt, groupType });
+    const storedMembers = groupRecord && Array.isArray(groupRecord.members) ? groupRecord.members : [];
+    const providedMembers = Array.isArray(groupMembers) ? groupMembers : [];
+    const recipientByKey = new Map();
+    [...storedMembers, ...providedMembers].forEach(member => {
+        const rawMember = String(member || '').trim();
+        const memberKey = normalizeUserKey(rawMember);
+        if (!memberKey || memberKey === normalizedReactor) return;
+        if (!recipientByKey.has(memberKey)) {
+            recipientByKey.set(memberKey, rawMember);
+        }
+    });
+    const membersToNotify = Array.from(recipientByKey.values());
+    if (!membersToNotify.length) {
+        return { status: 'success', details: { success: 0, failed: 0 } };
+    }
+
+    const reactionId = generateMessageId();
+    const resolvedGroupName = (groupRecord && groupRecord.name) || String(groupName || '').trim() || 'קבוצה';
+    const resolvedGroupMembers = groupRecord && Array.isArray(groupRecord.members)
+        ? groupRecord.members
+        : providedMembers;
+    const resolvedGroupCreatedBy = (groupRecord && groupRecord.createdBy) || groupCreatedBy || null;
+    const resolvedGroupUpdatedAt = (groupRecord && groupRecord.updatedAt) || groupUpdatedAt || Date.now();
+    const resolvedGroupType = groupRecord
+        ? groupRecord.type
+        : normalizeGroupType(groupType || 'group');
+    const resolvedReactorName = String(reactorName || reactor || 'משתמש').trim();
+    const reactionText = `${resolvedReactorName} הגיב ${normalizedEmoji}`;
+
+    const notificationData = {
+        messageId: reactionId,
+        title: resolvedGroupName || 'תגובה חדשה',
+        body: {
+            shortText: reactionText,
+            longText: reactionText
+        },
+        data: {
+            type: 'reaction',
+            targetMessageId: normalizedTargetMessageId,
+            emoji: normalizedEmoji,
+            reactor: normalizedReactor || reactor,
+            reactorName: resolvedReactorName,
+            groupId,
+            groupName: resolvedGroupName,
+            groupMembers: resolvedGroupMembers,
+            groupCreatedBy: resolvedGroupCreatedBy,
+            groupUpdatedAt: resolvedGroupUpdatedAt,
+            groupType: resolvedGroupType
+        }
+    };
+
+    const reactionRecord = {
+        messageId: reactionId,
+        sender: groupId,
+        type: 'reaction',
+        targetMessageId: normalizedTargetMessageId,
+        emoji: normalizedEmoji,
+        reactor: normalizedReactor || reactor,
+        reactorName: resolvedReactorName,
+        timestamp: Date.now(),
+        groupId,
+        groupName: resolvedGroupName,
+        groupMembers: resolvedGroupMembers,
+        groupCreatedBy: resolvedGroupCreatedBy,
+        groupUpdatedAt: resolvedGroupUpdatedAt,
+        groupType: resolvedGroupType
+    };
+    addToQueue(membersToNotify, reactionRecord);
+
+    const result = await sendPushNotificationToUser(membersToNotify, notificationData, groupId, {
+        messageId: reactionId,
+        skipBadge: true,
+        singlePerUser: true,
+        allowSecondAttempt: false
+    });
+    return { status: 'success', details: result };
+}
 
 function normalizeDeliveryTelemetryValue(rawValue) {
     const value = Number(rawValue);
@@ -4214,6 +4618,82 @@ app.use((req, res, next) => {
     return next();
 });
 
+const io = new SocketIOServer(httpServer, {
+    path: '/notify/socket.io',
+    transports: ['websocket', 'polling'],
+    cors: {
+        origin: '*',
+        methods: ['GET', 'POST']
+    }
+});
+
+io.use((socket, next) => {
+    try {
+        const user = resolveSocketAuthorizedUser(socket);
+        if (!user) {
+            return next(new Error('Authentication required'));
+        }
+        socket.data.user = user;
+        return next();
+    } catch (error) {
+        return next(error);
+    }
+});
+
+io.on('connection', (socket) => {
+    const socketUser = normalizeUserKey(socket && socket.data ? socket.data.user : '');
+    if (!socketUser) {
+        socket.disconnect(true);
+        return;
+    }
+
+    addWebsocketClient(socketUser, socket);
+    socket.emit('chat:connected', { user: socketUser, ts: Date.now() });
+
+    socket.on('chat:reply', async (payload = {}, ack) => {
+        const replyAck = typeof ack === 'function' ? ack : () => undefined;
+        try {
+            const result = await processReplyPayload(payload || {}, socketUser);
+            replyAck(result);
+        } catch (error) {
+            replyAck({
+                status: 'error',
+                error: error && error.message ? error.message : 'Reply failed'
+            });
+        }
+    });
+
+    socket.on('chat:reaction', async (payload = {}, ack) => {
+        const reactionAck = typeof ack === 'function' ? ack : () => undefined;
+        try {
+            const result = await processReactionPayload(payload || {}, socketUser);
+            reactionAck(result);
+        } catch (error) {
+            reactionAck({
+                status: 'error',
+                error: error && error.message ? error.message : 'Reaction failed'
+            });
+        }
+    });
+
+    socket.on('chat:typing', (payload = {}, ack) => {
+        const typingAck = typeof ack === 'function' ? ack : () => undefined;
+        try {
+            const result = emitTypingSignalToRecipients(payload || {}, socketUser);
+            typingAck(result);
+        } catch (error) {
+            typingAck({
+                status: 'error',
+                error: error && error.message ? error.message : 'Typing signal failed'
+            });
+        }
+    });
+
+    socket.on('disconnect', () => {
+        removeWebsocketClient(socketUser, socket);
+    });
+});
+
 registerAuthController(app, {
     normalizeUserCandidate,
     fetchWithRetry,
@@ -5085,189 +5565,16 @@ app.post(
         onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
     }),
     async (req, res) => {
-    try {
-        const {
-            reply,
-            originalSender,
-            imageUrl,
-            senderName,
-            messageId: clientMessageId,
-            groupId,
-            groupName,
-            groupMembers,
-            groupCreatedBy,
-            groupUpdatedAt,
-            groupSenderName,
-            membersToNotify,
-            replyToMessageId,
-            replyToSender,
-            replyToSenderName,
-            replyToBody,
-            replyToImageUrl,
-            forwarded,
-            forwardedFrom,
-            forwardedFromName
-        } = req.body;
-        const user = req.resolvedUser;
-        console.log(`[REPLY] From: ${user} | To: ${originalSender}`);
-
-        let groupRecord = null;
-        if (groupId) {
-            groupRecord = upsertGroup({
-                groupId,
-                groupName,
-                groupMembers,
-                groupCreatedBy,
-                groupUpdatedAt,
-                groupType: req.body.groupType
+        try {
+            const result = await processReplyPayload(req.body || {}, req.resolvedUser);
+            return res.json(result);
+        } catch (error) {
+            const statusCode = Number(error && error.status) || 500;
+            console.error('[REPLY ERROR]', error);
+            return res.status(statusCode).json({
+                error: error && error.message ? error.message : 'Reply failed'
             });
-            if (!canSendToCommunityGroup(user, groupRecord, groupId, groupName)) {
-                return res.status(403).json({ error: 'Only admins can send to this group' });
-            }
         }
-
-        const senderUserKey = normalizeUserKey(user);
-        let targetToNotify = [];
-        const hardcodedCommunityPolicy = groupId
-            ? resolveHardcodedCommunityPolicy(groupRecord, groupId, groupName)
-            : null;
-        const requestedMembersToNotify = parseUsernamesInput(membersToNotify);
-        if (hardcodedCommunityPolicy && Array.isArray(hardcodedCommunityPolicy.members) && hardcodedCommunityPolicy.members.length) {
-            targetToNotify = hardcodedCommunityPolicy.members;
-        } else if (requestedMembersToNotify.length) {
-            targetToNotify = requestedMembersToNotify;
-        } else if (groupId) {
-            const groupList = groupRecord && Array.isArray(groupRecord.members) ? groupRecord.members : groupMembers;
-            targetToNotify = parseUsernamesInput(groupList);
-        } else if (originalSender && originalSender !== 'System') {
-            targetToNotify = parseUsernamesInput([originalSender]);
-        } else {
-            targetToNotify = ['jmassalha'];
-        }
-
-        targetToNotify = parseUsernamesInput(targetToNotify)
-            .filter((memberKey) => memberKey && memberKey !== senderUserKey);
-        if (!targetToNotify.length && groupId) {
-            // Safety fallback: if malformed membersToNotify arrived, rebuild from known group members.
-            const fallbackGroupMembers = groupRecord && Array.isArray(groupRecord.members)
-                ? groupRecord.members
-                : groupMembers;
-            targetToNotify = parseUsernamesInput(fallbackGroupMembers)
-                .filter((memberKey) => memberKey && memberKey !== senderUserKey);
-        }
-        if (Array.isArray(targetToNotify) && targetToNotify.length === 0) {
-            return res.json({ status: 'success', details: { success: 0, failed: 0 } });
-        }
-
-        // 1. Prepare Message Text for Logging
-        let messageContent = reply;
-        if (!messageContent && imageUrl) {
-            messageContent = `[Image Sent]: ${imageUrl}`;
-        }
-        const normalizedReplyToMessageId = String(replyToMessageId || '').trim();
-        const normalizedReplyToSender = normalizeUserKey(replyToSender || '');
-        const normalizedReplyToSenderName = String(replyToSenderName || '').trim();
-        const normalizedReplyToBody = typeof replyToBody === 'string' ? replyToBody : '';
-        const normalizedReplyToImageUrl = String(replyToImageUrl || '').trim();
-        const hasReplyContext = Boolean(
-            normalizedReplyToMessageId &&
-            normalizedReplyToSender &&
-            (normalizedReplyToBody.trim() || normalizedReplyToImageUrl)
-        );
-        const normalizedForwarded = parseBooleanInput(forwarded, false);
-        const normalizedForwardedFrom = normalizeUserKey(forwardedFrom || '');
-        const normalizedForwardedFromName = String(forwardedFromName || '').trim();
-        const messageMetadata = {};
-        if (hasReplyContext) {
-            messageMetadata.replyToMessageId = normalizedReplyToMessageId;
-            messageMetadata.replyToSender = normalizedReplyToSender;
-            messageMetadata.replyToBody = normalizedReplyToBody;
-            messageMetadata.replyToImageUrl = normalizedReplyToImageUrl || null;
-            if (normalizedReplyToSenderName) {
-                messageMetadata.replyToSenderName = normalizedReplyToSenderName;
-            }
-        }
-        if (normalizedForwarded) {
-            messageMetadata.forwarded = true;
-            if (normalizedForwardedFrom) {
-                messageMetadata.forwardedFrom = normalizedForwardedFrom;
-            }
-            if (normalizedForwardedFromName) {
-                messageMetadata.forwardedFromName = normalizedForwardedFromName;
-            }
-        }
-
-        // ======================================================
-        // [NEW] SAVE TO GOOGLE SHEET "Replay"
-        // ======================================================
-        fetchWithRetry(GOOGLE_SHEET_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                action: 'save_reply',
-                fromUser: user,
-                toUser: groupId ? groupId : (originalSender || 'System'),
-                message: messageContent
-            })
-        }, { timeoutMs: 10000, retries: 2 }).catch(err => console.error('[SHEET ERROR] Failed to save reply:', err.message));
-
-        const messageId = clientMessageId || generateMessageId();
-        const isGroup = Boolean(groupId);
-        const senderLabel = groupSenderName || senderName || user;
-        const normalizedGroupName = (typeof groupName === 'string') ? groupName.trim() : groupName;
-        const notificationTitle = isGroup ? (normalizedGroupName || 'Group message') : `New message from ${senderLabel}`;
-        const shortText = reply || (imageUrl ? 'Sent an image' : 'New Message');
-        const notificationExtraData = {
-            ...(isGroup ? {
-                groupId,
-                groupName: normalizedGroupName,
-                groupMembers,
-                groupCreatedBy,
-                groupUpdatedAt,
-                groupType: groupRecord ? groupRecord.type : normalizeGroupType(req.body.groupType || 'group'),
-                groupMessageText: shortText,
-                groupSenderName: senderLabel
-            } : {}),
-            ...messageMetadata
-        };
-        const notificationData = {
-            messageId,
-            title: notificationTitle,
-            body: {
-                shortText: isGroup ? `${senderLabel}: ${shortText}` : shortText,
-                longText: reply
-            },
-            image: imageUrl,
-            data: Object.keys(notificationExtraData).length ? notificationExtraData : undefined
-        };
-
-        // [EXISTING] SAVE TO POLLING QUEUE
-        const pollingMessage = {
-            messageId,
-            sender: isGroup ? groupId : user,
-            body: reply,
-            timestamp: Date.now(),
-            imageUrl: imageUrl || null,
-            groupId: groupId || null,
-            groupName: groupName || null,
-            groupMembers: groupMembers || null,
-            groupCreatedBy: groupCreatedBy || null,
-            groupUpdatedAt: groupUpdatedAt || null,
-            groupType: groupRecord ? groupRecord.type : normalizeGroupType(req.body.groupType || 'group'),
-            groupSenderName: senderLabel,
-            ...messageMetadata
-        };
-        addToQueue(targetToNotify, pollingMessage);
-
-        // [EXISTING] SEND WEB PUSH (To all devices)
-        const senderForPush = isGroup ? groupId : user;
-        const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, { messageId });
-        res.json({ status: 'success', details: result });
-
-    } catch (e) {
-        console.error('[REPLY ERROR]', e);
-        res.status(500).json({ error: e.message });
-    }
 });
 
 app.post(['/group-update', '/notify/group-update'], async (req, res) => {
@@ -5354,109 +5661,37 @@ app.post(
         onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
     }),
     async (req, res) => {
-    try {
-        const {
-            groupId,
-            groupName,
-            groupMembers,
-            groupCreatedBy,
-            groupUpdatedAt,
-            groupType,
-            targetMessageId,
-            emoji,
-            reactor,
-            reactorName
-        } = req.body || {};
-        const normalizedTargetMessageId = String(targetMessageId || '').trim();
-        const normalizedEmoji = String(emoji || '').trim();
-        const normalizedReactor = req.resolvedUser;
-        if (!groupId || !normalizedTargetMessageId || !normalizedEmoji) {
-            return res.status(400).json({ error: 'Missing reaction fields' });
+        try {
+            const result = await processReactionPayload(req.body || {}, req.resolvedUser);
+            return res.json(result);
+        } catch (error) {
+            const statusCode = Number(error && error.status) || 500;
+            console.error('[REACTION ERROR]', error);
+            return res.status(statusCode).json({
+                error: error && error.message ? error.message : 'Reaction failed'
+            });
         }
-
-        const groupRecord = upsertGroup({ groupId, groupName, groupMembers, groupCreatedBy, groupUpdatedAt, groupType });
-        const storedMembers = groupRecord && Array.isArray(groupRecord.members) ? groupRecord.members : [];
-        const providedMembers = Array.isArray(groupMembers) ? groupMembers : [];
-        const recipientByKey = new Map();
-        [...storedMembers, ...providedMembers].forEach(member => {
-            const rawMember = String(member || '').trim();
-            const memberKey = normalizeUserKey(rawMember);
-            if (!memberKey || memberKey === normalizedReactor) return;
-            if (!recipientByKey.has(memberKey)) {
-                recipientByKey.set(memberKey, rawMember);
-            }
-        });
-        const membersToNotify = Array.from(recipientByKey.values());
-
-        if (!membersToNotify.length) {
-            return res.json({ status: 'success', details: { success: 0, failed: 0 } });
-        }
-
-        const reactionId = generateMessageId();
-        const resolvedGroupName = (groupRecord && groupRecord.name) || String(groupName || '').trim() || 'קבוצה';
-        const resolvedGroupMembers = groupRecord && Array.isArray(groupRecord.members)
-            ? groupRecord.members
-            : providedMembers;
-        const resolvedGroupCreatedBy = (groupRecord && groupRecord.createdBy) || groupCreatedBy || null;
-        const resolvedGroupUpdatedAt = (groupRecord && groupRecord.updatedAt) || groupUpdatedAt || Date.now();
-        const resolvedGroupType = groupRecord
-            ? groupRecord.type
-            : normalizeGroupType(groupType || 'group');
-        const resolvedReactorName = String(reactorName || reactor || 'משתמש').trim();
-        const reactionText = `${resolvedReactorName} הגיב ${normalizedEmoji}`;
-
-        const notificationData = {
-            messageId: reactionId,
-            title: resolvedGroupName || 'תגובה חדשה',
-            body: {
-                shortText: reactionText,
-                longText: reactionText
-            },
-            data: {
-                type: 'reaction',
-                targetMessageId: normalizedTargetMessageId,
-                emoji: normalizedEmoji,
-                reactor: normalizedReactor || reactor,
-                reactorName: resolvedReactorName,
-                groupId,
-                groupName: resolvedGroupName,
-                groupMembers: resolvedGroupMembers,
-                groupCreatedBy: resolvedGroupCreatedBy,
-                groupUpdatedAt: resolvedGroupUpdatedAt,
-                groupType: resolvedGroupType
-            }
-        };
-
-        const reactionRecord = {
-            messageId: reactionId,
-            sender: groupId,
-            type: 'reaction',
-            targetMessageId: normalizedTargetMessageId,
-            emoji: normalizedEmoji,
-            reactor: normalizedReactor || reactor,
-            reactorName: resolvedReactorName,
-            timestamp: Date.now(),
-            groupId,
-            groupName: resolvedGroupName,
-            groupMembers: resolvedGroupMembers,
-            groupCreatedBy: resolvedGroupCreatedBy,
-            groupUpdatedAt: resolvedGroupUpdatedAt,
-            groupType: resolvedGroupType
-        };
-        addToQueue(membersToNotify, reactionRecord);
-
-        const result = await sendPushNotificationToUser(membersToNotify, notificationData, groupId, {
-            messageId: reactionId,
-            skipBadge: true,
-            singlePerUser: true,
-            allowSecondAttempt: false
-        });
-        res.json({ status: 'success', details: result });
-    } catch (err) {
-        console.error('[REACTION ERROR]', err);
-        res.status(500).json({ error: err.message });
-    }
 });
+
+app.post(
+    ['/typing', '/notify/typing'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    (req, res) => {
+        try {
+            const result = emitTypingSignalToRecipients(req.body || {}, req.resolvedUser);
+            return res.json(result);
+        } catch (error) {
+            const statusCode = Number(error && error.status) || 500;
+            return res.status(statusCode).json({
+                error: error && error.message ? error.message : 'Typing signal failed'
+            });
+        }
+    }
+);
 
 app.post(
     ['/read', '/notify/read'],
@@ -5616,6 +5851,6 @@ startSubscriptionAuthRefreshScheduler();
 startShuttleReminderScheduler();
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+httpServer.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });

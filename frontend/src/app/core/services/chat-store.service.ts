@@ -18,12 +18,15 @@ import {
   OutboxGroupUpdateItem,
   OutboxItem,
   PersistedChatState,
-  ReplyPayload
+  ReactionPayload,
+  ReplyPayload,
+  TypingPayload
 } from '../models/chat.models';
 import {
   ChatApiService,
   HrActionOption,
   HrStepOption,
+  RealtimeSocket,
   ShuttleUserOrderPayload,
   UserPushSubscriptionPayload
 } from './chat-api.service';
@@ -33,6 +36,9 @@ const CONTACTS_ACCESS_SYNC_INTERVAL_MS = 60 * 1000;
 const GROUPS_TTL_MS = 2 * 60 * 1000;
 const POLL_INTERVAL_MS = 15000;
 const STREAM_RETRY_MS = 5000;
+const SOCKET_RETRY_MS = 3500;
+const SOCKET_FALLBACK_TO_SSE_DELAY_MS = 1800;
+const SOCKET_ACK_TIMEOUT_MS = 6000;
 const MAX_PERSISTED_MESSAGES = 2500;
 const PUSH_REGISTER_MIN_INTERVAL_MS = 30000;
 const PUSH_REGISTER_REFRESH_MS = 6 * 60 * 60 * 1000;
@@ -105,6 +111,9 @@ const SHUTTLE_SHIFT_OPTIONS = [
 const READ_RECEIPT_BATCH_SIZE = 80;
 const READ_RECEIPT_FLUSH_DEBOUNCE_MS = 900;
 const DELETED_MESSAGE_PLACEHOLDER = '🚫 הודעה זו נמחקה';
+const TYPING_IDLE_MS = 2200;
+const TYPING_HEARTBEAT_MS = 1200;
+const TYPING_STALE_MS = 6500;
 
 type HrAwaitingState = 'step' | 'action' | 'free-text';
 
@@ -265,13 +274,39 @@ export class ChatStoreService {
   readonly lastError = signal<string | null>(null);
   readonly incomingReactionNotice = signal<IncomingReactionNotice | null>(null);
   readonly shuttleAccessAllowed = signal(true);
+  readonly typingUsersByChat = signal<Record<string, string[]>>({});
+  readonly activeTypingLabel = computed<string | null>(() => {
+    const activeChatId = this.activeChatId();
+    if (!activeChatId) return null;
+    const typingUsers = this.typingUsersByChat()[activeChatId] ?? [];
+    const currentUser = this.normalizeUser(this.currentUser() ?? '');
+    const filteredUsers = typingUsers.filter((user) => user && user !== currentUser);
+    if (!filteredUsers.length) {
+      return null;
+    }
+    if (filteredUsers.length === 1) {
+      return `${this.getDisplayName(filteredUsers[0])} מקליד...`;
+    }
+    return `${filteredUsers.length} משתמשים מקלידים...`;
+  });
 
   private readonly messagesByChat = signal<Record<string, ChatMessage[]>>({});
+  private socket: RealtimeSocket | null = null;
+  private socketConnected = false;
+  private socketConnecting = false;
   private stream: EventSource | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private contactsAccessSyncTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private socketReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private socketSseFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  private shuttingDownRealtime = false;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  private typingStopTimer: ReturnType<typeof setTimeout> | null = null;
+  private typingStateChatId: string | null = null;
+  private typingStateActive = false;
+  private typingLastSentAt = 0;
+  private readonly typingCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private pullInFlight = false;
   private initializedUser: string | null = null;
   private lastContactsFetchAt = 0;
@@ -724,6 +759,10 @@ export class ChatStoreService {
   }
 
   setActiveChat(chatId: string | null): void {
+    const previousActiveChat = this.activeChatId();
+    if (previousActiveChat && previousActiveChat !== this.normalizeChatId(chatId ?? '')) {
+      this.cancelTypingForActiveChat();
+    }
     if (!chatId) {
       this.activeChatId.set(null);
       this.lastActivatedChatMeta.set(null);
@@ -773,6 +812,7 @@ export class ChatStoreService {
   }
 
   clearLastActiveChat(): void {
+    this.cancelTypingForActiveChat();
     const user = this.currentUser();
     this.activeChatId.set(null);
     if (!user) return;
@@ -1873,7 +1913,7 @@ export class ChatStoreService {
     const groupUpdatedAt = effectiveGroup?.updatedAt || Date.now();
     const groupType: GroupType = effectiveGroup?.type === 'group' ? 'group' : 'community';
 
-    await this.api.sendReaction({
+    const payload: ReactionPayload = {
       groupId,
       groupName,
       groupMembers,
@@ -1884,7 +1924,8 @@ export class ChatStoreService {
       emoji: normalizedEmoji,
       reactor: currentUser,
       reactorName: reaction.reactorName || currentUser
-    });
+    };
+    await this.sendReactionTransport(payload);
   }
 
   clearIncomingReactionNotice(): void {
@@ -1904,7 +1945,7 @@ export class ChatStoreService {
     for (const item of outbox) {
       try {
         if (item.kind === 'direct') {
-          await this.api.sendDirectMessage(item.payload);
+          await this.sendReplyTransport(item.payload);
           this.setMessageStatus(item.messageId, 'sent');
           continue;
         }
@@ -1917,7 +1958,7 @@ export class ChatStoreService {
             this.setMessageStatus(item.messageId, 'sent');
             continue;
           }
-          await this.api.sendDirectMessage({
+          await this.sendReplyTransport({
             ...item.payload,
             originalSender: recipients[0],
             membersToNotify: recipients
@@ -4046,6 +4087,7 @@ export class ChatStoreService {
   }
 
   private async sendMessageInternal(payload: SendMessagePayload): Promise<void> {
+    this.cancelTypingForActiveChat();
     const chatId = this.activeChatId();
     if (!chatId) {
       throw new Error('No active chat');
@@ -4170,7 +4212,7 @@ export class ChatStoreService {
     };
 
     try {
-      await this.api.sendDirectMessage(payload);
+      await this.sendReplyTransport(payload);
       this.setMessageStatus(messageId, 'sent');
     } catch {
       this.queueDirectMessage(originalSender, messageId, body, imageUrl, metadata);
@@ -4222,7 +4264,7 @@ export class ChatStoreService {
     }
 
     try {
-      await this.api.sendDirectMessage({
+      await this.sendReplyTransport({
         ...basePayload,
         // Backward-compatible fallback if backend ignores membersToNotify.
         originalSender: recipients[0] || group.id,
@@ -4235,6 +4277,164 @@ export class ChatStoreService {
     }
 
     this.setMessageStatus(messageId, 'sent');
+  }
+
+  private async emitSocketWithAck(
+    eventName: string,
+    payload: unknown,
+    timeoutMs = SOCKET_ACK_TIMEOUT_MS
+  ): Promise<Record<string, unknown> | null> {
+    if (!this.socket || !this.socketConnected) {
+      return null;
+    }
+
+    return new Promise<Record<string, unknown> | null>((resolve) => {
+      let settled = false;
+      const done = (value: Record<string, unknown> | null): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        resolve(value);
+      };
+      const timeoutId = setTimeout(() => done(null), timeoutMs);
+      try {
+        this.socket?.emit(eventName, payload, (ackPayload: unknown) => {
+          if (ackPayload && typeof ackPayload === 'object') {
+            done(ackPayload as Record<string, unknown>);
+            return;
+          }
+          done(null);
+        });
+      } catch {
+        done(null);
+      }
+    });
+  }
+
+  private async sendReplyTransport(payload: ReplyPayload): Promise<void> {
+    const ackPayload = await this.emitSocketWithAck('chat:reply', payload);
+    const ackStatus = String(ackPayload?.['status'] ?? '').trim().toLowerCase();
+    if (ackStatus === 'success') {
+      return;
+    }
+    await this.api.sendDirectMessage(payload);
+  }
+
+  private async sendReactionTransport(payload: ReactionPayload): Promise<void> {
+    const ackPayload = await this.emitSocketWithAck('chat:reaction', payload);
+    const ackStatus = String(ackPayload?.['status'] ?? '').trim().toLowerCase();
+    if (ackStatus === 'success') {
+      return;
+    }
+    await this.api.sendReaction(payload);
+  }
+
+  private async sendTypingTransport(payload: TypingPayload): Promise<void> {
+    const ackPayload = await this.emitSocketWithAck('chat:typing', payload, 2500);
+    const ackStatus = String(ackPayload?.['status'] ?? '').trim().toLowerCase();
+    if (ackStatus === 'success') {
+      return;
+    }
+    try {
+      await this.api.sendTypingState(payload);
+    } catch {
+      // Typing indicators are best-effort only.
+    }
+  }
+
+  private buildTypingPayload(chatId: string, isTyping: boolean): TypingPayload | null {
+    const user = this.normalizeUser(this.currentUser() ?? '');
+    const normalizedChatId = this.normalizeChatId(chatId);
+    if (!user || !normalizedChatId) {
+      return null;
+    }
+    const group = this.groups().find((item) => item.id === normalizedChatId) ?? null;
+    if (group) {
+      const groupMembers = Array.from(
+        new Set(group.members.map((member) => this.normalizeUser(member)).filter(Boolean))
+      ).filter((member) => member !== user);
+      if (!groupMembers.length) {
+        return null;
+      }
+      return {
+        user,
+        isTyping,
+        chatId: normalizedChatId,
+        groupId: group.id,
+        groupName: group.name,
+        groupMembers
+      };
+    }
+    if (this.isSystemChat(normalizedChatId)) {
+      return null;
+    }
+    return {
+      user,
+      isTyping,
+      chatId: normalizedChatId,
+      targetUser: normalizedChatId
+    };
+  }
+
+  reportTypingActivity(rawText: string): void {
+    const text = String(rawText ?? '');
+    const activeChatId = this.activeChatId();
+    if (!activeChatId || !this.canSendToActiveChat()) {
+      this.cancelTypingForActiveChat();
+      return;
+    }
+
+    if (!text.trim()) {
+      this.cancelTypingForActiveChat();
+      return;
+    }
+
+    if (!this.networkOnline()) {
+      return;
+    }
+
+    const now = Date.now();
+    const shouldSendTyping = (
+      !this.typingStateActive ||
+      this.typingStateChatId !== activeChatId ||
+      now - this.typingLastSentAt >= TYPING_HEARTBEAT_MS
+    );
+    if (shouldSendTyping) {
+      const payload = this.buildTypingPayload(activeChatId, true);
+      if (payload) {
+        this.typingStateActive = true;
+        this.typingStateChatId = activeChatId;
+        this.typingLastSentAt = now;
+        void this.sendTypingTransport(payload);
+      }
+    }
+
+    if (this.typingStopTimer) {
+      clearTimeout(this.typingStopTimer);
+    }
+    this.typingStopTimer = setTimeout(() => {
+      this.cancelTypingForActiveChat();
+    }, TYPING_IDLE_MS);
+  }
+
+  cancelTypingForActiveChat(): void {
+    if (this.typingStopTimer) {
+      clearTimeout(this.typingStopTimer);
+      this.typingStopTimer = null;
+    }
+    const activeTypingChat = this.typingStateChatId;
+    const wasTyping = this.typingStateActive;
+    this.typingStateActive = false;
+    this.typingStateChatId = null;
+    this.typingLastSentAt = 0;
+    if (!wasTyping || !activeTypingChat || !this.networkOnline()) {
+      return;
+    }
+    const payload = this.buildTypingPayload(activeTypingChat, false);
+    if (!payload) {
+      return;
+    }
+    void this.sendTypingTransport(payload);
   }
 
   private scheduleReadReceiptFlush(chatId: string): void {
@@ -4501,17 +4701,108 @@ export class ChatStoreService {
     if (!this.isNetworkReachable()) {
       return;
     }
+    void this.connectSocketPreferred(user);
+  }
 
+  private async connectSocketPreferred(user: string): Promise<void> {
+    this.shuttingDownRealtime = false;
+    if (!this.isNetworkReachable()) {
+      this.startSseFallback(user);
+      return;
+    }
+    if (this.socketConnecting) {
+      return;
+    }
+    this.socketConnecting = true;
+
+    if (this.socketSseFallbackTimer) {
+      clearTimeout(this.socketSseFallbackTimer);
+      this.socketSseFallbackTimer = null;
+    }
+
+    this.socketSseFallbackTimer = setTimeout(() => {
+      this.socketSseFallbackTimer = null;
+      if (!this.socketConnected && this.currentUser() === user) {
+        this.startSseFallback(user);
+      }
+    }, SOCKET_FALLBACK_TO_SSE_DELAY_MS);
+
+    try {
+      const socket = await this.api.createRealtimeSocket(user);
+      if (this.currentUser() !== user) {
+        socket.disconnect();
+        return;
+      }
+      this.shuttingDownRealtime = true;
+      this.stopSocketOnly();
+      this.shuttingDownRealtime = false;
+      this.socket = socket;
+
+      socket.on('connect', () => {
+        if (this.currentUser() !== user) return;
+        this.socketConnected = true;
+        this.socketConnecting = false;
+        if (this.socketSseFallbackTimer) {
+          clearTimeout(this.socketSseFallbackTimer);
+          this.socketSseFallbackTimer = null;
+        }
+        this.stopStreamOnly();
+        this.clearTypingIndicators();
+        void this.pullMessages(user);
+      });
+
+      socket.on('chat:message', (incoming: unknown) => {
+        if (!incoming || typeof incoming !== 'object') return;
+        this.handleIncomingPayload(incoming as IncomingServerMessage);
+      });
+
+      socket.on('chat:connected', () => {
+        if (this.currentUser() !== user) return;
+        this.socketConnected = true;
+        this.stopStreamOnly();
+        void this.pullMessages(user);
+      });
+
+      socket.on('disconnect', () => {
+        if (this.shuttingDownRealtime || this.currentUser() !== user) return;
+        this.socketConnected = false;
+        this.socketConnecting = false;
+        this.startSseFallback(user);
+        this.scheduleSocketReconnect(user);
+      });
+
+      socket.on('connect_error', () => {
+        if (this.shuttingDownRealtime || this.currentUser() !== user) return;
+        this.socketConnected = false;
+        this.socketConnecting = false;
+        this.startSseFallback(user);
+        this.scheduleSocketReconnect(user);
+      });
+
+      socket.connect();
+    } catch {
+      this.socketConnecting = false;
+      this.socketConnected = false;
+      this.startSseFallback(user);
+      this.scheduleSocketReconnect(user);
+    }
+  }
+
+  private startSseFallback(user: string): void {
+    if (this.socketConnected || !this.isNetworkReachable()) {
+      return;
+    }
+    if (this.stream) {
+      return;
+    }
     try {
       this.stream = this.api.createMessageStream(user);
       this.stream.addEventListener('message', (event: MessageEvent<string>) => {
         this.handleIncomingPayload(event.data);
       });
       this.stream.addEventListener('connected', () => {
-        // Immediately pull queued messages after stream handshake.
         void this.pullMessages(user);
       });
-
       this.stream.onerror = () => {
         this.stopStreamOnly();
         this.scheduleStreamReconnect(user);
@@ -4533,6 +4824,15 @@ export class ChatStoreService {
     void this.pullMessages(user);
   }
 
+  private stopSocketOnly(): void {
+    this.socketConnected = false;
+    this.socketConnecting = false;
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket = null;
+    }
+  }
+
   private stopStreamOnly(): void {
     if (this.stream) {
       this.stream.close();
@@ -4541,6 +4841,10 @@ export class ChatStoreService {
   }
 
   private stopRealtime(): void {
+    this.shuttingDownRealtime = true;
+    this.cancelTypingForActiveChat();
+    this.clearTypingIndicators();
+    this.stopSocketOnly();
     this.stopStreamOnly();
 
     if (this.pollTimer) {
@@ -4551,6 +4855,19 @@ export class ChatStoreService {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    if (this.socketReconnectTimer) {
+      clearTimeout(this.socketReconnectTimer);
+      this.socketReconnectTimer = null;
+    }
+    if (this.socketSseFallbackTimer) {
+      clearTimeout(this.socketSseFallbackTimer);
+      this.socketSseFallbackTimer = null;
+    }
+    if (this.typingStopTimer) {
+      clearTimeout(this.typingStopTimer);
+      this.typingStopTimer = null;
+    }
+    this.shuttingDownRealtime = false;
   }
 
   private startBackgroundContactsAccessSync(user: string): void {
@@ -4715,12 +5032,21 @@ export class ChatStoreService {
   }
 
   private scheduleStreamReconnect(user: string): void {
-    if (this.reconnectTimer) return;
+    if (this.socketConnected || this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (this.currentUser() !== user) return;
-      this.connectRealtime(user);
+      this.startSseFallback(user);
     }, STREAM_RETRY_MS);
+  }
+
+  private scheduleSocketReconnect(user: string): void {
+    if (this.socketReconnectTimer) return;
+    this.socketReconnectTimer = setTimeout(() => {
+      this.socketReconnectTimer = null;
+      if (this.currentUser() !== user || !this.isNetworkReachable()) return;
+      void this.connectSocketPreferred(user);
+    }, SOCKET_RETRY_MS);
   }
 
   private async pullMessages(user: string): Promise<void> {
@@ -4944,10 +5270,12 @@ export class ChatStoreService {
     return appliedCount;
   }
 
-  private handleIncomingPayload(rawData: string): void {
+  private handleIncomingPayload(rawData: string | IncomingServerMessage): void {
     try {
       this.incrementDeliveryTelemetry('ssePayloadReceived');
-      const message = JSON.parse(rawData) as IncomingServerMessage;
+      const message = typeof rawData === 'string'
+        ? (JSON.parse(rawData) as IncomingServerMessage)
+        : rawData;
       if (this.applyIncomingMessage(message)) {
         this.incrementDeliveryTelemetry('sseMessageApplied');
       } else {
@@ -4958,8 +5286,88 @@ export class ChatStoreService {
     }
   }
 
+  private typingTimerKey(chatId: string, user: string): string {
+    return `${chatId}::${user}`;
+  }
+
+  private clearTypingIndicators(): void {
+    this.typingUsersByChat.set({});
+    this.typingCleanupTimers.forEach((timer) => clearTimeout(timer));
+    this.typingCleanupTimers.clear();
+  }
+
+  private clearTypingIndicatorForUser(chatId: string, user: string): void {
+    const normalizedChatId = this.normalizeChatId(chatId);
+    const normalizedUser = this.normalizeUser(user);
+    if (!normalizedChatId || !normalizedUser) {
+      return;
+    }
+
+    const timerKey = this.typingTimerKey(normalizedChatId, normalizedUser);
+    const cleanupTimer = this.typingCleanupTimers.get(timerKey);
+    if (cleanupTimer) {
+      clearTimeout(cleanupTimer);
+      this.typingCleanupTimers.delete(timerKey);
+    }
+
+    const current = this.typingUsersByChat();
+    const users = current[normalizedChatId] ?? [];
+    if (!users.includes(normalizedUser)) {
+      return;
+    }
+    const nextUsers = users.filter((entry) => entry !== normalizedUser);
+    const nextState: Record<string, string[]> = { ...current };
+    if (nextUsers.length) {
+      nextState[normalizedChatId] = nextUsers;
+    } else {
+      delete nextState[normalizedChatId];
+    }
+    this.typingUsersByChat.set(nextState);
+  }
+
+  private applyIncomingTypingSignal(incoming: IncomingServerMessage): boolean {
+    const sender = this.normalizeUser(incoming.sender ?? '');
+    if (!sender || sender === this.normalizeUser(this.currentUser() ?? '')) {
+      return false;
+    }
+    const groupChatId = this.normalizeChatId(incoming.groupId ?? incoming.chatId ?? '');
+    const chatId = groupChatId || this.normalizeChatId(sender);
+    if (!chatId) {
+      return false;
+    }
+
+    const shouldMarkTyping = incoming.isTyping !== false;
+    if (!shouldMarkTyping) {
+      this.clearTypingIndicatorForUser(chatId, sender);
+      return true;
+    }
+
+    const current = this.typingUsersByChat();
+    const users = current[chatId] ?? [];
+    if (!users.includes(sender)) {
+      this.typingUsersByChat.set({
+        ...current,
+        [chatId]: [...users, sender]
+      });
+    }
+
+    const timerKey = this.typingTimerKey(chatId, sender);
+    const existingTimer = this.typingCleanupTimers.get(timerKey);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+    const cleanupTimer = setTimeout(() => {
+      this.clearTypingIndicatorForUser(chatId, sender);
+    }, TYPING_STALE_MS);
+    this.typingCleanupTimers.set(timerKey, cleanupTimer);
+    return true;
+  }
+
   private applyIncomingMessage(incoming: IncomingServerMessage): boolean {
     const incomingType = String(incoming.type ?? '').trim().toLowerCase();
+    if (incomingType === 'typing') {
+      return this.applyIncomingTypingSignal(incoming);
+    }
     if (incomingType === 'delete-action') {
       return this.applyIncomingDeleteAction(incoming);
     }
@@ -4974,6 +5382,9 @@ export class ChatStoreService {
     }
     if (incomingType === 'read-receipt') {
       return this.applyIncomingReadReceipt(incoming);
+    }
+    if (incomingType === 'typing') {
+      return this.applyIncomingTypingSignal(incoming);
     }
 
     const sender = this.normalizeUser(incoming.sender ?? '');
@@ -4993,6 +5404,8 @@ export class ChatStoreService {
     const incomingBody = this.resolveIncomingMessageBody(incoming);
     const incomingImageUrl = this.resolveIncomingImageUrl(incoming);
 
+    this.clearTypingIndicatorForUser(chatId, sender);
+
     const alreadyExists = (this.messagesByChat()[chatId] ?? []).some(
       (message) => message.messageId === messageId
     );
@@ -5006,6 +5419,7 @@ export class ChatStoreService {
     if (isGroup && incoming.groupId && incoming.groupName) {
       this.ensureGroupFromIncoming(incoming);
     }
+    this.clearTypingIndicatorForUser(chatId, sender);
     const incomingGroup = isGroup
       ? this.groups().find((item) => item.id === chatId) ?? null
       : null;

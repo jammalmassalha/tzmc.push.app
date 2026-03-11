@@ -75,6 +75,8 @@ export interface IncomingServerMessage {
   messageId?: string;
   sender?: string;
   type?: string;
+  chatId?: string;
+  isTyping?: boolean;
   editedAt?: number;
   deletedAt?: number;
   messageIds?: string[];
@@ -149,6 +151,16 @@ export interface ReactionPayload {
   emoji: string;
   reactor: string;
   reactorName: string;
+}
+
+export interface TypingPayload {
+  user: string;
+  isTyping: boolean;
+  targetUser?: string;
+  chatId?: string;
+  groupId?: string;
+  groupName?: string;
+  groupMembers?: string[];
 }
 
 export interface ReadReceiptPayload {

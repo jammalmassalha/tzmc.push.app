@@ -9,7 +9,8 @@ import {
   IncomingServerMessage,
   ReadReceiptPayload,
   ReactionPayload,
-  ReplyPayload
+  ReplyPayload,
+  TypingPayload
 } from '../models/chat.models';
 
 interface FetchRetryOptions {
@@ -106,6 +107,15 @@ interface ClientLogPayload {
   payload?: Record<string, unknown>;
   user?: string;
   timestamp?: number;
+}
+
+export interface RealtimeSocket {
+  connected: boolean;
+  auth: Record<string, unknown>;
+  on(event: string, listener: (...args: unknown[]) => void): this;
+  connect(): this;
+  disconnect(): this;
+  emit(event: string, ...args: unknown[]): this;
 }
 
 export interface HrStepOption {
@@ -614,6 +624,28 @@ export class ChatApiService {
     return new EventSource(url);
   }
 
+  async createRealtimeSocket(user?: string): Promise<RealtimeSocket> {
+    const normalizedUser = String(user || '').trim().toLowerCase();
+    let socketServerBase = this.notifyBaseUrl;
+    try {
+      const urlBase = typeof window !== 'undefined' ? window.location.origin : 'http://localhost';
+      const parsed = new URL(this.notifyBaseUrl, urlBase);
+      socketServerBase = parsed.origin;
+    } catch {
+      socketServerBase = this.notifyBaseUrl;
+    }
+    const { io } = await import('socket.io-client');
+    const socket = io(socketServerBase, {
+      path: '/notify/socket.io',
+      transports: ['websocket', 'polling'],
+      withCredentials: true,
+      autoConnect: false,
+      auth: normalizedUser ? { user: normalizedUser } : {},
+      query: normalizedUser ? { user: normalizedUser } : {}
+    });
+    return socket as unknown as RealtimeSocket;
+  }
+
   async sendDirectMessage(payload: ReplyPayload): Promise<void> {
     const response = await this.fetchWithRetry(
       this.config.notifyReplyUrl,
@@ -659,6 +691,22 @@ export class ChatApiService {
 
     if (!response.ok) {
       throw new Error(`Reaction update failed with ${response.status}`);
+    }
+  }
+
+  async sendTypingState(payload: TypingPayload): Promise<void> {
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/typing`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      },
+      { retries: 1, timeoutMs: 4000, backoffMs: 300 }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Typing update failed with ${response.status}`);
     }
   }
 
