@@ -2729,6 +2729,38 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     }
   }
 
+  formatMessageTextPart(text: string): string {
+    const escaped = this.escapeHtml(String(text || ''));
+    return this.applyWhatsAppStyleBoldFormatting(escaped);
+  }
+
+  private applyWhatsAppStyleBoldFormatting(value: string): string {
+    const source = String(value || '');
+    if (!source || source.indexOf('*') === -1) {
+      return source;
+    }
+
+    return source.replace(
+      /\*([^*\n]+?)\*/g,
+      (full, content: string) => {
+        const normalizedContent = String(content || '').trim();
+        if (!normalizedContent) {
+          return full;
+        }
+        return `<strong class="message-inline-bold">${normalizedContent}</strong>`;
+      }
+    );
+  }
+
+  private escapeHtml(value: string): string {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   private stripTrailingPhonePunctuation(phone: string): { cleanPhone: string; trailingText: string } {
     let cleanPhone = String(phone || '');
     let trailingText = '';

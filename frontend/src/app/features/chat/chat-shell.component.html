@@ -502,7 +502,7 @@
                   <div class="message-content">
                     @for (part of getMessageRenderParts(message.messageId, message.body); track $index) {
                       @if (part.kind === 'text') {
-                        <span class="message-text">{{ part.text }}</span>
+                        <span class="message-text" [innerHTML]="formatMessageTextPart(part.text)"></span>
                       } @else if (part.kind === 'phone') {
                         <button
                           type="button"
