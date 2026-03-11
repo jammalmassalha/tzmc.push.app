@@ -1007,8 +1007,12 @@ export class ChatApiService {
   ): Promise<ShuttleUserOrderPayload[]> {
     const fromDate = String(fromDateIso || this.resolveTodayIsoDate()).trim();
     const force = options.force === true ? '1' : '0';
-    const url = `${this.notifyBaseUrl}/shuttle/orders/operations?fromDate=${encodeURIComponent(fromDate)}&force=${force}&_ts=${Date.now()}`;
-    const response = await this.fetchWithRetry(url, { cache: 'no-store' }, { retries: 1, timeoutMs: 65000 });
+    const url = `${this.notifyBaseUrl}/shuttle/orders/operations?fromDate=${encodeURIComponent(fromDate)}&force=${force}&_ts=${Date.now()}&ngsw-bypass=1`;
+    const response = await this.fetchWithRetry(
+      url,
+      { cache: 'no-store', headers: { 'ngsw-bypass': 'true' } },
+      { retries: 1, timeoutMs: 65000 }
+    );
     const body = String(await response.text() || '');
     if (!response.ok) {
       let parsedError: { message?: string; error?: string } | null = null;
