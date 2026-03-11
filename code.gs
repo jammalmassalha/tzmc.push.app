@@ -212,6 +212,22 @@ function ensureLogsSheetHasAuthJsonColumn(logsSheet) {
   }
 }
 
+function ensureToSendQueueSheet(spreadsheet) {
+  var queueSheet = spreadsheet.getSheetByName('ToSend');
+  if (!queueSheet) {
+    queueSheet = spreadsheet.insertSheet('ToSend');
+    queueSheet.appendRow(['Recipient', 'Sender', 'Message_Content']);
+    return queueSheet;
+  }
+
+  var headerValues = queueSheet.getRange(1, 1, 1, 3).getValues()[0];
+  var hasHeaders = String(headerValues[0] || '').trim() && String(headerValues[1] || '').trim() && String(headerValues[2] || '').trim();
+  if (!hasHeaders) {
+    queueSheet.getRange(1, 1, 1, 3).setValues([['Recipient', 'Sender', 'Message_Content']]);
+  }
+  return queueSheet;
+}
+
 function doGet(e) {
   try {
     var spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
@@ -875,6 +891,47 @@ function doPost(e) {
         data.phone
       ]);
       return createJSON({ result: 'success' });
+    }
+
+    // ======================================================
+    // 3. ENQUEUE MESSAGE TO TOSEND QUEUE
+    // ======================================================
+    if (data.action === 'enqueue_to_send') {
+      if (configuredServerToken && providedServerToken !== configuredServerToken) {
+        return createJSON({ result: 'error', message: 'Unauthorized enqueue_to_send request' });
+      }
+
+      var queueRecipients = parseRecipientUsernames(
+        data.recipients || data.usernames || data.users || data.recipient
+      );
+      var queueSender = String(data.sender || 'System').trim() || 'System';
+      var queueMessageContent = '';
+      if (typeof data.messageContent === 'string') {
+        queueMessageContent = data.messageContent.trim();
+      } else if (typeof data.message === 'string') {
+        queueMessageContent = data.message.trim();
+      } else if (data.payload && typeof data.payload === 'object') {
+        queueMessageContent = JSON.stringify(data.payload);
+      }
+
+      if (!queueRecipients.length || !queueMessageContent) {
+        return createJSON({ result: 'error', message: 'Missing recipients or messageContent' });
+      }
+
+      var queueSheet = ensureToSendQueueSheet(spreadsheet);
+      var queueRows = queueRecipients.map(function (recipient) {
+        return [
+          "'" + recipient,
+          queueSender,
+          queueMessageContent
+        ];
+      });
+      var queueStartRow = Math.max(2, queueSheet.getLastRow() + 1);
+      queueSheet.getRange(queueStartRow, 1, queueRows.length, 3).setValues(queueRows);
+      return createJSON({
+        result: 'success',
+        queuedRecipients: queueRecipients.length
+      });
     }
 
     // ======================================================
