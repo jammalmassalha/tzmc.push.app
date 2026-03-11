@@ -1336,8 +1336,16 @@ export class ChatStoreService {
         const sender = this.normalizeUser(String(message.sender ?? '').trim());
         return Boolean(sender && sender !== 'system');
       });
-      this.applyIncomingMessagesBatch(nonSystemLogs);
+      const normalizedLogs = this.normalizeLogsMessagesForImport(nonSystemLogs);
+      this.applyIncomingMessagesBatch(normalizedLogs, {
+        incrementUnread: false,
+        trackReadReceipts: false,
+        applyActions: false,
+        updateGroupMetadata: false
+      });
     }
+    this.unreadByChat.set({});
+    this.resetReadReceiptTrackingState();
 
     await this.refreshShuttleAccessForCurrentUser(user, { force: true });
     if (this.shuttleAccessAllowed()) {
@@ -1347,6 +1355,41 @@ export class ChatStoreService {
 
     this.applyInitialChatSelection(user);
     this.schedulePersist();
+  }
+
+  private normalizeLogsMessagesForImport(messages: IncomingServerMessage[]): IncomingServerMessage[] {
+    if (!Array.isArray(messages) || !messages.length) {
+      return [];
+    }
+    const groupsById = new Map(this.groups().map((group) => [group.id, group]));
+    return messages.map((message) => {
+      const incoming = { ...message };
+      const normalizedSender = this.normalizeUser(String(incoming.sender ?? '').trim());
+      const normalizedGroupId = this.normalizeChatId(String(incoming.groupId ?? '').trim());
+      const normalizedGroupName = String(incoming.groupName ?? '').trim();
+
+      let resolvedGroupId = normalizedGroupId;
+      if (!resolvedGroupId && normalizedSender && groupsById.has(this.normalizeChatId(normalizedSender))) {
+        resolvedGroupId = this.normalizeChatId(normalizedSender);
+      }
+      if (!resolvedGroupId) {
+        return incoming;
+      }
+
+      const existingGroup = groupsById.get(resolvedGroupId) ?? null;
+      const shouldUseExistingName = (
+        !normalizedGroupName ||
+        this.normalizeChatId(normalizedGroupName) === resolvedGroupId
+      );
+      return {
+        ...incoming,
+        groupId: resolvedGroupId,
+        groupName: shouldUseExistingName
+          ? (existingGroup?.name || normalizedGroupName || resolvedGroupId)
+          : normalizedGroupName,
+        groupType: incoming.groupType ?? existingGroup?.type
+      };
+    });
   }
 
   getShuttleFlowBreadcrumbs(): ShuttleBreadcrumbStep[] | null {
@@ -4601,7 +4644,15 @@ export class ChatStoreService {
     }
   }
 
-  private applyIncomingMessagesBatch(messages: IncomingServerMessage[]): number {
+  private applyIncomingMessagesBatch(
+    messages: IncomingServerMessage[],
+    options: {
+      incrementUnread?: boolean;
+      trackReadReceipts?: boolean;
+      applyActions?: boolean;
+      updateGroupMetadata?: boolean;
+    } = {}
+  ): number {
     if (!Array.isArray(messages) || messages.length === 0) {
       return 0;
     }
@@ -4611,13 +4662,16 @@ export class ChatStoreService {
       const bufferedRegularMessages: IncomingServerMessage[] = [];
       const flushBufferedRegularMessages = (): void => {
         if (!bufferedRegularMessages.length) return;
-        appliedCount += this.applyRegularIncomingMessagesBulk(bufferedRegularMessages);
+        appliedCount += this.applyRegularIncomingMessagesBulk(bufferedRegularMessages, options);
         bufferedRegularMessages.length = 0;
       };
 
       for (const message of messages) {
         const incomingType = String(message.type ?? '').trim().toLowerCase();
         if (this.isIncomingActionType(incomingType)) {
+          if (options.applyActions === false) {
+            continue;
+          }
           flushBufferedRegularMessages();
           if (this.applyIncomingMessage(message)) {
             appliedCount += 1;
@@ -4644,7 +4698,14 @@ export class ChatStoreService {
     );
   }
 
-  private applyRegularIncomingMessagesBulk(messages: IncomingServerMessage[]): number {
+  private applyRegularIncomingMessagesBulk(
+    messages: IncomingServerMessage[],
+    options: {
+      incrementUnread?: boolean;
+      trackReadReceipts?: boolean;
+      updateGroupMetadata?: boolean;
+    } = {}
+  ): number {
     if (!messages.length) return 0;
 
     const currentMessageMap = this.messagesByChat();
@@ -4709,7 +4770,7 @@ export class ChatStoreService {
         continue;
       }
 
-      if (isGroup && incoming.groupId && incoming.groupName) {
+      if (options.updateGroupMetadata !== false && isGroup && incoming.groupId && incoming.groupName) {
         this.ensureGroupFromIncoming(incoming);
         groupsSnapshot = this.groups();
       }
@@ -4764,12 +4825,14 @@ export class ChatStoreService {
       messagesChanged = true;
       appliedCount += 1;
 
-      if (!isGroup && !this.isSystemChat(chatId)) {
+      if (options.trackReadReceipts !== false && !isGroup && !this.isSystemChat(chatId)) {
         this.trackIncomingMessageForReadReceipt(chatId, messageId);
       }
 
-      nextUnreadMap[chatId] = (nextUnreadMap[chatId] ?? 0) + 1;
-      unreadChanged = true;
+      if (options.incrementUnread !== false) {
+        nextUnreadMap[chatId] = (nextUnreadMap[chatId] ?? 0) + 1;
+        unreadChanged = true;
+      }
     }
 
     if (messagesChanged) {
