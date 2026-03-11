@@ -67,7 +67,7 @@ export function createSheetIntegrationServiceFromEnv(env: NodeJS.ProcessEnv = pr
   const googleSheetUrl = toTrimmedString(env.GOOGLE_SHEET_URL)
     || 'https://script.google.com/macros/s/AKfycbylA-hf-zUbRVieJuGeY-FLlmYHnKgkkebWgEXfOZnamtB7zf_CpWqJOt99RRmmPcpP/exec';
   const shuttleUserOrdersUrl = toTrimmedString(env.SHUTTLE_USER_ORDERS_URL)
-    || 'https://script.google.com/macros/s/AKfycbxXXz7QG-l_wwWW44aiVtp_ZWzinllmMzYhaRAh0mSzTOGmTbIlgmZZ4EdqvfowmMik/exec';
+    || 'https://script.google.com/macros/s/AKfycbyjdv27AlU_SeRFf8L_DzuKIE7XhNeC5Ri0e-qKy4sa2l4rYnDUFh7YhTmJOzfvPiQE/exec';
   const defaultToken = toTrimmedString(
     env.APP_SERVER_TOKEN ||
     env.GOOGLE_SHEET_APP_SERVER_TOKEN ||
