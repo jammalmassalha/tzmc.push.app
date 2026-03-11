@@ -1126,12 +1126,26 @@ const authCodeRequestRateLimitByUser = new Map();
 const authCodeVerifyRateLimitByIp = new Map();
 const authCodeVerifyRateLimitByUser = new Map();
 const deliveryTelemetryByDevice = new Map();
+const RECENT_REPLY_MESSAGE_TTL_MS = Math.max(
+    60 * 1000,
+    Number(process.env.RECENT_REPLY_MESSAGE_TTL_MS || 10 * 60 * 1000) || 10 * 60 * 1000
+);
+const recentProcessedReplyMessages = new Map();
 let mobileReregisterCampaignState = {
     running: false,
     lastRunAt: 0,
     lastResult: null,
     sentTargetsByCampaign: new Map()
 };
+
+function pruneRecentProcessedReplyMessages(nowTs = Date.now()) {
+    for (const [messageId, processedAt] of recentProcessedReplyMessages.entries()) {
+        if (!messageId) continue;
+        if (!Number.isFinite(Number(processedAt)) || nowTs - Number(processedAt) > RECENT_REPLY_MESSAGE_TTL_MS) {
+            recentProcessedReplyMessages.delete(messageId);
+        }
+    }
+}
 
 function buildSubscriptionCacheKey(usernames) {
     const values = Array.isArray(usernames) ? usernames : [usernames];
@@ -1398,7 +1412,13 @@ function resolveShuttleReminderTripTimestamp(dateIso, shiftLabel) {
 function isShuttleReminderCancelledStatus(value) {
     const normalized = normalizeShuttleReminderText(value);
     if (!normalized) return false;
-    return normalized.includes('ביטול') || normalized.includes('отмена');
+    return (
+        normalized.includes('ביטול') ||
+        normalized.includes('בוטל') ||
+        normalized.includes('отмена') ||
+        normalized.includes('отмен') ||
+        normalized.includes('cancel')
+    );
 }
 
 function buildShuttleReminderOrderKey(order) {
@@ -1502,7 +1522,7 @@ function parseShuttleReminderOrdersPayload(payloadText) {
     return rows;
 }
 
-function mapShuttleReminderOrder(rawOrder, user) {
+function mapShuttleReminderOrder(rawOrder, user, sourceIndex = 0) {
     const dateIso = normalizeShuttleReminderDateIso(rawOrder && (rawOrder.dateIso || rawOrder.date));
     const shiftLabel = normalizeShuttleReminderShiftLabel(
         rawOrder && (rawOrder.shift || rawOrder.shiftLabel || rawOrder.shiftValue)
@@ -1531,8 +1551,10 @@ function mapShuttleReminderOrder(rawOrder, user) {
         shiftLabel,
         station,
         statusValue,
+        isCancelled,
         orderKey,
-        tripAt
+        tripAt,
+        sourceIndex: Number.isFinite(Number(sourceIndex)) ? Number(sourceIndex) : 0
     };
 }
 
@@ -2351,6 +2373,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
     if (!user) {
         throw createHttpError(400, 'Missing user');
     }
+    const messageId = String(clientMessageId || generateMessageId()).trim() || generateMessageId();
     console.log(`[REPLY] From: ${user} | To: ${originalSender}`);
 
     let groupRecord = null;
@@ -2401,103 +2424,121 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         return { status: 'success', details: { success: 0, failed: 0 } };
     }
 
-    let messageContent = reply;
-    if (!messageContent && imageUrl) {
-        messageContent = `[Image Sent]: ${imageUrl}`;
+    pruneRecentProcessedReplyMessages();
+    if (recentProcessedReplyMessages.has(messageId)) {
+        return {
+            status: 'success',
+            details: {
+                success: 0,
+                failed: 0,
+                deduped: true
+            }
+        };
     }
-    const normalizedReplyToMessageId = String(replyToMessageId || '').trim();
-    const normalizedReplyToSender = normalizeUserKey(replyToSender || '');
-    const normalizedReplyToSenderName = String(replyToSenderName || '').trim();
-    const normalizedReplyToBody = typeof replyToBody === 'string' ? replyToBody : '';
-    const normalizedReplyToImageUrl = String(replyToImageUrl || '').trim();
-    const hasReplyContext = Boolean(
-        normalizedReplyToMessageId &&
-        normalizedReplyToSender &&
-        (normalizedReplyToBody.trim() || normalizedReplyToImageUrl)
-    );
-    const normalizedForwarded = parseBooleanInput(forwarded, false);
-    const normalizedForwardedFrom = normalizeUserKey(forwardedFrom || '');
-    const normalizedForwardedFromName = String(forwardedFromName || '').trim();
-    const messageMetadata = {};
-    if (hasReplyContext) {
-        messageMetadata.replyToMessageId = normalizedReplyToMessageId;
-        messageMetadata.replyToSender = normalizedReplyToSender;
-        messageMetadata.replyToBody = normalizedReplyToBody;
-        messageMetadata.replyToImageUrl = normalizedReplyToImageUrl || null;
-        if (normalizedReplyToSenderName) {
-            messageMetadata.replyToSenderName = normalizedReplyToSenderName;
-        }
-    }
-    if (normalizedForwarded) {
-        messageMetadata.forwarded = true;
-        if (normalizedForwardedFrom) {
-            messageMetadata.forwardedFrom = normalizedForwardedFrom;
-        }
-        if (normalizedForwardedFromName) {
-            messageMetadata.forwardedFromName = normalizedForwardedFromName;
-        }
-    }
+    recentProcessedReplyMessages.set(messageId, Date.now());
 
-    fetchWithRetry(GOOGLE_SHEET_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            action: 'save_reply',
-            fromUser: user,
-            toUser: groupId ? groupId : (originalSender || 'System'),
-            message: messageContent
-        })
-    }, { timeoutMs: 10000, retries: 2 }).catch(err => console.error('[SHEET ERROR] Failed to save reply:', err.message));
+    try {
+        let messageContent = reply;
+        if (!messageContent && imageUrl) {
+            messageContent = `[Image Sent]: ${imageUrl}`;
+        }
+        const normalizedReplyToMessageId = String(replyToMessageId || '').trim();
+        const normalizedReplyToSender = normalizeUserKey(replyToSender || '');
+        const normalizedReplyToSenderName = String(replyToSenderName || '').trim();
+        const normalizedReplyToBody = typeof replyToBody === 'string' ? replyToBody : '';
+        const normalizedReplyToImageUrl = String(replyToImageUrl || '').trim();
+        const hasReplyContext = Boolean(
+            normalizedReplyToMessageId &&
+            normalizedReplyToSender &&
+            (normalizedReplyToBody.trim() || normalizedReplyToImageUrl)
+        );
+        const normalizedForwarded = parseBooleanInput(forwarded, false);
+        const normalizedForwardedFrom = normalizeUserKey(forwardedFrom || '');
+        const normalizedForwardedFromName = String(forwardedFromName || '').trim();
+        const messageMetadata = {};
+        if (hasReplyContext) {
+            messageMetadata.replyToMessageId = normalizedReplyToMessageId;
+            messageMetadata.replyToSender = normalizedReplyToSender;
+            messageMetadata.replyToBody = normalizedReplyToBody;
+            messageMetadata.replyToImageUrl = normalizedReplyToImageUrl || null;
+            if (normalizedReplyToSenderName) {
+                messageMetadata.replyToSenderName = normalizedReplyToSenderName;
+            }
+        }
+        if (normalizedForwarded) {
+            messageMetadata.forwarded = true;
+            if (normalizedForwardedFrom) {
+                messageMetadata.forwardedFrom = normalizedForwardedFrom;
+            }
+            if (normalizedForwardedFromName) {
+                messageMetadata.forwardedFromName = normalizedForwardedFromName;
+            }
+        }
 
-    const messageId = clientMessageId || generateMessageId();
-    const isGroup = Boolean(groupId);
-    const senderLabel = groupSenderName || senderName || user;
-    const normalizedGroupName = (typeof groupName === 'string') ? groupName.trim() : groupName;
-    const shortText = reply || (imageUrl ? 'Sent an image' : 'New Message');
-    const normalizedGroupType = groupRecord ? groupRecord.type : normalizeGroupType(groupType || 'group');
-    const notificationTitle = isGroup ? (normalizedGroupName || 'Group message') : `New message from ${senderLabel}`;
-    const notificationExtraData = {
-        ...(isGroup ? {
-            groupId,
-            groupName: normalizedGroupName,
+        fetchWithRetry(GOOGLE_SHEET_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: 'save_reply',
+                fromUser: user,
+                toUser: groupId ? groupId : (originalSender || 'System'),
+                message: messageContent
+            })
+        }, { timeoutMs: 10000, retries: 2 }).catch(err => console.error('[SHEET ERROR] Failed to save reply:', err.message));
+
+        const isGroup = Boolean(groupId);
+        const senderLabel = groupSenderName || senderName || user;
+        const normalizedGroupName = (typeof groupName === 'string') ? groupName.trim() : groupName;
+        const shortText = reply || (imageUrl ? 'Sent an image' : 'New Message');
+        const normalizedGroupType = groupRecord ? groupRecord.type : normalizeGroupType(groupType || 'group');
+        const notificationTitle = isGroup ? (normalizedGroupName || 'Group message') : `New message from ${senderLabel}`;
+        const notificationExtraData = {
+            ...(isGroup ? {
+                groupId,
+                groupName: normalizedGroupName,
+                groupType: normalizedGroupType,
+                groupMessageText: shortText,
+                groupSenderName: senderLabel
+            } : {}),
+            ...messageMetadata
+        };
+        const notificationData = {
+            messageId,
+            title: notificationTitle,
+            body: {
+                shortText: isGroup ? `${senderLabel}: ${shortText}` : shortText,
+                longText: reply
+            },
+            image: imageUrl,
+            data: Object.keys(notificationExtraData).length ? notificationExtraData : undefined
+        };
+
+        const pollingMessage = {
+            messageId,
+            sender: isGroup ? groupId : user,
+            body: reply,
+            timestamp: Date.now(),
+            imageUrl: imageUrl || null,
+            groupId: groupId || null,
+            groupName: groupName || null,
+            groupMembers: groupMembers || null,
+            groupCreatedBy: groupCreatedBy || null,
+            groupAdmins: groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : undefined,
+            groupUpdatedAt: groupUpdatedAt || null,
             groupType: normalizedGroupType,
-            groupMessageText: shortText,
-            groupSenderName: senderLabel
-        } : {}),
-        ...messageMetadata
-    };
-    const notificationData = {
-        messageId,
-        title: notificationTitle,
-        body: {
-            shortText: isGroup ? `${senderLabel}: ${shortText}` : shortText,
-            longText: reply
-        },
-        image: imageUrl,
-        data: Object.keys(notificationExtraData).length ? notificationExtraData : undefined
-    };
+            groupSenderName: senderLabel,
+            ...messageMetadata
+        };
+        addToQueue(targetToNotify, pollingMessage);
 
-    const pollingMessage = {
-        messageId,
-        sender: isGroup ? groupId : user,
-        body: reply,
-        timestamp: Date.now(),
-        imageUrl: imageUrl || null,
-        groupId: groupId || null,
-        groupName: groupName || null,
-        groupMembers: groupMembers || null,
-        groupCreatedBy: groupCreatedBy || null,
-        groupAdmins: groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : undefined,
-        groupUpdatedAt: groupUpdatedAt || null,
-        groupType: normalizedGroupType,
-        groupSenderName: senderLabel,
-        ...messageMetadata
-    };
-    addToQueue(targetToNotify, pollingMessage);
-
-    const senderForPush = isGroup ? groupId : user;
-    const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, { messageId });
-    return { status: 'success', details: result };
+        const senderForPush = isGroup ? groupId : user;
+        const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, { messageId });
+        recentProcessedReplyMessages.set(messageId, Date.now());
+        return { status: 'success', details: result };
+    } catch (error) {
+        recentProcessedReplyMessages.delete(messageId);
+        throw error;
+    }
 }
 
 async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
@@ -3209,16 +3250,14 @@ async function fetchShuttleReminderOrdersForUser(userKey) {
     const payloadText = await response.text();
     const rows = parseShuttleReminderOrdersPayload(payloadText);
     const mappedOrders = rows
-        .map((row) => mapShuttleReminderOrder(row, normalizedUser))
+        .map((row, index) => mapShuttleReminderOrder(row, normalizedUser, index))
         .filter(Boolean);
     const dedupedByOrderKey = new Map();
     mappedOrders.forEach((order) => {
-        const existing = dedupedByOrderKey.get(order.orderKey);
-        if (!existing || Number(order.tripAt || 0) > Number(existing.tripAt || 0)) {
-            dedupedByOrderKey.set(order.orderKey, order);
-        }
+        // Keep the latest row for the same order key (sheet append order wins).
+        dedupedByOrderKey.set(order.orderKey, order);
     });
-    return Array.from(dedupedByOrderKey.values());
+    return Array.from(dedupedByOrderKey.values()).filter((order) => !order.isCancelled);
 }
 
 async function loadShuttleReminderOrdersForUser(userKey, options = {}) {
@@ -3291,7 +3330,7 @@ async function processShuttleReminderForUser(userKey, now, options = {}) {
             .filter((order) => Number(order.tripAt) > now);
         result.orderCount = activeOrders.length;
 
-        const dueOrders = [];
+        let dueOrders = [];
         activeOrders.forEach((order) => {
             if (hasShuttleReminderBeenSentForOrder(normalizedUser, order.orderKey)) {
                 result.skippedAlreadySent += 1;
@@ -3304,6 +3343,19 @@ async function processShuttleReminderForUser(userKey, now, options = {}) {
             }
             dueOrders.push(order);
         });
+
+        // Safety guard: when due orders come from cache/stale-cache, re-check against fresh
+        // sheet data before sending to avoid reminders for recently-cancelled rides.
+        if (dueOrders.length > 0 && loaded.source !== 'remote') {
+            const freshLoaded = await loadShuttleReminderOrdersForUser(normalizedUser, { forceRefresh: true });
+            const freshByOrderKey = new Set(
+                (Array.isArray(freshLoaded.orders) ? freshLoaded.orders : [])
+                    .map((order) => String(order && order.orderKey || '').trim())
+                    .filter(Boolean)
+            );
+            dueOrders = dueOrders.filter((order) => freshByOrderKey.has(String(order.orderKey || '').trim()));
+            result.source = `${result.source}+fresh-check`;
+        }
         result.dueCount = dueOrders.length;
 
         for (const order of dueOrders) {
@@ -5305,6 +5357,10 @@ const MAX_PUSH_TEXT_LENGTH = Math.max(
     80,
     Number(process.env.MAX_PUSH_TEXT_LENGTH || 280) || 280
 );
+const DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER = Math.max(
+    1,
+    Number(process.env.DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER || 2) || 2
+);
 
 function trimPushTextValue(value, maxLength = MAX_PUSH_TEXT_LENGTH) {
     const text = String(value || '');
@@ -5391,6 +5447,60 @@ function buildPushPayloadString(payloadData = {}) {
     return JSON.stringify({ data: emergencyData });
 }
 
+function limitSubscriptionsPerUser(subscriptions = [], maxPerUser = DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER) {
+    const normalizedMax = Math.max(1, Number(maxPerUser) || DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER);
+    const byUser = new Map();
+    const orderedUsers = [];
+
+    (Array.isArray(subscriptions) ? subscriptions : []).forEach((subscription) => {
+        if (!subscription || typeof subscription !== 'object') return;
+        const userKey = normalizeUserKey(subscription.username || subscription.user || '');
+        if (!userKey) return;
+        if (!byUser.has(userKey)) {
+            byUser.set(userKey, { mobile: [], pc: [], unknown: [] });
+            orderedUsers.push(userKey);
+        }
+        const bucket = byUser.get(userKey);
+        const type = normalizeSubscriptionType(subscription.type || subscription.deviceType || '');
+        if (type === 'mobile') {
+            bucket.mobile.push(subscription);
+            return;
+        }
+        if (type === 'pc') {
+            bucket.pc.push(subscription);
+            return;
+        }
+        bucket.unknown.push(subscription);
+    });
+
+    const selected = [];
+    orderedUsers.forEach((userKey) => {
+        const bucket = byUser.get(userKey);
+        if (!bucket) return;
+        const pickedForUser = [];
+        const pickOne = (list) => {
+            if (!Array.isArray(list) || !list.length) return;
+            pickedForUser.push(list[0]);
+        };
+        pickOne(bucket.mobile);
+        pickOne(bucket.pc);
+        if (!pickedForUser.length) {
+            pickOne(bucket.unknown);
+        }
+        const overflowPool = [
+            ...bucket.mobile.slice(1),
+            ...bucket.pc.slice(1),
+            ...bucket.unknown.slice(1)
+        ];
+        while (pickedForUser.length < normalizedMax && overflowPool.length) {
+            pickedForUser.push(overflowPool.shift());
+        }
+        selected.push(...pickedForUser.slice(0, normalizedMax));
+    });
+
+    return dedupeSubscriptionsByEndpoint(selected);
+}
+
 async function sendPushNotificationToUser(targetUser, message, senderuser, options = {}) {
     const targetUsersArray = Array.isArray(targetUser) ? targetUser : [targetUser];
     
@@ -5402,6 +5512,13 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     const finalSender = senderuser || 'System';
     const singlePerUser = Boolean(options.singlePerUser || messageType === 'reaction');
     const allowSecondAttempt = options.allowSecondAttempt !== false && messageType !== 'reaction';
+    const shouldLimitPerUserEndpoints = options.limitPerUserEndpoints !== false && !messageType;
+    const configuredMaxEndpointsPerUser = Number(options.maxPerUserEndpoints);
+    const maxEndpointsPerUser = (
+        Number.isFinite(configuredMaxEndpointsPerUser) && configuredMaxEndpointsPerUser > 0
+    )
+        ? Math.floor(configuredMaxEndpointsPerUser)
+        : (shouldLimitPerUserEndpoints ? DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER : 0);
     const compactCustomData = buildCompactPushCustomData(customData, messageType);
     let msgTitle = message.title || 'Work Alert';
     let msgText = msgBody.shortText || 'New Notification';
@@ -5580,6 +5697,8 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
             oneSubscriptionPerUser.set(userKey, subscription);
         });
         uniqueSubscriptions = Array.from(oneSubscriptionPerUser.values());
+    } else if (maxEndpointsPerUser > 0) {
+        uniqueSubscriptions = limitSubscriptionsPerUser(uniqueSubscriptions, maxEndpointsPerUser);
     }
     let sendResults = await sendToSubscriptions(uniqueSubscriptions, true);
 
@@ -5608,10 +5727,13 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         }
 
         const refreshedRawSubscriptions = await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true });
-        const refreshedUniqueSubscriptions = normalizeAndFilterTargetSubscriptions([
+        let refreshedUniqueSubscriptions = normalizeAndFilterTargetSubscriptions([
             ...(Array.isArray(refreshedRawSubscriptions) ? refreshedRawSubscriptions : []),
             ...getLocalDeviceSubscriptionsForUsers(targetUsersArray)
         ]);
+        if (!singlePerUser && maxEndpointsPerUser > 0) {
+            refreshedUniqueSubscriptions = limitSubscriptionsPerUser(refreshedUniqueSubscriptions, maxEndpointsPerUser);
+        }
         if (refreshedUniqueSubscriptions.length) {
             const existingEndpoints = new Set(uniqueSubscriptions.map((sub) => sub.endpoint));
             const retryTargets = refreshedUniqueSubscriptions.filter(
