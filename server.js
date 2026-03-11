@@ -212,6 +212,7 @@ const SERVER_RELEASE_NOTES = [
 const fsp = fs.promises;
 const stateDir = path.join(__dirname, 'data');
 const stateFile = path.join(stateDir, 'state.json');
+const groupsDbFile = path.join(stateDir, 'groups.db.json');
 let stateSaveTimer = null;
 let activeRedisStateStore = null;
 let redisQueuePubSubActive = false;
@@ -1907,6 +1908,11 @@ function canSendToCommunityGroup(sender, groupRecord, groupId, groupName) {
         return false;
     }
 
+    const groupAdmins = parseUsernamesInput(groupRecord.admins || groupRecord.groupAdmins);
+    if (groupAdmins.includes(senderKey)) {
+        return true;
+    }
+
     const creatorKey = normalizeUserKey(groupRecord.createdBy);
     if (creatorKey && senderKey === creatorKey) {
         return true;
@@ -2327,6 +2333,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         groupName,
         groupMembers,
         groupCreatedBy,
+        groupAdmins,
         groupUpdatedAt,
         groupType,
         groupSenderName,
@@ -2353,6 +2360,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             groupName,
             groupMembers,
             groupCreatedBy,
+            groupAdmins,
             groupUpdatedAt,
             groupType
         });
@@ -2479,6 +2487,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         groupName: groupName || null,
         groupMembers: groupMembers || null,
         groupCreatedBy: groupCreatedBy || null,
+        groupAdmins: groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : undefined,
         groupUpdatedAt: groupUpdatedAt || null,
         groupType: normalizedGroupType,
         groupSenderName: senderLabel,
@@ -2497,6 +2506,7 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
         groupName,
         groupMembers,
         groupCreatedBy,
+        groupAdmins,
         groupUpdatedAt,
         groupType,
         targetMessageId,
@@ -2514,7 +2524,15 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
         throw createHttpError(400, 'Missing reaction user');
     }
 
-    const groupRecord = upsertGroup({ groupId, groupName, groupMembers, groupCreatedBy, groupUpdatedAt, groupType });
+    const groupRecord = upsertGroup({
+        groupId,
+        groupName,
+        groupMembers,
+        groupCreatedBy,
+        groupAdmins,
+        groupUpdatedAt,
+        groupType
+    });
     const storedMembers = groupRecord && Array.isArray(groupRecord.members) ? groupRecord.members : [];
     const providedMembers = Array.isArray(groupMembers) ? groupMembers : [];
     const recipientByKey = new Map();
@@ -2561,6 +2579,7 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
             groupName: resolvedGroupName,
             groupMembers: resolvedGroupMembers,
             groupCreatedBy: resolvedGroupCreatedBy,
+            groupAdmins: groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : undefined,
             groupUpdatedAt: resolvedGroupUpdatedAt,
             groupType: resolvedGroupType
         }
@@ -2579,6 +2598,7 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
         groupName: resolvedGroupName,
         groupMembers: resolvedGroupMembers,
         groupCreatedBy: resolvedGroupCreatedBy,
+        groupAdmins: groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : undefined,
         groupUpdatedAt: resolvedGroupUpdatedAt,
         groupType: resolvedGroupType
     };
@@ -4220,25 +4240,232 @@ async function runMobileReregisterPromptCampaign(jobContext = {}) {
     return summary;
 }
 
+function normalizeGroupMembersInput(rawValue) {
+    return Array.from(
+        new Set(parseUsernamesInput(rawValue).map(normalizeUserKey).filter(Boolean))
+    );
+}
+
+function resolveGroupAdminsInput(rawValue, options = {}) {
+    const normalizedRawAdmins = normalizeGroupMembersInput(rawValue);
+    if (normalizedRawAdmins.length) {
+        return normalizedRawAdmins;
+    }
+
+    const existingAdmins = normalizeGroupMembersInput(options.existingAdmins);
+    if (existingAdmins.length) {
+        return existingAdmins;
+    }
+
+    const hardcodedPolicy = resolveHardcodedCommunityPolicy(
+        options.groupRecord || null,
+        options.groupId || '',
+        options.groupName || ''
+    );
+    if (hardcodedPolicy && hardcodedPolicy.writers && hardcodedPolicy.writers.size) {
+        return Array.from(new Set(Array.from(hardcodedPolicy.writers).map(normalizeUserKey).filter(Boolean)));
+    }
+
+    const createdByFallback = normalizeUserKey(options.createdBy || '');
+    if (createdByFallback) {
+        return [createdByFallback];
+    }
+
+    return [];
+}
+
+function normalizeRuntimeGroupRecord(rawGroup = {}, idHint = '') {
+    const groupId = String(rawGroup.id || rawGroup.groupId || rawGroup.groupID || idHint || '').trim();
+    const groupName = String(rawGroup.name || rawGroup.groupName || rawGroup.title || '').trim();
+    if (!groupId || !groupName) {
+        return null;
+    }
+
+    const createdBy = normalizeUserKey(
+        rawGroup.createdBy ||
+        rawGroup.groupCreatedBy ||
+        rawGroup.creator ||
+        ''
+    );
+    const type = normalizeGroupType(rawGroup.type || rawGroup.groupType || 'group');
+    const fallbackRecord = {
+        id: groupId,
+        name: groupName,
+        type,
+        createdBy
+    };
+    const admins = resolveGroupAdminsInput(
+        rawGroup.admins || rawGroup.groupAdmins,
+        {
+            existingAdmins: rawGroup.admins || rawGroup.groupAdmins,
+            groupId,
+            groupName,
+            groupRecord: fallbackRecord,
+            createdBy
+        }
+    );
+    const resolvedCreatedBy = createdBy || admins[0] || null;
+    const updatedAtRaw = Number(rawGroup.updatedAt || rawGroup.groupUpdatedAt || rawGroup.lastUpdatedAt || Date.now());
+    const updatedAt = Number.isFinite(updatedAtRaw) && updatedAtRaw > 0 ? updatedAtRaw : Date.now();
+    const createdAtRaw = Number(rawGroup.createdAt || rawGroup.groupCreatedAt || updatedAt);
+    const createdAt = Number.isFinite(createdAtRaw) && createdAtRaw > 0 ? createdAtRaw : updatedAt;
+    const members = normalizeGroupMembersInput(
+        rawGroup.members || rawGroup.groupMembers || rawGroup.memberList || []
+    );
+
+    return {
+        id: groupId,
+        name: groupName,
+        members,
+        admins,
+        createdBy: resolvedCreatedBy,
+        createdAt,
+        updatedAt,
+        type
+    };
+}
+
+function normalizeGroupsCollection(rawGroups = {}) {
+    const sourceItems = Array.isArray(rawGroups)
+        ? rawGroups
+        : Object.entries(rawGroups || {}).map(([groupId, groupValue]) => {
+            if (groupValue && typeof groupValue === 'object') {
+                return { ...groupValue, id: groupValue.id || groupId };
+            }
+            return { id: groupId };
+        });
+    const normalizedById = {};
+    sourceItems.forEach((item) => {
+        const normalized = normalizeRuntimeGroupRecord(item, item && item.id ? item.id : '');
+        if (!normalized) return;
+        const existing = normalizedById[normalized.id];
+        if (!existing || Number(normalized.updatedAt || 0) >= Number(existing.updatedAt || 0)) {
+            normalizedById[normalized.id] = normalized;
+        }
+    });
+    return normalizedById;
+}
+
+function buildGroupsDbPayloadFromRuntime() {
+    const groupRecords = Object.values(groups || {})
+        .map((group) => normalizeRuntimeGroupRecord(group, group && group.id ? group.id : ''))
+        .filter(Boolean)
+        .map((group) => ({
+            groupID: group.id,
+            title: group.name,
+            memberList: Array.isArray(group.members) ? group.members : [],
+            admins: Array.isArray(group.admins) ? group.admins : [],
+            createdBy: group.createdBy || null,
+            groupType: group.type || 'group',
+            createdAt: group.createdAt || Date.now(),
+            updatedAt: group.updatedAt || Date.now()
+        }))
+        .sort((left, right) => String(left.groupID || '').localeCompare(String(right.groupID || '')));
+    return {
+        version: 1,
+        updatedAt: Date.now(),
+        groups: groupRecords
+    };
+}
+
+async function persistGroupsLocalDb() {
+    try {
+        await fsp.mkdir(stateDir, { recursive: true });
+        const payload = JSON.stringify(buildGroupsDbPayloadFromRuntime());
+        const tmpFile = `${groupsDbFile}.tmp`;
+        await fsp.writeFile(tmpFile, payload, 'utf8');
+        await fsp.rename(tmpFile, groupsDbFile);
+    } catch (error) {
+        console.warn('[GROUPS DB] Failed to persist groups local DB:', error && error.message ? error.message : error);
+    }
+}
+
+async function readGroupsLocalDbRecords() {
+    try {
+        await fsp.mkdir(stateDir, { recursive: true });
+        const raw = await fsp.readFile(groupsDbFile, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+            return parsed;
+        }
+        if (parsed && Array.isArray(parsed.groups)) {
+            return parsed.groups;
+        }
+        if (parsed && typeof parsed === 'object') {
+            return Object.values(parsed);
+        }
+        return [];
+    } catch (error) {
+        if (error && error.code !== 'ENOENT') {
+            console.warn('[GROUPS DB] Failed to load groups local DB:', error.message);
+        }
+        return [];
+    }
+}
+
+async function hydrateGroupsFromLocalDb() {
+    const dbRecords = await readGroupsLocalDbRecords();
+    if (!dbRecords.length) return;
+    const normalizedDbGroups = normalizeGroupsCollection(
+        dbRecords.map((record) => ({
+            id: record && (record.id || record.groupId || record.groupID),
+            name: record && (record.name || record.groupName || record.title),
+            members: record && (record.members || record.groupMembers || record.memberList),
+            admins: record && (record.admins || record.groupAdmins),
+            createdBy: record && (record.createdBy || record.groupCreatedBy),
+            updatedAt: record && (record.updatedAt || record.groupUpdatedAt),
+            createdAt: record && (record.createdAt || record.groupCreatedAt),
+            type: record && (record.type || record.groupType)
+        }))
+    );
+    groups = normalizeGroupsCollection([
+        ...Object.values(groups || {}),
+        ...Object.values(normalizedDbGroups || {})
+    ]);
+}
+
 function upsertGroup(payload = {}) {
-    const groupId = payload.groupId;
-    const groupName = typeof payload.groupName === 'string' ? payload.groupName.trim() : payload.groupName;
+    const groupId = String(payload.groupId || payload.groupID || '').trim();
+    const groupName = String(payload.groupName || payload.title || '').trim();
     if (!groupId || !groupName) return null;
-    const existing = groups[groupId] || {};
-    const updatedAt = payload.groupUpdatedAt || Date.now();
-    const createdAt = existing.createdAt || payload.groupCreatedAt || Date.now();
-    const shouldUpdateMembers = Array.isArray(payload.groupMembers) &&
-        (!existing.updatedAt || updatedAt >= existing.updatedAt);
-    const nextMembers = shouldUpdateMembers ? payload.groupMembers : (existing.members || []);
-    const nextGroup = {
+
+    const existing = normalizeRuntimeGroupRecord(groups[groupId] || {}, groupId) || {};
+    const updatedAtRaw = Number(payload.groupUpdatedAt || payload.updatedAt || Date.now());
+    const updatedAt = Number.isFinite(updatedAtRaw) && updatedAtRaw > 0 ? updatedAtRaw : Date.now();
+    const incomingMembers = normalizeGroupMembersInput(payload.groupMembers || payload.memberList || []);
+    const shouldUpdateMembers = incomingMembers.length > 0 &&
+        (!existing.updatedAt || updatedAt >= Number(existing.updatedAt || 0));
+    const nextMembers = shouldUpdateMembers
+        ? incomingMembers
+        : normalizeGroupMembersInput(existing.members || []);
+    const type = normalizeGroupType(payload.groupType || existing.type || 'group');
+    const rawCreatedBy = normalizeUserKey(payload.groupCreatedBy || payload.createdBy || existing.createdBy || '');
+    const admins = resolveGroupAdminsInput(
+        payload.groupAdmins || payload.admins,
+        {
+            existingAdmins: existing.admins,
+            groupId,
+            groupName,
+            groupRecord: { id: groupId, name: groupName, type, createdBy: rawCreatedBy || existing.createdBy || '' },
+            createdBy: rawCreatedBy || existing.createdBy || ''
+        }
+    );
+    const createdBy = rawCreatedBy || admins[0] || null;
+    const createdAtRaw = Number(existing.createdAt || payload.groupCreatedAt || payload.createdAt || Date.now());
+    const createdAt = Number.isFinite(createdAtRaw) && createdAtRaw > 0 ? createdAtRaw : Date.now();
+
+    const nextGroup = normalizeRuntimeGroupRecord({
         id: groupId,
         name: groupName,
         members: nextMembers,
-        createdBy: payload.groupCreatedBy || existing.createdBy || null,
+        admins,
+        createdBy,
         createdAt,
-        updatedAt: Math.max(existing.updatedAt || 0, updatedAt),
-        type: normalizeGroupType(payload.groupType || existing.type || 'group')
-    };
+        updatedAt: Math.max(Number(existing.updatedAt || 0), updatedAt),
+        type
+    }, groupId);
+    if (!nextGroup) return null;
+
     groups[groupId] = nextGroup;
     scheduleStateSave();
     return nextGroup;
@@ -4259,6 +4486,7 @@ async function loadState() {
                 groups = (redisState.groups && typeof redisState.groups === 'object')
                     ? redisState.groups
                     : {};
+                groups = normalizeGroupsCollection(groups);
                 deviceSubscriptionsByUser = normalizeLocalDeviceSubscriptionsRegistry(
                     (redisState.deviceSubscriptionsByUser && typeof redisState.deviceSubscriptionsByUser === 'object')
                         ? redisState.deviceSubscriptionsByUser
@@ -4274,6 +4502,7 @@ async function loadState() {
                 Object.keys(shuttleReminderOrdersCacheByUser).forEach((userKey) => {
                     delete shuttleReminderOrdersCacheByUser[userKey];
                 });
+                await hydrateGroupsFromLocalDb();
                 console.log('[STATE] Loaded persisted state from Redis.');
                 return;
             }
@@ -4289,6 +4518,7 @@ async function loadState() {
         unreadCounts = (data.unreadCounts && typeof data.unreadCounts === 'object') ? data.unreadCounts : {};
         messageQueue = (data.messageQueue && typeof data.messageQueue === 'object') ? data.messageQueue : {};
         groups = (data.groups && typeof data.groups === 'object') ? data.groups : {};
+        groups = normalizeGroupsCollection(groups);
         deviceSubscriptionsByUser = normalizeLocalDeviceSubscriptionsRegistry(
             (data.deviceSubscriptionsByUser && typeof data.deviceSubscriptionsByUser === 'object')
                 ? data.deviceSubscriptionsByUser
@@ -4304,11 +4534,14 @@ async function loadState() {
         Object.keys(shuttleReminderOrdersCacheByUser).forEach((userKey) => {
             delete shuttleReminderOrdersCacheByUser[userKey];
         });
+        await hydrateGroupsFromLocalDb();
         console.log('[STATE] Loaded persisted state.');
     } catch (err) {
         if (err.code !== 'ENOENT') {
             console.warn('[STATE] Failed to load state:', err.message);
         }
+        groups = normalizeGroupsCollection(groups);
+        await hydrateGroupsFromLocalDb();
     }
 }
 
@@ -4322,6 +4555,7 @@ async function persistState() {
                 deviceSubscriptionsByUser,
                 shuttleReminderSentAtByKey
             });
+            await persistGroupsLocalDb();
             return;
         } catch (error) {
             console.warn('[STATE] Redis persist failed, falling back to file state:', error && error.message ? error.message : error);
@@ -4339,8 +4573,10 @@ async function persistState() {
         const tmpFile = `${stateFile}.tmp`;
         await fsp.writeFile(tmpFile, payload, 'utf8');
         await fsp.rename(tmpFile, stateFile);
+        await persistGroupsLocalDb();
     } catch (err) {
         console.warn('[STATE] Failed to persist state:', err.message);
+        await persistGroupsLocalDb();
     }
 }
 
@@ -5667,7 +5903,16 @@ app.post(
 
 app.post(['/group-update', '/notify/group-update'], async (req, res) => {
     try {
-        const { groupId, groupName, groupMembers, groupCreatedBy, groupUpdatedAt, groupType, membersToNotify } = req.body || {};
+        const {
+            groupId,
+            groupName,
+            groupMembers,
+            groupCreatedBy,
+            groupAdmins,
+            groupUpdatedAt,
+            groupType,
+            membersToNotify
+        } = req.body || {};
         if (!groupId || !groupName) {
             return res.status(400).json({ error: 'Missing group update fields' });
         }
@@ -5678,7 +5923,15 @@ app.post(['/group-update', '/notify/group-update'], async (req, res) => {
         if (!Array.isArray(requestedRecipients) || requestedRecipients.length === 0) {
             return res.status(400).json({ error: 'Missing group update recipients' });
         }
-        const groupRecord = upsertGroup({ groupId, groupName, groupMembers, groupCreatedBy, groupUpdatedAt, groupType });
+        const groupRecord = upsertGroup({
+            groupId,
+            groupName,
+            groupMembers,
+            groupCreatedBy,
+            groupAdmins,
+            groupUpdatedAt,
+            groupType
+        });
         const recipientByKey = new Map();
         requestedRecipients.forEach(member => {
             const rawMember = String(member || '').trim();
@@ -5714,6 +5967,7 @@ app.post(['/group-update', '/notify/group-update'], async (req, res) => {
                 groupName: resolvedGroupName,
                 groupMembers: resolvedGroupMembers,
                 groupCreatedBy: resolvedGroupCreatedBy,
+                groupAdmins: groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : undefined,
                 groupUpdatedAt: resolvedGroupUpdatedAt,
                 groupType: resolvedGroupType
             }
@@ -5727,6 +5981,7 @@ app.post(['/group-update', '/notify/group-update'], async (req, res) => {
             groupName: resolvedGroupName,
             groupMembers: resolvedGroupMembers,
             groupCreatedBy: resolvedGroupCreatedBy,
+            groupAdmins: groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : undefined,
             groupUpdatedAt: resolvedGroupUpdatedAt,
             groupType: resolvedGroupType,
             timestamp: Date.now()

@@ -58,10 +58,27 @@ function registerMessageController(app, deps = {}) {
             if (!user) return res.json({ groups: [] });
 
             const groups = getGroups();
-            const result = Object.values(groups || {}).filter((group) => {
-                if (!group || !Array.isArray(group.members)) return false;
-                return group.members.map(normalizeUserKey).includes(user);
-            });
+            const result = Object.values(groups || {})
+                .map((group) => {
+                    if (!group || typeof group !== 'object') return null;
+                    const members = Array.isArray(group.members)
+                        ? group.members
+                        : (Array.isArray(group.memberList) ? group.memberList : []);
+                    const admins = Array.isArray(group.admins)
+                        ? group.admins
+                        : (Array.isArray(group.groupAdmins) ? group.groupAdmins : []);
+                    if (!members.length) return null;
+                    if (!members.map(normalizeUserKey).includes(user)) return null;
+                    return {
+                        ...group,
+                        groupID: group.id || group.groupID || group.groupId || null,
+                        title: group.name || group.title || null,
+                        memberList: members,
+                        members,
+                        admins
+                    };
+                })
+                .filter(Boolean);
             return res.json({ groups: result });
         }
     );

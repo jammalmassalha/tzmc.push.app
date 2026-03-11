@@ -36,11 +36,16 @@ interface ContactResponse {
 interface GroupsResponse {
   groups?: Array<{
     id?: string;
+    groupID?: string;
     groupId?: string;
     name?: string;
+    title?: string;
     groupName?: string;
     members?: string[];
+    memberList?: string[];
     groupMembers?: string[];
+    admins?: string[];
+    groupAdmins?: string[];
     createdBy?: string;
     groupCreatedBy?: string;
     updatedAt?: number;
@@ -533,11 +538,14 @@ export class ChatApiService {
     const body = (await response.json()) as GroupsResponse;
     return (body.groups ?? [])
       .map((group) => {
-        const id = String(group.id ?? group.groupId ?? '').trim();
-        const name = String(group.name ?? group.groupName ?? '').trim();
-        const members = (group.members ?? group.groupMembers ?? []).map((member) =>
+        const id = String(group.id ?? group.groupID ?? group.groupId ?? '').trim();
+        const name = String(group.name ?? group.title ?? group.groupName ?? '').trim();
+        const members = (group.members ?? group.memberList ?? group.groupMembers ?? []).map((member) =>
           String(member).trim()
-        );
+        ).filter(Boolean);
+        const admins = (group.admins ?? group.groupAdmins ?? []).map((admin) =>
+          String(admin).trim()
+        ).filter(Boolean);
         const createdBy = String(group.createdBy ?? group.groupCreatedBy ?? '').trim();
         const updatedAt = Number(group.updatedAt ?? group.groupUpdatedAt ?? Date.now());
         const type = group.type === 'community' || group.groupType === 'community'
@@ -548,7 +556,8 @@ export class ChatApiService {
           id,
           name,
           members,
-          createdBy: createdBy || normalizedUser,
+          admins,
+          createdBy: createdBy || admins[0] || normalizedUser,
           updatedAt,
           type
         } satisfies ChatGroup;

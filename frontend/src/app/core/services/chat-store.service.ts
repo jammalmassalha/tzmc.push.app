@@ -878,6 +878,7 @@ export class ChatStoreService {
       id: groupId,
       name: groupName,
       members,
+      admins: [user],
       createdBy: user,
       updatedAt: Date.now(),
       type: payload.type
@@ -895,6 +896,7 @@ export class ChatStoreService {
       groupName: group.name,
       groupMembers: group.members,
       groupCreatedBy: group.createdBy,
+      groupAdmins: group.admins ?? [],
       groupUpdatedAt: group.updatedAt,
       groupType: group.type,
       membersToNotify
@@ -962,6 +964,7 @@ export class ChatStoreService {
       groupName: updatedGroup.name,
       groupMembers: updatedGroup.members,
       groupCreatedBy: updatedGroup.createdBy,
+      groupAdmins: updatedGroup.admins ?? [],
       groupUpdatedAt: updatedGroup.updatedAt,
       groupType: updatedGroup.type,
       membersToNotify
@@ -1024,6 +1027,12 @@ export class ChatStoreService {
   private canUserSendToCommunityGroup(group: ChatGroup, user: string | null): boolean {
     const normalizedUser = this.normalizeUser(user ?? '');
     if (!normalizedUser) return false;
+    const admins = Array.isArray(group.admins)
+      ? group.admins.map((admin) => this.normalizeUser(admin)).filter(Boolean)
+      : [];
+    if (admins.includes(normalizedUser)) {
+      return true;
+    }
     const writerSet = this.communityWriterSetByGroupId.get(this.normalizeChatId(group.id));
     if (writerSet) {
       return writerSet.has(normalizedUser);
@@ -1077,10 +1086,14 @@ export class ChatStoreService {
       }
 
       changed = true;
+      const admins = Array.from(
+        this.communityWriterSetByGroupId.get(normalizedId) ?? []
+      );
       const nextGroup: ChatGroup = {
         id: normalizedId,
         name: hardcodedGroup.name,
         members: expectedMembers,
+        admins,
         createdBy: creator,
         updatedAt: Date.now(),
         type: 'community'
@@ -1795,6 +1808,7 @@ export class ChatStoreService {
       groupName: group?.name || target.message.groupName || undefined,
       groupMembers: group?.members,
       groupCreatedBy: group?.createdBy,
+      groupAdmins: group?.admins,
       groupUpdatedAt: group?.updatedAt,
       groupType: group?.type
     };
@@ -1860,6 +1874,7 @@ export class ChatStoreService {
       groupName: group?.name || target.message.groupName || undefined,
       groupMembers: group?.members,
       groupCreatedBy: group?.createdBy,
+      groupAdmins: group?.admins,
       groupUpdatedAt: group?.updatedAt,
       groupType: group?.type
     };
@@ -1963,6 +1978,7 @@ export class ChatStoreService {
       groupName,
       groupMembers,
       groupCreatedBy,
+      groupAdmins: effectiveGroup?.admins ?? [],
       groupUpdatedAt,
       groupType,
       targetMessageId: normalizedTargetId,
@@ -4286,6 +4302,7 @@ export class ChatStoreService {
       groupName: group.name,
       groupMembers: group.members,
       groupCreatedBy: group.createdBy,
+      groupAdmins: group.admins ?? [],
       groupUpdatedAt: group.updatedAt,
       groupType: group.type,
       groupSenderName: this.getDisplayName(user),
@@ -4705,6 +4722,7 @@ export class ChatStoreService {
         groupName: group.name,
         groupMembers: group.members,
         groupCreatedBy: group.createdBy,
+        groupAdmins: group.admins ?? [],
         groupUpdatedAt: group.updatedAt,
         groupType: group.type,
         groupSenderName: this.getDisplayName(user),
@@ -5801,6 +5819,9 @@ export class ChatStoreService {
     const normalizedId = this.normalizeChatId(incoming.groupId);
     const normalizedType: GroupType = incoming.groupType === 'community' ? 'community' : 'group';
     const updatedAt = Number(incoming.groupUpdatedAt ?? Date.now());
+    const normalizedAdmins = Array.isArray(incoming.groupAdmins)
+      ? incoming.groupAdmins.map((admin) => this.normalizeUser(admin)).filter(Boolean)
+      : [];
 
     this.groups.update((groups) => {
       const existing = groups.find((group) => group.id === normalizedId);
@@ -5809,7 +5830,8 @@ export class ChatStoreService {
           id: normalizedId,
           name: incoming.groupName ?? normalizedId,
           members: (incoming.groupMembers ?? []).map((member) => this.normalizeUser(member)),
-          createdBy: this.normalizeUser(incoming.groupCreatedBy ?? user),
+          admins: normalizedAdmins,
+          createdBy: this.normalizeUser(incoming.groupCreatedBy ?? normalizedAdmins[0] ?? user),
           updatedAt,
           type: normalizedType
         };
@@ -5829,9 +5851,12 @@ export class ChatStoreService {
               members: Array.isArray(incoming.groupMembers)
                 ? incoming.groupMembers.map((member) => this.normalizeUser(member))
                 : group.members,
+              admins: normalizedAdmins.length
+                ? normalizedAdmins
+                : (Array.isArray(group.admins) ? group.admins : []),
               createdBy: incoming.groupCreatedBy
                 ? this.normalizeUser(incoming.groupCreatedBy)
-                : group.createdBy,
+                : (normalizedAdmins[0] || group.createdBy),
               type: normalizedType,
               updatedAt
             }
@@ -6541,11 +6566,16 @@ export class ChatStoreService {
     return groups
       .map((group): ChatGroup => {
         const type: GroupType = group.type === 'community' ? 'community' : 'group';
+        const admins = Array.from(
+          new Set((group.admins ?? []).map((admin) => this.normalizeUser(admin)).filter(Boolean))
+        );
+        const createdBy = this.normalizeUser(group.createdBy || admins[0] || fallbackCreator);
         return {
           id: this.normalizeChatId(group.id),
           name: group.name.trim(),
-          members: Array.from(new Set(group.members.map((member) => this.normalizeUser(member)))),
-          createdBy: this.normalizeUser(group.createdBy || fallbackCreator),
+          members: Array.from(new Set(group.members.map((member) => this.normalizeUser(member)).filter(Boolean))),
+          admins,
+          createdBy,
           updatedAt: Number(group.updatedAt || Date.now()),
           type
         };
@@ -6893,6 +6923,9 @@ export class ChatStoreService {
         : undefined,
       groupCreatedBy:
         typeof payload['groupCreatedBy'] === 'string' ? payload['groupCreatedBy'] : undefined,
+      groupAdmins: Array.isArray(payload['groupAdmins'])
+        ? payload['groupAdmins'].map((admin) => String(admin || '').trim()).filter(Boolean)
+        : undefined,
       groupUpdatedAt: Number.isFinite(numericGroupUpdatedAt) ? numericGroupUpdatedAt : undefined,
       groupType: payload['groupType'] === 'community' ? 'community' : 'group'
     };

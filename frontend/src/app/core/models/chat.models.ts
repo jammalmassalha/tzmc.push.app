@@ -21,6 +21,7 @@ export interface ChatGroup {
   id: string;
   name: string;
   members: string[];
+  admins?: string[];
   createdBy: string;
   updatedAt: number;
   type: GroupType;
@@ -92,6 +93,7 @@ export interface IncomingServerMessage {
   groupName?: string | null;
   groupMembers?: string[] | null;
   groupCreatedBy?: string | null;
+  groupAdmins?: string[] | null;
   groupUpdatedAt?: number | null;
   groupType?: GroupType | null;
   groupSenderName?: string | null;
@@ -117,6 +119,7 @@ export interface ReplyPayload {
   groupName?: string;
   groupMembers?: string[];
   groupCreatedBy?: string;
+  groupAdmins?: string[];
   groupUpdatedAt?: number;
   groupType?: GroupType;
   groupSenderName?: string;
@@ -135,6 +138,7 @@ export interface GroupUpdatePayload {
   groupName: string;
   groupMembers: string[];
   groupCreatedBy: string;
+  groupAdmins?: string[];
   groupUpdatedAt: number;
   groupType: GroupType;
   membersToNotify: string[];
@@ -145,6 +149,7 @@ export interface ReactionPayload {
   groupName: string;
   groupMembers: string[];
   groupCreatedBy: string;
+  groupAdmins?: string[];
   groupUpdatedAt: number;
   groupType: GroupType;
   targetMessageId: string;
@@ -182,6 +187,7 @@ export interface EditMessagePayload {
   groupName?: string;
   groupMembers?: string[];
   groupCreatedBy?: string;
+  groupAdmins?: string[];
   groupUpdatedAt?: number;
   groupType?: GroupType;
 }
@@ -197,6 +203,7 @@ export interface DeleteMessagePayload {
   groupName?: string;
   groupMembers?: string[];
   groupCreatedBy?: string;
+  groupAdmins?: string[];
   groupUpdatedAt?: number;
   groupType?: GroupType;
 }
