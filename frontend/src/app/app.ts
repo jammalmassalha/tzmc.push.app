@@ -18,7 +18,7 @@ import {
 } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { ChatStoreService } from './core/services/chat-store.service';
-import { runtimeConfig } from './core/config/runtime-config';
+import { getNotifyBaseUrl, runtimeConfig } from './core/config/runtime-config';
 
 type StartupLoaderPhase = 'auth' | 'contacts' | 'chats' | 'finalizing' | 'ready';
 
@@ -252,7 +252,7 @@ export class App implements OnDestroy {
         action: 'register-window-context',
         standalone,
         username,
-        subscriptionUrl: runtimeConfig.subscriptionUrl,
+        subscriptionUrl: `${getNotifyBaseUrl(runtimeConfig.notifyReplyUrl)}/register-device`,
         vapidPublicKey: runtimeConfig.vapidPublicKey,
         url: window.location.href,
         at: Date.now()

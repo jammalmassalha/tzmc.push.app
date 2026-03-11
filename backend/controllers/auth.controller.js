@@ -1,6 +1,9 @@
 function registerAuthController(app, deps = {}) {
     const {
         normalizeUserCandidate,
+        fetchWithRetry,
+        buildGoogleSheetGetUrl,
+        googleSheetUrl,
         activeSessionIdByUser,
         clearSessionCookie,
         SESSION_USER_PATTERN,
@@ -33,6 +36,103 @@ function registerAuthController(app, deps = {}) {
         unreadCounts,
         requireAuthorizedUser
     } = deps;
+
+    const requireAuthorizedSheetUser = typeof requireAuthorizedUser === 'function'
+        ? requireAuthorizedUser({
+            required: true,
+            candidateKeys: ['user', 'username'],
+            onError: (_req, res, resolution) => res.status(resolution.status).json({
+                result: 'error',
+                message: resolution.error || 'Authentication required'
+            })
+        })
+        : (_req, _res, next) => next();
+
+    app.get(
+        ['/hr/steps', '/notify/hr/steps'],
+        requireAuthorizedSheetUser,
+        async (_req, res) => {
+            try {
+                const response = await fetchWithRetry(
+                    buildGoogleSheetGetUrl({ action: 'get_hr_steps' }),
+                    {},
+                    { timeoutMs: 12000, retries: 2, backoffMs: 500 }
+                );
+                const bodyText = String(await response.text() || '').trim();
+                if (!response.ok) {
+                    return res.status(response.status).json({ result: 'error', data: [] });
+                }
+                try {
+                    return res.json(JSON.parse(bodyText));
+                } catch {
+                    return res.json({ result: 'error', data: [] });
+                }
+            } catch (error) {
+                const message = error && error.message ? String(error.message) : 'HR steps fetch failed';
+                return res.status(502).json({ result: 'error', message, data: [] });
+            }
+        }
+    );
+
+    app.get(
+        ['/hr/actions', '/notify/hr/actions'],
+        requireAuthorizedSheetUser,
+        async (req, res) => {
+            const serviceId = String(req && req.query ? req.query.serviceId : '').trim();
+            if (!serviceId) {
+                return res.json({ result: 'success', data: [] });
+            }
+            try {
+                const response = await fetchWithRetry(
+                    buildGoogleSheetGetUrl({ action: 'get_hr_steps_action', serviceId }),
+                    {},
+                    { timeoutMs: 12000, retries: 2, backoffMs: 500 }
+                );
+                const bodyText = String(await response.text() || '').trim();
+                if (!response.ok) {
+                    return res.status(response.status).json({ result: 'error', data: [] });
+                }
+                try {
+                    return res.json(JSON.parse(bodyText));
+                } catch {
+                    return res.json({ result: 'error', data: [] });
+                }
+            } catch (error) {
+                const message = error && error.message ? String(error.message) : 'HR actions fetch failed';
+                return res.status(502).json({ result: 'error', message, data: [] });
+            }
+        }
+    );
+
+    app.get(
+        ['/subscriptions', '/notify/subscriptions'],
+        requireAuthorizedSheetUser,
+        async (req, res) => {
+            const username = req.resolvedUser || '';
+            if (!username) {
+                return res.status(400).json({ result: 'error', subscriptions: [], message: 'Missing username' });
+            }
+            try {
+                const response = await fetchWithRetry(
+                    buildGoogleSheetGetUrl({ action: 'get_subscriptions', username }),
+                    {},
+                    { timeoutMs: 12000, retries: 2, backoffMs: 500 }
+                );
+                const bodyText = String(await response.text() || '').trim();
+                if (!response.ok) {
+                    return res.status(response.status).json({ result: 'error', subscriptions: [] });
+                }
+                try {
+                    return res.json(JSON.parse(bodyText));
+                } catch {
+                    return res.json({ result: 'error', subscriptions: [] });
+                }
+            } catch (error) {
+                const message = error && error.message ? String(error.message) : 'Subscriptions fetch failed';
+                return res.status(502).json({ result: 'error', message, subscriptions: [] });
+            }
+        }
+    );
 
     app.get(['/auth/session', '/notify/auth/session'], (req, res) => {
         const user = normalizeUserCandidate(req.authUser);
@@ -221,7 +321,7 @@ function registerAuthController(app, deps = {}) {
             candidateKeys: ['username', 'user'],
             onError: (_req, res, resolution) => res.status(resolution.status).json({ status: 'error', message: resolution.error })
         }),
-        (req, res) => {
+        async (req, res) => {
             try {
                 const payload = req.body && typeof req.body === 'object' ? req.body : {};
                 const username = req.resolvedUser;
@@ -235,6 +335,27 @@ function registerAuthController(app, deps = {}) {
                 }
 
                 scheduleStateSave();
+
+                const sheetPayload = {
+                    ...payload,
+                    username
+                };
+                const syncToSheetTask = (typeof fetchWithRetry === 'function' && typeof googleSheetUrl === 'string' && googleSheetUrl.trim())
+                    ? fetchWithRetry(
+                        String(googleSheetUrl).trim(),
+                        {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(sheetPayload)
+                        },
+                        { timeoutMs: 15000, retries: 2, backoffMs: 700 }
+                    ).catch((error) => {
+                        console.warn('[REGISTER DEVICE] Google Sheet sync failed:', error && error.message ? error.message : error);
+                        return null;
+                    })
+                    : Promise.resolve(null);
+
+                await syncToSheetTask;
                 return res.json({
                     status: 'success',
                     username,

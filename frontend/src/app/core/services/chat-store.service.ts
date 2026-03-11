@@ -71,7 +71,6 @@ const DOVRUT_SYSTEM_CREATOR = 'dovrut-system';
 const DOVRUT_ALLOWED_WRITERS = ['0506501040', '0506267447', '0543108095'] as const;
 const DOVRUT_TEST_ALLOWED_WRITERS = ['0546799693'] as const;
 const DOVRUT_TEST_GROUP_MEMBERS = ['0546799693', '0550000001', '0547997273', '0505203520'] as const;
-const SHUTTLE_OPERATIONS_ALLOWED_WRITERS = ['0546799693', '0550000001'] as const;
 const SHUTTLE_OPERATIONS_GROUP_MEMBERS = ['0546799693', '0550000001', '0506267410', '0505203520'] as const;
 interface HardcodedCommunityGroupConfig {
   id: string;
@@ -90,12 +89,6 @@ const HARDCODED_COMMUNITY_GROUPS: readonly HardcodedCommunityGroupConfig[] = [
     name: DOVRUT_TEST_GROUP_NAME,
     staticMembers: DOVRUT_TEST_GROUP_MEMBERS,
     allowedWriters: DOVRUT_TEST_ALLOWED_WRITERS
-  },
-  {
-    id: SHUTTLE_OPERATIONS_CHAT_NAME,
-    name: SHUTTLE_OPERATIONS_CHAT_NAME,
-    staticMembers: SHUTTLE_OPERATIONS_GROUP_MEMBERS,
-    allowedWriters: SHUTTLE_OPERATIONS_ALLOWED_WRITERS
   }
 ];
 const SHUTTLE_DAY_NAMES_BY_LANGUAGE: Record<ShuttleLanguage, readonly string[]> = {
@@ -959,7 +952,7 @@ export class ChatStoreService {
   }
 
   isShuttleOperationsRoomChat(chatId: string | null | undefined): boolean {
-    return this.normalizeChatId(String(chatId || '')) === this.normalizeChatId(SHUTTLE_OPERATIONS_CHAT_NAME);
+    return false;
   }
 
   canCurrentUserManageShuttleOperationsOrders(): boolean {
@@ -994,6 +987,12 @@ export class ChatStoreService {
     let changed = false;
     const creator = this.normalizeUser(DOVRUT_SYSTEM_CREATOR);
     const currentUser = this.normalizeUser(this.currentUser() ?? '');
+    const removedShuttleOpsGroupId = this.normalizeChatId(SHUTTLE_OPERATIONS_CHAT_NAME);
+    const filteredGroups = nextGroups.filter((group) => group.id !== removedShuttleOpsGroupId);
+    if (filteredGroups.length !== nextGroups.length) {
+      nextGroups = filteredGroups;
+      changed = true;
+    }
     const hardcodedGroupIds = HARDCODED_COMMUNITY_GROUPS.map((group) => this.normalizeChatId(group.id));
     for (const hardcodedGroup of HARDCODED_COMMUNITY_GROUPS) {
       const normalizedId = this.normalizeChatId(hardcodedGroup.id);

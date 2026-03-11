@@ -3150,7 +3150,7 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
                     reason: refreshReason,
                     initiatedBy,
                     requestId,
-                    subscriptionUrl: GOOGLE_SHEET_URL,
+                    subscriptionUrl: '/notify/register-device',
                     vapidPublicKey: vapidKeys.publicKey
                 }
             });
@@ -4216,6 +4216,9 @@ app.use((req, res, next) => {
 
 registerAuthController(app, {
     normalizeUserCandidate,
+    fetchWithRetry,
+    buildGoogleSheetGetUrl,
+    googleSheetUrl: GOOGLE_SHEET_URL,
     activeSessionIdByUser,
     clearSessionCookie,
     SESSION_USER_PATTERN,

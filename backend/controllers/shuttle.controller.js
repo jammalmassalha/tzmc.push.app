@@ -88,6 +88,18 @@ function parseShuttleOrdersProxyPayload(payloadText) {
     return parsed;
 }
 
+function parseJsonStringArray(payloadText) {
+    try {
+        const parsed = JSON.parse(String(payloadText || ''));
+        if (!Array.isArray(parsed)) return [];
+        return parsed
+            .map((item) => String(item || '').trim())
+            .filter(Boolean);
+    } catch (_error) {
+        return [];
+    }
+}
+
 function buildShuttleOperationsProxyResponse(payload, source, startedAt) {
     const normalizedSource = source === 'cache' ? 'cache' : 'remote';
     const basePayload = (payload && typeof payload === 'object' && !Array.isArray(payload))
@@ -106,6 +118,12 @@ function buildShuttleOperationsProxyResponse(payload, source, startedAt) {
 const SHUTTLE_OPERATIONS_PROXY_CACHE_TTL_MS = 90 * 1000;
 const shuttleOperationsProxyCacheByDate = new Map();
 const shuttleOperationsProxyInFlightByDate = new Map();
+const SHUTTLE_ENTRY_EMPLOYEE = 'entry.1035269960';
+const SHUTTLE_ENTRY_DATE = 'entry.794242217';
+const SHUTTLE_ENTRY_DATE_ALT = 'entry.794242217_22';
+const SHUTTLE_ENTRY_SHIFT = 'entry.1992732561';
+const SHUTTLE_ENTRY_STATION = 'entry.1096369604';
+const SHUTTLE_ENTRY_STATUS = 'entry.798637322';
 
 function getShuttleOperationsProxyCachedPayload(cacheKey, now = Date.now()) {
     const entry = shuttleOperationsProxyCacheByDate.get(cacheKey);
@@ -154,6 +172,130 @@ function registerShuttleController(app, deps = {}) {
                 })
         })
         : (_req, _res, next) => next();
+
+    app.get(
+        ['/shuttle/employees', '/notify/shuttle/employees'],
+        requireAuthorizedUserForOperations,
+        async (_req, res) => {
+            if (!SHUTTLE_USER_ORDERS_URL || typeof buildShuttleUserOrdersUrl !== 'function') {
+                return res.status(503).json({ result: 'error', data: [], message: 'Shuttle endpoint is not configured' });
+            }
+            try {
+                const response = await fetchWithRetry(
+                    buildShuttleUserOrdersUrl({ emp: 'test', _ts: Date.now() }),
+                    {},
+                    { timeoutMs: 15000, retries: 1, backoffMs: 700 }
+                );
+                if (!response.ok) {
+                    return res.status(response.status).json({ result: 'error', data: [] });
+                }
+                const body = await response.text();
+                return res.json({ result: 'success', data: parseJsonStringArray(body) });
+            } catch (error) {
+                const message = error && error.message ? error.message : 'Failed to load shuttle employees';
+                return res.status(502).json({ result: 'error', data: [], message });
+            }
+        }
+    );
+
+    app.get(
+        ['/shuttle/stations', '/notify/shuttle/stations'],
+        requireAuthorizedUserForOperations,
+        async (_req, res) => {
+            if (!SHUTTLE_USER_ORDERS_URL || typeof buildShuttleUserOrdersUrl !== 'function') {
+                return res.status(503).json({ result: 'error', data: [], message: 'Shuttle endpoint is not configured' });
+            }
+            try {
+                const response = await fetchWithRetry(
+                    buildShuttleUserOrdersUrl({ park: 'test', _ts: Date.now() }),
+                    {},
+                    { timeoutMs: 15000, retries: 1, backoffMs: 700 }
+                );
+                if (!response.ok) {
+                    return res.status(response.status).json({ result: 'error', data: [] });
+                }
+                const body = await response.text();
+                return res.json({ result: 'success', data: parseJsonStringArray(body) });
+            } catch (error) {
+                const message = error && error.message ? error.message : 'Failed to load shuttle stations';
+                return res.status(502).json({ result: 'error', data: [], message });
+            }
+        }
+    );
+
+    app.get(
+        ['/shuttle/orders/user', '/notify/shuttle/orders/user'],
+        requireAuthorizedUserForOperations,
+        async (req, res) => {
+            if (!SHUTTLE_USER_ORDERS_URL || typeof buildShuttleUserOrdersUrl !== 'function') {
+                return res.status(503).json({ result: 'error', orders: [], message: 'Shuttle endpoint is not configured' });
+            }
+            const user = req.resolvedUser || '';
+            if (!user) {
+                return res.status(400).json({ result: 'error', orders: [], message: 'Missing user' });
+            }
+            const force = parseBooleanInput(req && req.query ? req.query.force : '', true);
+            const requestUrl = buildShuttleUserOrdersUrl({
+                action: 'get_user_orders',
+                user,
+                force: force ? '1' : '0',
+                _ts: Date.now()
+            });
+            try {
+                const payloadText = await fetchShuttleOrdersProxyPayloadText(requestUrl, { fetchWithRetry });
+                const payload = parseShuttleOrdersProxyPayload(payloadText);
+                return res.json(payload);
+            } catch (error) {
+                const message = error && error.message ? error.message : 'Failed to load shuttle user orders';
+                return res.status(502).json({ result: 'error', orders: [], message });
+            }
+        }
+    );
+
+    app.post(
+        ['/shuttle/orders', '/notify/shuttle/orders'],
+        requireAuthorizedUserForOperations,
+        async (req, res) => {
+            if (!SHUTTLE_USER_ORDERS_URL || typeof buildShuttleUserOrdersUrl !== 'function') {
+                return res.status(503).json({ result: 'error', message: 'Shuttle endpoint is not configured' });
+            }
+            const payload = req && req.body && typeof req.body === 'object' ? req.body : {};
+            const employee = String(payload.employee || '').trim();
+            const date = String(payload.date || '').trim();
+            const dateAlt = String(payload.dateAlt || '').trim();
+            const shift = String(payload.shift || '').trim();
+            const station = String(payload.station || '').trim();
+            const status = String(payload.status || '').trim();
+            if (!employee || !date || !dateAlt || !shift || !station || !status) {
+                return res.status(400).json({ result: 'error', message: 'Shuttle payload is missing required fields' });
+            }
+
+            const requestUrl = buildShuttleUserOrdersUrl({
+                [SHUTTLE_ENTRY_EMPLOYEE]: employee,
+                [SHUTTLE_ENTRY_DATE]: date,
+                [SHUTTLE_ENTRY_DATE_ALT]: dateAlt,
+                [SHUTTLE_ENTRY_SHIFT]: shift,
+                [SHUTTLE_ENTRY_STATION]: station,
+                [SHUTTLE_ENTRY_STATUS]: status,
+                _ts: Date.now()
+            });
+            try {
+                const response = await fetchWithRetry(
+                    requestUrl,
+                    { cache: 'no-store' },
+                    { timeoutMs: 20000, retries: 2, backoffMs: 700 }
+                );
+                const bodyText = String(await response.text() || '').trim();
+                if (!response.ok) {
+                    return res.status(response.status).send(bodyText || `Shuttle submit failed with ${response.status}`);
+                }
+                return res.type('text/plain').send(bodyText || 'Success');
+            } catch (error) {
+                const message = error && error.message ? error.message : 'Shuttle submit failed';
+                return res.status(502).send(message);
+            }
+        }
+    );
 
     app.get(
         ['/shuttle/orders/operations', '/notify/shuttle/orders/operations'],
