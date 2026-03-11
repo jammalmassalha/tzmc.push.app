@@ -35,11 +35,6 @@ const fetch = (...args) => {
 const sheetIntegrationService = createSheetIntegrationServiceFromEnv(process.env);
 const webhookRegistryService = createWebhookRegistryFromEnv(process.env);
 const GOOGLE_SHEET_URL = sheetIntegrationService.googleSheetUrl;
-const SUBSCRIPTION_SHEET_URL = String(
-    process.env.SUBSCRIPTION_SHEET_URL ||
-    process.env.GOOGLE_SHEET_SUBSCRIPTION_URL ||
-    'https://script.google.com/macros/s/AKfycbzF2kB9WPG8BDL8BqLcJsuqoM1ZiAE9mEESYlRLamNy7zSsyYd6SGleLM9Iuc4dqwDx1g/exec'
-).trim();
 const redisStateStorePromise = createRedisStateStoreFromEnv(process.env)
     .then((store) => {
         if (store && store.isEnabled) {
@@ -4783,7 +4778,7 @@ registerAuthController(app, {
     normalizeUserCandidate,
     fetchWithRetry,
     buildGoogleSheetGetUrl,
-    googleSheetUrl: SUBSCRIPTION_SHEET_URL || GOOGLE_SHEET_URL,
+    googleSheetUrl: GOOGLE_SHEET_URL,
     activeSessionIdByUser,
     clearSessionCookie,
     SESSION_USER_PATTERN,
