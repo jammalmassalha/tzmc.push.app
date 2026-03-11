@@ -2316,43 +2316,6 @@ function emitTypingSignalToRecipients(payload = {}, senderUser = '') {
     return { status: 'success', deliveredTo: recipients.length };
 }
 
-async function enqueueToSendSheetRows({ recipients = [], sender = 'System', messageContent = '' } = {}) {
-    const targetRecipients = parseUsernamesInput(recipients);
-    const normalizedSender = String(sender || 'System').trim() || 'System';
-    const normalizedMessageContent = String(messageContent || '').trim();
-    if (!targetRecipients.length || !normalizedMessageContent) {
-        throw createHttpError(400, 'Missing recipients or message content for queue enqueue');
-    }
-
-    const response = await fetchWithRetry(GOOGLE_SHEET_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            action: 'enqueue_to_send',
-            recipients: targetRecipients,
-            sender: normalizedSender,
-            messageContent: normalizedMessageContent,
-            token: CHECK_QUEUE_SERVER_TOKEN || APP_SERVER_TOKEN || undefined
-        })
-    }, { timeoutMs: 12000, retries: 2, backoffMs: 500 });
-
-    if (!response.ok) {
-        throw createHttpError(response.status, `enqueue_to_send failed with ${response.status}`);
-    }
-
-    let body = null;
-    try {
-        body = await response.json();
-    } catch (error) {
-        body = null;
-    }
-    const result = String(body && body.result ? body.result : 'success').trim().toLowerCase();
-    if (result && result !== 'success') {
-        throw createHttpError(502, String((body && (body.message || body.error)) || 'enqueue_to_send failed'));
-    }
-    return body || { result: 'success', queuedRecipients: targetRecipients.length };
-}
-
 async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
     const {
         reply,
@@ -2526,50 +2489,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
     };
     addToQueue(targetToNotify, pollingMessage);
 
-    if (isGroup) {
-        const queuePayload = {
-            queueType: 'group-push-only',
-            messageId,
-            shortText,
-            longText: reply || shortText,
-            imageUrl: imageUrl || null,
-            senderName: senderLabel,
-            groupId,
-            groupName: normalizedGroupName || (groupRecord && groupRecord.name) || String(groupId || '').trim(),
-            groupMembers: Array.isArray(groupMembers)
-                ? groupMembers
-                : (groupRecord && Array.isArray(groupRecord.members) ? groupRecord.members : []),
-            groupCreatedBy: groupCreatedBy || (groupRecord && groupRecord.createdBy) || null,
-            groupUpdatedAt: groupUpdatedAt || (groupRecord && groupRecord.updatedAt) || Date.now(),
-            groupType: normalizedGroupType
-        };
-        try {
-            const enqueueResult = await enqueueToSendSheetRows({
-                recipients: targetToNotify,
-                sender: groupId || user,
-                messageContent: JSON.stringify(queuePayload)
-            });
-            return {
-                status: 'success',
-                details: {
-                    queuedRecipients: Number(enqueueResult && enqueueResult.queuedRecipients) || targetToNotify.length,
-                    mode: 'sheet-queue'
-                }
-            };
-        } catch (queueError) {
-            console.warn('[GROUP QUEUE] enqueue_to_send failed, fallback to direct push:', queueError && queueError.message ? queueError.message : queueError);
-            const fallbackResult = await sendPushNotificationToUser(targetToNotify, notificationData, groupId || user, { messageId });
-            return {
-                status: 'success',
-                details: {
-                    ...fallbackResult,
-                    mode: 'direct-push-fallback'
-                }
-            };
-        }
-    }
-
-    const senderForPush = user;
+    const senderForPush = isGroup ? groupId : user;
     const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, { messageId });
     return { status: 'success', details: result };
 }
@@ -5891,51 +5811,10 @@ async function checkOutgoingQueue() {
             for (const msg of queuedMessages) {
                 const targetUsers = parseUsernamesInput(msg && msg.recipient);
                 const senderName = String((msg && msg.sender) || 'System').trim() || 'System';
-                const rawContent = String((msg && msg.content) || '').trim();
-                if (!targetUsers.length || !rawContent) {
+                const bodyText = String((msg && msg.content) || '').trim();
+                if (!targetUsers.length || !bodyText) {
                     continue;
                 }
-
-                let parsedContent = null;
-                if (rawContent.startsWith('{') && rawContent.endsWith('}')) {
-                    try {
-                        parsedContent = JSON.parse(rawContent);
-                    } catch (error) {
-                        parsedContent = null;
-                    }
-                }
-
-                if (parsedContent && typeof parsedContent === 'object' && parsedContent.queueType === 'group-push-only') {
-                    const groupMessageId = String(parsedContent.messageId || '').trim() || generateMessageId();
-                    const groupId = String(parsedContent.groupId || senderName || '').trim();
-                    const groupName = String(parsedContent.groupName || groupId || '').trim() || 'Group';
-                    const groupSenderName = String(parsedContent.senderName || '').trim() || groupId || 'Group';
-                    const groupShortText = String(parsedContent.shortText || parsedContent.longText || 'New Message').trim() || 'New Message';
-                    const groupLongText = String(parsedContent.longText || groupShortText).trim() || groupShortText;
-                    const groupType = String(parsedContent.groupType || '').trim().toLowerCase() === 'community' ? 'community' : 'group';
-                    const groupNotification = {
-                        messageId: groupMessageId,
-                        title: groupName || 'Group message',
-                        body: {
-                            shortText: `${groupSenderName}: ${groupShortText}`,
-                            longText: groupLongText
-                        },
-                        image: parsedContent.imageUrl || null,
-                        data: {
-                            groupId: groupId || undefined,
-                            groupName: groupName || undefined,
-                            groupMembers: Array.isArray(parsedContent.groupMembers) ? parsedContent.groupMembers : undefined,
-                            groupCreatedBy: parsedContent.groupCreatedBy || undefined,
-                            groupUpdatedAt: parsedContent.groupUpdatedAt || undefined,
-                            groupType,
-                            groupMessageText: groupShortText,
-                            groupSenderName
-                        }
-                    };
-                    await sendPushNotificationToUser(targetUsers, groupNotification, groupId || senderName, { messageId: groupMessageId });
-                    continue;
-                }
-                const bodyText = rawContent;
                 
                 const messageId = (msg && msg.messageId) ? String(msg.messageId).trim() : generateMessageId();
                 const notificationData = {
