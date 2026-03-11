@@ -2165,43 +2165,6 @@ export class ChatStoreService {
     }
   }
 
-  private async getShuttleOperationsOrderUsers(): Promise<string[]> {
-    const orderUsers = new Set<string>();
-    SHUTTLE_OPERATIONS_GROUP_MEMBERS.forEach((member) => {
-      const normalizedMember = this.normalizePhone(member) || this.extractShuttlePhone(member);
-      if (normalizedMember) {
-        orderUsers.add(normalizedMember);
-      }
-    });
-
-    this.contacts().forEach((contact) => {
-      const normalizedContact = this.normalizePhone(contact.username) || this.extractShuttlePhone(contact.username);
-      if (normalizedContact) {
-        orderUsers.add(normalizedContact);
-      }
-    });
-
-    const employees = await this.fetchShuttleEmployeesCached();
-    employees.forEach((employee) => {
-      const normalizedEmployee = this.extractShuttlePhone(employee) || this.normalizePhone(employee);
-      if (normalizedEmployee) {
-        orderUsers.add(normalizedEmployee);
-      }
-    });
-
-    return Array.from(orderUsers).sort((a, b) => a.localeCompare(b));
-  }
-
-  private isShuttleOrderFromCurrentDateForward(order: ShuttleOrderRecord): boolean {
-    const orderDate = this.parseShuttleDate(order.date);
-    if (!orderDate) {
-      return false;
-    }
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    return orderDate.getTime() >= today.getTime();
-  }
-
   private async refreshShuttleOperationsOrders(
     options: { force?: boolean; throwOnError?: boolean } = {}
   ): Promise<void> {
@@ -2234,7 +2197,8 @@ export class ChatStoreService {
     this.shuttleOperationsOrdersLoading.set(true);
     this.bumpShuttlePickerRevision();
     const syncTask = (async () => {
-      const orderUsers = await this.getShuttleOperationsOrderUsers();
+      const fromDate = this.toIsoDate(new Date());
+      const remoteOrders = await this.api.getShuttleOperationsOrders(fromDate);
       const loadedOrders: ShuttleOperationsOrderRecord[] = [];
       const contactsByUser = new Map(
         this.contacts().map((contact) => [this.normalizeUser(contact.username), contact])
@@ -2247,35 +2211,35 @@ export class ChatStoreService {
         }
       });
 
-      for (const member of orderUsers) {
-        let remoteOrders: ShuttleUserOrderPayload[] = [];
-        try {
-          remoteOrders = await this.api.getShuttleUserOrders(member);
-        } catch {
-          remoteOrders = [];
-        }
-        const mappedOrders = remoteOrders
-          .map((item, index) => this.mapShuttleRemoteOrder(item, index))
-          .filter((item): item is ShuttleOrderRecord => Boolean(item))
-          .filter((item) => this.isShuttleOrderFromCurrentDateForward(item));
-        mappedOrders.forEach((order) => {
-          const contact = contactsByUser.get(member) || contactsByPhone.get(member);
-          const employeeLabel = this.normalizeShuttleEmployeeName(order.employee);
-          const sourceDisplayName = String(
-            contact?.displayName ||
-            employeeLabel ||
-            member
-          ).trim();
-          loadedOrders.push({
-            ...order,
-            sourceUser: member,
-            sourceDisplayName,
-            sourceOrderId: order.id,
-            compositeId: `${member}::${order.id}`,
-            canCancel: this.isShuttleOrderOngoing(order)
-          });
+      const mappedOrders = remoteOrders
+        .map((item, index) => this.mapShuttleRemoteOrder(item, index))
+        .filter((item): item is ShuttleOrderRecord => Boolean(item))
+        .filter((item) => {
+          const orderDate = this.parseShuttleDate(item.date);
+          if (!orderDate) return false;
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          return orderDate.getTime() >= today.getTime();
         });
-      }
+      mappedOrders.forEach((order) => {
+        const sourcePhone = this.normalizePhone(order.employee) || this.extractShuttlePhone(order.employee);
+        const sourceUser = sourcePhone || this.normalizeUser(order.employee) || `unknown-${order.id}`;
+        const contact = contactsByUser.get(sourceUser) || contactsByPhone.get(sourcePhone || '');
+        const employeeLabel = this.normalizeShuttleEmployeeName(order.employee);
+        const sourceDisplayName = String(
+          contact?.displayName ||
+          employeeLabel ||
+          sourceUser
+        ).trim();
+        loadedOrders.push({
+          ...order,
+          sourceUser,
+          sourceDisplayName,
+          sourceOrderId: order.id,
+          compositeId: `${sourceUser}::${order.id}`,
+          canCancel: this.isShuttleOrderOngoing(order)
+        });
+      });
 
       const dedupedByIdentity = new Map<string, ShuttleOperationsOrderRecord>();
       loadedOrders.forEach((order, index) => {

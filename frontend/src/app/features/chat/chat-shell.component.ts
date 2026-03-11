@@ -113,6 +113,7 @@ interface ShuttleOrderMessageCard {
 
 const MESSAGE_PAGE_SIZE = 15;
 const LOAD_OLDER_MESSAGES_SCROLL_THRESHOLD_PX = 56;
+const SHUTTLE_OPERATIONS_BACKGROUND_REFRESH_MS = 30_000;
 
 type ShuttleUiTextKey =
   | 'ordersTitle'
@@ -528,6 +529,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   private openBoundaryScrollRafId: number | null = null;
   private relativeTimeRefreshId: number | null = null;
   private logoutProgressIntervalId: number | null = null;
+  private shuttleOperationsBackgroundRefreshId: number | null = null;
   private routeQueryParamsSub: Subscription | null = null;
   private isLoadingOlderMessages = false;
   private lastPaginatedChatId: string | null = null;
@@ -675,9 +677,18 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   private readonly shuttleOperationsAutoRefreshEffect = effect(() => {
     const activeChatId = this.store.activeChatId();
     if (!this.store.isShuttleOperationsRoomChat(activeChatId)) {
+      if (this.shuttleOperationsBackgroundRefreshId !== null) {
+        window.clearInterval(this.shuttleOperationsBackgroundRefreshId);
+        this.shuttleOperationsBackgroundRefreshId = null;
+      }
       return;
     }
-    void this.store.refreshShuttleOperationsOrdersForActiveUser().catch(() => undefined);
+    void this.store.refreshShuttleOperationsOrdersForActiveUser({ force: true }).catch(() => undefined);
+    if (this.shuttleOperationsBackgroundRefreshId === null) {
+      this.shuttleOperationsBackgroundRefreshId = window.setInterval(() => {
+        void this.store.refreshShuttleOperationsOrdersForActiveUser({ force: true }).catch(() => undefined);
+      }, SHUTTLE_OPERATIONS_BACKGROUND_REFRESH_MS);
+    }
   });
 
   private readonly shuttleOperationsExpansionSyncEffect = effect(() => {
@@ -815,6 +826,10 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     if (this.relativeTimeRefreshId !== null) {
       window.clearInterval(this.relativeTimeRefreshId);
       this.relativeTimeRefreshId = null;
+    }
+    if (this.shuttleOperationsBackgroundRefreshId !== null) {
+      window.clearInterval(this.shuttleOperationsBackgroundRefreshId);
+      this.shuttleOperationsBackgroundRefreshId = null;
     }
     if (this.openBoundaryScrollRafId !== null) {
       window.cancelAnimationFrame(this.openBoundaryScrollRafId);

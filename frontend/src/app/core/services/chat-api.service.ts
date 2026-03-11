@@ -1007,6 +1007,17 @@ export class ChatApiService {
     return this.parseShuttleUserOrders(body);
   }
 
+  async getShuttleOperationsOrders(fromDateIso?: string): Promise<ShuttleUserOrderPayload[]> {
+    const fromDate = String(fromDateIso || this.resolveTodayIsoDate()).trim();
+    const url = `${this.config.shuttleUserOrdersUrl}?action=get_operations_orders&fromDate=${encodeURIComponent(fromDate)}&force=1&_ts=${Date.now()}`;
+    const response = await this.fetchWithRetry(url, { cache: 'no-store' }, { retries: 0, timeoutMs: 60000 });
+    if (!response.ok) {
+      throw new Error(`Shuttle operations orders request failed with ${response.status}`);
+    }
+    const body = await response.text();
+    return this.parseShuttleUserOrders(body);
+  }
+
   async getUserPushSubscriptions(user: string): Promise<UserPushSubscriptionPayload[]> {
     const normalizedUser = String(user || '').trim();
     if (!normalizedUser) {
@@ -1167,5 +1178,13 @@ export class ChatApiService {
     return rows
       .filter((item) => item && typeof item === 'object')
       .map((item) => item as ShuttleUserOrderPayload);
+  }
+
+  private resolveTodayIsoDate(): string {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
 }

@@ -21,6 +21,17 @@ function doGet(e) {
       .setMimeType(ContentService.MimeType.JSON);
   }
 
+  if (action === 'get_operations_orders' || action === 'get_shuttle_operations_orders') {
+    data = getShuttleOperationsOrders({
+      debug: debugMode,
+      forceRefresh: resolveShuttleForceRefreshFlag(e && e.parameter ? e.parameter.force : ''),
+      fromDate: String((e && e.parameter && e.parameter.fromDate) || '').trim()
+    });
+    return ContentService
+      .createTextOutput(JSON.stringify(data))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
   if (action === 'check_get_user_orders' || action === 'check_user_orders') {
     var checkUser = (e.parameter && (e.parameter.user || e.parameter.username || e.parameter.phone)) || '';
     data = checkGetUserOrders(checkUser, { debug: debugMode });
@@ -922,6 +933,153 @@ function getCurrentUserOrders(userValue, options) {
     debugInfo.phasesMs.cacheWrite = Date.now() - cacheWriteStartedAt;
   }
   return attachShuttleDebugTimings(response, debugInfo, startedAt);
+}
+
+function getShuttleOperationsOrders(options) {
+  var startedAt = Date.now();
+  var debugInfo = (options && options.debug === true)
+    ? {
+      enabled: true,
+      requestStartedAt: new Date(startedAt).toISOString(),
+      phasesMs: {},
+      cacheHit: false
+    }
+    : null;
+  var fromDate = String((options && options.fromDate) || '').trim();
+  var normalizedFromDate = fromDate && /^\d{4}-\d{2}-\d{2}$/.test(fromDate)
+    ? fromDate
+    : Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  if (!wsShuttleLog) {
+    return attachShuttleDebugTimings({
+      result: 'error',
+      message: 'Sheet לוג נסיעות not found'
+    }, debugInfo, startedAt);
+  }
+
+  var cache = CacheService.getScriptCache();
+  var forceRefresh = Boolean(options && options.forceRefresh === true);
+  var cacheKey = 'operations_orders_' + normalizedFromDate;
+  var cacheLookupStartedAt = Date.now();
+  var cached = forceRefresh ? null : cache.get(cacheKey);
+  if (debugInfo) {
+    debugInfo.phasesMs.cacheLookup = Date.now() - cacheLookupStartedAt;
+    if (forceRefresh) {
+      debugInfo.forceRefresh = true;
+    }
+  }
+  if (cached) {
+    var cachedResponse = JSON.parse(cached);
+    if (!debugInfo) {
+      return cachedResponse;
+    }
+    debugInfo.cacheHit = true;
+    debugInfo.path = 'cache';
+    debugInfo.counts = {
+      orders: Array.isArray(cachedResponse.orders) ? cachedResponse.orders.length : 0
+    };
+    return attachShuttleDebugTimings(cachedResponse, debugInfo, startedAt);
+  }
+
+  var collectStartedAt = Date.now();
+  var lastRow = wsShuttleLog.getLastRow();
+  var rawOrders = [];
+  if (lastRow >= 2) {
+    var rows = wsShuttleLog.getRange(2, 1, lastRow - 1, 7).getValues(); // A..G
+    for (var i = 0; i < rows.length; i++) {
+      var order = mapShuttleOrderRow(rows[i], i + 2);
+      if (!order) continue;
+      if (!isShuttleDisplayVisible(order.display)) continue;
+      var orderDateIso = String(order.dateIso || '').trim();
+      if (!orderDateIso || orderDateIso < normalizedFromDate) continue;
+      rawOrders.push(order);
+    }
+  }
+  if (debugInfo) {
+    debugInfo.phasesMs.collectRawOrders = Date.now() - collectStartedAt;
+    debugInfo.counts = { rawOrders: rawOrders.length };
+  }
+
+  var pairStartedAt = Date.now();
+  var groupedOrders = applyShuttleCancelPairingLogicByUser(rawOrders);
+  if (debugInfo) {
+    debugInfo.phasesMs.applyGrouping = Date.now() - pairStartedAt;
+  }
+
+  var sortStartedAt = Date.now();
+  groupedOrders.sort(function(a, b) {
+    var delta = getShuttleOrderDateTimeSortKey(a) - getShuttleOrderDateTimeSortKey(b);
+    if (delta !== 0) return delta;
+    var employeeDelta = String(a.employeePhone || '').localeCompare(String(b.employeePhone || ''));
+    if (employeeDelta !== 0) return employeeDelta;
+    return Number(a.sheetRow || 0) - Number(b.sheetRow || 0);
+  });
+  if (debugInfo) {
+    debugInfo.phasesMs.sortOrders = Date.now() - sortStartedAt;
+  }
+
+  var ongoingCount = 0;
+  var pastCount = 0;
+  for (var j = 0; j < groupedOrders.length; j++) {
+    if (groupedOrders[j].isOngoing) {
+      ongoingCount += 1;
+    } else {
+      pastCount += 1;
+    }
+  }
+
+  var response = {
+    result: 'success',
+    fromDate: normalizedFromDate,
+    counts: {
+      total: groupedOrders.length,
+      ongoing: ongoingCount,
+      past: pastCount
+    },
+    orders: groupedOrders
+  };
+
+  var cacheWriteStartedAt = Date.now();
+  cache.put(cacheKey, JSON.stringify(response), 60);
+  if (debugInfo) {
+    debugInfo.phasesMs.cacheWrite = Date.now() - cacheWriteStartedAt;
+    debugInfo.counts.groupedOrders = groupedOrders.length;
+    debugInfo.path = 'fresh';
+  }
+  return attachShuttleDebugTimings(response, debugInfo, startedAt);
+}
+
+function applyShuttleCancelPairingLogicByUser(orders) {
+  var grouped = {};
+  var passthrough = [];
+  for (var i = 0; i < orders.length; i++) {
+    var order = orders[i];
+    var key = buildShuttleOperationsOrderKey(order);
+    if (!key) {
+      passthrough.push(order);
+      continue;
+    }
+    if (!grouped[key]) grouped[key] = [];
+    grouped[key].push(order);
+  }
+
+  var result = passthrough.slice();
+  var groupKeys = Object.keys(grouped);
+  for (var k = 0; k < groupKeys.length; k++) {
+    var group = grouped[groupKeys[k]];
+    if (!group || !group.length) continue;
+    var representative = selectGroupRepresentative(group);
+    if (!representative) continue;
+    result.push(representative);
+  }
+  return result;
+}
+
+function buildShuttleOperationsOrderKey(order) {
+  if (!order) return '';
+  var employeePhone = normalizeShuttlePhone(order.employeePhone || order.employee || '');
+  var baseKey = buildShuttleOrderKey(order);
+  if (!employeePhone || !baseKey) return '';
+  return employeePhone + '|' + baseKey;
 }
 
 function attachShuttleDebugTimings(response, debugInfo, startedAt) {
