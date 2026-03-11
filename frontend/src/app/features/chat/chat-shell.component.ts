@@ -819,6 +819,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   ngOnDestroy(): void {
+    this.store.cancelTypingForActiveChat();
     this.mobileQuery.removeEventListener('change', this.onMediaChange);
     window.removeEventListener('resize', this.onViewportResize);
     window.visualViewport?.removeEventListener('resize', this.onViewportResize);
@@ -847,6 +848,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   openChat(chatId: string): void {
+    this.store.cancelTypingForActiveChat();
     this.resetConversationSwipeGesture();
     this.clearComposerEditState();
     this.messageActionTarget.set(null);
@@ -858,6 +860,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   backToList(): void {
+    this.store.cancelTypingForActiveChat();
     this.resetConversationSwipeGesture();
     this.clearComposerEditState();
     this.messageActionTarget.set(null);
@@ -891,6 +894,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   async sendMessage(): Promise<void> {
+    this.store.cancelTypingForActiveChat();
     if (this.isComposerHidden() && !this.editingMessageTarget()) {
       return;
     }
@@ -1315,6 +1319,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
 
   onComposerInput(): void {
     this.syncComposerTextareaHeight();
+    this.store.reportTypingActivity(this.messageControl.value);
   }
 
   scrollToBottomFromButton(): void {

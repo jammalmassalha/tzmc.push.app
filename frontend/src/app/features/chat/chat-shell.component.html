@@ -11,6 +11,13 @@
       <mat-chip [class.offline]="!store.networkOnline()">
         {{ store.networkOnline() ? 'מקוון' : 'לא מחובר' }}
       </mat-chip>
+      <mat-chip
+        class="connection-mode-chip"
+        [class.conn-socket]="store.realtimeTransportMode() === 'socket'"
+        [class.conn-sse]="store.realtimeTransportMode() === 'sse'"
+        [class.conn-polling]="store.realtimeTransportMode() === 'polling'">
+        {{ store.realtimeTransportLabel() }}
+      </mat-chip>
     </mat-chip-set>
 
     <button mat-icon-button type="button" [matMenuTriggerFor]="mainMenu" aria-label="תפריט">
@@ -587,6 +594,10 @@
           aria-label="גלול להודעה האחרונה">
           <mat-icon>keyboard_arrow_down</mat-icon>
         </button>
+
+        @if (store.activeTypingLabel(); as typingLabel) {
+          <div class="typing-indicator" aria-live="polite">{{ typingLabel }}</div>
+        }
 
         @if (editingMessageTarget(); as editingMessage) {
           <div class="composer-edit-banner">

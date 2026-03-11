@@ -43,6 +43,22 @@ mat-chip:not(.offline) {
   --mdc-chip-label-text-color: rgb(40 220 61 / 87%);
 }
 
+.connection-mode-chip {
+  --mdc-chip-label-text-color: #dbe3ff;
+}
+
+.connection-mode-chip.conn-socket {
+  --mdc-chip-label-text-color: #48e26a;
+}
+
+.connection-mode-chip.conn-sse {
+  --mdc-chip-label-text-color: #70d5ff;
+}
+
+.connection-mode-chip.conn-polling {
+  --mdc-chip-label-text-color: #f3c86e;
+}
+
 .chat-layout {
   height: calc(var(--app-height, 100dvh) - var(--app-toolbar-height) - var(--app-viewport-offset-top, 0px));
   display: grid;
@@ -1308,6 +1324,15 @@ mat-chip:not(.offline) {
   font-size: 13px;
   font-weight: 600;
   color: #273158;
+}
+
+.typing-indicator {
+  margin: 6px 14px 0;
+  font-size: 12px;
+  color: #5f6f91;
+  min-height: 18px;
+  display: flex;
+  align-items: center;
 }
 
 .composer-edit-banner {
