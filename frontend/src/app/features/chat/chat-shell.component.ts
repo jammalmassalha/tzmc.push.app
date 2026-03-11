@@ -380,6 +380,8 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   readonly isLoadingShuttleOperationsOrders = computed(() =>
     this.store.getShuttleOperationsOrdersLoading()
   );
+  readonly shuttleOperationsManualSyncFailedAt = signal<number | null>(null);
+  readonly shuttleOperationsManualSyncFailedMessage = signal('');
   readonly isShuttleOperationsRoomActive = computed(() =>
     Boolean(this.shuttleOperationsDateGroups())
   );
@@ -1057,9 +1059,12 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     if (this.isLoadingShuttleOperationsOrders()) return;
     try {
       await this.store.refreshShuttleOperationsOrdersForActiveUser({ force: true, throwOnError: true });
+      this.shuttleOperationsManualSyncFailedAt.set(null);
+      this.shuttleOperationsManualSyncFailedMessage.set('');
     } catch (error) {
       const message = error instanceof Error ? error.message : this.shuttleText('refreshFailedFallback');
-      this.snackBar.open(message, this.shuttleCloseActionLabel(), { duration: 2800 });
+      this.shuttleOperationsManualSyncFailedAt.set(Date.now());
+      this.shuttleOperationsManualSyncFailedMessage.set(message);
     }
   }
 

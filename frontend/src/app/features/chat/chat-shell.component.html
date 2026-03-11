@@ -345,6 +345,15 @@
               @if (isLoadingShuttleOperationsOrders()) {
                 <div class="shuttle-orders-hint" aria-live="polite">{{ shuttleText('loading') }}</div>
               }
+              @if (shuttleOperationsManualSyncFailedAt(); as manualSyncFailedAt) {
+                <div
+                  class="shuttle-ops-sync-failed"
+                  aria-live="polite"
+                  [attr.title]="shuttleOperationsManualSyncFailedMessage()">
+                  <mat-icon>error_outline</mat-icon>
+                  <span>סנכרון ידני נכשל ב־{{ formatTime(manualSyncFailedAt) }}</span>
+                </div>
+              }
 
               @if (!shuttleOpsGroups.length) {
                 <div class="shuttle-orders-empty">אין הזמנות פעילות כרגע.</div>

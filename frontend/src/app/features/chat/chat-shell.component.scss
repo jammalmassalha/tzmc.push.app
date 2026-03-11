@@ -1110,6 +1110,27 @@ mat-chip:not(.offline) {
   gap: 12px;
 }
 
+.shuttle-ops-sync-failed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  max-width: 100%;
+  font-size: 11px;
+  line-height: 1.25;
+  color: #8f2f3b;
+  background: rgba(203, 64, 81, 0.08);
+  border: 1px solid rgba(176, 55, 70, 0.25);
+  border-radius: 999px;
+  padding: 3px 8px;
+}
+
+.shuttle-ops-sync-failed mat-icon {
+  width: 14px;
+  height: 14px;
+  font-size: 14px;
+}
+
 .shuttle-ops-accordion {
   display: flex;
   flex-direction: column;
