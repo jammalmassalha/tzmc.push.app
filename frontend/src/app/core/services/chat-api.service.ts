@@ -997,24 +997,14 @@ export class ChatApiService {
     }
 
     const url = `${this.config.shuttleUserOrdersUrl}?action=get_user_orders&user=${encodeURIComponent(normalizedUser)}&force=1&_ts=${Date.now()}`;
-    // Apps Script often responds with an initial 302 redirect and can be slow on cold start.
-    // Keep retries disabled to avoid duplicate bursts, but allow more time before aborting.
-    const response = await this.fetchWithRetry(url, { cache: 'no-store' }, { retries: 0, timeoutMs: 60000 });
-    if (!response.ok) {
-      throw new Error(`Shuttle user orders request failed with ${response.status}`);
-    }
-    const body = await response.text();
+    const body = await this.fetchShuttleOrdersPayloadText(url);
     return this.parseShuttleUserOrders(body);
   }
 
   async getShuttleOperationsOrders(fromDateIso?: string): Promise<ShuttleUserOrderPayload[]> {
     const fromDate = String(fromDateIso || this.resolveTodayIsoDate()).trim();
     const url = `${this.config.shuttleUserOrdersUrl}?action=get_operations_orders&fromDate=${encodeURIComponent(fromDate)}&force=1&_ts=${Date.now()}`;
-    const response = await this.fetchWithRetry(url, { cache: 'no-store' }, { retries: 0, timeoutMs: 60000 });
-    if (!response.ok) {
-      throw new Error(`Shuttle operations orders request failed with ${response.status}`);
-    }
-    const body = await response.text();
+    const body = await this.fetchShuttleOrdersPayloadText(url);
     return this.parseShuttleUserOrders(body);
   }
 
@@ -1155,6 +1145,9 @@ export class ChatApiService {
     try {
       parsed = JSON.parse(payloadText);
     } catch {
+      if (this.isLikelyHtmlPayload(payloadText)) {
+        throw new Error('Shuttle orders endpoint returned HTML instead of JSON');
+      }
       throw new Error('Invalid shuttle orders payload');
     }
 
@@ -1178,6 +1171,58 @@ export class ChatApiService {
     return rows
       .filter((item) => item && typeof item === 'object')
       .map((item) => item as ShuttleUserOrderPayload);
+  }
+
+  private async fetchShuttleOrdersPayloadText(url: string): Promise<string> {
+    // Apps Script can cold-start or bounce through redirects before returning JSON.
+    const response = await this.fetchWithRetry(
+      url,
+      { cache: 'no-store', mode: 'cors', redirect: 'follow', credentials: 'omit' },
+      { retries: 1, timeoutMs: 60000 }
+    );
+    if (!response.ok) {
+      throw new Error(`Shuttle orders request failed with ${response.status}`);
+    }
+
+    const body = String(await response.text());
+    if (!this.isLikelyHtmlPayload(body)) {
+      return body;
+    }
+
+    const fallbackHref = this.extractMovedTemporarilyHref(body);
+    if (!fallbackHref) {
+      if (/accounts\.google\.com/i.test(body)) {
+        throw new Error('Shuttle orders endpoint is not publicly accessible');
+      }
+      throw new Error('Shuttle orders endpoint returned unexpected HTML');
+    }
+
+    const fallbackResponse = await this.fetchWithRetry(
+      fallbackHref,
+      { cache: 'no-store', mode: 'cors', redirect: 'follow', credentials: 'omit' },
+      { retries: 1, timeoutMs: 60000 }
+    );
+    if (!fallbackResponse.ok) {
+      throw new Error(`Shuttle orders fallback request failed with ${fallbackResponse.status}`);
+    }
+    return String(await fallbackResponse.text());
+  }
+
+  private isLikelyHtmlPayload(payloadText: string): boolean {
+    return /<html[\s>]/i.test(payloadText) || /<body[\s>]/i.test(payloadText);
+  }
+
+  private extractMovedTemporarilyHref(payloadText: string): string | null {
+    const hrefMatch = payloadText.match(/<a[^>]+href="([^"]+)"/i);
+    const href = String(hrefMatch?.[1] || '').trim();
+    if (!href) {
+      return null;
+    }
+    const decodedHref = href.replace(/&amp;/g, '&');
+    if (!/^https:\/\/script\.googleusercontent\.com\//i.test(decodedHref)) {
+      return null;
+    }
+    return decodedHref;
   }
 
   private resolveTodayIsoDate(): string {
