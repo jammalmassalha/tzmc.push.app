@@ -2741,13 +2741,13 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     }
 
     return source.replace(
-      /(^|[\s([{>])\*([^*\n]+?)\*(?=$|[\s)\]}<.,!?;:])/g,
-      (full, prefix: string, content: string) => {
+      /\*([^*\n]+?)\*/g,
+      (full, content: string) => {
         const normalizedContent = String(content || '').trim();
         if (!normalizedContent) {
           return full;
         }
-        return `${prefix}<strong class="message-inline-bold">${normalizedContent}</strong>`;
+        return `<strong class="message-inline-bold">${normalizedContent}</strong>`;
       }
     );
   }
