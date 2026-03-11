@@ -2532,46 +2532,34 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
     addToQueue(targetToNotify, pollingMessage);
 
     if (isGroup) {
-        const queuePayload = {
-            queueType: 'group-push-only',
-            messageId,
-            shortText,
-            longText: reply || shortText,
-            imageUrl: imageUrl || null,
-            senderName: senderLabel,
-            groupId,
-            groupName: normalizedGroupName || (groupRecord && groupRecord.name) || String(groupId || '').trim(),
-            groupMembers: Array.isArray(groupMembers)
-                ? groupMembers
-                : (groupRecord && Array.isArray(groupRecord.members) ? groupRecord.members : []),
-            groupCreatedBy: groupCreatedBy || (groupRecord && groupRecord.createdBy) || null,
-            groupUpdatedAt: groupUpdatedAt || (groupRecord && groupRecord.updatedAt) || Date.now(),
-            groupType: normalizedGroupType
+        const resolvedGroupNameForQueue = String(
+            normalizedGroupName ||
+            (groupRecord && groupRecord.name) ||
+            groupId ||
+            senderLabel ||
+            'Group'
+        ).trim() || 'Group';
+        const queueMessageText = String(
+            reply ||
+            shortText ||
+            (imageUrl ? 'Sent an image' : '')
+        ).trim();
+        const queueMessageContent = queueMessageText
+            ? `${senderLabel}: ${queueMessageText}`
+            : `${senderLabel}: New Message`;
+        const enqueueResult = await enqueueToSendSheetRows({
+            recipients: targetToNotify,
+            // Requirement: sender column in ToSend should be the group display name.
+            sender: resolvedGroupNameForQueue,
+            messageContent: queueMessageContent
+        });
+        return {
+            status: 'success',
+            details: {
+                queuedRecipients: Number(enqueueResult && enqueueResult.queuedRecipients) || targetToNotify.length,
+                mode: 'sheet-queue'
+            }
         };
-        try {
-            const enqueueResult = await enqueueToSendSheetRows({
-                recipients: targetToNotify,
-                sender: groupId || user,
-                messageContent: JSON.stringify(queuePayload)
-            });
-            return {
-                status: 'success',
-                details: {
-                    queuedRecipients: Number(enqueueResult && enqueueResult.queuedRecipients) || targetToNotify.length,
-                    mode: 'sheet-queue'
-                }
-            };
-        } catch (queueError) {
-            console.warn('[GROUP QUEUE] enqueue_to_send failed, fallback to direct push:', queueError && queueError.message ? queueError.message : queueError);
-            const fallbackResult = await sendPushNotificationToUser(targetToNotify, notificationData, groupId || user, { messageId });
-            return {
-                status: 'success',
-                details: {
-                    ...fallbackResult,
-                    mode: 'direct-push-fallback'
-                }
-            };
-        }
     }
 
     const senderForPush = user;
