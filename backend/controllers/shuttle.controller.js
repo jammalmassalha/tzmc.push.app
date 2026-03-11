@@ -88,6 +88,21 @@ function parseShuttleOrdersProxyPayload(payloadText) {
     return parsed;
 }
 
+function buildShuttleOperationsProxyResponse(payload, source, startedAt) {
+    const normalizedSource = source === 'cache' ? 'cache' : 'remote';
+    const basePayload = (payload && typeof payload === 'object' && !Array.isArray(payload))
+        ? payload
+        : {
+            result: 'success',
+            orders: Array.isArray(payload) ? payload : []
+        };
+    return {
+        ...basePayload,
+        source: normalizedSource,
+        proxyMs: Math.max(0, Date.now() - Number(startedAt || Date.now()))
+    };
+}
+
 const SHUTTLE_OPERATIONS_PROXY_CACHE_TTL_MS = 90 * 1000;
 const shuttleOperationsProxyCacheByDate = new Map();
 const shuttleOperationsProxyInFlightByDate = new Map();
@@ -144,11 +159,14 @@ function registerShuttleController(app, deps = {}) {
         ['/shuttle/orders/operations', '/notify/shuttle/orders/operations'],
         requireAuthorizedUserForOperations,
         async (req, res) => {
+            const requestStartedAt = Date.now();
             if (!SHUTTLE_USER_ORDERS_URL || typeof buildShuttleUserOrdersUrl !== 'function') {
                 return res.status(503).json({
                     result: 'error',
                     message: 'Shuttle orders endpoint is not configured',
-                    orders: []
+                    orders: [],
+                    source: 'remote',
+                    proxyMs: 0
                 });
             }
 
@@ -161,26 +179,28 @@ function registerShuttleController(app, deps = {}) {
             const now = Date.now();
             const cachedPayload = getShuttleOperationsProxyCachedPayload(cacheKey, now);
             if (!force && cachedPayload) {
-                return res.json(cachedPayload);
+                return res.json(buildShuttleOperationsProxyResponse(cachedPayload, 'cache', requestStartedAt));
             }
 
             const existingInFlight = shuttleOperationsProxyInFlightByDate.get(cacheKey);
             if (existingInFlight) {
                 if (!force && cachedPayload) {
-                    return res.json(cachedPayload);
+                    return res.json(buildShuttleOperationsProxyResponse(cachedPayload, 'cache', requestStartedAt));
                 }
                 try {
                     const payload = await existingInFlight;
-                    return res.json(payload);
+                    return res.json(buildShuttleOperationsProxyResponse(payload, 'remote', requestStartedAt));
                 } catch (error) {
                     if (cachedPayload) {
-                        return res.json(cachedPayload);
+                        return res.json(buildShuttleOperationsProxyResponse(cachedPayload, 'cache', requestStartedAt));
                     }
                     const message = error && error.message ? error.message : 'Failed to load shuttle operations orders';
                     return res.status(502).json({
                         result: 'error',
                         message,
-                        orders: []
+                        orders: [],
+                        source: 'remote',
+                        proxyMs: Math.max(0, Date.now() - requestStartedAt)
                     });
                 }
             }
@@ -204,17 +224,19 @@ function registerShuttleController(app, deps = {}) {
             shuttleOperationsProxyInFlightByDate.set(cacheKey, syncPromise);
             try {
                 const payload = await syncPromise;
-                return res.json(payload);
+                return res.json(buildShuttleOperationsProxyResponse(payload, 'remote', requestStartedAt));
             } catch (error) {
                 if (cachedPayload) {
-                    return res.json(cachedPayload);
+                    return res.json(buildShuttleOperationsProxyResponse(cachedPayload, 'cache', requestStartedAt));
                 }
                 const message = error && error.message ? error.message : 'Failed to load shuttle operations orders';
                 console.error('[SHUTTLE OPS] Failed to proxy operations orders:', message);
                 return res.status(502).json({
                     result: 'error',
                     message,
-                    orders: []
+                    orders: [],
+                    source: 'remote',
+                    proxyMs: Math.max(0, Date.now() - requestStartedAt)
                 });
             } finally {
                 if (shuttleOperationsProxyInFlightByDate.get(cacheKey) === syncPromise) {
