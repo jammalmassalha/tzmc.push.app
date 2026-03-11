@@ -1394,8 +1394,40 @@ export class ChatStoreService {
         nonSystemLogs,
         groupsSnapshotBeforeCacheClear
       );
-      this.ensureGroupsFromImportedLogs(normalizedLogs, groupsSnapshotBeforeCacheClear);
-      this.applyIncomingMessagesBatch(normalizedLogs, {
+      const knownGroupNamesById = new Map<string, string>();
+      [...groupsSnapshotBeforeCacheClear, ...this.groups()].forEach((group) => {
+        const groupId = this.normalizeChatId(String(group.id || '').trim());
+        const groupName = String(group.name || '').trim();
+        if (!groupId || !groupName) return;
+        if (this.normalizeChatId(groupName) === groupId) return;
+        if (!knownGroupNamesById.has(groupId)) {
+          knownGroupNamesById.set(groupId, groupName);
+        }
+      });
+      const importableLogs = normalizedLogs
+        .map((message) => {
+          const groupId = this.normalizeChatId(String(message.groupId ?? '').trim());
+          if (!groupId) return message;
+          const incomingGroupName = String(message.groupName ?? '').trim();
+          const knownGroupName = knownGroupNamesById.get(groupId) ?? '';
+          const hasNamedGroup = Boolean(
+            (incomingGroupName && this.normalizeChatId(incomingGroupName) !== groupId) ||
+            knownGroupName
+          );
+          if (!hasNamedGroup) {
+            return null;
+          }
+          if (incomingGroupName && this.normalizeChatId(incomingGroupName) !== groupId) {
+            return message;
+          }
+          return {
+            ...message,
+            groupName: knownGroupName
+          };
+        })
+        .filter((message): message is IncomingServerMessage => Boolean(message));
+      this.ensureGroupsFromImportedLogs(importableLogs, groupsSnapshotBeforeCacheClear);
+      this.applyIncomingMessagesBatch(importableLogs, {
         incrementUnread: false,
         trackReadReceipts: false,
         applyActions: false,
