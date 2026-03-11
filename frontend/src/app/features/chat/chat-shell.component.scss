@@ -536,6 +536,59 @@ mat-chip:not(.offline) {
   line-height: 1.2;
 }
 
+.conversation-title-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.conversation-title-edit-btn {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  color: #3952ad;
+}
+
+.conversation-title-edit-btn mat-icon {
+  width: 16px;
+  height: 16px;
+  font-size: 16px;
+  line-height: 16px;
+}
+
+.conversation-title-inline-edit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.conversation-title-inline-input {
+  min-height: 34px;
+  width: min(360px, 100%);
+  border: 1px solid rgba(11, 20, 26, 0.16);
+  border-radius: 10px;
+  padding: 0 10px;
+  background: #fff;
+  color: #111b21;
+  direction: rtl;
+  text-align: right;
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.conversation-title-inline-input:focus {
+  outline: 0;
+  border-color: rgba(63, 87, 191, 0.35);
+  box-shadow: 0 0 0 1px rgba(63, 87, 191, 0.18);
+}
+
+.conversation-title-inline-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .conversation-title small {
   color: #6f788a;
 }
