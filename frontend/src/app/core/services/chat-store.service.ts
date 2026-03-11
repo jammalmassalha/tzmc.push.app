@@ -1325,6 +1325,11 @@ export class ChatStoreService {
     // First, try sending pending outgoing items before cache reset.
     await this.flushOutbox();
 
+    const groupsSnapshotBeforeCacheClear = this.groups().map((group) => ({
+      ...group,
+      members: Array.isArray(group.members) ? [...group.members] : []
+    }));
+
     this.clearLocalChatCacheForUser(user, { keepOutbox: true });
     this.resetRuntimeStateAfterCacheClear(user);
 
@@ -1336,7 +1341,11 @@ export class ChatStoreService {
         const sender = this.normalizeUser(String(message.sender ?? '').trim());
         return Boolean(sender && sender !== 'system');
       });
-      const normalizedLogs = this.normalizeLogsMessagesForImport(nonSystemLogs);
+      const normalizedLogs = this.normalizeLogsMessagesForImport(
+        nonSystemLogs,
+        groupsSnapshotBeforeCacheClear
+      );
+      this.ensureGroupsFromImportedLogs(normalizedLogs, groupsSnapshotBeforeCacheClear);
       this.applyIncomingMessagesBatch(normalizedLogs, {
         incrementUnread: false,
         trackReadReceipts: false,
@@ -1357,11 +1366,20 @@ export class ChatStoreService {
     this.schedulePersist();
   }
 
-  private normalizeLogsMessagesForImport(messages: IncomingServerMessage[]): IncomingServerMessage[] {
+  private normalizeLogsMessagesForImport(
+    messages: IncomingServerMessage[],
+    fallbackGroups: ChatGroup[] = []
+  ): IncomingServerMessage[] {
     if (!Array.isArray(messages) || !messages.length) {
       return [];
     }
-    const groupsById = new Map(this.groups().map((group) => [group.id, group]));
+    const groupsById = new Map<string, ChatGroup>();
+    this.groups().forEach((group) => groupsById.set(group.id, group));
+    fallbackGroups.forEach((group) => {
+      if (!groupsById.has(group.id)) {
+        groupsById.set(group.id, group);
+      }
+    });
     return messages.map((message) => {
       const incoming = { ...message };
       const normalizedSender = this.normalizeUser(String(incoming.sender ?? '').trim());
@@ -1369,6 +1387,9 @@ export class ChatStoreService {
       const normalizedGroupName = String(incoming.groupName ?? '').trim();
 
       let resolvedGroupId = normalizedGroupId;
+      if (!resolvedGroupId && normalizedSender && /^group:/i.test(normalizedSender)) {
+        resolvedGroupId = this.normalizeChatId(normalizedSender);
+      }
       if (!resolvedGroupId && normalizedSender && groupsById.has(this.normalizeChatId(normalizedSender))) {
         resolvedGroupId = this.normalizeChatId(normalizedSender);
       }
@@ -1381,14 +1402,89 @@ export class ChatStoreService {
         !normalizedGroupName ||
         this.normalizeChatId(normalizedGroupName) === resolvedGroupId
       );
+      const rawBody = String(incoming.body ?? '').trim();
+      const senderPrefixMatch = rawBody.match(/^([^:\n]{1,80})\s*:\s*(.+)$/);
+      const inferredSenderName = senderPrefixMatch ? String(senderPrefixMatch[1] || '').trim() : '';
+      const inferredBody = senderPrefixMatch ? String(senderPrefixMatch[2] || '').trim() : rawBody;
+
       return {
         ...incoming,
         groupId: resolvedGroupId,
         groupName: shouldUseExistingName
           ? (existingGroup?.name || normalizedGroupName || resolvedGroupId)
           : normalizedGroupName,
-        groupType: incoming.groupType ?? existingGroup?.type
+        groupType: incoming.groupType ?? existingGroup?.type ?? 'group',
+        groupSenderName: String(incoming.groupSenderName ?? '').trim() || inferredSenderName || undefined,
+        body: inferredBody || rawBody
       };
+    });
+  }
+
+  private ensureGroupsFromImportedLogs(
+    messages: IncomingServerMessage[],
+    fallbackGroups: ChatGroup[] = []
+  ): void {
+    if (!Array.isArray(messages) || !messages.length) return;
+    const currentUser = this.normalizeUser(this.currentUser() ?? '');
+    const fallbackById = new Map<string, ChatGroup>();
+    fallbackGroups.forEach((group) => fallbackById.set(group.id, group));
+
+    this.groups.update((groups) => {
+      let changed = false;
+      const existingById = new Map(groups.map((group) => [group.id, group]));
+      const nextGroups = groups.slice();
+
+      for (const message of messages) {
+        const groupId = this.normalizeChatId(String(message.groupId ?? '').trim());
+        if (!groupId) continue;
+
+        const incomingGroupName = String(message.groupName ?? '').trim();
+        const fallbackGroup = fallbackById.get(groupId) ?? null;
+        const resolvedGroupName = (
+          incomingGroupName && this.normalizeChatId(incomingGroupName) !== groupId
+            ? incomingGroupName
+            : (fallbackGroup?.name || incomingGroupName || groupId)
+        );
+        const resolvedType: GroupType = message.groupType === 'community' ? 'community' : 'group';
+
+        const existing = existingById.get(groupId) ?? null;
+        if (!existing) {
+          changed = true;
+          const members = Array.isArray(fallbackGroup?.members)
+            ? Array.from(new Set(fallbackGroup!.members.map((member) => this.normalizeUser(member)).filter(Boolean)))
+            : (currentUser ? [currentUser] : []);
+          const nextGroup: ChatGroup = {
+            id: groupId,
+            name: resolvedGroupName,
+            members,
+            createdBy: this.normalizeUser(fallbackGroup?.createdBy || currentUser || 'system'),
+            updatedAt: Date.now(),
+            type: resolvedType
+          };
+          nextGroups.unshift(nextGroup);
+          existingById.set(groupId, nextGroup);
+          continue;
+        }
+
+        const existingName = String(existing.name || '').trim();
+        const existingNameLooksLikeId = this.normalizeChatId(existingName) === groupId;
+        const resolvedNameLooksLikeId = this.normalizeChatId(resolvedGroupName) === groupId;
+        if (existingNameLooksLikeId && !resolvedNameLooksLikeId) {
+          changed = true;
+          const updatedGroup: ChatGroup = {
+            ...existing,
+            name: resolvedGroupName,
+            updatedAt: Math.max(existing.updatedAt || 0, Date.now())
+          };
+          const index = nextGroups.findIndex((group) => group.id === groupId);
+          if (index >= 0) {
+            nextGroups[index] = updatedGroup;
+          }
+          existingById.set(groupId, updatedGroup);
+        }
+      }
+
+      return changed ? nextGroups : groups;
     });
   }
 
