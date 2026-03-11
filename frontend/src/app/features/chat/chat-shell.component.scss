@@ -1106,6 +1106,67 @@ mat-chip:not(.offline) {
   gap: 8px;
 }
 
+.shuttle-ops-dashboard {
+  gap: 12px;
+}
+
+.shuttle-ops-sync-failed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  max-width: 100%;
+  font-size: 11px;
+  line-height: 1.25;
+  color: #8f2f3b;
+  background: rgba(203, 64, 81, 0.08);
+  border: 1px solid rgba(176, 55, 70, 0.25);
+  border-radius: 999px;
+  padding: 3px 8px;
+}
+
+.shuttle-ops-sync-failed mat-icon {
+  width: 14px;
+  height: 14px;
+  font-size: 14px;
+}
+
+.shuttle-ops-accordion {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.shuttle-ops-panel {
+  border-radius: 12px !important;
+  overflow: hidden;
+  border: 1px solid rgba(64, 89, 179, 0.22);
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.shuttle-ops-panel .mat-expansion-panel-header {
+  min-height: 56px;
+  padding-inline: 14px;
+}
+
+.shuttle-ops-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  padding-inline: 8px;
+  background: rgba(57, 86, 187, 0.14);
+  color: #1f3275;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.shuttle-ops-cards {
+  padding-top: 4px;
+}
+
 .shuttle-order-card {
   border-radius: 14px;
   border: 1px solid rgba(64, 89, 179, 0.2);

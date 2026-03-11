@@ -160,13 +160,6 @@ export interface UserPushSubscriptionPayload {
   user?: string;
 }
 
-const SHUTTLE_ENTRY_EMPLOYEE = 'entry.1035269960';
-const SHUTTLE_ENTRY_DATE = 'entry.794242217';
-const SHUTTLE_ENTRY_DATE_ALT = 'entry.794242217_22';
-const SHUTTLE_ENTRY_SHIFT = 'entry.1992732561';
-const SHUTTLE_ENTRY_STATION = 'entry.1096369604';
-const SHUTTLE_ENTRY_STATUS = 'entry.798637322';
-
 @Injectable({ providedIn: 'root' })
 export class ChatApiService {
   private readonly config = runtimeConfig;
@@ -783,15 +776,6 @@ export class ChatApiService {
       payload.subscriptionMobile = subscription;
     }
 
-    const sheetRegistration = this.fetchWithRetry(
-      this.config.subscriptionUrl,
-      {
-        method: 'POST',
-        mode: 'no-cors',
-        body: JSON.stringify(payload)
-      },
-      { retries: 2, timeoutMs: 15000, backoffMs: 700 }
-    );
     const backendRegistration = this.fetchWithRetry(
       `${this.notifyBaseUrl}/register-device`,
       {
@@ -801,8 +785,7 @@ export class ChatApiService {
       },
       { retries: 2, timeoutMs: 12000, backoffMs: 500 }
     );
-
-    await Promise.allSettled([sheetRegistration, backendRegistration]);
+    await backendRegistration;
   }
 
   async getVersion(): Promise<{ version: string; notes: string[] }> {
@@ -828,7 +811,7 @@ export class ChatApiService {
   }
 
   async getHrSteps(): Promise<HrStepOption[]> {
-    const url = `${this.config.subscriptionUrl}?action=get_hr_steps`;
+    const url = `${this.notifyBaseUrl}/hr/steps?_ts=${Date.now()}`;
     const response = await this.fetchWithRetry(url, {}, { retries: 2, timeoutMs: 10000 });
     if (!response.ok) {
       throw new Error(`HR steps request failed with ${response.status}`);
@@ -852,7 +835,7 @@ export class ChatApiService {
     const normalized = String(serviceId || '').trim();
     if (!normalized) return [];
 
-    const url = `${this.config.subscriptionUrl}?action=get_hr_steps_action&serviceId=${encodeURIComponent(normalized)}`;
+    const url = `${this.notifyBaseUrl}/hr/actions?serviceId=${encodeURIComponent(normalized)}&_ts=${Date.now()}`;
     const response = await this.fetchWithRetry(url, {}, { retries: 2, timeoutMs: 10000 });
     if (!response.ok) {
       throw new Error(`HR actions request failed with ${response.status}`);
@@ -873,28 +856,40 @@ export class ChatApiService {
 
   async getShuttleEmployees(): Promise<string[]> {
     const response = await this.fetchWithRetry(
-      `${this.config.shuttleSheetUrl}?emp=test`,
+      `${this.notifyBaseUrl}/shuttle/employees?_ts=${Date.now()}`,
       {},
       { retries: 2, timeoutMs: 12000 }
     );
     if (!response.ok) {
       throw new Error(`Shuttle employees request failed with ${response.status}`);
     }
-    const body = await response.text();
-    return this.parseJsonStringArray(body);
+    const body = (await response.json()) as { result?: string; data?: unknown; message?: string };
+    const result = String(body?.result ?? '').trim().toLowerCase();
+    if (result && result !== 'success') {
+      throw new Error(String(body?.message ?? 'Failed to load shuttle employees'));
+    }
+    return Array.isArray(body?.data)
+      ? body.data.map((item) => String(item ?? '').trim()).filter(Boolean)
+      : [];
   }
 
   async getShuttleStations(): Promise<string[]> {
     const response = await this.fetchWithRetry(
-      `${this.config.shuttleSheetUrl}?park=test`,
+      `${this.notifyBaseUrl}/shuttle/stations?_ts=${Date.now()}`,
       {},
       { retries: 2, timeoutMs: 12000 }
     );
     if (!response.ok) {
       throw new Error(`Shuttle stations request failed with ${response.status}`);
     }
-    const body = await response.text();
-    return this.parseJsonStringArray(body);
+    const body = (await response.json()) as { result?: string; data?: unknown; message?: string };
+    const result = String(body?.result ?? '').trim().toLowerCase();
+    if (result && result !== 'success') {
+      throw new Error(String(body?.message ?? 'Failed to load shuttle stations'));
+    }
+    return Array.isArray(body?.data)
+      ? body.data.map((item) => String(item ?? '').trim()).filter(Boolean)
+      : [];
   }
 
   async submitShuttleOrder(payload: ShuttleOrderSubmitPayload): Promise<void> {
@@ -909,18 +904,14 @@ export class ChatApiService {
       throw new Error('Shuttle payload is missing required fields');
     }
 
-    const params = new URLSearchParams();
-    params.set(SHUTTLE_ENTRY_EMPLOYEE, employee);
-    params.set(SHUTTLE_ENTRY_DATE, date);
-    params.set(SHUTTLE_ENTRY_DATE_ALT, dateAlt);
-    params.set(SHUTTLE_ENTRY_SHIFT, shift);
-    params.set(SHUTTLE_ENTRY_STATION, station);
-    params.set(SHUTTLE_ENTRY_STATUS, status);
-    params.set('_ts', String(Date.now()));
-
     const response = await this.fetchWithRetry(
-      `${this.config.shuttleSheetUrl}?${params.toString()}`,
-      { cache: 'no-store' },
+      `${this.notifyBaseUrl}/shuttle/orders`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ employee, date, dateAlt, shift, station, status }),
+        cache: 'no-store'
+      },
       { retries: 2, timeoutMs: 12000 }
     );
     if (!response.ok) {
@@ -996,14 +987,42 @@ export class ChatApiService {
       return [];
     }
 
-    const url = `${this.config.shuttleUserOrdersUrl}?action=get_user_orders&user=${encodeURIComponent(normalizedUser)}&force=1&_ts=${Date.now()}`;
-    // Apps Script often responds with an initial 302 redirect and can be slow on cold start.
-    // Keep retries disabled to avoid duplicate bursts, but allow more time before aborting.
-    const response = await this.fetchWithRetry(url, { cache: 'no-store' }, { retries: 0, timeoutMs: 60000 });
+    const url = `${this.notifyBaseUrl}/shuttle/orders/user?user=${encodeURIComponent(normalizedUser)}&force=1&_ts=${Date.now()}&ngsw-bypass=1`;
+    const response = await this.fetchWithRetry(
+      url,
+      { cache: 'no-store', headers: { 'ngsw-bypass': 'true' } },
+      { retries: 1, timeoutMs: 65000 }
+    );
     if (!response.ok) {
       throw new Error(`Shuttle user orders request failed with ${response.status}`);
     }
-    const body = await response.text();
+    const body = String(await response.text() || '');
+    return this.parseShuttleUserOrders(body);
+  }
+
+  async getShuttleOperationsOrders(
+    fromDateIso?: string,
+    options: { force?: boolean } = {}
+  ): Promise<ShuttleUserOrderPayload[]> {
+    const fromDate = String(fromDateIso || this.resolveTodayIsoDate()).trim();
+    const force = options.force === true ? '1' : '0';
+    const url = `${this.notifyBaseUrl}/shuttle/orders/operations?fromDate=${encodeURIComponent(fromDate)}&force=${force}&_ts=${Date.now()}&ngsw-bypass=1`;
+    const response = await this.fetchWithRetry(
+      url,
+      { cache: 'no-store', headers: { 'ngsw-bypass': 'true' } },
+      { retries: 1, timeoutMs: 65000 }
+    );
+    const body = String(await response.text() || '');
+    if (!response.ok) {
+      let parsedError: { message?: string; error?: string } | null = null;
+      try {
+        parsedError = JSON.parse(body) as { message?: string; error?: string };
+      } catch {
+        parsedError = null;
+      }
+      const message = String(parsedError?.message ?? parsedError?.error ?? '').trim();
+      throw new Error(message || `Shuttle operations orders request failed with ${response.status}`);
+    }
     return this.parseShuttleUserOrders(body);
   }
 
@@ -1013,7 +1032,7 @@ export class ChatApiService {
       return [];
     }
 
-    const url = `${this.config.subscriptionUrl}?action=get_subscriptions&username=${encodeURIComponent(normalizedUser)}`;
+    const url = `${this.notifyBaseUrl}/subscriptions?username=${encodeURIComponent(normalizedUser)}&_ts=${Date.now()}`;
     const response = await this.fetchWithRetry(url, {}, { retries: 1, timeoutMs: 12000 });
     if (!response.ok) {
       throw new Error(`User subscriptions request failed with ${response.status}`);
@@ -1125,25 +1144,14 @@ export class ChatApiService {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  private parseJsonStringArray(payloadText: string): string[] {
-    try {
-      const parsed = JSON.parse(payloadText);
-      if (!Array.isArray(parsed)) {
-        return [];
-      }
-      return parsed
-        .map((item) => String(item ?? '').trim())
-        .filter(Boolean);
-    } catch {
-      return [];
-    }
-  }
-
   private parseShuttleUserOrders(payloadText: string): ShuttleUserOrderPayload[] {
     let parsed: unknown;
     try {
       parsed = JSON.parse(payloadText);
     } catch {
+      if (this.isLikelyHtmlPayload(payloadText)) {
+        throw new Error('Shuttle orders endpoint returned HTML instead of JSON');
+      }
       throw new Error('Invalid shuttle orders payload');
     }
 
@@ -1167,5 +1175,17 @@ export class ChatApiService {
     return rows
       .filter((item) => item && typeof item === 'object')
       .map((item) => item as ShuttleUserOrderPayload);
+  }
+
+  private isLikelyHtmlPayload(payloadText: string): boolean {
+    return /<html[\s>]/i.test(payloadText) || /<body[\s>]/i.test(payloadText);
+  }
+
+  private resolveTodayIsoDate(): string {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
 }

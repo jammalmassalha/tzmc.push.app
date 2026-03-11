@@ -16,6 +16,7 @@ import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
+import { MatExpansionModule } from '@angular/material/expansion';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
@@ -39,6 +40,7 @@ import {
   IncomingReactionNotice,
   ShuttleBreadcrumbStep,
   ShuttleLanguage,
+  ShuttleOperationsDateGroup,
   ShuttleOrdersDashboard,
   ShuttleQuickPickerState
 } from '../../core/services/chat-store.service';
@@ -111,6 +113,7 @@ interface ShuttleOrderMessageCard {
 
 const MESSAGE_PAGE_SIZE = 15;
 const LOAD_OLDER_MESSAGES_SCROLL_THRESHOLD_PX = 56;
+const SHUTTLE_OPERATIONS_BACKGROUND_REFRESH_MS = 30_000;
 
 type ShuttleUiTextKey =
   | 'ordersTitle'
@@ -252,6 +255,7 @@ const SHUTTLE_UI_TEXT: Record<ShuttleLanguage, Record<ShuttleUiTextKey, string>>
     ReactiveFormsModule,
     ScrollingModule,
     MatDialogModule,
+    MatExpansionModule,
     MatFormFieldModule,
     MatInputModule,
     MatButtonModule,
@@ -343,6 +347,9 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     if (!activeChat) {
       return 'בחר צ׳אט כדי להתחיל';
     }
+    if (this.isShuttleOperationsRoomActive()) {
+      return 'חדר הסעות למעקב בלבד';
+    }
     if (this.store.getShuttleQuickPickerState()) {
       return 'לבחירה השתמש בכפתורים';
     }
@@ -350,7 +357,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       return 'הקלד הודעה';
     }
     if (this.store.isDovrutGroupChat(activeChat.id)) {
-      return 'רק מנהלי דוברות יכולים לשלוח בחדר זה';
+      return 'רק מנהלי החדר יכולים לשלוח בחדר זה';
     }
     return 'רק מנהל יכול לשלוח בקבוצת קהילה';
   });
@@ -367,14 +374,29 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   readonly shuttleOrdersDashboard = computed<ShuttleOrdersDashboard | null>(() =>
     this.store.getShuttleOrdersDashboard()
   );
+  readonly shuttleOperationsDateGroups = computed<ShuttleOperationsDateGroup[] | null>(() =>
+    this.store.getShuttleOperationsDateGroupsForActiveChat()
+  );
+  readonly isLoadingShuttleOperationsOrders = computed(() =>
+    this.store.getShuttleOperationsOrdersLoading()
+  );
+  readonly shuttleOperationsManualSyncFailedAt = signal<number | null>(null);
+  readonly shuttleOperationsManualSyncFailedMessage = signal('');
+  readonly isShuttleOperationsRoomActive = computed(() =>
+    Boolean(this.shuttleOperationsDateGroups())
+  );
   readonly isLoadingShuttleOrders = computed(() =>
     this.store.getShuttleOrdersLoading()
   );
   readonly shuttleLanguage = computed<ShuttleLanguage>(() => this.store.getShuttleLanguage());
   readonly shuttleDashboardTab = signal<'ongoing' | 'past'>('ongoing');
   readonly isShuttleRoomActive = computed(() =>
-    Boolean(this.shuttleOrdersDashboard() || this.shuttleQuickPicker())
+    Boolean(this.shuttleOrdersDashboard() || this.shuttleQuickPicker() || this.isShuttleOperationsRoomActive())
   );
+  readonly isComposerHidden = computed(() =>
+    Boolean(this.shuttleQuickPicker() || this.isShuttleOperationsRoomActive())
+  );
+  readonly expandedShuttleOperationsDates = signal<Set<string>>(new Set<string>());
   readonly shuttleBreadcrumbs = computed<ShuttleBreadcrumbStep[] | null>(() =>
     this.store.getShuttleFlowBreadcrumbs()
   );
@@ -509,6 +531,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   private openBoundaryScrollRafId: number | null = null;
   private relativeTimeRefreshId: number | null = null;
   private logoutProgressIntervalId: number | null = null;
+  private shuttleOperationsBackgroundRefreshId: number | null = null;
   private routeQueryParamsSub: Subscription | null = null;
   private isLoadingOlderMessages = false;
   private lastPaginatedChatId: string | null = null;
@@ -653,6 +676,42 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     }
   });
 
+  private readonly shuttleOperationsAutoRefreshEffect = effect(() => {
+    const activeChatId = this.store.activeChatId();
+    if (!this.store.isShuttleOperationsRoomChat(activeChatId)) {
+      if (this.shuttleOperationsBackgroundRefreshId !== null) {
+        window.clearInterval(this.shuttleOperationsBackgroundRefreshId);
+        this.shuttleOperationsBackgroundRefreshId = null;
+      }
+      return;
+    }
+    void this.store.refreshShuttleOperationsOrdersForActiveUser({ force: false, silent: true }).catch(() => undefined);
+    if (this.shuttleOperationsBackgroundRefreshId === null) {
+      this.shuttleOperationsBackgroundRefreshId = window.setInterval(() => {
+        void this.store.refreshShuttleOperationsOrdersForActiveUser({ force: false, silent: true }).catch(() => undefined);
+      }, SHUTTLE_OPERATIONS_BACKGROUND_REFRESH_MS);
+    }
+  });
+
+  private readonly shuttleOperationsExpansionSyncEffect = effect(() => {
+    const groups = this.shuttleOperationsDateGroups();
+    if (!groups || !groups.length) {
+      this.expandedShuttleOperationsDates.set(new Set<string>());
+      return;
+    }
+    const nextExpanded = new Set(this.expandedShuttleOperationsDates());
+    const validDateKeys = new Set(groups.map((group) => group.date));
+    for (const existingKey of Array.from(nextExpanded)) {
+      if (!validDateKeys.has(existingKey)) {
+        nextExpanded.delete(existingKey);
+      }
+    }
+    if (!nextExpanded.size && groups[0]?.date) {
+      nextExpanded.add(groups[0].date);
+    }
+    this.expandedShuttleOperationsDates.set(nextExpanded);
+  });
+
   private readonly editingMessageGuardEffect = effect(() => {
     const editing = this.editingMessageTarget();
     if (!editing) return;
@@ -770,6 +829,10 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       window.clearInterval(this.relativeTimeRefreshId);
       this.relativeTimeRefreshId = null;
     }
+    if (this.shuttleOperationsBackgroundRefreshId !== null) {
+      window.clearInterval(this.shuttleOperationsBackgroundRefreshId);
+      this.shuttleOperationsBackgroundRefreshId = null;
+    }
     if (this.openBoundaryScrollRafId !== null) {
       window.cancelAnimationFrame(this.openBoundaryScrollRafId);
       this.openBoundaryScrollRafId = null;
@@ -828,7 +891,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   async sendMessage(): Promise<void> {
-    if (this.shuttleQuickPicker() && !this.editingMessageTarget()) {
+    if (this.isComposerHidden() && !this.editingMessageTarget()) {
       return;
     }
     if (!this.canSendMessage()) return;
@@ -989,6 +1052,74 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     } catch (error) {
       const message = error instanceof Error ? error.message : this.shuttleText('refreshFailedFallback');
       this.snackBar.open(message, this.shuttleCloseActionLabel(), { duration: 2800 });
+    }
+  }
+
+  async refreshShuttleOperationsOrders(): Promise<void> {
+    if (this.isLoadingShuttleOperationsOrders()) return;
+    try {
+      await this.store.refreshShuttleOperationsOrdersForActiveUser({ force: true, throwOnError: true });
+      this.shuttleOperationsManualSyncFailedAt.set(null);
+      this.shuttleOperationsManualSyncFailedMessage.set('');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : this.shuttleText('refreshFailedFallback');
+      this.shuttleOperationsManualSyncFailedAt.set(Date.now());
+      this.shuttleOperationsManualSyncFailedMessage.set(message);
+    }
+  }
+
+  isShuttleOperationsDateExpanded(date: string): boolean {
+    const normalizedDate = String(date || '').trim();
+    if (!normalizedDate) return false;
+    return this.expandedShuttleOperationsDates().has(normalizedDate);
+  }
+
+  setShuttleOperationsDateExpanded(date: string, expanded: boolean): void {
+    const normalizedDate = String(date || '').trim();
+    if (!normalizedDate) return;
+    const next = new Set(this.expandedShuttleOperationsDates());
+    if (expanded) {
+      next.add(normalizedDate);
+    } else {
+      next.delete(normalizedDate);
+    }
+    this.expandedShuttleOperationsDates.set(next);
+  }
+
+  canCancelShuttleOperationsOrder(): boolean {
+    return this.store.canCurrentUserManageShuttleOperationsOrders();
+  }
+
+  async cancelShuttleOperationsOrder(orderCompositeId: string): Promise<void> {
+    const normalizedId = String(orderCompositeId || '').trim();
+    if (!normalizedId) return;
+    if (this.isCancellingShuttleOrder(normalizedId)) return;
+    if (!this.canCancelShuttleOperationsOrder()) return;
+
+    const dialogRef = this.dialog.open(ConfirmMessageActionDialogComponent, {
+      width: '360px',
+      data: {
+        title: this.shuttleText('deleteOrderDialogTitle'),
+        message: this.shuttleText('deleteOrderDialogMessage'),
+        confirmLabel: this.shuttleText('deleteOrderDialogConfirm'),
+        cancelLabel: this.shuttleText('deleteOrderDialogCancel'),
+        confirmColor: 'warn'
+      }
+    });
+    const confirmed = await firstValueFrom(dialogRef.afterClosed());
+    if (!confirmed) {
+      return;
+    }
+
+    this.setShuttleOrderCancelling(normalizedId, true);
+    try {
+      await this.store.cancelShuttleOperationsOrderByCompositeId(normalizedId);
+      this.snackBar.open(this.shuttleText('orderCancelledToast'), this.shuttleCloseActionLabel(), { duration: 2400 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : this.shuttleText('orderCancelFailedFallback');
+      this.snackBar.open(message, this.shuttleCloseActionLabel(), { duration: 3200 });
+    } finally {
+      this.setShuttleOrderCancelling(normalizedId, false);
     }
   }
 
@@ -1206,8 +1337,11 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   openImagePicker(): void {
-    if (this.shuttleQuickPicker()) {
-      this.snackBar.open('בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.', this.shuttleCloseActionLabel(), { duration: 2600 });
+    if (this.isComposerHidden()) {
+      const message = this.isShuttleOperationsRoomActive()
+        ? 'בחדר זה לא ניתן לשלוח הודעות.'
+        : 'בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.';
+      this.snackBar.open(message, this.shuttleCloseActionLabel(), { duration: 2600 });
       return;
     }
     if (!this.store.activeChat() || !this.store.canSendToActiveChat()) {
@@ -1218,8 +1352,11 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   async shareLocation(): Promise<void> {
-    if (this.shuttleQuickPicker()) {
-      this.snackBar.open('בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.', this.shuttleCloseActionLabel(), { duration: 2600 });
+    if (this.isComposerHidden()) {
+      const message = this.isShuttleOperationsRoomActive()
+        ? 'בחדר זה לא ניתן לשלוח הודעות.'
+        : 'בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.';
+      this.snackBar.open(message, this.shuttleCloseActionLabel(), { duration: 2600 });
       return;
     }
     if (!this.store.activeChat() || !this.store.canSendToActiveChat()) {
@@ -1244,7 +1381,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   canSendMessage(): boolean {
-    if (this.shuttleQuickPicker() && !this.editingMessageTarget()) {
+    if (this.isComposerHidden() && !this.editingMessageTarget()) {
       return false;
     }
     return Boolean(this.messageValue().trim()) && this.store.canSendToActiveChat() && !!this.store.activeChat();
@@ -1495,7 +1632,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       return 'קבוצה רגילה · כל המשתתפים יכולים לשלוח';
     }
     if (this.store.isDovrutGroupChat(groupPreview.groupId)) {
-      return 'קבוצת קהילה · רק מנהלי דוברות שולחים הודעות';
+      return 'קבוצת קהילה · רק מנהלי החדר שולחים הודעות';
     }
     return 'קבוצת קהילה · רק מנהל שולח הודעות';
   }

@@ -189,12 +189,42 @@ function registerMessageController(app, deps = {}) {
                             : Date.now() + index;
                         const messageIdRaw = String(message.messageId ?? message.id ?? '').trim();
                         const messageId = messageIdRaw || `logs-${sender}-${timestamp}-${index}`;
+                        const groupId = String(
+                            message.groupId ??
+                            message.group_id ??
+                            message.chatId ??
+                            message.chat_id ??
+                            ''
+                        ).trim();
+                        const groupName = String(
+                            message.groupName ??
+                            message.group_name ??
+                            message.chatName ??
+                            message.chat_name ??
+                            ''
+                        ).trim();
+                        const groupTypeRaw = String(
+                            message.groupType ??
+                            message.group_type ??
+                            ''
+                        ).trim().toLowerCase();
+                        const groupSenderName = String(
+                            message.groupSenderName ??
+                            message.group_sender_name ??
+                            message.senderDisplayName ??
+                            message.sender_name ??
+                            ''
+                        ).trim();
 
                         return {
                             messageId,
                             sender,
                             body,
-                            timestamp
+                            timestamp,
+                            groupId: groupId || undefined,
+                            groupName: groupName || undefined,
+                            groupType: groupTypeRaw === 'community' ? 'community' : (groupTypeRaw === 'group' ? 'group' : undefined),
+                            groupSenderName: groupSenderName || undefined
                         };
                     })
                     .filter(Boolean);
