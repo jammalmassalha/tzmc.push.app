@@ -897,6 +897,7 @@ export class ChatStoreService {
       groupMembers: group.members,
       groupCreatedBy: group.createdBy,
       groupAdmins: group.admins ?? [],
+      actorUser: user,
       groupUpdatedAt: group.updatedAt,
       groupType: group.type,
       membersToNotify
@@ -927,16 +928,21 @@ export class ChatStoreService {
     }
 
     const normalizedUser = this.normalizeUser(user);
-    const adminUser = this.normalizeUser(group.createdBy);
-    if (normalizedUser !== adminUser) {
+    const adminUsers = this.getGroupAdminList(group);
+    if (!adminUsers.includes(normalizedUser)) {
       throw new Error('רק מנהל קבוצה יכול לעדכן משתתפים');
     }
 
     const normalizedNextMembers = Array.from(
       new Set(nextMembers.map((member) => this.normalizeUser(member)).filter(Boolean))
     );
-    if (!normalizedNextMembers.includes(adminUser)) {
-      normalizedNextMembers.unshift(adminUser);
+    adminUsers.forEach((adminUser) => {
+      if (!normalizedNextMembers.includes(adminUser)) {
+        normalizedNextMembers.unshift(adminUser);
+      }
+    });
+    if (!normalizedNextMembers.includes(normalizedUser)) {
+      normalizedNextMembers.unshift(normalizedUser);
     }
     if (normalizedNextMembers.length < 2) {
       throw new Error('קבוצה חייבת לכלול לפחות שני משתתפים');
@@ -965,6 +971,73 @@ export class ChatStoreService {
       groupMembers: updatedGroup.members,
       groupCreatedBy: updatedGroup.createdBy,
       groupAdmins: updatedGroup.admins ?? [],
+      actorUser: normalizedUser,
+      groupUpdatedAt: updatedGroup.updatedAt,
+      groupType: updatedGroup.type,
+      membersToNotify
+    };
+
+    if (!this.networkOnline()) {
+      this.queueGroupUpdate(groupUpdatePayload);
+      return;
+    }
+
+    try {
+      await this.api.sendGroupUpdate(groupUpdatePayload);
+    } catch {
+      this.queueGroupUpdate(groupUpdatePayload);
+    }
+  }
+
+  async updateGroupTitle(groupId: string, nextTitle: string): Promise<void> {
+    const user = this.currentUser();
+    if (!user) {
+      throw new Error('יש להתחבר לפני עדכון שם קבוצה');
+    }
+
+    const normalizedGroupId = this.normalizeChatId(groupId);
+    const group = this.groups().find((item) => item.id === normalizedGroupId);
+    if (!group) {
+      throw new Error('הקבוצה לא נמצאה');
+    }
+
+    const normalizedUser = this.normalizeUser(user);
+    if (!this.canUserManageGroup(group, normalizedUser)) {
+      throw new Error('רק מנהלי קבוצה יכולים לעדכן שם קבוצה');
+    }
+
+    const title = String(nextTitle || '').trim();
+    if (title.length < 2) {
+      throw new Error('יש להזין שם קבוצה תקין');
+    }
+
+    if (title === group.name) {
+      return;
+    }
+
+    const updatedGroup: ChatGroup = {
+      ...group,
+      name: title,
+      updatedAt: Date.now()
+    };
+
+    this.groups.update((groups) =>
+      groups.map((item) => (item.id === updatedGroup.id ? updatedGroup : item))
+    );
+    this.schedulePersist();
+
+    const membersToNotify = Array.from(
+      new Set(updatedGroup.members.map((member) => this.normalizeUser(member)).filter(Boolean))
+    ).filter((member) => member && member !== normalizedUser);
+    if (!membersToNotify.length) return;
+
+    const groupUpdatePayload: GroupUpdatePayload = {
+      groupId: updatedGroup.id,
+      groupName: updatedGroup.name,
+      groupMembers: updatedGroup.members,
+      groupCreatedBy: updatedGroup.createdBy,
+      groupAdmins: updatedGroup.admins ?? [],
+      actorUser: normalizedUser,
       groupUpdatedAt: updatedGroup.updatedAt,
       groupType: updatedGroup.type,
       membersToNotify
@@ -1038,6 +1111,26 @@ export class ChatStoreService {
       return writerSet.has(normalizedUser);
     }
     return this.normalizeUser(group.createdBy) === normalizedUser;
+  }
+
+  private getGroupAdminList(group: ChatGroup): string[] {
+    const admins = Array.from(
+      new Set((group.admins ?? []).map((admin) => this.normalizeUser(admin)).filter(Boolean))
+    );
+    const createdBy = this.normalizeUser(group.createdBy || '');
+    if (createdBy && !admins.includes(createdBy)) {
+      admins.unshift(createdBy);
+    }
+    return admins;
+  }
+
+  private canUserManageGroup(group: ChatGroup, user: string | null): boolean {
+    const normalizedUser = this.normalizeUser(user ?? '');
+    if (!normalizedUser) return false;
+    if (this.isDovrutGroup(group.id)) {
+      return this.isDovrutAdminUser(normalizedUser);
+    }
+    return this.getGroupAdminList(group).includes(normalizedUser);
   }
 
   private isDovrutGroup(groupId: string): boolean {

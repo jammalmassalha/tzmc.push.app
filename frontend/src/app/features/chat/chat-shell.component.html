@@ -993,6 +993,34 @@
           {{ groupMembersMetaText(groupPreview) }}
         </div>
 
+        @if (groupPreview.canEditTitle) {
+          <div class="group-title-edit-panel">
+            <label class="group-title-edit-label" for="group-title-edit-input">עריכת שם קבוצה</label>
+            <div class="group-title-edit-row">
+              <input
+                id="group-title-edit-input"
+                class="group-title-edit-input"
+                type="text"
+                [value]="groupTitleEditValue()"
+                (input)="onGroupTitleEditInput($event)"
+                (focus)="handleTextInputFocus()"
+                placeholder="שם קבוצה"
+                autocomplete="off" />
+              <div class="group-title-edit-actions">
+                <button mat-stroked-button type="button" (click)="resetGroupTitleEdit()">איפוס</button>
+                <button
+                  mat-flat-button
+                  color="primary"
+                  type="button"
+                  [disabled]="!canSaveGroupTitle()"
+                  (click)="saveGroupTitleEdit()">
+                  שמור שם
+                </button>
+              </div>
+            </div>
+          </div>
+        }
+
         @if (groupPreview.canManageMembers) {
           <div class="group-members-manage">
             <button

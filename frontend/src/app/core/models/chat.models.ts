@@ -139,6 +139,7 @@ export interface GroupUpdatePayload {
   groupMembers: string[];
   groupCreatedBy: string;
   groupAdmins?: string[];
+  actorUser?: string;
   groupUpdatedAt: number;
   groupType: GroupType;
   membersToNotify: string[];

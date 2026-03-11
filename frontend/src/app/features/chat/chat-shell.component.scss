@@ -2118,6 +2118,55 @@ mat-chip:not(.offline) {
   text-align: right;
 }
 
+.group-title-edit-panel {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid rgba(11, 20, 26, 0.12);
+  border-radius: 10px;
+  background: #f8fafe;
+}
+
+.group-title-edit-label {
+  display: block;
+  margin-bottom: 6px;
+  color: #3f4a66;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: right;
+}
+
+.group-title-edit-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.group-title-edit-input {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid rgba(11, 20, 26, 0.16);
+  border-radius: 10px;
+  padding: 0 10px;
+  background: #fff;
+  color: #111b21;
+  direction: rtl;
+  text-align: right;
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.group-title-edit-input:focus {
+  outline: 0;
+  border-color: rgba(63, 87, 191, 0.35);
+  box-shadow: 0 0 0 1px rgba(63, 87, 191, 0.18);
+}
+
+.group-title-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .group-members-manage {
   margin-top: 12px;
   display: flex;

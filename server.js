@@ -1949,6 +1949,51 @@ function canSendToCommunityGroup(sender, groupRecord, groupId, groupName) {
     return !creatorKey;
 }
 
+function isGroupAdminUser(userKey, groupRecord = null) {
+    const normalizedUser = normalizeUserKey(userKey);
+    if (!normalizedUser || !groupRecord || typeof groupRecord !== 'object') {
+        return false;
+    }
+    const admins = parseUsernamesInput(groupRecord.admins || groupRecord.groupAdmins);
+    if (admins.includes(normalizedUser)) {
+        return true;
+    }
+    const createdBy = normalizeUserKey(groupRecord.createdBy || groupRecord.groupCreatedBy || '');
+    return Boolean(createdBy && createdBy === normalizedUser);
+}
+
+function canManageGroupUpdate(actorUser, existingGroup, incomingPayload = {}) {
+    const normalizedActor = normalizeUserKey(actorUser);
+    if (!normalizedActor) return false;
+
+    const incomingGroupId = String(incomingPayload.groupId || '').trim();
+    const incomingGroupName = String(incomingPayload.groupName || '').trim();
+
+    if (existingGroup && typeof existingGroup === 'object') {
+        if (isGroupAdminUser(normalizedActor, existingGroup)) {
+            return true;
+        }
+        if (existingGroup.type === 'community') {
+            return canSendToCommunityGroup(normalizedActor, existingGroup, incomingGroupId, incomingGroupName);
+        }
+        return false;
+    }
+
+    const incomingAdmins = parseUsernamesInput(incomingPayload.groupAdmins || incomingPayload.admins);
+    if (incomingAdmins.includes(normalizedActor)) {
+        return true;
+    }
+    const incomingCreator = normalizeUserKey(incomingPayload.groupCreatedBy || incomingPayload.createdBy || '');
+    if (incomingCreator && incomingCreator === normalizedActor) {
+        return true;
+    }
+    const hardcodedPolicy = resolveHardcodedCommunityPolicy(null, incomingGroupId, incomingGroupName);
+    if (hardcodedPolicy && hardcodedPolicy.writers && hardcodedPolicy.writers.has(normalizedActor)) {
+        return true;
+    }
+    return false;
+}
+
 function getClientIpAddress(req) {
     const forwardedFor = String((req && req.headers && req.headers['x-forwarded-for']) || '').trim();
     if (forwardedFor) {
@@ -6023,7 +6068,14 @@ app.post(
         }
 });
 
-app.post(['/group-update', '/notify/group-update'], async (req, res) => {
+app.post(
+    ['/group-update', '/notify/group-update'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['actorUser', 'user', 'groupCreatedBy'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
     try {
         const {
             groupId,
@@ -6031,12 +6083,23 @@ app.post(['/group-update', '/notify/group-update'], async (req, res) => {
             groupMembers,
             groupCreatedBy,
             groupAdmins,
+            actorUser,
             groupUpdatedAt,
             groupType,
             membersToNotify
         } = req.body || {};
         if (!groupId || !groupName) {
             return res.status(400).json({ error: 'Missing group update fields' });
+        }
+        const normalizedActorUser = normalizeUserKey(req.resolvedUser || actorUser || '');
+        if (!normalizedActorUser) {
+            return res.status(400).json({ error: 'Missing actor user' });
+        }
+        const existingGroupRecord = groups[groupId] && typeof groups[groupId] === 'object'
+            ? groups[groupId]
+            : null;
+        if (!canManageGroupUpdate(normalizedActorUser, existingGroupRecord, req.body || {})) {
+            return res.status(403).json({ error: 'Only group admins can update group metadata' });
         }
         const hardcodedCommunityPolicy = resolveHardcodedCommunityPolicy(null, groupId, groupName);
         const requestedRecipients = (hardcodedCommunityPolicy && Array.isArray(hardcodedCommunityPolicy.members) && hardcodedCommunityPolicy.members.length)
