@@ -11,6 +11,13 @@
       <mat-chip [class.offline]="!store.networkOnline()">
         {{ store.networkOnline() ? 'מקוון' : 'לא מחובר' }}
       </mat-chip>
+      <mat-chip
+        class="connection-mode-chip"
+        [class.conn-socket]="store.realtimeTransportMode() === 'socket'"
+        [class.conn-sse]="store.realtimeTransportMode() === 'sse'"
+        [class.conn-polling]="store.realtimeTransportMode() === 'polling'">
+        {{ store.realtimeTransportLabel() }}
+      </mat-chip>
     </mat-chip-set>
 
     <button mat-icon-button type="button" [matMenuTriggerFor]="mainMenu" aria-label="תפריט">

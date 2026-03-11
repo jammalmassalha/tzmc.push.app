@@ -43,6 +43,22 @@ mat-chip:not(.offline) {
   --mdc-chip-label-text-color: rgb(40 220 61 / 87%);
 }
 
+.connection-mode-chip {
+  --mdc-chip-label-text-color: #dbe3ff;
+}
+
+.connection-mode-chip.conn-socket {
+  --mdc-chip-label-text-color: #48e26a;
+}
+
+.connection-mode-chip.conn-sse {
+  --mdc-chip-label-text-color: #70d5ff;
+}
+
+.connection-mode-chip.conn-polling {
+  --mdc-chip-label-text-color: #f3c86e;
+}
+
 .chat-layout {
   height: calc(var(--app-height, 100dvh) - var(--app-toolbar-height) - var(--app-viewport-offset-top, 0px));
   display: grid;

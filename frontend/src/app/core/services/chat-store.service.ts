@@ -259,6 +259,8 @@ export interface ShuttleBreadcrumbStep {
   completed: boolean;
 }
 
+export type RealtimeTransportMode = 'socket' | 'sse' | 'polling';
+
 @Injectable({ providedIn: 'root' })
 export class ChatStoreService {
   readonly currentUser = signal<string | null>(null);
@@ -274,6 +276,13 @@ export class ChatStoreService {
   readonly lastError = signal<string | null>(null);
   readonly incomingReactionNotice = signal<IncomingReactionNotice | null>(null);
   readonly shuttleAccessAllowed = signal(true);
+  readonly realtimeTransportMode = signal<RealtimeTransportMode>('polling');
+  readonly realtimeTransportLabel = computed(() => {
+    const mode = this.realtimeTransportMode();
+    if (mode === 'socket') return 'Socket';
+    if (mode === 'sse') return 'SSE';
+    return 'Polling';
+  });
   readonly typingUsersByChat = signal<Record<string, string[]>>({});
   readonly activeTypingLabel = computed<string | null>(() => {
     const activeChatId = this.activeChatId();
@@ -4704,6 +4713,13 @@ export class ChatStoreService {
     void this.connectSocketPreferred(user);
   }
 
+  private setRealtimeTransportMode(mode: RealtimeTransportMode): void {
+    if (this.realtimeTransportMode() === mode) {
+      return;
+    }
+    this.realtimeTransportMode.set(mode);
+  }
+
   private async connectSocketPreferred(user: string): Promise<void> {
     this.shuttingDownRealtime = false;
     if (!this.isNetworkReachable()) {
@@ -4742,6 +4758,7 @@ export class ChatStoreService {
         if (this.currentUser() !== user) return;
         this.socketConnected = true;
         this.socketConnecting = false;
+        this.setRealtimeTransportMode('socket');
         if (this.socketSseFallbackTimer) {
           clearTimeout(this.socketSseFallbackTimer);
           this.socketSseFallbackTimer = null;
@@ -4759,6 +4776,7 @@ export class ChatStoreService {
       socket.on('chat:connected', () => {
         if (this.currentUser() !== user) return;
         this.socketConnected = true;
+        this.setRealtimeTransportMode('socket');
         this.stopStreamOnly();
         void this.pullMessages(user);
       });
@@ -4767,6 +4785,7 @@ export class ChatStoreService {
         if (this.shuttingDownRealtime || this.currentUser() !== user) return;
         this.socketConnected = false;
         this.socketConnecting = false;
+        this.setRealtimeTransportMode('polling');
         this.startSseFallback(user);
         this.scheduleSocketReconnect(user);
       });
@@ -4775,6 +4794,7 @@ export class ChatStoreService {
         if (this.shuttingDownRealtime || this.currentUser() !== user) return;
         this.socketConnected = false;
         this.socketConnecting = false;
+        this.setRealtimeTransportMode('polling');
         this.startSseFallback(user);
         this.scheduleSocketReconnect(user);
       });
@@ -4783,6 +4803,7 @@ export class ChatStoreService {
     } catch {
       this.socketConnecting = false;
       this.socketConnected = false;
+      this.setRealtimeTransportMode('polling');
       this.startSseFallback(user);
       this.scheduleSocketReconnect(user);
     }
@@ -4797,6 +4818,7 @@ export class ChatStoreService {
     }
     try {
       this.stream = this.api.createMessageStream(user);
+      this.setRealtimeTransportMode('sse');
       this.stream.addEventListener('message', (event: MessageEvent<string>) => {
         this.handleIncomingPayload(event.data);
       });
@@ -4821,6 +4843,10 @@ export class ChatStoreService {
       void this.pullMessages(user);
     }, POLL_INTERVAL_MS);
 
+    if (!this.socketConnected && !this.stream) {
+      this.setRealtimeTransportMode('polling');
+    }
+
     void this.pullMessages(user);
   }
 
@@ -4831,12 +4857,20 @@ export class ChatStoreService {
       this.socket.disconnect();
       this.socket = null;
     }
+    if (this.stream) {
+      this.setRealtimeTransportMode('sse');
+    } else {
+      this.setRealtimeTransportMode('polling');
+    }
   }
 
   private stopStreamOnly(): void {
     if (this.stream) {
       this.stream.close();
       this.stream = null;
+    }
+    if (!this.socketConnected) {
+      this.setRealtimeTransportMode('polling');
     }
   }
 
@@ -4867,6 +4901,7 @@ export class ChatStoreService {
       clearTimeout(this.typingStopTimer);
       this.typingStopTimer = null;
     }
+    this.setRealtimeTransportMode('polling');
     this.shuttingDownRealtime = false;
   }
 
