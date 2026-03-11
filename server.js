@@ -2452,9 +2452,6 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         ...(isGroup ? {
             groupId,
             groupName: normalizedGroupName,
-            groupMembers,
-            groupCreatedBy,
-            groupUpdatedAt,
             groupType: normalizedGroupType,
             groupMessageText: shortText,
             groupSenderName: senderLabel
@@ -5064,6 +5061,100 @@ app.post(['/verify-status', '/notify/verify-status'], async (req, res) => {
 // ======================================================
 // [FINAL FIX] CORE SENDING LOGIC (Collision Proof)
 // ======================================================
+const MAX_PUSH_PAYLOAD_BYTES = Math.max(
+    2048,
+    Number(process.env.MAX_PUSH_PAYLOAD_BYTES || 3584) || 3584
+);
+const MAX_PUSH_TEXT_LENGTH = Math.max(
+    80,
+    Number(process.env.MAX_PUSH_TEXT_LENGTH || 280) || 280
+);
+
+function trimPushTextValue(value, maxLength = MAX_PUSH_TEXT_LENGTH) {
+    const text = String(value || '');
+    if (text.length <= maxLength) return text;
+    if (maxLength <= 3) return text.slice(0, maxLength);
+    return `${text.slice(0, maxLength - 3)}...`;
+}
+
+function buildCompactPushCustomData(rawData = {}, messageType = '') {
+    if (!rawData || typeof rawData !== 'object') {
+        return {};
+    }
+
+    const compact = {};
+    Object.entries(rawData).forEach(([key, rawValue]) => {
+        if (rawValue === undefined || rawValue === null) {
+            return;
+        }
+        if (key === 'membersToNotify') {
+            // This list is transport-only and can make payloads oversized for large groups.
+            return;
+        }
+        if (key === 'groupMembers') {
+            if (messageType === 'group-update') {
+                compact.groupMembers = parseUsernamesInput(rawValue).slice(0, 120);
+            }
+            return;
+        }
+        if (typeof rawValue === 'string') {
+            compact[key] = trimPushTextValue(rawValue);
+            return;
+        }
+        if (Array.isArray(rawValue)) {
+            compact[key] = rawValue.slice(0, 20);
+            return;
+        }
+        compact[key] = rawValue;
+    });
+    return compact;
+}
+
+function buildPushPayloadString(payloadData = {}) {
+    let compactData = { ...payloadData };
+    let payload = JSON.stringify({ data: compactData });
+    if (Buffer.byteLength(payload, 'utf8') <= MAX_PUSH_PAYLOAD_BYTES) {
+        return payload;
+    }
+
+    delete compactData.groupMembers;
+    delete compactData.membersToNotify;
+    delete compactData.replyToBody;
+    delete compactData.replyToImageUrl;
+    delete compactData.forwardedFromName;
+    if (typeof compactData.groupMessageText === 'string') {
+        compactData.groupMessageText = trimPushTextValue(compactData.groupMessageText, 120);
+    }
+    if (typeof compactData.body === 'string') {
+        compactData.body = trimPushTextValue(compactData.body, 120);
+    }
+
+    payload = JSON.stringify({ data: compactData });
+    if (Buffer.byteLength(payload, 'utf8') <= MAX_PUSH_PAYLOAD_BYTES) {
+        return payload;
+    }
+
+    const emergencyData = {
+        type: compactData.type,
+        messageId: compactData.messageId,
+        groupId: compactData.groupId,
+        groupName: compactData.groupName,
+        sender: compactData.sender,
+        user: compactData.user,
+        title: compactData.title,
+        body: trimPushTextValue(
+            compactData.body || compactData.groupMessageText || compactData.messageText || 'New Notification',
+            120
+        ),
+        image: compactData.image,
+        url: compactData.url,
+        badge: compactData.badge,
+        icon: compactData.icon,
+        requireInteraction: compactData.requireInteraction
+    };
+    return JSON.stringify({ data: emergencyData });
+}
+
 async function sendPushNotificationToUser(targetUser, message, senderuser, options = {}) {
     const targetUsersArray = Array.isArray(targetUser) ? targetUser : [targetUser];
     
@@ -5075,6 +5166,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     const finalSender = senderuser || 'System';
     const singlePerUser = Boolean(options.singlePerUser || messageType === 'reaction');
     const allowSecondAttempt = options.allowSecondAttempt !== false && messageType !== 'reaction';
+    const compactCustomData = buildCompactPushCustomData(customData, messageType);
     let msgTitle = message.title || 'Work Alert';
     let msgText = msgBody.shortText || 'New Notification';
     if (messageType === 'reaction') {
@@ -5194,7 +5286,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
 
                 const clickUrl = `/subscribes/?chat=${encodeURIComponent(finalSender)}`;
                 const payloadData = {
-                    ...customData,
+                    ...compactCustomData,
                     title: msgTitle,
                     body: msgText || 'New Notification',
                     badge: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
@@ -5210,11 +5302,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                     payloadData.badgeCount = currentCount;
                 }
 
-                const payload = JSON.stringify({
-                    data: {
-                        ...payloadData
-                    }
-                });
+                const payload = buildPushPayloadString(payloadData);
 
                 try {
                     const pushOptions = {
