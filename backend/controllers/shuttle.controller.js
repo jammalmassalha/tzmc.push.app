@@ -1,6 +1,99 @@
+function resolveTodayIsoDate() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+function isLikelyHtmlPayload(payloadText) {
+    return /<html[\s>]/i.test(payloadText) || /<body[\s>]/i.test(payloadText);
+}
+
+function extractMovedTemporarilyHref(payloadText) {
+    const hrefMatch = String(payloadText || '').match(/<a[^>]+href="([^"]+)"/i);
+    const href = String((hrefMatch && hrefMatch[1]) || '').trim();
+    if (!href) return '';
+    const decodedHref = href.replace(/&amp;/g, '&');
+    if (!/^https:\/\/script\.googleusercontent\.com\//i.test(decodedHref)) {
+        return '';
+    }
+    return decodedHref;
+}
+
+async function fetchShuttleOrdersProxyPayloadText(requestUrl, deps = {}) {
+    const {
+        fetchWithRetry
+    } = deps;
+    if (typeof fetchWithRetry !== 'function') {
+        throw new Error('fetchWithRetry dependency is required');
+    }
+    const requestOptions = {
+        timeoutMs: 60000,
+        retries: 1,
+        backoffMs: 700
+    };
+
+    const response = await fetchWithRetry(requestUrl, {}, requestOptions);
+    if (!response.ok) {
+        throw new Error(`Shuttle orders request failed (${response.status})`);
+    }
+    const body = String(await response.text() || '');
+    if (!isLikelyHtmlPayload(body)) {
+        return body;
+    }
+
+    const fallbackHref = extractMovedTemporarilyHref(body);
+    if (!fallbackHref) {
+        if (/accounts\.google\.com/i.test(body)) {
+            throw new Error('Shuttle orders endpoint is not publicly accessible');
+        }
+        throw new Error('Shuttle orders endpoint returned unexpected HTML');
+    }
+
+    const fallbackResponse = await fetchWithRetry(fallbackHref, {}, requestOptions);
+    if (!fallbackResponse.ok) {
+        throw new Error(`Shuttle orders fallback request failed (${fallbackResponse.status})`);
+    }
+    return String(await fallbackResponse.text() || '');
+}
+
+function parseShuttleOrdersProxyPayload(payloadText) {
+    const raw = String(payloadText || '').trim();
+    if (!raw) {
+        return {
+            result: 'success',
+            orders: []
+        };
+    }
+
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    } catch (_error) {
+        throw new Error('Invalid shuttle orders payload');
+    }
+
+    if (Array.isArray(parsed)) {
+        return {
+            result: 'success',
+            orders: parsed
+        };
+    }
+
+    if (!parsed || typeof parsed !== 'object') {
+        throw new Error('Invalid shuttle orders payload');
+    }
+
+    return parsed;
+}
+
 function registerShuttleController(app, deps = {}) {
     const {
         isSchedulerOpsRequestAuthorized,
+        requireAuthorizedUser,
+        fetchWithRetry,
+        buildShuttleUserOrdersUrl,
         getShuttleReminderEffectiveTimeZone,
         SHUTTLE_REMINDER_ENABLED,
         shuttleReminderState,
@@ -19,6 +112,59 @@ function registerShuttleController(app, deps = {}) {
         generateMessageId,
         runShuttleReminderJob
     } = deps;
+
+    const requireAuthorizedUserForOperations = typeof requireAuthorizedUser === 'function'
+        ? requireAuthorizedUser({
+            required: true,
+            candidateKeys: ['user'],
+            onError: (_req, res, resolution) =>
+                res.status(resolution.status || 401).json({
+                    result: 'error',
+                    message: resolution.error || 'Authentication required',
+                    orders: []
+                })
+        })
+        : (_req, _res, next) => next();
+
+    app.get(
+        ['/shuttle/orders/operations', '/notify/shuttle/orders/operations'],
+        requireAuthorizedUserForOperations,
+        async (req, res) => {
+            if (!SHUTTLE_USER_ORDERS_URL || typeof buildShuttleUserOrdersUrl !== 'function') {
+                return res.status(503).json({
+                    result: 'error',
+                    message: 'Shuttle orders endpoint is not configured',
+                    orders: []
+                });
+            }
+
+            const fromDateRaw = String(req && req.query ? req.query.fromDate : '').trim();
+            const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(fromDateRaw)
+                ? fromDateRaw
+                : resolveTodayIsoDate();
+            const force = parseBooleanInput(req && req.query ? req.query.force : '', true);
+            const requestUrl = buildShuttleUserOrdersUrl({
+                action: 'get_operations_orders',
+                fromDate,
+                force: force ? '1' : '0',
+                _ts: Date.now()
+            });
+
+            try {
+                const payloadText = await fetchShuttleOrdersProxyPayloadText(requestUrl, { fetchWithRetry });
+                const payload = parseShuttleOrdersProxyPayload(payloadText);
+                return res.json(payload);
+            } catch (error) {
+                const message = error && error.message ? error.message : 'Failed to load shuttle operations orders';
+                console.error('[SHUTTLE OPS] Failed to proxy operations orders:', message);
+                return res.status(502).json({
+                    result: 'error',
+                    message,
+                    orders: []
+                });
+            }
+        }
+    );
 
     app.get(['/shuttle-reminders/status', '/notify/shuttle-reminders/status'], (req, res) => {
         if (!isSchedulerOpsRequestAuthorized(req)) {

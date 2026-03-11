@@ -4999,6 +4999,9 @@ app.post(['/mobile-reregister-campaign', '/notify/mobile-reregister-campaign'], 
 
 registerShuttleController(app, {
     isSchedulerOpsRequestAuthorized,
+    requireAuthorizedUser,
+    fetchWithRetry,
+    buildShuttleUserOrdersUrl: (queryParams = {}) => sheetIntegrationService.buildShuttleUserOrdersUrl(queryParams),
     getShuttleReminderEffectiveTimeZone,
     SHUTTLE_REMINDER_ENABLED,
     shuttleReminderState,

@@ -1003,8 +1003,19 @@ export class ChatApiService {
 
   async getShuttleOperationsOrders(fromDateIso?: string): Promise<ShuttleUserOrderPayload[]> {
     const fromDate = String(fromDateIso || this.resolveTodayIsoDate()).trim();
-    const url = `${this.config.shuttleUserOrdersUrl}?action=get_operations_orders&fromDate=${encodeURIComponent(fromDate)}&force=1&_ts=${Date.now()}`;
-    const body = await this.fetchShuttleOrdersPayloadText(url);
+    const url = `${this.notifyBaseUrl}/shuttle/orders/operations?fromDate=${encodeURIComponent(fromDate)}&force=1&_ts=${Date.now()}`;
+    const response = await this.fetchWithRetry(url, { cache: 'no-store' }, { retries: 1, timeoutMs: 65000 });
+    const body = String(await response.text() || '');
+    if (!response.ok) {
+      let parsedError: { message?: string; error?: string } | null = null;
+      try {
+        parsedError = JSON.parse(body) as { message?: string; error?: string };
+      } catch {
+        parsedError = null;
+      }
+      const message = String(parsedError?.message ?? parsedError?.error ?? '').trim();
+      throw new Error(message || `Shuttle operations orders request failed with ${response.status}`);
+    }
     return this.parseShuttleUserOrders(body);
   }
 
