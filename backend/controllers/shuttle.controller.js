@@ -88,6 +88,20 @@ function parseShuttleOrdersProxyPayload(payloadText) {
     return parsed;
 }
 
+const SHUTTLE_OPERATIONS_PROXY_CACHE_TTL_MS = 90 * 1000;
+const shuttleOperationsProxyCacheByDate = new Map();
+const shuttleOperationsProxyInFlightByDate = new Map();
+
+function getShuttleOperationsProxyCachedPayload(cacheKey, now = Date.now()) {
+    const entry = shuttleOperationsProxyCacheByDate.get(cacheKey);
+    if (!entry || !entry.payload) return null;
+    if (now - Number(entry.at || 0) > SHUTTLE_OPERATIONS_PROXY_CACHE_TTL_MS) {
+        shuttleOperationsProxyCacheByDate.delete(cacheKey);
+        return null;
+    }
+    return entry.payload;
+}
+
 function registerShuttleController(app, deps = {}) {
     const {
         isSchedulerOpsRequestAuthorized,
@@ -142,7 +156,35 @@ function registerShuttleController(app, deps = {}) {
             const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(fromDateRaw)
                 ? fromDateRaw
                 : resolveTodayIsoDate();
-            const force = parseBooleanInput(req && req.query ? req.query.force : '', true);
+            const force = parseBooleanInput(req && req.query ? req.query.force : '', false);
+            const cacheKey = fromDate;
+            const now = Date.now();
+            const cachedPayload = getShuttleOperationsProxyCachedPayload(cacheKey, now);
+            if (!force && cachedPayload) {
+                return res.json(cachedPayload);
+            }
+
+            const existingInFlight = shuttleOperationsProxyInFlightByDate.get(cacheKey);
+            if (existingInFlight) {
+                if (!force && cachedPayload) {
+                    return res.json(cachedPayload);
+                }
+                try {
+                    const payload = await existingInFlight;
+                    return res.json(payload);
+                } catch (error) {
+                    if (cachedPayload) {
+                        return res.json(cachedPayload);
+                    }
+                    const message = error && error.message ? error.message : 'Failed to load shuttle operations orders';
+                    return res.status(502).json({
+                        result: 'error',
+                        message,
+                        orders: []
+                    });
+                }
+            }
+
             const requestUrl = buildShuttleUserOrdersUrl({
                 action: 'get_operations_orders',
                 fromDate,
@@ -150,11 +192,23 @@ function registerShuttleController(app, deps = {}) {
                 _ts: Date.now()
             });
 
-            try {
+            const syncPromise = (async () => {
                 const payloadText = await fetchShuttleOrdersProxyPayloadText(requestUrl, { fetchWithRetry });
                 const payload = parseShuttleOrdersProxyPayload(payloadText);
+                shuttleOperationsProxyCacheByDate.set(cacheKey, {
+                    at: Date.now(),
+                    payload
+                });
+                return payload;
+            })();
+            shuttleOperationsProxyInFlightByDate.set(cacheKey, syncPromise);
+            try {
+                const payload = await syncPromise;
                 return res.json(payload);
             } catch (error) {
+                if (cachedPayload) {
+                    return res.json(cachedPayload);
+                }
                 const message = error && error.message ? error.message : 'Failed to load shuttle operations orders';
                 console.error('[SHUTTLE OPS] Failed to proxy operations orders:', message);
                 return res.status(502).json({
@@ -162,6 +216,10 @@ function registerShuttleController(app, deps = {}) {
                     message,
                     orders: []
                 });
+            } finally {
+                if (shuttleOperationsProxyInFlightByDate.get(cacheKey) === syncPromise) {
+                    shuttleOperationsProxyInFlightByDate.delete(cacheKey);
+                }
             }
         }
     );

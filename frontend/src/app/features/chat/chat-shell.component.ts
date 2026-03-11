@@ -685,10 +685,10 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       }
       return;
     }
-    void this.store.refreshShuttleOperationsOrdersForActiveUser({ force: true }).catch(() => undefined);
+    void this.store.refreshShuttleOperationsOrdersForActiveUser({ force: false, silent: true }).catch(() => undefined);
     if (this.shuttleOperationsBackgroundRefreshId === null) {
       this.shuttleOperationsBackgroundRefreshId = window.setInterval(() => {
-        void this.store.refreshShuttleOperationsOrdersForActiveUser({ force: true }).catch(() => undefined);
+        void this.store.refreshShuttleOperationsOrdersForActiveUser({ force: false, silent: true }).catch(() => undefined);
       }, SHUTTLE_OPERATIONS_BACKGROUND_REFRESH_MS);
     }
   });

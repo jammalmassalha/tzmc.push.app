@@ -1001,9 +1001,13 @@ export class ChatApiService {
     return this.parseShuttleUserOrders(body);
   }
 
-  async getShuttleOperationsOrders(fromDateIso?: string): Promise<ShuttleUserOrderPayload[]> {
+  async getShuttleOperationsOrders(
+    fromDateIso?: string,
+    options: { force?: boolean } = {}
+  ): Promise<ShuttleUserOrderPayload[]> {
     const fromDate = String(fromDateIso || this.resolveTodayIsoDate()).trim();
-    const url = `${this.notifyBaseUrl}/shuttle/orders/operations?fromDate=${encodeURIComponent(fromDate)}&force=1&_ts=${Date.now()}`;
+    const force = options.force === true ? '1' : '0';
+    const url = `${this.notifyBaseUrl}/shuttle/orders/operations?fromDate=${encodeURIComponent(fromDate)}&force=${force}&_ts=${Date.now()}`;
     const response = await this.fetchWithRetry(url, { cache: 'no-store' }, { retries: 1, timeoutMs: 65000 });
     const body = String(await response.text() || '');
     if (!response.ok) {

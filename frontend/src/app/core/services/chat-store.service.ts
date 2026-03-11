@@ -1247,7 +1247,9 @@ export class ChatStoreService {
     return this.shuttleOperationsOrdersLoading();
   }
 
-  async refreshShuttleOperationsOrdersForActiveUser(options: { force?: boolean; throwOnError?: boolean } = {}): Promise<void> {
+  async refreshShuttleOperationsOrdersForActiveUser(
+    options: { force?: boolean; throwOnError?: boolean; silent?: boolean } = {}
+  ): Promise<void> {
     const activeChatId = this.activeChatId();
     if (!this.isShuttleOperationsRoomChat(activeChatId)) {
       return;
@@ -2166,7 +2168,7 @@ export class ChatStoreService {
   }
 
   private async refreshShuttleOperationsOrders(
-    options: { force?: boolean; throwOnError?: boolean } = {}
+    options: { force?: boolean; throwOnError?: boolean; silent?: boolean } = {}
   ): Promise<void> {
     const currentUser = this.currentUser();
     if (!currentUser) {
@@ -2187,18 +2189,23 @@ export class ChatStoreService {
       return;
     }
     if (this.shuttleOperationsSyncPromise) {
-      if (options.force) {
-        await this.shuttleOperationsSyncPromise.catch(() => undefined);
-      } else {
+      if (options.throwOnError) {
         return this.shuttleOperationsSyncPromise;
       }
+      await this.shuttleOperationsSyncPromise.catch(() => undefined);
+      return;
     }
 
-    this.shuttleOperationsOrdersLoading.set(true);
-    this.bumpShuttlePickerRevision();
+    const showLoadingState = !options.silent;
+    if (showLoadingState) {
+      this.shuttleOperationsOrdersLoading.set(true);
+      this.bumpShuttlePickerRevision();
+    }
     const syncTask = (async () => {
       const fromDate = this.toIsoDate(new Date());
-      const remoteOrders = await this.api.getShuttleOperationsOrders(fromDate);
+      const remoteOrders = await this.api.getShuttleOperationsOrders(fromDate, {
+        force: options.force === true
+      });
       const loadedOrders: ShuttleOperationsOrderRecord[] = [];
       const contactsByUser = new Map(
         this.contacts().map((contact) => [this.normalizeUser(contact.username), contact])
@@ -2266,8 +2273,10 @@ export class ChatStoreService {
       }
     } finally {
       this.shuttleOperationsSyncPromise = null;
-      this.shuttleOperationsOrdersLoading.set(false);
-      this.bumpShuttlePickerRevision();
+      if (showLoadingState) {
+        this.shuttleOperationsOrdersLoading.set(false);
+        this.bumpShuttlePickerRevision();
+      }
     }
   }
 
