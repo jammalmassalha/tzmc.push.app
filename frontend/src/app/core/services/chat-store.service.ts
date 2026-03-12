@@ -190,6 +190,7 @@ interface SendMessageOptions {
   forwarded?: boolean;
   forwardedFrom?: string | null;
   forwardedFromName?: string | null;
+  hrFlowInput?: string | null;
 }
 
 interface SendMessagePayload extends SendMessageOptions {
@@ -1086,6 +1087,25 @@ export class ChatStoreService {
     const normalizedUser = this.normalizeUser(String(user || '').trim());
     if (!normalizedUser) return false;
     return this.dovrutWriterSet.has(normalizedUser);
+  }
+
+  getHrComposerActionsForActiveChat(): { canGoBack: boolean; hasOpenSession: boolean } | null {
+    const user = this.currentUser();
+    const activeChatId = this.activeChatId();
+    if (!user || !this.isHrChat(activeChatId)) {
+      return null;
+    }
+    const state = this.loadHrState(user);
+    if (!state) {
+      return {
+        canGoBack: false,
+        hasOpenSession: false
+      };
+    }
+    return {
+      canGoBack: state.awaiting !== 'step',
+      hasOpenSession: true
+    };
   }
 
   isShuttleOperationsRoomChat(chatId: string | null | undefined): boolean {
@@ -2258,6 +2278,12 @@ export class ChatStoreService {
     if (!user) return false;
     const trimmed = String(messageBody || '').trim();
     if (!trimmed) return false;
+
+    if (trimmed === '__hr_end__') {
+      this.resetHrState(user);
+      this.sendHrSystemMessage('השיחה הסתיימה. ניתן להתחיל מחדש בכל רגע.');
+      return true;
+    }
 
     if (trimmed === '0') {
       this.resetHrState(user);
@@ -4323,7 +4349,8 @@ export class ChatStoreService {
     }
 
     if (this.isHrChat(chatId) && payload.body.trim()) {
-      const handledByHrFlow = await this.handleHrOutgoing(payload.body);
+      const hrFlowInput = String(payload.hrFlowInput || payload.body).trim();
+      const handledByHrFlow = await this.handleHrOutgoing(hrFlowInput);
       if (handledByHrFlow) {
         this.setMessageStatus(messageId, 'delivered');
         return;
@@ -6579,11 +6606,13 @@ export class ChatStoreService {
     const forwarded = Boolean(options.forwarded);
     const forwardedFrom = options.forwardedFrom ? this.normalizeUser(options.forwardedFrom) : '';
     const forwardedFromName = String(options.forwardedFromName || '').trim();
+    const hrFlowInput = String(options.hrFlowInput || '').trim();
     return {
       replyTo,
       forwarded,
       forwardedFrom: forwardedFrom || null,
-      forwardedFromName: forwardedFromName || null
+      forwardedFromName: forwardedFromName || null,
+      hrFlowInput: hrFlowInput || null
     };
   }
 

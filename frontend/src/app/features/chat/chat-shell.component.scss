@@ -1798,6 +1798,32 @@ mat-chip:not(.offline) {
   margin-inline-end: 4px;
 }
 
+.hr-composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 10px 0;
+  background: #f6f7fb;
+  border-top: 1px solid rgba(11, 20, 26, 0.08);
+}
+
+.hr-composer-action-btn {
+  border-radius: 999px;
+  min-height: 34px;
+  padding-inline: 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #2b458f;
+  border-color: rgba(43, 69, 143, 0.24);
+  background: #fff;
+}
+
+.hr-composer-action-btn.danger {
+  color: #8f2b2b;
+  border-color: rgba(143, 43, 43, 0.26);
+}
+
 .composer {
   position: relative;
   z-index: 5;

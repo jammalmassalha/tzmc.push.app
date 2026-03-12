@@ -15,7 +15,7 @@ import { toSignal } from '@angular/core/rxjs-interop';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatChipsModule } from '@angular/material/chips';
-import { MatDialog, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
+import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { MatExpansionModule } from '@angular/material/expansion';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
@@ -48,10 +48,6 @@ import { CreateGroupDialogComponent } from './dialogs/create-group-dialog.compon
 import { NewChatDialogComponent } from './dialogs/new-chat-dialog.component';
 import { ConfirmMessageActionDialogComponent } from './dialogs/confirm-message-action-dialog.component';
 import { ForwardMessageDialogComponent } from './dialogs/forward-message-dialog.component';
-import {
-  HrListChoiceDialogComponent,
-  HrListChoiceDialogResult
-} from './dialogs/hr-list-choice-dialog.component';
 
 type MessageRenderPart =
   | { kind: 'text'; text: string }
@@ -388,6 +384,9 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   readonly isSubmittingShuttlePicker = signal(false);
   readonly isSubmittingHrListChoice = signal(false);
   readonly lockedHrListChoiceMessageIds = signal<Set<string>>(new Set<string>());
+  readonly hrComposerActions = computed(() => this.store.getHrComposerActionsForActiveChat());
+  readonly showHrBackButton = computed(() => Boolean(this.hrComposerActions()?.canGoBack));
+  readonly showHrEndSessionButton = computed(() => Boolean(this.hrComposerActions()?.hasOpenSession));
   readonly isSubmittingShuttleOrder = signal(false);
   readonly isCancellingShuttleOrderIds = signal<Set<string>>(new Set<string>());
   readonly shuttlePickerHasOptions = computed(() => {
@@ -562,7 +561,6 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   private readonly messagePartsCache = new Map<string, ParsedMessageCacheEntry>();
   private readonly hrListChoiceCache = new Map<string, HrListChoiceCacheEntry>();
   private readonly hrChatId = this.normalizeUsername('ציפי');
-  private readonly handledHrListChoiceMessageIds = new Set<string>();
   private readonly scrollBottomThresholdPx = 44;
   private readonly loadOlderMessagesScrollThresholdPx = LOAD_OLDER_MESSAGES_SCROLL_THRESHOLD_PX;
   private readonly conversationSwipeMinDistancePx = 80;
@@ -586,10 +584,6 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   private routeQueryParamsSub: Subscription | null = null;
   private isLoadingOlderMessages = false;
   private lastPaginatedChatId: string | null = null;
-  private hrListChoiceDialogRef: MatDialogRef<
-    HrListChoiceDialogComponent,
-    HrListChoiceDialogResult | undefined
-  > | null = null;
 
   private readonly autoScrollEffect = effect(() => {
     const activeChatId = this.store.activeChatId();
@@ -702,10 +696,6 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
 
     this.showReactionToast(notice);
     this.store.clearIncomingReactionNotice();
-  });
-
-  private readonly hrListChoiceDialogEffect = effect(() => {
-    this.maybeOpenHrListChoiceDialogFromActiveChat();
   });
 
   private readonly shuttlePickerSyncEffect = effect(() => {
@@ -898,8 +888,6 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     window.visualViewport?.removeEventListener('scroll', this.onViewportResize);
     document.removeEventListener('focusin', this.onDocumentFocusIn, true);
     document.removeEventListener('focusout', this.onDocumentFocusOut, true);
-    this.hrListChoiceDialogRef?.close();
-    this.hrListChoiceDialogRef = null;
     if (this.relativeTimeRefreshId !== null) {
       window.clearInterval(this.relativeTimeRefreshId);
       this.relativeTimeRefreshId = null;
@@ -3177,81 +3165,40 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     return payload;
   }
 
-  private openHrListChoiceDialog(payload: HrListChoiceDialogPayload): void {
-    this.hrListChoiceDialogRef = this.dialog.open(HrListChoiceDialogComponent, {
-      width: 'min(92vw, 420px)',
-      maxWidth: '92vw',
-      autoFocus: false,
-      restoreFocus: false,
-      data: {
-        prompt: payload.prompt,
-        options: payload.options
-      }
-    });
-
-    this.hrListChoiceDialogRef.afterClosed().subscribe((result) => {
-      this.hrListChoiceDialogRef = null;
-      if (!result) {
-        this.maybeOpenHrListChoiceDialogFromActiveChat();
-        return;
-      }
-      void this.chooseHrListChoice(result.choiceNumber, payload.sourceMessageId);
-      this.maybeOpenHrListChoiceDialogFromActiveChat();
-    });
-  }
-
-  private maybeOpenHrListChoiceDialogFromActiveChat(): void {
-    const activeChatId = this.store.activeChatId();
-    if (!this.isHrChatRoom(activeChatId)) {
-      if (this.hrListChoiceDialogRef) {
-        this.hrListChoiceDialogRef.close();
-      }
-      return;
-    }
-    if (this.hrListChoiceDialogRef) {
-      return;
-    }
-
-    const activeMessages = this.store.activeMessages();
-    if (!activeMessages.length) return;
-
-    for (let index = activeMessages.length - 1; index >= 0; index -= 1) {
-      const candidate = activeMessages[index];
-      if (candidate.direction !== 'incoming') continue;
-      const payload = this.getHrListChoicePayload(candidate);
-      if (!payload) continue;
-      if (this.handledHrListChoiceMessageIds.has(payload.sourceMessageId)) continue;
-
-      const hasOutgoingAfter = activeMessages
-        .slice(index + 1)
-        .some((message) => message.direction === 'outgoing' && String(message.body || '').trim());
-      if (hasOutgoingAfter) continue;
-
-      this.handledHrListChoiceMessageIds.add(payload.sourceMessageId);
-      this.openHrListChoiceDialog(payload);
-      return;
-    }
-  }
-
   hrInlineChoicePayload(message: ChatMessage): HrListChoiceDialogPayload | null {
     if (message.direction !== 'incoming') return null;
     if (!this.isHrChatRoom(this.store.activeChatId())) return null;
     return this.getHrListChoicePayload(message);
   }
 
-  async chooseHrListChoice(choiceNumber: string, sourceMessageId?: string): Promise<void> {
+  async chooseHrListChoice(
+    choiceNumber: string,
+    choiceLabel?: string | null,
+    sourceMessageId?: string
+  ): Promise<void> {
     const normalized = String(choiceNumber || '').trim();
     if (!/^\d{1,2}$/.test(normalized)) return;
     if (this.isSubmittingHrListChoice()) return;
-    this.lockHrListChoiceSourceMessage(sourceMessageId);
+    const displayLabel = String(choiceLabel || '').trim() || normalized;
 
     this.isSubmittingHrListChoice.set(true);
     try {
-      this.messageControl.setValue(normalized);
-      await this.sendMessage();
+      await this.store.sendTextMessage(displayLabel, { hrFlowInput: normalized });
+      this.lockHrListChoiceSourceMessage(sourceMessageId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'שליחת הבחירה נכשלה';
+      this.snackBar.open(message, 'סגור', { duration: 2800 });
     } finally {
       this.isSubmittingHrListChoice.set(false);
     }
+  }
+
+  async goBackInHrFlow(): Promise<void> {
+    await this.sendHrComposerControlMessage('חזרה', '0');
+  }
+
+  async endHrConversation(): Promise<void> {
+    await this.sendHrComposerControlMessage('סיום שיחה', '__hr_end__');
   }
 
   isHrListChoiceLocked(sourceMessageId: string | null | undefined): boolean {
@@ -3271,6 +3218,20 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       next.add(normalized);
       return next;
     });
+  }
+
+  private async sendHrComposerControlMessage(displayText: string, flowInput: string): Promise<void> {
+    if (!this.isHrChatRoom(this.store.activeChatId())) return;
+    if (this.isSubmittingHrListChoice()) return;
+    this.isSubmittingHrListChoice.set(true);
+    try {
+      await this.store.sendTextMessage(displayText, { hrFlowInput: flowInput });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'שליחת ההודעה נכשלה';
+      this.snackBar.open(message, 'סגור', { duration: 2800 });
+    } finally {
+      this.isSubmittingHrListChoice.set(false);
+    }
   }
 
   private extractDepartmentFromInfo(info?: string): string {

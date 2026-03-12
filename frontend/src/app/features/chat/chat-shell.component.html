@@ -547,7 +547,7 @@
                             type="button"
                             class="hr-inline-choice-btn"
                             [disabled]="isSubmittingHrListChoice() || isHrListChoiceLocked(hrChoice.sourceMessageId)"
-                            (click)="chooseHrListChoice(option.choiceNumber, hrChoice.sourceMessageId)"
+                            (click)="chooseHrListChoice(option.choiceNumber, option.label, hrChoice.sourceMessageId)"
                             [attr.aria-label]="'בחר אפשרות ' + option.choiceNumber">
                             <span class="hr-inline-choice-number">{{ option.choiceNumber }}</span>
                             <span class="hr-inline-choice-label">{{ option.label }}</span>
@@ -831,6 +831,31 @@
               </button>
             }
           </section>
+        }
+
+        @if (showHrBackButton() || showHrEndSessionButton()) {
+          <div class="hr-composer-actions">
+            @if (showHrBackButton()) {
+              <button
+                mat-stroked-button
+                type="button"
+                class="hr-composer-action-btn"
+                [disabled]="isSubmittingHrListChoice()"
+                (click)="goBackInHrFlow()">
+                חזרה
+              </button>
+            }
+            @if (showHrEndSessionButton()) {
+              <button
+                mat-stroked-button
+                type="button"
+                class="hr-composer-action-btn danger"
+                [disabled]="isSubmittingHrListChoice()"
+                (click)="endHrConversation()">
+                סיום שיחה
+              </button>
+            }
+          </div>
         }
 
         <form
