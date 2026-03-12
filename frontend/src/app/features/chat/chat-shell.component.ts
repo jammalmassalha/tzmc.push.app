@@ -370,6 +370,9 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     if (this.store.getShuttleQuickPickerState()) {
       return 'לבחירה השתמש בכפתורים';
     }
+    if (this.hrComposerActions() && !this.hrComposerActions()?.canWriteMessage) {
+      return 'כדי לכתוב הודעה יש לבחור קודם באפשרות כתיבה';
+    }
     if (this.store.canSendToActiveChat()) {
       return 'הקלד הודעה';
     }
@@ -387,6 +390,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   readonly hrComposerActions = computed(() => this.store.getHrComposerActionsForActiveChat());
   readonly showHrBackButton = computed(() => Boolean(this.hrComposerActions()?.canGoBack));
   readonly showHrEndSessionButton = computed(() => Boolean(this.hrComposerActions()?.hasOpenSession));
+  readonly isHrTextInputEnabled = computed(() => this.hrComposerActions()?.canWriteMessage ?? true);
   readonly isSubmittingShuttleOrder = signal(false);
   readonly isCancellingShuttleOrderIds = signal<Set<string>>(new Set<string>());
   readonly shuttlePickerHasOptions = computed(() => {
@@ -1449,6 +1453,9 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
 
   canSendMessage(): boolean {
     if (this.isComposerHidden() && !this.editingMessageTarget()) {
+      return false;
+    }
+    if (!this.isHrTextInputEnabled() && !this.editingMessageTarget()) {
       return false;
     }
     return Boolean(this.messageValue().trim()) && this.store.canSendToActiveChat() && !!this.store.activeChat();

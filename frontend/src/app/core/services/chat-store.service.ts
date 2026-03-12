@@ -1089,7 +1089,11 @@ export class ChatStoreService {
     return this.dovrutWriterSet.has(normalizedUser);
   }
 
-  getHrComposerActionsForActiveChat(): { canGoBack: boolean; hasOpenSession: boolean } | null {
+  getHrComposerActionsForActiveChat(): {
+    canGoBack: boolean;
+    hasOpenSession: boolean;
+    canWriteMessage: boolean;
+  } | null {
     const user = this.currentUser();
     const activeChatId = this.activeChatId();
     if (!user || !this.isHrChat(activeChatId)) {
@@ -1099,12 +1103,14 @@ export class ChatStoreService {
     if (!state) {
       return {
         canGoBack: false,
-        hasOpenSession: false
+        hasOpenSession: false,
+        canWriteMessage: false
       };
     }
     return {
       canGoBack: state.awaiting !== 'step',
-      hasOpenSession: true
+      hasOpenSession: true,
+      canWriteMessage: state.awaiting === 'free-text'
     };
   }
 

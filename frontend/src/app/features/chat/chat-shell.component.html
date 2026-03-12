@@ -876,7 +876,7 @@
               class="composer-textarea"
               rows="1"
               [formControl]="messageControl"
-              [disabled]="isComposerHidden()"
+              [disabled]="isComposerHidden() || !isHrTextInputEnabled()"
               (input)="onComposerInput()"
               (focus)="handleTextInputFocus()"
               [placeholder]="composerPlaceholder()"></textarea>
@@ -884,7 +884,7 @@
               type="button"
               class="attach-btn"
               [matMenuTriggerFor]="attachMenu"
-              [disabled]="isComposerHidden() || !store.activeChat() || !store.canSendToActiveChat()"
+              [disabled]="isComposerHidden() || !isHrTextInputEnabled() || !store.activeChat() || !store.canSendToActiveChat()"
               aria-label="Attach">
               <span class="attach-plus">+</span>
             </button>
