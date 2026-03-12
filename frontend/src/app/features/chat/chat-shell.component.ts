@@ -3206,7 +3206,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   async startNewHrSession(): Promise<void> {
-    await this.sendHrComposerControlMessage('התחל סשן חדש', '0');
+    await this.sendHrComposerControlMessage('התחל מחדש', '0');
   }
 
   async endHrConversation(): Promise<void> {
