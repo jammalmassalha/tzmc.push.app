@@ -196,7 +196,8 @@ function registerMessageController(app, deps = {}) {
                         if (!body) {
                             return null;
                         }
-                        if (body.toLowerCase() === 'new notification') {
+                        const normalizedBody = body.toLowerCase();
+                        if (normalizedBody === 'new notification' || normalizedBody === 'new reaction') {
                             return null;
                         }
 

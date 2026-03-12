@@ -112,6 +112,22 @@ interface ShuttleOrderMessageCard {
   cancelled: boolean;
 }
 
+interface HrListChoiceOption {
+  choiceNumber: string;
+  label: string;
+}
+
+interface HrListChoiceDialogPayload {
+  sourceMessageId: string;
+  prompt: string;
+  options: HrListChoiceOption[];
+}
+
+interface HrListChoiceCacheEntry {
+  body: string;
+  payload: HrListChoiceDialogPayload | null;
+}
+
 const MESSAGE_PAGE_SIZE = 15;
 const LOAD_OLDER_MESSAGES_SCROLL_THRESHOLD_PX = 56;
 const SHUTTLE_OPERATIONS_BACKGROUND_REFRESH_MS = 30_000;
@@ -354,6 +370,9 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     if (this.store.getShuttleQuickPickerState()) {
       return 'לבחירה השתמש בכפתורים';
     }
+    if (this.hrComposerActions() && !this.hrComposerActions()?.canWriteMessage) {
+      return 'כדי לכתוב הודעה יש לבחור קודם באפשרות כתיבה';
+    }
     if (this.store.canSendToActiveChat()) {
       return 'הקלד הודעה';
     }
@@ -366,6 +385,13 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     this.store.getShuttleQuickPickerState()
   );
   readonly isSubmittingShuttlePicker = signal(false);
+  readonly isSubmittingHrListChoice = signal(false);
+  readonly lockedHrListChoiceMessageIds = signal<Set<string>>(new Set<string>());
+  readonly hrComposerActions = computed(() => this.store.getHrComposerActionsForActiveChat());
+  readonly showHrStartSessionButton = computed(() => Boolean(this.hrComposerActions()));
+  readonly showHrBackButton = computed(() => Boolean(this.hrComposerActions()?.canGoBack));
+  readonly showHrEndSessionButton = computed(() => Boolean(this.hrComposerActions()?.hasOpenSession));
+  readonly isHrTextInputEnabled = computed(() => this.hrComposerActions()?.canWriteMessage ?? true);
   readonly isSubmittingShuttleOrder = signal(false);
   readonly isCancellingShuttleOrderIds = signal<Set<string>>(new Set<string>());
   readonly shuttlePickerHasOptions = computed(() => {
@@ -538,6 +564,8 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       !this.isMessagesPanelAtBottom()
   );
   private readonly messagePartsCache = new Map<string, ParsedMessageCacheEntry>();
+  private readonly hrListChoiceCache = new Map<string, HrListChoiceCacheEntry>();
+  private readonly hrChatId = this.normalizeUsername('ציפי');
   private readonly scrollBottomThresholdPx = 44;
   private readonly loadOlderMessagesScrollThresholdPx = LOAD_OLDER_MESSAGES_SCROLL_THRESHOLD_PX;
   private readonly conversationSwipeMinDistancePx = 80;
@@ -1426,6 +1454,9 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
 
   canSendMessage(): boolean {
     if (this.isComposerHidden() && !this.editingMessageTarget()) {
+      return false;
+    }
+    if (!this.isHrTextInputEnabled() && !this.editingMessageTarget()) {
       return false;
     }
     return Boolean(this.messageValue().trim()) && this.store.canSendToActiveChat() && !!this.store.activeChat();
@@ -3057,6 +3088,162 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
 
   private normalizeUsername(value: string): string {
     return String(value || '').trim().toLowerCase();
+  }
+
+  private isHrChatRoom(chatId: string | null | undefined): boolean {
+    return this.normalizeUsername(chatId || '') === this.hrChatId;
+  }
+
+  private parseHrListChoiceMessage(message: ChatMessage): HrListChoiceDialogPayload | null {
+    const sourceMessageId = String(message.messageId || message.id || '').trim();
+    if (!sourceMessageId) {
+      return null;
+    }
+    const body = String(message.body || '');
+    const normalizedBody = body
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .trim();
+    if (!normalizedBody) {
+      return null;
+    }
+
+    const lines = normalizedBody
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    const options: HrListChoiceOption[] = [];
+    const promptLines: string[] = [];
+    let encounteredChoiceLine = false;
+    for (const line of lines) {
+      const match = line.match(/^(\d{1,2})\s*[\.\)\-]\s*(.+)$/);
+      if (match) {
+        encounteredChoiceLine = true;
+        const label = String(match[2] || '').trim();
+        options.push({
+          choiceNumber: String(match[1] || '').trim(),
+          label: label || `אפשרות ${match[1]}`
+        });
+        continue;
+      }
+      if (!encounteredChoiceLine) {
+        promptLines.push(line);
+      }
+    }
+
+    if (!options.length) {
+      const inlineMatches = Array.from(
+        normalizedBody.matchAll(/(?:^|\s)(\d{1,2})\s*[\.\)\-]\s*([^\n]+?)(?=(?:\s+\d{1,2}\s*[\.\)\-])|$)/g)
+      );
+      for (const match of inlineMatches) {
+        const number = String(match[1] || '').trim();
+        const label = String(match[2] || '').trim();
+        if (!number || !label) continue;
+        options.push({
+          choiceNumber: number,
+          label
+        });
+      }
+    }
+
+    if (options.length < 2) {
+      return null;
+    }
+    const prompt = promptLines.join('\n').trim() || 'יש לבחור אפשרות מהרשימה:';
+    return {
+      sourceMessageId,
+      prompt,
+      options
+    };
+  }
+
+  private getHrListChoicePayload(message: ChatMessage): HrListChoiceDialogPayload | null {
+    const cacheKey = String(message.messageId || message.id || '').trim();
+    if (!cacheKey) {
+      return this.parseHrListChoiceMessage(message);
+    }
+    const body = String(message.body || '');
+    const cached = this.hrListChoiceCache.get(cacheKey);
+    if (cached && cached.body === body) {
+      return cached.payload;
+    }
+    const payload = this.parseHrListChoiceMessage(message);
+    this.hrListChoiceCache.set(cacheKey, { body, payload });
+    return payload;
+  }
+
+  hrInlineChoicePayload(message: ChatMessage): HrListChoiceDialogPayload | null {
+    if (message.direction !== 'incoming') return null;
+    if (!this.isHrChatRoom(this.store.activeChatId())) return null;
+    return this.getHrListChoicePayload(message);
+  }
+
+  async chooseHrListChoice(
+    choiceNumber: string,
+    choiceLabel?: string | null,
+    sourceMessageId?: string
+  ): Promise<void> {
+    const normalized = String(choiceNumber || '').trim();
+    if (!/^\d{1,2}$/.test(normalized)) return;
+    if (this.isSubmittingHrListChoice()) return;
+    const displayLabel = String(choiceLabel || '').trim() || normalized;
+
+    this.isSubmittingHrListChoice.set(true);
+    try {
+      await this.store.sendTextMessage(displayLabel, { hrFlowInput: normalized });
+      this.lockHrListChoiceSourceMessage(sourceMessageId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'שליחת הבחירה נכשלה';
+      this.snackBar.open(message, 'סגור', { duration: 2800 });
+    } finally {
+      this.isSubmittingHrListChoice.set(false);
+    }
+  }
+
+  async goBackInHrFlow(): Promise<void> {
+    await this.sendHrComposerControlMessage('חזרה', '0');
+  }
+
+  async startNewHrSession(): Promise<void> {
+    await this.sendHrComposerControlMessage('התחל מחדש', '0');
+  }
+
+  async endHrConversation(): Promise<void> {
+    await this.sendHrComposerControlMessage('סיום שיחה', '__hr_end__');
+  }
+
+  isHrListChoiceLocked(sourceMessageId: string | null | undefined): boolean {
+    const normalized = String(sourceMessageId || '').trim();
+    if (!normalized) return false;
+    return this.lockedHrListChoiceMessageIds().has(normalized);
+  }
+
+  private lockHrListChoiceSourceMessage(sourceMessageId: string | null | undefined): void {
+    const normalized = String(sourceMessageId || '').trim();
+    if (!normalized) return;
+    this.lockedHrListChoiceMessageIds.update((current) => {
+      if (current.has(normalized)) {
+        return current;
+      }
+      const next = new Set(current);
+      next.add(normalized);
+      return next;
+    });
+  }
+
+  private async sendHrComposerControlMessage(displayText: string, flowInput: string): Promise<void> {
+    if (!this.isHrChatRoom(this.store.activeChatId())) return;
+    if (this.isSubmittingHrListChoice()) return;
+    this.isSubmittingHrListChoice.set(true);
+    try {
+      await this.store.sendTextMessage(displayText, { hrFlowInput: flowInput });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'שליחת ההודעה נכשלה';
+      this.snackBar.open(message, 'סגור', { duration: 2800 });
+    } finally {
+      this.isSubmittingHrListChoice.set(false);
+    }
   }
 
   private extractDepartmentFromInfo(info?: string): string {

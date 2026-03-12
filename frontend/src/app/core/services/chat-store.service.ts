@@ -190,6 +190,7 @@ interface SendMessageOptions {
   forwarded?: boolean;
   forwardedFrom?: string | null;
   forwardedFromName?: string | null;
+  hrFlowInput?: string | null;
 }
 
 interface SendMessagePayload extends SendMessageOptions {
@@ -1088,6 +1089,31 @@ export class ChatStoreService {
     return this.dovrutWriterSet.has(normalizedUser);
   }
 
+  getHrComposerActionsForActiveChat(): {
+    canGoBack: boolean;
+    hasOpenSession: boolean;
+    canWriteMessage: boolean;
+  } | null {
+    const user = this.currentUser();
+    const activeChatId = this.activeChatId();
+    if (!user || !this.isHrChat(activeChatId)) {
+      return null;
+    }
+    const state = this.loadHrState(user);
+    if (!state) {
+      return {
+        canGoBack: false,
+        hasOpenSession: false,
+        canWriteMessage: false
+      };
+    }
+    return {
+      canGoBack: state.awaiting !== 'step',
+      hasOpenSession: true,
+      canWriteMessage: state.awaiting === 'free-text'
+    };
+  }
+
   isShuttleOperationsRoomChat(chatId: string | null | undefined): boolean {
     return false;
   }
@@ -1506,17 +1532,27 @@ export class ChatStoreService {
     if (logsMessages.length) {
       const nonSystemLogs = logsMessages.filter((message) => {
         const sender = this.normalizeUser(String(message.sender ?? '').trim());
-        return Boolean(sender && sender !== 'system');
+        if (!sender || sender === 'system') {
+          return false;
+        }
+        const normalizedBody = String(message.body ?? '').trim().toLowerCase();
+        if (normalizedBody === 'new notification' || normalizedBody === 'new reaction') {
+          return false;
+        }
+        return true;
       });
       const normalizedLogs = this.normalizeLogsMessagesForImport(
         nonSystemLogs,
         groupsSnapshotBeforeCacheClear
       );
       const knownGroupNamesById = new Map<string, string>();
+      const knownGroupIds = new Set<string>();
       [...groupsSnapshotBeforeCacheClear, ...this.groups()].forEach((group) => {
         const groupId = this.normalizeChatId(String(group.id || '').trim());
         const groupName = String(group.name || '').trim();
-        if (!groupId || !groupName) return;
+        if (!groupId) return;
+        knownGroupIds.add(groupId);
+        if (!groupName) return;
         if (this.normalizeChatId(groupName) === groupId) return;
         if (!knownGroupNamesById.has(groupId)) {
           knownGroupNamesById.set(groupId, groupName);
@@ -1528,11 +1564,12 @@ export class ChatStoreService {
           if (!groupId) return message;
           const incomingGroupName = String(message.groupName ?? '').trim();
           const knownGroupName = knownGroupNamesById.get(groupId) ?? '';
-          const hasNamedGroup = Boolean(
-            (incomingGroupName && this.normalizeChatId(incomingGroupName) !== groupId) ||
-            knownGroupName
+          const hasResolvableGroup = Boolean(
+            incomingGroupName ||
+            knownGroupName ||
+            knownGroupIds.has(groupId)
           );
-          if (!hasNamedGroup) {
+          if (!hasResolvableGroup) {
             return null;
           }
           if (incomingGroupName && this.normalizeChatId(incomingGroupName) !== groupId) {
@@ -1540,7 +1577,7 @@ export class ChatStoreService {
           }
           return {
             ...message,
-            groupName: knownGroupName
+            groupName: knownGroupName || incomingGroupName || groupId
           };
         })
         .filter((message): message is IncomingServerMessage => Boolean(message));
@@ -2247,6 +2284,12 @@ export class ChatStoreService {
     if (!user) return false;
     const trimmed = String(messageBody || '').trim();
     if (!trimmed) return false;
+
+    if (trimmed === '__hr_end__') {
+      this.resetHrState(user);
+      this.sendHrSystemMessage('השיחה הסתיימה. ניתן להתחיל מחדש בכל רגע.');
+      return true;
+    }
 
     if (trimmed === '0') {
       this.resetHrState(user);
@@ -4312,7 +4355,8 @@ export class ChatStoreService {
     }
 
     if (this.isHrChat(chatId) && payload.body.trim()) {
-      const handledByHrFlow = await this.handleHrOutgoing(payload.body);
+      const hrFlowInput = String(payload.hrFlowInput || payload.body).trim();
+      const handledByHrFlow = await this.handleHrOutgoing(hrFlowInput);
       if (handledByHrFlow) {
         this.setMessageStatus(messageId, 'delivered');
         return;
@@ -6568,11 +6612,13 @@ export class ChatStoreService {
     const forwarded = Boolean(options.forwarded);
     const forwardedFrom = options.forwardedFrom ? this.normalizeUser(options.forwardedFrom) : '';
     const forwardedFromName = String(options.forwardedFromName || '').trim();
+    const hrFlowInput = String(options.hrFlowInput || '').trim();
     return {
       replyTo,
       forwarded,
       forwardedFrom: forwardedFrom || null,
-      forwardedFromName: forwardedFromName || null
+      forwardedFromName: forwardedFromName || null,
+      hrFlowInput: hrFlowInput || null
     };
   }
 
