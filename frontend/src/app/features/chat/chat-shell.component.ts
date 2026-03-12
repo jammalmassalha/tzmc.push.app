@@ -387,6 +387,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   );
   readonly isSubmittingShuttlePicker = signal(false);
   readonly isSubmittingHrListChoice = signal(false);
+  readonly lockedHrListChoiceMessageIds = signal<Set<string>>(new Set<string>());
   readonly isSubmittingShuttleOrder = signal(false);
   readonly isCancellingShuttleOrderIds = signal<Set<string>>(new Set<string>());
   readonly shuttlePickerHasOptions = computed(() => {
@@ -3153,7 +3154,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     if (options.length < 2) {
       return null;
     }
-    const prompt = promptLines.join('\n').trim() || 'Choose an option from the list:';
+    const prompt = promptLines.join('\n').trim() || 'יש לבחור אפשרות מהרשימה:';
     return {
       sourceMessageId,
       prompt,
@@ -3194,7 +3195,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
         this.maybeOpenHrListChoiceDialogFromActiveChat();
         return;
       }
-      void this.chooseHrListChoice(result.choiceNumber);
+      void this.chooseHrListChoice(result.choiceNumber, payload.sourceMessageId);
       this.maybeOpenHrListChoiceDialogFromActiveChat();
     });
   }
@@ -3238,10 +3239,11 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     return this.getHrListChoicePayload(message);
   }
 
-  async chooseHrListChoice(choiceNumber: string): Promise<void> {
+  async chooseHrListChoice(choiceNumber: string, sourceMessageId?: string): Promise<void> {
     const normalized = String(choiceNumber || '').trim();
     if (!/^\d{1,2}$/.test(normalized)) return;
     if (this.isSubmittingHrListChoice()) return;
+    this.lockHrListChoiceSourceMessage(sourceMessageId);
 
     this.isSubmittingHrListChoice.set(true);
     try {
@@ -3250,6 +3252,25 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     } finally {
       this.isSubmittingHrListChoice.set(false);
     }
+  }
+
+  isHrListChoiceLocked(sourceMessageId: string | null | undefined): boolean {
+    const normalized = String(sourceMessageId || '').trim();
+    if (!normalized) return false;
+    return this.lockedHrListChoiceMessageIds().has(normalized);
+  }
+
+  private lockHrListChoiceSourceMessage(sourceMessageId: string | null | undefined): void {
+    const normalized = String(sourceMessageId || '').trim();
+    if (!normalized) return;
+    this.lockedHrListChoiceMessageIds.update((current) => {
+      if (current.has(normalized)) {
+        return current;
+      }
+      const next = new Set(current);
+      next.add(normalized);
+      return next;
+    });
   }
 
   private extractDepartmentFromInfo(info?: string): string {

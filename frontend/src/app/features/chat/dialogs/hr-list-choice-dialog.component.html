@@ -2,19 +2,19 @@
   <span class="hr-dialog-title-icon">
     <mat-icon>format_list_bulleted</mat-icon>
   </span>
-  <span>Quick selection</span>
+  <span>בחירה מהירה</span>
 </h2>
 
 <mat-dialog-content class="hr-dialog-content">
   <p class="hr-dialog-prompt">{{ data.prompt }}</p>
 
-  <div class="hr-dialog-options" role="listbox" aria-label="Choice options">
+  <div class="hr-dialog-options" role="listbox" aria-label="אפשרויות בחירה">
     @for (option of data.options; track option.choiceNumber + '-' + $index) {
       <button
         type="button"
         class="hr-dialog-option"
         (click)="choose(option)"
-        [attr.aria-label]="'Choose option ' + option.choiceNumber">
+        [attr.aria-label]="'בחר אפשרות ' + option.choiceNumber">
         <span class="hr-dialog-option-number">{{ option.choiceNumber }}</span>
         <span class="hr-dialog-option-label">{{ option.label }}</span>
         <mat-icon class="hr-dialog-option-arrow">chevron_left</mat-icon>
@@ -24,5 +24,5 @@
 </mat-dialog-content>
 
 <mat-dialog-actions align="end">
-  <button mat-stroked-button mat-dialog-close>Close</button>
+  <button mat-stroked-button mat-dialog-close>סגור</button>
 </mat-dialog-actions>

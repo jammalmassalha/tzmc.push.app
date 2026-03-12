@@ -541,14 +541,14 @@
                   @if (hrInlineChoicePayload(message); as hrChoice) {
                     <div class="message-content">
                       <span class="message-text" [innerHTML]="formatMessageTextPart(hrChoice.prompt)"></span>
-                      <div class="hr-inline-choice-list" role="listbox" aria-label="Quick choice list">
+                      <div class="hr-inline-choice-list" role="listbox" aria-label="רשימת אפשרויות">
                         @for (option of hrChoice.options; track option.choiceNumber + '-' + $index) {
                           <button
                             type="button"
                             class="hr-inline-choice-btn"
-                            [disabled]="isSubmittingHrListChoice()"
-                            (click)="chooseHrListChoice(option.choiceNumber)"
-                            [attr.aria-label]="'Choose option ' + option.choiceNumber">
+                            [disabled]="isSubmittingHrListChoice() || isHrListChoiceLocked(hrChoice.sourceMessageId)"
+                            (click)="chooseHrListChoice(option.choiceNumber, hrChoice.sourceMessageId)"
+                            [attr.aria-label]="'בחר אפשרות ' + option.choiceNumber">
                             <span class="hr-inline-choice-number">{{ option.choiceNumber }}</span>
                             <span class="hr-inline-choice-label">{{ option.label }}</span>
                           </button>
