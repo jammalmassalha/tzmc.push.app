@@ -833,8 +833,18 @@
           </section>
         }
 
-        @if (showHrBackButton() || showHrEndSessionButton()) {
+        @if (showHrStartSessionButton() || showHrBackButton() || showHrEndSessionButton()) {
           <div class="hr-composer-actions">
+            @if (showHrStartSessionButton()) {
+              <button
+                mat-stroked-button
+                type="button"
+                class="hr-composer-action-btn"
+                [disabled]="isSubmittingHrListChoice()"
+                (click)="startNewHrSession()">
+                התחל סשן חדש
+              </button>
+            }
             @if (showHrBackButton()) {
               <button
                 mat-stroked-button

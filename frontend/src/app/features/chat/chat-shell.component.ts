@@ -388,6 +388,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   readonly isSubmittingHrListChoice = signal(false);
   readonly lockedHrListChoiceMessageIds = signal<Set<string>>(new Set<string>());
   readonly hrComposerActions = computed(() => this.store.getHrComposerActionsForActiveChat());
+  readonly showHrStartSessionButton = computed(() => Boolean(this.hrComposerActions()));
   readonly showHrBackButton = computed(() => Boolean(this.hrComposerActions()?.canGoBack));
   readonly showHrEndSessionButton = computed(() => Boolean(this.hrComposerActions()?.hasOpenSession));
   readonly isHrTextInputEnabled = computed(() => this.hrComposerActions()?.canWriteMessage ?? true);
@@ -3202,6 +3203,10 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
 
   async goBackInHrFlow(): Promise<void> {
     await this.sendHrComposerControlMessage('חזרה', '0');
+  }
+
+  async startNewHrSession(): Promise<void> {
+    await this.sendHrComposerControlMessage('התחל סשן חדש', '0');
   }
 
   async endHrConversation(): Promise<void> {
