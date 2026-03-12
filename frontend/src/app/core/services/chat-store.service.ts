@@ -217,6 +217,13 @@ type BadgeCapableNavigator = Navigator & {
   clearAppBadge?: () => Promise<void>;
 };
 
+type BadgeCapableServiceWorkerRegistration = ServiceWorkerRegistration & {
+  setAppBadge?: (count?: number) => Promise<void>;
+  clearAppBadge?: () => Promise<void>;
+  setBadge?: (count?: number) => Promise<void>;
+  clearBadge?: () => Promise<void>;
+};
+
 type BadgeMessage =
   | { action: 'set-app-badge-count'; count: number }
   | { action: 'clear-app-badge' }
@@ -489,6 +496,7 @@ export class ChatStoreService {
     if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
       navigator.serviceWorker.addEventListener('message', this.handleServiceWorkerMessage);
     }
+    this.clearHomeScreenBadgeOnAppOpen();
   }
 
   isAuthenticated(): boolean {
@@ -7198,6 +7206,41 @@ export class ChatStoreService {
       void badgeNavigator.setAppBadge(0).catch(() => undefined);
       return;
     }
+    this.postBadgeMessageToServiceWorker({ action: 'clear-app-badge' });
+  }
+
+  private clearHomeScreenBadgeOnAppOpen(): void {
+    if (typeof navigator === 'undefined') return;
+
+    this.lastAppliedAppBadgeCount = 0;
+    const badgeNavigator = navigator as BadgeCapableNavigator;
+    if (typeof badgeNavigator.clearAppBadge === 'function') {
+      void badgeNavigator.clearAppBadge().catch(() => undefined);
+    } else if (typeof badgeNavigator.setAppBadge === 'function') {
+      void badgeNavigator.setAppBadge(0).catch(() => undefined);
+    }
+
+    if ('serviceWorker' in navigator) {
+      void navigator.serviceWorker.ready
+        .then((registration) => {
+          const badgeRegistration = registration as BadgeCapableServiceWorkerRegistration;
+          if (typeof badgeRegistration.clearAppBadge === 'function') {
+            return badgeRegistration.clearAppBadge().catch(() => undefined);
+          }
+          if (typeof badgeRegistration.clearBadge === 'function') {
+            return badgeRegistration.clearBadge().catch(() => undefined);
+          }
+          if (typeof badgeRegistration.setAppBadge === 'function') {
+            return badgeRegistration.setAppBadge(0).catch(() => undefined);
+          }
+          if (typeof badgeRegistration.setBadge === 'function') {
+            return badgeRegistration.setBadge(0).catch(() => undefined);
+          }
+          return undefined;
+        })
+        .catch(() => undefined);
+    }
+
     this.postBadgeMessageToServiceWorker({ action: 'clear-app-badge' });
   }
 
