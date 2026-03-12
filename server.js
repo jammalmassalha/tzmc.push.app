@@ -797,10 +797,12 @@ async function ensureRedisQueuePubSubBridge() {
 }
 
 // Helper: Add message to queue (NORMALIZED TO LOWERCASE)
-function addToQueue(targetUser, messageObj) {
+async function addToQueue(targetUser, messageObj) {
     const recipients = Array.isArray(targetUser) ? targetUser : [targetUser];
-    
-    recipients.forEach(user => {
+    const queueWriteTasks = [];
+    const deliveries = [];
+
+    recipients.forEach((user) => {
         const normalizedUser = normalizeUserCandidate(user);
         if (!normalizedUser) return;
 
@@ -812,22 +814,32 @@ function addToQueue(targetUser, messageObj) {
                 timestamp: Date.now()
             };
 
+        deliveries.push({ normalizedUser, queueEntry });
         const hasRedisQueue = Boolean(activeRedisStateStore && activeRedisStateStore.isEnabled);
         if (hasRedisQueue) {
-            activeRedisStateStore.enqueueMessages(normalizedUser, [queueEntry]).catch((error) => {
-                console.warn('[REDIS] enqueue failed:', error && error.message ? error.message : error);
-                if (!messageQueue[normalizedUser]) {
-                    messageQueue[normalizedUser] = [];
-                }
-                messageQueue[normalizedUser].push(queueEntry);
-                scheduleStateSave();
-            });
-        } else {
-            if (!messageQueue[normalizedUser]) {
-                messageQueue[normalizedUser] = [];
-            }
-            messageQueue[normalizedUser].push(queueEntry);
+            queueWriteTasks.push(
+                activeRedisStateStore.enqueueMessages(normalizedUser, [queueEntry]).catch((error) => {
+                    console.warn('[REDIS] enqueue failed:', error && error.message ? error.message : error);
+                    if (!messageQueue[normalizedUser]) {
+                        messageQueue[normalizedUser] = [];
+                    }
+                    messageQueue[normalizedUser].push(queueEntry);
+                })
+            );
+            return;
         }
+
+        if (!messageQueue[normalizedUser]) {
+            messageQueue[normalizedUser] = [];
+        }
+        messageQueue[normalizedUser].push(queueEntry);
+    });
+
+    if (queueWriteTasks.length) {
+        await Promise.allSettled(queueWriteTasks);
+    }
+
+    deliveries.forEach(({ normalizedUser, queueEntry }) => {
         dispatchRegisteredWebhookAsync(queueEntry);
         notifyRealtimeClients(normalizedUser, queueEntry);
     });
@@ -2574,7 +2586,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             groupSenderName: senderLabel,
             ...messageMetadata
         };
-        addToQueue(targetToNotify, pollingMessage);
+        await addToQueue(targetToNotify, pollingMessage);
 
         const senderForPush = isGroup ? groupId : user;
         const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, { messageId });
@@ -2688,7 +2700,7 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
         groupUpdatedAt: resolvedGroupUpdatedAt,
         groupType: resolvedGroupType
     };
-    addToQueue(membersToNotify, reactionRecord);
+    await addToQueue(membersToNotify, reactionRecord);
 
     const result = await sendPushNotificationToUser(membersToNotify, notificationData, groupId, {
         messageId: reactionId,
@@ -3422,6 +3434,16 @@ async function processShuttleReminderForUser(userKey, now, options = {}) {
                     shuttleStation: order.station
                 }
             };
+            await addToQueue(normalizedUser, {
+                messageId,
+                sender: SHUTTLE_CHAT_NAME,
+                body: reminderText,
+                timestamp: Date.now(),
+                type: SHUTTLE_REMINDER_TYPE,
+                shuttleDate: order.dateIso,
+                shuttleShift: order.shiftLabel,
+                shuttleStation: order.station
+            });
             const pushResult = await sendPushNotificationToUser(
                 [normalizedUser],
                 pushPayload,
@@ -3436,16 +3458,6 @@ async function processShuttleReminderForUser(userKey, now, options = {}) {
             const failedCount = Number((pushResult && pushResult.failed) || 0);
             if (successCount > 0) {
                 markShuttleReminderSentForOrder(normalizedUser, order.orderKey, now);
-                addToQueue(normalizedUser, {
-                    messageId,
-                    sender: SHUTTLE_CHAT_NAME,
-                    body: reminderText,
-                    timestamp: Date.now(),
-                    type: SHUTTLE_REMINDER_TYPE,
-                    shuttleDate: order.dateIso,
-                    shuttleShift: order.shiftLabel,
-                    shuttleStation: order.station
-                });
                 result.sent += 1;
                 continue;
             }
@@ -5026,6 +5038,7 @@ io.on('connection', (socket) => {
 
 registerAuthController(app, {
     normalizeUserCandidate,
+    buildUserLookupAliases,
     fetchWithRetry,
     buildGoogleSheetGetUrl,
     googleSheetUrl: GOOGLE_SHEET_URL,
@@ -5215,7 +5228,7 @@ app.post(
             groupUpdatedAt: Number.isFinite(resolvedGroupUpdatedAt) ? resolvedGroupUpdatedAt : deletedAt,
             groupType: resolvedGroupType
         };
-        addToQueue(recipients, actionRecord);
+        await addToQueue(recipients, actionRecord);
 
         const notificationPayload = {
             messageId,
@@ -5307,7 +5320,7 @@ app.post(
             groupUpdatedAt: Number.isFinite(resolvedGroupUpdatedAt) ? resolvedGroupUpdatedAt : editedAt,
             groupType: resolvedGroupType
         };
-        addToQueue(recipients, actionRecord);
+        await addToQueue(recipients, actionRecord);
 
         const notificationPayload = {
             messageId,
@@ -6171,7 +6184,7 @@ app.post(
             groupType: resolvedGroupType,
             timestamp: Date.now()
         };
-        addToQueue(dedupedRecipients, groupUpdateRecord);
+        await addToQueue(dedupedRecipients, groupUpdateRecord);
 
         const result = await sendPushNotificationToUser(dedupedRecipients, notificationData, groupId, { messageId, skipBadge: true });
         res.json({ status: 'success', details: result });
@@ -6261,7 +6274,7 @@ app.post(
         };
 
         // Queue as well so polling/SSE can recover if push is delayed/missed.
-        addToQueue(normalizedSender, {
+        await addToQueue(normalizedSender, {
             type: 'read-receipt',
             messageIds: uniqueMessageIds,
             readAt: effectiveReadAt,
@@ -6305,7 +6318,7 @@ app.post('/notify', async (req, res) => {
             imageUrl: imageUrl || null
         };
         // The helper function will handle lowercasing the KEY for storage
-        addToQueue(targetUser, pollingMessage);
+        await addToQueue(targetUser, pollingMessage);
         
         await sleep(100);
         
@@ -6354,10 +6367,7 @@ async function checkOutgoingQueue() {
                     }
                 };
 
-                // 1. Send Push Notification (Handles all devices)
-                await sendPushNotificationToUser(targetUsers, notificationData, senderName, { messageId });
-                
-                // 2. Add to Polling Queue
+                // 1. Add to Polling Queue
                 const pollingMessage = {
                     messageId,
                     sender: senderName,
@@ -6365,7 +6375,10 @@ async function checkOutgoingQueue() {
                     timestamp: Date.now(),
                     imageUrl: null
                 };
-                addToQueue(targetUsers, pollingMessage);
+                await addToQueue(targetUsers, pollingMessage);
+
+                // 2. Send Push Notification (Handles all devices)
+                await sendPushNotificationToUser(targetUsers, notificationData, senderName, { messageId });
             }
         }
     } catch (error) {

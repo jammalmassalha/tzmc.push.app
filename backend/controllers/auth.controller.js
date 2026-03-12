@@ -1,6 +1,7 @@
 function registerAuthController(app, deps = {}) {
     const {
         normalizeUserCandidate,
+        buildUserLookupAliases,
         fetchWithRetry,
         buildGoogleSheetGetUrl,
         googleSheetUrl,
@@ -378,7 +379,22 @@ function registerAuthController(app, deps = {}) {
         (req, res) => {
             const user = req.resolvedUser;
             if (user) {
-                unreadCounts[user] = 0;
+                const aliasCandidates = typeof buildUserLookupAliases === 'function'
+                    ? buildUserLookupAliases(user)
+                    : [user];
+                const normalizedAliases = Array.from(
+                    new Set(
+                        (Array.isArray(aliasCandidates) ? aliasCandidates : [user])
+                            .map((value) => String(value || '').trim().toLowerCase())
+                            .filter(Boolean)
+                    )
+                );
+                if (!normalizedAliases.length) {
+                    normalizedAliases.push(String(user || '').trim().toLowerCase());
+                }
+                normalizedAliases.forEach((alias) => {
+                    unreadCounts[alias] = 0;
+                });
                 console.log(`[BADGE] Reset count for ${user}`);
                 scheduleStateSave();
             }

@@ -350,6 +350,7 @@ export class ChatStoreService {
   private readonly shuttlePickerRevision = signal(0);
   private lastAppliedAppBadgeCount = -1;
   private lastServerBadgeResetAt = 0;
+  private serverBadgeResetInFlight = false;
   private lastForegroundSyncAt = 0;
   private readonly readReceiptSentByChat = new Map<string, Set<string>>();
   private readonly pendingReadReceiptByChat = new Map<string, Set<string>>();
@@ -7318,8 +7319,18 @@ export class ChatStoreService {
     if (now - this.lastServerBadgeResetAt < BADGE_RESET_MIN_INTERVAL_MS) {
       return;
     }
-    this.lastServerBadgeResetAt = now;
-    void this.api.resetServerBadge(user).catch(() => undefined);
+    if (this.serverBadgeResetInFlight) {
+      return;
+    }
+    this.serverBadgeResetInFlight = true;
+    void this.api.resetServerBadge(user)
+      .then(() => {
+        this.lastServerBadgeResetAt = Date.now();
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        this.serverBadgeResetInFlight = false;
+      });
   }
 
   private postBadgeMessageToServiceWorker(message: BadgeMessage): void {
