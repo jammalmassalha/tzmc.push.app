@@ -1506,7 +1506,14 @@ export class ChatStoreService {
     if (logsMessages.length) {
       const nonSystemLogs = logsMessages.filter((message) => {
         const sender = this.normalizeUser(String(message.sender ?? '').trim());
-        return Boolean(sender && sender !== 'system');
+        if (!sender || sender === 'system') {
+          return false;
+        }
+        const normalizedBody = String(message.body ?? '').trim().toLowerCase();
+        if (normalizedBody === 'new notification' || normalizedBody === 'new reaction') {
+          return false;
+        }
+        return true;
       });
       const normalizedLogs = this.normalizeLogsMessagesForImport(
         nonSystemLogs,
