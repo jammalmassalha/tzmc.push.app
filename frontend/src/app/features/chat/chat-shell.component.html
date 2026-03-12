@@ -538,33 +538,52 @@
                     </div>
                   </div>
                 } @else if (message.body) {
-                  <div class="message-content">
-                    @for (part of getMessageRenderParts(message.messageId, message.body); track $index) {
-                      @if (part.kind === 'text') {
-                        <span class="message-text" [innerHTML]="formatMessageTextPart(part.text)"></span>
-                      } @else if (part.kind === 'phone') {
-                        <button
-                          type="button"
-                          class="message-phone"
-                          (click)="openPhoneActions(part)"
-                          aria-label="פעולות מספר טלפון">
-                          {{ part.display }}
-                        </button>
-                      } @else if (part.kind === 'image') {
-                        <button
-                          type="button"
-                          class="message-image-btn"
-                          (click)="openFullImage(part.url)"
-                          aria-label="Open full image">
-                          <img class="message-image" [src]="part.url" alt="Image" loading="lazy" />
-                        </button>
-                      } @else {
-                        <a [href]="part.url" target="_blank" rel="noopener" class="message-link">
-                          {{ part.label }}
-                        </a>
+                  @if (hrInlineChoicePayload(message); as hrChoice) {
+                    <div class="message-content">
+                      <span class="message-text" [innerHTML]="formatMessageTextPart(hrChoice.prompt)"></span>
+                      <div class="hr-inline-choice-list" role="listbox" aria-label="Quick choice list">
+                        @for (option of hrChoice.options; track option.choiceNumber + '-' + $index) {
+                          <button
+                            type="button"
+                            class="hr-inline-choice-btn"
+                            [disabled]="isSubmittingHrListChoice()"
+                            (click)="chooseHrListChoice(option.choiceNumber)"
+                            [attr.aria-label]="'Choose option ' + option.choiceNumber">
+                            <span class="hr-inline-choice-number">{{ option.choiceNumber }}</span>
+                            <span class="hr-inline-choice-label">{{ option.label }}</span>
+                          </button>
+                        }
+                      </div>
+                    </div>
+                  } @else {
+                    <div class="message-content">
+                      @for (part of getMessageRenderParts(message.messageId, message.body); track $index) {
+                        @if (part.kind === 'text') {
+                          <span class="message-text" [innerHTML]="formatMessageTextPart(part.text)"></span>
+                        } @else if (part.kind === 'phone') {
+                          <button
+                            type="button"
+                            class="message-phone"
+                            (click)="openPhoneActions(part)"
+                            aria-label="פעולות מספר טלפון">
+                            {{ part.display }}
+                          </button>
+                        } @else if (part.kind === 'image') {
+                          <button
+                            type="button"
+                            class="message-image-btn"
+                            (click)="openFullImage(part.url)"
+                            aria-label="Open full image">
+                            <img class="message-image" [src]="part.url" alt="Image" loading="lazy" />
+                          </button>
+                        } @else {
+                          <a [href]="part.url" target="_blank" rel="noopener" class="message-link">
+                            {{ part.label }}
+                          </a>
+                        }
                       }
-                    }
-                  </div>
+                    </div>
+                  }
                 }
 
                 <div class="message-meta">

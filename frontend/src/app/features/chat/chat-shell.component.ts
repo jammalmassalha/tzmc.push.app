@@ -127,6 +127,11 @@ interface HrListChoiceDialogPayload {
   options: HrListChoiceOption[];
 }
 
+interface HrListChoiceCacheEntry {
+  body: string;
+  payload: HrListChoiceDialogPayload | null;
+}
+
 const MESSAGE_PAGE_SIZE = 15;
 const LOAD_OLDER_MESSAGES_SCROLL_THRESHOLD_PX = 56;
 const SHUTTLE_OPERATIONS_BACKGROUND_REFRESH_MS = 30_000;
@@ -381,6 +386,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     this.store.getShuttleQuickPickerState()
   );
   readonly isSubmittingShuttlePicker = signal(false);
+  readonly isSubmittingHrListChoice = signal(false);
   readonly isSubmittingShuttleOrder = signal(false);
   readonly isCancellingShuttleOrderIds = signal<Set<string>>(new Set<string>());
   readonly shuttlePickerHasOptions = computed(() => {
@@ -553,6 +559,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       !this.isMessagesPanelAtBottom()
   );
   private readonly messagePartsCache = new Map<string, ParsedMessageCacheEntry>();
+  private readonly hrListChoiceCache = new Map<string, HrListChoiceCacheEntry>();
   private readonly hrChatId = this.normalizeUsername('ציפי');
   private readonly handledHrListChoiceMessageIds = new Set<string>();
   private readonly scrollBottomThresholdPx = 44;
@@ -3090,33 +3097,24 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     return this.normalizeUsername(chatId || '') === this.hrChatId;
   }
 
-  private findLatestIncomingMessage(messages: ChatMessage[]): ChatMessage | null {
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
-      if (message.direction === 'incoming' && String(message.body || '').trim()) {
-        return message;
-      }
-    }
-    return null;
-  }
-
   private parseHrListChoiceMessage(message: ChatMessage): HrListChoiceDialogPayload | null {
     const sourceMessageId = String(message.messageId || message.id || '').trim();
     if (!sourceMessageId) {
       return null;
     }
-    const body = String(message.body || '').trim();
-    if (!body) {
+    const body = String(message.body || '');
+    const normalizedBody = body
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .trim();
+    if (!normalizedBody) {
       return null;
     }
 
-    const lines = body
+    const lines = normalizedBody
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean);
-    if (lines.length < 3) {
-      return null;
-    }
 
     const options: HrListChoiceOption[] = [];
     const promptLines: string[] = [];
@@ -3137,15 +3135,45 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       }
     }
 
+    if (!options.length) {
+      const inlineMatches = Array.from(
+        normalizedBody.matchAll(/(?:^|\s)(\d{1,2})\s*[\.\)\-]\s*([^\n]+?)(?=(?:\s+\d{1,2}\s*[\.\)\-])|$)/g)
+      );
+      for (const match of inlineMatches) {
+        const number = String(match[1] || '').trim();
+        const label = String(match[2] || '').trim();
+        if (!number || !label) continue;
+        options.push({
+          choiceNumber: number,
+          label
+        });
+      }
+    }
+
     if (options.length < 2) {
       return null;
     }
-    const prompt = promptLines.join('\n').trim() || 'בחר את האפשרות המתאימה מהרשימה:';
+    const prompt = promptLines.join('\n').trim() || 'Choose an option from the list:';
     return {
       sourceMessageId,
       prompt,
       options
     };
+  }
+
+  private getHrListChoicePayload(message: ChatMessage): HrListChoiceDialogPayload | null {
+    const cacheKey = String(message.messageId || message.id || '').trim();
+    if (!cacheKey) {
+      return this.parseHrListChoiceMessage(message);
+    }
+    const body = String(message.body || '');
+    const cached = this.hrListChoiceCache.get(cacheKey);
+    if (cached && cached.body === body) {
+      return cached.payload;
+    }
+    const payload = this.parseHrListChoiceMessage(message);
+    this.hrListChoiceCache.set(cacheKey, { body, payload });
+    return payload;
   }
 
   private openHrListChoiceDialog(payload: HrListChoiceDialogPayload): void {
@@ -3166,8 +3194,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
         this.maybeOpenHrListChoiceDialogFromActiveChat();
         return;
       }
-      this.messageControl.setValue(result.choiceNumber);
-      void this.sendMessage();
+      void this.chooseHrListChoice(result.choiceNumber);
       this.maybeOpenHrListChoiceDialogFromActiveChat();
     });
   }
@@ -3185,24 +3212,44 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     }
 
     const activeMessages = this.store.activeMessages();
-    if (!activeMessages.length) {
-      return;
-    }
-    const latestIncoming = this.findLatestIncomingMessage(activeMessages);
-    if (!latestIncoming) {
-      return;
-    }
+    if (!activeMessages.length) return;
 
-    const payload = this.parseHrListChoiceMessage(latestIncoming);
-    if (!payload) {
-      return;
-    }
-    if (this.handledHrListChoiceMessageIds.has(payload.sourceMessageId)) {
-      return;
-    }
+    for (let index = activeMessages.length - 1; index >= 0; index -= 1) {
+      const candidate = activeMessages[index];
+      if (candidate.direction !== 'incoming') continue;
+      const payload = this.getHrListChoicePayload(candidate);
+      if (!payload) continue;
+      if (this.handledHrListChoiceMessageIds.has(payload.sourceMessageId)) continue;
 
-    this.handledHrListChoiceMessageIds.add(payload.sourceMessageId);
-    this.openHrListChoiceDialog(payload);
+      const hasOutgoingAfter = activeMessages
+        .slice(index + 1)
+        .some((message) => message.direction === 'outgoing' && String(message.body || '').trim());
+      if (hasOutgoingAfter) continue;
+
+      this.handledHrListChoiceMessageIds.add(payload.sourceMessageId);
+      this.openHrListChoiceDialog(payload);
+      return;
+    }
+  }
+
+  hrInlineChoicePayload(message: ChatMessage): HrListChoiceDialogPayload | null {
+    if (message.direction !== 'incoming') return null;
+    if (!this.isHrChatRoom(this.store.activeChatId())) return null;
+    return this.getHrListChoicePayload(message);
+  }
+
+  async chooseHrListChoice(choiceNumber: string): Promise<void> {
+    const normalized = String(choiceNumber || '').trim();
+    if (!/^\d{1,2}$/.test(normalized)) return;
+    if (this.isSubmittingHrListChoice()) return;
+
+    this.isSubmittingHrListChoice.set(true);
+    try {
+      this.messageControl.setValue(normalized);
+      await this.sendMessage();
+    } finally {
+      this.isSubmittingHrListChoice.set(false);
+    }
   }
 
   private extractDepartmentFromInfo(info?: string): string {

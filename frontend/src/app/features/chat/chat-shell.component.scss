@@ -749,6 +749,65 @@ mat-chip:not(.offline) {
   gap: 6px;
 }
 
+.hr-inline-choice-list {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 4px;
+}
+
+.hr-inline-choice-btn {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid rgba(40, 77, 171, 0.24);
+  border-radius: 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #f7f9ff 100%);
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  text-align: right;
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.hr-inline-choice-btn:hover {
+  border-color: rgba(40, 77, 171, 0.4);
+  box-shadow: 0 5px 14px rgba(34, 63, 131, 0.12);
+  transform: translateY(-1px);
+}
+
+.hr-inline-choice-btn:disabled {
+  opacity: 0.72;
+  cursor: default;
+  transform: none;
+  box-shadow: none;
+}
+
+.hr-inline-choice-number {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  background: rgba(40, 77, 171, 0.14);
+  color: #23489f;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.hr-inline-choice-label {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1d2a45;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .message-actions {
   position: absolute;
   top: 6px;
