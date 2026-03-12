@@ -1513,10 +1513,13 @@ export class ChatStoreService {
         groupsSnapshotBeforeCacheClear
       );
       const knownGroupNamesById = new Map<string, string>();
+      const knownGroupIds = new Set<string>();
       [...groupsSnapshotBeforeCacheClear, ...this.groups()].forEach((group) => {
         const groupId = this.normalizeChatId(String(group.id || '').trim());
         const groupName = String(group.name || '').trim();
-        if (!groupId || !groupName) return;
+        if (!groupId) return;
+        knownGroupIds.add(groupId);
+        if (!groupName) return;
         if (this.normalizeChatId(groupName) === groupId) return;
         if (!knownGroupNamesById.has(groupId)) {
           knownGroupNamesById.set(groupId, groupName);
@@ -1528,11 +1531,12 @@ export class ChatStoreService {
           if (!groupId) return message;
           const incomingGroupName = String(message.groupName ?? '').trim();
           const knownGroupName = knownGroupNamesById.get(groupId) ?? '';
-          const hasNamedGroup = Boolean(
-            (incomingGroupName && this.normalizeChatId(incomingGroupName) !== groupId) ||
-            knownGroupName
+          const hasResolvableGroup = Boolean(
+            incomingGroupName ||
+            knownGroupName ||
+            knownGroupIds.has(groupId)
           );
-          if (!hasNamedGroup) {
+          if (!hasResolvableGroup) {
             return null;
           }
           if (incomingGroupName && this.normalizeChatId(incomingGroupName) !== groupId) {
@@ -1540,7 +1544,7 @@ export class ChatStoreService {
           }
           return {
             ...message,
-            groupName: knownGroupName
+            groupName: knownGroupName || incomingGroupName || groupId
           };
         })
         .filter((message): message is IncomingServerMessage => Boolean(message));
