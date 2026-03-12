@@ -15,7 +15,7 @@ import { toSignal } from '@angular/core/rxjs-interop';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatChipsModule } from '@angular/material/chips';
-import { MatDialog, MatDialogModule } from '@angular/material/dialog';
+import { MatDialog, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
 import { MatExpansionModule } from '@angular/material/expansion';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
@@ -48,6 +48,10 @@ import { CreateGroupDialogComponent } from './dialogs/create-group-dialog.compon
 import { NewChatDialogComponent } from './dialogs/new-chat-dialog.component';
 import { ConfirmMessageActionDialogComponent } from './dialogs/confirm-message-action-dialog.component';
 import { ForwardMessageDialogComponent } from './dialogs/forward-message-dialog.component';
+import {
+  HrListChoiceDialogComponent,
+  HrListChoiceDialogResult
+} from './dialogs/hr-list-choice-dialog.component';
 
 type MessageRenderPart =
   | { kind: 'text'; text: string }
@@ -110,6 +114,17 @@ interface ShuttleOrderMessageCard {
   shift: string;
   station: string;
   cancelled: boolean;
+}
+
+interface HrListChoiceOption {
+  choiceNumber: string;
+  label: string;
+}
+
+interface HrListChoiceDialogPayload {
+  sourceMessageId: string;
+  prompt: string;
+  options: HrListChoiceOption[];
 }
 
 const MESSAGE_PAGE_SIZE = 15;
@@ -538,6 +553,8 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       !this.isMessagesPanelAtBottom()
   );
   private readonly messagePartsCache = new Map<string, ParsedMessageCacheEntry>();
+  private readonly hrChatId = this.normalizeUsername('ציפי');
+  private readonly handledHrListChoiceMessageIds = new Set<string>();
   private readonly scrollBottomThresholdPx = 44;
   private readonly loadOlderMessagesScrollThresholdPx = LOAD_OLDER_MESSAGES_SCROLL_THRESHOLD_PX;
   private readonly conversationSwipeMinDistancePx = 80;
@@ -561,6 +578,10 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   private routeQueryParamsSub: Subscription | null = null;
   private isLoadingOlderMessages = false;
   private lastPaginatedChatId: string | null = null;
+  private hrListChoiceDialogRef: MatDialogRef<
+    HrListChoiceDialogComponent,
+    HrListChoiceDialogResult | undefined
+  > | null = null;
 
   private readonly autoScrollEffect = effect(() => {
     const activeChatId = this.store.activeChatId();
@@ -673,6 +694,10 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
 
     this.showReactionToast(notice);
     this.store.clearIncomingReactionNotice();
+  });
+
+  private readonly hrListChoiceDialogEffect = effect(() => {
+    this.maybeOpenHrListChoiceDialogFromActiveChat();
   });
 
   private readonly shuttlePickerSyncEffect = effect(() => {
@@ -865,6 +890,8 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     window.visualViewport?.removeEventListener('scroll', this.onViewportResize);
     document.removeEventListener('focusin', this.onDocumentFocusIn, true);
     document.removeEventListener('focusout', this.onDocumentFocusOut, true);
+    this.hrListChoiceDialogRef?.close();
+    this.hrListChoiceDialogRef = null;
     if (this.relativeTimeRefreshId !== null) {
       window.clearInterval(this.relativeTimeRefreshId);
       this.relativeTimeRefreshId = null;
@@ -3057,6 +3084,125 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
 
   private normalizeUsername(value: string): string {
     return String(value || '').trim().toLowerCase();
+  }
+
+  private isHrChatRoom(chatId: string | null | undefined): boolean {
+    return this.normalizeUsername(chatId || '') === this.hrChatId;
+  }
+
+  private findLatestIncomingMessage(messages: ChatMessage[]): ChatMessage | null {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.direction === 'incoming' && String(message.body || '').trim()) {
+        return message;
+      }
+    }
+    return null;
+  }
+
+  private parseHrListChoiceMessage(message: ChatMessage): HrListChoiceDialogPayload | null {
+    const sourceMessageId = String(message.messageId || message.id || '').trim();
+    if (!sourceMessageId) {
+      return null;
+    }
+    const body = String(message.body || '').trim();
+    if (!body) {
+      return null;
+    }
+
+    const lines = body
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (lines.length < 3) {
+      return null;
+    }
+
+    const options: HrListChoiceOption[] = [];
+    const promptLines: string[] = [];
+    let encounteredChoiceLine = false;
+    for (const line of lines) {
+      const match = line.match(/^(\d{1,2})\s*[\.\)\-]\s*(.+)$/);
+      if (match) {
+        encounteredChoiceLine = true;
+        const label = String(match[2] || '').trim();
+        options.push({
+          choiceNumber: String(match[1] || '').trim(),
+          label: label || `אפשרות ${match[1]}`
+        });
+        continue;
+      }
+      if (!encounteredChoiceLine) {
+        promptLines.push(line);
+      }
+    }
+
+    if (options.length < 2) {
+      return null;
+    }
+    const prompt = promptLines.join('\n').trim() || 'בחר את האפשרות המתאימה מהרשימה:';
+    return {
+      sourceMessageId,
+      prompt,
+      options
+    };
+  }
+
+  private openHrListChoiceDialog(payload: HrListChoiceDialogPayload): void {
+    this.hrListChoiceDialogRef = this.dialog.open(HrListChoiceDialogComponent, {
+      width: 'min(92vw, 420px)',
+      maxWidth: '92vw',
+      autoFocus: false,
+      restoreFocus: false,
+      data: {
+        prompt: payload.prompt,
+        options: payload.options
+      }
+    });
+
+    this.hrListChoiceDialogRef.afterClosed().subscribe((result) => {
+      this.hrListChoiceDialogRef = null;
+      if (!result) {
+        this.maybeOpenHrListChoiceDialogFromActiveChat();
+        return;
+      }
+      this.messageControl.setValue(result.choiceNumber);
+      void this.sendMessage();
+      this.maybeOpenHrListChoiceDialogFromActiveChat();
+    });
+  }
+
+  private maybeOpenHrListChoiceDialogFromActiveChat(): void {
+    const activeChatId = this.store.activeChatId();
+    if (!this.isHrChatRoom(activeChatId)) {
+      if (this.hrListChoiceDialogRef) {
+        this.hrListChoiceDialogRef.close();
+      }
+      return;
+    }
+    if (this.hrListChoiceDialogRef) {
+      return;
+    }
+
+    const activeMessages = this.store.activeMessages();
+    if (!activeMessages.length) {
+      return;
+    }
+    const latestIncoming = this.findLatestIncomingMessage(activeMessages);
+    if (!latestIncoming) {
+      return;
+    }
+
+    const payload = this.parseHrListChoiceMessage(latestIncoming);
+    if (!payload) {
+      return;
+    }
+    if (this.handledHrListChoiceMessageIds.has(payload.sourceMessageId)) {
+      return;
+    }
+
+    this.handledHrListChoiceMessageIds.add(payload.sourceMessageId);
+    this.openHrListChoiceDialog(payload);
   }
 
   private extractDepartmentFromInfo(info?: string): string {
