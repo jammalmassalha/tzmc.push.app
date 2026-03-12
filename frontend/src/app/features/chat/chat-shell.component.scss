@@ -548,6 +548,11 @@ mat-chip:not(.offline) {
   height: 26px;
   min-width: 26px;
   color: #3952ad;
+  padding: 0;
+  position: absolute;
+  z-index: 9999;
+  left: 10px;
+  top: 23px;
 }
 
 .conversation-title-edit-btn mat-icon {
