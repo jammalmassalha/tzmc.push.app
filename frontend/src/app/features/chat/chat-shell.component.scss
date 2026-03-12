@@ -538,7 +538,7 @@ mat-chip:not(.offline) {
 }
 
 .conversation-title-line {
-  display: inline-flex;
+  display: block;
   align-items: center;
   gap: 4px;
 }
