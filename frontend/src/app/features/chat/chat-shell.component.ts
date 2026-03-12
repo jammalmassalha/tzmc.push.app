@@ -71,6 +71,7 @@ interface GroupMembersPreview {
   groupId: string;
   title: string;
   type: 'group' | 'community';
+  canEditTitle: boolean;
   canManageMembers: boolean;
   members: Array<{
     username: string;
@@ -443,11 +444,36 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     return seconds > 0 ? `מתנתק... ${seconds}ש׳` : 'מתנתק...';
   });
   readonly groupMemberAddOpen = signal(false);
+  readonly isInlineGroupTitleEditing = signal(false);
+  readonly inlineGroupTitleEditGroupId = signal<string | null>(null);
+  readonly inlineGroupTitleEditValue = signal('');
+  readonly groupTitleEditValue = signal('');
   readonly groupMemberAddSearchTerm = signal('');
   readonly selectedGroupMemberAddUsernames = signal<Set<string>>(new Set<string>());
   readonly selectedGroupMemberRemoveUsernames = signal<Set<string>>(new Set<string>());
   readonly selectedGroupMemberAddCount = computed(() => this.selectedGroupMemberAddUsernames().size);
   readonly selectedGroupMemberRemoveCount = computed(() => this.selectedGroupMemberRemoveUsernames().size);
+  readonly canSaveGroupTitle = computed(() => {
+    const preview = this.groupMembersPreview();
+    if (!preview?.canEditTitle) return false;
+    const nextTitle = String(this.groupTitleEditValue() || '').trim();
+    if (nextTitle.length < 2) return false;
+    return nextTitle !== preview.title;
+  });
+  readonly canEditActiveGroupTitle = computed(() => {
+    const group = this.findActiveGroup();
+    if (!group) return false;
+    return this.canCurrentUserEditGroupTitle(group);
+  });
+  readonly canSaveInlineGroupTitle = computed(() => {
+    if (!this.isInlineGroupTitleEditing()) return false;
+    if (!this.canEditActiveGroupTitle()) return false;
+    const group = this.findActiveGroup();
+    if (!group) return false;
+    const nextTitle = String(this.inlineGroupTitleEditValue() || '').trim();
+    if (nextTitle.length < 2) return false;
+    return nextTitle !== String(group.name || '').trim();
+  });
   readonly currentUserDepartment = computed(() => {
     const currentUser = this.normalizeUsername(this.store.currentUser() || '');
     if (!currentUser) return '';
@@ -755,6 +781,19 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
 
     if (latest !== replying) {
       this.replyingMessageTarget.set(latest);
+    }
+  });
+  private readonly inlineGroupTitleEditGuardEffect = effect(() => {
+    const activeChatId = this.store.activeChatId();
+    const editGroupId = this.inlineGroupTitleEditGroupId();
+    if (!this.isInlineGroupTitleEditing()) return;
+    if (!activeChatId || !editGroupId || activeChatId !== editGroupId) {
+      this.cancelInlineGroupTitleEdit();
+      return;
+    }
+    const group = this.findGroupById(editGroupId);
+    if (!group || !this.canCurrentUserEditGroupTitle(group)) {
+      this.cancelInlineGroupTitleEdit();
     }
   });
 
@@ -1482,6 +1521,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     const group = this.findGroupById(activeChat.id);
     if (!group) return;
     this.groupMemberAddOpen.set(false);
+    this.groupTitleEditValue.set(group.name);
     this.groupMemberAddSearchTerm.set('');
     this.clearSelectedGroupMemberAdds();
     this.clearSelectedGroupMemberRemovals();
@@ -1545,6 +1585,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
 
   closeGroupMembers(): void {
     this.groupMemberAddOpen.set(false);
+    this.groupTitleEditValue.set('');
     this.groupMemberAddSearchTerm.set('');
     this.clearSelectedGroupMemberAdds();
     this.clearSelectedGroupMemberRemovals();
@@ -1621,6 +1662,109 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     this.selectedGroupMemberRemoveUsernames.set(new Set<string>());
   }
 
+  onGroupTitleEditInput(event: Event): void {
+    const target = event.target as HTMLInputElement | null;
+    this.groupTitleEditValue.set(String(target?.value || ''));
+  }
+
+  resetGroupTitleEdit(): void {
+    const preview = this.groupMembersPreview();
+    this.groupTitleEditValue.set(preview?.title || '');
+  }
+
+  async saveGroupTitleEdit(): Promise<void> {
+    const preview = this.groupMembersPreview();
+    if (!preview?.canEditTitle) return;
+    const nextTitle = String(this.groupTitleEditValue() || '').trim();
+    if (nextTitle.length < 2) {
+      this.snackBar.open('יש להזין שם קבוצה תקין.', 'סגור', { duration: 2200 });
+      return;
+    }
+    if (nextTitle === preview.title) {
+      return;
+    }
+
+    try {
+      await this.store.updateGroupTitle(preview.groupId, nextTitle);
+      this.snackBar.open('שם הקבוצה עודכן.', 'סגור', { duration: 2200 });
+      const refreshed = this.findGroupById(preview.groupId);
+      if (!refreshed) {
+        this.closeGroupMembers();
+        return;
+      }
+      const refreshedPreview = this.buildGroupMembersPreview(refreshed);
+      this.groupMembersPreview.set(refreshedPreview);
+      this.groupTitleEditValue.set(refreshedPreview.title);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'עדכון שם קבוצה נכשל';
+      this.snackBar.open(message, 'סגור', { duration: 3200 });
+      this.resetGroupTitleEdit();
+    }
+  }
+
+  startInlineGroupTitleEdit(event?: Event): void {
+    event?.stopPropagation();
+    const group = this.findActiveGroup();
+    if (!group || !this.canCurrentUserEditGroupTitle(group)) {
+      return;
+    }
+    this.inlineGroupTitleEditGroupId.set(group.id);
+    this.inlineGroupTitleEditValue.set(String(group.name || '').trim());
+    this.isInlineGroupTitleEditing.set(true);
+  }
+
+  cancelInlineGroupTitleEdit(event?: Event): void {
+    event?.stopPropagation();
+    this.isInlineGroupTitleEditing.set(false);
+    this.inlineGroupTitleEditGroupId.set(null);
+    this.inlineGroupTitleEditValue.set('');
+  }
+
+  onInlineGroupTitleInput(event: Event): void {
+    event.stopPropagation();
+    const target = event.target as HTMLInputElement | null;
+    this.inlineGroupTitleEditValue.set(String(target?.value || ''));
+  }
+
+  async saveInlineGroupTitleEdit(event?: Event): Promise<void> {
+    event?.stopPropagation();
+    if (!this.isInlineGroupTitleEditing()) return;
+    const group = this.findActiveGroup();
+    if (!group || !this.canCurrentUserEditGroupTitle(group)) {
+      this.cancelInlineGroupTitleEdit();
+      return;
+    }
+    const nextTitle = String(this.inlineGroupTitleEditValue() || '').trim();
+    if (nextTitle.length < 2) {
+      this.snackBar.open('יש להזין שם קבוצה תקין.', 'סגור', { duration: 2200 });
+      return;
+    }
+    if (nextTitle === String(group.name || '').trim()) {
+      this.cancelInlineGroupTitleEdit();
+      return;
+    }
+    try {
+      await this.store.updateGroupTitle(group.id, nextTitle);
+      this.snackBar.open('שם הקבוצה עודכן.', 'סגור', { duration: 2200 });
+      const refreshed = this.findGroupById(group.id);
+      if (refreshed) {
+        this.inlineGroupTitleEditValue.set(String(refreshed.name || '').trim());
+      }
+      this.cancelInlineGroupTitleEdit();
+      const preview = this.groupMembersPreview();
+      if (preview && preview.groupId === group.id) {
+        this.groupMembersPreview.set({
+          ...preview,
+          title: nextTitle
+        });
+        this.groupTitleEditValue.set(nextTitle);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'עדכון שם קבוצה נכשל';
+      this.snackBar.open(message, 'סגור', { duration: 3200 });
+    }
+  }
+
   canShowGroupMembers(): boolean {
     const activeChat = this.store.activeChat();
     return Boolean(activeChat?.isGroup && this.findGroupById(activeChat.id));
@@ -1648,8 +1792,10 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     );
     const currentUser = String(this.store.currentUser() || '').trim().toLowerCase();
     const isDovrutGroup = this.store.isDovrutGroupChat(group.id);
-    const adminUsername = String(group.createdBy || '').trim().toLowerCase();
-    const canManageMembers = !isDovrutGroup && Boolean(adminUsername && currentUser === adminUsername);
+    const adminUsernames = this.resolveGroupAdminUsernames(group);
+    const isCurrentUserAdmin = Boolean(currentUser && adminUsernames.includes(currentUser));
+    const canManageMembers = !isDovrutGroup && isCurrentUserAdmin;
+    const canEditTitle = !isDovrutGroup && isCurrentUserAdmin;
     const members = (group.members ?? [])
       .map((username) => {
         const normalized = String(username || '').trim().toLowerCase();
@@ -1660,7 +1806,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
           info: contact?.info,
           isAdmin: isDovrutGroup
             ? this.store.isDovrutAdminUser(normalized)
-            : normalized === adminUsername
+            : adminUsernames.includes(normalized)
         };
       })
       .sort((a, b) => a.displayName.localeCompare(b.displayName, 'he'));
@@ -1669,6 +1815,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       groupId: group.id,
       title: group.name,
       type: group.type,
+      canEditTitle,
       canManageMembers,
       members
     };
@@ -1688,6 +1835,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
         return;
       }
       this.groupMembersPreview.set(this.buildGroupMembersPreview(refreshed));
+      this.groupTitleEditValue.set(refreshed.name);
       this.clearSelectedGroupMemberAdds();
       this.clearSelectedGroupMemberRemovals();
     } catch (error) {
@@ -1759,9 +1907,10 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     if (!activeGroup) return false;
     const currentUser = this.normalizeUsername(this.store.currentUser() || '');
     if (!currentUser) return false;
+    const adminUsers = this.resolveGroupAdminUsernames(activeGroup);
     const isGroupAdmin = this.store.isDovrutGroupChat(activeGroup.id)
       ? this.store.isDovrutAdminUser(currentUser)
-      : this.normalizeUsername(activeGroup.createdBy || '') === currentUser;
+      : adminUsers.includes(currentUser);
     const isCommunityMessage = message.groupType === 'community' || Boolean(activeGroup && activeGroup.type === 'community');
     return Boolean(
       isGroupAdmin &&
@@ -2882,6 +3031,28 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     const normalized = String(groupId || '').trim().toLowerCase();
     if (!normalized) return null;
     return this.store.groups().find((group) => group.id === normalized) ?? null;
+  }
+
+  private resolveGroupAdminUsernames(group: ChatGroup): string[] {
+    const adminUsers = Array.from(
+      new Set((group.admins ?? [])
+        .map((admin) => this.normalizeUsername(admin))
+        .filter(Boolean))
+    );
+    const createdBy = this.normalizeUsername(group.createdBy || '');
+    if (createdBy && !adminUsers.includes(createdBy)) {
+      adminUsers.push(createdBy);
+    }
+    return adminUsers;
+  }
+
+  private canCurrentUserEditGroupTitle(group: ChatGroup): boolean {
+    if (this.store.isDovrutGroupChat(group.id)) {
+      return false;
+    }
+    const currentUser = this.normalizeUsername(this.store.currentUser() || '');
+    if (!currentUser) return false;
+    return this.resolveGroupAdminUsernames(group).includes(currentUser);
   }
 
   private normalizeUsername(value: string): string {

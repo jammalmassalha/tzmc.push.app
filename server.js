@@ -212,6 +212,7 @@ const SERVER_RELEASE_NOTES = [
 const fsp = fs.promises;
 const stateDir = path.join(__dirname, 'data');
 const stateFile = path.join(stateDir, 'state.json');
+const groupsDbFile = path.join(stateDir, 'groups.db.json');
 let stateSaveTimer = null;
 let activeRedisStateStore = null;
 let redisQueuePubSubActive = false;
@@ -1125,12 +1126,26 @@ const authCodeRequestRateLimitByUser = new Map();
 const authCodeVerifyRateLimitByIp = new Map();
 const authCodeVerifyRateLimitByUser = new Map();
 const deliveryTelemetryByDevice = new Map();
+const RECENT_REPLY_MESSAGE_TTL_MS = Math.max(
+    60 * 1000,
+    Number(process.env.RECENT_REPLY_MESSAGE_TTL_MS || 10 * 60 * 1000) || 10 * 60 * 1000
+);
+const recentProcessedReplyMessages = new Map();
 let mobileReregisterCampaignState = {
     running: false,
     lastRunAt: 0,
     lastResult: null,
     sentTargetsByCampaign: new Map()
 };
+
+function pruneRecentProcessedReplyMessages(nowTs = Date.now()) {
+    for (const [messageId, processedAt] of recentProcessedReplyMessages.entries()) {
+        if (!messageId) continue;
+        if (!Number.isFinite(Number(processedAt)) || nowTs - Number(processedAt) > RECENT_REPLY_MESSAGE_TTL_MS) {
+            recentProcessedReplyMessages.delete(messageId);
+        }
+    }
+}
 
 function buildSubscriptionCacheKey(usernames) {
     const values = Array.isArray(usernames) ? usernames : [usernames];
@@ -1397,7 +1412,13 @@ function resolveShuttleReminderTripTimestamp(dateIso, shiftLabel) {
 function isShuttleReminderCancelledStatus(value) {
     const normalized = normalizeShuttleReminderText(value);
     if (!normalized) return false;
-    return normalized.includes('ביטול') || normalized.includes('отмена');
+    return (
+        normalized.includes('ביטול') ||
+        normalized.includes('בוטל') ||
+        normalized.includes('отмена') ||
+        normalized.includes('отмен') ||
+        normalized.includes('cancel')
+    );
 }
 
 function buildShuttleReminderOrderKey(order) {
@@ -1501,7 +1522,7 @@ function parseShuttleReminderOrdersPayload(payloadText) {
     return rows;
 }
 
-function mapShuttleReminderOrder(rawOrder, user) {
+function mapShuttleReminderOrder(rawOrder, user, sourceIndex = 0) {
     const dateIso = normalizeShuttleReminderDateIso(rawOrder && (rawOrder.dateIso || rawOrder.date));
     const shiftLabel = normalizeShuttleReminderShiftLabel(
         rawOrder && (rawOrder.shift || rawOrder.shiftLabel || rawOrder.shiftValue)
@@ -1530,8 +1551,10 @@ function mapShuttleReminderOrder(rawOrder, user) {
         shiftLabel,
         station,
         statusValue,
+        isCancelled,
         orderKey,
-        tripAt
+        tripAt,
+        sourceIndex: Number.isFinite(Number(sourceIndex)) ? Number(sourceIndex) : 0
     };
 }
 
@@ -1907,6 +1930,11 @@ function canSendToCommunityGroup(sender, groupRecord, groupId, groupName) {
         return false;
     }
 
+    const groupAdmins = parseUsernamesInput(groupRecord.admins || groupRecord.groupAdmins);
+    if (groupAdmins.includes(senderKey)) {
+        return true;
+    }
+
     const creatorKey = normalizeUserKey(groupRecord.createdBy);
     if (creatorKey && senderKey === creatorKey) {
         return true;
@@ -1919,6 +1947,51 @@ function canSendToCommunityGroup(sender, groupRecord, groupId, groupName) {
 
     // Legacy behavior: community groups without creator remain sendable.
     return !creatorKey;
+}
+
+function isGroupAdminUser(userKey, groupRecord = null) {
+    const normalizedUser = normalizeUserKey(userKey);
+    if (!normalizedUser || !groupRecord || typeof groupRecord !== 'object') {
+        return false;
+    }
+    const admins = parseUsernamesInput(groupRecord.admins || groupRecord.groupAdmins);
+    if (admins.includes(normalizedUser)) {
+        return true;
+    }
+    const createdBy = normalizeUserKey(groupRecord.createdBy || groupRecord.groupCreatedBy || '');
+    return Boolean(createdBy && createdBy === normalizedUser);
+}
+
+function canManageGroupUpdate(actorUser, existingGroup, incomingPayload = {}) {
+    const normalizedActor = normalizeUserKey(actorUser);
+    if (!normalizedActor) return false;
+
+    const incomingGroupId = String(incomingPayload.groupId || '').trim();
+    const incomingGroupName = String(incomingPayload.groupName || '').trim();
+
+    if (existingGroup && typeof existingGroup === 'object') {
+        if (isGroupAdminUser(normalizedActor, existingGroup)) {
+            return true;
+        }
+        if (existingGroup.type === 'community') {
+            return canSendToCommunityGroup(normalizedActor, existingGroup, incomingGroupId, incomingGroupName);
+        }
+        return false;
+    }
+
+    const incomingAdmins = parseUsernamesInput(incomingPayload.groupAdmins || incomingPayload.admins);
+    if (incomingAdmins.includes(normalizedActor)) {
+        return true;
+    }
+    const incomingCreator = normalizeUserKey(incomingPayload.groupCreatedBy || incomingPayload.createdBy || '');
+    if (incomingCreator && incomingCreator === normalizedActor) {
+        return true;
+    }
+    const hardcodedPolicy = resolveHardcodedCommunityPolicy(null, incomingGroupId, incomingGroupName);
+    if (hardcodedPolicy && hardcodedPolicy.writers && hardcodedPolicy.writers.has(normalizedActor)) {
+        return true;
+    }
+    return false;
 }
 
 function getClientIpAddress(req) {
@@ -2327,6 +2400,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         groupName,
         groupMembers,
         groupCreatedBy,
+        groupAdmins,
         groupUpdatedAt,
         groupType,
         groupSenderName,
@@ -2344,6 +2418,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
     if (!user) {
         throw createHttpError(400, 'Missing user');
     }
+    const messageId = String(clientMessageId || generateMessageId()).trim() || generateMessageId();
     console.log(`[REPLY] From: ${user} | To: ${originalSender}`);
 
     let groupRecord = null;
@@ -2353,6 +2428,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             groupName,
             groupMembers,
             groupCreatedBy,
+            groupAdmins,
             groupUpdatedAt,
             groupType
         });
@@ -2393,105 +2469,121 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         return { status: 'success', details: { success: 0, failed: 0 } };
     }
 
-    let messageContent = reply;
-    if (!messageContent && imageUrl) {
-        messageContent = `[Image Sent]: ${imageUrl}`;
+    pruneRecentProcessedReplyMessages();
+    if (recentProcessedReplyMessages.has(messageId)) {
+        return {
+            status: 'success',
+            details: {
+                success: 0,
+                failed: 0,
+                deduped: true
+            }
+        };
     }
-    const normalizedReplyToMessageId = String(replyToMessageId || '').trim();
-    const normalizedReplyToSender = normalizeUserKey(replyToSender || '');
-    const normalizedReplyToSenderName = String(replyToSenderName || '').trim();
-    const normalizedReplyToBody = typeof replyToBody === 'string' ? replyToBody : '';
-    const normalizedReplyToImageUrl = String(replyToImageUrl || '').trim();
-    const hasReplyContext = Boolean(
-        normalizedReplyToMessageId &&
-        normalizedReplyToSender &&
-        (normalizedReplyToBody.trim() || normalizedReplyToImageUrl)
-    );
-    const normalizedForwarded = parseBooleanInput(forwarded, false);
-    const normalizedForwardedFrom = normalizeUserKey(forwardedFrom || '');
-    const normalizedForwardedFromName = String(forwardedFromName || '').trim();
-    const messageMetadata = {};
-    if (hasReplyContext) {
-        messageMetadata.replyToMessageId = normalizedReplyToMessageId;
-        messageMetadata.replyToSender = normalizedReplyToSender;
-        messageMetadata.replyToBody = normalizedReplyToBody;
-        messageMetadata.replyToImageUrl = normalizedReplyToImageUrl || null;
-        if (normalizedReplyToSenderName) {
-            messageMetadata.replyToSenderName = normalizedReplyToSenderName;
-        }
-    }
-    if (normalizedForwarded) {
-        messageMetadata.forwarded = true;
-        if (normalizedForwardedFrom) {
-            messageMetadata.forwardedFrom = normalizedForwardedFrom;
-        }
-        if (normalizedForwardedFromName) {
-            messageMetadata.forwardedFromName = normalizedForwardedFromName;
-        }
-    }
+    recentProcessedReplyMessages.set(messageId, Date.now());
 
-    fetchWithRetry(GOOGLE_SHEET_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            action: 'save_reply',
-            fromUser: user,
-            toUser: groupId ? groupId : (originalSender || 'System'),
-            message: messageContent
-        })
-    }, { timeoutMs: 10000, retries: 2 }).catch(err => console.error('[SHEET ERROR] Failed to save reply:', err.message));
+    try {
+        let messageContent = reply;
+        if (!messageContent && imageUrl) {
+            messageContent = `[Image Sent]: ${imageUrl}`;
+        }
+        const normalizedReplyToMessageId = String(replyToMessageId || '').trim();
+        const normalizedReplyToSender = normalizeUserKey(replyToSender || '');
+        const normalizedReplyToSenderName = String(replyToSenderName || '').trim();
+        const normalizedReplyToBody = typeof replyToBody === 'string' ? replyToBody : '';
+        const normalizedReplyToImageUrl = String(replyToImageUrl || '').trim();
+        const hasReplyContext = Boolean(
+            normalizedReplyToMessageId &&
+            normalizedReplyToSender &&
+            (normalizedReplyToBody.trim() || normalizedReplyToImageUrl)
+        );
+        const normalizedForwarded = parseBooleanInput(forwarded, false);
+        const normalizedForwardedFrom = normalizeUserKey(forwardedFrom || '');
+        const normalizedForwardedFromName = String(forwardedFromName || '').trim();
+        const messageMetadata = {};
+        if (hasReplyContext) {
+            messageMetadata.replyToMessageId = normalizedReplyToMessageId;
+            messageMetadata.replyToSender = normalizedReplyToSender;
+            messageMetadata.replyToBody = normalizedReplyToBody;
+            messageMetadata.replyToImageUrl = normalizedReplyToImageUrl || null;
+            if (normalizedReplyToSenderName) {
+                messageMetadata.replyToSenderName = normalizedReplyToSenderName;
+            }
+        }
+        if (normalizedForwarded) {
+            messageMetadata.forwarded = true;
+            if (normalizedForwardedFrom) {
+                messageMetadata.forwardedFrom = normalizedForwardedFrom;
+            }
+            if (normalizedForwardedFromName) {
+                messageMetadata.forwardedFromName = normalizedForwardedFromName;
+            }
+        }
 
-    const messageId = clientMessageId || generateMessageId();
-    const isGroup = Boolean(groupId);
-    const senderLabel = groupSenderName || senderName || user;
-    const normalizedGroupName = (typeof groupName === 'string') ? groupName.trim() : groupName;
-    const shortText = reply || (imageUrl ? 'Sent an image' : 'New Message');
-    const normalizedGroupType = groupRecord ? groupRecord.type : normalizeGroupType(groupType || 'group');
-    const notificationTitle = isGroup ? (normalizedGroupName || 'Group message') : `New message from ${senderLabel}`;
-    const notificationExtraData = {
-        ...(isGroup ? {
-            groupId,
-            groupName: normalizedGroupName,
-            groupMembers,
-            groupCreatedBy,
-            groupUpdatedAt,
+        fetchWithRetry(GOOGLE_SHEET_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: 'save_reply',
+                fromUser: user,
+                toUser: groupId ? groupId : (originalSender || 'System'),
+                message: messageContent
+            })
+        }, { timeoutMs: 10000, retries: 2 }).catch(err => console.error('[SHEET ERROR] Failed to save reply:', err.message));
+
+        const isGroup = Boolean(groupId);
+        const senderLabel = groupSenderName || senderName || user;
+        const normalizedGroupName = (typeof groupName === 'string') ? groupName.trim() : groupName;
+        const shortText = reply || (imageUrl ? 'Sent an image' : 'New Message');
+        const normalizedGroupType = groupRecord ? groupRecord.type : normalizeGroupType(groupType || 'group');
+        const notificationTitle = isGroup ? (normalizedGroupName || 'Group message') : `New message from ${senderLabel}`;
+        const notificationExtraData = {
+            ...(isGroup ? {
+                groupId,
+                groupName: normalizedGroupName,
+                groupType: normalizedGroupType,
+                groupMessageText: shortText,
+                groupSenderName: senderLabel
+            } : {}),
+            ...messageMetadata
+        };
+        const notificationData = {
+            messageId,
+            title: notificationTitle,
+            body: {
+                shortText: isGroup ? `${senderLabel}: ${shortText}` : shortText,
+                longText: reply
+            },
+            image: imageUrl,
+            data: Object.keys(notificationExtraData).length ? notificationExtraData : undefined
+        };
+
+        const pollingMessage = {
+            messageId,
+            sender: isGroup ? groupId : user,
+            body: reply,
+            timestamp: Date.now(),
+            imageUrl: imageUrl || null,
+            groupId: groupId || null,
+            groupName: groupName || null,
+            groupMembers: groupMembers || null,
+            groupCreatedBy: groupCreatedBy || null,
+            groupAdmins: groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : undefined,
+            groupUpdatedAt: groupUpdatedAt || null,
             groupType: normalizedGroupType,
-            groupMessageText: shortText,
-            groupSenderName: senderLabel
-        } : {}),
-        ...messageMetadata
-    };
-    const notificationData = {
-        messageId,
-        title: notificationTitle,
-        body: {
-            shortText: isGroup ? `${senderLabel}: ${shortText}` : shortText,
-            longText: reply
-        },
-        image: imageUrl,
-        data: Object.keys(notificationExtraData).length ? notificationExtraData : undefined
-    };
+            groupSenderName: senderLabel,
+            ...messageMetadata
+        };
+        addToQueue(targetToNotify, pollingMessage);
 
-    const pollingMessage = {
-        messageId,
-        sender: isGroup ? groupId : user,
-        body: reply,
-        timestamp: Date.now(),
-        imageUrl: imageUrl || null,
-        groupId: groupId || null,
-        groupName: groupName || null,
-        groupMembers: groupMembers || null,
-        groupCreatedBy: groupCreatedBy || null,
-        groupUpdatedAt: groupUpdatedAt || null,
-        groupType: normalizedGroupType,
-        groupSenderName: senderLabel,
-        ...messageMetadata
-    };
-    addToQueue(targetToNotify, pollingMessage);
-
-    const senderForPush = isGroup ? groupId : user;
-    const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, { messageId });
-    return { status: 'success', details: result };
+        const senderForPush = isGroup ? groupId : user;
+        const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, { messageId });
+        recentProcessedReplyMessages.set(messageId, Date.now());
+        return { status: 'success', details: result };
+    } catch (error) {
+        recentProcessedReplyMessages.delete(messageId);
+        throw error;
+    }
 }
 
 async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
@@ -2500,6 +2592,7 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
         groupName,
         groupMembers,
         groupCreatedBy,
+        groupAdmins,
         groupUpdatedAt,
         groupType,
         targetMessageId,
@@ -2517,7 +2610,15 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
         throw createHttpError(400, 'Missing reaction user');
     }
 
-    const groupRecord = upsertGroup({ groupId, groupName, groupMembers, groupCreatedBy, groupUpdatedAt, groupType });
+    const groupRecord = upsertGroup({
+        groupId,
+        groupName,
+        groupMembers,
+        groupCreatedBy,
+        groupAdmins,
+        groupUpdatedAt,
+        groupType
+    });
     const storedMembers = groupRecord && Array.isArray(groupRecord.members) ? groupRecord.members : [];
     const providedMembers = Array.isArray(groupMembers) ? groupMembers : [];
     const recipientByKey = new Map();
@@ -2564,6 +2665,7 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
             groupName: resolvedGroupName,
             groupMembers: resolvedGroupMembers,
             groupCreatedBy: resolvedGroupCreatedBy,
+            groupAdmins: groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : undefined,
             groupUpdatedAt: resolvedGroupUpdatedAt,
             groupType: resolvedGroupType
         }
@@ -2582,6 +2684,7 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
         groupName: resolvedGroupName,
         groupMembers: resolvedGroupMembers,
         groupCreatedBy: resolvedGroupCreatedBy,
+        groupAdmins: groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : undefined,
         groupUpdatedAt: resolvedGroupUpdatedAt,
         groupType: resolvedGroupType
     };
@@ -3192,16 +3295,14 @@ async function fetchShuttleReminderOrdersForUser(userKey) {
     const payloadText = await response.text();
     const rows = parseShuttleReminderOrdersPayload(payloadText);
     const mappedOrders = rows
-        .map((row) => mapShuttleReminderOrder(row, normalizedUser))
+        .map((row, index) => mapShuttleReminderOrder(row, normalizedUser, index))
         .filter(Boolean);
     const dedupedByOrderKey = new Map();
     mappedOrders.forEach((order) => {
-        const existing = dedupedByOrderKey.get(order.orderKey);
-        if (!existing || Number(order.tripAt || 0) > Number(existing.tripAt || 0)) {
-            dedupedByOrderKey.set(order.orderKey, order);
-        }
+        // Keep the latest row for the same order key (sheet append order wins).
+        dedupedByOrderKey.set(order.orderKey, order);
     });
-    return Array.from(dedupedByOrderKey.values());
+    return Array.from(dedupedByOrderKey.values()).filter((order) => !order.isCancelled);
 }
 
 async function loadShuttleReminderOrdersForUser(userKey, options = {}) {
@@ -3274,7 +3375,7 @@ async function processShuttleReminderForUser(userKey, now, options = {}) {
             .filter((order) => Number(order.tripAt) > now);
         result.orderCount = activeOrders.length;
 
-        const dueOrders = [];
+        let dueOrders = [];
         activeOrders.forEach((order) => {
             if (hasShuttleReminderBeenSentForOrder(normalizedUser, order.orderKey)) {
                 result.skippedAlreadySent += 1;
@@ -3287,6 +3388,19 @@ async function processShuttleReminderForUser(userKey, now, options = {}) {
             }
             dueOrders.push(order);
         });
+
+        // Safety guard: when due orders come from cache/stale-cache, re-check against fresh
+        // sheet data before sending to avoid reminders for recently-cancelled rides.
+        if (dueOrders.length > 0 && loaded.source !== 'remote') {
+            const freshLoaded = await loadShuttleReminderOrdersForUser(normalizedUser, { forceRefresh: true });
+            const freshByOrderKey = new Set(
+                (Array.isArray(freshLoaded.orders) ? freshLoaded.orders : [])
+                    .map((order) => String(order && order.orderKey || '').trim())
+                    .filter(Boolean)
+            );
+            dueOrders = dueOrders.filter((order) => freshByOrderKey.has(String(order.orderKey || '').trim()));
+            result.source = `${result.source}+fresh-check`;
+        }
         result.dueCount = dueOrders.length;
 
         for (const order of dueOrders) {
@@ -4223,25 +4337,232 @@ async function runMobileReregisterPromptCampaign(jobContext = {}) {
     return summary;
 }
 
+function normalizeGroupMembersInput(rawValue) {
+    return Array.from(
+        new Set(parseUsernamesInput(rawValue).map(normalizeUserKey).filter(Boolean))
+    );
+}
+
+function resolveGroupAdminsInput(rawValue, options = {}) {
+    const normalizedRawAdmins = normalizeGroupMembersInput(rawValue);
+    if (normalizedRawAdmins.length) {
+        return normalizedRawAdmins;
+    }
+
+    const existingAdmins = normalizeGroupMembersInput(options.existingAdmins);
+    if (existingAdmins.length) {
+        return existingAdmins;
+    }
+
+    const hardcodedPolicy = resolveHardcodedCommunityPolicy(
+        options.groupRecord || null,
+        options.groupId || '',
+        options.groupName || ''
+    );
+    if (hardcodedPolicy && hardcodedPolicy.writers && hardcodedPolicy.writers.size) {
+        return Array.from(new Set(Array.from(hardcodedPolicy.writers).map(normalizeUserKey).filter(Boolean)));
+    }
+
+    const createdByFallback = normalizeUserKey(options.createdBy || '');
+    if (createdByFallback) {
+        return [createdByFallback];
+    }
+
+    return [];
+}
+
+function normalizeRuntimeGroupRecord(rawGroup = {}, idHint = '') {
+    const groupId = String(rawGroup.id || rawGroup.groupId || rawGroup.groupID || idHint || '').trim();
+    const groupName = String(rawGroup.name || rawGroup.groupName || rawGroup.title || '').trim();
+    if (!groupId || !groupName) {
+        return null;
+    }
+
+    const createdBy = normalizeUserKey(
+        rawGroup.createdBy ||
+        rawGroup.groupCreatedBy ||
+        rawGroup.creator ||
+        ''
+    );
+    const type = normalizeGroupType(rawGroup.type || rawGroup.groupType || 'group');
+    const fallbackRecord = {
+        id: groupId,
+        name: groupName,
+        type,
+        createdBy
+    };
+    const admins = resolveGroupAdminsInput(
+        rawGroup.admins || rawGroup.groupAdmins,
+        {
+            existingAdmins: rawGroup.admins || rawGroup.groupAdmins,
+            groupId,
+            groupName,
+            groupRecord: fallbackRecord,
+            createdBy
+        }
+    );
+    const resolvedCreatedBy = createdBy || admins[0] || null;
+    const updatedAtRaw = Number(rawGroup.updatedAt || rawGroup.groupUpdatedAt || rawGroup.lastUpdatedAt || Date.now());
+    const updatedAt = Number.isFinite(updatedAtRaw) && updatedAtRaw > 0 ? updatedAtRaw : Date.now();
+    const createdAtRaw = Number(rawGroup.createdAt || rawGroup.groupCreatedAt || updatedAt);
+    const createdAt = Number.isFinite(createdAtRaw) && createdAtRaw > 0 ? createdAtRaw : updatedAt;
+    const members = normalizeGroupMembersInput(
+        rawGroup.members || rawGroup.groupMembers || rawGroup.memberList || []
+    );
+
+    return {
+        id: groupId,
+        name: groupName,
+        members,
+        admins,
+        createdBy: resolvedCreatedBy,
+        createdAt,
+        updatedAt,
+        type
+    };
+}
+
+function normalizeGroupsCollection(rawGroups = {}) {
+    const sourceItems = Array.isArray(rawGroups)
+        ? rawGroups
+        : Object.entries(rawGroups || {}).map(([groupId, groupValue]) => {
+            if (groupValue && typeof groupValue === 'object') {
+                return { ...groupValue, id: groupValue.id || groupId };
+            }
+            return { id: groupId };
+        });
+    const normalizedById = {};
+    sourceItems.forEach((item) => {
+        const normalized = normalizeRuntimeGroupRecord(item, item && item.id ? item.id : '');
+        if (!normalized) return;
+        const existing = normalizedById[normalized.id];
+        if (!existing || Number(normalized.updatedAt || 0) >= Number(existing.updatedAt || 0)) {
+            normalizedById[normalized.id] = normalized;
+        }
+    });
+    return normalizedById;
+}
+
+function buildGroupsDbPayloadFromRuntime() {
+    const groupRecords = Object.values(groups || {})
+        .map((group) => normalizeRuntimeGroupRecord(group, group && group.id ? group.id : ''))
+        .filter(Boolean)
+        .map((group) => ({
+            groupID: group.id,
+            title: group.name,
+            memberList: Array.isArray(group.members) ? group.members : [],
+            admins: Array.isArray(group.admins) ? group.admins : [],
+            createdBy: group.createdBy || null,
+            groupType: group.type || 'group',
+            createdAt: group.createdAt || Date.now(),
+            updatedAt: group.updatedAt || Date.now()
+        }))
+        .sort((left, right) => String(left.groupID || '').localeCompare(String(right.groupID || '')));
+    return {
+        version: 1,
+        updatedAt: Date.now(),
+        groups: groupRecords
+    };
+}
+
+async function persistGroupsLocalDb() {
+    try {
+        await fsp.mkdir(stateDir, { recursive: true });
+        const payload = JSON.stringify(buildGroupsDbPayloadFromRuntime());
+        const tmpFile = `${groupsDbFile}.tmp`;
+        await fsp.writeFile(tmpFile, payload, 'utf8');
+        await fsp.rename(tmpFile, groupsDbFile);
+    } catch (error) {
+        console.warn('[GROUPS DB] Failed to persist groups local DB:', error && error.message ? error.message : error);
+    }
+}
+
+async function readGroupsLocalDbRecords() {
+    try {
+        await fsp.mkdir(stateDir, { recursive: true });
+        const raw = await fsp.readFile(groupsDbFile, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+            return parsed;
+        }
+        if (parsed && Array.isArray(parsed.groups)) {
+            return parsed.groups;
+        }
+        if (parsed && typeof parsed === 'object') {
+            return Object.values(parsed);
+        }
+        return [];
+    } catch (error) {
+        if (error && error.code !== 'ENOENT') {
+            console.warn('[GROUPS DB] Failed to load groups local DB:', error.message);
+        }
+        return [];
+    }
+}
+
+async function hydrateGroupsFromLocalDb() {
+    const dbRecords = await readGroupsLocalDbRecords();
+    if (!dbRecords.length) return;
+    const normalizedDbGroups = normalizeGroupsCollection(
+        dbRecords.map((record) => ({
+            id: record && (record.id || record.groupId || record.groupID),
+            name: record && (record.name || record.groupName || record.title),
+            members: record && (record.members || record.groupMembers || record.memberList),
+            admins: record && (record.admins || record.groupAdmins),
+            createdBy: record && (record.createdBy || record.groupCreatedBy),
+            updatedAt: record && (record.updatedAt || record.groupUpdatedAt),
+            createdAt: record && (record.createdAt || record.groupCreatedAt),
+            type: record && (record.type || record.groupType)
+        }))
+    );
+    groups = normalizeGroupsCollection([
+        ...Object.values(groups || {}),
+        ...Object.values(normalizedDbGroups || {})
+    ]);
+}
+
 function upsertGroup(payload = {}) {
-    const groupId = payload.groupId;
-    const groupName = typeof payload.groupName === 'string' ? payload.groupName.trim() : payload.groupName;
+    const groupId = String(payload.groupId || payload.groupID || '').trim();
+    const groupName = String(payload.groupName || payload.title || '').trim();
     if (!groupId || !groupName) return null;
-    const existing = groups[groupId] || {};
-    const updatedAt = payload.groupUpdatedAt || Date.now();
-    const createdAt = existing.createdAt || payload.groupCreatedAt || Date.now();
-    const shouldUpdateMembers = Array.isArray(payload.groupMembers) &&
-        (!existing.updatedAt || updatedAt >= existing.updatedAt);
-    const nextMembers = shouldUpdateMembers ? payload.groupMembers : (existing.members || []);
-    const nextGroup = {
+
+    const existing = normalizeRuntimeGroupRecord(groups[groupId] || {}, groupId) || {};
+    const updatedAtRaw = Number(payload.groupUpdatedAt || payload.updatedAt || Date.now());
+    const updatedAt = Number.isFinite(updatedAtRaw) && updatedAtRaw > 0 ? updatedAtRaw : Date.now();
+    const incomingMembers = normalizeGroupMembersInput(payload.groupMembers || payload.memberList || []);
+    const shouldUpdateMembers = incomingMembers.length > 0 &&
+        (!existing.updatedAt || updatedAt >= Number(existing.updatedAt || 0));
+    const nextMembers = shouldUpdateMembers
+        ? incomingMembers
+        : normalizeGroupMembersInput(existing.members || []);
+    const type = normalizeGroupType(payload.groupType || existing.type || 'group');
+    const rawCreatedBy = normalizeUserKey(payload.groupCreatedBy || payload.createdBy || existing.createdBy || '');
+    const admins = resolveGroupAdminsInput(
+        payload.groupAdmins || payload.admins,
+        {
+            existingAdmins: existing.admins,
+            groupId,
+            groupName,
+            groupRecord: { id: groupId, name: groupName, type, createdBy: rawCreatedBy || existing.createdBy || '' },
+            createdBy: rawCreatedBy || existing.createdBy || ''
+        }
+    );
+    const createdBy = rawCreatedBy || admins[0] || null;
+    const createdAtRaw = Number(existing.createdAt || payload.groupCreatedAt || payload.createdAt || Date.now());
+    const createdAt = Number.isFinite(createdAtRaw) && createdAtRaw > 0 ? createdAtRaw : Date.now();
+
+    const nextGroup = normalizeRuntimeGroupRecord({
         id: groupId,
         name: groupName,
         members: nextMembers,
-        createdBy: payload.groupCreatedBy || existing.createdBy || null,
+        admins,
+        createdBy,
         createdAt,
-        updatedAt: Math.max(existing.updatedAt || 0, updatedAt),
-        type: normalizeGroupType(payload.groupType || existing.type || 'group')
-    };
+        updatedAt: Math.max(Number(existing.updatedAt || 0), updatedAt),
+        type
+    }, groupId);
+    if (!nextGroup) return null;
+
     groups[groupId] = nextGroup;
     scheduleStateSave();
     return nextGroup;
@@ -4262,6 +4583,7 @@ async function loadState() {
                 groups = (redisState.groups && typeof redisState.groups === 'object')
                     ? redisState.groups
                     : {};
+                groups = normalizeGroupsCollection(groups);
                 deviceSubscriptionsByUser = normalizeLocalDeviceSubscriptionsRegistry(
                     (redisState.deviceSubscriptionsByUser && typeof redisState.deviceSubscriptionsByUser === 'object')
                         ? redisState.deviceSubscriptionsByUser
@@ -4277,6 +4599,7 @@ async function loadState() {
                 Object.keys(shuttleReminderOrdersCacheByUser).forEach((userKey) => {
                     delete shuttleReminderOrdersCacheByUser[userKey];
                 });
+                await hydrateGroupsFromLocalDb();
                 console.log('[STATE] Loaded persisted state from Redis.');
                 return;
             }
@@ -4292,6 +4615,7 @@ async function loadState() {
         unreadCounts = (data.unreadCounts && typeof data.unreadCounts === 'object') ? data.unreadCounts : {};
         messageQueue = (data.messageQueue && typeof data.messageQueue === 'object') ? data.messageQueue : {};
         groups = (data.groups && typeof data.groups === 'object') ? data.groups : {};
+        groups = normalizeGroupsCollection(groups);
         deviceSubscriptionsByUser = normalizeLocalDeviceSubscriptionsRegistry(
             (data.deviceSubscriptionsByUser && typeof data.deviceSubscriptionsByUser === 'object')
                 ? data.deviceSubscriptionsByUser
@@ -4307,11 +4631,14 @@ async function loadState() {
         Object.keys(shuttleReminderOrdersCacheByUser).forEach((userKey) => {
             delete shuttleReminderOrdersCacheByUser[userKey];
         });
+        await hydrateGroupsFromLocalDb();
         console.log('[STATE] Loaded persisted state.');
     } catch (err) {
         if (err.code !== 'ENOENT') {
             console.warn('[STATE] Failed to load state:', err.message);
         }
+        groups = normalizeGroupsCollection(groups);
+        await hydrateGroupsFromLocalDb();
     }
 }
 
@@ -4325,6 +4652,7 @@ async function persistState() {
                 deviceSubscriptionsByUser,
                 shuttleReminderSentAtByKey
             });
+            await persistGroupsLocalDb();
             return;
         } catch (error) {
             console.warn('[STATE] Redis persist failed, falling back to file state:', error && error.message ? error.message : error);
@@ -4342,8 +4670,10 @@ async function persistState() {
         const tmpFile = `${stateFile}.tmp`;
         await fsp.writeFile(tmpFile, payload, 'utf8');
         await fsp.rename(tmpFile, stateFile);
+        await persistGroupsLocalDb();
     } catch (err) {
         console.warn('[STATE] Failed to persist state:', err.message);
+        await persistGroupsLocalDb();
     }
 }
 
@@ -5064,6 +5394,158 @@ app.post(['/verify-status', '/notify/verify-status'], async (req, res) => {
 // ======================================================
 // [FINAL FIX] CORE SENDING LOGIC (Collision Proof)
 // ======================================================
+const MAX_PUSH_PAYLOAD_BYTES = Math.max(
+    2048,
+    Number(process.env.MAX_PUSH_PAYLOAD_BYTES || 3584) || 3584
+);
+const MAX_PUSH_TEXT_LENGTH = Math.max(
+    80,
+    Number(process.env.MAX_PUSH_TEXT_LENGTH || 280) || 280
+);
+const DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER = Math.max(
+    1,
+    Number(process.env.DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER || 2) || 2
+);
+
+function trimPushTextValue(value, maxLength = MAX_PUSH_TEXT_LENGTH) {
+    const text = String(value || '');
+    if (text.length <= maxLength) return text;
+    if (maxLength <= 3) return text.slice(0, maxLength);
+    return `${text.slice(0, maxLength - 3)}...`;
+}
+
+function buildCompactPushCustomData(rawData = {}, messageType = '') {
+    if (!rawData || typeof rawData !== 'object') {
+        return {};
+    }
+
+    const compact = {};
+    Object.entries(rawData).forEach(([key, rawValue]) => {
+        if (rawValue === undefined || rawValue === null) {
+            return;
+        }
+        if (key === 'membersToNotify') {
+            // This list is transport-only and can make payloads oversized for large groups.
+            return;
+        }
+        if (key === 'groupMembers') {
+            if (messageType === 'group-update') {
+                compact.groupMembers = parseUsernamesInput(rawValue).slice(0, 120);
+            }
+            return;
+        }
+        if (typeof rawValue === 'string') {
+            compact[key] = trimPushTextValue(rawValue);
+            return;
+        }
+        if (Array.isArray(rawValue)) {
+            compact[key] = rawValue.slice(0, 20);
+            return;
+        }
+        compact[key] = rawValue;
+    });
+    return compact;
+}
+
+function buildPushPayloadString(payloadData = {}) {
+    let compactData = { ...payloadData };
+    let payload = JSON.stringify({ data: compactData });
+    if (Buffer.byteLength(payload, 'utf8') <= MAX_PUSH_PAYLOAD_BYTES) {
+        return payload;
+    }
+
+    delete compactData.groupMembers;
+    delete compactData.membersToNotify;
+    delete compactData.replyToBody;
+    delete compactData.replyToImageUrl;
+    delete compactData.forwardedFromName;
+    if (typeof compactData.groupMessageText === 'string') {
+        compactData.groupMessageText = trimPushTextValue(compactData.groupMessageText, 120);
+    }
+    if (typeof compactData.body === 'string') {
+        compactData.body = trimPushTextValue(compactData.body, 120);
+    }
+
+    payload = JSON.stringify({ data: compactData });
+    if (Buffer.byteLength(payload, 'utf8') <= MAX_PUSH_PAYLOAD_BYTES) {
+        return payload;
+    }
+
+    const emergencyData = {
+        type: compactData.type,
+        messageId: compactData.messageId,
+        groupId: compactData.groupId,
+        groupName: compactData.groupName,
+        sender: compactData.sender,
+        user: compactData.user,
+        title: compactData.title,
+        body: trimPushTextValue(
+            compactData.body || compactData.groupMessageText || compactData.messageText || 'New Notification',
+            120
+        ),
+        image: compactData.image,
+        url: compactData.url,
+        badge: compactData.badge,
+        icon: compactData.icon,
+        requireInteraction: compactData.requireInteraction
+    };
+    return JSON.stringify({ data: emergencyData });
+}
+
+function limitSubscriptionsPerUser(subscriptions = [], maxPerUser = DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER) {
+    const normalizedMax = Math.max(1, Number(maxPerUser) || DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER);
+    const byUser = new Map();
+    const orderedUsers = [];
+
+    (Array.isArray(subscriptions) ? subscriptions : []).forEach((subscription) => {
+        if (!subscription || typeof subscription !== 'object') return;
+        const userKey = normalizeUserKey(subscription.username || subscription.user || '');
+        if (!userKey) return;
+        if (!byUser.has(userKey)) {
+            byUser.set(userKey, { mobile: [], pc: [], unknown: [] });
+            orderedUsers.push(userKey);
+        }
+        const bucket = byUser.get(userKey);
+        const type = normalizeSubscriptionType(subscription.type || subscription.deviceType || '');
+        if (type === 'mobile') {
+            bucket.mobile.push(subscription);
+            return;
+        }
+        if (type === 'pc') {
+            bucket.pc.push(subscription);
+            return;
+        }
+        bucket.unknown.push(subscription);
+    });
+
+    const selected = [];
+    orderedUsers.forEach((userKey) => {
+        const bucket = byUser.get(userKey);
+        if (!bucket) return;
+        const pickedForUser = [];
+        const pickOne = (list) => {
+            if (!Array.isArray(list) || !list.length) return;
+            pickedForUser.push(list[0]);
+        };
+        pickOne(bucket.mobile);
+        pickOne(bucket.pc);
+        if (!pickedForUser.length) {
+            pickOne(bucket.unknown);
+        }
+        const overflowPool = [
+            ...bucket.mobile.slice(1),
+            ...bucket.pc.slice(1),
+            ...bucket.unknown.slice(1)
+        ];
+        while (pickedForUser.length < normalizedMax && overflowPool.length) {
+            pickedForUser.push(overflowPool.shift());
+        }
+        selected.push(...pickedForUser.slice(0, normalizedMax));
+    });
+
+    return dedupeSubscriptionsByEndpoint(selected);
+}
+
 async function sendPushNotificationToUser(targetUser, message, senderuser, options = {}) {
     const targetUsersArray = Array.isArray(targetUser) ? targetUser : [targetUser];
     
@@ -5075,6 +5557,14 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     const finalSender = senderuser || 'System';
     const singlePerUser = Boolean(options.singlePerUser || messageType === 'reaction');
     const allowSecondAttempt = options.allowSecondAttempt !== false && messageType !== 'reaction';
+    const shouldLimitPerUserEndpoints = options.limitPerUserEndpoints !== false && !messageType;
+    const configuredMaxEndpointsPerUser = Number(options.maxPerUserEndpoints);
+    const maxEndpointsPerUser = (
+        Number.isFinite(configuredMaxEndpointsPerUser) && configuredMaxEndpointsPerUser > 0
+    )
+        ? Math.floor(configuredMaxEndpointsPerUser)
+        : (shouldLimitPerUserEndpoints ? DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER : 0);
+    const compactCustomData = buildCompactPushCustomData(customData, messageType);
     let msgTitle = message.title || 'Work Alert';
     let msgText = msgBody.shortText || 'New Notification';
     if (messageType === 'reaction') {
@@ -5194,7 +5684,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
 
                 const clickUrl = `/subscribes/?chat=${encodeURIComponent(finalSender)}`;
                 const payloadData = {
-                    ...customData,
+                    ...compactCustomData,
                     title: msgTitle,
                     body: msgText || 'New Notification',
                     badge: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
@@ -5210,11 +5700,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                     payloadData.badgeCount = currentCount;
                 }
 
-                const payload = JSON.stringify({
-                    data: {
-                        ...payloadData
-                    }
-                });
+                const payload = buildPushPayloadString(payloadData);
 
                 try {
                     const pushOptions = {
@@ -5256,6 +5742,8 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
             oneSubscriptionPerUser.set(userKey, subscription);
         });
         uniqueSubscriptions = Array.from(oneSubscriptionPerUser.values());
+    } else if (maxEndpointsPerUser > 0) {
+        uniqueSubscriptions = limitSubscriptionsPerUser(uniqueSubscriptions, maxEndpointsPerUser);
     }
     let sendResults = await sendToSubscriptions(uniqueSubscriptions, true);
 
@@ -5284,10 +5772,13 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         }
 
         const refreshedRawSubscriptions = await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true });
-        const refreshedUniqueSubscriptions = normalizeAndFilterTargetSubscriptions([
+        let refreshedUniqueSubscriptions = normalizeAndFilterTargetSubscriptions([
             ...(Array.isArray(refreshedRawSubscriptions) ? refreshedRawSubscriptions : []),
             ...getLocalDeviceSubscriptionsForUsers(targetUsersArray)
         ]);
+        if (!singlePerUser && maxEndpointsPerUser > 0) {
+            refreshedUniqueSubscriptions = limitSubscriptionsPerUser(refreshedUniqueSubscriptions, maxEndpointsPerUser);
+        }
         if (refreshedUniqueSubscriptions.length) {
             const existingEndpoints = new Set(uniqueSubscriptions.map((sub) => sub.endpoint));
             const retryTargets = refreshedUniqueSubscriptions.filter(
@@ -5577,11 +6068,38 @@ app.post(
         }
 });
 
-app.post(['/group-update', '/notify/group-update'], async (req, res) => {
+app.post(
+    ['/group-update', '/notify/group-update'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['actorUser', 'user', 'groupCreatedBy'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
     try {
-        const { groupId, groupName, groupMembers, groupCreatedBy, groupUpdatedAt, groupType, membersToNotify } = req.body || {};
+        const {
+            groupId,
+            groupName,
+            groupMembers,
+            groupCreatedBy,
+            groupAdmins,
+            actorUser,
+            groupUpdatedAt,
+            groupType,
+            membersToNotify
+        } = req.body || {};
         if (!groupId || !groupName) {
             return res.status(400).json({ error: 'Missing group update fields' });
+        }
+        const normalizedActorUser = normalizeUserKey(req.resolvedUser || actorUser || '');
+        if (!normalizedActorUser) {
+            return res.status(400).json({ error: 'Missing actor user' });
+        }
+        const existingGroupRecord = groups[groupId] && typeof groups[groupId] === 'object'
+            ? groups[groupId]
+            : null;
+        if (!canManageGroupUpdate(normalizedActorUser, existingGroupRecord, req.body || {})) {
+            return res.status(403).json({ error: 'Only group admins can update group metadata' });
         }
         const hardcodedCommunityPolicy = resolveHardcodedCommunityPolicy(null, groupId, groupName);
         const requestedRecipients = (hardcodedCommunityPolicy && Array.isArray(hardcodedCommunityPolicy.members) && hardcodedCommunityPolicy.members.length)
@@ -5590,7 +6108,15 @@ app.post(['/group-update', '/notify/group-update'], async (req, res) => {
         if (!Array.isArray(requestedRecipients) || requestedRecipients.length === 0) {
             return res.status(400).json({ error: 'Missing group update recipients' });
         }
-        const groupRecord = upsertGroup({ groupId, groupName, groupMembers, groupCreatedBy, groupUpdatedAt, groupType });
+        const groupRecord = upsertGroup({
+            groupId,
+            groupName,
+            groupMembers,
+            groupCreatedBy,
+            groupAdmins,
+            groupUpdatedAt,
+            groupType
+        });
         const recipientByKey = new Map();
         requestedRecipients.forEach(member => {
             const rawMember = String(member || '').trim();
@@ -5626,6 +6152,7 @@ app.post(['/group-update', '/notify/group-update'], async (req, res) => {
                 groupName: resolvedGroupName,
                 groupMembers: resolvedGroupMembers,
                 groupCreatedBy: resolvedGroupCreatedBy,
+                groupAdmins: groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : undefined,
                 groupUpdatedAt: resolvedGroupUpdatedAt,
                 groupType: resolvedGroupType
             }
@@ -5639,6 +6166,7 @@ app.post(['/group-update', '/notify/group-update'], async (req, res) => {
             groupName: resolvedGroupName,
             groupMembers: resolvedGroupMembers,
             groupCreatedBy: resolvedGroupCreatedBy,
+            groupAdmins: groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : undefined,
             groupUpdatedAt: resolvedGroupUpdatedAt,
             groupType: resolvedGroupType,
             timestamp: Date.now()
