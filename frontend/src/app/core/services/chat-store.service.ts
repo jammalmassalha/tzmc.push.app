@@ -47,6 +47,8 @@ const PUSH_REGISTER_REFRESH_MS = 6 * 60 * 60 * 1000;
 const FOREGROUND_SYNC_MIN_INTERVAL_MS = 4000;
 const BADGE_RESET_MIN_INTERVAL_MS = 30000;
 const PUSH_RECOVERY_PULL_DELAYS_MS = [1200, 3600];
+const LOGS_RECOVERY_MIN_INTERVAL_MS = 2 * 60 * 1000;
+const LOGS_RECOVERY_MAX_FETCH_LIMIT = 1000;
 const DELIVERY_TELEMETRY_FLUSH_INTERVAL_MS = 60 * 1000;
 const DELIVERY_TELEMETRY_FLUSH_MIN_EVENTS = 4;
 const DELIVERY_TELEMETRY_DEVICE_ID_KEY = 'modern-chat-delivery-device-id';
@@ -352,6 +354,8 @@ export class ChatStoreService {
   private lastServerBadgeResetAt = 0;
   private serverBadgeResetInFlight = false;
   private lastForegroundSyncAt = 0;
+  private logsRecoveryInFlight = false;
+  private lastLogsRecoveryAt = 0;
   private readonly readReceiptSentByChat = new Map<string, Set<string>>();
   private readonly pendingReadReceiptByChat = new Map<string, Set<string>>();
   private readonly readReceiptFlushTimerByChat = new Map<string, ReturnType<typeof setTimeout>>();
@@ -589,6 +593,7 @@ export class ChatStoreService {
 
     void this.refresh(true);
     void this.flushOutbox();
+    void this.recoverMissedMessagesFromLogs(user, { force: true });
     this.clearDeviceAttention({ resetServerBadge: true });
     // Recover silently if a device lost its push subscription.
     void this.ensurePushRegistrationHealth(user, {
@@ -1529,67 +1534,11 @@ export class ChatStoreService {
 
     await this.refresh(true);
     await this.pullMessages(user);
-    const logsMessages = await this.api.getMessagesFromLogs(user);
-    if (logsMessages.length) {
-      const nonSystemLogs = logsMessages.filter((message) => {
-        const sender = this.normalizeUser(String(message.sender ?? '').trim());
-        if (!sender || sender === 'system') {
-          return false;
-        }
-        const normalizedBody = String(message.body ?? '').trim().toLowerCase();
-        if (normalizedBody === 'new notification' || normalizedBody === 'new reaction') {
-          return false;
-        }
-        return true;
-      });
-      const normalizedLogs = this.normalizeLogsMessagesForImport(
-        nonSystemLogs,
-        groupsSnapshotBeforeCacheClear
-      );
-      const knownGroupNamesById = new Map<string, string>();
-      const knownGroupIds = new Set<string>();
-      [...groupsSnapshotBeforeCacheClear, ...this.groups()].forEach((group) => {
-        const groupId = this.normalizeChatId(String(group.id || '').trim());
-        const groupName = String(group.name || '').trim();
-        if (!groupId) return;
-        knownGroupIds.add(groupId);
-        if (!groupName) return;
-        if (this.normalizeChatId(groupName) === groupId) return;
-        if (!knownGroupNamesById.has(groupId)) {
-          knownGroupNamesById.set(groupId, groupName);
-        }
-      });
-      const importableLogs = normalizedLogs
-        .map((message) => {
-          const groupId = this.normalizeChatId(String(message.groupId ?? '').trim());
-          if (!groupId) return message;
-          const incomingGroupName = String(message.groupName ?? '').trim();
-          const knownGroupName = knownGroupNamesById.get(groupId) ?? '';
-          const hasResolvableGroup = Boolean(
-            incomingGroupName ||
-            knownGroupName ||
-            knownGroupIds.has(groupId)
-          );
-          if (!hasResolvableGroup) {
-            return null;
-          }
-          if (incomingGroupName && this.normalizeChatId(incomingGroupName) !== groupId) {
-            return message;
-          }
-          return {
-            ...message,
-            groupName: knownGroupName || incomingGroupName || groupId
-          };
-        })
-        .filter((message): message is IncomingServerMessage => Boolean(message));
-      this.ensureGroupsFromImportedLogs(importableLogs, groupsSnapshotBeforeCacheClear);
-      this.applyIncomingMessagesBatch(importableLogs, {
-        incrementUnread: false,
-        trackReadReceipts: false,
-        applyActions: false,
-        updateGroupMetadata: false
-      });
-    }
+    await this.recoverMissedMessagesFromLogs(user, {
+      force: true,
+      incrementUnread: false,
+      fallbackGroups: groupsSnapshotBeforeCacheClear
+    });
     this.unreadByChat.set({});
     this.resetReadReceiptTrackingState();
 
@@ -1601,6 +1550,116 @@ export class ChatStoreService {
 
     this.applyInitialChatSelection(user);
     this.schedulePersist();
+  }
+
+  private shouldSkipLogsMessage(message: IncomingServerMessage): boolean {
+    const sender = this.normalizeUser(String(message.sender ?? '').trim());
+    if (!sender || sender === 'system') {
+      return true;
+    }
+    const normalizedBody = String(message.body ?? '').trim().toLowerCase();
+    return normalizedBody === 'new notification' || normalizedBody === 'new reaction';
+  }
+
+  private buildImportableLogsMessagesForSync(
+    logsMessages: IncomingServerMessage[],
+    fallbackGroups: ChatGroup[] = []
+  ): IncomingServerMessage[] {
+    if (!Array.isArray(logsMessages) || !logsMessages.length) {
+      return [];
+    }
+
+    const nonSystemLogs = logsMessages.filter((message) => !this.shouldSkipLogsMessage(message));
+    if (!nonSystemLogs.length) {
+      return [];
+    }
+
+    const normalizedLogs = this.normalizeLogsMessagesForImport(nonSystemLogs, fallbackGroups);
+    const knownGroupNamesById = new Map<string, string>();
+    const knownGroupIds = new Set<string>();
+    [...fallbackGroups, ...this.groups()].forEach((group) => {
+      const groupId = this.normalizeChatId(String(group.id || '').trim());
+      const groupName = String(group.name || '').trim();
+      if (!groupId) return;
+      knownGroupIds.add(groupId);
+      if (!groupName) return;
+      if (this.normalizeChatId(groupName) === groupId) return;
+      if (!knownGroupNamesById.has(groupId)) {
+        knownGroupNamesById.set(groupId, groupName);
+      }
+    });
+
+    return normalizedLogs
+      .map((message) => {
+        const groupId = this.normalizeChatId(String(message.groupId ?? '').trim());
+        if (!groupId) return message;
+        const incomingGroupName = String(message.groupName ?? '').trim();
+        const knownGroupName = knownGroupNamesById.get(groupId) ?? '';
+        const hasResolvableGroup = Boolean(
+          incomingGroupName ||
+          knownGroupName ||
+          knownGroupIds.has(groupId)
+        );
+        if (!hasResolvableGroup) {
+          return null;
+        }
+        if (incomingGroupName && this.normalizeChatId(incomingGroupName) !== groupId) {
+          return message;
+        }
+        return {
+          ...message,
+          groupName: knownGroupName || incomingGroupName || groupId
+        };
+      })
+      .filter((message): message is IncomingServerMessage => Boolean(message));
+  }
+
+  private async recoverMissedMessagesFromLogs(
+    user: string,
+    options: {
+      force?: boolean;
+      incrementUnread?: boolean;
+      fallbackGroups?: ChatGroup[];
+    } = {}
+  ): Promise<number> {
+    const normalizedUser = this.normalizeUser(user);
+    if (!normalizedUser || this.currentUser() !== normalizedUser || !this.isNetworkReachable()) {
+      return 0;
+    }
+
+    const force = Boolean(options.force);
+    const now = Date.now();
+    if (!force && now - this.lastLogsRecoveryAt < LOGS_RECOVERY_MIN_INTERVAL_MS) {
+      return 0;
+    }
+    if (this.logsRecoveryInFlight) {
+      return 0;
+    }
+
+    this.logsRecoveryInFlight = true;
+    try {
+      const logsMessages = await this.api.getMessagesFromLogs(normalizedUser, LOGS_RECOVERY_MAX_FETCH_LIMIT);
+      const fallbackGroups = Array.isArray(options.fallbackGroups) ? options.fallbackGroups : [];
+      const importableLogs = this.buildImportableLogsMessagesForSync(logsMessages, fallbackGroups);
+      if (!importableLogs.length) {
+        this.lastLogsRecoveryAt = Date.now();
+        return 0;
+      }
+
+      this.ensureGroupsFromImportedLogs(importableLogs, fallbackGroups);
+      const appliedCount = this.applyIncomingMessagesBatch(importableLogs, {
+        incrementUnread: options.incrementUnread !== false,
+        trackReadReceipts: false,
+        applyActions: false,
+        updateGroupMetadata: false
+      });
+      this.lastLogsRecoveryAt = Date.now();
+      return appliedCount;
+    } catch {
+      return 0;
+    } finally {
+      this.logsRecoveryInFlight = false;
+    }
   }
 
   private normalizeLogsMessagesForImport(
@@ -7217,6 +7276,7 @@ export class ChatStoreService {
     this.lastForegroundSyncAt = now;
 
     void this.pullMessages(user);
+    void this.recoverMissedMessagesFromLogs(user);
     void this.flushOutbox();
     void this.refresh(forceRefresh);
   }

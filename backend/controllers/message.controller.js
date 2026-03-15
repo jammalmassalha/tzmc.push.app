@@ -157,6 +157,47 @@ function registerMessageController(app, deps = {}) {
 
             const limitRaw = Number(req.query && req.query.limit);
             const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.floor(limitRaw)), 1000) : 700;
+            const knownGroupNamesById = new Map();
+            const knownGroupIds = new Set();
+            const isLikelyPhoneUser = (value) => {
+                const digits = String(value || '').replace(/\D/g, '');
+                if (!digits) return false;
+                return (
+                    /^05\d{8}$/.test(digits) ||
+                    /^5\d{8}$/.test(digits) ||
+                    /^9725\d{8}$/.test(digits) ||
+                    /^97205\d{8}$/.test(digits)
+                );
+            };
+
+            try {
+                const groups = getGroups && typeof getGroups === 'function' ? getGroups() : {};
+                Object.values(groups || {}).forEach((group) => {
+                    if (!group || typeof group !== 'object') {
+                        return;
+                    }
+                    const members = Array.isArray(group.members)
+                        ? group.members
+                        : (Array.isArray(group.memberList) ? group.memberList : []);
+                    const normalizedMembers = members.map((member) => normalizeUserKey(member)).filter(Boolean);
+                    if (normalizedMembers.length > 0 && !normalizedMembers.includes(user)) {
+                        return;
+                    }
+                    const normalizedGroupId = normalizeUserKey(
+                        String(group.id || group.groupID || group.groupId || '').trim()
+                    );
+                    if (!normalizedGroupId) {
+                        return;
+                    }
+                    knownGroupIds.add(normalizedGroupId);
+                    const groupName = String(group.name || group.title || group.groupName || '').trim();
+                    if (groupName) {
+                        knownGroupNamesById.set(normalizedGroupId, groupName);
+                    }
+                });
+            } catch (_error) {
+                // Keep logs sync resilient even if in-memory groups are unavailable.
+            }
 
             try {
                 const response = await fetchWithRetry(
@@ -205,15 +246,39 @@ function registerMessageController(app, deps = {}) {
                         const timestamp = Number.isFinite(timestampRaw) && timestampRaw > 0
                             ? timestampRaw
                             : Date.now() + index;
-                        const messageIdRaw = String(message.messageId ?? message.id ?? '').trim();
-                        const messageId = messageIdRaw || `logs-${sender}-${timestamp}-${index}`;
-                        const groupId = String(
+                        const explicitGroupIdRaw = String(
                             message.groupId ??
                             message.group_id ??
                             message.chatId ??
                             message.chat_id ??
                             ''
                         ).trim();
+                        const toUserCandidateRaw = String(
+                            message.toUser ??
+                            message.to_user ??
+                            message.to ??
+                            message.recipient ??
+                            message.targetUser ??
+                            message.target_user ??
+                            ''
+                        ).trim();
+                        const normalizedExplicitGroupId = normalizeUserKey(explicitGroupIdRaw);
+                        const normalizedToUserCandidate = normalizeUserKey(toUserCandidateRaw);
+
+                        let resolvedGroupId = normalizedExplicitGroupId;
+                        if (
+                            !resolvedGroupId &&
+                            normalizedToUserCandidate &&
+                            normalizedToUserCandidate !== user &&
+                            normalizedToUserCandidate !== sender &&
+                            (
+                                knownGroupIds.has(normalizedToUserCandidate) ||
+                                !isLikelyPhoneUser(normalizedToUserCandidate)
+                            )
+                        ) {
+                            resolvedGroupId = normalizedToUserCandidate;
+                        }
+
                         const groupName = String(
                             message.groupName ??
                             message.group_name ??
@@ -221,6 +286,15 @@ function registerMessageController(app, deps = {}) {
                             message.chat_name ??
                             ''
                         ).trim();
+                        const resolvedGroupName = groupName
+                            || (resolvedGroupId ? (knownGroupNamesById.get(resolvedGroupId) || toUserCandidateRaw || resolvedGroupId) : '');
+                        const messageIdRaw = String(message.messageId ?? message.id ?? '').trim();
+                        const fingerprintSource = `${sender}|${resolvedGroupId || normalizedToUserCandidate || user}|${timestamp}|${body}`;
+                        let fingerprint = 0;
+                        for (let charIndex = 0; charIndex < fingerprintSource.length; charIndex += 1) {
+                            fingerprint = ((fingerprint << 5) - fingerprint + fingerprintSource.charCodeAt(charIndex)) | 0;
+                        }
+                        const messageId = messageIdRaw || `logs-${sender}-${timestamp}-${Math.abs(fingerprint).toString(36)}`;
                         const groupTypeRaw = String(
                             message.groupType ??
                             message.group_type ??
@@ -229,19 +303,28 @@ function registerMessageController(app, deps = {}) {
                         const groupSenderName = String(
                             message.groupSenderName ??
                             message.group_sender_name ??
+                            message.senderName ??
+                            message.sender_name ??
+                            message.fromName ??
+                            message.from_name ??
                             message.senderDisplayName ??
                             message.sender_name ??
                             ''
                         ).trim();
+                        const resolvedGroupType = groupTypeRaw === 'community'
+                            ? 'community'
+                            : (groupTypeRaw === 'group'
+                                ? 'group'
+                                : (resolvedGroupId ? 'group' : undefined));
 
                         return {
                             messageId,
                             sender,
                             body,
                             timestamp,
-                            groupId: groupId || undefined,
-                            groupName: groupName || undefined,
-                            groupType: groupTypeRaw === 'community' ? 'community' : (groupTypeRaw === 'group' ? 'group' : undefined),
+                            groupId: resolvedGroupId || undefined,
+                            groupName: resolvedGroupName || undefined,
+                            groupType: resolvedGroupType,
                             groupSenderName: groupSenderName || undefined
                         };
                     })

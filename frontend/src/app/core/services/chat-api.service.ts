@@ -597,13 +597,16 @@ export class ChatApiService {
     return Array.isArray(body.messages) ? body.messages : [];
   }
 
-  async getMessagesFromLogs(user?: string): Promise<IncomingServerMessage[]> {
+  async getMessagesFromLogs(user?: string, limit = 1000): Promise<IncomingServerMessage[]> {
     const normalizedUser = String(user || '').trim().toLowerCase();
     if (!normalizedUser) {
       return [];
     }
 
-    const url = `${this.notifyBaseUrl}/messages/logs?user=${encodeURIComponent(normalizedUser)}&excludeSystem=1&limit=700&_ts=${Date.now()}`;
+    const safeLimit = Number.isFinite(Number(limit))
+      ? Math.min(1000, Math.max(1, Math.floor(Number(limit))))
+      : 1000;
+    const url = `${this.notifyBaseUrl}/messages/logs?user=${encodeURIComponent(normalizedUser)}&excludeSystem=1&limit=${safeLimit}&_ts=${Date.now()}`;
     const response = await this.fetchWithRetry(
       url,
       { cache: 'no-store' },
