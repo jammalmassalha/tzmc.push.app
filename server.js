@@ -4862,6 +4862,7 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
         new Set(parseUsernamesInput(requestUserList).map(normalizeUserKey).filter(Boolean))
     );
     const requestedAliasToCanonical = buildUserAliasLookupMap(requestedUsers);
+    const singleRequestedUser = requestedUsers.length === 1 ? requestedUsers[0] : '';
     if (!requestedUsers.length) {
         return cached ? cached.subscriptions : [];
     }
@@ -4874,12 +4875,13 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
                     subscription && (subscription.username || subscription.user),
                     requestedAliasToCanonical
                 );
-                if (!canonicalUser) {
+                const fallbackUser = canonicalUser || singleRequestedUser;
+                if (!fallbackUser) {
                     return null;
                 }
                 return {
                     ...subscription,
-                    username: canonicalUser
+                    username: fallbackUser
                 };
             })
             .filter(Boolean);
@@ -5593,6 +5595,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     );
     const targetAliasToCanonical = buildUserAliasLookupMap(normalizedTargetUsers);
     const targetUsersSet = new Set(normalizedTargetUsers);
+    const singleTargetUser = normalizedTargetUsers.length === 1 ? normalizedTargetUsers[0] : '';
     const normalizeAndFilterTargetSubscriptions = (subscriptions) => {
         const normalized = dedupeSubscriptionsByEndpoint(subscriptions || []);
         return normalized
@@ -5601,10 +5604,11 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                     subscription && (subscription.username || subscription.user),
                     targetAliasToCanonical
                 );
-                if (!canonicalUser) return null;
+                const fallbackUser = canonicalUser || singleTargetUser;
+                if (!fallbackUser) return null;
                 return {
                     ...subscription,
-                    username: canonicalUser
+                    username: fallbackUser
                 };
             })
             .filter(Boolean);
@@ -5672,26 +5676,27 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                 const userKey = normalizeUserKey(
                     subscription.username || subscription.user
                 );
-                if (!userKey || (targetUsersSet.size && !targetUsersSet.has(userKey))) {
+                const resolvedUserKey = userKey || singleTargetUser;
+                if (!resolvedUserKey || (targetUsersSet.size && !targetUsersSet.has(resolvedUserKey))) {
                     return {
                         ok: false,
-                        username: userKey || 'unknown',
+                        username: resolvedUserKey || 'unknown',
                         statusCode: 'SKIP',
                         message: 'Subscription user mismatch'
                     };
                 }
-                let currentCount = userKey ? (unreadCounts[userKey] || 0) : 0;
-                if (shouldIncrementBadge && userKey) {
+                let currentCount = resolvedUserKey ? (unreadCounts[resolvedUserKey] || 0) : 0;
+                if (shouldIncrementBadge && resolvedUserKey) {
                     if (allowBadgeIncrement) {
-                        if (badgeCountByUser.has(userKey)) {
-                            currentCount = badgeCountByUser.get(userKey);
+                        if (badgeCountByUser.has(resolvedUserKey)) {
+                            currentCount = badgeCountByUser.get(resolvedUserKey);
                         } else {
                             currentCount = currentCount + 1;
-                            unreadCounts[userKey] = currentCount;
-                            badgeCountByUser.set(userKey, currentCount);
+                            unreadCounts[resolvedUserKey] = currentCount;
+                            badgeCountByUser.set(resolvedUserKey, currentCount);
                         }
                     } else {
-                        currentCount = unreadCounts[userKey] || 0;
+                        currentCount = unreadCounts[resolvedUserKey] || 0;
                     }
                 }
 
@@ -5705,11 +5710,11 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                     requireInteraction: true,
                     image: imageUrl,
                     url: clickUrl,
-                    user: userKey,
+                    user: resolvedUserKey,
                     sender: finalSender,
                     messageId: messageId
                 };
-                if (shouldIncrementBadge && userKey) {
+                if (shouldIncrementBadge && resolvedUserKey) {
                     payloadData.badgeCount = currentCount;
                 }
 
@@ -5724,7 +5729,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                     await webpush.sendNotification(subscription, payload, pushOptions);
                     return {
                         ok: true,
-                        username: subscription.username || userKey || 'unknown',
+                        username: subscription.username || resolvedUserKey || 'unknown',
                         badge: currentCount
                     };
                 } catch (err) {
@@ -5734,7 +5739,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                     }
                     return {
                         ok: false,
-                        username: subscription.username || userKey || 'unknown',
+                        username: subscription.username || resolvedUserKey || 'unknown',
                         statusCode,
                         message: err.message
                     };
