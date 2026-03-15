@@ -337,6 +337,7 @@ export class ChatStoreService {
   private hrStepsCache: { at: number; steps: HrStepOption[] } = { at: 0, steps: [] };
   private hrActionsCache: Record<string, { at: number; actions: HrActionOption[] }> = {};
   private hrInitInFlight = false;
+  private readonly hrStateRevision = signal(0);
   private shuttleInitInFlight = false;
   private shuttleStationsCache: { at: number; items: string[] } = { at: 0, items: [] };
   private shuttleEmployeesCache: { at: number; items: string[] } = { at: 0, items: [] };
@@ -1100,6 +1101,7 @@ export class ChatStoreService {
     hasOpenSession: boolean;
     canWriteMessage: boolean;
   } | null {
+    this.hrStateRevision();
     const user = this.currentUser();
     const activeChatId = this.activeChatId();
     if (!user || !this.isHrChat(activeChatId)) {
@@ -2553,11 +2555,17 @@ export class ChatStoreService {
 
   private saveHrState(user: string, state: HrConversationState): void {
     localStorage.setItem(this.hrStateKey(user), JSON.stringify(state));
+    this.bumpHrStateRevision();
   }
 
   private resetHrState(user: string): void {
     localStorage.removeItem(this.hrStateKey(user));
     localStorage.removeItem(this.hrWelcomeKey(user));
+    this.bumpHrStateRevision();
+  }
+
+  private bumpHrStateRevision(): void {
+    this.hrStateRevision.update((value) => value + 1);
   }
 
   private buildHrAssetUrl(value: string): string {
@@ -6843,6 +6851,7 @@ export class ChatStoreService {
     localStorage.removeItem(this.homeViewKey(user));
     localStorage.removeItem(this.hrStateKey(user));
     localStorage.removeItem(this.hrWelcomeKey(user));
+    this.bumpHrStateRevision();
     localStorage.removeItem(this.shuttleStateKey(user));
     localStorage.removeItem(this.shuttleWelcomeKey(user));
     localStorage.removeItem(this.shuttleOrdersKey(user));
