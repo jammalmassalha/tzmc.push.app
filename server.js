@@ -988,6 +988,9 @@ const sessionTokenJweService = SESSION_JWE_SECRET
     ? new SessionTokenJweService(SESSION_JWE_SECRET)
     : null;
 const SESSION_USER_PATTERN = /^0\d{9}$/;
+const BADGE_RESET_ALL_ALLOWED_USERS = parseUsernamesInput(
+    process.env.BADGE_RESET_ALL_ALLOWED_USERS || '0546799693'
+);
 const AUTH_SESSION_RATE_LIMIT_WINDOW_MS = Math.max(
     60 * 1000,
     Number(process.env.AUTH_SESSION_RATE_LIMIT_WINDOW_MS || 10 * 60 * 1000) || 10 * 60 * 1000
@@ -5121,7 +5124,8 @@ registerAuthController(app, {
     scheduleStateSave,
     unreadCounts,
     requireAuthorizedUser,
-    APP_SERVER_TOKEN
+    APP_SERVER_TOKEN,
+    BADGE_RESET_ALL_ALLOWED_USERS
 });
 
 // --- CLIENT TELEMETRY ---

@@ -960,6 +960,16 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     }
   }
 
+  async resetAllBadges(): Promise<void> {
+    try {
+      const clearedKeys = await this.store.resetAllServerBadgesForAdmin();
+      this.snackBar.open(`איפוס מונים הושלם (${clearedKeys}).`, 'סגור', { duration: 2600 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'איפוס מונים נכשל';
+      this.snackBar.open(message, 'סגור', { duration: 3200 });
+    }
+  }
+
   async sendMessage(): Promise<void> {
     this.store.cancelTypingForActiveChat();
     if (this.isComposerHidden() && !this.editingMessageTarget()) {

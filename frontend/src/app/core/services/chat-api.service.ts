@@ -72,6 +72,13 @@ interface UploadResponse {
   type?: string;
 }
 
+interface ResetBadgeResponse {
+  status?: string;
+  scope?: string;
+  clearedKeys?: number;
+  message?: string;
+}
+
 interface VersionResponse {
   version?: string;
   notes?: string[];
@@ -788,6 +795,31 @@ export class ChatApiService {
     if (!response.ok) {
       throw new Error(`Reset badge failed with ${response.status}`);
     }
+  }
+
+  async resetAllServerBadges(user?: string): Promise<{ clearedKeys: number }> {
+    const normalized = String(user || '').trim().toLowerCase();
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/reset-badge`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          all: true,
+          user: normalized || undefined
+        })
+      },
+      { retries: 1, timeoutMs: 8000 }
+    );
+
+    const body = (await response.json().catch(() => ({}))) as ResetBadgeResponse;
+    if (!response.ok || String(body?.status || '').trim().toLowerCase() !== 'success') {
+      throw new Error(String(body?.message || '').trim() || `Reset all badges failed with ${response.status}`);
+    }
+
+    return {
+      clearedKeys: Number.isFinite(Number(body?.clearedKeys)) ? Math.max(0, Math.floor(Number(body?.clearedKeys))) : 0
+    };
   }
 
   async uploadFile(file: File, thumbnail?: File | null): Promise<UploadResponse> {

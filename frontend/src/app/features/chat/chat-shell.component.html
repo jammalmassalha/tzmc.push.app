@@ -34,6 +34,12 @@
       <mat-icon>sync</mat-icon>
       <span>סנכרון הודעות</span>
     </button>
+    @if (store.canCurrentUserResetAllBadges()) {
+      <button mat-menu-item type="button" (click)="resetAllBadges()">
+        <mat-icon>notifications_off</mat-icon>
+        <span>איפוס כל המונים</span>
+      </button>
+    }
     <button mat-menu-item type="button" (click)="openCreateGroupDialog()">
       <mat-icon>group_add</mat-icon>
       <span>קבוצה חדשה</span>

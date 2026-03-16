@@ -36,8 +36,14 @@ function registerAuthController(app, deps = {}) {
         scheduleStateSave,
         unreadCounts,
         requireAuthorizedUser,
-        APP_SERVER_TOKEN
+        APP_SERVER_TOKEN,
+        BADGE_RESET_ALL_ALLOWED_USERS
     } = deps;
+    const resetAllAllowedUserSet = new Set(
+        (Array.isArray(BADGE_RESET_ALL_ALLOWED_USERS) ? BADGE_RESET_ALL_ALLOWED_USERS : [])
+            .map((value) => normalizeUserCandidate(value))
+            .filter(Boolean)
+    );
 
     const requireAuthorizedSheetUser = typeof requireAuthorizedUser === 'function'
         ? requireAuthorizedUser({
@@ -394,13 +400,20 @@ function registerAuthController(app, deps = {}) {
             const hasConfiguredAdminToken = Boolean(String(APP_SERVER_TOKEN || '').trim());
             const isAdminTokenValid = hasConfiguredAdminToken && adminToken === String(APP_SERVER_TOKEN || '').trim();
             const user = req.resolvedUser;
+            const normalizedUser = normalizeUserCandidate(user);
+            const isAllowedResetAllUser = Boolean(
+                normalizedUser && resetAllAllowedUserSet.has(normalizedUser)
+            );
 
             if (resetAll) {
-                if (hasConfiguredAdminToken && !isAdminTokenValid) {
+                if (hasConfiguredAdminToken && !isAdminTokenValid && !isAllowedResetAllUser) {
                     return res.status(403).json({ status: 'error', message: 'Forbidden' });
                 }
-                if (!hasConfiguredAdminToken && !user) {
+                if (!hasConfiguredAdminToken && !normalizedUser) {
                     return res.status(401).json({ status: 'error', message: 'Authentication required' });
+                }
+                if (!hasConfiguredAdminToken && !isAllowedResetAllUser) {
+                    return res.status(403).json({ status: 'error', message: 'Forbidden' });
                 }
 
                 const keys = Object.keys(unreadCounts || {});

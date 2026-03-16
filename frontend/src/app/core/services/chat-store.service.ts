@@ -82,6 +82,7 @@ const DOVRUT_ALLOWED_WRITERS = ['0506501040', '0506267447', '0543108095'] as con
 const DOVRUT_TEST_ALLOWED_WRITERS = ['0546799693'] as const;
 const DOVRUT_TEST_GROUP_MEMBERS = ['0546799693', '0550000001', '0547997273', '0505203520'] as const;
 const SHUTTLE_OPERATIONS_GROUP_MEMBERS = ['0546799693', '0550000001', '0506267410', '0505203520'] as const;
+const BADGE_RESET_ALL_ALLOWED_USERS = ['0546799693'] as const;
 interface HardcodedCommunityGroupConfig {
   id: string;
   name: string;
@@ -387,6 +388,9 @@ export class ChatStoreService {
       .flatMap((group) => group.allowedWriters)
       .map((value) => this.normalizeUser(value))
       .filter(Boolean)
+  );
+  private readonly badgeResetAllAdminUsersSet = new Set<string>(
+    BADGE_RESET_ALL_ALLOWED_USERS.map((value) => this.normalizeUser(value)).filter(Boolean)
   );
   private incomingBatchDepth = 0;
   private pendingPersistAfterIncomingBatch = false;
@@ -1094,6 +1098,32 @@ export class ChatStoreService {
     const normalizedUser = this.normalizeUser(String(user || '').trim());
     if (!normalizedUser) return false;
     return this.dovrutWriterSet.has(normalizedUser);
+  }
+
+  canCurrentUserResetAllBadges(): boolean {
+    const normalizedUser = this.normalizeUser(this.currentUser() ?? '');
+    if (!normalizedUser) return false;
+    return this.badgeResetAllAdminUsersSet.has(normalizedUser);
+  }
+
+  async resetAllServerBadgesForAdmin(): Promise<number> {
+    const user = this.currentUser();
+    if (!user) {
+      throw new Error('יש להתחבר לפני איפוס מונים');
+    }
+    if (!this.canCurrentUserResetAllBadges()) {
+      throw new Error('אין הרשאה לאיפוס כל המונים');
+    }
+    if (!this.networkOnline()) {
+      throw new Error('אין חיבור לרשת');
+    }
+
+    const result = await this.api.resetAllServerBadges(user);
+    this.unreadByChat.set({});
+    this.lastServerBadgeResetAt = Date.now();
+    this.clearDeviceAttention();
+    this.schedulePersist();
+    return result.clearedKeys;
   }
 
   getHrComposerActionsForActiveChat(): {
