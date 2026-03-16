@@ -5604,6 +5604,16 @@ function buildPushPayloadString(payloadData = {}) {
     return JSON.stringify({ data: emergencyData });
 }
 
+function isLikelyPhoneUserKey(userKey) {
+    const digits = String(userKey || '').replace(/\D/g, '');
+    return (
+        /^0\d{9}$/.test(digits) ||
+        /^5\d{8}$/.test(digits) ||
+        /^9725\d{8}$/.test(digits) ||
+        /^97205\d{8}$/.test(digits)
+    );
+}
+
 function limitSubscriptionsPerUser(subscriptions = [], maxPerUser = DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER) {
     const normalizedMax = Math.max(1, Number(maxPerUser) || DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER);
     const byUser = new Map();
@@ -5665,6 +5675,13 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     const msgBody = message.body || {};
     const customData = message.data || {};
     const messageType = String(customData.type || '').trim().toLowerCase();
+    const isGroupScopedPush = Boolean(
+        customData.groupId ||
+        customData.groupName ||
+        messageType === 'group-update' ||
+        messageType === 'reaction' ||
+        (Array.isArray(customData.groupMembers) && customData.groupMembers.length)
+    );
     const imageUrl = message.image || null;
     const finalSender = senderuser || 'System';
     const singlePerUser = Boolean(options.singlePerUser || messageType === 'reaction');
@@ -5687,9 +5704,15 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     const logContent = msgText || messageType || 'System Notification';
     const messageId = options.messageId || message.messageId || generateMessageId();
     const shouldIncrementBadge = !options.skipBadge;
-    const normalizedTargetUsers = Array.from(
+    let normalizedTargetUsers = Array.from(
         new Set(targetUsersArray.map(normalizeUserKey).filter(Boolean))
     );
+    if (!isGroupScopedPush && normalizedTargetUsers.length > 3) {
+        console.warn(
+            `[PUSH] Direct-target users trimmed: ${normalizedTargetUsers.length} -> 3`
+        );
+        normalizedTargetUsers = normalizedTargetUsers.slice(0, 3);
+    }
     const targetAliasToCanonical = buildUserAliasLookupMap(normalizedTargetUsers);
     const targetUsersSet = new Set(normalizedTargetUsers);
     const singleTargetUser = normalizedTargetUsers.length === 1 ? normalizedTargetUsers[0] : '';
@@ -5892,6 +5915,18 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
             `${uniqueSubscriptions.length} -> ${SINGLE_TARGET_MAX_SAFE_SUBSCRIPTIONS}`
         );
         uniqueSubscriptions = uniqueSubscriptions.slice(0, SINGLE_TARGET_MAX_SAFE_SUBSCRIPTIONS);
+    }
+    if (!isGroupScopedPush) {
+        const maxDirectSubscriptions = Math.max(
+            1,
+            Math.min(24, normalizedTargetUsers.length * SINGLE_TARGET_MAX_SAFE_SUBSCRIPTIONS)
+        );
+        if (uniqueSubscriptions.length > maxDirectSubscriptions) {
+            console.warn(
+                `[PUSH] Direct subscriptions hard-trimmed: ${uniqueSubscriptions.length} -> ${maxDirectSubscriptions}`
+            );
+            uniqueSubscriptions = uniqueSubscriptions.slice(0, maxDirectSubscriptions);
+        }
     }
     let sendResults = await sendToSubscriptions(uniqueSubscriptions, true);
 
@@ -6515,7 +6550,21 @@ async function checkOutgoingQueue() {
             console.log(`[QUEUE] Found ${queuedMessages.length} messages.`);
 
             for (const msg of queuedMessages) {
-                const targetUsers = parseUsernamesInput(msg && msg.recipient);
+                const rawRecipients = parseUsernamesInput(msg && msg.recipient);
+                const normalizedRecipients = Array.from(new Set(
+                    rawRecipients.map((value) => normalizeUserKey(value)).filter(Boolean)
+                ));
+                let targetUsers = normalizedRecipients.filter((value) => isLikelyPhoneUserKey(value));
+                if (!targetUsers.length && normalizedRecipients.length === 1) {
+                    // Keep backwards compatibility for non-phone usernames in controlled/dev flows.
+                    targetUsers = normalizedRecipients;
+                }
+                if (targetUsers.length > 3) {
+                    console.warn(
+                        `[QUEUE] Suspicious recipient fanout trimmed: ${targetUsers.length} -> 3`
+                    );
+                    targetUsers = targetUsers.slice(0, 3);
+                }
                 const senderName = String((msg && msg.sender) || 'System').trim() || 'System';
                 const bodyText = String((msg && msg.content) || '').trim();
                 if (!targetUsers.length || !bodyText) {
