@@ -7299,8 +7299,8 @@ export class ChatStoreService {
     }
 
     const bodyFromPayload = this.normalizeIncomingBodyValue(
-      payload['messageText'] ??
       payload['groupMessageText'] ??
+      payload['messageText'] ??
       payload['longText'] ??
       payload['shortText'] ??
       payload['text'] ??

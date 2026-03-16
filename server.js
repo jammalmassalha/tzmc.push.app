@@ -5559,9 +5559,33 @@ function buildCompactPushCustomData(rawData = {}, messageType = '') {
     return compact;
 }
 
-function buildPushPayloadString(payloadData = {}) {
+function buildPushPayloadString(payloadData = {}, options = {}) {
+    const includeNotification = options.includeNotification !== false;
+    const buildPayloadEnvelope = (dataPayload) => {
+        if (!includeNotification) {
+            return { data: dataPayload };
+        }
+        const title = String(dataPayload.title || '').trim();
+        const body = String(
+            dataPayload.body || dataPayload.groupMessageText || dataPayload.messageText || 'New Notification'
+        ).trim();
+        const notification = {
+            title: title || 'Work Alert',
+            body: body || 'New Notification',
+            icon: dataPayload.icon || dataPayload.badge,
+            badge: dataPayload.badge || dataPayload.icon,
+            image: dataPayload.image || undefined,
+            requireInteraction: Boolean(dataPayload.requireInteraction),
+            tag: String(dataPayload.messageId || '').trim() || undefined
+        };
+        return {
+            notification,
+            data: dataPayload
+        };
+    };
+
     let compactData = { ...payloadData };
-    let payload = JSON.stringify({ data: compactData });
+    let payload = JSON.stringify(buildPayloadEnvelope(compactData));
     if (Buffer.byteLength(payload, 'utf8') <= MAX_PUSH_PAYLOAD_BYTES) {
         return payload;
     }
@@ -5578,7 +5602,7 @@ function buildPushPayloadString(payloadData = {}) {
         compactData.body = trimPushTextValue(compactData.body, 120);
     }
 
-    payload = JSON.stringify({ data: compactData });
+    payload = JSON.stringify(buildPayloadEnvelope(compactData));
     if (Buffer.byteLength(payload, 'utf8') <= MAX_PUSH_PAYLOAD_BYTES) {
         return payload;
     }
@@ -5601,7 +5625,7 @@ function buildPushPayloadString(payloadData = {}) {
         icon: compactData.icon,
         requireInteraction: compactData.requireInteraction
     };
-    return JSON.stringify({ data: emergencyData });
+    return JSON.stringify(buildPayloadEnvelope(emergencyData));
 }
 
 function isLikelyPhoneUserKey(userKey) {
@@ -5863,7 +5887,17 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                     payloadData.badgeCount = currentCount;
                 }
 
-                const payload = buildPushPayloadString(payloadData);
+                const includeNotificationPayload = !(
+                    payloadData.skipNotification === true ||
+                    messageType === 'read-receipt' ||
+                    messageType === 'group-update' ||
+                    messageType === 'delete-action' ||
+                    messageType === 'edit-action' ||
+                    messageType === AUTH_REFRESH_PUSH_TYPE
+                );
+                const payload = buildPushPayloadString(payloadData, {
+                    includeNotification: includeNotificationPayload
+                });
 
                 try {
                     const pushOptions = {

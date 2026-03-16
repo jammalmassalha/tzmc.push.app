@@ -159,6 +159,22 @@ function registerMessageController(app, deps = {}) {
             const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.floor(limitRaw)), 1000) : 700;
             const knownGroupNamesById = new Map();
             const knownGroupIds = new Set();
+            const parseFlexibleTimestamp = (...candidates) => {
+                for (const candidate of candidates) {
+                    if (candidate === null || candidate === undefined) continue;
+                    const numeric = Number(candidate);
+                    if (Number.isFinite(numeric) && numeric > 0) {
+                        return numeric;
+                    }
+                    const text = String(candidate || '').trim();
+                    if (!text) continue;
+                    const parsedDate = Date.parse(text);
+                    if (Number.isFinite(parsedDate) && parsedDate > 0) {
+                        return parsedDate;
+                    }
+                }
+                return 0;
+            };
             const isLikelyPhoneUser = (value) => {
                 const digits = String(value || '').replace(/\D/g, '');
                 if (!digits) return false;
@@ -242,9 +258,19 @@ function registerMessageController(app, deps = {}) {
                             return null;
                         }
 
-                        const timestampRaw = Number(message.timestamp ?? message.sentAt ?? message.at ?? 0);
-                        const timestamp = Number.isFinite(timestampRaw) && timestampRaw > 0
-                            ? timestampRaw
+                        const sourceTimestamp = parseFlexibleTimestamp(
+                            message.timestamp,
+                            message.sentAt,
+                            message.at,
+                            message.createdAt,
+                            message.created_at,
+                            message.dateTime,
+                            message.datetime,
+                            message.date,
+                            message.time
+                        );
+                        const timestamp = sourceTimestamp > 0
+                            ? sourceTimestamp
                             : Date.now() + index;
                         const explicitGroupIdRaw = String(
                             message.groupId ??
@@ -298,7 +324,19 @@ function registerMessageController(app, deps = {}) {
                             message.id ??
                             ''
                         ).trim();
-                        const fingerprintSource = `${sender}|${resolvedGroupId || normalizedToUserCandidate || user}|${timestamp}|${body}`;
+                        const timestampSeed = String(
+                            message.timestamp ??
+                            message.sentAt ??
+                            message.at ??
+                            message.createdAt ??
+                            message.created_at ??
+                            message.dateTime ??
+                            message.datetime ??
+                            message.date ??
+                            message.time ??
+                            ''
+                        ).trim();
+                        const fingerprintSource = `${sender}|${resolvedGroupId || normalizedToUserCandidate || user}|${timestampSeed || 'na'}|${body}`;
                         let fingerprint = 0;
                         for (let charIndex = 0; charIndex < fingerprintSource.length; charIndex += 1) {
                             fingerprint = ((fingerprint << 5) - fingerprint + fingerprintSource.charCodeAt(charIndex)) | 0;
