@@ -7263,18 +7263,8 @@ export class ChatStoreService {
     };
 
     if (payloadType !== 'reaction' && payloadType !== 'group-update' && payloadType !== 'read-receipt') {
-      const immediateMessage = this.buildIncomingMessageFromPushPayload(payload, incoming);
-      if (immediateMessage) {
-        this.incrementDeliveryTelemetry('pushImmediateMessageBuilt');
-        if (this.applyIncomingMessage(immediateMessage)) {
-          this.incrementDeliveryTelemetry('pushMessageApplied');
-        } else {
-          this.incrementDeliveryTelemetry('pushMessageNoop');
-        }
-      } else {
-        this.incrementDeliveryTelemetry('pushMissingMessageContext');
-      }
-      // For regular pushes, recover with immediate + delayed pulls so chat list stays fresh.
+      // Avoid duplicate inserts from mixed push/realtime/logs paths.
+      // We rely on realtime stream + recovery pulls as the single source of truth.
       this.syncForegroundState({ forceRefresh: true });
       this.schedulePushRecoveryPulls();
       return;

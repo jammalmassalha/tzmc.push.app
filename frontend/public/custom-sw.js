@@ -166,12 +166,19 @@ function parsePushPayload(event) {
   try {
     const raw = event.data.json();
     if (raw && typeof raw === 'object') {
+      const envelopeData = raw.data && typeof raw.data === 'object'
+        ? raw.data
+        : {};
       const basePayload = raw.notification && typeof raw.notification === 'object'
         ? raw.notification
         : raw;
-      const dataPayload = basePayload.data && typeof basePayload.data === 'object'
+      const baseDataPayload = basePayload.data && typeof basePayload.data === 'object'
         ? basePayload.data
         : {};
+      const dataPayload = {
+        ...baseDataPayload,
+        ...envelopeData
+      };
       const normalizedBody = typeof basePayload.body === 'string'
         ? basePayload.body
         : (
@@ -183,9 +190,12 @@ function parsePushPayload(event) {
         ...basePayload,
         ...dataPayload,
         messageText: normalizedBody || String(dataPayload.messageText || dataPayload.longText || dataPayload.shortText || '').trim(),
-        image: typeof basePayload.image === 'string' && basePayload.image
+        image: typeof dataPayload.image === 'string' && dataPayload.image
+          ? dataPayload.image
+          : (typeof basePayload.image === 'string' && basePayload.image
           ? basePayload.image
-          : (typeof dataPayload.image === 'string' ? dataPayload.image : undefined)
+          : undefined),
+        _hasNotificationEnvelope: Boolean(raw.notification && typeof raw.notification === 'object')
       };
     }
   } catch (_) {
@@ -614,12 +624,33 @@ function pickPreferredClient(windowClients, target) {
   return null;
 }
 
+function hasVisibleWindowClient(windowClients) {
+  return Array.isArray(windowClients) && windowClients.some((client) => {
+    if (!client) return false;
+    if (client.focused === true) return true;
+    if (client.visibilityState === 'visible') return true;
+    return false;
+  });
+}
+
 function broadcastPushPayload(payload) {
   return clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
     windowClients.forEach((client) => {
       client.postMessage({ action: 'push-payload', payload });
     });
   });
+}
+
+function showDedupedNotification(title, options = {}) {
+  const tag = typeof options.tag === 'string' ? options.tag.trim() : '';
+  const closeDuplicatesTask = tag
+    ? self.registration.getNotifications({ tag })
+      .then((items) => {
+        items.forEach((item) => item.close());
+      })
+      .catch(() => undefined)
+    : Promise.resolve();
+  return closeDuplicatesTask.then(() => self.registration.showNotification(title, options));
 }
 
 self.addEventListener('push', (event) => {
@@ -645,21 +676,27 @@ self.addEventListener('push', (event) => {
   if (badgeCount !== null) {
     tasks.push(setHomeScreenBadgeCount(badgeCount));
   }
-  if (shouldShowNotification(payload)) {
-    tasks.push(
-      self.registration.showNotification(title, {
-        body,
-        icon,
-        badge: icon,
-        image: typeof payload.image === 'string' ? payload.image : undefined,
-        requireInteraction: Boolean(payload.requireInteraction),
-        data: {
-          ...payload,
-          url
-        }
-      })
-    );
-  }
+  tasks.push((async () => {
+    if (!shouldShowNotification(payload)) {
+      return;
+    }
+    const windowClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+    if (hasVisibleWindowClient(windowClients)) {
+      return;
+    }
+    await showDedupedNotification(title, {
+      body,
+      icon,
+      badge: icon,
+      image: typeof payload.image === 'string' ? payload.image : undefined,
+      requireInteraction: Boolean(payload.requireInteraction),
+      tag: String(payload.messageId || '').trim() || undefined,
+      data: {
+        ...payload,
+        url
+      }
+    });
+  })());
 
   event.waitUntil(Promise.all(tasks));
 });
