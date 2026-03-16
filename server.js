@@ -4883,29 +4883,78 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
             })
             .filter(Boolean);
     };
+    const fetchLookupBatchSubscriptions = async (batchUsers = []) => {
+        const normalizedBatch = Array.from(new Set(
+            (Array.isArray(batchUsers) ? batchUsers : [])
+                .map(normalizeUserKey)
+                .filter(Boolean)
+        ));
+        if (!normalizedBatch.length) {
+            return [];
+        }
+        const csvUsers = normalizedBatch.join(',');
+        const candidateUrls = [
+            buildGoogleSheetGetUrl({ usernames: csvUsers }),
+            buildGoogleSheetGetUrl({ action: 'get_subscriptions', usernames: csvUsers })
+        ];
+        if (normalizedBatch.length === 1) {
+            candidateUrls.push(buildGoogleSheetGetUrl({ action: 'get_subscriptions', username: normalizedBatch[0] }));
+        }
+
+        for (const url of candidateUrls) {
+            try {
+                const response = await fetchWithRetry(
+                    url,
+                    {},
+                    { timeoutMs: 12000, retries: 2, backoffMs: 500 }
+                );
+                if (!response.ok) {
+                    continue;
+                }
+                const result = await response.json();
+                const subscriptions = normalizeLookupSubscriptions(result);
+                if (subscriptions.length) {
+                    return subscriptions;
+                }
+            } catch (_error) {
+                // Continue with next variant; some Apps Script deployments only support one shape.
+            }
+        }
+
+        // Last fallback: request each user explicitly via action=get_subscriptions&username=<user>.
+        const collected = [];
+        for (const userKey of normalizedBatch) {
+            try {
+                const response = await fetchWithRetry(
+                    buildGoogleSheetGetUrl({ action: 'get_subscriptions', username: userKey }),
+                    {},
+                    { timeoutMs: 12000, retries: 2, backoffMs: 500 }
+                );
+                if (!response.ok) {
+                    continue;
+                }
+                const result = await response.json();
+                collected.push(...normalizeLookupSubscriptions(result));
+            } catch (_error) {
+                // Keep lookup resilient and continue trying remaining users.
+            }
+        }
+        return dedupeSubscriptionsByEndpoint(collected);
+    };
 
     try {
         let subscriptions = [];
         if (requestedUsers.length <= SUBSCRIPTION_LOOKUP_BATCH_SIZE) {
-            const response = await fetchWithRetry(
-                buildGoogleSheetGetUrl({ usernames: requestUserList }),
-                {},
-                { timeoutMs: 12000, retries: 2, backoffMs: 500 }
-            );
-            const result = await response.json();
-            subscriptions = normalizeLookupSubscriptions(result);
+            subscriptions = await fetchLookupBatchSubscriptions(requestedUsers);
         } else {
             const collected = [];
             for (let i = 0; i < requestedUsers.length; i += SUBSCRIPTION_LOOKUP_BATCH_SIZE) {
                 const batch = requestedUsers.slice(i, i + SUBSCRIPTION_LOOKUP_BATCH_SIZE);
                 if (!batch.length) continue;
-                const response = await fetchWithRetry(
-                    buildGoogleSheetGetUrl({ usernames: batch.join(',') }),
-                    {},
-                    { timeoutMs: 12000, retries: 2, backoffMs: 500 }
-                );
-                const result = await response.json();
-                collected.push(...normalizeLookupSubscriptions(result));
+                const batchSubscriptions = await fetchLookupBatchSubscriptions(batch);
+                if (batchSubscriptions.length) {
+                    collected.push(...batchSubscriptions);
+                }
             }
             subscriptions = dedupeSubscriptionsByEndpoint(collected);
         }
