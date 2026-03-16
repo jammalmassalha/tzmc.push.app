@@ -7553,9 +7553,10 @@ export class ChatStoreService {
   private shouldRequireStandaloneInstallForPush(): boolean {
     if (typeof navigator === 'undefined') return false;
     const ua = navigator.userAgent || '';
-    const isMobileUa = /Android|iP(hone|ad|od)|IEMobile|BlackBerry|Opera Mini/i.test(ua);
+    const isIosUa = /iP(hone|ad|od)/i.test(ua);
     const isIpadOsDesktopUa = /Macintosh/i.test(ua) && navigator.maxTouchPoints > 1;
-    return isMobileUa || isIpadOsDesktopUa;
+    // iOS/iPadOS Web Push requires home-screen install. Android does not.
+    return isIosUa || isIpadOsDesktopUa;
   }
 
   private isRunningStandaloneApp(): boolean {
