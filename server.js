@@ -222,6 +222,18 @@ let unreadCounts = {};
 let groups = {};
 let deviceSubscriptionsByUser = {};
 
+function replaceObjectContents(target, source) {
+    if (!target || typeof target !== 'object') {
+        return;
+    }
+    Object.keys(target).forEach((key) => {
+        delete target[key];
+    });
+    if (source && typeof source === 'object') {
+        Object.assign(target, source);
+    }
+}
+
 
 
 app.use((req, res, next) => {
@@ -4591,9 +4603,11 @@ async function loadState() {
         try {
             const redisState = await redisStore.loadState();
             if (redisState) {
-                unreadCounts = (redisState.unreadCounts && typeof redisState.unreadCounts === 'object')
+                const nextUnreadCounts = (redisState.unreadCounts && typeof redisState.unreadCounts === 'object')
                     ? redisState.unreadCounts
                     : {};
+                // Keep a stable reference so controllers/middlewares mutate the live map.
+                replaceObjectContents(unreadCounts, nextUnreadCounts);
                 messageQueue = {};
                 groups = (redisState.groups && typeof redisState.groups === 'object')
                     ? redisState.groups
@@ -4627,7 +4641,9 @@ async function loadState() {
         await fsp.mkdir(stateDir, { recursive: true });
         const raw = await fsp.readFile(stateFile, 'utf8');
         const data = JSON.parse(raw);
-        unreadCounts = (data.unreadCounts && typeof data.unreadCounts === 'object') ? data.unreadCounts : {};
+        const nextUnreadCounts = (data.unreadCounts && typeof data.unreadCounts === 'object') ? data.unreadCounts : {};
+        // Keep a stable reference so controllers/middlewares mutate the live map.
+        replaceObjectContents(unreadCounts, nextUnreadCounts);
         messageQueue = (data.messageQueue && typeof data.messageQueue === 'object') ? data.messageQueue : {};
         groups = (data.groups && typeof data.groups === 'object') ? data.groups : {};
         groups = normalizeGroupsCollection(groups);
