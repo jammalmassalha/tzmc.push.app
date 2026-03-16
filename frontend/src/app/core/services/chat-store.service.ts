@@ -1552,6 +1552,8 @@ export class ChatStoreService {
 
     this.applyInitialChatSelection(user);
     this.schedulePersist();
+    this.lastServerBadgeResetAt = 0;
+    this.clearDeviceAttention({ resetServerBadge: true, forceServerBadgeReset: true });
   }
 
   private shouldSkipLogsMessage(message: IncomingServerMessage): boolean {
@@ -7365,7 +7367,9 @@ export class ChatStoreService {
     return document.visibilityState === 'visible';
   }
 
-  private clearDeviceAttention(options: { resetServerBadge?: boolean } = {}): void {
+  private clearDeviceAttention(
+    options: { resetServerBadge?: boolean; forceServerBadgeReset?: boolean } = {}
+  ): void {
     if (typeof navigator === 'undefined') return;
 
     const badgeNavigator = navigator as BadgeCapableNavigator;
@@ -7385,7 +7389,8 @@ export class ChatStoreService {
       return;
     }
     const now = Date.now();
-    if (now - this.lastServerBadgeResetAt < BADGE_RESET_MIN_INTERVAL_MS) {
+    const forceServerBadgeReset = Boolean(options.forceServerBadgeReset);
+    if (!forceServerBadgeReset && now - this.lastServerBadgeResetAt < BADGE_RESET_MIN_INTERVAL_MS) {
       return;
     }
     if (this.serverBadgeResetInFlight) {

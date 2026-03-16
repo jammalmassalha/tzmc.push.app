@@ -35,7 +35,8 @@ function registerAuthController(app, deps = {}) {
         upsertLocalDeviceSubscriptionsFromRegistration,
         scheduleStateSave,
         unreadCounts,
-        requireAuthorizedUser
+        requireAuthorizedUser,
+        APP_SERVER_TOKEN
     } = deps;
 
     const requireAuthorizedSheetUser = typeof requireAuthorizedUser === 'function'
@@ -377,7 +378,44 @@ function registerAuthController(app, deps = {}) {
             onError: (_req, res, resolution) => res.status(resolution.status).json({ status: 'error', message: resolution.error })
         }),
         (req, res) => {
+            const body = req.body && typeof req.body === 'object' ? req.body : {};
+            const resetAllRaw = body.all ?? body.resetAll ?? body.clearAll ?? false;
+            const resetAll = (
+                resetAllRaw === true ||
+                String(resetAllRaw || '').trim().toLowerCase() === '1' ||
+                String(resetAllRaw || '').trim().toLowerCase() === 'true' ||
+                String(resetAllRaw || '').trim().toLowerCase() === 'yes'
+            );
+            const adminToken = String(
+                (req.query && req.query.token) ||
+                (req.headers && (req.headers['x-admin-token'] || req.headers['x-app-token'])) ||
+                ''
+            ).trim();
+            const hasConfiguredAdminToken = Boolean(String(APP_SERVER_TOKEN || '').trim());
+            const isAdminTokenValid = hasConfiguredAdminToken && adminToken === String(APP_SERVER_TOKEN || '').trim();
             const user = req.resolvedUser;
+
+            if (resetAll) {
+                if (hasConfiguredAdminToken && !isAdminTokenValid) {
+                    return res.status(403).json({ status: 'error', message: 'Forbidden' });
+                }
+                if (!hasConfiguredAdminToken && !user) {
+                    return res.status(401).json({ status: 'error', message: 'Authentication required' });
+                }
+
+                const keys = Object.keys(unreadCounts || {});
+                keys.forEach((key) => {
+                    delete unreadCounts[key];
+                });
+                console.log(`[BADGE] Reset all unread counts (${keys.length} keys).`);
+                scheduleStateSave();
+                return res.json({
+                    status: 'success',
+                    scope: 'all',
+                    clearedKeys: keys.length
+                });
+            }
+
             if (user) {
                 const aliasCandidates = typeof buildUserLookupAliases === 'function'
                     ? buildUserLookupAliases(user)

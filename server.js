@@ -5120,7 +5120,8 @@ registerAuthController(app, {
     upsertLocalDeviceSubscriptionsFromRegistration,
     scheduleStateSave,
     unreadCounts,
-    requireAuthorizedUser
+    requireAuthorizedUser,
+    APP_SERVER_TOKEN
 });
 
 // --- CLIENT TELEMETRY ---
