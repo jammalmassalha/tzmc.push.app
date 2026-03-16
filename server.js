@@ -5702,6 +5702,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         msgText = 'new reaction';
     }
     const logContent = msgText || messageType || 'System Notification';
+    const shouldPersistPushLog = messageType !== 'read-receipt';
     const messageId = options.messageId || message.messageId || generateMessageId();
     const shouldIncrementBadge = !options.skipBadge;
     let normalizedTargetUsers = Array.from(
@@ -6006,17 +6007,19 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
 
     scheduleStateSave();
 
-    // Log to Sheet
-    const fullReport = executionLogs.join('\n');
-    let finalStatus = successCount > 0 ? 'Sent' : 'Failed';
-    logNotificationStatus(
-        finalSender,
-        targetUsersArray.join(','),
-        logContent,
-        finalStatus,
-        fullReport,
-        recipientAuthJsonForLog
-    );
+    // Skip sheet logs for read-receipt ("seen") transport events.
+    if (shouldPersistPushLog) {
+        const fullReport = executionLogs.join('\n');
+        const finalStatus = successCount > 0 ? 'Sent' : 'Failed';
+        logNotificationStatus(
+            finalSender,
+            targetUsersArray.join(','),
+            logContent,
+            finalStatus,
+            fullReport,
+            recipientAuthJsonForLog
+        );
+    }
 
     return { success: successCount, failed: failCount };
 }
