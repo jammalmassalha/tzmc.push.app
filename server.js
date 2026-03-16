@@ -4876,12 +4876,9 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
                     requestedAliasToCanonical
                 );
                 const fallbackUser = canonicalUser || singleRequestedUser;
-                if (!fallbackUser) {
-                    return null;
-                }
                 return {
                     ...subscription,
-                    username: fallbackUser
+                    username: fallbackUser || subscription.username || subscription.user || undefined
                 };
             })
             .filter(Boolean);
@@ -5596,7 +5593,8 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     const targetAliasToCanonical = buildUserAliasLookupMap(normalizedTargetUsers);
     const targetUsersSet = new Set(normalizedTargetUsers);
     const singleTargetUser = normalizedTargetUsers.length === 1 ? normalizedTargetUsers[0] : '';
-    const normalizeAndFilterTargetSubscriptions = (subscriptions) => {
+    const normalizeAndFilterTargetSubscriptions = (subscriptions, options = {}) => {
+        const allowUnknownUser = Boolean(options.allowUnknownUser);
         const normalized = dedupeSubscriptionsByEndpoint(subscriptions || []);
         return normalized
             .map((subscription) => {
@@ -5605,10 +5603,10 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                     targetAliasToCanonical
                 );
                 const fallbackUser = canonicalUser || singleTargetUser;
-                if (!fallbackUser) return null;
+                if (!fallbackUser && !allowUnknownUser) return null;
                 return {
                     ...subscription,
-                    username: fallbackUser
+                    username: fallbackUser || subscription.username || subscription.user || undefined
                 };
             })
             .filter(Boolean);
@@ -5617,12 +5615,14 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     console.log(`[PUSH] Searching subs for: ${targetUsersArray.join(', ')} from ${finalSender}`);
 
     let rawSubscriptions = normalizeAndFilterTargetSubscriptions(
-        await getSubscriptionFromSheet(targetUsersArray)
+        await getSubscriptionFromSheet(targetUsersArray),
+        { allowUnknownUser: true }
     );
     if (!rawSubscriptions.length) {
         // Force refresh once to avoid stale cache windows (common after iOS resubscribe).
         rawSubscriptions = normalizeAndFilterTargetSubscriptions(
-            await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true })
+            await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true }),
+            { allowUnknownUser: true }
         );
     }
     if (!rawSubscriptions.length) {
@@ -5632,7 +5632,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         const discoveredSubscriptions = Array.isArray(fallbackDiscovery.subscriptions)
             ? fallbackDiscovery.subscriptions
             : [];
-        rawSubscriptions = normalizeAndFilterTargetSubscriptions(discoveredSubscriptions);
+        rawSubscriptions = normalizeAndFilterTargetSubscriptions(discoveredSubscriptions, { allowUnknownUser: false });
         if (rawSubscriptions.length) {
             const cacheKey = buildSubscriptionCacheKey(targetUsersArray);
             if (cacheKey) {
@@ -5645,7 +5645,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         rawSubscriptions = normalizeAndFilterTargetSubscriptions([
             ...rawSubscriptions,
             ...localSubscriptions
-        ]);
+        ], { allowUnknownUser: true });
         const cacheKey = buildSubscriptionCacheKey(targetUsersArray);
         if (cacheKey && rawSubscriptions.length) {
             subscriptionCache.set(cacheKey, { at: Date.now(), subscriptions: rawSubscriptions });
@@ -5676,11 +5676,12 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                 const userKey = normalizeUserKey(
                     subscription.username || subscription.user
                 );
+                const hasExplicitUser = Boolean(userKey);
                 const resolvedUserKey = userKey || singleTargetUser;
-                if (!resolvedUserKey || (targetUsersSet.size && !targetUsersSet.has(resolvedUserKey))) {
+                if (hasExplicitUser && targetUsersSet.size && !targetUsersSet.has(userKey)) {
                     return {
                         ok: false,
-                        username: resolvedUserKey || 'unknown',
+                        username: userKey || 'unknown',
                         statusCode: 'SKIP',
                         message: 'Subscription user mismatch'
                     };
