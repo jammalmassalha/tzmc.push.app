@@ -4888,19 +4888,41 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
     const normalizeLookupSubscriptions = (payload) => {
         const extracted = extractSubscriptionsFromSheetResponse(payload);
         if (!extracted.length) return [];
-        return extracted
-            .map((subscription) => {
-                const canonicalUser = resolveCanonicalUserFromLookup(
-                    subscription && (subscription.username || subscription.user),
-                    requestedAliasToCanonical
-                );
-                const fallbackUser = canonicalUser || singleRequestedUser;
-                return {
+        const matched = [];
+        const unknownWithoutUser = [];
+        extracted.forEach((subscription) => {
+            const rawUser = normalizeUserKey(subscription && (subscription.username || subscription.user));
+            const canonicalUser = resolveCanonicalUserFromLookup(
+                rawUser,
+                requestedAliasToCanonical
+            );
+            if (canonicalUser) {
+                matched.push({
                     ...subscription,
-                    username: fallbackUser || subscription.username || subscription.user || undefined
-                };
-            })
-            .filter(Boolean);
+                    username: canonicalUser
+                });
+                return;
+            }
+            // If payload provides a user that does not match requested users, never remap it.
+            if (rawUser) {
+                return;
+            }
+            if (!singleRequestedUser) {
+                return;
+            }
+            unknownWithoutUser.push({
+                ...subscription,
+                username: singleRequestedUser
+            });
+        });
+        if (matched.length) {
+            return matched;
+        }
+        // Only allow tiny user-less fallbacks; large sets likely indicate unfiltered sheet response.
+        if (unknownWithoutUser.length > 0 && unknownWithoutUser.length <= UNKNOWN_USER_FALLBACK_MAX_ENDPOINTS) {
+            return unknownWithoutUser;
+        }
+        return [];
     };
     const fetchLookupBatchSubscriptions = async (batchUsers = []) => {
         const normalizedBatch = Array.from(new Set(
@@ -5488,6 +5510,14 @@ const DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER = Math.max(
     1,
     Number(process.env.DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER || 2) || 2
 );
+const SINGLE_TARGET_MAX_SAFE_SUBSCRIPTIONS = Math.max(
+    1,
+    Number(process.env.SINGLE_TARGET_MAX_SAFE_SUBSCRIPTIONS || 8) || 8
+);
+const UNKNOWN_USER_FALLBACK_MAX_ENDPOINTS = Math.max(
+    1,
+    Number(process.env.UNKNOWN_USER_FALLBACK_MAX_ENDPOINTS || 4) || 4
+);
 
 function trimPushTextValue(value, maxLength = MAX_PUSH_TEXT_LENGTH) {
     const text = String(value || '');
@@ -5666,20 +5696,40 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     const normalizeAndFilterTargetSubscriptions = (subscriptions, options = {}) => {
         const allowUnknownUser = Boolean(options.allowUnknownUser);
         const normalized = dedupeSubscriptionsByEndpoint(subscriptions || []);
-        return normalized
-            .map((subscription) => {
-                const canonicalUser = resolveCanonicalUserFromLookup(
-                    subscription && (subscription.username || subscription.user),
-                    targetAliasToCanonical
-                );
-                const fallbackUser = canonicalUser || singleTargetUser;
-                if (!fallbackUser && !allowUnknownUser) return null;
-                return {
+        const matched = [];
+        const unknownWithoutUser = [];
+        normalized.forEach((subscription) => {
+            const rawUser = normalizeUserKey(subscription && (subscription.username || subscription.user));
+            const canonicalUser = resolveCanonicalUserFromLookup(
+                rawUser,
+                targetAliasToCanonical
+            );
+            if (canonicalUser) {
+                matched.push({
                     ...subscription,
-                    username: fallbackUser || subscription.username || subscription.user || undefined
-                };
-            })
-            .filter(Boolean);
+                    username: canonicalUser
+                });
+                return;
+            }
+            // Explicitly scoped to another user -> never treat as current target.
+            if (rawUser) {
+                return;
+            }
+            if (!allowUnknownUser || !singleTargetUser) {
+                return;
+            }
+            unknownWithoutUser.push({
+                ...subscription,
+                username: singleTargetUser
+            });
+        });
+        if (matched.length) {
+            return matched;
+        }
+        if (unknownWithoutUser.length > 0 && unknownWithoutUser.length <= UNKNOWN_USER_FALLBACK_MAX_ENDPOINTS) {
+            return unknownWithoutUser;
+        }
+        return [];
     };
 
     console.log(`[PUSH] Searching subs for: ${targetUsersArray.join(', ')} from ${finalSender}`);
@@ -5835,6 +5885,13 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         uniqueSubscriptions = Array.from(oneSubscriptionPerUser.values());
     } else if (maxEndpointsPerUser > 0) {
         uniqueSubscriptions = limitSubscriptionsPerUser(uniqueSubscriptions, maxEndpointsPerUser);
+    }
+    if (singleTargetUser && uniqueSubscriptions.length > SINGLE_TARGET_MAX_SAFE_SUBSCRIPTIONS) {
+        console.warn(
+            `[PUSH] Single-target subscriptions trimmed for ${singleTargetUser}: ` +
+            `${uniqueSubscriptions.length} -> ${SINGLE_TARGET_MAX_SAFE_SUBSCRIPTIONS}`
+        );
+        uniqueSubscriptions = uniqueSubscriptions.slice(0, SINGLE_TARGET_MAX_SAFE_SUBSCRIPTIONS);
     }
     let sendResults = await sendToSubscriptions(uniqueSubscriptions, true);
 
