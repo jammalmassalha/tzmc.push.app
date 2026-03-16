@@ -5801,7 +5801,8 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                     return {
                         ok: true,
                         username: subscription.username || resolvedUserKey || 'unknown',
-                        badge: currentCount
+                        badge: currentCount,
+                        endpoint: subscription.endpoint
                     };
                 } catch (err) {
                     const statusCode = err.statusCode || 'N/A';
@@ -5812,7 +5813,8 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                         ok: false,
                         username: subscription.username || resolvedUserKey || 'unknown',
                         statusCode,
-                        message: err.message
+                        message: err.message,
+                        endpoint: subscription.endpoint
                     };
                 }
             })
@@ -5877,6 +5879,36 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
 
             const retryResults = await sendToSubscriptions(effectiveRetryTargets, false);
             appendResultsToLogs(retryResults);
+            sendResults = [...sendResults, ...retryResults];
+        }
+    }
+
+    const staleEndpoints = Array.from(
+        new Set(
+            sendResults
+                .filter((result) => !result.ok && (result.statusCode === 404 || result.statusCode === 410))
+                .map((result) => String(result.endpoint || '').trim())
+                .filter(Boolean)
+        )
+    );
+    if (staleEndpoints.length) {
+        let localRemoved = 0;
+        staleEndpoints.forEach((endpoint) => {
+            if (removeLocalDeviceSubscriptionEndpoint(endpoint)) {
+                localRemoved += 1;
+            }
+        });
+        let staleCleanupSummary = null;
+        try {
+            staleCleanupSummary = await removeStaleSubscriptionsFromSheet(staleEndpoints);
+        } catch (_error) {
+            staleCleanupSummary = null;
+        }
+        if (localRemoved > 0 || staleCleanupSummary) {
+            executionLogs.push(
+                `[STALE CLEANUP] endpoints=${staleEndpoints.length}, localRemoved=${localRemoved}, ` +
+                `sheetCleared=${Number(staleCleanupSummary && staleCleanupSummary.clearedSubscriptions || 0)}`
+            );
         }
     }
 

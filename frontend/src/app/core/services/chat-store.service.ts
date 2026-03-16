@@ -119,6 +119,7 @@ const DELETED_MESSAGE_PLACEHOLDER = '🚫 הודעה זו נמחקה';
 const TYPING_IDLE_MS = 2200;
 const TYPING_HEARTBEAT_MS = 1200;
 const TYPING_STALE_MS = 6500;
+const INCOMING_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS = 2000;
 
 type HrAwaitingState = 'step' | 'action' | 'free-text';
 
@@ -5544,6 +5545,11 @@ export class ChatStoreService {
       if (!messageId) continue;
       const incomingBody = this.resolveIncomingMessageBody(incoming);
       const incomingImageUrl = this.resolveIncomingImageUrl(incoming);
+      const incomingTimestampRaw = Number(incoming.timestamp ?? Date.now());
+      const incomingTimestamp = Number.isFinite(incomingTimestampRaw) && incomingTimestampRaw > 0
+        ? incomingTimestampRaw
+        : Date.now();
+      const normalizedGroupId = isGroup ? this.normalizeChatId(incoming.groupId ?? '') : '';
 
       const knownMessageIds = getMessageIdSet(chatId);
       if (knownMessageIds.has(messageId)) {
@@ -5559,6 +5565,20 @@ export class ChatStoreService {
       }
 
       if (!this.hasRenderableIncomingContent(incomingBody, incomingImageUrl)) {
+        continue;
+      }
+
+      const list = getMutableList(chatId);
+      const equivalentMessageIndex = this.findEquivalentIncomingMessageIndex(list, {
+        sender,
+        body: incomingBody,
+        imageUrl: incomingImageUrl,
+        timestamp: incomingTimestamp,
+        groupId: normalizedGroupId || null
+      });
+      if (equivalentMessageIndex >= 0) {
+        // Treat same-content/same-time messages as duplicates even if backend messageId differs.
+        knownMessageIds.add(messageId);
         continue;
       }
 
@@ -5592,9 +5612,9 @@ export class ChatStoreService {
         body: incomingBody,
         imageUrl: incomingImageUrl,
         direction: 'incoming',
-        timestamp: Number(incoming.timestamp ?? Date.now()),
+        timestamp: incomingTimestamp,
         deliveryStatus: 'delivered',
-        groupId: incoming.groupId ? this.normalizeChatId(incoming.groupId) : null,
+        groupId: normalizedGroupId || null,
         groupName: incoming.groupName ?? null,
         groupType: normalizedIncomingGroupType,
         editedAt: Number.isFinite(Number(incoming.editedAt)) ? Number(incoming.editedAt) : null,
@@ -5605,7 +5625,6 @@ export class ChatStoreService {
         forwardedFromName: forwardedFromName || null
       };
 
-      const list = getMutableList(chatId);
       if (!list.length || list[list.length - 1].timestamp <= record.timestamp) {
         list.push(record);
       } else {
@@ -5773,6 +5792,11 @@ export class ChatStoreService {
     if (!messageId) return false;
     const incomingBody = this.resolveIncomingMessageBody(incoming);
     const incomingImageUrl = this.resolveIncomingImageUrl(incoming);
+    const incomingTimestampRaw = Number(incoming.timestamp ?? Date.now());
+    const incomingTimestamp = Number.isFinite(incomingTimestampRaw) && incomingTimestampRaw > 0
+      ? incomingTimestampRaw
+      : Date.now();
+    const normalizedGroupId = incoming.groupId ? this.normalizeChatId(incoming.groupId ?? '') : null;
 
     this.clearTypingIndicatorForUser(chatId, sender);
 
@@ -5783,6 +5807,17 @@ export class ChatStoreService {
       return this.hydrateExistingIncomingMessage(chatId, messageId, incomingBody, incomingImageUrl);
     }
     if (!this.hasRenderableIncomingContent(incomingBody, incomingImageUrl)) {
+      return false;
+    }
+    const existingChatMessages = this.messagesByChat()[chatId] ?? [];
+    const equivalentMessageIndex = this.findEquivalentIncomingMessageIndex(existingChatMessages, {
+      sender,
+      body: incomingBody,
+      imageUrl: incomingImageUrl,
+      timestamp: incomingTimestamp,
+      groupId: normalizedGroupId
+    });
+    if (equivalentMessageIndex >= 0) {
       return false;
     }
 
@@ -5816,9 +5851,9 @@ export class ChatStoreService {
       body: incomingBody,
       imageUrl: incomingImageUrl,
       direction: 'incoming',
-      timestamp: Number(incoming.timestamp ?? Date.now()),
+      timestamp: incomingTimestamp,
       deliveryStatus: 'delivered',
-      groupId: incoming.groupId ? this.normalizeChatId(incoming.groupId) : null,
+      groupId: normalizedGroupId,
       groupName: incoming.groupName ?? null,
       groupType: normalizedIncomingGroupType,
       editedAt: Number.isFinite(Number(incoming.editedAt)) ? Number(incoming.editedAt) : null,
@@ -5886,6 +5921,55 @@ export class ChatStoreService {
 
   private hasRenderableIncomingContent(body: string, imageUrl: string | null): boolean {
     return Boolean(String(body || '').trim() || String(imageUrl || '').trim());
+  }
+
+  private normalizeIncomingTextForDedup(value: string): string {
+    return String(value || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private findEquivalentIncomingMessageIndex(
+    list: ChatMessage[],
+    candidate: {
+      sender: string;
+      body: string;
+      imageUrl: string | null;
+      timestamp: number;
+      groupId: string | null;
+    }
+  ): number {
+    const candidateSender = this.normalizeUser(candidate.sender);
+    const candidateBody = this.normalizeIncomingTextForDedup(candidate.body);
+    const candidateImage = String(candidate.imageUrl || '').trim();
+    const candidateTimestamp = Number(candidate.timestamp) || 0;
+    const candidateGroupId = this.normalizeChatId(String(candidate.groupId || ''));
+    if (!candidateSender || !Number.isFinite(candidateTimestamp)) {
+      return -1;
+    }
+    if (!candidateBody && !candidateImage) {
+      return -1;
+    }
+
+    return list.findIndex((message) => {
+      if (!message || message.direction !== 'incoming' || message.deletedAt) {
+        return false;
+      }
+      if (this.normalizeUser(message.sender) !== candidateSender) {
+        return false;
+      }
+      const messageGroupId = this.normalizeChatId(String(message.groupId || ''));
+      if (candidateGroupId && messageGroupId !== candidateGroupId) {
+        return false;
+      }
+      const messageBody = this.normalizeIncomingTextForDedup(message.body);
+      const messageImage = String(message.imageUrl || '').trim();
+      if (messageBody !== candidateBody || messageImage !== candidateImage) {
+        return false;
+      }
+      const messageTimestamp = Number(message.timestamp) || 0;
+      return Math.abs(messageTimestamp - candidateTimestamp) <= INCOMING_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS;
+    });
   }
 
   private hydrateExistingIncomingMessage(

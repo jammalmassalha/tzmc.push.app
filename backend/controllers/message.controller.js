@@ -288,7 +288,16 @@ function registerMessageController(app, deps = {}) {
                         ).trim();
                         const resolvedGroupName = groupName
                             || (resolvedGroupId ? (knownGroupNamesById.get(resolvedGroupId) || toUserCandidateRaw || resolvedGroupId) : '');
-                        const messageIdRaw = String(message.messageId ?? message.id ?? '').trim();
+                        const messageIdRaw = String(
+                            message.messageId ??
+                            message.message_id ??
+                            message.msgId ??
+                            message.msg_id ??
+                            message.mid ??
+                            message.uuid ??
+                            message.id ??
+                            ''
+                        ).trim();
                         const fingerprintSource = `${sender}|${resolvedGroupId || normalizedToUserCandidate || user}|${timestamp}|${body}`;
                         let fingerprint = 0;
                         for (let charIndex = 0; charIndex < fingerprintSource.length; charIndex += 1) {
