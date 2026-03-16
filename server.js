@@ -1158,6 +1158,11 @@ const RECENT_REPLY_MESSAGE_TTL_MS = Math.max(
     Number(process.env.RECENT_REPLY_MESSAGE_TTL_MS || 10 * 60 * 1000) || 10 * 60 * 1000
 );
 const recentProcessedReplyMessages = new Map();
+const RECENT_QUEUE_MESSAGE_TTL_MS = Math.max(
+    30 * 1000,
+    Number(process.env.RECENT_QUEUE_MESSAGE_TTL_MS || 3 * 60 * 1000) || 3 * 60 * 1000
+);
+const recentProcessedQueueMessages = new Map();
 let mobileReregisterCampaignState = {
     running: false,
     lastRunAt: 0,
@@ -1172,6 +1177,24 @@ function pruneRecentProcessedReplyMessages(nowTs = Date.now()) {
             recentProcessedReplyMessages.delete(messageId);
         }
     }
+}
+
+function pruneRecentProcessedQueueMessages(nowTs = Date.now()) {
+    for (const [dedupKey, processedAt] of recentProcessedQueueMessages.entries()) {
+        if (!dedupKey) continue;
+        if (!Number.isFinite(Number(processedAt)) || nowTs - Number(processedAt) > RECENT_QUEUE_MESSAGE_TTL_MS) {
+            recentProcessedQueueMessages.delete(dedupKey);
+        }
+    }
+}
+
+function hashStringToShortId(value = '') {
+    const text = String(value || '');
+    let hash = 0;
+    for (let index = 0; index < text.length; index += 1) {
+        hash = ((hash << 5) - hash + text.charCodeAt(index)) | 0;
+    }
+    return Math.abs(hash).toString(36);
 }
 
 function buildSubscriptionCacheKey(usernames) {
@@ -6560,7 +6583,10 @@ app.post('/notify', async (req, res) => {
         await sleep(100);
         
         // [UPDATED] Send to ALL devices found for this user
-        const result = await sendPushNotificationToUser(targetUser, messageParam, senderuser || 'System', { messageId });
+        const result = await sendPushNotificationToUser(targetUser, messageParam, senderuser || 'System', {
+            messageId,
+            maxPerUserEndpoints: 1
+        });
         res.json({ status: 'done', details: result });
 
     } catch (e) {
@@ -6574,6 +6600,7 @@ app.post('/notify', async (req, res) => {
 // ======================================================
 async function checkOutgoingQueue() {
     try {
+        pruneRecentProcessedQueueMessages();
         // Ask Google Script for pending messages
         const response = await fetchWithRetry(
             buildGoogleSheetGetUrl({ action: 'check_queue' }, { token: CHECK_QUEUE_SERVER_TOKEN }),
@@ -6607,8 +6634,22 @@ async function checkOutgoingQueue() {
                 if (!targetUsers.length || !bodyText) {
                     continue;
                 }
-                
-                const messageId = (msg && msg.messageId) ? String(msg.messageId).trim() : generateMessageId();
+
+                const sourceUniqueId = String(
+                    (msg && (msg.messageId || msg.id || msg.queueId || msg.rowId || msg.sheetRow || msg.row || msg.uid || msg.createdAt || msg.timestamp)) ||
+                    ''
+                ).trim();
+                const senderKey = normalizeUserKey(senderName);
+                const recipientKey = targetUsers.map((entry) => normalizeUserKey(entry)).filter(Boolean).sort().join(',');
+                const dedupBaseKey = `${senderKey}|${recipientKey}|${bodyText}|${sourceUniqueId || 'no-source-id'}`;
+                const dedupKey = dedupBaseKey;
+                if (recentProcessedQueueMessages.has(dedupKey)) {
+                    continue;
+                }
+
+                const messageId = (msg && msg.messageId)
+                    ? String(msg.messageId).trim()
+                    : `queue-${hashStringToShortId(dedupBaseKey)}`;
                 const notificationData = {
                     messageId,
                     title: `Message from ${senderName}`,
@@ -6629,7 +6670,11 @@ async function checkOutgoingQueue() {
                 await addToQueue(targetUsers, pollingMessage);
 
                 // 2. Send Push Notification (Handles all devices)
-                await sendPushNotificationToUser(targetUsers, notificationData, senderName, { messageId });
+                await sendPushNotificationToUser(targetUsers, notificationData, senderName, {
+                    messageId,
+                    maxPerUserEndpoints: 1
+                });
+                recentProcessedQueueMessages.set(dedupKey, Date.now());
             }
         }
     } catch (error) {
