@@ -120,6 +120,7 @@ const TYPING_IDLE_MS = 2200;
 const TYPING_HEARTBEAT_MS = 1200;
 const TYPING_STALE_MS = 6500;
 const INCOMING_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS = 2000;
+const INCOMING_SYSTEM_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS = 90 * 1000;
 
 type HrAwaitingState = 'step' | 'action' | 'free-text';
 
@@ -5550,6 +5551,10 @@ export class ChatStoreService {
         ? incomingTimestampRaw
         : Date.now();
       const normalizedGroupId = isGroup ? this.normalizeChatId(incoming.groupId ?? '') : '';
+      const semanticDedupToleranceMs = this.resolveIncomingSemanticDedupToleranceMs({
+        sender,
+        isGroup
+      });
 
       const knownMessageIds = getMessageIdSet(chatId);
       if (knownMessageIds.has(messageId)) {
@@ -5574,7 +5579,8 @@ export class ChatStoreService {
         body: incomingBody,
         imageUrl: incomingImageUrl,
         timestamp: incomingTimestamp,
-        groupId: normalizedGroupId || null
+        groupId: normalizedGroupId || null,
+        toleranceMs: semanticDedupToleranceMs
       });
       if (equivalentMessageIndex >= 0) {
         // Treat same-content/same-time messages as duplicates even if backend messageId differs.
@@ -5797,6 +5803,10 @@ export class ChatStoreService {
       ? incomingTimestampRaw
       : Date.now();
     const normalizedGroupId = incoming.groupId ? this.normalizeChatId(incoming.groupId ?? '') : null;
+    const semanticDedupToleranceMs = this.resolveIncomingSemanticDedupToleranceMs({
+      sender,
+      isGroup
+    });
 
     this.clearTypingIndicatorForUser(chatId, sender);
 
@@ -5815,7 +5825,8 @@ export class ChatStoreService {
       body: incomingBody,
       imageUrl: incomingImageUrl,
       timestamp: incomingTimestamp,
-      groupId: normalizedGroupId
+      groupId: normalizedGroupId,
+      toleranceMs: semanticDedupToleranceMs
     });
     if (equivalentMessageIndex >= 0) {
       return false;
@@ -5937,6 +5948,7 @@ export class ChatStoreService {
       imageUrl: string | null;
       timestamp: number;
       groupId: string | null;
+      toleranceMs?: number;
     }
   ): number {
     const candidateSender = this.normalizeUser(candidate.sender);
@@ -5944,6 +5956,10 @@ export class ChatStoreService {
     const candidateImage = String(candidate.imageUrl || '').trim();
     const candidateTimestamp = Number(candidate.timestamp) || 0;
     const candidateGroupId = this.normalizeChatId(String(candidate.groupId || ''));
+    const toleranceMs = Math.max(
+      INCOMING_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS,
+      Math.floor(Number(candidate.toleranceMs || INCOMING_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS))
+    );
     if (!candidateSender || !Number.isFinite(candidateTimestamp)) {
       return -1;
     }
@@ -5968,8 +5984,35 @@ export class ChatStoreService {
         return false;
       }
       const messageTimestamp = Number(message.timestamp) || 0;
-      return Math.abs(messageTimestamp - candidateTimestamp) <= INCOMING_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS;
+      return Math.abs(messageTimestamp - candidateTimestamp) <= toleranceMs;
     });
+  }
+
+  private resolveIncomingSemanticDedupToleranceMs(
+    context: { sender: string; isGroup: boolean }
+  ): number {
+    if (context.isGroup) {
+      return INCOMING_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS;
+    }
+    const normalizedSender = this.normalizeUser(String(context.sender || '').trim());
+    if (!normalizedSender) {
+      return INCOMING_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS;
+    }
+    if (this.isLikelyPhoneIdentity(normalizedSender)) {
+      return INCOMING_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS;
+    }
+    // System/non-phone senders are often injected by multiple pipelines with different IDs.
+    return INCOMING_SYSTEM_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS;
+  }
+
+  private isLikelyPhoneIdentity(value: string): boolean {
+    const digits = String(value || '').replace(/\D/g, '');
+    return (
+      /^0\d{9}$/.test(digits) ||
+      /^5\d{8}$/.test(digits) ||
+      /^9725\d{8}$/.test(digits) ||
+      /^97205\d{8}$/.test(digits)
+    );
   }
 
   private hydrateExistingIncomingMessage(
