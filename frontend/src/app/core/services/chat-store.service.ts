@@ -379,6 +379,7 @@ export class ChatStoreService {
     url?: unknown;
     chat?: unknown;
   }> = [];
+  private pendingPushDrainInFlight = false;
   private readonly systemChatIdSet = new Set<string>(
     SYSTEM_CHAT_IDS.map((id) => this.normalizeChatId(id)).filter(Boolean)
   );
@@ -557,10 +558,14 @@ export class ChatStoreService {
     if (this.initializedUser === user) {
       this.flushPendingServiceWorkerMessages();
       await this.consumePendingPushPayloadsFromServiceWorker();
+      this.schedulePendingPushDrainRetry();
       return;
     }
 
     this.initializedUser = user;
+    this.flushPendingServiceWorkerMessages();
+    await this.consumePendingPushPayloadsFromServiceWorker();
+    this.schedulePendingPushDrainRetry();
     await this.refreshShuttleAccessForCurrentUser(user, { force: true });
 
     // Open quickly from cached/local state only.
@@ -570,8 +575,6 @@ export class ChatStoreService {
     this.startDeliveryTelemetry(user);
     this.startBackgroundContactsAccessSync(user);
     this.runInitializeBackgroundTasks(user);
-    this.flushPendingServiceWorkerMessages();
-    await this.consumePendingPushPayloadsFromServiceWorker();
   }
 
   private applyInitialChatSelection(user: string): void {
@@ -7230,6 +7233,7 @@ export class ChatStoreService {
       requireStandaloneOnMobile: true
     });
     this.connectRealtime(user);
+    void this.consumePendingPushPayloadsFromServiceWorker();
   };
 
   private handleOffline = (): void => {
@@ -7251,6 +7255,7 @@ export class ChatStoreService {
   private handleWindowFocus = (): void => {
     this.refreshPushRegistrationForCurrentUser(false);
     this.clearDeviceAttention({ resetServerBadge: true });
+    void this.consumePendingPushPayloadsFromServiceWorker();
   };
 
   private handleVisibilityChange = (): void => {
@@ -7259,6 +7264,7 @@ export class ChatStoreService {
     }
     this.refreshPushRegistrationForCurrentUser(false);
     this.clearDeviceAttention({ resetServerBadge: true });
+    void this.consumePendingPushPayloadsFromServiceWorker();
   };
 
   private handleServiceWorkerMessage = (event: MessageEvent<unknown>): void => {
@@ -7302,6 +7308,9 @@ export class ChatStoreService {
   }
 
   private async consumePendingPushPayloadsFromServiceWorker(): Promise<void> {
+    if (this.pendingPushDrainInFlight) {
+      return;
+    }
     const currentUser = this.currentUser();
     if (!currentUser) {
       return;
@@ -7309,50 +7318,95 @@ export class ChatStoreService {
     if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
       return;
     }
-
-    const pendingPayloads = await new Promise<Record<string, unknown>[]>((resolve) => {
-      let settled = false;
-      const finalize = (value: Record<string, unknown>[]) => {
-        if (settled) return;
-        settled = true;
-        resolve(Array.isArray(value) ? value : []);
-      };
-      const timeoutId = setTimeout(() => finalize([]), 2500);
-      navigator.serviceWorker.ready
-        .then((registration) => {
-          const worker = registration.active ?? navigator.serviceWorker.controller;
-          if (!worker) {
-            clearTimeout(timeoutId);
-            finalize([]);
-            return;
-          }
-          const channel = new MessageChannel();
-          channel.port1.onmessage = (replyEvent: MessageEvent<unknown>) => {
-            clearTimeout(timeoutId);
-            const reply = replyEvent.data as { payloads?: unknown } | null;
-            const rawPayloads = reply && typeof reply === 'object'
-              ? reply.payloads
-              : undefined;
-            const payloads: unknown[] = Array.isArray(rawPayloads) ? rawPayloads : [];
-            const normalizedPayloads = payloads.filter(
-              (item: unknown): item is Record<string, unknown> => Boolean(item) && typeof item === 'object'
-            );
-            finalize(normalizedPayloads);
-          };
-          worker.postMessage({ action: 'drain-pending-push-payloads' }, [channel.port2]);
-        })
-        .catch(() => {
+    this.pendingPushDrainInFlight = true;
+    try {
+      const targetWorker = await this.resolveServiceWorkerMessageTarget();
+      if (!targetWorker) {
+        return;
+      }
+      const pendingPayloads = await new Promise<Record<string, unknown>[]>((resolve) => {
+        let settled = false;
+        const finalize = (value: Record<string, unknown>[]) => {
+          if (settled) return;
+          settled = true;
+          resolve(Array.isArray(value) ? value : []);
+        };
+        const timeoutId = setTimeout(() => finalize([]), 2500);
+        const channel = new MessageChannel();
+        channel.port1.onmessage = (replyEvent: MessageEvent<unknown>) => {
+          clearTimeout(timeoutId);
+          const reply = replyEvent.data as { payloads?: unknown } | null;
+          const rawPayloads = reply && typeof reply === 'object'
+            ? reply.payloads
+            : undefined;
+          const payloads: unknown[] = Array.isArray(rawPayloads) ? rawPayloads : [];
+          const normalizedPayloads = payloads.filter(
+            (item: unknown): item is Record<string, unknown> => Boolean(item) && typeof item === 'object'
+          );
+          finalize(normalizedPayloads);
+        };
+        try {
+          targetWorker.postMessage({ action: 'drain-pending-push-payloads' }, [channel.port2]);
+        } catch {
           clearTimeout(timeoutId);
           finalize([]);
-        });
-    });
+        }
+      });
 
-    if (this.currentUser() !== currentUser || !pendingPayloads.length) {
-      return;
+      if (this.currentUser() !== currentUser || !pendingPayloads.length) {
+        return;
+      }
+      pendingPayloads.forEach((payload) => {
+        this.incrementDeliveryTelemetry('pushPayloadReceived');
+        this.applyIncomingFromPushPayload(payload, currentUser);
+      });
+    } finally {
+      this.pendingPushDrainInFlight = false;
     }
-    pendingPayloads.forEach((payload) => {
-      this.incrementDeliveryTelemetry('pushPayloadReceived');
-      this.applyIncomingFromPushPayload(payload, currentUser);
+  }
+
+  private async resolveServiceWorkerMessageTarget(): Promise<ServiceWorker | null> {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+      return null;
+    }
+    const controllerWorker = navigator.serviceWorker.controller;
+    if (controllerWorker) {
+      return controllerWorker;
+    }
+    try {
+      const registration = await navigator.serviceWorker.getRegistration();
+      if (registration) {
+        const registrationWorker =
+          registration.active ??
+          registration.waiting ??
+          registration.installing ??
+          null;
+        if (registrationWorker) {
+          return registrationWorker;
+        }
+      }
+    } catch {
+      // Ignore registration lookup failure.
+    }
+    try {
+      const readyRegistration = await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 800))
+      ]);
+      if (readyRegistration) {
+        return readyRegistration.active ?? readyRegistration.waiting ?? readyRegistration.installing ?? null;
+      }
+    } catch {
+      // Ignore readiness errors and fallback to null.
+    }
+    return null;
+  }
+
+  private schedulePendingPushDrainRetry(): void {
+    [700, 2200, 5000].forEach((delayMs) => {
+      setTimeout(() => {
+        void this.consumePendingPushPayloadsFromServiceWorker();
+      }, delayMs);
     });
   }
 
