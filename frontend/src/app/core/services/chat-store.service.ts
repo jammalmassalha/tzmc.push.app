@@ -556,6 +556,7 @@ export class ChatStoreService {
     if (!user) return;
     if (this.initializedUser === user) {
       this.flushPendingServiceWorkerMessages();
+      await this.consumePendingPushPayloadsFromServiceWorker();
       return;
     }
 
@@ -570,6 +571,7 @@ export class ChatStoreService {
     this.startBackgroundContactsAccessSync(user);
     this.runInitializeBackgroundTasks(user);
     this.flushPendingServiceWorkerMessages();
+    await this.consumePendingPushPayloadsFromServiceWorker();
   }
 
   private applyInitialChatSelection(user: string): void {
@@ -7296,6 +7298,57 @@ export class ChatStoreService {
     const pendingMessages = this.pendingServiceWorkerMessages.splice(0, this.pendingServiceWorkerMessages.length);
     pendingMessages.forEach((messageData) => {
       this.processServiceWorkerMessageData(messageData, currentUser);
+    });
+  }
+
+  private async consumePendingPushPayloadsFromServiceWorker(): Promise<void> {
+    const currentUser = this.currentUser();
+    if (!currentUser) {
+      return;
+    }
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+      return;
+    }
+
+    const pendingPayloads = await new Promise<Record<string, unknown>[]>((resolve) => {
+      let settled = false;
+      const finalize = (value: Record<string, unknown>[]) => {
+        if (settled) return;
+        settled = true;
+        resolve(Array.isArray(value) ? value : []);
+      };
+      const timeoutId = setTimeout(() => finalize([]), 2500);
+      navigator.serviceWorker.ready
+        .then((registration) => {
+          const worker = registration.active ?? navigator.serviceWorker.controller;
+          if (!worker) {
+            clearTimeout(timeoutId);
+            finalize([]);
+            return;
+          }
+          const channel = new MessageChannel();
+          channel.port1.onmessage = (replyEvent: MessageEvent<unknown>) => {
+            clearTimeout(timeoutId);
+            const reply = replyEvent.data as { payloads?: unknown } | null;
+            const payloads = Array.isArray(reply && reply.payloads) ? reply.payloads : [];
+            finalize(
+              payloads.filter((item) => item && typeof item === 'object') as Record<string, unknown>[]
+            );
+          };
+          worker.postMessage({ action: 'drain-pending-push-payloads' }, [channel.port2]);
+        })
+        .catch(() => {
+          clearTimeout(timeoutId);
+          finalize([]);
+        });
+    });
+
+    if (this.currentUser() !== currentUser || !pendingPayloads.length) {
+      return;
+    }
+    pendingPayloads.forEach((payload) => {
+      this.incrementDeliveryTelemetry('pushPayloadReceived');
+      this.applyIncomingFromPushPayload(payload, currentUser);
     });
   }
 

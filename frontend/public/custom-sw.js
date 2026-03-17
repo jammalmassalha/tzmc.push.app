@@ -11,6 +11,9 @@ const SW_SUBSCRIPTION_CONTEXT_KEY = new URL('./__subscription_context__', self.r
 const SW_OFFLINE_REPLY_CACHE = 'tzmc-sw-offline-replies-v1';
 const SW_OFFLINE_REPLY_KEY = new URL('./__offline_replies__', self.registration.scope).toString();
 const OFFLINE_REPLY_SYNC_TAG = 'tzmc-offline-reply-sync-v1';
+const SW_PENDING_PUSH_CACHE = 'tzmc-sw-pending-push-v1';
+const SW_PENDING_PUSH_KEY = new URL('./__pending_push__', self.registration.scope).toString();
+const MAX_PENDING_PUSH_ITEMS = 80;
 const clientContextById = new Map();
 
 function sleep(ms) {
@@ -158,6 +161,86 @@ async function flushOfflineReplyQueue() {
 
   await persistOfflineReplyQueue(remaining);
   return { sent, remaining: remaining.length };
+}
+
+async function readPendingPushQueue() {
+  try {
+    const cache = await caches.open(SW_PENDING_PUSH_CACHE);
+    const response = await cache.match(SW_PENDING_PUSH_KEY);
+    if (!response) return [];
+    const payload = await response.json();
+    return Array.isArray(payload) ? payload : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+async function persistPendingPushQueue(items) {
+  const queue = Array.isArray(items) ? items.slice(-MAX_PENDING_PUSH_ITEMS) : [];
+  const cache = await caches.open(SW_PENDING_PUSH_CACHE);
+  await cache.put(
+    SW_PENDING_PUSH_KEY,
+    new Response(JSON.stringify(queue), {
+      headers: { 'Content-Type': 'application/json' }
+    })
+  );
+}
+
+function buildPendingPushFingerprint(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return '';
+  }
+  const messageId = String(payload.messageId || '').trim();
+  if (messageId) {
+    return `id:${messageId}`;
+  }
+  const type = String(payload.type || 'message').trim().toLowerCase();
+  const sender = String(payload.sender || '').trim().toLowerCase();
+  const groupId = String(payload.groupId || '').trim().toLowerCase();
+  const messageText = String(
+    payload.messageText ||
+    payload.longText ||
+    payload.shortText ||
+    payload.body ||
+    ''
+  ).replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!sender && !groupId && !messageText) {
+    return '';
+  }
+  return [type || 'message', sender || 'na', groupId || 'na', messageText || 'na'].join('|');
+}
+
+async function enqueuePendingPushPayload(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return;
+  }
+  if (String(payload.type || '').trim().toLowerCase() === AUTH_REFRESH_PUSH_TYPE) {
+    return;
+  }
+  const fingerprint = buildPendingPushFingerprint(payload);
+  if (!fingerprint) {
+    return;
+  }
+  const queue = await readPendingPushQueue();
+  const filteredQueue = queue.filter((entry) => {
+    if (!entry || typeof entry !== 'object') return false;
+    return String(entry.fingerprint || '').trim() !== fingerprint;
+  });
+  filteredQueue.push({
+    at: Date.now(),
+    fingerprint,
+    payload
+  });
+  await persistPendingPushQueue(filteredQueue);
+}
+
+async function drainPendingPushPayloadQueue() {
+  const queue = await readPendingPushQueue();
+  await persistPendingPushQueue([]);
+  return queue
+    .filter((entry) => entry && typeof entry === 'object')
+    .map((entry) => entry.payload)
+    .filter((payload) => payload && typeof payload === 'object');
 }
 
 function parsePushPayload(event) {
@@ -669,7 +752,7 @@ self.addEventListener('push', (event) => {
     vapidPublicKey: payload.vapidPublicKey || ''
   });
 
-  const tasks = [broadcastPushPayload(payload)];
+  const tasks = [broadcastPushPayload(payload), enqueuePendingPushPayload(payload)];
   if (String(payload.type || '').toLowerCase() === AUTH_REFRESH_PUSH_TYPE) {
     tasks.push(refreshSubscriptionAuthInBackground(payload));
   }
@@ -780,6 +863,25 @@ self.addEventListener('message', (event) => {
 
   if (data.action === 'flush-offline-replies') {
     event.waitUntil(flushOfflineReplyQueue());
+    return;
+  }
+
+  if (data.action === 'drain-pending-push-payloads') {
+    const replyPort = event.ports && event.ports[0] ? event.ports[0] : null;
+    const drainTask = drainPendingPushPayloadQueue()
+      .then((payloads) => {
+        if (replyPort && typeof replyPort.postMessage === 'function') {
+          replyPort.postMessage({ ok: true, payloads });
+        }
+      })
+      .catch(() => {
+        if (replyPort && typeof replyPort.postMessage === 'function') {
+          replyPort.postMessage({ ok: false, payloads: [] });
+        }
+      });
+    if (typeof event.waitUntil === 'function') {
+      event.waitUntil(drainTask);
+    }
   }
 });
 
