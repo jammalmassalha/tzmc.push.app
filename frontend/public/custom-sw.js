@@ -810,15 +810,16 @@ self.addEventListener('notificationclick', (event) => {
       notificationData.sender ||
       ''
     ).trim();
+    const clickMessage = {
+      action: 'notification-clicked',
+      url: target.toString(),
+      chat: chatHint || null,
+      payload: notificationData
+    };
 
     const preferredClient = pickPreferredClient(windowClients, target);
     if (preferredClient) {
-      preferredClient.postMessage({
-        action: 'notification-clicked',
-        url: target.toString(),
-        chat: chatHint || null,
-        payload: notificationData
-      });
+      preferredClient.postMessage(clickMessage);
 
       if (typeof preferredClient.navigate === 'function') {
         await preferredClient.navigate(target.toString());
@@ -827,7 +828,34 @@ self.addEventListener('notificationclick', (event) => {
     }
 
     if (clients.openWindow) {
-      return clients.openWindow(appScopedOpenUrl);
+      const openedClient = await clients.openWindow(appScopedOpenUrl);
+      if (openedClient) {
+        try {
+          openedClient.postMessage(clickMessage);
+          if (typeof openedClient.focus === 'function') {
+            await openedClient.focus();
+          }
+        } catch (_) {
+          // Keep click handling resilient across browser implementations.
+        }
+      }
+
+      // Cold starts can race with app/bootstrap. Retry delivery a few times.
+      const retryDelaysMs = [450, 1200, 2600];
+      for (const delayMs of retryDelaysMs) {
+        await sleep(delayMs);
+        const retryClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+        retryClients.forEach((client) => {
+          try {
+            const clientUrl = new URL(client.url, self.registration.scope);
+            if (clientUrl.origin !== target.origin) return;
+            client.postMessage(clickMessage);
+          } catch (_) {
+            // Ignore malformed client URLs and continue.
+          }
+        });
+      }
+      return openedClient;
     }
 
     return undefined;

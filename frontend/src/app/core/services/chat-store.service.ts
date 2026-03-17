@@ -373,6 +373,12 @@ export class ChatStoreService {
   private deliveryTelemetryLastFlushedAt = 0;
   private deliveryTelemetryDeviceId = '';
   private deliveryTelemetryCounters: DeliveryTelemetryCounters = this.createEmptyDeliveryTelemetryCounters();
+  private pendingServiceWorkerMessages: Array<{
+    action?: unknown;
+    payload?: unknown;
+    url?: unknown;
+    chat?: unknown;
+  }> = [];
   private readonly systemChatIdSet = new Set<string>(
     SYSTEM_CHAT_IDS.map((id) => this.normalizeChatId(id)).filter(Boolean)
   );
@@ -548,7 +554,10 @@ export class ChatStoreService {
     await this.ensureSessionReady();
     const user = this.currentUser();
     if (!user) return;
-    if (this.initializedUser === user) return;
+    if (this.initializedUser === user) {
+      this.flushPendingServiceWorkerMessages();
+      return;
+    }
 
     this.initializedUser = user;
     await this.refreshShuttleAccessForCurrentUser(user, { force: true });
@@ -565,6 +574,7 @@ export class ChatStoreService {
     this.startDeliveryTelemetry(user);
     this.startBackgroundContactsAccessSync(user);
     this.runInitializeBackgroundTasks(user);
+    this.flushPendingServiceWorkerMessages();
   }
 
   private applyInitialChatSelection(user: string): void {
@@ -7285,13 +7295,49 @@ export class ChatStoreService {
   };
 
   private handleServiceWorkerMessage = (event: MessageEvent<unknown>): void => {
-    const currentUser = this.currentUser();
-    if (!currentUser) return;
-
     const eventData = event.data;
     if (!eventData || typeof eventData !== 'object') return;
 
     const messageData = eventData as { action?: unknown; payload?: unknown; url?: unknown; chat?: unknown };
+    const currentUser = this.currentUser();
+    if (!currentUser) {
+      this.enqueuePendingServiceWorkerMessage(messageData);
+      return;
+    }
+    this.processServiceWorkerMessageData(messageData, currentUser);
+  };
+
+  private enqueuePendingServiceWorkerMessage(messageData: {
+    action?: unknown;
+    payload?: unknown;
+    url?: unknown;
+    chat?: unknown;
+  }): void {
+    const action = String(messageData.action ?? '').trim();
+    if (action !== 'notification-clicked' && action !== 'push-payload') {
+      return;
+    }
+    this.pendingServiceWorkerMessages.push(messageData);
+    if (this.pendingServiceWorkerMessages.length > 20) {
+      this.pendingServiceWorkerMessages.splice(0, this.pendingServiceWorkerMessages.length - 20);
+    }
+  }
+
+  private flushPendingServiceWorkerMessages(): void {
+    const currentUser = this.currentUser();
+    if (!currentUser || !this.pendingServiceWorkerMessages.length) {
+      return;
+    }
+    const pendingMessages = this.pendingServiceWorkerMessages.splice(0, this.pendingServiceWorkerMessages.length);
+    pendingMessages.forEach((messageData) => {
+      this.processServiceWorkerMessageData(messageData, currentUser);
+    });
+  }
+
+  private processServiceWorkerMessageData(
+    messageData: { action?: unknown; payload?: unknown; url?: unknown; chat?: unknown },
+    currentUser: string
+  ): void {
     const action = String(messageData.action ?? '').trim();
     if (action === 'notification-clicked') {
       this.clearDeviceAttention({ resetServerBadge: true });
@@ -7377,7 +7423,7 @@ export class ChatStoreService {
     } else {
       this.incrementDeliveryTelemetry('pushMessageNoop');
     }
-  };
+  }
 
   private buildIncomingMessageFromPushPayload(
     payload: Record<string, unknown>,
