@@ -5650,7 +5650,7 @@ export class ChatStoreService {
         this.trackIncomingMessageForReadReceipt(chatId, messageId);
       }
 
-      if (options.incrementUnread !== false) {
+      if (options.incrementUnread !== false && this.shouldIncrementUnreadForChat(chatId)) {
         nextUnreadMap[chatId] = (nextUnreadMap[chatId] ?? 0) + 1;
         unreadChanged = true;
       }
@@ -5884,13 +5884,27 @@ export class ChatStoreService {
       this.trackIncomingMessageForReadReceipt(chatId, messageId);
     }
 
-    this.unreadByChat.update((map) => ({
-      ...map,
-      [chatId]: (map[chatId] ?? 0) + 1
-    }));
+    if (this.shouldIncrementUnreadForChat(chatId)) {
+      this.unreadByChat.update((map) => ({
+        ...map,
+        [chatId]: (map[chatId] ?? 0) + 1
+      }));
+    }
 
     this.schedulePersist();
     return true;
+  }
+
+  private shouldIncrementUnreadForChat(chatId: string): boolean {
+    const normalizedChatId = this.normalizeChatId(chatId);
+    if (!normalizedChatId) {
+      return true;
+    }
+    const activeChatId = this.normalizeChatId(this.activeChatId() ?? '');
+    if (!activeChatId || activeChatId !== normalizedChatId) {
+      return true;
+    }
+    return !this.isAppInForeground();
   }
 
   private normalizeIncomingBodyValue(value: unknown): string {
@@ -7284,6 +7298,8 @@ export class ChatStoreService {
       const clickedChatId = this.resolveNotificationChatId(messageData, currentUser);
       if (clickedChatId) {
         this.setActiveChat(clickedChatId);
+        // Opening from a notification is an explicit read intent for that chat.
+        this.clearUnreadCountForChat(clickedChatId);
       }
       this.syncForegroundState({ forceRefresh: true });
       return;
@@ -7339,8 +7355,18 @@ export class ChatStoreService {
     };
 
     if (payloadType !== 'reaction' && payloadType !== 'group-update' && payloadType !== 'read-receipt') {
-      // Avoid duplicate inserts from mixed push/realtime/logs paths.
-      // We rely on realtime stream + recovery pulls as the single source of truth.
+      const immediateIncoming = this.buildIncomingMessageFromPushPayload(payload, incoming);
+      if (immediateIncoming) {
+        this.incrementDeliveryTelemetry('pushImmediateMessageBuilt');
+        if (this.applyIncomingMessage(immediateIncoming)) {
+          this.incrementDeliveryTelemetry('pushMessageApplied');
+        } else {
+          this.incrementDeliveryTelemetry('pushMessageNoop');
+        }
+      } else {
+        this.incrementDeliveryTelemetry('pushMissingMessageContext');
+      }
+      // Keep recovery pulls to hydrate fields missing from compact push payloads.
       this.syncForegroundState({ forceRefresh: true });
       this.schedulePushRecoveryPulls();
       return;
