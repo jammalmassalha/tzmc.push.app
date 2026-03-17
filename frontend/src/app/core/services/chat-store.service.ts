@@ -47,6 +47,8 @@ const PUSH_REGISTER_REFRESH_MS = 6 * 60 * 60 * 1000;
 const FOREGROUND_SYNC_MIN_INTERVAL_MS = 4000;
 const BADGE_RESET_MIN_INTERVAL_MS = 30000;
 const PUSH_RECOVERY_PULL_DELAYS_MS = [1200, 3600];
+const LOGS_RECOVERY_MIN_INTERVAL_MS = 2 * 60 * 1000;
+const LOGS_RECOVERY_MAX_FETCH_LIMIT = 1000;
 const DELIVERY_TELEMETRY_FLUSH_INTERVAL_MS = 60 * 1000;
 const DELIVERY_TELEMETRY_FLUSH_MIN_EVENTS = 4;
 const DELIVERY_TELEMETRY_DEVICE_ID_KEY = 'modern-chat-delivery-device-id';
@@ -80,6 +82,7 @@ const DOVRUT_ALLOWED_WRITERS = ['0506501040', '0506267447', '0543108095'] as con
 const DOVRUT_TEST_ALLOWED_WRITERS = ['0546799693'] as const;
 const DOVRUT_TEST_GROUP_MEMBERS = ['0546799693', '0550000001', '0547997273', '0505203520'] as const;
 const SHUTTLE_OPERATIONS_GROUP_MEMBERS = ['0546799693', '0550000001', '0506267410', '0505203520'] as const;
+const BADGE_RESET_ALL_ALLOWED_USERS = ['0546799693'] as const;
 interface HardcodedCommunityGroupConfig {
   id: string;
   name: string;
@@ -116,6 +119,8 @@ const DELETED_MESSAGE_PLACEHOLDER = '🚫 הודעה זו נמחקה';
 const TYPING_IDLE_MS = 2200;
 const TYPING_HEARTBEAT_MS = 1200;
 const TYPING_STALE_MS = 6500;
+const INCOMING_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS = 2000;
+const INCOMING_SYSTEM_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS = 90 * 1000;
 
 type HrAwaitingState = 'step' | 'action' | 'free-text';
 
@@ -335,6 +340,7 @@ export class ChatStoreService {
   private hrStepsCache: { at: number; steps: HrStepOption[] } = { at: 0, steps: [] };
   private hrActionsCache: Record<string, { at: number; actions: HrActionOption[] }> = {};
   private hrInitInFlight = false;
+  private readonly hrStateRevision = signal(0);
   private shuttleInitInFlight = false;
   private shuttleStationsCache: { at: number; items: string[] } = { at: 0, items: [] };
   private shuttleEmployeesCache: { at: number; items: string[] } = { at: 0, items: [] };
@@ -352,6 +358,8 @@ export class ChatStoreService {
   private lastServerBadgeResetAt = 0;
   private serverBadgeResetInFlight = false;
   private lastForegroundSyncAt = 0;
+  private logsRecoveryInFlight = false;
+  private lastLogsRecoveryAt = 0;
   private readonly readReceiptSentByChat = new Map<string, Set<string>>();
   private readonly pendingReadReceiptByChat = new Map<string, Set<string>>();
   private readonly readReceiptFlushTimerByChat = new Map<string, ReturnType<typeof setTimeout>>();
@@ -365,6 +373,13 @@ export class ChatStoreService {
   private deliveryTelemetryLastFlushedAt = 0;
   private deliveryTelemetryDeviceId = '';
   private deliveryTelemetryCounters: DeliveryTelemetryCounters = this.createEmptyDeliveryTelemetryCounters();
+  private pendingServiceWorkerMessages: Array<{
+    action?: unknown;
+    payload?: unknown;
+    url?: unknown;
+    chat?: unknown;
+  }> = [];
+  private pendingPushDrainInFlight = false;
   private readonly systemChatIdSet = new Set<string>(
     SYSTEM_CHAT_IDS.map((id) => this.normalizeChatId(id)).filter(Boolean)
   );
@@ -382,6 +397,9 @@ export class ChatStoreService {
       .flatMap((group) => group.allowedWriters)
       .map((value) => this.normalizeUser(value))
       .filter(Boolean)
+  );
+  private readonly badgeResetAllAdminUsersSet = new Set<string>(
+    BADGE_RESET_ALL_ALLOWED_USERS.map((value) => this.normalizeUser(value)).filter(Boolean)
   );
   private incomingBatchDepth = 0;
   private pendingPersistAfterIncomingBatch = false;
@@ -537,17 +555,20 @@ export class ChatStoreService {
     await this.ensureSessionReady();
     const user = this.currentUser();
     if (!user) return;
-    if (this.initializedUser === user) return;
-
-    this.initializedUser = user;
-    await this.refreshShuttleAccessForCurrentUser(user, { force: true });
-
-    // Open quickly from cached state, then bring latest messages in.
-    this.applyInitialChatSelection(user);
-    await this.pullMessages(user);
-    if (this.currentUser() !== user) {
+    if (this.initializedUser === user) {
+      this.flushPendingServiceWorkerMessages();
+      await this.consumePendingPushPayloadsFromServiceWorker();
+      this.schedulePendingPushDrainRetry();
       return;
     }
+
+    this.initializedUser = user;
+    this.flushPendingServiceWorkerMessages();
+    await this.consumePendingPushPayloadsFromServiceWorker();
+    this.schedulePendingPushDrainRetry();
+    await this.refreshShuttleAccessForCurrentUser(user, { force: true });
+
+    // Open quickly from cached/local state only.
     this.applyInitialChatSelection(user);
 
     this.connectRealtime(user);
@@ -587,8 +608,6 @@ export class ChatStoreService {
       return;
     }
 
-    void this.refresh(true);
-    void this.flushOutbox();
     this.clearDeviceAttention({ resetServerBadge: true });
     // Recover silently if a device lost its push subscription.
     void this.ensurePushRegistrationHealth(user, {
@@ -759,26 +778,7 @@ export class ChatStoreService {
   }
 
   async preloadLatestMessagesBeforeCacheCleanup(): Promise<void> {
-    const user = this.currentUser();
-    if (!user || !this.networkOnline()) return;
-
-    try {
-      await this.pullMessages(user);
-    } catch {
-      // Best-effort pre-sync before cache cleanup.
-    }
-
-    try {
-      await this.refresh(true);
-    } catch {
-      // Best-effort pre-sync before cache cleanup.
-    }
-
-    try {
-      await this.flushOutbox();
-    } catch {
-      // Best-effort pre-sync before cache cleanup.
-    }
+    // Intentionally no-op: message sync must stay manual-only.
   }
 
   setActiveChat(chatId: string | null): void {
@@ -1090,11 +1090,38 @@ export class ChatStoreService {
     return this.dovrutWriterSet.has(normalizedUser);
   }
 
+  canCurrentUserResetAllBadges(): boolean {
+    const normalizedUser = this.normalizeUser(this.currentUser() ?? '');
+    if (!normalizedUser) return false;
+    return this.badgeResetAllAdminUsersSet.has(normalizedUser);
+  }
+
+  async resetAllServerBadgesForAdmin(): Promise<number> {
+    const user = this.currentUser();
+    if (!user) {
+      throw new Error('יש להתחבר לפני איפוס מונים');
+    }
+    if (!this.canCurrentUserResetAllBadges()) {
+      throw new Error('אין הרשאה לאיפוס כל המונים');
+    }
+    if (!this.networkOnline()) {
+      throw new Error('אין חיבור לרשת');
+    }
+
+    const result = await this.api.resetAllServerBadges(user);
+    this.unreadByChat.set({});
+    this.lastServerBadgeResetAt = Date.now();
+    this.clearDeviceAttention();
+    this.schedulePersist();
+    return result.clearedKeys;
+  }
+
   getHrComposerActionsForActiveChat(): {
     canGoBack: boolean;
     hasOpenSession: boolean;
     canWriteMessage: boolean;
   } | null {
+    this.hrStateRevision();
     const user = this.currentUser();
     const activeChatId = this.activeChatId();
     if (!user || !this.isHrChat(activeChatId)) {
@@ -1529,67 +1556,11 @@ export class ChatStoreService {
 
     await this.refresh(true);
     await this.pullMessages(user);
-    const logsMessages = await this.api.getMessagesFromLogs(user);
-    if (logsMessages.length) {
-      const nonSystemLogs = logsMessages.filter((message) => {
-        const sender = this.normalizeUser(String(message.sender ?? '').trim());
-        if (!sender || sender === 'system') {
-          return false;
-        }
-        const normalizedBody = String(message.body ?? '').trim().toLowerCase();
-        if (normalizedBody === 'new notification' || normalizedBody === 'new reaction') {
-          return false;
-        }
-        return true;
-      });
-      const normalizedLogs = this.normalizeLogsMessagesForImport(
-        nonSystemLogs,
-        groupsSnapshotBeforeCacheClear
-      );
-      const knownGroupNamesById = new Map<string, string>();
-      const knownGroupIds = new Set<string>();
-      [...groupsSnapshotBeforeCacheClear, ...this.groups()].forEach((group) => {
-        const groupId = this.normalizeChatId(String(group.id || '').trim());
-        const groupName = String(group.name || '').trim();
-        if (!groupId) return;
-        knownGroupIds.add(groupId);
-        if (!groupName) return;
-        if (this.normalizeChatId(groupName) === groupId) return;
-        if (!knownGroupNamesById.has(groupId)) {
-          knownGroupNamesById.set(groupId, groupName);
-        }
-      });
-      const importableLogs = normalizedLogs
-        .map((message) => {
-          const groupId = this.normalizeChatId(String(message.groupId ?? '').trim());
-          if (!groupId) return message;
-          const incomingGroupName = String(message.groupName ?? '').trim();
-          const knownGroupName = knownGroupNamesById.get(groupId) ?? '';
-          const hasResolvableGroup = Boolean(
-            incomingGroupName ||
-            knownGroupName ||
-            knownGroupIds.has(groupId)
-          );
-          if (!hasResolvableGroup) {
-            return null;
-          }
-          if (incomingGroupName && this.normalizeChatId(incomingGroupName) !== groupId) {
-            return message;
-          }
-          return {
-            ...message,
-            groupName: knownGroupName || incomingGroupName || groupId
-          };
-        })
-        .filter((message): message is IncomingServerMessage => Boolean(message));
-      this.ensureGroupsFromImportedLogs(importableLogs, groupsSnapshotBeforeCacheClear);
-      this.applyIncomingMessagesBatch(importableLogs, {
-        incrementUnread: false,
-        trackReadReceipts: false,
-        applyActions: false,
-        updateGroupMetadata: false
-      });
-    }
+    await this.recoverMissedMessagesFromLogs(user, {
+      force: true,
+      incrementUnread: false,
+      fallbackGroups: groupsSnapshotBeforeCacheClear
+    });
     this.unreadByChat.set({});
     this.resetReadReceiptTrackingState();
 
@@ -1601,6 +1572,122 @@ export class ChatStoreService {
 
     this.applyInitialChatSelection(user);
     this.schedulePersist();
+    this.lastServerBadgeResetAt = 0;
+    this.clearDeviceAttention({ resetServerBadge: true, forceServerBadgeReset: true });
+  }
+
+  private shouldSkipLogsMessage(message: IncomingServerMessage): boolean {
+    const incomingType = String(message.type ?? '').trim().toLowerCase();
+    if (this.isIncomingActionType(incomingType)) {
+      return false;
+    }
+    const sender = this.normalizeUser(String(message.sender ?? '').trim());
+    if (!sender || sender === 'system') {
+      return true;
+    }
+    const normalizedBody = String(message.body ?? '').trim().toLowerCase();
+    return normalizedBody === 'new notification' || normalizedBody === 'new reaction';
+  }
+
+  private buildImportableLogsMessagesForSync(
+    logsMessages: IncomingServerMessage[],
+    fallbackGroups: ChatGroup[] = []
+  ): IncomingServerMessage[] {
+    if (!Array.isArray(logsMessages) || !logsMessages.length) {
+      return [];
+    }
+
+    const nonSystemLogs = logsMessages.filter((message) => !this.shouldSkipLogsMessage(message));
+    if (!nonSystemLogs.length) {
+      return [];
+    }
+
+    const normalizedLogs = this.normalizeLogsMessagesForImport(nonSystemLogs, fallbackGroups);
+    const knownGroupNamesById = new Map<string, string>();
+    const knownGroupIds = new Set<string>();
+    [...fallbackGroups, ...this.groups()].forEach((group) => {
+      const groupId = this.normalizeChatId(String(group.id || '').trim());
+      const groupName = String(group.name || '').trim();
+      if (!groupId) return;
+      knownGroupIds.add(groupId);
+      if (!groupName) return;
+      if (this.normalizeChatId(groupName) === groupId) return;
+      if (!knownGroupNamesById.has(groupId)) {
+        knownGroupNamesById.set(groupId, groupName);
+      }
+    });
+
+    return normalizedLogs
+      .map((message) => {
+        const groupId = this.normalizeChatId(String(message.groupId ?? '').trim());
+        if (!groupId) return message;
+        const incomingGroupName = String(message.groupName ?? '').trim();
+        const knownGroupName = knownGroupNamesById.get(groupId) ?? '';
+        const hasResolvableGroup = Boolean(
+          incomingGroupName ||
+          knownGroupName ||
+          knownGroupIds.has(groupId)
+        );
+        if (!hasResolvableGroup) {
+          return null;
+        }
+        if (incomingGroupName && this.normalizeChatId(incomingGroupName) !== groupId) {
+          return message;
+        }
+        return {
+          ...message,
+          groupName: knownGroupName || incomingGroupName || groupId
+        };
+      })
+      .filter((message): message is IncomingServerMessage => Boolean(message));
+  }
+
+  private async recoverMissedMessagesFromLogs(
+    user: string,
+    options: {
+      force?: boolean;
+      incrementUnread?: boolean;
+      fallbackGroups?: ChatGroup[];
+    } = {}
+  ): Promise<number> {
+    const normalizedUser = this.normalizeUser(user);
+    if (!normalizedUser || this.currentUser() !== normalizedUser || !this.isNetworkReachable()) {
+      return 0;
+    }
+
+    const force = Boolean(options.force);
+    const now = Date.now();
+    if (!force && now - this.lastLogsRecoveryAt < LOGS_RECOVERY_MIN_INTERVAL_MS) {
+      return 0;
+    }
+    if (this.logsRecoveryInFlight) {
+      return 0;
+    }
+
+    this.logsRecoveryInFlight = true;
+    try {
+      const logsMessages = await this.api.getMessagesFromLogs(normalizedUser, LOGS_RECOVERY_MAX_FETCH_LIMIT);
+      const fallbackGroups = Array.isArray(options.fallbackGroups) ? options.fallbackGroups : [];
+      const importableLogs = this.buildImportableLogsMessagesForSync(logsMessages, fallbackGroups);
+      if (!importableLogs.length) {
+        this.lastLogsRecoveryAt = Date.now();
+        return 0;
+      }
+
+      this.ensureGroupsFromImportedLogs(importableLogs, fallbackGroups);
+      const appliedCount = this.applyIncomingMessagesBatch(importableLogs, {
+        incrementUnread: options.incrementUnread !== false,
+        trackReadReceipts: false,
+        applyActions: true,
+        updateGroupMetadata: false
+      });
+      this.lastLogsRecoveryAt = Date.now();
+      return appliedCount;
+    } catch {
+      return 0;
+    } finally {
+      this.logsRecoveryInFlight = false;
+    }
   }
 
   private normalizeLogsMessagesForImport(
@@ -2494,11 +2581,17 @@ export class ChatStoreService {
 
   private saveHrState(user: string, state: HrConversationState): void {
     localStorage.setItem(this.hrStateKey(user), JSON.stringify(state));
+    this.bumpHrStateRevision();
   }
 
   private resetHrState(user: string): void {
     localStorage.removeItem(this.hrStateKey(user));
     localStorage.removeItem(this.hrWelcomeKey(user));
+    this.bumpHrStateRevision();
+  }
+
+  private bumpHrStateRevision(): void {
+    this.hrStateRevision.update((value) => value + 1);
   }
 
   private buildHrAssetUrl(value: string): string {
@@ -4905,8 +4998,6 @@ export class ChatStoreService {
 
   private connectRealtime(user: string): void {
     this.stopRealtime();
-    this.startPolling(user);
-
     if (!this.isNetworkReachable()) {
       return;
     }
@@ -4991,7 +5082,6 @@ export class ChatStoreService {
         }
         this.stopStreamOnly();
         this.clearTypingIndicators();
-        void this.pullMessages(user);
       });
 
       socket.on('chat:message', (incoming: unknown) => {
@@ -5005,7 +5095,6 @@ export class ChatStoreService {
         this.socketConnected = true;
         this.setRealtimeTransportMode('socket');
         this.stopStreamOnly();
-        void this.pullMessages(user);
       });
 
       socket.on('disconnect', () => {
@@ -5056,7 +5145,6 @@ export class ChatStoreService {
         this.handleIncomingPayload(event.data);
       });
       this.stream.addEventListener('connected', () => {
-        void this.pullMessages(user);
       });
       this.stream.onerror = () => {
         this.stopStreamOnly();
@@ -5445,6 +5533,15 @@ export class ChatStoreService {
       if (!messageId) continue;
       const incomingBody = this.resolveIncomingMessageBody(incoming);
       const incomingImageUrl = this.resolveIncomingImageUrl(incoming);
+      const incomingTimestampRaw = Number(incoming.timestamp ?? Date.now());
+      const incomingTimestamp = Number.isFinite(incomingTimestampRaw) && incomingTimestampRaw > 0
+        ? incomingTimestampRaw
+        : Date.now();
+      const normalizedGroupId = isGroup ? this.normalizeChatId(incoming.groupId ?? '') : '';
+      const semanticDedupToleranceMs = this.resolveIncomingSemanticDedupToleranceMs({
+        sender,
+        isGroup
+      });
 
       const knownMessageIds = getMessageIdSet(chatId);
       if (knownMessageIds.has(messageId)) {
@@ -5460,6 +5557,21 @@ export class ChatStoreService {
       }
 
       if (!this.hasRenderableIncomingContent(incomingBody, incomingImageUrl)) {
+        continue;
+      }
+
+      const list = getMutableList(chatId);
+      const equivalentMessageIndex = this.findEquivalentIncomingMessageIndex(list, {
+        sender,
+        body: incomingBody,
+        imageUrl: incomingImageUrl,
+        timestamp: incomingTimestamp,
+        groupId: normalizedGroupId || null,
+        toleranceMs: semanticDedupToleranceMs
+      });
+      if (equivalentMessageIndex >= 0) {
+        // Treat same-content/same-time messages as duplicates even if backend messageId differs.
+        knownMessageIds.add(messageId);
         continue;
       }
 
@@ -5493,9 +5605,9 @@ export class ChatStoreService {
         body: incomingBody,
         imageUrl: incomingImageUrl,
         direction: 'incoming',
-        timestamp: Number(incoming.timestamp ?? Date.now()),
+        timestamp: incomingTimestamp,
         deliveryStatus: 'delivered',
-        groupId: incoming.groupId ? this.normalizeChatId(incoming.groupId) : null,
+        groupId: normalizedGroupId || null,
         groupName: incoming.groupName ?? null,
         groupType: normalizedIncomingGroupType,
         editedAt: Number.isFinite(Number(incoming.editedAt)) ? Number(incoming.editedAt) : null,
@@ -5506,7 +5618,6 @@ export class ChatStoreService {
         forwardedFromName: forwardedFromName || null
       };
 
-      const list = getMutableList(chatId);
       if (!list.length || list[list.length - 1].timestamp <= record.timestamp) {
         list.push(record);
       } else {
@@ -5522,7 +5633,7 @@ export class ChatStoreService {
         this.trackIncomingMessageForReadReceipt(chatId, messageId);
       }
 
-      if (options.incrementUnread !== false) {
+      if (options.incrementUnread !== false && this.shouldIncrementUnreadForChat(chatId)) {
         nextUnreadMap[chatId] = (nextUnreadMap[chatId] ?? 0) + 1;
         unreadChanged = true;
       }
@@ -5674,6 +5785,15 @@ export class ChatStoreService {
     if (!messageId) return false;
     const incomingBody = this.resolveIncomingMessageBody(incoming);
     const incomingImageUrl = this.resolveIncomingImageUrl(incoming);
+    const incomingTimestampRaw = Number(incoming.timestamp ?? Date.now());
+    const incomingTimestamp = Number.isFinite(incomingTimestampRaw) && incomingTimestampRaw > 0
+      ? incomingTimestampRaw
+      : Date.now();
+    const normalizedGroupId = incoming.groupId ? this.normalizeChatId(incoming.groupId ?? '') : null;
+    const semanticDedupToleranceMs = this.resolveIncomingSemanticDedupToleranceMs({
+      sender,
+      isGroup
+    });
 
     this.clearTypingIndicatorForUser(chatId, sender);
 
@@ -5684,6 +5804,18 @@ export class ChatStoreService {
       return this.hydrateExistingIncomingMessage(chatId, messageId, incomingBody, incomingImageUrl);
     }
     if (!this.hasRenderableIncomingContent(incomingBody, incomingImageUrl)) {
+      return false;
+    }
+    const existingChatMessages = this.messagesByChat()[chatId] ?? [];
+    const equivalentMessageIndex = this.findEquivalentIncomingMessageIndex(existingChatMessages, {
+      sender,
+      body: incomingBody,
+      imageUrl: incomingImageUrl,
+      timestamp: incomingTimestamp,
+      groupId: normalizedGroupId,
+      toleranceMs: semanticDedupToleranceMs
+    });
+    if (equivalentMessageIndex >= 0) {
       return false;
     }
 
@@ -5717,9 +5849,9 @@ export class ChatStoreService {
       body: incomingBody,
       imageUrl: incomingImageUrl,
       direction: 'incoming',
-      timestamp: Number(incoming.timestamp ?? Date.now()),
+      timestamp: incomingTimestamp,
       deliveryStatus: 'delivered',
-      groupId: incoming.groupId ? this.normalizeChatId(incoming.groupId) : null,
+      groupId: normalizedGroupId,
       groupName: incoming.groupName ?? null,
       groupType: normalizedIncomingGroupType,
       editedAt: Number.isFinite(Number(incoming.editedAt)) ? Number(incoming.editedAt) : null,
@@ -5735,13 +5867,27 @@ export class ChatStoreService {
       this.trackIncomingMessageForReadReceipt(chatId, messageId);
     }
 
-    this.unreadByChat.update((map) => ({
-      ...map,
-      [chatId]: (map[chatId] ?? 0) + 1
-    }));
+    if (this.shouldIncrementUnreadForChat(chatId)) {
+      this.unreadByChat.update((map) => ({
+        ...map,
+        [chatId]: (map[chatId] ?? 0) + 1
+      }));
+    }
 
     this.schedulePersist();
     return true;
+  }
+
+  private shouldIncrementUnreadForChat(chatId: string): boolean {
+    const normalizedChatId = this.normalizeChatId(chatId);
+    if (!normalizedChatId) {
+      return true;
+    }
+    const activeChatId = this.normalizeChatId(this.activeChatId() ?? '');
+    if (!activeChatId || activeChatId !== normalizedChatId) {
+      return true;
+    }
+    return !this.isAppInForeground();
   }
 
   private normalizeIncomingBodyValue(value: unknown): string {
@@ -5787,6 +5933,87 @@ export class ChatStoreService {
 
   private hasRenderableIncomingContent(body: string, imageUrl: string | null): boolean {
     return Boolean(String(body || '').trim() || String(imageUrl || '').trim());
+  }
+
+  private normalizeIncomingTextForDedup(value: string): string {
+    return String(value || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private findEquivalentIncomingMessageIndex(
+    list: ChatMessage[],
+    candidate: {
+      sender: string;
+      body: string;
+      imageUrl: string | null;
+      timestamp: number;
+      groupId: string | null;
+      toleranceMs?: number;
+    }
+  ): number {
+    const candidateSender = this.normalizeUser(candidate.sender);
+    const candidateBody = this.normalizeIncomingTextForDedup(candidate.body);
+    const candidateImage = String(candidate.imageUrl || '').trim();
+    const candidateTimestamp = Number(candidate.timestamp) || 0;
+    const candidateGroupId = this.normalizeChatId(String(candidate.groupId || ''));
+    const toleranceMs = Math.max(
+      INCOMING_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS,
+      Math.floor(Number(candidate.toleranceMs || INCOMING_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS))
+    );
+    if (!candidateSender || !Number.isFinite(candidateTimestamp)) {
+      return -1;
+    }
+    if (!candidateBody && !candidateImage) {
+      return -1;
+    }
+
+    return list.findIndex((message) => {
+      if (!message || message.direction !== 'incoming' || message.deletedAt) {
+        return false;
+      }
+      if (this.normalizeUser(message.sender) !== candidateSender) {
+        return false;
+      }
+      const messageGroupId = this.normalizeChatId(String(message.groupId || ''));
+      if (candidateGroupId && messageGroupId !== candidateGroupId) {
+        return false;
+      }
+      const messageBody = this.normalizeIncomingTextForDedup(message.body);
+      const messageImage = String(message.imageUrl || '').trim();
+      if (messageBody !== candidateBody || messageImage !== candidateImage) {
+        return false;
+      }
+      const messageTimestamp = Number(message.timestamp) || 0;
+      return Math.abs(messageTimestamp - candidateTimestamp) <= toleranceMs;
+    });
+  }
+
+  private resolveIncomingSemanticDedupToleranceMs(
+    context: { sender: string; isGroup: boolean }
+  ): number {
+    if (context.isGroup) {
+      return INCOMING_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS;
+    }
+    const normalizedSender = this.normalizeUser(String(context.sender || '').trim());
+    if (!normalizedSender) {
+      return INCOMING_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS;
+    }
+    if (this.isLikelyPhoneIdentity(normalizedSender)) {
+      return INCOMING_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS;
+    }
+    // System/non-phone senders are often injected by multiple pipelines with different IDs.
+    return INCOMING_SYSTEM_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS;
+  }
+
+  private isLikelyPhoneIdentity(value: string): boolean {
+    const digits = String(value || '').replace(/\D/g, '');
+    return (
+      /^0\d{9}$/.test(digits) ||
+      /^5\d{8}$/.test(digits) ||
+      /^9725\d{8}$/.test(digits) ||
+      /^97205\d{8}$/.test(digits)
+    );
   }
 
   private hydrateExistingIncomingMessage(
@@ -5942,6 +6169,9 @@ export class ChatStoreService {
     if (currentUser && reactor === currentUser) {
       return true;
     }
+    if (!this.canCurrentUserReceiveReactionNotification(groupId, incoming)) {
+      return true;
+    }
 
     const group = this.groups().find((item) => item.id === groupId);
     const groupName = String(incoming.groupName ?? group?.name ?? groupId).trim() || groupId;
@@ -5955,6 +6185,32 @@ export class ChatStoreService {
       emoji
     });
     return true;
+  }
+
+  private canCurrentUserReceiveReactionNotification(
+    groupId: string,
+    incoming: IncomingServerMessage
+  ): boolean {
+    const currentUser = this.normalizeUser(this.currentUser() ?? '');
+    if (!currentUser) return false;
+    if (this.isDovrutGroup(groupId)) {
+      return this.isDovrutAdminUser(currentUser);
+    }
+    const incomingAdmins = Array.isArray(incoming.groupAdmins)
+      ? incoming.groupAdmins.map((admin) => this.normalizeUser(admin)).filter(Boolean)
+      : [];
+    if (incomingAdmins.includes(currentUser)) {
+      return true;
+    }
+    const incomingCreatedBy = this.normalizeUser(String(incoming.groupCreatedBy ?? '').trim());
+    if (incomingCreatedBy && incomingCreatedBy === currentUser) {
+      return true;
+    }
+    const group = this.groups().find((item) => item.id === groupId) ?? null;
+    if (!group) {
+      return false;
+    }
+    return this.getGroupAdminList(group).includes(currentUser);
   }
 
   private ensureGroupFromIncoming(incoming: IncomingServerMessage): void {
@@ -6784,6 +7040,7 @@ export class ChatStoreService {
     localStorage.removeItem(this.homeViewKey(user));
     localStorage.removeItem(this.hrStateKey(user));
     localStorage.removeItem(this.hrWelcomeKey(user));
+    this.bumpHrStateRevision();
     localStorage.removeItem(this.shuttleStateKey(user));
     localStorage.removeItem(this.shuttleWelcomeKey(user));
     localStorage.removeItem(this.shuttleOrdersKey(user));
@@ -6976,7 +7233,7 @@ export class ChatStoreService {
       requireStandaloneOnMobile: true
     });
     this.connectRealtime(user);
-    this.syncForegroundState({ forceRefresh: true });
+    void this.consumePendingPushPayloadsFromServiceWorker();
   };
 
   private handleOffline = (): void => {
@@ -6998,7 +7255,7 @@ export class ChatStoreService {
   private handleWindowFocus = (): void => {
     this.refreshPushRegistrationForCurrentUser(false);
     this.clearDeviceAttention({ resetServerBadge: true });
-    this.syncForegroundState();
+    void this.consumePendingPushPayloadsFromServiceWorker();
   };
 
   private handleVisibilityChange = (): void => {
@@ -7007,25 +7264,173 @@ export class ChatStoreService {
     }
     this.refreshPushRegistrationForCurrentUser(false);
     this.clearDeviceAttention({ resetServerBadge: true });
-    this.syncForegroundState();
+    void this.consumePendingPushPayloadsFromServiceWorker();
   };
 
   private handleServiceWorkerMessage = (event: MessageEvent<unknown>): void => {
-    const currentUser = this.currentUser();
-    if (!currentUser) return;
-
     const eventData = event.data;
     if (!eventData || typeof eventData !== 'object') return;
 
     const messageData = eventData as { action?: unknown; payload?: unknown; url?: unknown; chat?: unknown };
+    const currentUser = this.currentUser();
+    if (!currentUser) {
+      this.enqueuePendingServiceWorkerMessage(messageData);
+      return;
+    }
+    this.processServiceWorkerMessageData(messageData, currentUser);
+  };
+
+  private enqueuePendingServiceWorkerMessage(messageData: {
+    action?: unknown;
+    payload?: unknown;
+    url?: unknown;
+    chat?: unknown;
+  }): void {
+    const action = String(messageData.action ?? '').trim();
+    if (action !== 'notification-clicked' && action !== 'push-payload') {
+      return;
+    }
+    this.pendingServiceWorkerMessages.push(messageData);
+    if (this.pendingServiceWorkerMessages.length > 20) {
+      this.pendingServiceWorkerMessages.splice(0, this.pendingServiceWorkerMessages.length - 20);
+    }
+  }
+
+  private flushPendingServiceWorkerMessages(): void {
+    const currentUser = this.currentUser();
+    if (!currentUser || !this.pendingServiceWorkerMessages.length) {
+      return;
+    }
+    const pendingMessages = this.pendingServiceWorkerMessages.splice(0, this.pendingServiceWorkerMessages.length);
+    pendingMessages.forEach((messageData) => {
+      this.processServiceWorkerMessageData(messageData, currentUser);
+    });
+  }
+
+  private async consumePendingPushPayloadsFromServiceWorker(): Promise<void> {
+    if (this.pendingPushDrainInFlight) {
+      return;
+    }
+    const currentUser = this.currentUser();
+    if (!currentUser) {
+      return;
+    }
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+      return;
+    }
+    this.pendingPushDrainInFlight = true;
+    try {
+      const targetWorker = await this.resolveServiceWorkerMessageTarget();
+      if (!targetWorker) {
+        return;
+      }
+      const pendingPayloads = await new Promise<Record<string, unknown>[]>((resolve) => {
+        let settled = false;
+        const finalize = (value: Record<string, unknown>[]) => {
+          if (settled) return;
+          settled = true;
+          resolve(Array.isArray(value) ? value : []);
+        };
+        const timeoutId = setTimeout(() => finalize([]), 2500);
+        const channel = new MessageChannel();
+        channel.port1.onmessage = (replyEvent: MessageEvent<unknown>) => {
+          clearTimeout(timeoutId);
+          const reply = replyEvent.data as { payloads?: unknown } | null;
+          const rawPayloads = reply && typeof reply === 'object'
+            ? reply.payloads
+            : undefined;
+          const payloads: unknown[] = Array.isArray(rawPayloads) ? rawPayloads : [];
+          const normalizedPayloads = payloads.filter(
+            (item: unknown): item is Record<string, unknown> => Boolean(item) && typeof item === 'object'
+          );
+          finalize(normalizedPayloads);
+        };
+        try {
+          targetWorker.postMessage({ action: 'drain-pending-push-payloads' }, [channel.port2]);
+        } catch {
+          clearTimeout(timeoutId);
+          finalize([]);
+        }
+      });
+
+      if (this.currentUser() !== currentUser || !pendingPayloads.length) {
+        return;
+      }
+      pendingPayloads.forEach((payload) => {
+        this.incrementDeliveryTelemetry('pushPayloadReceived');
+        this.applyIncomingFromPushPayload(payload, currentUser);
+      });
+    } finally {
+      this.pendingPushDrainInFlight = false;
+    }
+  }
+
+  private async resolveServiceWorkerMessageTarget(): Promise<ServiceWorker | null> {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+      return null;
+    }
+    const controllerWorker = navigator.serviceWorker.controller;
+    if (controllerWorker) {
+      return controllerWorker;
+    }
+    try {
+      const registration = await navigator.serviceWorker.getRegistration();
+      if (registration) {
+        const registrationWorker =
+          registration.active ??
+          registration.waiting ??
+          registration.installing ??
+          null;
+        if (registrationWorker) {
+          return registrationWorker;
+        }
+      }
+    } catch {
+      // Ignore registration lookup failure.
+    }
+    try {
+      const readyRegistration = await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 800))
+      ]);
+      if (readyRegistration) {
+        return readyRegistration.active ?? readyRegistration.waiting ?? readyRegistration.installing ?? null;
+      }
+    } catch {
+      // Ignore readiness errors and fallback to null.
+    }
+    return null;
+  }
+
+  private schedulePendingPushDrainRetry(): void {
+    [700, 2200, 5000].forEach((delayMs) => {
+      setTimeout(() => {
+        void this.consumePendingPushPayloadsFromServiceWorker();
+      }, delayMs);
+    });
+  }
+
+  private processServiceWorkerMessageData(
+    messageData: { action?: unknown; payload?: unknown; url?: unknown; chat?: unknown },
+    currentUser: string
+  ): void {
     const action = String(messageData.action ?? '').trim();
     if (action === 'notification-clicked') {
       this.clearDeviceAttention({ resetServerBadge: true });
+      const clickedPayloadRaw = messageData.payload;
+      if (clickedPayloadRaw && typeof clickedPayloadRaw === 'object') {
+        this.incrementDeliveryTelemetry('pushPayloadReceived');
+        this.applyIncomingFromPushPayload(
+          clickedPayloadRaw as Record<string, unknown>,
+          currentUser
+        );
+      }
       const clickedChatId = this.resolveNotificationChatId(messageData, currentUser);
       if (clickedChatId) {
         this.setActiveChat(clickedChatId);
+        // Opening from a notification is an explicit read intent for that chat.
+        this.clearUnreadCountForChat(clickedChatId);
       }
-      this.syncForegroundState({ forceRefresh: true });
       return;
     }
     if (action !== 'push-payload') return;
@@ -7033,15 +7438,19 @@ export class ChatStoreService {
 
     const payloadRaw = messageData.payload;
     if (!payloadRaw || typeof payloadRaw !== 'object') return;
-    const payload = payloadRaw as Record<string, unknown>;
+    this.applyIncomingFromPushPayload(payloadRaw as Record<string, unknown>, currentUser);
+  }
 
+  private applyIncomingFromPushPayload(
+    payload: Record<string, unknown>,
+    currentUser: string
+  ): void {
     const payloadUser = this.normalizeUser(String(payload['user'] ?? ''));
     if (payloadUser && payloadUser !== currentUser) return;
 
     const payloadType = String(payload['type'] ?? '').trim().toLowerCase();
     if (payloadType === 'subscription-auth-refresh') {
       this.refreshPushRegistrationForCurrentUser(true);
-      this.syncForegroundState({ forceRefresh: true });
       return;
     }
     const numericGroupUpdatedAt = Number(payload['groupUpdatedAt']);
@@ -7079,10 +7488,10 @@ export class ChatStoreService {
     };
 
     if (payloadType !== 'reaction' && payloadType !== 'group-update' && payloadType !== 'read-receipt') {
-      const immediateMessage = this.buildIncomingMessageFromPushPayload(payload, incoming);
-      if (immediateMessage) {
+      const immediateIncoming = this.buildIncomingMessageFromPushPayload(payload, incoming);
+      if (immediateIncoming) {
         this.incrementDeliveryTelemetry('pushImmediateMessageBuilt');
-        if (this.applyIncomingMessage(immediateMessage)) {
+        if (this.applyIncomingMessage(immediateIncoming)) {
           this.incrementDeliveryTelemetry('pushMessageApplied');
         } else {
           this.incrementDeliveryTelemetry('pushMessageNoop');
@@ -7090,9 +7499,6 @@ export class ChatStoreService {
       } else {
         this.incrementDeliveryTelemetry('pushMissingMessageContext');
       }
-      // For regular pushes, recover with immediate + delayed pulls so chat list stays fresh.
-      this.syncForegroundState({ forceRefresh: true });
-      this.schedulePushRecoveryPulls();
       return;
     }
 
@@ -7101,7 +7507,7 @@ export class ChatStoreService {
     } else {
       this.incrementDeliveryTelemetry('pushMessageNoop');
     }
-  };
+  }
 
   private buildIncomingMessageFromPushPayload(
     payload: Record<string, unknown>,
@@ -7115,8 +7521,8 @@ export class ChatStoreService {
     }
 
     const bodyFromPayload = this.normalizeIncomingBodyValue(
-      payload['messageText'] ??
       payload['groupMessageText'] ??
+      payload['messageText'] ??
       payload['longText'] ??
       payload['shortText'] ??
       payload['text'] ??
@@ -7217,6 +7623,7 @@ export class ChatStoreService {
     this.lastForegroundSyncAt = now;
 
     void this.pullMessages(user);
+    void this.recoverMissedMessagesFromLogs(user);
     void this.flushOutbox();
     void this.refresh(forceRefresh);
   }
@@ -7296,7 +7703,9 @@ export class ChatStoreService {
     return document.visibilityState === 'visible';
   }
 
-  private clearDeviceAttention(options: { resetServerBadge?: boolean } = {}): void {
+  private clearDeviceAttention(
+    options: { resetServerBadge?: boolean; forceServerBadgeReset?: boolean } = {}
+  ): void {
     if (typeof navigator === 'undefined') return;
 
     const badgeNavigator = navigator as BadgeCapableNavigator;
@@ -7316,7 +7725,8 @@ export class ChatStoreService {
       return;
     }
     const now = Date.now();
-    if (now - this.lastServerBadgeResetAt < BADGE_RESET_MIN_INTERVAL_MS) {
+    const forceServerBadgeReset = Boolean(options.forceServerBadgeReset);
+    if (!forceServerBadgeReset && now - this.lastServerBadgeResetAt < BADGE_RESET_MIN_INTERVAL_MS) {
       return;
     }
     if (this.serverBadgeResetInFlight) {
@@ -7365,9 +7775,10 @@ export class ChatStoreService {
   private shouldRequireStandaloneInstallForPush(): boolean {
     if (typeof navigator === 'undefined') return false;
     const ua = navigator.userAgent || '';
-    const isMobileUa = /Android|iP(hone|ad|od)|IEMobile|BlackBerry|Opera Mini/i.test(ua);
+    const isIosUa = /iP(hone|ad|od)/i.test(ua);
     const isIpadOsDesktopUa = /Macintosh/i.test(ua) && navigator.maxTouchPoints > 1;
-    return isMobileUa || isIpadOsDesktopUa;
+    // iOS/iPadOS Web Push requires home-screen install. Android does not.
+    return isIosUa || isIpadOsDesktopUa;
   }
 
   private isRunningStandaloneApp(): boolean {

@@ -222,6 +222,18 @@ let unreadCounts = {};
 let groups = {};
 let deviceSubscriptionsByUser = {};
 
+function replaceObjectContents(target, source) {
+    if (!target || typeof target !== 'object') {
+        return;
+    }
+    Object.keys(target).forEach((key) => {
+        delete target[key];
+    });
+    if (source && typeof source === 'object') {
+        Object.assign(target, source);
+    }
+}
+
 
 
 app.use((req, res, next) => {
@@ -988,6 +1000,9 @@ const sessionTokenJweService = SESSION_JWE_SECRET
     ? new SessionTokenJweService(SESSION_JWE_SECRET)
     : null;
 const SESSION_USER_PATTERN = /^0\d{9}$/;
+const BADGE_RESET_ALL_ALLOWED_USERS = parseUsernamesInput(
+    process.env.BADGE_RESET_ALL_ALLOWED_USERS || '0546799693'
+);
 const AUTH_SESSION_RATE_LIMIT_WINDOW_MS = Math.max(
     60 * 1000,
     Number(process.env.AUTH_SESSION_RATE_LIMIT_WINDOW_MS || 10 * 60 * 1000) || 10 * 60 * 1000
@@ -1143,6 +1158,11 @@ const RECENT_REPLY_MESSAGE_TTL_MS = Math.max(
     Number(process.env.RECENT_REPLY_MESSAGE_TTL_MS || 10 * 60 * 1000) || 10 * 60 * 1000
 );
 const recentProcessedReplyMessages = new Map();
+const RECENT_QUEUE_MESSAGE_TTL_MS = Math.max(
+    30 * 1000,
+    Number(process.env.RECENT_QUEUE_MESSAGE_TTL_MS || 10 * 60 * 1000) || 10 * 60 * 1000
+);
+const recentProcessedQueueMessages = new Map();
 let mobileReregisterCampaignState = {
     running: false,
     lastRunAt: 0,
@@ -1157,6 +1177,28 @@ function pruneRecentProcessedReplyMessages(nowTs = Date.now()) {
             recentProcessedReplyMessages.delete(messageId);
         }
     }
+}
+
+function pruneRecentProcessedQueueMessages(nowTs = Date.now()) {
+    for (const [dedupKey, processedAt] of recentProcessedQueueMessages.entries()) {
+        if (!dedupKey) continue;
+        if (!Number.isFinite(Number(processedAt)) || nowTs - Number(processedAt) > RECENT_QUEUE_MESSAGE_TTL_MS) {
+            recentProcessedQueueMessages.delete(dedupKey);
+        }
+    }
+}
+
+function hashStringToShortId(value = '') {
+    const text = String(value || '');
+    let hash = 0;
+    for (let index = 0; index < text.length; index += 1) {
+        hash = ((hash << 5) - hash + text.charCodeAt(index)) | 0;
+    }
+    return Math.abs(hash).toString(36);
+}
+
+function normalizeQueueTextForDedup(value = '') {
+    return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 function buildSubscriptionCacheKey(usernames) {
@@ -2646,6 +2688,22 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
     if (!membersToNotify.length) {
         return { status: 'success', details: { success: 0, failed: 0 } };
     }
+    const adminByKey = new Map();
+    const adminCandidates = [
+        ...(groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : []),
+        ...(Array.isArray(groupAdmins) ? groupAdmins : []),
+        (groupRecord && groupRecord.createdBy) ? groupRecord.createdBy : '',
+        groupCreatedBy || ''
+    ];
+    adminCandidates.forEach((candidate) => {
+        const rawAdmin = String(candidate || '').trim();
+        const adminKey = normalizeUserKey(rawAdmin);
+        if (!adminKey || adminKey === normalizedReactor) return;
+        if (!adminByKey.has(adminKey)) {
+            adminByKey.set(adminKey, rawAdmin || adminKey);
+        }
+    });
+    const adminMembersToNotify = Array.from(adminByKey.values());
 
     const reactionId = generateMessageId();
     const resolvedGroupName = (groupRecord && groupRecord.name) || String(groupName || '').trim() || 'קבוצה';
@@ -2701,13 +2759,14 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
         groupType: resolvedGroupType
     };
     await addToQueue(membersToNotify, reactionRecord);
-
-    const result = await sendPushNotificationToUser(membersToNotify, notificationData, groupId, {
-        messageId: reactionId,
-        skipBadge: true,
-        singlePerUser: true,
-        allowSecondAttempt: false
-    });
+    const result = adminMembersToNotify.length
+        ? await sendPushNotificationToUser(adminMembersToNotify, notificationData, groupId, {
+            messageId: reactionId,
+            skipBadge: true,
+            singlePerUser: true,
+            allowSecondAttempt: false
+        })
+        : { success: 0, failed: 0 };
     return { status: 'success', details: result };
 }
 
@@ -4588,9 +4647,11 @@ async function loadState() {
         try {
             const redisState = await redisStore.loadState();
             if (redisState) {
-                unreadCounts = (redisState.unreadCounts && typeof redisState.unreadCounts === 'object')
+                const nextUnreadCounts = (redisState.unreadCounts && typeof redisState.unreadCounts === 'object')
                     ? redisState.unreadCounts
                     : {};
+                // Keep a stable reference so controllers/middlewares mutate the live map.
+                replaceObjectContents(unreadCounts, nextUnreadCounts);
                 messageQueue = {};
                 groups = (redisState.groups && typeof redisState.groups === 'object')
                     ? redisState.groups
@@ -4624,7 +4685,9 @@ async function loadState() {
         await fsp.mkdir(stateDir, { recursive: true });
         const raw = await fsp.readFile(stateFile, 'utf8');
         const data = JSON.parse(raw);
-        unreadCounts = (data.unreadCounts && typeof data.unreadCounts === 'object') ? data.unreadCounts : {};
+        const nextUnreadCounts = (data.unreadCounts && typeof data.unreadCounts === 'object') ? data.unreadCounts : {};
+        // Keep a stable reference so controllers/middlewares mutate the live map.
+        replaceObjectContents(unreadCounts, nextUnreadCounts);
         messageQueue = (data.messageQueue && typeof data.messageQueue === 'object') ? data.messageQueue : {};
         groups = (data.groups && typeof data.groups === 'object') ? data.groups : {};
         groups = normalizeGroupsCollection(groups);
@@ -4862,51 +4925,121 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
         new Set(parseUsernamesInput(requestUserList).map(normalizeUserKey).filter(Boolean))
     );
     const requestedAliasToCanonical = buildUserAliasLookupMap(requestedUsers);
+    const singleRequestedUser = requestedUsers.length === 1 ? requestedUsers[0] : '';
     if (!requestedUsers.length) {
         return cached ? cached.subscriptions : [];
     }
     const normalizeLookupSubscriptions = (payload) => {
         const extracted = extractSubscriptionsFromSheetResponse(payload);
         if (!extracted.length) return [];
-        return extracted
-            .map((subscription) => {
-                const canonicalUser = resolveCanonicalUserFromLookup(
-                    subscription && (subscription.username || subscription.user),
-                    requestedAliasToCanonical
-                );
-                if (!canonicalUser) {
-                    return null;
-                }
-                return {
+        const matched = [];
+        const unknownWithoutUser = [];
+        extracted.forEach((subscription) => {
+            const rawUser = normalizeUserKey(subscription && (subscription.username || subscription.user));
+            const canonicalUser = resolveCanonicalUserFromLookup(
+                rawUser,
+                requestedAliasToCanonical
+            );
+            if (canonicalUser) {
+                matched.push({
                     ...subscription,
                     username: canonicalUser
-                };
-            })
-            .filter(Boolean);
+                });
+                return;
+            }
+            // If payload provides a user that does not match requested users, never remap it.
+            if (rawUser) {
+                return;
+            }
+            if (!singleRequestedUser) {
+                return;
+            }
+            unknownWithoutUser.push({
+                ...subscription,
+                username: singleRequestedUser
+            });
+        });
+        if (matched.length) {
+            return matched;
+        }
+        // Only allow tiny user-less fallbacks; large sets likely indicate unfiltered sheet response.
+        if (unknownWithoutUser.length > 0 && unknownWithoutUser.length <= UNKNOWN_USER_FALLBACK_MAX_ENDPOINTS) {
+            return unknownWithoutUser;
+        }
+        return [];
+    };
+    const fetchLookupBatchSubscriptions = async (batchUsers = []) => {
+        const normalizedBatch = Array.from(new Set(
+            (Array.isArray(batchUsers) ? batchUsers : [])
+                .map(normalizeUserKey)
+                .filter(Boolean)
+        ));
+        if (!normalizedBatch.length) {
+            return [];
+        }
+        const csvUsers = normalizedBatch.join(',');
+        const candidateUrls = [
+            buildGoogleSheetGetUrl({ usernames: csvUsers }),
+            buildGoogleSheetGetUrl({ action: 'get_subscriptions', usernames: csvUsers })
+        ];
+        if (normalizedBatch.length === 1) {
+            candidateUrls.push(buildGoogleSheetGetUrl({ action: 'get_subscriptions', username: normalizedBatch[0] }));
+        }
+
+        for (const url of candidateUrls) {
+            try {
+                const response = await fetchWithRetry(
+                    url,
+                    {},
+                    { timeoutMs: 12000, retries: 2, backoffMs: 500 }
+                );
+                if (!response.ok) {
+                    continue;
+                }
+                const result = await response.json();
+                const subscriptions = normalizeLookupSubscriptions(result);
+                if (subscriptions.length) {
+                    return subscriptions;
+                }
+            } catch (_error) {
+                // Continue with next variant; some Apps Script deployments only support one shape.
+            }
+        }
+
+        // Last fallback: request each user explicitly via action=get_subscriptions&username=<user>.
+        const collected = [];
+        for (const userKey of normalizedBatch) {
+            try {
+                const response = await fetchWithRetry(
+                    buildGoogleSheetGetUrl({ action: 'get_subscriptions', username: userKey }),
+                    {},
+                    { timeoutMs: 12000, retries: 2, backoffMs: 500 }
+                );
+                if (!response.ok) {
+                    continue;
+                }
+                const result = await response.json();
+                collected.push(...normalizeLookupSubscriptions(result));
+            } catch (_error) {
+                // Keep lookup resilient and continue trying remaining users.
+            }
+        }
+        return dedupeSubscriptionsByEndpoint(collected);
     };
 
     try {
         let subscriptions = [];
         if (requestedUsers.length <= SUBSCRIPTION_LOOKUP_BATCH_SIZE) {
-            const response = await fetchWithRetry(
-                buildGoogleSheetGetUrl({ usernames: requestUserList }),
-                {},
-                { timeoutMs: 12000, retries: 2, backoffMs: 500 }
-            );
-            const result = await response.json();
-            subscriptions = normalizeLookupSubscriptions(result);
+            subscriptions = await fetchLookupBatchSubscriptions(requestedUsers);
         } else {
             const collected = [];
             for (let i = 0; i < requestedUsers.length; i += SUBSCRIPTION_LOOKUP_BATCH_SIZE) {
                 const batch = requestedUsers.slice(i, i + SUBSCRIPTION_LOOKUP_BATCH_SIZE);
                 if (!batch.length) continue;
-                const response = await fetchWithRetry(
-                    buildGoogleSheetGetUrl({ usernames: batch.join(',') }),
-                    {},
-                    { timeoutMs: 12000, retries: 2, backoffMs: 500 }
-                );
-                const result = await response.json();
-                collected.push(...normalizeLookupSubscriptions(result));
+                const batchSubscriptions = await fetchLookupBatchSubscriptions(batch);
+                if (batchSubscriptions.length) {
+                    collected.push(...batchSubscriptions);
+                }
             }
             subscriptions = dedupeSubscriptionsByEndpoint(collected);
         }
@@ -5072,7 +5205,9 @@ registerAuthController(app, {
     upsertLocalDeviceSubscriptionsFromRegistration,
     scheduleStateSave,
     unreadCounts,
-    requireAuthorizedUser
+    requireAuthorizedUser,
+    APP_SERVER_TOKEN,
+    BADGE_RESET_ALL_ALLOWED_USERS
 });
 
 // --- CLIENT TELEMETRY ---
@@ -5419,6 +5554,14 @@ const DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER = Math.max(
     1,
     Number(process.env.DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER || 2) || 2
 );
+const SINGLE_TARGET_MAX_SAFE_SUBSCRIPTIONS = Math.max(
+    1,
+    Number(process.env.SINGLE_TARGET_MAX_SAFE_SUBSCRIPTIONS || 8) || 8
+);
+const UNKNOWN_USER_FALLBACK_MAX_ENDPOINTS = Math.max(
+    1,
+    Number(process.env.UNKNOWN_USER_FALLBACK_MAX_ENDPOINTS || 4) || 4
+);
 
 function trimPushTextValue(value, maxLength = MAX_PUSH_TEXT_LENGTH) {
     const text = String(value || '');
@@ -5460,9 +5603,33 @@ function buildCompactPushCustomData(rawData = {}, messageType = '') {
     return compact;
 }
 
-function buildPushPayloadString(payloadData = {}) {
+function buildPushPayloadString(payloadData = {}, options = {}) {
+    const includeNotification = options.includeNotification !== false;
+    const buildPayloadEnvelope = (dataPayload) => {
+        if (!includeNotification) {
+            return { data: dataPayload };
+        }
+        const title = String(dataPayload.title || '').trim();
+        const body = String(
+            dataPayload.body || dataPayload.groupMessageText || dataPayload.messageText || 'New Notification'
+        ).trim();
+        const notification = {
+            title: title || 'Work Alert',
+            body: body || 'New Notification',
+            icon: dataPayload.icon || dataPayload.badge,
+            badge: dataPayload.badge || dataPayload.icon,
+            image: dataPayload.image || undefined,
+            requireInteraction: Boolean(dataPayload.requireInteraction),
+            tag: String(dataPayload.messageId || '').trim() || undefined
+        };
+        return {
+            notification,
+            data: dataPayload
+        };
+    };
+
     let compactData = { ...payloadData };
-    let payload = JSON.stringify({ data: compactData });
+    let payload = JSON.stringify(buildPayloadEnvelope(compactData));
     if (Buffer.byteLength(payload, 'utf8') <= MAX_PUSH_PAYLOAD_BYTES) {
         return payload;
     }
@@ -5479,7 +5646,7 @@ function buildPushPayloadString(payloadData = {}) {
         compactData.body = trimPushTextValue(compactData.body, 120);
     }
 
-    payload = JSON.stringify({ data: compactData });
+    payload = JSON.stringify(buildPayloadEnvelope(compactData));
     if (Buffer.byteLength(payload, 'utf8') <= MAX_PUSH_PAYLOAD_BYTES) {
         return payload;
     }
@@ -5502,7 +5669,17 @@ function buildPushPayloadString(payloadData = {}) {
         icon: compactData.icon,
         requireInteraction: compactData.requireInteraction
     };
-    return JSON.stringify({ data: emergencyData });
+    return JSON.stringify(buildPayloadEnvelope(emergencyData));
+}
+
+function isLikelyPhoneUserKey(userKey) {
+    const digits = String(userKey || '').replace(/\D/g, '');
+    return (
+        /^0\d{9}$/.test(digits) ||
+        /^5\d{8}$/.test(digits) ||
+        /^9725\d{8}$/.test(digits) ||
+        /^97205\d{8}$/.test(digits)
+    );
 }
 
 function limitSubscriptionsPerUser(subscriptions = [], maxPerUser = DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER) {
@@ -5566,6 +5743,13 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     const msgBody = message.body || {};
     const customData = message.data || {};
     const messageType = String(customData.type || '').trim().toLowerCase();
+    const isGroupScopedPush = Boolean(
+        customData.groupId ||
+        customData.groupName ||
+        messageType === 'group-update' ||
+        messageType === 'reaction' ||
+        (Array.isArray(customData.groupMembers) && customData.groupMembers.length)
+    );
     const imageUrl = message.image || null;
     const finalSender = senderuser || 'System';
     const singlePerUser = Boolean(options.singlePerUser || messageType === 'reaction');
@@ -5586,39 +5770,71 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         msgText = 'new reaction';
     }
     const logContent = msgText || messageType || 'System Notification';
+    const shouldPersistPushLog = messageType !== 'read-receipt';
     const messageId = options.messageId || message.messageId || generateMessageId();
     const shouldIncrementBadge = !options.skipBadge;
-    const normalizedTargetUsers = Array.from(
+    let normalizedTargetUsers = Array.from(
         new Set(targetUsersArray.map(normalizeUserKey).filter(Boolean))
     );
+    if (!isGroupScopedPush && normalizedTargetUsers.length > 3) {
+        console.warn(
+            `[PUSH] Direct-target users trimmed: ${normalizedTargetUsers.length} -> 3`
+        );
+        normalizedTargetUsers = normalizedTargetUsers.slice(0, 3);
+    }
     const targetAliasToCanonical = buildUserAliasLookupMap(normalizedTargetUsers);
     const targetUsersSet = new Set(normalizedTargetUsers);
-    const normalizeAndFilterTargetSubscriptions = (subscriptions) => {
+    const singleTargetUser = normalizedTargetUsers.length === 1 ? normalizedTargetUsers[0] : '';
+    const normalizeAndFilterTargetSubscriptions = (subscriptions, options = {}) => {
+        const allowUnknownUser = Boolean(options.allowUnknownUser);
         const normalized = dedupeSubscriptionsByEndpoint(subscriptions || []);
-        return normalized
-            .map((subscription) => {
-                const canonicalUser = resolveCanonicalUserFromLookup(
-                    subscription && (subscription.username || subscription.user),
-                    targetAliasToCanonical
-                );
-                if (!canonicalUser) return null;
-                return {
+        const matched = [];
+        const unknownWithoutUser = [];
+        normalized.forEach((subscription) => {
+            const rawUser = normalizeUserKey(subscription && (subscription.username || subscription.user));
+            const canonicalUser = resolveCanonicalUserFromLookup(
+                rawUser,
+                targetAliasToCanonical
+            );
+            if (canonicalUser) {
+                matched.push({
                     ...subscription,
                     username: canonicalUser
-                };
-            })
-            .filter(Boolean);
+                });
+                return;
+            }
+            // Explicitly scoped to another user -> never treat as current target.
+            if (rawUser) {
+                return;
+            }
+            if (!allowUnknownUser || !singleTargetUser) {
+                return;
+            }
+            unknownWithoutUser.push({
+                ...subscription,
+                username: singleTargetUser
+            });
+        });
+        if (matched.length) {
+            return matched;
+        }
+        if (unknownWithoutUser.length > 0 && unknownWithoutUser.length <= UNKNOWN_USER_FALLBACK_MAX_ENDPOINTS) {
+            return unknownWithoutUser;
+        }
+        return [];
     };
 
     console.log(`[PUSH] Searching subs for: ${targetUsersArray.join(', ')} from ${finalSender}`);
 
     let rawSubscriptions = normalizeAndFilterTargetSubscriptions(
-        await getSubscriptionFromSheet(targetUsersArray)
+        await getSubscriptionFromSheet(targetUsersArray),
+        { allowUnknownUser: true }
     );
     if (!rawSubscriptions.length) {
         // Force refresh once to avoid stale cache windows (common after iOS resubscribe).
         rawSubscriptions = normalizeAndFilterTargetSubscriptions(
-            await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true })
+            await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true }),
+            { allowUnknownUser: true }
         );
     }
     if (!rawSubscriptions.length) {
@@ -5628,7 +5844,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         const discoveredSubscriptions = Array.isArray(fallbackDiscovery.subscriptions)
             ? fallbackDiscovery.subscriptions
             : [];
-        rawSubscriptions = normalizeAndFilterTargetSubscriptions(discoveredSubscriptions);
+        rawSubscriptions = normalizeAndFilterTargetSubscriptions(discoveredSubscriptions, { allowUnknownUser: false });
         if (rawSubscriptions.length) {
             const cacheKey = buildSubscriptionCacheKey(targetUsersArray);
             if (cacheKey) {
@@ -5641,7 +5857,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         rawSubscriptions = normalizeAndFilterTargetSubscriptions([
             ...rawSubscriptions,
             ...localSubscriptions
-        ]);
+        ], { allowUnknownUser: true });
         const cacheKey = buildSubscriptionCacheKey(targetUsersArray);
         if (cacheKey && rawSubscriptions.length) {
             subscriptionCache.set(cacheKey, { at: Date.now(), subscriptions: rawSubscriptions });
@@ -5672,7 +5888,9 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                 const userKey = normalizeUserKey(
                     subscription.username || subscription.user
                 );
-                if (!userKey || (targetUsersSet.size && !targetUsersSet.has(userKey))) {
+                const hasExplicitUser = Boolean(userKey);
+                const resolvedUserKey = userKey || singleTargetUser;
+                if (hasExplicitUser && targetUsersSet.size && !targetUsersSet.has(userKey)) {
                     return {
                         ok: false,
                         username: userKey || 'unknown',
@@ -5680,18 +5898,18 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                         message: 'Subscription user mismatch'
                     };
                 }
-                let currentCount = userKey ? (unreadCounts[userKey] || 0) : 0;
-                if (shouldIncrementBadge && userKey) {
+                let currentCount = resolvedUserKey ? (unreadCounts[resolvedUserKey] || 0) : 0;
+                if (shouldIncrementBadge && resolvedUserKey) {
                     if (allowBadgeIncrement) {
-                        if (badgeCountByUser.has(userKey)) {
-                            currentCount = badgeCountByUser.get(userKey);
+                        if (badgeCountByUser.has(resolvedUserKey)) {
+                            currentCount = badgeCountByUser.get(resolvedUserKey);
                         } else {
                             currentCount = currentCount + 1;
-                            unreadCounts[userKey] = currentCount;
-                            badgeCountByUser.set(userKey, currentCount);
+                            unreadCounts[resolvedUserKey] = currentCount;
+                            badgeCountByUser.set(resolvedUserKey, currentCount);
                         }
                     } else {
-                        currentCount = unreadCounts[userKey] || 0;
+                        currentCount = unreadCounts[resolvedUserKey] || 0;
                     }
                 }
 
@@ -5705,15 +5923,25 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                     requireInteraction: true,
                     image: imageUrl,
                     url: clickUrl,
-                    user: userKey,
+                    user: resolvedUserKey,
                     sender: finalSender,
                     messageId: messageId
                 };
-                if (shouldIncrementBadge && userKey) {
+                if (shouldIncrementBadge && resolvedUserKey) {
                     payloadData.badgeCount = currentCount;
                 }
 
-                const payload = buildPushPayloadString(payloadData);
+                const includeNotificationPayload = !(
+                    payloadData.skipNotification === true ||
+                    messageType === 'read-receipt' ||
+                    messageType === 'group-update' ||
+                    messageType === 'delete-action' ||
+                    messageType === 'edit-action' ||
+                    messageType === AUTH_REFRESH_PUSH_TYPE
+                );
+                const payload = buildPushPayloadString(payloadData, {
+                    includeNotification: includeNotificationPayload
+                });
 
                 try {
                     const pushOptions = {
@@ -5724,8 +5952,9 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                     await webpush.sendNotification(subscription, payload, pushOptions);
                     return {
                         ok: true,
-                        username: subscription.username || userKey || 'unknown',
-                        badge: currentCount
+                        username: subscription.username || resolvedUserKey || 'unknown',
+                        badge: currentCount,
+                        endpoint: subscription.endpoint
                     };
                 } catch (err) {
                     const statusCode = err.statusCode || 'N/A';
@@ -5734,9 +5963,10 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
                     }
                     return {
                         ok: false,
-                        username: subscription.username || userKey || 'unknown',
+                        username: subscription.username || resolvedUserKey || 'unknown',
                         statusCode,
-                        message: err.message
+                        message: err.message,
+                        endpoint: subscription.endpoint
                     };
                 }
             })
@@ -5757,6 +5987,25 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         uniqueSubscriptions = Array.from(oneSubscriptionPerUser.values());
     } else if (maxEndpointsPerUser > 0) {
         uniqueSubscriptions = limitSubscriptionsPerUser(uniqueSubscriptions, maxEndpointsPerUser);
+    }
+    if (singleTargetUser && uniqueSubscriptions.length > SINGLE_TARGET_MAX_SAFE_SUBSCRIPTIONS) {
+        console.warn(
+            `[PUSH] Single-target subscriptions trimmed for ${singleTargetUser}: ` +
+            `${uniqueSubscriptions.length} -> ${SINGLE_TARGET_MAX_SAFE_SUBSCRIPTIONS}`
+        );
+        uniqueSubscriptions = uniqueSubscriptions.slice(0, SINGLE_TARGET_MAX_SAFE_SUBSCRIPTIONS);
+    }
+    if (!isGroupScopedPush) {
+        const maxDirectSubscriptions = Math.max(
+            1,
+            Math.min(24, normalizedTargetUsers.length * SINGLE_TARGET_MAX_SAFE_SUBSCRIPTIONS)
+        );
+        if (uniqueSubscriptions.length > maxDirectSubscriptions) {
+            console.warn(
+                `[PUSH] Direct subscriptions hard-trimmed: ${uniqueSubscriptions.length} -> ${maxDirectSubscriptions}`
+            );
+            uniqueSubscriptions = uniqueSubscriptions.slice(0, maxDirectSubscriptions);
+        }
     }
     let sendResults = await sendToSubscriptions(uniqueSubscriptions, true);
 
@@ -5801,22 +6050,54 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
 
             const retryResults = await sendToSubscriptions(effectiveRetryTargets, false);
             appendResultsToLogs(retryResults);
+            sendResults = [...sendResults, ...retryResults];
+        }
+    }
+
+    const staleEndpoints = Array.from(
+        new Set(
+            sendResults
+                .filter((result) => !result.ok && (result.statusCode === 404 || result.statusCode === 410))
+                .map((result) => String(result.endpoint || '').trim())
+                .filter(Boolean)
+        )
+    );
+    if (staleEndpoints.length) {
+        let localRemoved = 0;
+        staleEndpoints.forEach((endpoint) => {
+            if (removeLocalDeviceSubscriptionEndpoint(endpoint)) {
+                localRemoved += 1;
+            }
+        });
+        let staleCleanupSummary = null;
+        try {
+            staleCleanupSummary = await removeStaleSubscriptionsFromSheet(staleEndpoints);
+        } catch (_error) {
+            staleCleanupSummary = null;
+        }
+        if (localRemoved > 0 || staleCleanupSummary) {
+            executionLogs.push(
+                `[STALE CLEANUP] endpoints=${staleEndpoints.length}, localRemoved=${localRemoved}, ` +
+                `sheetCleared=${Number(staleCleanupSummary && staleCleanupSummary.clearedSubscriptions || 0)}`
+            );
         }
     }
 
     scheduleStateSave();
 
-    // Log to Sheet
-    const fullReport = executionLogs.join('\n');
-    let finalStatus = successCount > 0 ? 'Sent' : 'Failed';
-    logNotificationStatus(
-        finalSender,
-        targetUsersArray.join(','),
-        logContent,
-        finalStatus,
-        fullReport,
-        recipientAuthJsonForLog
-    );
+    // Skip sheet logs for read-receipt ("seen") transport events.
+    if (shouldPersistPushLog) {
+        const fullReport = executionLogs.join('\n');
+        const finalStatus = successCount > 0 ? 'Sent' : 'Failed';
+        logNotificationStatus(
+            finalSender,
+            targetUsersArray.join(','),
+            logContent,
+            finalStatus,
+            fullReport,
+            recipientAuthJsonForLog
+        );
+    }
 
     return { success: successCount, failed: failCount };
 }
@@ -6323,7 +6604,10 @@ app.post('/notify', async (req, res) => {
         await sleep(100);
         
         // [UPDATED] Send to ALL devices found for this user
-        const result = await sendPushNotificationToUser(targetUser, messageParam, senderuser || 'System', { messageId });
+        const result = await sendPushNotificationToUser(targetUser, messageParam, senderuser || 'System', {
+            messageId,
+            maxPerUserEndpoints: 1
+        });
         res.json({ status: 'done', details: result });
 
     } catch (e) {
@@ -6337,6 +6621,7 @@ app.post('/notify', async (req, res) => {
 // ======================================================
 async function checkOutgoingQueue() {
     try {
+        pruneRecentProcessedQueueMessages();
         // Ask Google Script for pending messages
         const response = await fetchWithRetry(
             buildGoogleSheetGetUrl({ action: 'check_queue' }, { token: CHECK_QUEUE_SERVER_TOKEN }),
@@ -6350,14 +6635,48 @@ async function checkOutgoingQueue() {
             console.log(`[QUEUE] Found ${queuedMessages.length} messages.`);
 
             for (const msg of queuedMessages) {
-                const targetUsers = parseUsernamesInput(msg && msg.recipient);
+                const rawRecipients = parseUsernamesInput(msg && msg.recipient);
+                const normalizedRecipients = Array.from(new Set(
+                    rawRecipients.map((value) => normalizeUserKey(value)).filter(Boolean)
+                ));
+                let targetUsers = normalizedRecipients.filter((value) => isLikelyPhoneUserKey(value));
+                if (!targetUsers.length && normalizedRecipients.length === 1) {
+                    // Keep backwards compatibility for non-phone usernames in controlled/dev flows.
+                    targetUsers = normalizedRecipients;
+                }
+                if (targetUsers.length > 3) {
+                    console.warn(
+                        `[QUEUE] Suspicious recipient fanout trimmed: ${targetUsers.length} -> 3`
+                    );
+                    targetUsers = targetUsers.slice(0, 3);
+                }
                 const senderName = String((msg && msg.sender) || 'System').trim() || 'System';
                 const bodyText = String((msg && msg.content) || '').trim();
                 if (!targetUsers.length || !bodyText) {
                     continue;
                 }
-                
-                const messageId = (msg && msg.messageId) ? String(msg.messageId).trim() : generateMessageId();
+
+                const sourceUniqueId = String(
+                    (msg && (msg.messageId || msg.id || msg.queueId || msg.rowId || msg.sheetRow || msg.row || msg.uid || msg.createdAt || msg.timestamp)) ||
+                    ''
+                ).trim();
+                const senderKey = normalizeUserKey(senderName);
+                const recipientKey = targetUsers.map((entry) => normalizeUserKey(entry)).filter(Boolean).sort().join(',');
+                const normalizedBodyForDedup = normalizeQueueTextForDedup(bodyText);
+                const semanticDedupKey = `${senderKey}|${recipientKey}|${normalizedBodyForDedup || bodyText}`;
+                const sourceAwareDedupKey = sourceUniqueId
+                    ? `${semanticDedupKey}|${sourceUniqueId}`
+                    : '';
+                if (
+                    recentProcessedQueueMessages.has(semanticDedupKey) ||
+                    (sourceAwareDedupKey && recentProcessedQueueMessages.has(sourceAwareDedupKey))
+                ) {
+                    continue;
+                }
+
+                const messageId = (msg && msg.messageId)
+                    ? String(msg.messageId).trim()
+                    : `queue-${hashStringToShortId(sourceAwareDedupKey || semanticDedupKey)}`;
                 const notificationData = {
                     messageId,
                     title: `Message from ${senderName}`,
@@ -6378,7 +6697,15 @@ async function checkOutgoingQueue() {
                 await addToQueue(targetUsers, pollingMessage);
 
                 // 2. Send Push Notification (Handles all devices)
-                await sendPushNotificationToUser(targetUsers, notificationData, senderName, { messageId });
+                await sendPushNotificationToUser(targetUsers, notificationData, senderName, {
+                    messageId,
+                    maxPerUserEndpoints: 1
+                });
+                const processedAt = Date.now();
+                recentProcessedQueueMessages.set(semanticDedupKey, processedAt);
+                if (sourceAwareDedupKey) {
+                    recentProcessedQueueMessages.set(sourceAwareDedupKey, processedAt);
+                }
             }
         }
     } catch (error) {

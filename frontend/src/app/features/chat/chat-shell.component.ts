@@ -960,6 +960,16 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     }
   }
 
+  async resetAllBadges(): Promise<void> {
+    try {
+      const clearedKeys = await this.store.resetAllServerBadgesForAdmin();
+      this.snackBar.open(`איפוס מונים הושלם (${clearedKeys}).`, 'סגור', { duration: 2600 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'איפוס מונים נכשל';
+      this.snackBar.open(message, 'סגור', { duration: 3200 });
+    }
+  }
+
   async sendMessage(): Promise<void> {
     this.store.cancelTypingForActiveChat();
     if (this.isComposerHidden() && !this.editingMessageTarget()) {
@@ -1942,10 +1952,8 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     const isGroupAdmin = this.store.isDovrutGroupChat(activeGroup.id)
       ? this.store.isDovrutAdminUser(currentUser)
       : adminUsers.includes(currentUser);
-    const isCommunityMessage = message.groupType === 'community' || Boolean(activeGroup && activeGroup.type === 'community');
     return Boolean(
       isGroupAdmin &&
-      isCommunityMessage &&
       Array.isArray(message.reactions) &&
       message.reactions.length
     );
