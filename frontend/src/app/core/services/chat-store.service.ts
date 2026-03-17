@@ -803,6 +803,34 @@ export class ChatStoreService {
     }
   }
 
+  async forceSyncLatestMessagesForOpenedChat(chatId?: string | null): Promise<void> {
+    await this.ensureSessionReady();
+    const user = this.currentUser();
+    if (!user || !this.isNetworkReachable()) {
+      return;
+    }
+    const normalizedChatId = this.normalizeChatId(chatId ?? '');
+    const pullWithPostReadClear = async (): Promise<void> => {
+      if (this.currentUser() !== user || !this.isNetworkReachable()) {
+        return;
+      }
+      await this.pullMessages(user);
+      if (normalizedChatId) {
+        this.clearUnreadCountForChat(normalizedChatId);
+      }
+    };
+
+    this.syncForegroundState({ forceRefresh: true });
+    await pullWithPostReadClear();
+
+    // Queue ingest can race with notification click; retry shortly to guarantee latest state.
+    [500, 1500, 3500].forEach((delayMs) => {
+      setTimeout(() => {
+        void pullWithPostReadClear();
+      }, delayMs);
+    });
+  }
+
   setActiveChat(chatId: string | null): void {
     const previousActiveChat = this.activeChatId();
     if (previousActiveChat && previousActiveChat !== this.normalizeChatId(chatId ?? '')) {
@@ -7347,7 +7375,7 @@ export class ChatStoreService {
         // Opening from a notification is an explicit read intent for that chat.
         this.clearUnreadCountForChat(clickedChatId);
       }
-      this.syncForegroundState({ forceRefresh: true });
+      void this.forceSyncLatestMessagesForOpenedChat(clickedChatId || null);
       return;
     }
     if (action !== 'push-payload') return;
