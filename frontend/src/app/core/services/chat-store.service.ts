@@ -1589,6 +1589,10 @@ export class ChatStoreService {
   }
 
   private shouldSkipLogsMessage(message: IncomingServerMessage): boolean {
+    const incomingType = String(message.type ?? '').trim().toLowerCase();
+    if (this.isIncomingActionType(incomingType)) {
+      return false;
+    }
     const sender = this.normalizeUser(String(message.sender ?? '').trim());
     if (!sender || sender === 'system') {
       return true;
@@ -1686,7 +1690,7 @@ export class ChatStoreService {
       const appliedCount = this.applyIncomingMessagesBatch(importableLogs, {
         incrementUnread: options.incrementUnread !== false,
         trackReadReceipts: false,
-        applyActions: false,
+        applyActions: true,
         updateGroupMetadata: false
       });
       this.lastLogsRecoveryAt = Date.now();

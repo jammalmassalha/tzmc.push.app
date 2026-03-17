@@ -245,16 +245,38 @@ function registerMessageController(app, deps = {}) {
                         if (!message || typeof message !== 'object') {
                             return null;
                         }
-                        const sender = normalizeUserKey(message.sender || message.from || '');
-                        if (!sender || sender === 'system') {
+                        const rawType = String(
+                            message.type ??
+                            message.eventType ??
+                            message.event_type ??
+                            message.actionType ??
+                            message.action_type ??
+                            ''
+                        ).trim().toLowerCase();
+                        const supportedActionTypes = new Set([
+                            'reaction',
+                            'group-update',
+                            'read-receipt',
+                            'edit-action',
+                            'delete-action'
+                        ]);
+                        const normalizedType = supportedActionTypes.has(rawType) ? rawType : '';
+                        const isActionMessage = Boolean(normalizedType);
+                        const sender = normalizeUserKey(
+                            message.sender ||
+                            message.from ||
+                            message.reactor ||
+                            ''
+                        );
+                        if (!isActionMessage && (!sender || sender === 'system')) {
                             return null;
                         }
                         const body = String(message.body ?? message.message ?? message.content ?? '').trim();
-                        if (!body) {
+                        if (!isActionMessage && !body) {
                             return null;
                         }
                         const normalizedBody = body.toLowerCase();
-                        if (normalizedBody === 'new notification' || normalizedBody === 'new reaction') {
+                        if (!isActionMessage && (normalizedBody === 'new notification' || normalizedBody === 'new reaction')) {
                             return null;
                         }
 
@@ -336,7 +358,27 @@ function registerMessageController(app, deps = {}) {
                             message.time ??
                             ''
                         ).trim();
-                        const fingerprintSource = `${sender}|${resolvedGroupId || normalizedToUserCandidate || user}|${timestampSeed || 'na'}|${body}`;
+                        const targetMessageId = String(
+                            message.targetMessageId ??
+                            message.target_message_id ??
+                            message.messageTargetId ??
+                            message.message_target_id ??
+                            ''
+                        ).trim();
+                        const emoji = String(message.emoji ?? message.reaction ?? '').trim();
+                        const readMessageIds = Array.isArray(message.messageIds)
+                            ? message.messageIds.map((id) => String(id || '').trim()).filter(Boolean)
+                            : String(
+                                message.messageIds ??
+                                message.message_ids ??
+                                message.messageId ??
+                                message.message_id ??
+                                ''
+                            ).split(',').map((id) => String(id || '').trim()).filter(Boolean);
+                        const actionFingerprintSeed = isActionMessage
+                            ? `${normalizedType}|${targetMessageId}|${emoji}|${readMessageIds.join(',')}`
+                            : body;
+                        const fingerprintSource = `${sender || 'unknown'}|${resolvedGroupId || normalizedToUserCandidate || user}|${timestampSeed || 'na'}|${actionFingerprintSeed}`;
                         let fingerprint = 0;
                         for (let charIndex = 0; charIndex < fingerprintSource.length; charIndex += 1) {
                             fingerprint = ((fingerprint << 5) - fingerprint + fingerprintSource.charCodeAt(charIndex)) | 0;
@@ -363,6 +405,55 @@ function registerMessageController(app, deps = {}) {
                             : (groupTypeRaw === 'group'
                                 ? 'group'
                                 : (resolvedGroupId ? 'group' : undefined));
+
+                        if (isActionMessage) {
+                            const normalizedReactor = normalizeUserKey(message.reactor || sender);
+                            const reactorName = String(
+                                message.reactorName ??
+                                message.reactor_name ??
+                                message.senderName ??
+                                message.sender_name ??
+                                ''
+                            ).trim();
+                            const readAt = parseFlexibleTimestamp(
+                                message.readAt,
+                                message.read_at,
+                                message.readTime,
+                                message.read_time
+                            );
+                            const editedAt = parseFlexibleTimestamp(
+                                message.editedAt,
+                                message.edited_at
+                            );
+                            const deletedAt = parseFlexibleTimestamp(
+                                message.deletedAt,
+                                message.deleted_at
+                            );
+
+                            return {
+                                type: normalizedType,
+                                messageId,
+                                messageIds: normalizedType === 'read-receipt' && readMessageIds.length
+                                    ? readMessageIds
+                                    : undefined,
+                                readAt: normalizedType === 'read-receipt' && readAt > 0 ? readAt : undefined,
+                                sender: sender || undefined,
+                                targetMessageId: normalizedType === 'reaction'
+                                    ? (targetMessageId || undefined)
+                                    : undefined,
+                                emoji: normalizedType === 'reaction' ? (emoji || undefined) : undefined,
+                                reactor: normalizedType === 'reaction' ? (normalizedReactor || undefined) : undefined,
+                                reactorName: normalizedType === 'reaction' ? (reactorName || undefined) : undefined,
+                                body: normalizedType === 'edit-action' ? (body || undefined) : undefined,
+                                editedAt: normalizedType === 'edit-action' && editedAt > 0 ? editedAt : undefined,
+                                deletedAt: normalizedType === 'delete-action' && deletedAt > 0 ? deletedAt : undefined,
+                                timestamp,
+                                groupId: resolvedGroupId || undefined,
+                                groupName: resolvedGroupName || undefined,
+                                groupType: resolvedGroupType,
+                                groupSenderName: groupSenderName || undefined
+                            };
+                        }
 
                         return {
                             messageId,
