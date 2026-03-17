@@ -1952,10 +1952,8 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     const isGroupAdmin = this.store.isDovrutGroupChat(activeGroup.id)
       ? this.store.isDovrutAdminUser(currentUser)
       : adminUsers.includes(currentUser);
-    const isCommunityMessage = message.groupType === 'community' || Boolean(activeGroup && activeGroup.type === 'community');
     return Boolean(
       isGroupAdmin &&
-      isCommunityMessage &&
       Array.isArray(message.reactions) &&
       message.reactions.length
     );

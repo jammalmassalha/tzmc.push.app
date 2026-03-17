@@ -6172,6 +6172,9 @@ export class ChatStoreService {
     if (currentUser && reactor === currentUser) {
       return true;
     }
+    if (!this.canCurrentUserReceiveReactionNotification(groupId, incoming)) {
+      return true;
+    }
 
     const group = this.groups().find((item) => item.id === groupId);
     const groupName = String(incoming.groupName ?? group?.name ?? groupId).trim() || groupId;
@@ -6185,6 +6188,32 @@ export class ChatStoreService {
       emoji
     });
     return true;
+  }
+
+  private canCurrentUserReceiveReactionNotification(
+    groupId: string,
+    incoming: IncomingServerMessage
+  ): boolean {
+    const currentUser = this.normalizeUser(this.currentUser() ?? '');
+    if (!currentUser) return false;
+    if (this.isDovrutGroup(groupId)) {
+      return this.isDovrutAdminUser(currentUser);
+    }
+    const incomingAdmins = Array.isArray(incoming.groupAdmins)
+      ? incoming.groupAdmins.map((admin) => this.normalizeUser(admin)).filter(Boolean)
+      : [];
+    if (incomingAdmins.includes(currentUser)) {
+      return true;
+    }
+    const incomingCreatedBy = this.normalizeUser(String(incoming.groupCreatedBy ?? '').trim());
+    if (incomingCreatedBy && incomingCreatedBy === currentUser) {
+      return true;
+    }
+    const group = this.groups().find((item) => item.id === groupId) ?? null;
+    if (!group) {
+      return false;
+    }
+    return this.getGroupAdminList(group).includes(currentUser);
   }
 
   private ensureGroupFromIncoming(incoming: IncomingServerMessage): void {

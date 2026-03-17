@@ -2684,6 +2684,22 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
     if (!membersToNotify.length) {
         return { status: 'success', details: { success: 0, failed: 0 } };
     }
+    const adminByKey = new Map();
+    const adminCandidates = [
+        ...(groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : []),
+        ...(Array.isArray(groupAdmins) ? groupAdmins : []),
+        (groupRecord && groupRecord.createdBy) ? groupRecord.createdBy : '',
+        groupCreatedBy || ''
+    ];
+    adminCandidates.forEach((candidate) => {
+        const rawAdmin = String(candidate || '').trim();
+        const adminKey = normalizeUserKey(rawAdmin);
+        if (!adminKey || adminKey === normalizedReactor) return;
+        if (!adminByKey.has(adminKey)) {
+            adminByKey.set(adminKey, rawAdmin || adminKey);
+        }
+    });
+    const adminMembersToNotify = Array.from(adminByKey.values());
 
     const reactionId = generateMessageId();
     const resolvedGroupName = (groupRecord && groupRecord.name) || String(groupName || '').trim() || 'קבוצה';
@@ -2739,13 +2755,14 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
         groupType: resolvedGroupType
     };
     await addToQueue(membersToNotify, reactionRecord);
-
-    const result = await sendPushNotificationToUser(membersToNotify, notificationData, groupId, {
-        messageId: reactionId,
-        skipBadge: true,
-        singlePerUser: true,
-        allowSecondAttempt: false
-    });
+    const result = adminMembersToNotify.length
+        ? await sendPushNotificationToUser(adminMembersToNotify, notificationData, groupId, {
+            messageId: reactionId,
+            skipBadge: true,
+            singlePerUser: true,
+            allowSecondAttempt: false
+        })
+        : { success: 0, failed: 0 };
     return { status: 'success', details: result };
 }
 
