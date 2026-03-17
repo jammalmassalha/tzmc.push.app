@@ -562,12 +562,7 @@ export class ChatStoreService {
     this.initializedUser = user;
     await this.refreshShuttleAccessForCurrentUser(user, { force: true });
 
-    // Open quickly from cached state, then bring latest messages in.
-    this.applyInitialChatSelection(user);
-    await this.pullMessages(user);
-    if (this.currentUser() !== user) {
-      return;
-    }
+    // Open quickly from cached/local state only.
     this.applyInitialChatSelection(user);
 
     this.connectRealtime(user);
@@ -608,9 +603,6 @@ export class ChatStoreService {
       return;
     }
 
-    void this.refresh(true);
-    void this.flushOutbox();
-    void this.recoverMissedMessagesFromLogs(user, { force: true });
     this.clearDeviceAttention({ resetServerBadge: true });
     // Recover silently if a device lost its push subscription.
     void this.ensurePushRegistrationHealth(user, {
@@ -781,26 +773,7 @@ export class ChatStoreService {
   }
 
   async preloadLatestMessagesBeforeCacheCleanup(): Promise<void> {
-    const user = this.currentUser();
-    if (!user || !this.networkOnline()) return;
-
-    try {
-      await this.pullMessages(user);
-    } catch {
-      // Best-effort pre-sync before cache cleanup.
-    }
-
-    try {
-      await this.refresh(true);
-    } catch {
-      // Best-effort pre-sync before cache cleanup.
-    }
-
-    try {
-      await this.flushOutbox();
-    } catch {
-      // Best-effort pre-sync before cache cleanup.
-    }
+    // Intentionally no-op: message sync must stay manual-only.
   }
 
   setActiveChat(chatId: string | null): void {
@@ -5020,8 +4993,6 @@ export class ChatStoreService {
 
   private connectRealtime(user: string): void {
     this.stopRealtime();
-    this.startPolling(user);
-
     if (!this.isNetworkReachable()) {
       return;
     }
@@ -5106,7 +5077,6 @@ export class ChatStoreService {
         }
         this.stopStreamOnly();
         this.clearTypingIndicators();
-        void this.pullMessages(user);
       });
 
       socket.on('chat:message', (incoming: unknown) => {
@@ -5120,7 +5090,6 @@ export class ChatStoreService {
         this.socketConnected = true;
         this.setRealtimeTransportMode('socket');
         this.stopStreamOnly();
-        void this.pullMessages(user);
       });
 
       socket.on('disconnect', () => {
@@ -5171,7 +5140,6 @@ export class ChatStoreService {
         this.handleIncomingPayload(event.data);
       });
       this.stream.addEventListener('connected', () => {
-        void this.pullMessages(user);
       });
       this.stream.onerror = () => {
         this.stopStreamOnly();
@@ -7260,7 +7228,6 @@ export class ChatStoreService {
       requireStandaloneOnMobile: true
     });
     this.connectRealtime(user);
-    this.syncForegroundState({ forceRefresh: true });
   };
 
   private handleOffline = (): void => {
@@ -7282,7 +7249,6 @@ export class ChatStoreService {
   private handleWindowFocus = (): void => {
     this.refreshPushRegistrationForCurrentUser(false);
     this.clearDeviceAttention({ resetServerBadge: true });
-    this.syncForegroundState();
   };
 
   private handleVisibilityChange = (): void => {
@@ -7291,7 +7257,6 @@ export class ChatStoreService {
     }
     this.refreshPushRegistrationForCurrentUser(false);
     this.clearDeviceAttention({ resetServerBadge: true });
-    this.syncForegroundState();
   };
 
   private handleServiceWorkerMessage = (event: MessageEvent<unknown>): void => {
@@ -7346,8 +7311,7 @@ export class ChatStoreService {
         this.incrementDeliveryTelemetry('pushPayloadReceived');
         this.applyIncomingFromPushPayload(
           clickedPayloadRaw as Record<string, unknown>,
-          currentUser,
-          { allowRecoverySync: false }
+          currentUser
         );
       }
       const clickedChatId = this.resolveNotificationChatId(messageData, currentUser);
@@ -7363,15 +7327,12 @@ export class ChatStoreService {
 
     const payloadRaw = messageData.payload;
     if (!payloadRaw || typeof payloadRaw !== 'object') return;
-    this.applyIncomingFromPushPayload(payloadRaw as Record<string, unknown>, currentUser, {
-      allowRecoverySync: true
-    });
+    this.applyIncomingFromPushPayload(payloadRaw as Record<string, unknown>, currentUser);
   }
 
   private applyIncomingFromPushPayload(
     payload: Record<string, unknown>,
-    currentUser: string,
-    options: { allowRecoverySync: boolean }
+    currentUser: string
   ): void {
     const payloadUser = this.normalizeUser(String(payload['user'] ?? ''));
     if (payloadUser && payloadUser !== currentUser) return;
@@ -7379,9 +7340,6 @@ export class ChatStoreService {
     const payloadType = String(payload['type'] ?? '').trim().toLowerCase();
     if (payloadType === 'subscription-auth-refresh') {
       this.refreshPushRegistrationForCurrentUser(true);
-      if (options.allowRecoverySync) {
-        this.syncForegroundState({ forceRefresh: true });
-      }
       return;
     }
     const numericGroupUpdatedAt = Number(payload['groupUpdatedAt']);
@@ -7429,11 +7387,6 @@ export class ChatStoreService {
         }
       } else {
         this.incrementDeliveryTelemetry('pushMissingMessageContext');
-      }
-      if (options.allowRecoverySync) {
-        // Keep recovery pulls to hydrate fields missing from compact push payloads.
-        this.syncForegroundState({ forceRefresh: true });
-        this.schedulePushRecoveryPulls();
       }
       return;
     }
