@@ -10,6 +10,195 @@ function registerMessageController(app, deps = {}) {
         scheduleStateSave,
         sseClients
     } = deps;
+    const RECENT_POLLING_MESSAGE_DEDUP_TTL_MS = 10 * 60 * 1000;
+    const LOGS_MESSAGE_SEMANTIC_DEDUP_WINDOW_MS = 2 * 60 * 1000;
+    const MAX_RECENT_POLLING_DEDUP_KEYS_PER_USER = 4000;
+    const recentPollingMessageKeysByUser = new Map();
+
+    const normalizeTextForDedup = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const normalizeTimestampMs = (value, fallback = 0) => {
+        const numeric = Number(value);
+        if (Number.isFinite(numeric) && numeric > 0) {
+            return numeric;
+        }
+        return fallback;
+    };
+    const buildMessageIdsDedupKey = (value) => {
+        if (Array.isArray(value)) {
+            return value.map((id) => String(id || '').trim()).filter(Boolean).sort().join(',');
+        }
+        return String(value || '').split(',').map((id) => String(id || '').trim()).filter(Boolean).sort().join(',');
+    };
+    const pruneRecentPollingDedupKeys = (nowTs = Date.now()) => {
+        for (const [userKey, keysMap] of recentPollingMessageKeysByUser.entries()) {
+            if (!keysMap || !(keysMap instanceof Map)) {
+                recentPollingMessageKeysByUser.delete(userKey);
+                continue;
+            }
+            for (const [fingerprint, deliveredAt] of keysMap.entries()) {
+                if (!fingerprint) {
+                    keysMap.delete(fingerprint);
+                    continue;
+                }
+                if (!Number.isFinite(Number(deliveredAt)) || nowTs - Number(deliveredAt) > RECENT_POLLING_MESSAGE_DEDUP_TTL_MS) {
+                    keysMap.delete(fingerprint);
+                }
+            }
+            if (keysMap.size === 0) {
+                recentPollingMessageKeysByUser.delete(userKey);
+            }
+        }
+    };
+    const compactRecentPollingDedupKeys = (keysMap) => {
+        if (!(keysMap instanceof Map)) return;
+        if (keysMap.size <= MAX_RECENT_POLLING_DEDUP_KEYS_PER_USER) return;
+        const sorted = Array.from(keysMap.entries())
+            .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
+            .slice(0, MAX_RECENT_POLLING_DEDUP_KEYS_PER_USER);
+        keysMap.clear();
+        sorted.forEach(([key, timestamp]) => {
+            keysMap.set(key, Number(timestamp) || Date.now());
+        });
+    };
+    const buildPollingMessageFingerprint = (message, user) => {
+        if (!message || typeof message !== 'object') return '';
+        const messageId = String(message.messageId || message.id || '').trim();
+        if (messageId) return `id:${messageId}`;
+        const payloadType = String(message.type || 'message').trim().toLowerCase() || 'message';
+        const sender = normalizeUserKey(message.sender || message.from || message.reactor || '');
+        const recipient = normalizeUserKey(message.recipient || message.user || user || '');
+        const groupId = normalizeUserKey(message.groupId || message.group_id || message.chatId || message.chat_id || '');
+        const targetMessageId = String(
+            message.targetMessageId ||
+            message.target_message_id ||
+            message.messageTargetId ||
+            message.message_target_id ||
+            ''
+        ).trim();
+        const body = normalizeTextForDedup(message.body || message.message || message.content || '');
+        const imageUrl = normalizeTextForDedup(message.imageUrl || message.image || message.thumbnailUrl || '');
+        const emoji = normalizeTextForDedup(message.emoji || message.reaction || '');
+        const messageIds = buildMessageIdsDedupKey(message.messageIds || message.message_ids);
+        return [
+            payloadType,
+            sender || 'na',
+            recipient || 'na',
+            groupId || 'na',
+            targetMessageId || 'na',
+            emoji || 'na',
+            messageIds || 'na',
+            body || 'na',
+            imageUrl || 'na'
+        ].join('|');
+    };
+    const dedupePollingMailboxMessages = (messages, user) => {
+        if (!Array.isArray(messages) || messages.length === 0) {
+            return [];
+        }
+        const normalizedUser = normalizeUserKey(user);
+        if (!normalizedUser) {
+            return messages;
+        }
+        const now = Date.now();
+        pruneRecentPollingDedupKeys(now);
+        const recentlyDeliveredKeys = recentPollingMessageKeysByUser.get(normalizedUser) || new Map();
+        const seenInBatch = new Set();
+        const deduped = [];
+        for (const message of messages) {
+            const fingerprint = buildPollingMessageFingerprint(message, normalizedUser);
+            if (!fingerprint) {
+                deduped.push(message);
+                continue;
+            }
+            if (seenInBatch.has(fingerprint)) {
+                continue;
+            }
+            const deliveredAt = Number(recentlyDeliveredKeys.get(fingerprint) || 0);
+            if (deliveredAt > 0 && now - deliveredAt <= RECENT_POLLING_MESSAGE_DEDUP_TTL_MS) {
+                continue;
+            }
+            seenInBatch.add(fingerprint);
+            recentlyDeliveredKeys.set(fingerprint, now);
+            deduped.push(message);
+        }
+        compactRecentPollingDedupKeys(recentlyDeliveredKeys);
+        if (recentlyDeliveredKeys.size > 0) {
+            recentPollingMessageKeysByUser.set(normalizedUser, recentlyDeliveredKeys);
+        } else {
+            recentPollingMessageKeysByUser.delete(normalizedUser);
+        }
+        return deduped;
+    };
+    const buildLogsSemanticFingerprint = (message) => {
+        if (!message || typeof message !== 'object') return '';
+        const sender = normalizeUserKey(message.sender || message.reactor || message.from || '');
+        const groupId = normalizeUserKey(message.groupId || message.group_id || message.chatId || message.chat_id || '');
+        const payloadType = String(message.type || 'message').trim().toLowerCase() || 'message';
+        const body = normalizeTextForDedup(message.body || message.message || message.content || '');
+        const imageUrl = normalizeTextForDedup(message.imageUrl || message.image || message.thumbnailUrl || '');
+        const targetMessageId = String(
+            message.targetMessageId ||
+            message.target_message_id ||
+            message.messageTargetId ||
+            message.message_target_id ||
+            ''
+        ).trim();
+        const emoji = normalizeTextForDedup(message.emoji || message.reaction || '');
+        const messageIds = buildMessageIdsDedupKey(message.messageIds || message.message_ids);
+        return [
+            payloadType,
+            sender || 'na',
+            groupId || 'na',
+            targetMessageId || 'na',
+            emoji || 'na',
+            messageIds || 'na',
+            body || 'na',
+            imageUrl || 'na'
+        ].join('|');
+    };
+    const dedupeLogsMessages = (messages) => {
+        if (!Array.isArray(messages) || messages.length === 0) {
+            return [];
+        }
+        const seenMessageIds = new Set();
+        const seenBySemanticKey = new Map();
+        const deduped = [];
+        for (const message of messages) {
+            if (!message || typeof message !== 'object') {
+                continue;
+            }
+            const messageId = String(message.messageId || message.id || '').trim();
+            if (messageId) {
+                if (seenMessageIds.has(messageId)) {
+                    continue;
+                }
+                seenMessageIds.add(messageId);
+            }
+            const semanticKey = buildLogsSemanticFingerprint(message);
+            if (semanticKey) {
+                const timestamp = normalizeTimestampMs(message.timestamp, 0);
+                const previouslySeenTimestamps = seenBySemanticKey.get(semanticKey) || [];
+                const hasEquivalentTimestamp = previouslySeenTimestamps.some((seenTimestamp) => {
+                    if (!timestamp || !seenTimestamp) {
+                        return false;
+                    }
+                    return Math.abs(Number(seenTimestamp) - timestamp) <= LOGS_MESSAGE_SEMANTIC_DEDUP_WINDOW_MS;
+                });
+                if (hasEquivalentTimestamp) {
+                    continue;
+                }
+                if (timestamp > 0) {
+                    previouslySeenTimestamps.push(timestamp);
+                    if (previouslySeenTimestamps.length > 8) {
+                        previouslySeenTimestamps.shift();
+                    }
+                    seenBySemanticKey.set(semanticKey, previouslySeenTimestamps);
+                }
+            }
+            deduped.push(message);
+        }
+        return deduped;
+    };
 
     app.get(
         ['/contacts', '/notify/contacts', '/contacts/:user', '/notify/contacts/:user'],
@@ -128,8 +317,13 @@ function registerMessageController(app, deps = {}) {
                 if (droppedCount > 0) {
                     console.warn(`[POLLING] Dropped ${droppedCount} mismatched queued messages for ${user}`);
                 }
-                console.log(`[POLLING] Delivered ${waitingMessages.length} msgs to ${user}`);
-                return res.json({ messages: waitingMessages });
+                const dedupedMessages = dedupePollingMailboxMessages(waitingMessages, user);
+                const dedupedCount = waitingMessages.length - dedupedMessages.length;
+                if (dedupedCount > 0) {
+                    console.warn(`[POLLING] Deduped ${dedupedCount} duplicate msgs for ${user}`);
+                }
+                console.log(`[POLLING] Delivered ${dedupedMessages.length} msgs to ${user}`);
+                return res.json({ messages: dedupedMessages });
             }
 
             return res.json({ messages: [] });
@@ -468,7 +662,12 @@ function registerMessageController(app, deps = {}) {
                     })
                     .filter(Boolean);
 
-                return res.json({ result: 'success', messages });
+                const dedupedMessages = dedupeLogsMessages(messages);
+                const dedupedCount = messages.length - dedupedMessages.length;
+                if (dedupedCount > 0) {
+                    console.warn(`[LOGS SYNC] Deduped ${dedupedCount} duplicate logs messages for ${user}`);
+                }
+                return res.json({ result: 'success', messages: dedupedMessages });
             } catch (error) {
                 console.error('[LOGS SYNC] Failed to load logs messages:', error && error.message ? error.message : error);
                 return res.status(502).json({ messages: [], error: 'Logs sync failed' });

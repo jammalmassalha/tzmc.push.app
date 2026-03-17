@@ -1160,7 +1160,7 @@ const RECENT_REPLY_MESSAGE_TTL_MS = Math.max(
 const recentProcessedReplyMessages = new Map();
 const RECENT_QUEUE_MESSAGE_TTL_MS = Math.max(
     30 * 1000,
-    Number(process.env.RECENT_QUEUE_MESSAGE_TTL_MS || 3 * 60 * 1000) || 3 * 60 * 1000
+    Number(process.env.RECENT_QUEUE_MESSAGE_TTL_MS || 10 * 60 * 1000) || 10 * 60 * 1000
 );
 const recentProcessedQueueMessages = new Map();
 let mobileReregisterCampaignState = {
@@ -1195,6 +1195,10 @@ function hashStringToShortId(value = '') {
         hash = ((hash << 5) - hash + text.charCodeAt(index)) | 0;
     }
     return Math.abs(hash).toString(36);
+}
+
+function normalizeQueueTextForDedup(value = '') {
+    return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 function buildSubscriptionCacheKey(usernames) {
@@ -6658,15 +6662,21 @@ async function checkOutgoingQueue() {
                 ).trim();
                 const senderKey = normalizeUserKey(senderName);
                 const recipientKey = targetUsers.map((entry) => normalizeUserKey(entry)).filter(Boolean).sort().join(',');
-                const dedupBaseKey = `${senderKey}|${recipientKey}|${bodyText}|${sourceUniqueId || 'no-source-id'}`;
-                const dedupKey = dedupBaseKey;
-                if (recentProcessedQueueMessages.has(dedupKey)) {
+                const normalizedBodyForDedup = normalizeQueueTextForDedup(bodyText);
+                const semanticDedupKey = `${senderKey}|${recipientKey}|${normalizedBodyForDedup || bodyText}`;
+                const sourceAwareDedupKey = sourceUniqueId
+                    ? `${semanticDedupKey}|${sourceUniqueId}`
+                    : '';
+                if (
+                    recentProcessedQueueMessages.has(semanticDedupKey) ||
+                    (sourceAwareDedupKey && recentProcessedQueueMessages.has(sourceAwareDedupKey))
+                ) {
                     continue;
                 }
 
                 const messageId = (msg && msg.messageId)
                     ? String(msg.messageId).trim()
-                    : `queue-${hashStringToShortId(dedupBaseKey)}`;
+                    : `queue-${hashStringToShortId(sourceAwareDedupKey || semanticDedupKey)}`;
                 const notificationData = {
                     messageId,
                     title: `Message from ${senderName}`,
@@ -6691,7 +6701,11 @@ async function checkOutgoingQueue() {
                     messageId,
                     maxPerUserEndpoints: 1
                 });
-                recentProcessedQueueMessages.set(dedupKey, Date.now());
+                const processedAt = Date.now();
+                recentProcessedQueueMessages.set(semanticDedupKey, processedAt);
+                if (sourceAwareDedupKey) {
+                    recentProcessedQueueMessages.set(sourceAwareDedupKey, processedAt);
+                }
             }
         }
     } catch (error) {
