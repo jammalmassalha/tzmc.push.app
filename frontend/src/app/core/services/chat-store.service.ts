@@ -7330,10 +7330,14 @@ export class ChatStoreService {
           channel.port1.onmessage = (replyEvent: MessageEvent<unknown>) => {
             clearTimeout(timeoutId);
             const reply = replyEvent.data as { payloads?: unknown } | null;
-            const payloads = Array.isArray(reply && reply.payloads) ? reply.payloads : [];
-            finalize(
-              payloads.filter((item) => item && typeof item === 'object') as Record<string, unknown>[]
+            const rawPayloads = reply && typeof reply === 'object'
+              ? reply.payloads
+              : undefined;
+            const payloads: unknown[] = Array.isArray(rawPayloads) ? rawPayloads : [];
+            const normalizedPayloads = payloads.filter(
+              (item: unknown): item is Record<string, unknown> => Boolean(item) && typeof item === 'object'
             );
+            finalize(normalizedPayloads);
           };
           worker.postMessage({ action: 'drain-pending-push-payloads' }, [channel.port2]);
         })
