@@ -803,34 +803,6 @@ export class ChatStoreService {
     }
   }
 
-  async forceSyncLatestMessagesForOpenedChat(chatId?: string | null): Promise<void> {
-    await this.ensureSessionReady();
-    const user = this.currentUser();
-    if (!user || !this.isNetworkReachable()) {
-      return;
-    }
-    const normalizedChatId = this.normalizeChatId(chatId ?? '');
-    const pullWithPostReadClear = async (): Promise<void> => {
-      if (this.currentUser() !== user || !this.isNetworkReachable()) {
-        return;
-      }
-      await this.pullMessages(user);
-      if (normalizedChatId) {
-        this.clearUnreadCountForChat(normalizedChatId);
-      }
-    };
-
-    this.syncForegroundState({ forceRefresh: true });
-    await pullWithPostReadClear();
-
-    // Queue ingest can race with notification click; retry shortly to guarantee latest state.
-    [500, 1500, 3500].forEach((delayMs) => {
-      setTimeout(() => {
-        void pullWithPostReadClear();
-      }, delayMs);
-    });
-  }
-
   setActiveChat(chatId: string | null): void {
     const previousActiveChat = this.activeChatId();
     if (previousActiveChat && previousActiveChat !== this.normalizeChatId(chatId ?? '')) {
@@ -7369,13 +7341,21 @@ export class ChatStoreService {
     const action = String(messageData.action ?? '').trim();
     if (action === 'notification-clicked') {
       this.clearDeviceAttention({ resetServerBadge: true });
+      const clickedPayloadRaw = messageData.payload;
+      if (clickedPayloadRaw && typeof clickedPayloadRaw === 'object') {
+        this.incrementDeliveryTelemetry('pushPayloadReceived');
+        this.applyIncomingFromPushPayload(
+          clickedPayloadRaw as Record<string, unknown>,
+          currentUser,
+          { allowRecoverySync: false }
+        );
+      }
       const clickedChatId = this.resolveNotificationChatId(messageData, currentUser);
       if (clickedChatId) {
         this.setActiveChat(clickedChatId);
         // Opening from a notification is an explicit read intent for that chat.
         this.clearUnreadCountForChat(clickedChatId);
       }
-      void this.forceSyncLatestMessagesForOpenedChat(clickedChatId || null);
       return;
     }
     if (action !== 'push-payload') return;
@@ -7383,15 +7363,25 @@ export class ChatStoreService {
 
     const payloadRaw = messageData.payload;
     if (!payloadRaw || typeof payloadRaw !== 'object') return;
-    const payload = payloadRaw as Record<string, unknown>;
+    this.applyIncomingFromPushPayload(payloadRaw as Record<string, unknown>, currentUser, {
+      allowRecoverySync: true
+    });
+  }
 
+  private applyIncomingFromPushPayload(
+    payload: Record<string, unknown>,
+    currentUser: string,
+    options: { allowRecoverySync: boolean }
+  ): void {
     const payloadUser = this.normalizeUser(String(payload['user'] ?? ''));
     if (payloadUser && payloadUser !== currentUser) return;
 
     const payloadType = String(payload['type'] ?? '').trim().toLowerCase();
     if (payloadType === 'subscription-auth-refresh') {
       this.refreshPushRegistrationForCurrentUser(true);
-      this.syncForegroundState({ forceRefresh: true });
+      if (options.allowRecoverySync) {
+        this.syncForegroundState({ forceRefresh: true });
+      }
       return;
     }
     const numericGroupUpdatedAt = Number(payload['groupUpdatedAt']);
@@ -7440,9 +7430,11 @@ export class ChatStoreService {
       } else {
         this.incrementDeliveryTelemetry('pushMissingMessageContext');
       }
-      // Keep recovery pulls to hydrate fields missing from compact push payloads.
-      this.syncForegroundState({ forceRefresh: true });
-      this.schedulePushRecoveryPulls();
+      if (options.allowRecoverySync) {
+        // Keep recovery pulls to hydrate fields missing from compact push payloads.
+        this.syncForegroundState({ forceRefresh: true });
+        this.schedulePushRecoveryPulls();
+      }
       return;
     }
 

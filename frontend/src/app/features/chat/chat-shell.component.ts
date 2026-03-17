@@ -852,7 +852,6 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       const chatFromUrl = queryParams.get('chat');
       if (chatFromUrl) {
         this.openChat(chatFromUrl);
-        void this.store.forceSyncLatestMessagesForOpenedChat(chatFromUrl);
         return;
       }
 
