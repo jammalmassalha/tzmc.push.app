@@ -1,0 +1,233 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.MysqlLogsService = void 0;
+exports.createMysqlLogsServiceFromEnv = createMysqlLogsServiceFromEnv;
+const promise_1 = __importDefault(require("mysql2/promise"));
+function toTrimmedString(value) {
+    return String(value ?? '').trim();
+}
+function toPositiveInteger(value, fallbackValue) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+        return fallbackValue;
+    }
+    return Math.floor(parsed);
+}
+function normalizePhone(value) {
+    let text = toTrimmedString(value);
+    if (!text)
+        return '';
+    if (/^\d+$/.test(text) && text.charAt(0) !== '0') {
+        text = `0${text}`;
+    }
+    return text;
+}
+function parseRecipientUsernames(recipientRawValue) {
+    const parts = [];
+    if (Array.isArray(recipientRawValue)) {
+        recipientRawValue.forEach((value) => parts.push(toTrimmedString(value)));
+    }
+    else if (recipientRawValue && typeof recipientRawValue === 'object') {
+        const record = recipientRawValue;
+        const usernames = Array.isArray(record.usernames) ? record.usernames : (Array.isArray(record.users) ? record.users : []);
+        usernames.forEach((value) => parts.push(toTrimmedString(value)));
+    }
+    else {
+        const raw = toTrimmedString(recipientRawValue);
+        if (!raw || raw.toLowerCase() === 'all' || raw === '*') {
+            return [];
+        }
+        raw.split(',').forEach((value) => parts.push(toTrimmedString(value)));
+    }
+    const seen = new Set();
+    const users = [];
+    parts.forEach((part) => {
+        const normalized = normalizePhone(part);
+        if (!normalized || seen.has(normalized)) {
+            return;
+        }
+        seen.add(normalized);
+        users.push(normalized);
+    });
+    return users;
+}
+function parseFlexibleTimestamp(value) {
+    if (value instanceof Date) {
+        const timestamp = value.getTime();
+        return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : 0;
+    }
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric > 0) {
+        return numeric;
+    }
+    const text = toTrimmedString(value);
+    if (!text)
+        return 0;
+    const parsed = Date.parse(text);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+function parseLogDetailsMap(detailsRawValue) {
+    const detailsText = toTrimmedString(detailsRawValue);
+    if (!detailsText)
+        return {};
+    try {
+        const parsed = JSON.parse(detailsText);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            return Object.entries(parsed).reduce((acc, [key, value]) => {
+                acc[String(key)] = toTrimmedString(value);
+                return acc;
+            }, {});
+        }
+    }
+    catch {
+        // Fallback to key=value parser.
+    }
+    return detailsText
+        .split('|')
+        .map((segment) => toTrimmedString(segment))
+        .filter(Boolean)
+        .reduce((acc, segment) => {
+        const separatorIndex = segment.indexOf('=');
+        if (separatorIndex <= 0) {
+            return acc;
+        }
+        const key = toTrimmedString(segment.slice(0, separatorIndex));
+        const value = toTrimmedString(segment.slice(separatorIndex + 1));
+        if (!key) {
+            return acc;
+        }
+        acc[key] = value;
+        return acc;
+    }, {});
+}
+function normalizeTableName(rawValue) {
+    const fallback = 'Logs';
+    const value = toTrimmedString(rawValue);
+    if (!value)
+        return fallback;
+    if (!/^[A-Za-z0-9_]+$/.test(value)) {
+        return fallback;
+    }
+    return value;
+}
+class MysqlLogsService {
+    pool;
+    tableName;
+    constructor(config) {
+        this.tableName = normalizeTableName(config.table);
+        this.pool = promise_1.default.createPool({
+            host: config.host,
+            port: config.port,
+            user: config.user,
+            password: config.password,
+            database: config.database,
+            connectionLimit: config.connectionLimit,
+            charset: 'utf8mb4'
+        });
+    }
+    async insertLog(payload) {
+        const sender = toTrimmedString(payload.sender) || 'System';
+        const recipient = toTrimmedString(payload.recipient);
+        const message = toTrimmedString(payload.message);
+        const status = toTrimmedString(payload.status);
+        const details = toTrimmedString(payload.details);
+        const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
+        const dateTime = payload.dateTime instanceof Date ? payload.dateTime : new Date();
+        await this.pool.execute(`INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`, [dateTime, recipient, sender, message, status, details, recipientAuthJson]);
+        return true;
+    }
+    async getLogsMessagesForUser(user, options = {}) {
+        const requestedUser = normalizePhone(user);
+        if (!requestedUser) {
+            return [];
+        }
+        const limit = Math.max(1, Math.min(toPositiveInteger(options.limit, 700), 2000));
+        const excludeSystem = options.excludeSystem !== false;
+        const queryFetchLimit = Math.max(2000, Math.min(limit * 8, 20000));
+        const [rows] = await this.pool.query(`SELECT
+        \`DateTime\` AS dateTime,
+        \`ToUser\` AS toUser,
+        \`From\` AS fromUser,
+        \`Message Preview\` AS messagePreview,
+        \`SuccessOrFailed\` AS successOrFailed,
+        \`ErrorMessageOrSuccessCount\` AS errorMessageOrSuccessCount,
+        \`RecipientAuthJSON\` AS recipientAuthJson
+      FROM \`${this.tableName}\`
+      ORDER BY \`DateTime\` DESC
+      LIMIT ?`, [queryFetchLimit]);
+        const messages = [];
+        for (let rowIndex = 0; rowIndex < rows.length && messages.length < limit; rowIndex += 1) {
+            const row = rows[rowIndex];
+            const recipients = parseRecipientUsernames(row.toUser);
+            if (!recipients.includes(requestedUser)) {
+                continue;
+            }
+            const senderRaw = toTrimmedString(row.fromUser);
+            const sender = normalizePhone(senderRaw) || senderRaw;
+            if (!sender)
+                continue;
+            if (excludeSystem && sender.toLowerCase() === 'system') {
+                continue;
+            }
+            const status = toTrimmedString(row.successOrFailed).toLowerCase();
+            if (status.startsWith('fail') || status.startsWith('error')) {
+                continue;
+            }
+            const details = toTrimmedString(row.errorMessageOrSuccessCount);
+            const detailsMap = parseLogDetailsMap(details);
+            const actionTypeFromDetails = toTrimmedString(detailsMap.type || detailsMap.actionType || detailsMap.action_type).toLowerCase();
+            const isDeletedStatus = status.startsWith('deleted');
+            const resolvedActionType = isDeletedStatus ? 'delete-action' : actionTypeFromDetails;
+            const body = toTrimmedString(row.messagePreview);
+            if (!resolvedActionType) {
+                if (!body)
+                    continue;
+                if (body.toLowerCase() === 'new notification') {
+                    continue;
+                }
+            }
+            const timestamp = parseFlexibleTimestamp(row.dateTime) || Date.now();
+            const messageId = toTrimmedString(detailsMap.messageId || detailsMap.message_id || detailsMap.targetMessageId) || `db-logs-${timestamp}-${rowIndex}`;
+            const deletedAt = parseFlexibleTimestamp(detailsMap.deletedAt || detailsMap.deleted_at || timestamp) || timestamp;
+            messages.push({
+                id: `db-logs-${timestamp}-${rowIndex}`,
+                messageId,
+                sender,
+                body,
+                timestamp,
+                recipient: requestedUser,
+                status,
+                details,
+                type: resolvedActionType || undefined,
+                deletedAt: resolvedActionType === 'delete-action' ? deletedAt : undefined,
+                groupId: toTrimmedString(detailsMap.groupId || detailsMap.group_id) || undefined,
+                messageIds: toTrimmedString(detailsMap.messageIds || detailsMap.message_ids) || undefined
+            });
+        }
+        messages.reverse();
+        return messages;
+    }
+}
+exports.MysqlLogsService = MysqlLogsService;
+function createMysqlLogsServiceFromEnv(env = process.env) {
+    const host = toTrimmedString(env.LOGS_DB_HOST || env.MYSQL_HOST || env.DB_HOST || '127.0.0.1');
+    const port = toPositiveInteger(env.LOGS_DB_PORT || env.MYSQL_PORT || env.DB_PORT, 3306);
+    const user = toTrimmedString(env.LOGS_DB_USER || env.MYSQL_USER || env.DB_USER || 'jmassalh_subscribes');
+    const password = toTrimmedString(env.LOGS_DB_PASSWORD || env.MYSQL_PASSWORD || env.DB_PASSWORD || 'jmassalh_subscribes!!');
+    const database = toTrimmedString(env.LOGS_DB_NAME || env.MYSQL_DATABASE || env.DB_NAME || 'jmassalh_subscribes');
+    const table = normalizeTableName(env.LOGS_DB_TABLE || env.MYSQL_LOGS_TABLE || 'Logs');
+    const connectionLimit = Math.max(1, Math.min(toPositiveInteger(env.LOGS_DB_CONNECTION_LIMIT || env.MYSQL_CONNECTION_LIMIT, 5), 30));
+    return new MysqlLogsService({
+        host,
+        port,
+        user,
+        password,
+        database,
+        table,
+        connectionLimit
+    });
+}

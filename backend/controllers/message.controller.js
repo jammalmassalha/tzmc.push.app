@@ -4,6 +4,7 @@ function registerMessageController(app, deps = {}) {
         normalizeUserKey,
         fetchWithRetry,
         buildGoogleSheetGetUrl,
+        getLogsMessagesForUser,
         getGroups,
         getActiveRedisStateStore,
         getMessageQueue,
@@ -446,30 +447,9 @@ function registerMessageController(app, deps = {}) {
             }
 
             try {
-                const response = await fetchWithRetry(
-                    buildGoogleSheetGetUrl({
-                        action: 'get_logs_messages',
-                        user,
-                        excludeSystem: '1',
-                        limit: String(limit)
-                    }),
-                    {},
-                    { timeoutMs: 15000, retries: 1 }
-                );
-                if (!response.ok) {
-                    return res.status(response.status).json({ messages: [] });
-                }
-
-                const payload = await response.json();
-                const payloadResult = String(payload && payload.result ? payload.result : '').trim().toLowerCase();
-                if (payloadResult && payloadResult !== 'success') {
-                    const payloadError = String(
-                        (payload && (payload.message || payload.error)) || 'Logs sync failed'
-                    ).trim();
-                    const statusCode = /unauthorized|forbidden/i.test(payloadError) ? 403 : 502;
-                    return res.status(statusCode).json({ messages: [], error: payloadError || 'Logs sync failed' });
-                }
-                const rawMessages = Array.isArray(payload && payload.messages) ? payload.messages : [];
+                const rawMessages = typeof getLogsMessagesForUser === 'function'
+                    ? await getLogsMessagesForUser(user, { limit, excludeSystem: true })
+                    : [];
                 const messages = rawMessages
                     .map((message, index) => {
                         if (!message || typeof message !== 'object') {

@@ -19,6 +19,7 @@ const { registerMessageController } = require('./backend/controllers/message.con
 const { registerShuttleController } = require('./backend/controllers/shuttle.controller');
 const {
     createSheetIntegrationServiceFromEnv,
+    createMysqlLogsServiceFromEnv,
     createWebhookRegistryFromEnv,
     createRedisStateStoreFromEnv,
     SessionTokenJweService,
@@ -33,6 +34,7 @@ const fetch = (...args) => {
 };
 
 const sheetIntegrationService = createSheetIntegrationServiceFromEnv(process.env);
+const mysqlLogsService = createMysqlLogsServiceFromEnv(process.env);
 const webhookRegistryService = createWebhookRegistryFromEnv(process.env);
 const GOOGLE_SHEET_URL = sheetIntegrationService.googleSheetUrl;
 const redisStateStorePromise = createRedisStateStoreFromEnv(process.env)
@@ -4838,20 +4840,15 @@ function buildMobileSubscriptionAuthJsonForLog(recipient, subscriptions = []) {
 
 // Helper: Log status to Google Sheets
 function logNotificationStatus(sender, recipient, messageShort, status, details, recipientAuthJson = '') {
-    return fetchWithRetry(GOOGLE_SHEET_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            action: 'save_log',
-            sender: sender || 'System',
-            recipient: recipient,
-            message: messageShort,
-            status: status,
-            details: details,
-            recipientAuthJson: recipientAuthJson || ''
-        })
-    }, { timeoutMs: 10000, retries: 2 }).catch(err => {
-        console.error('[LOG ERROR]', err.message);
+    return mysqlLogsService.insertLog({
+        sender: sender || 'System',
+        recipient: recipient,
+        message: messageShort,
+        status: status,
+        details: details,
+        recipientAuthJson: recipientAuthJson || ''
+    }).catch((err) => {
+        console.error('[LOG ERROR]', err && err.message ? err.message : err);
         return null;
     });
 }
@@ -6312,6 +6309,7 @@ registerMessageController(app, {
     normalizeUserKey,
     fetchWithRetry,
     buildGoogleSheetGetUrl,
+    getLogsMessagesForUser: (user, options = {}) => mysqlLogsService.getLogsMessagesForUser(user, options),
     getGroups: () => groups,
     getActiveRedisStateStore: () => activeRedisStateStore,
     getMessageQueue: () => messageQueue,
