@@ -89,6 +89,41 @@ function parseRecipientUsernames(recipientRawValue: unknown): string[] {
   return users;
 }
 
+function parseRecipientsFromAuthJson(recipientAuthJsonRawValue: unknown): string[] {
+  const text = toTrimmedString(recipientAuthJsonRawValue);
+  if (!text) return [];
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    const addCandidate = (rawCandidate: unknown, target: Set<string>) => {
+      const normalized = normalizePhone(rawCandidate);
+      if (normalized) {
+        target.add(normalized);
+      }
+    };
+    const recipients = new Set<string>();
+    if (Array.isArray(parsed)) {
+      parsed.forEach((item) => {
+        if (item && typeof item === 'object') {
+          const record = item as Record<string, unknown>;
+          addCandidate(record.username ?? record.user, recipients);
+        } else {
+          addCandidate(item, recipients);
+        }
+      });
+      return Array.from(recipients);
+    }
+    if (parsed && typeof parsed === 'object') {
+      const record = parsed as Record<string, unknown>;
+      addCandidate(record.username ?? record.user, recipients);
+      return Array.from(recipients);
+    }
+    addCandidate(parsed, recipients);
+    return Array.from(recipients);
+  } catch {
+    return [];
+  }
+}
+
 function parseFlexibleTimestamp(value: unknown): number {
   if (value instanceof Date) {
     const timestamp = value.getTime();
@@ -349,8 +384,21 @@ export class MysqlLogsService {
     const messages: Record<string, unknown>[] = [];
     for (let rowIndex = 0; rowIndex < rows.length && messages.length < limit; rowIndex += 1) {
       const row = rows[rowIndex];
-      const recipients = parseRecipientUsernames(row.toUser);
-      if (!recipients.includes(requestedUser)) {
+      const rawToUser = toTrimmedString(row.toUser);
+      const recipients = new Set<string>([
+        ...parseRecipientUsernames(rawToUser),
+        ...parseRecipientsFromAuthJson(row.recipientAuthJson)
+      ]);
+      const toUserNormalizedPhone = normalizePhone(rawToUser);
+      const toUserLower = rawToUser.toLowerCase();
+      const isGroupTargetRow = Boolean(
+        rawToUser &&
+        !toUserNormalizedPhone &&
+        toUserLower !== 'system' &&
+        toUserLower !== 'all' &&
+        rawToUser !== '*'
+      );
+      if (!recipients.has(requestedUser) && !isGroupTargetRow) {
         continue;
       }
 

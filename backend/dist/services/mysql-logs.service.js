@@ -54,6 +54,43 @@ function parseRecipientUsernames(recipientRawValue) {
     });
     return users;
 }
+function parseRecipientsFromAuthJson(recipientAuthJsonRawValue) {
+    const text = toTrimmedString(recipientAuthJsonRawValue);
+    if (!text)
+        return [];
+    try {
+        const parsed = JSON.parse(text);
+        const addCandidate = (rawCandidate, target) => {
+            const normalized = normalizePhone(rawCandidate);
+            if (normalized) {
+                target.add(normalized);
+            }
+        };
+        const recipients = new Set();
+        if (Array.isArray(parsed)) {
+            parsed.forEach((item) => {
+                if (item && typeof item === 'object') {
+                    const record = item;
+                    addCandidate(record.username ?? record.user, recipients);
+                }
+                else {
+                    addCandidate(item, recipients);
+                }
+            });
+            return Array.from(recipients);
+        }
+        if (parsed && typeof parsed === 'object') {
+            const record = parsed;
+            addCandidate(record.username ?? record.user, recipients);
+            return Array.from(recipients);
+        }
+        addCandidate(parsed, recipients);
+        return Array.from(recipients);
+    }
+    catch {
+        return [];
+    }
+}
 function parseFlexibleTimestamp(value) {
     if (value instanceof Date) {
         const timestamp = value.getTime();
@@ -277,8 +314,19 @@ class MysqlLogsService {
         const messages = [];
         for (let rowIndex = 0; rowIndex < rows.length && messages.length < limit; rowIndex += 1) {
             const row = rows[rowIndex];
-            const recipients = parseRecipientUsernames(row.toUser);
-            if (!recipients.includes(requestedUser)) {
+            const rawToUser = toTrimmedString(row.toUser);
+            const recipients = new Set([
+                ...parseRecipientUsernames(rawToUser),
+                ...parseRecipientsFromAuthJson(row.recipientAuthJson)
+            ]);
+            const toUserNormalizedPhone = normalizePhone(rawToUser);
+            const toUserLower = rawToUser.toLowerCase();
+            const isGroupTargetRow = Boolean(rawToUser &&
+                !toUserNormalizedPhone &&
+                toUserLower !== 'system' &&
+                toUserLower !== 'all' &&
+                rawToUser !== '*');
+            if (!recipients.has(requestedUser) && !isGroupTargetRow) {
                 continue;
             }
             const senderRaw = toTrimmedString(row.fromUser);
