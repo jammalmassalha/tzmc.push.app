@@ -461,7 +461,12 @@ function registerMessageController(app, deps = {}) {
 
             try {
                 const rawMessages = typeof getLogsMessagesForUser === 'function'
-                    ? await getLogsMessagesForUser(user, { limit, offset, excludeSystem: true })
+                    ? await getLogsMessagesForUser(user, {
+                        limit,
+                        offset,
+                        excludeSystem: true,
+                        hardcodedGroupIds: Array.from(hardcodedGroupKeySet)
+                    })
                     : [];
                 const messages = rawMessages
                     .map((message, index) => {

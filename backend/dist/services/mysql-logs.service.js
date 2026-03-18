@@ -25,6 +25,9 @@ function normalizePhone(value) {
     }
     return text;
 }
+function normalizeGroupKey(value) {
+    return toTrimmedString(value).toLowerCase();
+}
 function parseRecipientUsernames(recipientRawValue) {
     const parts = [];
     if (Array.isArray(recipientRawValue)) {
@@ -300,6 +303,9 @@ class MysqlLogsService {
         const limit = Math.max(1, Math.min(toPositiveInteger(options.limit, 700), 200000));
         const offset = Math.max(0, toPositiveInteger(options.offset, 0));
         const excludeSystem = options.excludeSystem !== false;
+        const hardcodedGroupKeySet = new Set(Array.isArray(options.hardcodedGroupIds)
+            ? options.hardcodedGroupIds.map((value) => normalizeGroupKey(value)).filter(Boolean)
+            : []);
         const maxRawRowsToScan = Math.max(50000, Math.min(limit * 200, 2000000));
         let rawOffset = offset;
         let scannedRawRows = 0;
@@ -324,6 +330,9 @@ class MysqlLogsService {
             }
             for (let rowIndex = 0; rowIndex < rows.length && messages.length < limit; rowIndex += 1) {
                 const row = rows[rowIndex];
+                const senderRaw = toTrimmedString(row.fromUser);
+                const sender = normalizePhone(senderRaw) || senderRaw;
+                const isHardcodedGlobalGroupSender = hardcodedGroupKeySet.has(normalizeGroupKey(senderRaw));
                 const rawToUser = toTrimmedString(row.toUser);
                 const recipients = new Set([
                     ...parseRecipientUsernames(rawToUser),
@@ -336,11 +345,9 @@ class MysqlLogsService {
                     toUserLower !== 'system' &&
                     toUserLower !== 'all' &&
                     rawToUser !== '*');
-                if (!recipients.has(requestedUser) && !isGroupTargetRow) {
+                if (!recipients.has(requestedUser) && !isGroupTargetRow && !isHardcodedGlobalGroupSender) {
                     continue;
                 }
-                const senderRaw = toTrimmedString(row.fromUser);
-                const sender = normalizePhone(senderRaw) || senderRaw;
                 if (!sender)
                     continue;
                 if (excludeSystem && sender.toLowerCase() === 'system') {
