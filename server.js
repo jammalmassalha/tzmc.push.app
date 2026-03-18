@@ -4853,6 +4853,84 @@ function logNotificationStatus(sender, recipient, messageShort, status, details,
     });
 }
 
+function parseLogsDumpDateTime(rawValue) {
+    if (rawValue instanceof Date) {
+        const timestamp = rawValue.getTime();
+        return Number.isFinite(timestamp) && timestamp > 0 ? rawValue : new Date();
+    }
+    const numeric = Number(rawValue);
+    if (Number.isFinite(numeric) && numeric > 0) {
+        return new Date(numeric);
+    }
+    const text = String(rawValue || '').trim();
+    if (!text) {
+        return new Date();
+    }
+    const parsed = Date.parse(text);
+    if (Number.isFinite(parsed) && parsed > 0) {
+        return new Date(parsed);
+    }
+    return new Date();
+}
+
+function mapLogsDumpRowForMysqlInsert(rawRow = {}) {
+    if (!rawRow || typeof rawRow !== 'object') {
+        return null;
+    }
+    const row = rawRow;
+    const sender = String(
+        row.fromUser ??
+        row.from ??
+        row.From ??
+        row.sender ??
+        'System'
+    ).trim() || 'System';
+    const recipient = String(
+        row.toUser ??
+        row.to ??
+        row.ToUser ??
+        row.recipient ??
+        ''
+    ).trim();
+    const message = String(
+        row.messagePreview ??
+        row.message ??
+        row['Message Preview'] ??
+        ''
+    ).trim();
+    const status = String(
+        row.successOrFailed ??
+        row.status ??
+        row.SuccessOrFailed ??
+        ''
+    ).trim();
+    const details = String(
+        row.errorMessageOrSuccessCount ??
+        row.details ??
+        row.ErrorMessageOrSuccessCount ??
+        ''
+    ).trim();
+    const recipientAuthJson = String(
+        row.recipientAuthJson ??
+        row.RecipientAuthJSON ??
+        ''
+    ).trim();
+    return {
+        sender,
+        recipient,
+        message,
+        status,
+        details,
+        recipientAuthJson,
+        dateTime: parseLogsDumpDateTime(
+            row.dateTime ??
+            row.DateTime ??
+            row.date ??
+            row.createdAt
+        )
+    };
+}
+
 async function updateSubscriptionAuthRefreshDateTime(usernames = [], requestId = '') {
     const normalizedUsers = parseUsernamesInput(usernames);
     if (!normalizedUsers.length) {
@@ -5260,6 +5338,110 @@ app.get(['/delivery-telemetry/status', '/notify/delivery-telemetry/status'], (re
         count: rows.length,
         devices: rows
     });
+});
+
+app.post(['/logs/import-sheet-to-db', '/notify/logs/import-sheet-to-db'], async (req, res) => {
+    if (!isSchedulerOpsRequestAuthorized(req)) {
+        return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const payload = req.body && typeof req.body === 'object' ? req.body : {};
+    const batchSizeRaw = parsePositiveInteger(payload.batchSize, 500);
+    const batchSize = Math.max(50, Math.min(batchSizeRaw || 500, 5000));
+    const maxRowsRaw = parsePositiveInteger(payload.maxRows, 0);
+    const maxRows = maxRowsRaw > 0 ? Math.min(maxRowsRaw, 1000000) : 0;
+    const truncateBeforeImport = parseBooleanInput(
+        payload.truncateBeforeImport ?? payload.truncate ?? false,
+        false
+    );
+    const dryRun = parseBooleanInput(payload.dryRun ?? false, false);
+    const initialOffset = Math.max(0, Number(payload.offset || 0) || 0);
+
+    try {
+        if (truncateBeforeImport && !dryRun && initialOffset === 0) {
+            await mysqlLogsService.truncateLogs();
+        }
+
+        let offset = initialOffset;
+        let batches = 0;
+        let imported = 0;
+        let scanned = 0;
+        let hasMore = true;
+
+        while (hasMore) {
+            const remaining = maxRows > 0 ? Math.max(0, maxRows - scanned) : batchSize;
+            if (maxRows > 0 && remaining <= 0) {
+                break;
+            }
+            const effectiveLimit = maxRows > 0
+                ? Math.max(1, Math.min(batchSize, remaining))
+                : batchSize;
+
+            const response = await fetchWithRetry(
+                buildGoogleSheetGetUrl({
+                    action: 'get_logs_dump',
+                    offset: String(offset),
+                    limit: String(effectiveLimit)
+                }),
+                {},
+                { timeoutMs: 20000, retries: 2, backoffMs: 700 }
+            );
+            if (!response.ok) {
+                throw new Error(`Sheet logs dump failed with ${response.status}`);
+            }
+
+            const dumpPayload = await response.json();
+            const result = String(dumpPayload && dumpPayload.result ? dumpPayload.result : '').trim().toLowerCase();
+            if (result && result !== 'success') {
+                const errorMessage = String(
+                    (dumpPayload && (dumpPayload.error || dumpPayload.message)) || 'Sheet logs dump failed'
+                ).trim();
+                throw new Error(errorMessage || 'Sheet logs dump failed');
+            }
+
+            const rawRows = Array.isArray(dumpPayload && dumpPayload.rows) ? dumpPayload.rows : [];
+            if (!rawRows.length) {
+                hasMore = false;
+                break;
+            }
+
+            const normalizedRows = rawRows
+                .map((row) => mapLogsDumpRowForMysqlInsert(row))
+                .filter(Boolean);
+
+            if (!dryRun && normalizedRows.length) {
+                imported += await mysqlLogsService.insertLogsBulk(normalizedRows);
+            } else {
+                imported += normalizedRows.length;
+            }
+
+            scanned += rawRows.length;
+            offset += rawRows.length;
+            batches += 1;
+
+            const payloadHasMore = Boolean(dumpPayload && dumpPayload.hasMore === true);
+            hasMore = payloadHasMore;
+            if (!payloadHasMore && rawRows.length < effectiveLimit) {
+                hasMore = false;
+            }
+        }
+
+        return res.json({
+            result: 'success',
+            dryRun,
+            truncated: truncateBeforeImport && initialOffset === 0,
+            imported,
+            scanned,
+            batches,
+            nextOffset: initialOffset + scanned
+        });
+    } catch (error) {
+        console.error('[LOGS IMPORT] Failed:', error && error.message ? error.message : error);
+        return res.status(500).json({
+            result: 'error',
+            message: error && error.message ? error.message : 'Logs import failed'
+        });
+    }
 });
 // ======================================================
 // [UPDATED] BACKUP CHATS ENDPOINT (NON-BLOCKING)

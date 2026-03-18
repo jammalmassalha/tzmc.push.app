@@ -491,7 +491,95 @@ function doGet(e) {
     }
 
     // ======================================================
-    // 4. GET LOGS MESSAGES (From Sheet: Logs)
+    // 4. GET LOGS DUMP (From Sheet: Logs, raw rows)
+    // ======================================================
+    if (action === 'get_logs_dump') {
+      var configuredDumpToken = getServerGuardToken();
+      var providedDumpToken = String(e.parameter.token || e.parameter.serverToken || '').trim();
+      if (configuredDumpToken && providedDumpToken !== configuredDumpToken) {
+        return createError('Unauthorized get_logs_dump read');
+      }
+
+      var dumpSheet = spreadsheet.getSheetByName('Logs');
+      if (!dumpSheet) {
+        return createJSON({
+          result: 'success',
+          rows: [],
+          offset: 0,
+          nextOffset: 0,
+          count: 0,
+          totalRows: 0,
+          hasMore: false
+        });
+      }
+
+      var dumpLastRow = getLastDataRow(dumpSheet);
+      if (!dumpLastRow) {
+        return createJSON({
+          result: 'success',
+          rows: [],
+          offset: 0,
+          nextOffset: 0,
+          count: 0,
+          totalRows: 0,
+          hasMore: false
+        });
+      }
+
+      var dumpOffsetRaw = parseInt(String(e.parameter.offset || '0'), 10);
+      var dumpOffset = isNaN(dumpOffsetRaw) ? 0 : Math.max(0, dumpOffsetRaw);
+      var dumpLimitRaw = parseInt(String(e.parameter.limit || '1000'), 10);
+      var dumpLimit = isNaN(dumpLimitRaw) ? 1000 : Math.max(1, Math.min(dumpLimitRaw, 5000));
+      var dumpTotalRows = Math.max(0, dumpLastRow - 1);
+      var dumpRemaining = Math.max(0, dumpTotalRows - dumpOffset);
+      var dumpFetchRows = Math.min(dumpLimit, dumpRemaining);
+
+      if (dumpFetchRows <= 0) {
+        return createJSON({
+          result: 'success',
+          rows: [],
+          offset: dumpOffset,
+          nextOffset: dumpOffset,
+          count: 0,
+          totalRows: dumpTotalRows,
+          hasMore: false
+        });
+      }
+
+      var dumpValues = getRangeValues(dumpSheet, 2 + dumpOffset, 1, dumpFetchRows, 7);
+      var dumpRows = dumpValues.map(function (row) {
+        var rowDate = row[0];
+        var dateTimeText = '';
+        if (rowDate && Object.prototype.toString.call(rowDate) === '[object Date]') {
+          dateTimeText = rowDate.toISOString();
+        } else {
+          dateTimeText = String(rowDate || '').trim();
+        }
+        return {
+          dateTime: dateTimeText,
+          toUser: String(row[1] || '').trim(),
+          fromUser: String(row[2] || '').trim(),
+          messagePreview: String(row[3] || '').trim(),
+          successOrFailed: String(row[4] || '').trim(),
+          errorMessageOrSuccessCount: String(row[5] || '').trim(),
+          recipientAuthJson: String(row[6] || '').trim()
+        };
+      });
+
+      var dumpNextOffset = dumpOffset + dumpRows.length;
+      return createJSON({
+        result: 'success',
+        rows: dumpRows,
+        offset: dumpOffset,
+        nextOffset: dumpNextOffset,
+        count: dumpRows.length,
+        totalRows: dumpTotalRows,
+        hasMore: dumpNextOffset < dumpTotalRows
+      });
+    }
+
+    // ======================================================
+    // 5. GET LOGS MESSAGES (From Sheet: Logs)
     // ======================================================
     if (action === 'get_logs_messages') {
       var requestedLogsUser = normalizePhone(e.parameter.user || e.parameter.username || '');
@@ -600,7 +688,7 @@ function doGet(e) {
     }
 
     // ======================================================
-    // 5. CHECK QUEUE (Polling)
+    // 6. CHECK QUEUE (Polling)
     // ======================================================
     if (action === 'check_queue') {
       var requestedUser = normalizePhone(e.parameter.user || e.parameter.username || '');

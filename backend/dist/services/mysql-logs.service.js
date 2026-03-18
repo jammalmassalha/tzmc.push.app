@@ -116,8 +116,11 @@ function normalizeTableName(rawValue) {
 class MysqlLogsService {
     pool;
     tableName;
+    insertQuery;
     constructor(config) {
         this.tableName = normalizeTableName(config.table);
+        this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`;
         this.pool = promise_1.default.createPool({
             host: config.host,
             port: config.port,
@@ -136,9 +139,48 @@ class MysqlLogsService {
         const details = toTrimmedString(payload.details);
         const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
         const dateTime = payload.dateTime instanceof Date ? payload.dateTime : new Date();
-        await this.pool.execute(`INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`, [dateTime, recipient, sender, message, status, details, recipientAuthJson]);
+        await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, message, status, details, recipientAuthJson]);
         return true;
+    }
+    async insertLogsBulk(payloads) {
+        const normalizedPayloads = Array.isArray(payloads) ? payloads.filter(Boolean) : [];
+        if (!normalizedPayloads.length) {
+            return 0;
+        }
+        const connection = await this.pool.getConnection();
+        try {
+            await connection.beginTransaction();
+            for (const payload of normalizedPayloads) {
+                const sender = toTrimmedString(payload.sender) || 'System';
+                const recipient = toTrimmedString(payload.recipient);
+                const message = toTrimmedString(payload.message);
+                const status = toTrimmedString(payload.status);
+                const details = toTrimmedString(payload.details);
+                const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
+                const dateTime = payload.dateTime instanceof Date ? payload.dateTime : new Date();
+                await connection.execute(this.insertQuery, [
+                    dateTime,
+                    recipient,
+                    sender,
+                    message,
+                    status,
+                    details,
+                    recipientAuthJson
+                ]);
+            }
+            await connection.commit();
+            return normalizedPayloads.length;
+        }
+        catch (error) {
+            await connection.rollback();
+            throw error;
+        }
+        finally {
+            connection.release();
+        }
+    }
+    async truncateLogs() {
+        await this.pool.query(`TRUNCATE TABLE \`${this.tableName}\``);
     }
     async getLogsMessagesForUser(user, options = {}) {
         const requestedUser = normalizePhone(user);

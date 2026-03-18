@@ -147,9 +147,12 @@ function normalizeTableName(rawValue: unknown): string {
 export class MysqlLogsService {
   private readonly pool: Pool;
   private readonly tableName: string;
+  private readonly insertQuery: string;
 
   constructor(config: MysqlLogsConfig) {
     this.tableName = normalizeTableName(config.table);
+    this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`;
     this.pool = mysql.createPool({
       host: config.host,
       port: config.port,
@@ -170,12 +173,49 @@ export class MysqlLogsService {
     const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
     const dateTime = payload.dateTime instanceof Date ? payload.dateTime : new Date();
 
-    await this.pool.execute(
-      `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [dateTime, recipient, sender, message, status, details, recipientAuthJson]
-    );
+    await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, message, status, details, recipientAuthJson]);
     return true;
+  }
+
+  async insertLogsBulk(payloads: MysqlLogInsertPayload[]): Promise<number> {
+    const normalizedPayloads = Array.isArray(payloads) ? payloads.filter(Boolean) : [];
+    if (!normalizedPayloads.length) {
+      return 0;
+    }
+
+    const connection = await this.pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      for (const payload of normalizedPayloads) {
+        const sender = toTrimmedString(payload.sender) || 'System';
+        const recipient = toTrimmedString(payload.recipient);
+        const message = toTrimmedString(payload.message);
+        const status = toTrimmedString(payload.status);
+        const details = toTrimmedString(payload.details);
+        const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
+        const dateTime = payload.dateTime instanceof Date ? payload.dateTime : new Date();
+        await connection.execute(this.insertQuery, [
+          dateTime,
+          recipient,
+          sender,
+          message,
+          status,
+          details,
+          recipientAuthJson
+        ]);
+      }
+      await connection.commit();
+      return normalizedPayloads.length;
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+
+  async truncateLogs(): Promise<void> {
+    await this.pool.query(`TRUNCATE TABLE \`${this.tableName}\``);
   }
 
   async getLogsMessagesForUser(user: string, options: MysqlLogsReadOptions = {}): Promise<Record<string, unknown>[]> {
