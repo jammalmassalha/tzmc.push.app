@@ -5396,6 +5396,9 @@ app.post(['/logs/import-sheet-to-db', '/notify/logs/import-sheet-to-db'], async 
                 const errorMessage = String(
                     (dumpPayload && (dumpPayload.error || dumpPayload.message)) || 'Sheet logs dump failed'
                 ).trim();
+                if (/usernames parameter is missing/i.test(errorMessage)) {
+                    throw new Error('Google Apps Script deployment is outdated (missing get_logs_dump action). Deploy latest code.gs first.');
+                }
                 throw new Error(errorMessage || 'Sheet logs dump failed');
             }
 

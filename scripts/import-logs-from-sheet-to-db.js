@@ -160,7 +160,11 @@ async function main() {
     const payload = await fetchJsonWithRetry(url, 2, 25000);
     const result = String(payload && payload.result ? payload.result : '').trim().toLowerCase();
     if (result && result !== 'success') {
-      throw new Error(String((payload && (payload.error || payload.message)) || 'Logs dump failed'));
+      const errorMessage = String((payload && (payload.error || payload.message)) || 'Logs dump failed').trim();
+      if (/usernames parameter is missing/i.test(errorMessage)) {
+        throw new Error('Google Apps Script deployment is outdated (missing get_logs_dump action). Deploy latest code.gs first.');
+      }
+      throw new Error(errorMessage || 'Logs dump failed');
     }
 
     const rows = Array.isArray(payload && payload.rows) ? payload.rows : [];
