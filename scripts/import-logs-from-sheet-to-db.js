@@ -1,33 +1,109 @@
 #!/usr/bin/env node
 
+const http = require('http');
+const https = require('https');
 const {
   createSheetIntegrationServiceFromEnv,
   createMysqlLogsServiceFromEnv
 } = require('../backend/dist/services');
 
+function fetchJsonWithNodeHttp(url, timeoutMs = 20000, redirectsLeft = 5) {
+  return new Promise((resolve, reject) => {
+    let requestFinished = false;
+    const finishOnce = (handler, value) => {
+      if (requestFinished) return;
+      requestFinished = true;
+      handler(value);
+    };
+
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(url);
+    } catch (error) {
+      finishOnce(reject, error);
+      return;
+    }
+
+    const transport = parsedUrl.protocol === 'https:' ? https : http;
+    const req = transport.request(
+      parsedUrl,
+      {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json'
+        }
+      },
+      (res) => {
+        const statusCode = Number(res.statusCode || 0);
+        const locationHeader = String(res.headers.location || '').trim();
+        if ([301, 302, 303, 307, 308].includes(statusCode) && locationHeader) {
+          res.resume();
+          if (redirectsLeft <= 0) {
+            finishOnce(reject, new Error(`Too many redirects while fetching ${url}`));
+            return;
+          }
+          const nextUrl = new URL(locationHeader, parsedUrl).toString();
+          fetchJsonWithNodeHttp(nextUrl, timeoutMs, redirectsLeft - 1)
+            .then((payload) => finishOnce(resolve, payload))
+            .catch((error) => finishOnce(reject, error));
+          return;
+        }
+
+        if (statusCode < 200 || statusCode >= 300) {
+          res.resume();
+          finishOnce(reject, new Error(`HTTP ${statusCode}`));
+          return;
+        }
+
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => {
+          body += String(chunk || '');
+        });
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(body);
+            finishOnce(resolve, parsed);
+          } catch (error) {
+            finishOnce(reject, error);
+          }
+        });
+      }
+    );
+
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Request timeout after ${timeoutMs}ms`));
+    });
+    req.on('error', (error) => finishOnce(reject, error));
+    req.end();
+  });
+}
+
 async function fetchJsonWithRetry(url, retries = 2, timeoutMs = 20000) {
   let lastError = null;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      let response;
-      try {
-        if (typeof globalThis.fetch === 'function') {
-          response = await globalThis.fetch(url, { signal: controller.signal });
-        } else {
-          const nodeFetch = (await import('node-fetch')).default;
-          response = await nodeFetch(url, { signal: controller.signal });
+      if (typeof globalThis.fetch === 'function') {
+        const hasAbortController = typeof AbortController === 'function';
+        const controller = hasAbortController ? new AbortController() : null;
+        const timer = setTimeout(() => {
+          if (controller) {
+            controller.abort();
+          }
+        }, timeoutMs);
+        let response;
+        try {
+          response = await globalThis.fetch(url, controller ? { signal: controller.signal } : undefined);
+        } finally {
+          clearTimeout(timer);
         }
-      } finally {
-        clearTimeout(timer);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const payload = await response.json();
+        return payload;
       }
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-      const payload = await response.json();
-      return payload;
+      return await fetchJsonWithNodeHttp(url, timeoutMs, 5);
     } catch (error) {
       lastError = error;
       if (attempt >= retries) break;
