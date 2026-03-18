@@ -511,6 +511,8 @@ mat-chip:not(.offline) {
 
 .back-button-rtl {
   flex: 0 0 auto;
+  position: relative;
+  z-index: 99999999;
 }
 
 .conversation-title {
