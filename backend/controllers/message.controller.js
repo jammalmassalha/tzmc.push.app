@@ -5,6 +5,7 @@ function registerMessageController(app, deps = {}) {
         fetchWithRetry,
         buildGoogleSheetGetUrl,
         getLogsMessagesForUser,
+        hardcodedGroupIds,
         getGroups,
         getActiveRedisStateStore,
         getMessageQueue,
@@ -359,6 +360,11 @@ function registerMessageController(app, deps = {}) {
             const knownGroupNamesById = new Map();
             const knownGroupIds = new Set();
             const knownGroupIdByName = new Map();
+            const hardcodedGroupKeySet = new Set(
+                Array.isArray(hardcodedGroupIds)
+                    ? hardcodedGroupIds.map((value) => normalizeUserKey(value)).filter(Boolean)
+                    : []
+            );
             const parseFlexibleTimestamp = (...candidates) => {
                 for (const candidate of candidates) {
                     if (candidate === null || candidate === undefined) continue;
@@ -552,6 +558,13 @@ function registerMessageController(app, deps = {}) {
                         if (
                             !resolvedGroupId &&
                             sender &&
+                            hardcodedGroupKeySet.has(sender)
+                        ) {
+                            resolvedGroupId = sender;
+                        }
+                        if (
+                            !resolvedGroupId &&
+                            sender &&
                             sender !== user &&
                             !isLikelyPhoneUser(sender)
                         ) {
@@ -560,6 +573,13 @@ function registerMessageController(app, deps = {}) {
                             } else if (knownGroupIdByName.has(sender)) {
                                 resolvedGroupId = knownGroupIdByName.get(sender) || '';
                             }
+                        }
+                        if (
+                            !resolvedGroupId &&
+                            normalizedToUserCandidate &&
+                            hardcodedGroupKeySet.has(normalizedToUserCandidate)
+                        ) {
+                            resolvedGroupId = normalizedToUserCandidate;
                         }
                         if (
                             !resolvedGroupId &&

@@ -6520,6 +6520,7 @@ registerMessageController(app, {
     fetchWithRetry,
     buildGoogleSheetGetUrl,
     getLogsMessagesForUser: (user, options = {}) => mysqlLogsService.getLogsMessagesForUser(user, options),
+    hardcodedGroupIds: [DOVRUT_GROUP_ID, DOVRUT_TEST_GROUP_ID],
     getGroups: () => groups,
     getActiveRedisStateStore: () => activeRedisStateStore,
     getMessageQueue: () => messageQueue,

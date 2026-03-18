@@ -1673,7 +1673,22 @@ export class ChatStoreService {
       const safeLimit = Number.isFinite(requestedLimit)
         ? Math.min(200000, Math.max(1, Math.floor(requestedLimit)))
         : LOGS_RECOVERY_MAX_FETCH_LIMIT;
-      const logsMessages = await this.api.getMessagesFromLogs(normalizedUser, safeLimit, 0);
+      const pageSize = Math.max(1, Math.min(10000, safeLimit));
+      const logsMessages: IncomingServerMessage[] = [];
+      let offset = 0;
+      while (logsMessages.length < safeLimit) {
+        const remaining = safeLimit - logsMessages.length;
+        const currentLimit = Math.max(1, Math.min(pageSize, remaining));
+        const page = await this.api.getMessagesFromLogs(normalizedUser, currentLimit, offset);
+        if (!page.length) {
+          break;
+        }
+        logsMessages.push(...page);
+        offset += page.length;
+        if (page.length < currentLimit) {
+          break;
+        }
+      }
       const fallbackGroups = Array.isArray(options.fallbackGroups) ? options.fallbackGroups : [];
       const importableLogs = this.buildImportableLogsMessagesForSync(logsMessages, fallbackGroups);
       if (!importableLogs.length) {
