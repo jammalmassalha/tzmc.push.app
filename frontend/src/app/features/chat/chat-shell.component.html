@@ -214,7 +214,7 @@
                 }
               </div>
             }
-            <small>{{ activeChat.isGroup ? 'קבוצה' : activeChat.id }}</small>
+            <small>{{ conversationSubtitle(activeChat) }}</small>
           </div>
 
           @if (canCallActiveChat()) {
@@ -1214,13 +1214,27 @@
             @for (member of groupPreview.members; track member.username) {
               <div class="group-member-item">
                 <div class="group-member-main">
-                  <span class="group-member-name">{{ member.displayName }}</span>
-                  @if (member.info) {
-                    <span class="group-member-info">{{ member.info }}</span>
-                  }
-                  @if (member.isAdmin) {
-                    <span class="group-member-role">מנהל</span>
-                  }
+                  <span class="group-member-avatar" [class.has-image]="!!groupMemberAvatarUrl(member)">
+                    @if (groupMemberAvatarUrl(member); as userAvatar) {
+                      <img
+                        class="group-member-avatar-image"
+                        [src]="userAvatar"
+                        [alt]="member.displayName"
+                        loading="lazy"
+                        (error)="markGroupMemberAvatarLoadError(member.username)" />
+                    } @else {
+                      <span class="group-member-avatar-fallback">{{ groupMemberAvatarFallback(member) }}</span>
+                    }
+                  </span>
+                  <div class="group-member-text">
+                    <span class="group-member-name">{{ member.displayName }}</span>
+                    @if (member.info) {
+                      <span class="group-member-info">{{ member.info }}</span>
+                    }
+                    @if (member.isAdmin) {
+                      <span class="group-member-role">מנהל</span>
+                    }
+                  </div>
                 </div>
                 @if (canRemoveCommunityMember(groupPreview, member.username)) {
                   <button
