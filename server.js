@@ -5384,6 +5384,24 @@ app.post(
             { messageId, skipBadge: true }
         );
 
+        const deleteLogDetails = [
+            'type=delete-action',
+            `messageId=${messageId}`,
+            `deletedAt=${deletedAt}`,
+            `sender=${sender}`,
+            `groupId=${groupId || ''}`,
+            `recipients=${recipients.join(',')}`,
+            `pushSuccess=${Number(result && result.success ? result.success : 0)}`,
+            `pushFailed=${Number(result && result.failed ? result.failed : 0)}`
+        ].join(' | ');
+        void logNotificationStatus(
+            sender,
+            recipients.join(','),
+            'Message deleted',
+            'Deleted',
+            deleteLogDetails
+        );
+
         res.json({ status: 'success', details: result });
     } catch (e) {
         console.error('[DELETE ERROR]', e);

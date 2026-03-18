@@ -371,6 +371,40 @@ function registerMessageController(app, deps = {}) {
                 }
                 return 0;
             };
+            const parseLogDetailsMap = (rawValue) => {
+                const detailsText = String(rawValue || '').trim();
+                if (!detailsText) {
+                    return {};
+                }
+                try {
+                    const parsed = JSON.parse(detailsText);
+                    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                        return Object.entries(parsed).reduce((acc, [key, value]) => {
+                            acc[String(key)] = String(value == null ? '' : value).trim();
+                            return acc;
+                        }, {});
+                    }
+                } catch (_error) {
+                    // Fallback to key=value parser.
+                }
+                return detailsText
+                    .split('|')
+                    .map((segment) => String(segment || '').trim())
+                    .filter(Boolean)
+                    .reduce((acc, segment) => {
+                        const separatorIndex = segment.indexOf('=');
+                        if (separatorIndex <= 0) {
+                            return acc;
+                        }
+                        const key = String(segment.slice(0, separatorIndex) || '').trim();
+                        const value = String(segment.slice(separatorIndex + 1) || '').trim();
+                        if (!key) {
+                            return acc;
+                        }
+                        acc[key] = value;
+                        return acc;
+                    }, {});
+            };
             const isLikelyPhoneUser = (value) => {
                 const digits = String(value || '').replace(/\D/g, '');
                 if (!digits) return false;
@@ -441,12 +475,30 @@ function registerMessageController(app, deps = {}) {
                         if (!message || typeof message !== 'object') {
                             return null;
                         }
+                        const messageStatus = String(
+                            message.status ??
+                            message.deliveryStatus ??
+                            ''
+                        ).trim().toLowerCase();
+                        const detailsMap = parseLogDetailsMap(
+                            message.details ??
+                            message.detail ??
+                            message.logDetails ??
+                            message.metadata ??
+                            ''
+                        );
                         const rawType = String(
                             message.type ??
                             message.eventType ??
                             message.event_type ??
                             message.actionType ??
                             message.action_type ??
+                            detailsMap.type ??
+                            detailsMap.eventType ??
+                            detailsMap.event_type ??
+                            detailsMap.actionType ??
+                            detailsMap.action_type ??
+                            (messageStatus.startsWith('deleted') ? 'delete-action' : '') ??
                             ''
                         ).trim().toLowerCase();
                         const supportedActionTypes = new Set([
@@ -540,6 +592,10 @@ function registerMessageController(app, deps = {}) {
                             message.mid ??
                             message.uuid ??
                             message.id ??
+                            detailsMap.messageId ??
+                            detailsMap.message_id ??
+                            detailsMap.targetMessageId ??
+                            detailsMap.target_message_id ??
                             ''
                         ).trim();
                         const timestampSeed = String(
@@ -559,6 +615,10 @@ function registerMessageController(app, deps = {}) {
                             message.target_message_id ??
                             message.messageTargetId ??
                             message.message_target_id ??
+                            detailsMap.targetMessageId ??
+                            detailsMap.target_message_id ??
+                            detailsMap.messageId ??
+                            detailsMap.message_id ??
                             ''
                         ).trim();
                         const emoji = String(message.emoji ?? message.reaction ?? '').trim();
@@ -567,6 +627,8 @@ function registerMessageController(app, deps = {}) {
                             : String(
                                 message.messageIds ??
                                 message.message_ids ??
+                                detailsMap.messageIds ??
+                                detailsMap.message_ids ??
                                 message.messageId ??
                                 message.message_id ??
                                 ''
@@ -619,11 +681,15 @@ function registerMessageController(app, deps = {}) {
                             );
                             const editedAt = parseFlexibleTimestamp(
                                 message.editedAt,
-                                message.edited_at
+                                message.edited_at,
+                                detailsMap.editedAt,
+                                detailsMap.edited_at
                             );
                             const deletedAt = parseFlexibleTimestamp(
                                 message.deletedAt,
-                                message.deleted_at
+                                message.deleted_at,
+                                detailsMap.deletedAt,
+                                detailsMap.deleted_at
                             );
 
                             return {

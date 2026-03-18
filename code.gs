@@ -165,6 +165,40 @@ function parseRecipientUsernames(recipientRawValue) {
   return users;
 }
 
+function parseLogDetailsMap(detailsRawValue) {
+  var detailsText = String(detailsRawValue || '').trim();
+  if (!detailsText) return {};
+
+  // First try JSON payloads for forward compatibility.
+  try {
+    var parsed = JSON.parse(detailsText);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      var jsonResult = {};
+      for (var jsonKey in parsed) {
+        if (!Object.prototype.hasOwnProperty.call(parsed, jsonKey)) continue;
+        jsonResult[String(jsonKey)] = String(parsed[jsonKey] == null ? '' : parsed[jsonKey]).trim();
+      }
+      return jsonResult;
+    }
+  } catch (err) {
+    // Fallback to key=value parser below.
+  }
+
+  var result = {};
+  var segments = detailsText.split('|');
+  for (var i = 0; i < segments.length; i++) {
+    var segment = String(segments[i] || '').trim();
+    if (!segment) continue;
+    var equalsIndex = segment.indexOf('=');
+    if (equalsIndex <= 0) continue;
+    var key = String(segment.substring(0, equalsIndex) || '').trim();
+    var value = String(segment.substring(equalsIndex + 1) || '').trim();
+    if (!key) continue;
+    result[key] = value;
+  }
+  return result;
+}
+
 function getRecipientAuthJsonForLog(spreadsheet, recipientRawValue) {
   var users = parseRecipientUsernames(recipientRawValue);
   if (!users.length) return '';
@@ -503,16 +537,25 @@ function doGet(e) {
           continue;
         }
 
-        var body = String(row[3] || '').trim();
-        if (!body) continue;
-        var normalizedBody = body.toLowerCase();
-        if (normalizedBody === 'new notification') {
-          continue;
-        }
-
         var status = String(row[4] || '').trim().toLowerCase();
         if (status.indexOf('fail') === 0 || status.indexOf('error') === 0) {
           continue;
+        }
+        var details = String(row[5] || '').trim();
+        var parsedDetails = parseLogDetailsMap(details);
+        var actionTypeFromDetails = String(
+          parsedDetails.type || parsedDetails.actionType || parsedDetails.action_type || ''
+        ).trim().toLowerCase();
+        var isDeletedStatus = status.indexOf('deleted') === 0;
+        var resolvedActionType = isDeletedStatus ? 'delete-action' : actionTypeFromDetails;
+
+        var body = String(row[3] || '').trim();
+        if (!resolvedActionType) {
+          if (!body) continue;
+          var normalizedBody = body.toLowerCase();
+          if (normalizedBody === 'new notification') {
+            continue;
+          }
         }
 
         var timestamp = 0;
@@ -527,13 +570,28 @@ function doGet(e) {
         }
 
         var absoluteRow = rowIndex + 2;
+        var messageId = String(
+          parsedDetails.messageId || parsedDetails.message_id || parsedDetails.targetMessageId || ''
+        ).trim();
+        if (!messageId) {
+          messageId = 'logs-' + absoluteRow;
+        }
+        var deletedAtRaw = Number(parsedDetails.deletedAt || parsedDetails.deleted_at || timestamp);
+        var deletedAt = isNaN(deletedAtRaw) ? timestamp : deletedAtRaw;
+
         messages.push({
           id: 'logs-' + absoluteRow,
-          messageId: 'logs-' + absoluteRow,
+          messageId: messageId,
           sender: sender,
           body: body,
           timestamp: timestamp,
-          recipient: requestedLogsUser
+          recipient: requestedLogsUser,
+          status: status,
+          details: details,
+          type: resolvedActionType || undefined,
+          deletedAt: resolvedActionType === 'delete-action' ? deletedAt : undefined,
+          groupId: String(parsedDetails.groupId || parsedDetails.group_id || '').trim() || undefined,
+          messageIds: String(parsedDetails.messageIds || parsedDetails.message_ids || '').trim() || undefined
         });
       }
 
