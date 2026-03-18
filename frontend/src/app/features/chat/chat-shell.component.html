@@ -174,47 +174,70 @@
             [attr.tabindex]="canShowGroupMembers() ? '0' : null"
             (keydown.enter)="canShowGroupMembers() && openGroupMembers()"
             (keydown.space)="canShowGroupMembers() && openGroupMembers(); $event.preventDefault()">
-            @if (isInlineGroupTitleEditing()) {
-              <div class="conversation-title-inline-edit" (click)="$event.stopPropagation()">
-                <input
-                  class="conversation-title-inline-input"
-                  type="text"
-                  [value]="inlineGroupTitleEditValue()"
-                  (input)="onInlineGroupTitleInput($event)"
-                  (keydown.enter)="saveInlineGroupTitleEdit($event)"
-                  (keydown.escape)="cancelInlineGroupTitleEdit($event)"
-                  (focus)="handleTextInputFocus()"
-                  placeholder="שם קבוצה"
-                  autocomplete="off" />
-                <div class="conversation-title-inline-actions">
-                  <button mat-stroked-button type="button" (click)="cancelInlineGroupTitleEdit($event)">ביטול</button>
-                  <button
-                    mat-flat-button
-                    color="primary"
-                    type="button"
-                    [disabled]="!canSaveInlineGroupTitle()"
-                    (click)="saveInlineGroupTitleEdit($event)">
-                    שמור
-                  </button>
-                </div>
-              </div>
-            } @else {
-              <div class="conversation-title-line">
-                <h2>{{ activeChat.title }}</h2>
-                @if (activeChat.isGroup && canEditActiveGroupTitle()) {
-                  <button
-                    mat-icon-button
-                    type="button"
-                    class="conversation-title-edit-btn"
-                    (click)="startInlineGroupTitleEdit($event)"
-                    aria-label="ערוך שם קבוצה"
-                    title="ערוך שם קבוצה">
-                    <mat-icon>edit</mat-icon>
-                  </button>
+            <div class="conversation-title-main">
+              @if (chatAvatarThumb(activeChat); as headerAvatar) {
+                <button
+                  type="button"
+                  class="conversation-title-avatar clickable"
+                  (click)="openChatAvatar($event, activeChat)"
+                  aria-label="הצג תמונת פרופיל"
+                  title="הצג תמונת פרופיל">
+                  <img
+                    class="conversation-title-avatar-image"
+                    [src]="headerAvatar"
+                    [alt]="activeChat.title"
+                    loading="lazy" />
+                </button>
+              } @else {
+                <span class="conversation-title-avatar">
+                  <span class="conversation-title-avatar-fallback">{{ chatAvatarFallback(activeChat) }}</span>
+                </span>
+              }
+
+              <div class="conversation-title-meta">
+                @if (isInlineGroupTitleEditing()) {
+                  <div class="conversation-title-inline-edit" (click)="$event.stopPropagation()">
+                    <input
+                      class="conversation-title-inline-input"
+                      type="text"
+                      [value]="inlineGroupTitleEditValue()"
+                      (input)="onInlineGroupTitleInput($event)"
+                      (keydown.enter)="saveInlineGroupTitleEdit($event)"
+                      (keydown.escape)="cancelInlineGroupTitleEdit($event)"
+                      (focus)="handleTextInputFocus()"
+                      placeholder="שם קבוצה"
+                      autocomplete="off" />
+                    <div class="conversation-title-inline-actions">
+                      <button mat-stroked-button type="button" (click)="cancelInlineGroupTitleEdit($event)">ביטול</button>
+                      <button
+                        mat-flat-button
+                        color="primary"
+                        type="button"
+                        [disabled]="!canSaveInlineGroupTitle()"
+                        (click)="saveInlineGroupTitleEdit($event)">
+                        שמור
+                      </button>
+                    </div>
+                  </div>
+                } @else {
+                  <div class="conversation-title-line">
+                    <h2>{{ activeChat.title }}</h2>
+                    @if (activeChat.isGroup && canEditActiveGroupTitle()) {
+                      <button
+                        mat-icon-button
+                        type="button"
+                        class="conversation-title-edit-btn"
+                        (click)="startInlineGroupTitleEdit($event)"
+                        aria-label="ערוך שם קבוצה"
+                        title="ערוך שם קבוצה">
+                        <mat-icon>edit</mat-icon>
+                      </button>
+                    }
+                  </div>
                 }
+                <small>{{ conversationSubtitle(activeChat) }}</small>
               </div>
-            }
-            <small>{{ conversationSubtitle(activeChat) }}</small>
+            </div>
           </div>
 
           @if (canCallActiveChat()) {
