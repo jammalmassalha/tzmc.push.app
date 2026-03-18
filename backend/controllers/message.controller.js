@@ -353,9 +353,12 @@ function registerMessageController(app, deps = {}) {
             const user = sessionUser;
 
             const limitRaw = Number(req.query && req.query.limit);
-            const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.floor(limitRaw)), 1000) : 700;
+            const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.floor(limitRaw)), 50000) : 700;
+            const offsetRaw = Number(req.query && req.query.offset);
+            const offset = Number.isFinite(offsetRaw) ? Math.max(0, Math.floor(offsetRaw)) : 0;
             const knownGroupNamesById = new Map();
             const knownGroupIds = new Set();
+            const knownGroupIdByName = new Map();
             const parseFlexibleTimestamp = (...candidates) => {
                 for (const candidate of candidates) {
                     if (candidate === null || candidate === undefined) continue;
@@ -440,6 +443,10 @@ function registerMessageController(app, deps = {}) {
                     const groupName = String(group.name || group.title || group.groupName || '').trim();
                     if (groupName) {
                         knownGroupNamesById.set(normalizedGroupId, groupName);
+                        const normalizedGroupNameKey = normalizeUserKey(groupName);
+                        if (normalizedGroupNameKey && !knownGroupIdByName.has(normalizedGroupNameKey)) {
+                            knownGroupIdByName.set(normalizedGroupNameKey, normalizedGroupId);
+                        }
                     }
                 });
             } catch (_error) {
@@ -448,7 +455,7 @@ function registerMessageController(app, deps = {}) {
 
             try {
                 const rawMessages = typeof getLogsMessagesForUser === 'function'
-                    ? await getLogsMessagesForUser(user, { limit, excludeSystem: true })
+                    ? await getLogsMessagesForUser(user, { limit, offset, excludeSystem: true })
                     : [];
                 const messages = rawMessages
                     .map((message, index) => {
@@ -542,6 +549,18 @@ function registerMessageController(app, deps = {}) {
                         const normalizedToUserCandidate = normalizeUserKey(toUserCandidateRaw);
 
                         let resolvedGroupId = normalizedExplicitGroupId;
+                        if (
+                            !resolvedGroupId &&
+                            sender &&
+                            sender !== user &&
+                            !isLikelyPhoneUser(sender)
+                        ) {
+                            if (knownGroupIds.has(sender)) {
+                                resolvedGroupId = sender;
+                            } else if (knownGroupIdByName.has(sender)) {
+                                resolvedGroupId = knownGroupIdByName.get(sender) || '';
+                            }
+                        }
                         if (
                             !resolvedGroupId &&
                             normalizedToUserCandidate &&

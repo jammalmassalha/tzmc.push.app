@@ -49,6 +49,7 @@ const BADGE_RESET_MIN_INTERVAL_MS = 30000;
 const PUSH_RECOVERY_PULL_DELAYS_MS = [1200, 3600];
 const LOGS_RECOVERY_MIN_INTERVAL_MS = 2 * 60 * 1000;
 const LOGS_RECOVERY_MAX_FETCH_LIMIT = 1000;
+const LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT = 50000;
 const DELIVERY_TELEMETRY_FLUSH_INTERVAL_MS = 60 * 1000;
 const DELIVERY_TELEMETRY_FLUSH_MIN_EVENTS = 4;
 const DELIVERY_TELEMETRY_DEVICE_ID_KEY = 'modern-chat-delivery-device-id';
@@ -1559,7 +1560,8 @@ export class ChatStoreService {
     await this.recoverMissedMessagesFromLogs(user, {
       force: true,
       incrementUnread: false,
-      fallbackGroups: groupsSnapshotBeforeCacheClear
+      fallbackGroups: groupsSnapshotBeforeCacheClear,
+      limit: LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT
     });
     this.unreadByChat.set({});
     this.resetReadReceiptTrackingState();
@@ -1648,6 +1650,7 @@ export class ChatStoreService {
       force?: boolean;
       incrementUnread?: boolean;
       fallbackGroups?: ChatGroup[];
+      limit?: number;
     } = {}
   ): Promise<number> {
     const normalizedUser = this.normalizeUser(user);
@@ -1666,7 +1669,11 @@ export class ChatStoreService {
 
     this.logsRecoveryInFlight = true;
     try {
-      const logsMessages = await this.api.getMessagesFromLogs(normalizedUser, LOGS_RECOVERY_MAX_FETCH_LIMIT);
+      const requestedLimit = Number(options.limit);
+      const safeLimit = Number.isFinite(requestedLimit)
+        ? Math.min(50000, Math.max(1, Math.floor(requestedLimit)))
+        : LOGS_RECOVERY_MAX_FETCH_LIMIT;
+      const logsMessages = await this.api.getMessagesFromLogs(normalizedUser, safeLimit, 0);
       const fallbackGroups = Array.isArray(options.fallbackGroups) ? options.fallbackGroups : [];
       const importableLogs = this.buildImportableLogsMessagesForSync(logsMessages, fallbackGroups);
       if (!importableLogs.length) {

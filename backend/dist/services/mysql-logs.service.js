@@ -297,9 +297,10 @@ class MysqlLogsService {
         if (!requestedUser) {
             return [];
         }
-        const limit = Math.max(1, Math.min(toPositiveInteger(options.limit, 700), 2000));
+        const limit = Math.max(1, Math.min(toPositiveInteger(options.limit, 700), 50000));
+        const offset = Math.max(0, toPositiveInteger(options.offset, 0));
         const excludeSystem = options.excludeSystem !== false;
-        const queryFetchLimit = Math.max(2000, Math.min(limit * 8, 20000));
+        const queryFetchLimit = Math.max(3000, Math.min(limit * 12, 250000));
         const [rows] = await this.pool.query(`SELECT
         \`DateTime\` AS dateTime,
         \`ToUser\` AS toUser,
@@ -310,7 +311,7 @@ class MysqlLogsService {
         \`RecipientAuthJSON\` AS recipientAuthJson
       FROM \`${this.tableName}\`
       ORDER BY \`DateTime\` DESC
-      LIMIT ?`, [queryFetchLimit]);
+      LIMIT ?, ?`, [offset, queryFetchLimit]);
         const messages = [];
         for (let rowIndex = 0; rowIndex < rows.length && messages.length < limit; rowIndex += 1) {
             const row = rows[rowIndex];
