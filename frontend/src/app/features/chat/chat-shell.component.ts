@@ -77,6 +77,7 @@ interface GroupMembersPreview {
     username: string;
     displayName: string;
     info?: string;
+    upic?: string;
     isAdmin: boolean;
   }>;
 }
@@ -463,6 +464,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   readonly reactionDetailsPreview = signal<ReactionDetailsPreview | null>(null);
   readonly phoneActionTarget = signal<{ display: string; phone: string } | null>(null);
   readonly groupMembersPreview = signal<GroupMembersPreview | null>(null);
+  readonly failedGroupMemberAvatarUsers = signal<Set<string>>(new Set<string>());
   readonly isLoggingOut = signal(false);
   readonly logoutElapsedSeconds = signal(0);
   readonly logoutLoaderText = computed(() => {
@@ -1566,6 +1568,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     this.groupMemberAddSearchTerm.set('');
     this.clearSelectedGroupMemberAdds();
     this.clearSelectedGroupMemberRemovals();
+    this.failedGroupMemberAvatarUsers.set(new Set<string>());
     this.groupMembersPreview.set(this.buildGroupMembersPreview(group));
   }
 
@@ -1630,6 +1633,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     this.groupMemberAddSearchTerm.set('');
     this.clearSelectedGroupMemberAdds();
     this.clearSelectedGroupMemberRemovals();
+    this.failedGroupMemberAvatarUsers.set(new Set<string>());
     this.groupMembersPreview.set(null);
   }
 
@@ -1827,6 +1831,45 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     return 'קבוצת קהילה · רק מנהל שולח הודעות';
   }
 
+  conversationSubtitle(chat: ChatListItem): string {
+    const info = String(chat.info || '').trim();
+    if (info) {
+      return info;
+    }
+    return chat.isGroup ? 'קבוצה' : chat.id;
+  }
+
+  groupMemberAvatarUrl(member: {
+    username: string;
+    upic?: string;
+  }): string | null {
+    const normalizedUsername = this.normalizeUsername(member.username);
+    if (normalizedUsername && this.failedGroupMemberAvatarUsers().has(normalizedUsername)) {
+      return null;
+    }
+    const rawUrl = String(member.upic || '').trim();
+    if (!rawUrl) return null;
+    return this.optimizeAvatarUrl(rawUrl, 96);
+  }
+
+  groupMemberAvatarFallback(member: {
+    displayName: string;
+    username: string;
+  }): string {
+    const source = String(member.displayName || member.username || '').trim();
+    return source ? source.charAt(0).toUpperCase() : '?';
+  }
+
+  markGroupMemberAvatarLoadError(username: string): void {
+    const normalizedUsername = this.normalizeUsername(username);
+    if (!normalizedUsername || this.failedGroupMemberAvatarUsers().has(normalizedUsername)) {
+      return;
+    }
+    const next = new Set(this.failedGroupMemberAvatarUsers());
+    next.add(normalizedUsername);
+    this.failedGroupMemberAvatarUsers.set(next);
+  }
+
   private buildGroupMembersPreview(group: ChatGroup): GroupMembersPreview {
     const contactsByUsername = new Map(
       this.store.contacts().map((contact) => [contact.username, contact])
@@ -1845,6 +1888,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
           username: normalized,
           displayName: contact?.displayName || normalized,
           info: contact?.info,
+          upic: contact?.upic,
           isAdmin: isDovrutGroup
             ? this.store.isDovrutAdminUser(normalized)
             : adminUsernames.includes(normalized)

@@ -519,6 +519,18 @@ mat-chip:not(.offline) {
   min-width: 0;
 }
 
+.conversation-title-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.conversation-title-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .conversation-title.clickable {
   cursor: pointer;
   border-radius: 10px;
@@ -535,12 +547,16 @@ mat-chip:not(.offline) {
   margin: 0;
   font-size: 16px;
   line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .conversation-title-line {
-  display: block;
+  display: flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
 }
 
 .conversation-title-edit-btn {
@@ -549,10 +565,7 @@ mat-chip:not(.offline) {
   min-width: 26px;
   color: #3952ad;
   padding: 0;
-  position: absolute;
-  z-index: 9999;
-  left: 10px;
-  top: 23px;
+  position: static;
 }
 
 .conversation-title-edit-btn mat-icon {
@@ -597,6 +610,43 @@ mat-chip:not(.offline) {
 
 .conversation-title small {
   color: #6f788a;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-title-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  overflow: hidden;
+  flex: 0 0 auto;
+  border: 0;
+  background: linear-gradient(140deg, #e6ecff 0%, #f4f7ff 100%);
+  color: #2f4a95;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.conversation-title-avatar.clickable {
+  cursor: pointer;
+}
+
+.conversation-title-avatar-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.conversation-title-avatar-fallback {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
 .conversation-call-btn {
@@ -2510,7 +2560,7 @@ mat-chip:not(.offline) {
 }
 
 .group-member-item {
-  min-height: 54px;
+  min-height: 70px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2520,6 +2570,40 @@ mat-chip:not(.offline) {
 }
 
 .group-member-main {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.group-member-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  background: linear-gradient(135deg, #dbe4ff 0%, #c7d6ff 100%);
+  color: #27439d;
+}
+
+.group-member-avatar-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.group-member-avatar-fallback {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.group-member-text {
   min-width: 0;
   flex: 1 1 auto;
   display: flex;
