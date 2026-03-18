@@ -162,7 +162,7 @@ async function main() {
       ? Math.max(1, Math.min(options.batchSize, remaining))
       : options.batchSize;
 
-    const url = sheetService.buildGoogleSheetGetUrl({
+    const url = sheetService.buildLogsBackupSheetGetUrl({
       action: 'get_logs_dump',
       offset: String(offset),
       limit: String(effectiveLimit)

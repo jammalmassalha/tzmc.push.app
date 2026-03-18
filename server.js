@@ -2873,6 +2873,14 @@ function buildGoogleSheetGetUrl(queryParams = {}, options = {}) {
     });
 }
 
+function buildLogsBackupSheetGetUrl(queryParams = {}, options = {}) {
+    return sheetIntegrationService.buildLogsBackupSheetGetUrl(queryParams, {
+        token: Object.prototype.hasOwnProperty.call(options, 'token')
+            ? (options && options.token)
+            : APP_SERVER_TOKEN
+    });
+}
+
 function normalizeAuthCode(value) {
     return String(value || '').replace(/\D/g, '').slice(0, AUTH_CODE_DIGITS);
 }
@@ -5383,7 +5391,7 @@ app.post(['/logs/import-sheet-to-db', '/notify/logs/import-sheet-to-db'], async 
                 : batchSize;
 
             const response = await fetchWithRetry(
-                buildGoogleSheetGetUrl({
+                buildLogsBackupSheetGetUrl({
                     action: 'get_logs_dump',
                     offset: String(offset),
                     limit: String(effectiveLimit)
