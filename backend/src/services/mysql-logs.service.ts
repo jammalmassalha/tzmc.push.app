@@ -25,6 +25,10 @@ export interface MysqlLogsReadOptions {
   excludeSystem?: boolean;
 }
 
+export interface MysqlLogsInsertBulkOptions {
+  dedupeExisting?: boolean;
+}
+
 interface MysqlLogRow extends RowDataPacket {
   dateTime: Date | string | number | null;
   toUser: string | null;
@@ -100,6 +104,22 @@ function parseFlexibleTimestamp(value: unknown): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
+function normalizeDateTimeForStorage(value: unknown): Date {
+  const timestamp = parseFlexibleTimestamp(value);
+  if (!timestamp || !Number.isFinite(timestamp)) {
+    return new Date();
+  }
+  return new Date(Math.floor(timestamp / 1000) * 1000);
+}
+
+function normalizeDateTimeKey(value: unknown): string {
+  const timestamp = parseFlexibleTimestamp(value);
+  if (!timestamp || !Number.isFinite(timestamp)) {
+    return '0';
+  }
+  return String(Math.floor(timestamp / 1000) * 1000);
+}
+
 function parseLogDetailsMap(detailsRawValue: unknown): Record<string, string> {
   const detailsText = toTrimmedString(detailsRawValue);
   if (!detailsText) return {};
@@ -164,6 +184,29 @@ export class MysqlLogsService {
     });
   }
 
+  private buildCompositeKeyFromPayload(payload: MysqlLogInsertPayload): string {
+    return [
+      normalizeDateTimeKey(payload.dateTime),
+      toTrimmedString(payload.recipient),
+      toTrimmedString(payload.sender) || 'System',
+      toTrimmedString(payload.message)
+    ].join('|');
+  }
+
+  private buildCompositeKeyFromRow(row: {
+    dateTime: unknown;
+    toUser: unknown;
+    fromUser: unknown;
+    messagePreview: unknown;
+  }): string {
+    return [
+      normalizeDateTimeKey(row.dateTime),
+      toTrimmedString(row.toUser),
+      toTrimmedString(row.fromUser) || 'System',
+      toTrimmedString(row.messagePreview)
+    ].join('|');
+  }
+
   async insertLog(payload: MysqlLogInsertPayload): Promise<boolean> {
     const sender = toTrimmedString(payload.sender) || 'System';
     const recipient = toTrimmedString(payload.recipient);
@@ -171,29 +214,89 @@ export class MysqlLogsService {
     const status = toTrimmedString(payload.status);
     const details = toTrimmedString(payload.details);
     const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
-    const dateTime = payload.dateTime instanceof Date ? payload.dateTime : new Date();
+    const dateTime = normalizeDateTimeForStorage(payload.dateTime);
 
     await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, message, status, details, recipientAuthJson]);
     return true;
   }
 
-  async insertLogsBulk(payloads: MysqlLogInsertPayload[]): Promise<number> {
+  async filterNewLogsByCompositeKey(payloads: MysqlLogInsertPayload[]): Promise<MysqlLogInsertPayload[]> {
     const normalizedPayloads = Array.isArray(payloads) ? payloads.filter(Boolean) : [];
     if (!normalizedPayloads.length) {
+      return [];
+    }
+
+    const uniqueIncoming = new Map<string, MysqlLogInsertPayload>();
+    normalizedPayloads.forEach((payload) => {
+      const key = this.buildCompositeKeyFromPayload(payload);
+      if (!uniqueIncoming.has(key)) {
+        uniqueIncoming.set(key, payload);
+      }
+    });
+    const dedupedIncoming = Array.from(uniqueIncoming.values());
+    if (!dedupedIncoming.length) {
+      return [];
+    }
+
+    const existingKeys = new Set<string>();
+    const chunkSize = 200;
+    for (let start = 0; start < dedupedIncoming.length; start += chunkSize) {
+      const chunk = dedupedIncoming.slice(start, start + chunkSize);
+      if (!chunk.length) continue;
+      const orClauses: string[] = [];
+      const params: Array<string | Date> = [];
+      chunk.forEach((payload) => {
+        orClauses.push('(`DateTime` = ? AND `ToUser` = ? AND `From` = ? AND `Message Preview` = ?)');
+        params.push(
+          normalizeDateTimeForStorage(payload.dateTime),
+          toTrimmedString(payload.recipient),
+          toTrimmedString(payload.sender) || 'System',
+          toTrimmedString(payload.message)
+        );
+      });
+      const [rows] = await this.pool.query<Array<RowDataPacket & {
+        dateTime: Date | string | number | null;
+        toUser: string | null;
+        fromUser: string | null;
+        messagePreview: string | null;
+      }>>(
+        `SELECT \`DateTime\` AS dateTime, \`ToUser\` AS toUser, \`From\` AS fromUser, \`Message Preview\` AS messagePreview
+         FROM \`${this.tableName}\`
+         WHERE ${orClauses.join(' OR ')}`,
+        params
+      );
+      rows.forEach((row) => {
+        existingKeys.add(this.buildCompositeKeyFromRow(row));
+      });
+    }
+
+    return dedupedIncoming.filter((payload) => !existingKeys.has(this.buildCompositeKeyFromPayload(payload)));
+  }
+
+  async insertLogsBulk(payloads: MysqlLogInsertPayload[], options: MysqlLogsInsertBulkOptions = {}): Promise<number> {
+    const normalizedPayloads = Array.isArray(payloads) ? payloads.filter(Boolean) : [];
+    if (!normalizedPayloads.length) {
+      return 0;
+    }
+
+    const rowsToInsert = options.dedupeExisting
+      ? await this.filterNewLogsByCompositeKey(normalizedPayloads)
+      : normalizedPayloads;
+    if (!rowsToInsert.length) {
       return 0;
     }
 
     const connection = await this.pool.getConnection();
     try {
       await connection.beginTransaction();
-      for (const payload of normalizedPayloads) {
+      for (const payload of rowsToInsert) {
         const sender = toTrimmedString(payload.sender) || 'System';
         const recipient = toTrimmedString(payload.recipient);
         const message = toTrimmedString(payload.message);
         const status = toTrimmedString(payload.status);
         const details = toTrimmedString(payload.details);
         const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
-        const dateTime = payload.dateTime instanceof Date ? payload.dateTime : new Date();
+        const dateTime = normalizeDateTimeForStorage(payload.dateTime);
         await connection.execute(this.insertQuery, [
           dateTime,
           recipient,
@@ -205,7 +308,7 @@ export class MysqlLogsService {
         ]);
       }
       await connection.commit();
-      return normalizedPayloads.length;
+      return rowsToInsert.length;
     } catch (error) {
       await connection.rollback();
       throw error;

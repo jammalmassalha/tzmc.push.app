@@ -87,7 +87,8 @@ function parseArgs(argv) {
     maxRows: 0,
     offset: 0,
     dryRun: false,
-    truncate: false
+    truncate: false,
+    dedupe: false
   };
   argv.forEach((arg) => {
     const text = String(arg || '').trim();
@@ -98,6 +99,10 @@ function parseArgs(argv) {
     }
     if (text === '--truncate') {
       options.truncate = true;
+      return;
+    }
+    if (text === '--dedupe') {
+      options.dedupe = true;
       return;
     }
     const [rawKey, ...rawValueParts] = text.replace(/^--/, '').split('=');
@@ -122,6 +127,10 @@ function parseArgs(argv) {
     }
     if (key === 'truncate') {
       options.truncate = parseBooleanArg(rawValue, options.truncate);
+      return;
+    }
+    if (key === 'dedupe') {
+      options.dedupe = parseBooleanArg(rawValue, options.dedupe);
     }
   });
   return options;
@@ -141,6 +150,7 @@ async function main() {
   let scanned = 0;
   let imported = 0;
   let batches = 0;
+  let skippedExisting = 0;
   let hasMore = true;
 
   while (hasMore) {
@@ -175,7 +185,17 @@ async function main() {
 
     const mappedRows = rows.map((row) => mapDumpRowToLogPayload(row)).filter(Boolean);
     if (!options.dryRun && mappedRows.length) {
-      imported += await mysqlLogsService.insertLogsBulk(mappedRows);
+      const insertedCount = await mysqlLogsService.insertLogsBulk(mappedRows, {
+        dedupeExisting: options.dedupe
+      });
+      imported += insertedCount;
+      if (options.dedupe) {
+        skippedExisting += Math.max(0, mappedRows.length - insertedCount);
+      }
+    } else if (options.dryRun && options.dedupe && mappedRows.length) {
+      const rowsToInsert = await mysqlLogsService.filterNewLogsByCompositeKey(mappedRows);
+      imported += rowsToInsert.length;
+      skippedExisting += Math.max(0, mappedRows.length - rowsToInsert.length);
     } else {
       imported += mappedRows.length;
     }
@@ -190,9 +210,11 @@ async function main() {
   console.log(JSON.stringify({
     result: 'success',
     dryRun: options.dryRun,
+    dedupe: options.dedupe,
     truncated: options.truncate && options.offset === 0,
     scanned,
     imported,
+    skippedExisting,
     batches,
     nextOffset: offset
   }, null, 2));

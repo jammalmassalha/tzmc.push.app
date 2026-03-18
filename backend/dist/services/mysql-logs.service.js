@@ -69,6 +69,20 @@ function parseFlexibleTimestamp(value) {
     const parsed = Date.parse(text);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
+function normalizeDateTimeForStorage(value) {
+    const timestamp = parseFlexibleTimestamp(value);
+    if (!timestamp || !Number.isFinite(timestamp)) {
+        return new Date();
+    }
+    return new Date(Math.floor(timestamp / 1000) * 1000);
+}
+function normalizeDateTimeKey(value) {
+    const timestamp = parseFlexibleTimestamp(value);
+    if (!timestamp || !Number.isFinite(timestamp)) {
+        return '0';
+    }
+    return String(Math.floor(timestamp / 1000) * 1000);
+}
 function parseLogDetailsMap(detailsRawValue) {
     const detailsText = toTrimmedString(detailsRawValue);
     if (!detailsText)
@@ -131,6 +145,22 @@ class MysqlLogsService {
             charset: 'utf8mb4'
         });
     }
+    buildCompositeKeyFromPayload(payload) {
+        return [
+            normalizeDateTimeKey(payload.dateTime),
+            toTrimmedString(payload.recipient),
+            toTrimmedString(payload.sender) || 'System',
+            toTrimmedString(payload.message)
+        ].join('|');
+    }
+    buildCompositeKeyFromRow(row) {
+        return [
+            normalizeDateTimeKey(row.dateTime),
+            toTrimmedString(row.toUser),
+            toTrimmedString(row.fromUser) || 'System',
+            toTrimmedString(row.messagePreview)
+        ].join('|');
+    }
     async insertLog(payload) {
         const sender = toTrimmedString(payload.sender) || 'System';
         const recipient = toTrimmedString(payload.recipient);
@@ -138,26 +168,69 @@ class MysqlLogsService {
         const status = toTrimmedString(payload.status);
         const details = toTrimmedString(payload.details);
         const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
-        const dateTime = payload.dateTime instanceof Date ? payload.dateTime : new Date();
+        const dateTime = normalizeDateTimeForStorage(payload.dateTime);
         await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, message, status, details, recipientAuthJson]);
         return true;
     }
-    async insertLogsBulk(payloads) {
+    async filterNewLogsByCompositeKey(payloads) {
         const normalizedPayloads = Array.isArray(payloads) ? payloads.filter(Boolean) : [];
         if (!normalizedPayloads.length) {
+            return [];
+        }
+        const uniqueIncoming = new Map();
+        normalizedPayloads.forEach((payload) => {
+            const key = this.buildCompositeKeyFromPayload(payload);
+            if (!uniqueIncoming.has(key)) {
+                uniqueIncoming.set(key, payload);
+            }
+        });
+        const dedupedIncoming = Array.from(uniqueIncoming.values());
+        if (!dedupedIncoming.length) {
+            return [];
+        }
+        const existingKeys = new Set();
+        const chunkSize = 200;
+        for (let start = 0; start < dedupedIncoming.length; start += chunkSize) {
+            const chunk = dedupedIncoming.slice(start, start + chunkSize);
+            if (!chunk.length)
+                continue;
+            const orClauses = [];
+            const params = [];
+            chunk.forEach((payload) => {
+                orClauses.push('(`DateTime` = ? AND `ToUser` = ? AND `From` = ? AND `Message Preview` = ?)');
+                params.push(normalizeDateTimeForStorage(payload.dateTime), toTrimmedString(payload.recipient), toTrimmedString(payload.sender) || 'System', toTrimmedString(payload.message));
+            });
+            const [rows] = await this.pool.query(`SELECT \`DateTime\` AS dateTime, \`ToUser\` AS toUser, \`From\` AS fromUser, \`Message Preview\` AS messagePreview
+         FROM \`${this.tableName}\`
+         WHERE ${orClauses.join(' OR ')}`, params);
+            rows.forEach((row) => {
+                existingKeys.add(this.buildCompositeKeyFromRow(row));
+            });
+        }
+        return dedupedIncoming.filter((payload) => !existingKeys.has(this.buildCompositeKeyFromPayload(payload)));
+    }
+    async insertLogsBulk(payloads, options = {}) {
+        const normalizedPayloads = Array.isArray(payloads) ? payloads.filter(Boolean) : [];
+        if (!normalizedPayloads.length) {
+            return 0;
+        }
+        const rowsToInsert = options.dedupeExisting
+            ? await this.filterNewLogsByCompositeKey(normalizedPayloads)
+            : normalizedPayloads;
+        if (!rowsToInsert.length) {
             return 0;
         }
         const connection = await this.pool.getConnection();
         try {
             await connection.beginTransaction();
-            for (const payload of normalizedPayloads) {
+            for (const payload of rowsToInsert) {
                 const sender = toTrimmedString(payload.sender) || 'System';
                 const recipient = toTrimmedString(payload.recipient);
                 const message = toTrimmedString(payload.message);
                 const status = toTrimmedString(payload.status);
                 const details = toTrimmedString(payload.details);
                 const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
-                const dateTime = payload.dateTime instanceof Date ? payload.dateTime : new Date();
+                const dateTime = normalizeDateTimeForStorage(payload.dateTime);
                 await connection.execute(this.insertQuery, [
                     dateTime,
                     recipient,
@@ -169,7 +242,7 @@ class MysqlLogsService {
                 ]);
             }
             await connection.commit();
-            return normalizedPayloads.length;
+            return rowsToInsert.length;
         }
         catch (error) {
             await connection.rollback();

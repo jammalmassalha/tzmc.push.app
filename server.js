@@ -5354,6 +5354,10 @@ app.post(['/logs/import-sheet-to-db', '/notify/logs/import-sheet-to-db'], async 
         payload.truncateBeforeImport ?? payload.truncate ?? false,
         false
     );
+    const dedupe = parseBooleanInput(
+        payload.dedupe ?? payload.skipExisting ?? false,
+        false
+    );
     const dryRun = parseBooleanInput(payload.dryRun ?? false, false);
     const initialOffset = Math.max(0, Number(payload.offset || 0) || 0);
 
@@ -5366,6 +5370,7 @@ app.post(['/logs/import-sheet-to-db', '/notify/logs/import-sheet-to-db'], async 
         let batches = 0;
         let imported = 0;
         let scanned = 0;
+        let skippedExisting = 0;
         let hasMore = true;
 
         while (hasMore) {
@@ -5413,7 +5418,17 @@ app.post(['/logs/import-sheet-to-db', '/notify/logs/import-sheet-to-db'], async 
                 .filter(Boolean);
 
             if (!dryRun && normalizedRows.length) {
-                imported += await mysqlLogsService.insertLogsBulk(normalizedRows);
+                const insertedCount = await mysqlLogsService.insertLogsBulk(normalizedRows, {
+                    dedupeExisting: dedupe
+                });
+                imported += insertedCount;
+                if (dedupe) {
+                    skippedExisting += Math.max(0, normalizedRows.length - insertedCount);
+                }
+            } else if (dryRun && dedupe && normalizedRows.length) {
+                const rowsToInsert = await mysqlLogsService.filterNewLogsByCompositeKey(normalizedRows);
+                imported += rowsToInsert.length;
+                skippedExisting += Math.max(0, normalizedRows.length - rowsToInsert.length);
             } else {
                 imported += normalizedRows.length;
             }
@@ -5432,8 +5447,10 @@ app.post(['/logs/import-sheet-to-db', '/notify/logs/import-sheet-to-db'], async 
         return res.json({
             result: 'success',
             dryRun,
+            dedupe,
             truncated: truncateBeforeImport && initialOffset === 0,
             imported,
+            skippedExisting,
             scanned,
             batches,
             nextOffset: initialOffset + scanned
