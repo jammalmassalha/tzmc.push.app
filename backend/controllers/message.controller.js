@@ -353,7 +353,7 @@ function registerMessageController(app, deps = {}) {
             const user = sessionUser;
 
             const limitRaw = Number(req.query && req.query.limit);
-            const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.floor(limitRaw)), 50000) : 700;
+            const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.floor(limitRaw)), 200000) : 700;
             const offsetRaw = Number(req.query && req.query.offset);
             const offset = Number.isFinite(offsetRaw) ? Math.max(0, Math.floor(offsetRaw)) : 0;
             const knownGroupNamesById = new Map();

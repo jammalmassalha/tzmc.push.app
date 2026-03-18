@@ -49,7 +49,7 @@ const BADGE_RESET_MIN_INTERVAL_MS = 30000;
 const PUSH_RECOVERY_PULL_DELAYS_MS = [1200, 3600];
 const LOGS_RECOVERY_MIN_INTERVAL_MS = 2 * 60 * 1000;
 const LOGS_RECOVERY_MAX_FETCH_LIMIT = 1000;
-const LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT = 50000;
+const LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT = 200000;
 const DELIVERY_TELEMETRY_FLUSH_INTERVAL_MS = 60 * 1000;
 const DELIVERY_TELEMETRY_FLUSH_MIN_EVENTS = 4;
 const DELIVERY_TELEMETRY_DEVICE_ID_KEY = 'modern-chat-delivery-device-id';
@@ -1671,7 +1671,7 @@ export class ChatStoreService {
     try {
       const requestedLimit = Number(options.limit);
       const safeLimit = Number.isFinite(requestedLimit)
-        ? Math.min(50000, Math.max(1, Math.floor(requestedLimit)))
+        ? Math.min(200000, Math.max(1, Math.floor(requestedLimit)))
         : LOGS_RECOVERY_MAX_FETCH_LIMIT;
       const logsMessages = await this.api.getMessagesFromLogs(normalizedUser, safeLimit, 0);
       const fallbackGroups = Array.isArray(options.fallbackGroups) ? options.fallbackGroups : [];

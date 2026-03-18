@@ -611,7 +611,7 @@ export class ChatApiService {
     }
 
     const safeLimit = Number.isFinite(Number(limit))
-      ? Math.min(50000, Math.max(1, Math.floor(Number(limit))))
+      ? Math.min(200000, Math.max(1, Math.floor(Number(limit))))
       : 1000;
     const safeOffset = Number.isFinite(Number(offset))
       ? Math.max(0, Math.floor(Number(offset)))

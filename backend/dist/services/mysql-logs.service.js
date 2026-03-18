@@ -297,80 +297,95 @@ class MysqlLogsService {
         if (!requestedUser) {
             return [];
         }
-        const limit = Math.max(1, Math.min(toPositiveInteger(options.limit, 700), 50000));
+        const limit = Math.max(1, Math.min(toPositiveInteger(options.limit, 700), 200000));
         const offset = Math.max(0, toPositiveInteger(options.offset, 0));
         const excludeSystem = options.excludeSystem !== false;
-        const queryFetchLimit = Math.max(3000, Math.min(limit * 12, 250000));
-        const [rows] = await this.pool.query(`SELECT
-        \`DateTime\` AS dateTime,
-        \`ToUser\` AS toUser,
-        \`From\` AS fromUser,
-        \`Message Preview\` AS messagePreview,
-        \`SuccessOrFailed\` AS successOrFailed,
-        \`ErrorMessageOrSuccessCount\` AS errorMessageOrSuccessCount,
-        \`RecipientAuthJSON\` AS recipientAuthJson
-      FROM \`${this.tableName}\`
-      ORDER BY \`DateTime\` DESC
-      LIMIT ?, ?`, [offset, queryFetchLimit]);
+        const maxRawRowsToScan = Math.max(50000, Math.min(limit * 200, 2000000));
+        let rawOffset = offset;
+        let scannedRawRows = 0;
         const messages = [];
-        for (let rowIndex = 0; rowIndex < rows.length && messages.length < limit; rowIndex += 1) {
-            const row = rows[rowIndex];
-            const rawToUser = toTrimmedString(row.toUser);
-            const recipients = new Set([
-                ...parseRecipientUsernames(rawToUser),
-                ...parseRecipientsFromAuthJson(row.recipientAuthJson)
-            ]);
-            const toUserNormalizedPhone = normalizePhone(rawToUser);
-            const toUserLower = rawToUser.toLowerCase();
-            const isGroupTargetRow = Boolean(rawToUser &&
-                !toUserNormalizedPhone &&
-                toUserLower !== 'system' &&
-                toUserLower !== 'all' &&
-                rawToUser !== '*');
-            if (!recipients.has(requestedUser) && !isGroupTargetRow) {
-                continue;
+        while (messages.length < limit && scannedRawRows < maxRawRowsToScan) {
+            const remainingToCollect = Math.max(1, limit - messages.length);
+            const remainingRawScan = Math.max(1, maxRawRowsToScan - scannedRawRows);
+            const currentChunkSize = Math.max(3000, Math.min(20000, Math.min(remainingRawScan, remainingToCollect * 12)));
+            const [rows] = await this.pool.query(`SELECT
+          \`DateTime\` AS dateTime,
+          \`ToUser\` AS toUser,
+          \`From\` AS fromUser,
+          \`Message Preview\` AS messagePreview,
+          \`SuccessOrFailed\` AS successOrFailed,
+          \`ErrorMessageOrSuccessCount\` AS errorMessageOrSuccessCount,
+          \`RecipientAuthJSON\` AS recipientAuthJson
+        FROM \`${this.tableName}\`
+        ORDER BY \`DateTime\` DESC
+        LIMIT ?, ?`, [rawOffset, currentChunkSize]);
+            if (!rows.length) {
+                break;
             }
-            const senderRaw = toTrimmedString(row.fromUser);
-            const sender = normalizePhone(senderRaw) || senderRaw;
-            if (!sender)
-                continue;
-            if (excludeSystem && sender.toLowerCase() === 'system') {
-                continue;
-            }
-            const status = toTrimmedString(row.successOrFailed).toLowerCase();
-            if (status.startsWith('fail') || status.startsWith('error')) {
-                continue;
-            }
-            const details = toTrimmedString(row.errorMessageOrSuccessCount);
-            const detailsMap = parseLogDetailsMap(details);
-            const actionTypeFromDetails = toTrimmedString(detailsMap.type || detailsMap.actionType || detailsMap.action_type).toLowerCase();
-            const isDeletedStatus = status.startsWith('deleted');
-            const resolvedActionType = isDeletedStatus ? 'delete-action' : actionTypeFromDetails;
-            const body = toTrimmedString(row.messagePreview);
-            if (!resolvedActionType) {
-                if (!body)
-                    continue;
-                if (body.toLowerCase() === 'new notification') {
+            for (let rowIndex = 0; rowIndex < rows.length && messages.length < limit; rowIndex += 1) {
+                const row = rows[rowIndex];
+                const rawToUser = toTrimmedString(row.toUser);
+                const recipients = new Set([
+                    ...parseRecipientUsernames(rawToUser),
+                    ...parseRecipientsFromAuthJson(row.recipientAuthJson)
+                ]);
+                const toUserNormalizedPhone = normalizePhone(rawToUser);
+                const toUserLower = rawToUser.toLowerCase();
+                const isGroupTargetRow = Boolean(rawToUser &&
+                    !toUserNormalizedPhone &&
+                    toUserLower !== 'system' &&
+                    toUserLower !== 'all' &&
+                    rawToUser !== '*');
+                if (!recipients.has(requestedUser) && !isGroupTargetRow) {
                     continue;
                 }
+                const senderRaw = toTrimmedString(row.fromUser);
+                const sender = normalizePhone(senderRaw) || senderRaw;
+                if (!sender)
+                    continue;
+                if (excludeSystem && sender.toLowerCase() === 'system') {
+                    continue;
+                }
+                const status = toTrimmedString(row.successOrFailed).toLowerCase();
+                if (status.startsWith('fail') || status.startsWith('error')) {
+                    continue;
+                }
+                const details = toTrimmedString(row.errorMessageOrSuccessCount);
+                const detailsMap = parseLogDetailsMap(details);
+                const actionTypeFromDetails = toTrimmedString(detailsMap.type || detailsMap.actionType || detailsMap.action_type).toLowerCase();
+                const isDeletedStatus = status.startsWith('deleted');
+                const resolvedActionType = isDeletedStatus ? 'delete-action' : actionTypeFromDetails;
+                const body = toTrimmedString(row.messagePreview);
+                if (!resolvedActionType) {
+                    if (!body)
+                        continue;
+                    if (body.toLowerCase() === 'new notification') {
+                        continue;
+                    }
+                }
+                const timestamp = parseFlexibleTimestamp(row.dateTime) || Date.now();
+                const messageId = toTrimmedString(detailsMap.messageId || detailsMap.message_id || detailsMap.targetMessageId) || `db-logs-${timestamp}-${rawOffset + rowIndex}`;
+                const deletedAt = parseFlexibleTimestamp(detailsMap.deletedAt || detailsMap.deleted_at || timestamp) || timestamp;
+                messages.push({
+                    id: `db-logs-${timestamp}-${rawOffset + rowIndex}`,
+                    messageId,
+                    sender,
+                    body,
+                    timestamp,
+                    recipient: requestedUser,
+                    status,
+                    details,
+                    type: resolvedActionType || undefined,
+                    deletedAt: resolvedActionType === 'delete-action' ? deletedAt : undefined,
+                    groupId: toTrimmedString(detailsMap.groupId || detailsMap.group_id) || undefined,
+                    messageIds: toTrimmedString(detailsMap.messageIds || detailsMap.message_ids) || undefined
+                });
             }
-            const timestamp = parseFlexibleTimestamp(row.dateTime) || Date.now();
-            const messageId = toTrimmedString(detailsMap.messageId || detailsMap.message_id || detailsMap.targetMessageId) || `db-logs-${timestamp}-${rowIndex}`;
-            const deletedAt = parseFlexibleTimestamp(detailsMap.deletedAt || detailsMap.deleted_at || timestamp) || timestamp;
-            messages.push({
-                id: `db-logs-${timestamp}-${rowIndex}`,
-                messageId,
-                sender,
-                body,
-                timestamp,
-                recipient: requestedUser,
-                status,
-                details,
-                type: resolvedActionType || undefined,
-                deletedAt: resolvedActionType === 'delete-action' ? deletedAt : undefined,
-                groupId: toTrimmedString(detailsMap.groupId || detailsMap.group_id) || undefined,
-                messageIds: toTrimmedString(detailsMap.messageIds || detailsMap.message_ids) || undefined
-            });
+            rawOffset += rows.length;
+            scannedRawRows += rows.length;
+            if (rows.length < currentChunkSize) {
+                break;
+            }
         }
         messages.reverse();
         return messages;
