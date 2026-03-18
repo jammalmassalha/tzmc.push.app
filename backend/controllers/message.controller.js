@@ -62,9 +62,9 @@ function registerMessageController(app, deps = {}) {
     };
     const buildPollingMessageFingerprint = (message, user) => {
         if (!message || typeof message !== 'object') return '';
-        const messageId = String(message.messageId || message.id || '').trim();
-        if (messageId) return `id:${messageId}`;
         const payloadType = String(message.type || 'message').trim().toLowerCase() || 'message';
+        const messageId = String(message.messageId || message.id || '').trim();
+        if (messageId) return `id:${payloadType}:${messageId}`;
         const sender = normalizeUserKey(message.sender || message.from || message.reactor || '');
         const recipient = normalizeUserKey(message.recipient || message.user || user || '');
         const groupId = normalizeUserKey(message.groupId || message.group_id || message.chatId || message.chat_id || '');
@@ -167,12 +167,14 @@ function registerMessageController(app, deps = {}) {
             if (!message || typeof message !== 'object') {
                 continue;
             }
+            const payloadType = String(message.type || 'message').trim().toLowerCase() || 'message';
             const messageId = String(message.messageId || message.id || '').trim();
             if (messageId) {
-                if (seenMessageIds.has(messageId)) {
+                const scopedMessageId = `${payloadType}:${messageId}`;
+                if (seenMessageIds.has(scopedMessageId)) {
                     continue;
                 }
-                seenMessageIds.add(messageId);
+                seenMessageIds.add(scopedMessageId);
             }
             const semanticKey = buildLogsSemanticFingerprint(message);
             if (semanticKey) {

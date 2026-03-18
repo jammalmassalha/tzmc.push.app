@@ -5441,6 +5441,7 @@ export class ChatStoreService {
     let appliedCount = 0;
     this.runIncomingBatch(() => {
       const bufferedRegularMessages: IncomingServerMessage[] = [];
+      const deferredActions: IncomingServerMessage[] = [];
       const flushBufferedRegularMessages = (): void => {
         if (!bufferedRegularMessages.length) return;
         appliedCount += this.applyRegularIncomingMessagesBulk(bufferedRegularMessages, options);
@@ -5454,8 +5455,16 @@ export class ChatStoreService {
             continue;
           }
           flushBufferedRegularMessages();
-          if (this.applyIncomingMessage(message)) {
+          const actionApplied = this.applyIncomingMessage(message);
+          if (actionApplied) {
             appliedCount += 1;
+            continue;
+          }
+
+          // Full sync batches can arrive out-of-order (action before base message).
+          // Retry mutating actions once after all regular messages are applied.
+          if (incomingType === 'delete-action' || incomingType === 'edit-action') {
+            deferredActions.push(message);
           }
           continue;
         }
@@ -5464,6 +5473,13 @@ export class ChatStoreService {
       }
 
       flushBufferedRegularMessages();
+      if (deferredActions.length) {
+        for (const deferredAction of deferredActions) {
+          if (this.applyIncomingMessage(deferredAction)) {
+            appliedCount += 1;
+          }
+        }
+      }
     });
 
     return appliedCount;
