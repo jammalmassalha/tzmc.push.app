@@ -5,6 +5,7 @@
   "main": "server.js",
   "scripts": {
     "build:backend": "tsc -p backend/tsconfig.json",
+    "import:logs:sheet-to-db": "node scripts/import-logs-from-sheet-to-db.js",
     "start": "node server.js",
     "test": "echo \"No root tests configured\""
   },
