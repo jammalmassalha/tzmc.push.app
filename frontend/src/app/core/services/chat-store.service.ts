@@ -6786,7 +6786,7 @@ export class ChatStoreService {
   }
 
   private rememberDeletedIncomingFingerprint(message: ChatMessage, deletedAt: number): void {
-    if (!message || message.direction !== 'incoming') {
+    if (!message) {
       return;
     }
     const chatId = this.normalizeChatId(message.chatId);

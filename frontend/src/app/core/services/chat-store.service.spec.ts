@@ -173,6 +173,77 @@ describe('ChatStoreService full sync ordering', () => {
     expect(chatMessages[0]['sender']).toBe(currentUser);
     expect(unreadByChat[chatId] ?? 0).toBe(0);
   });
+
+  it('keeps deleted outgoing message hidden when duplicate arrives with new id', () => {
+    const currentUser = '0507777777';
+    const recipient = '0508888888';
+    const originalMessageId = 'msg-outgoing-original-1';
+    const duplicateMessageId = 'msg-outgoing-duplicate-2';
+    const messageTimestamp = 1710000040000;
+    const deletedAt = 1710000045000;
+    (service as any).currentUser.set(currentUser);
+
+    (service as any).applyIncomingMessagesBatch(
+      [
+        {
+          sender: currentUser,
+          toUser: recipient,
+          messageId: originalMessageId,
+          body: 'outgoing ghost text',
+          timestamp: messageTimestamp
+        }
+      ],
+      {
+        applyActions: true,
+        incrementUnread: false,
+        trackReadReceipts: false
+      }
+    );
+
+    (service as any).applyIncomingMessagesBatch(
+      [
+        {
+          type: 'delete-action',
+          sender: currentUser,
+          messageId: originalMessageId,
+          deletedAt,
+          timestamp: deletedAt
+        }
+      ],
+      {
+        applyActions: true,
+        incrementUnread: false,
+        trackReadReceipts: false
+      }
+    );
+
+    (service as any).applyIncomingMessagesBatch(
+      [
+        {
+          sender: currentUser,
+          toUser: recipient,
+          messageId: duplicateMessageId,
+          body: 'outgoing ghost text',
+          timestamp: messageTimestamp
+        }
+      ],
+      {
+        applyActions: true,
+        incrementUnread: false,
+        trackReadReceipts: false
+      }
+    );
+
+    const chatId = (service as any).normalizeChatId(recipient);
+    const messagesByChat = (service as any).messagesByChat() as Record<string, Array<Record<string, unknown>>>;
+    const chatMessages = messagesByChat[chatId] ?? [];
+
+    expect(chatMessages.length).toBe(1);
+    expect(chatMessages[0]['messageId']).toBe(originalMessageId);
+    expect(chatMessages[0]['direction']).toBe('outgoing');
+    expect(chatMessages[0]['deletedAt']).toBe(deletedAt);
+    expect(chatMessages[0]['body']).not.toBe('outgoing ghost text');
+  });
 });
 
 describe('ChatStoreService HR sector filtering', () => {
