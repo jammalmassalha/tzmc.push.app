@@ -139,6 +139,40 @@ describe('ChatStoreService full sync ordering', () => {
     expect(importable[0]['groupId']).toBe('legacy-group');
     expect(importable[0]['groupName']).toBe('legacy-group');
   });
+
+  it('maps current-user sent logs message as outgoing in recipient chat', () => {
+    const currentUser = '0505555555';
+    const recipient = '0506666666';
+    (service as any).currentUser.set(currentUser);
+
+    (service as any).applyIncomingMessagesBatch(
+      [
+        {
+          sender: currentUser,
+          toUser: recipient,
+          messageId: 'logs-outgoing-1',
+          body: 'sent from logs',
+          timestamp: 1710000030000
+        }
+      ],
+      {
+        applyActions: true,
+        incrementUnread: true,
+        trackReadReceipts: true
+      }
+    );
+
+    const chatId = (service as any).normalizeChatId(recipient);
+    const messagesByChat = (service as any).messagesByChat() as Record<string, Array<Record<string, unknown>>>;
+    const unreadByChat = (service as any).unreadByChat() as Record<string, number>;
+    const chatMessages = messagesByChat[chatId] ?? [];
+
+    expect(chatMessages.length).toBe(1);
+    expect(chatMessages[0]['direction']).toBe('outgoing');
+    expect(chatMessages[0]['chatId']).toBe(chatId);
+    expect(chatMessages[0]['sender']).toBe(currentUser);
+    expect(unreadByChat[chatId] ?? 0).toBe(0);
+  });
 });
 
 describe('ChatStoreService HR sector filtering', () => {

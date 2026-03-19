@@ -415,6 +415,8 @@ export class MysqlLogsService {
         const row = rows[rowIndex];
         const senderRaw = toTrimmedString(row.fromUser);
         const sender = normalizePhone(senderRaw) || senderRaw;
+        const senderPhone = normalizePhone(sender);
+        const isOutgoingFromRequestedUser = Boolean(senderPhone && senderPhone === requestedUser);
         const isHardcodedGlobalGroupSender = hardcodedGroupKeySet.has(normalizeGroupKey(senderRaw));
         const rawToUser = toTrimmedString(row.toUser);
         const recipients = new Set<string>([
@@ -422,6 +424,7 @@ export class MysqlLogsService {
           ...parseRecipientsFromAuthJson(row.recipientAuthJson)
         ]);
         const toUserNormalizedPhone = normalizePhone(rawToUser);
+        const resolvedToUser = toUserNormalizedPhone || rawToUser;
         const toUserLower = rawToUser.toLowerCase();
         const isGroupTargetRow = Boolean(
           rawToUser &&
@@ -430,7 +433,7 @@ export class MysqlLogsService {
           toUserLower !== 'all' &&
           rawToUser !== '*'
         );
-        if (!recipients.has(requestedUser) && !isGroupTargetRow && !isHardcodedGlobalGroupSender) {
+        if (!recipients.has(requestedUser) && !isGroupTargetRow && !isHardcodedGlobalGroupSender && !isOutgoingFromRequestedUser) {
           continue;
         }
 
@@ -475,6 +478,7 @@ export class MysqlLogsService {
           id: `db-logs-${timestamp}-${rawOffset + rowIndex}`,
           messageId,
           sender,
+          toUser: resolvedToUser || undefined,
           body,
           timestamp,
           recipient: requestedUser,

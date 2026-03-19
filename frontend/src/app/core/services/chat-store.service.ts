@@ -5664,11 +5664,18 @@ export class ChatStoreService {
     for (const incoming of messages) {
       const sender = this.normalizeUser(incoming.sender ?? '');
       if (!sender) continue;
+      const currentUser = this.normalizeUser(this.currentUser() ?? '');
+      const incomingToUser = this.normalizeChatId(String(incoming.toUser ?? incoming.recipient ?? '').trim());
+      const isOutgoingFromCurrentUser = Boolean(currentUser && sender === currentUser);
 
       const isGroup = Boolean(incoming.groupId);
       const chatId = isGroup
         ? this.normalizeChatId(incoming.groupId ?? '')
-        : this.normalizeChatId(sender);
+        : (
+            isOutgoingFromCurrentUser && incomingToUser && incomingToUser !== currentUser
+              ? incomingToUser
+              : this.normalizeChatId(sender)
+          );
       if (!chatId) continue;
       if (this.isShuttleChat(chatId) && !this.shuttleAccessAllowed()) {
         continue;
@@ -5774,7 +5781,7 @@ export class ChatStoreService {
         senderDisplayName: incoming.groupSenderName || this.getDisplayName(sender),
         body: incomingBody,
         imageUrl: incomingImageUrl,
-        direction: 'incoming',
+        direction: isOutgoingFromCurrentUser ? 'outgoing' : 'incoming',
         timestamp: incomingTimestamp,
         deliveryStatus: 'delivered',
         groupId: normalizedGroupId || null,
@@ -5799,11 +5806,20 @@ export class ChatStoreService {
       messagesChanged = true;
       appliedCount += 1;
 
-      if (options.trackReadReceipts !== false && !isGroup && !this.isSystemChat(chatId)) {
+      if (
+        options.trackReadReceipts !== false &&
+        !isGroup &&
+        !isOutgoingFromCurrentUser &&
+        !this.isSystemChat(chatId)
+      ) {
         this.trackIncomingMessageForReadReceipt(chatId, messageId);
       }
 
-      if (options.incrementUnread !== false && this.shouldIncrementUnreadForChat(chatId)) {
+      if (
+        options.incrementUnread !== false &&
+        !isOutgoingFromCurrentUser &&
+        this.shouldIncrementUnreadForChat(chatId)
+      ) {
         nextUnreadMap[chatId] = (nextUnreadMap[chatId] ?? 0) + 1;
         unreadChanged = true;
       }
@@ -5941,11 +5957,18 @@ export class ChatStoreService {
 
     const sender = this.normalizeUser(incoming.sender ?? '');
     if (!sender) return false;
+    const currentUser = this.normalizeUser(this.currentUser() ?? '');
+    const incomingToUser = this.normalizeChatId(String(incoming.toUser ?? incoming.recipient ?? '').trim());
+    const isOutgoingFromCurrentUser = Boolean(currentUser && sender === currentUser);
 
     const isGroup = Boolean(incoming.groupId);
     const chatId = isGroup
       ? this.normalizeChatId(incoming.groupId ?? '')
-      : this.normalizeChatId(sender);
+      : (
+          isOutgoingFromCurrentUser && incomingToUser && incomingToUser !== currentUser
+            ? incomingToUser
+            : this.normalizeChatId(sender)
+        );
     if (!chatId) return false;
     if (this.isShuttleChat(chatId) && !this.shuttleAccessAllowed()) {
       return false;
@@ -6036,7 +6059,7 @@ export class ChatStoreService {
       senderDisplayName: incoming.groupSenderName || this.getDisplayName(sender),
       body: incomingBody,
       imageUrl: incomingImageUrl,
-      direction: 'incoming',
+      direction: isOutgoingFromCurrentUser ? 'outgoing' : 'incoming',
       timestamp: incomingTimestamp,
       deliveryStatus: 'delivered',
       groupId: normalizedGroupId,
@@ -6051,11 +6074,11 @@ export class ChatStoreService {
     };
 
     this.appendMessage(record);
-    if (!isGroup && !this.isSystemChat(chatId)) {
+    if (!isGroup && !isOutgoingFromCurrentUser && !this.isSystemChat(chatId)) {
       this.trackIncomingMessageForReadReceipt(chatId, messageId);
     }
 
-    if (this.shouldIncrementUnreadForChat(chatId)) {
+    if (!isOutgoingFromCurrentUser && this.shouldIncrementUnreadForChat(chatId)) {
       this.unreadByChat.update((map) => ({
         ...map,
         [chatId]: (map[chatId] ?? 0) + 1
