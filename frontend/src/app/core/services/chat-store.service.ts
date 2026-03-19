@@ -7500,6 +7500,19 @@ export class ChatStoreService {
     }
     const numericGroupUpdatedAt = Number(payload['groupUpdatedAt']);
     const numericReadAt = Number(payload['readAt']);
+    const numericPayloadTimestamp = Number(payload['timestamp']);
+    const numericPayloadReceivedAt = Number(
+      payload['receivedAt'] ??
+      payload['_swReceivedAt'] ??
+      payload['_queuedAt']
+    );
+    const resolvedIncomingTimestamp = Number.isFinite(numericPayloadTimestamp) && numericPayloadTimestamp > 0
+      ? numericPayloadTimestamp
+      : (
+          Number.isFinite(numericPayloadReceivedAt) && numericPayloadReceivedAt > 0
+            ? numericPayloadReceivedAt
+            : undefined
+        );
     const payloadMessageIds = Array.isArray(payload['messageIds'])
       ? payload['messageIds'].map((id) => String(id || '').trim()).filter(Boolean)
       : String(payload['messageId'] ?? '')
@@ -7529,7 +7542,8 @@ export class ChatStoreService {
         ? payload['groupAdmins'].map((admin) => String(admin || '').trim()).filter(Boolean)
         : undefined,
       groupUpdatedAt: Number.isFinite(numericGroupUpdatedAt) ? numericGroupUpdatedAt : undefined,
-      groupType: payload['groupType'] === 'community' ? 'community' : 'group'
+      groupType: payload['groupType'] === 'community' ? 'community' : 'group',
+      timestamp: resolvedIncomingTimestamp
     };
 
     if (payloadType !== 'reaction' && payloadType !== 'group-update' && payloadType !== 'read-receipt') {
