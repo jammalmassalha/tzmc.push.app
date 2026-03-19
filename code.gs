@@ -550,7 +550,7 @@ function doGet(e) {
         });
       }
 
-      var dumpValues = getRangeValues(dumpSheet, 2 + dumpOffset, 1, dumpFetchRows, 7);
+      var dumpValues = getRangeValues(dumpSheet, 2 + dumpOffset, 1, dumpFetchRows, 8);
       var dumpRows = dumpValues.map(function (row) {
         var rowDate = row[0];
         var dateTimeText = '';
@@ -566,7 +566,8 @@ function doGet(e) {
           messagePreview: String(row[3] || '').trim(),
           successOrFailed: String(row[4] || '').trim(),
           errorMessageOrSuccessCount: String(row[5] || '').trim(),
-          recipientAuthJson: String(row[6] || '').trim()
+          recipientAuthJson: String(row[6] || '').trim(),
+          msgId: String(row[7] || '').trim()
         };
       });
 

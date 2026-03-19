@@ -150,6 +150,7 @@ function mapDumpRowToLogPayload(rawRow = {}) {
     dateTime: parseDateTime(rawRow.dateTime ?? rawRow.DateTime ?? ''),
     recipient: String(rawRow.toUser ?? rawRow.ToUser ?? rawRow.recipient ?? '').trim(),
     sender: String(rawRow.fromUser ?? rawRow.From ?? rawRow.sender ?? 'System').trim() || 'System',
+    msgId: String(rawRow.msgId ?? rawRow.MsgID ?? rawRow.messageId ?? rawRow.message_id ?? '').trim(),
     message: String(rawRow.messagePreview ?? rawRow['Message Preview'] ?? rawRow.message ?? '').trim(),
     status: String(rawRow.successOrFailed ?? rawRow.SuccessOrFailed ?? rawRow.status ?? '').trim(),
     details: String(rawRow.errorMessageOrSuccessCount ?? rawRow.ErrorMessageOrSuccessCount ?? rawRow.details ?? '').trim(),

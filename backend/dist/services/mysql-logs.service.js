@@ -173,8 +173,8 @@ class MysqlLogsService {
     insertQuery;
     constructor(config) {
         this.tableName = normalizeTableName(config.table);
-        this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`;
+        this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
         this.pool = promise_1.default.createPool({
             host: config.host,
             port: config.port,
@@ -204,12 +204,13 @@ class MysqlLogsService {
     async insertLog(payload) {
         const sender = toTrimmedString(payload.sender) || 'System';
         const recipient = toTrimmedString(payload.recipient);
+        const msgId = toTrimmedString(payload.msgId);
         const message = toTrimmedString(payload.message);
         const status = toTrimmedString(payload.status);
         const details = toTrimmedString(payload.details);
         const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
         const dateTime = normalizeDateTimeForStorage(payload.dateTime);
-        await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, message, status, details, recipientAuthJson]);
+        await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson]);
         return true;
     }
     async filterNewLogsByCompositeKey(payloads) {
@@ -266,6 +267,7 @@ class MysqlLogsService {
             for (const payload of rowsToInsert) {
                 const sender = toTrimmedString(payload.sender) || 'System';
                 const recipient = toTrimmedString(payload.recipient);
+                const msgId = toTrimmedString(payload.msgId);
                 const message = toTrimmedString(payload.message);
                 const status = toTrimmedString(payload.status);
                 const details = toTrimmedString(payload.details);
@@ -275,6 +277,7 @@ class MysqlLogsService {
                     dateTime,
                     recipient,
                     sender,
+                    msgId,
                     message,
                     status,
                     details,
@@ -321,6 +324,7 @@ class MysqlLogsService {
           \`DateTime\` AS dateTime,
           \`ToUser\` AS toUser,
           \`From\` AS fromUser,
+          \`MsgID\` AS msgId,
           \`Message Preview\` AS messagePreview,
           \`SuccessOrFailed\` AS successOrFailed,
           \`ErrorMessageOrSuccessCount\` AS errorMessageOrSuccessCount,
@@ -377,8 +381,15 @@ class MysqlLogsService {
                     }
                 }
                 const timestamp = parseFlexibleTimestamp(row.dateTime) || Date.now();
-                const messageId = toTrimmedString(detailsMap.messageId || detailsMap.message_id || detailsMap.targetMessageId) || `db-logs-${timestamp}-${rawOffset + rowIndex}`;
+                const msgIdFromRowOrDetails = toTrimmedString(row.msgId ||
+                    detailsMap.messageId ||
+                    detailsMap.message_id ||
+                    detailsMap.targetMessageId);
+                const messageId = msgIdFromRowOrDetails || `db-logs-${timestamp}-${rawOffset + rowIndex}`;
                 const deletedAt = parseFlexibleTimestamp(detailsMap.deletedAt || detailsMap.deleted_at || timestamp) || timestamp;
+                if (resolvedActionType === 'delete-action' && !msgIdFromRowOrDetails) {
+                    continue;
+                }
                 const nextMatchedCount = matchedCount + 1;
                 if (nextMatchedCount <= offset) {
                     matchedCount = nextMatchedCount;

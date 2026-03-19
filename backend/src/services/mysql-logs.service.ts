@@ -16,6 +16,7 @@ export interface MysqlLogInsertPayload {
   message: string;
   status: string;
   details: string;
+  msgId?: string;
   recipientAuthJson?: string;
   dateTime?: Date;
 }
@@ -35,6 +36,7 @@ interface MysqlLogRow extends RowDataPacket {
   dateTime: Date | string | number | null;
   toUser: string | null;
   fromUser: string | null;
+  msgId: string | null;
   messagePreview: string | null;
   successOrFailed: string | null;
   errorMessageOrSuccessCount: string | null;
@@ -212,8 +214,8 @@ export class MysqlLogsService {
 
   constructor(config: MysqlLogsConfig) {
     this.tableName = normalizeTableName(config.table);
-    this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`;
+    this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
     this.pool = mysql.createPool({
       host: config.host,
       port: config.port,
@@ -251,13 +253,14 @@ export class MysqlLogsService {
   async insertLog(payload: MysqlLogInsertPayload): Promise<boolean> {
     const sender = toTrimmedString(payload.sender) || 'System';
     const recipient = toTrimmedString(payload.recipient);
+    const msgId = toTrimmedString(payload.msgId);
     const message = toTrimmedString(payload.message);
     const status = toTrimmedString(payload.status);
     const details = toTrimmedString(payload.details);
     const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
     const dateTime = normalizeDateTimeForStorage(payload.dateTime);
 
-    await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, message, status, details, recipientAuthJson]);
+    await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson]);
     return true;
   }
 
@@ -333,6 +336,7 @@ export class MysqlLogsService {
       for (const payload of rowsToInsert) {
         const sender = toTrimmedString(payload.sender) || 'System';
         const recipient = toTrimmedString(payload.recipient);
+        const msgId = toTrimmedString(payload.msgId);
         const message = toTrimmedString(payload.message);
         const status = toTrimmedString(payload.status);
         const details = toTrimmedString(payload.details);
@@ -342,6 +346,7 @@ export class MysqlLogsService {
           dateTime,
           recipient,
           sender,
+          msgId,
           message,
           status,
           details,
@@ -397,6 +402,7 @@ export class MysqlLogsService {
           \`DateTime\` AS dateTime,
           \`ToUser\` AS toUser,
           \`From\` AS fromUser,
+          \`MsgID\` AS msgId,
           \`Message Preview\` AS messagePreview,
           \`SuccessOrFailed\` AS successOrFailed,
           \`ErrorMessageOrSuccessCount\` AS errorMessageOrSuccessCount,
@@ -464,10 +470,17 @@ export class MysqlLogsService {
         }
 
         const timestamp = parseFlexibleTimestamp(row.dateTime) || Date.now();
-        const messageId = toTrimmedString(
-          detailsMap.messageId || detailsMap.message_id || detailsMap.targetMessageId
-        ) || `db-logs-${timestamp}-${rawOffset + rowIndex}`;
+        const msgIdFromRowOrDetails = toTrimmedString(
+          row.msgId ||
+          detailsMap.messageId ||
+          detailsMap.message_id ||
+          detailsMap.targetMessageId
+        );
+        const messageId = msgIdFromRowOrDetails || `db-logs-${timestamp}-${rawOffset + rowIndex}`;
         const deletedAt = parseFlexibleTimestamp(detailsMap.deletedAt || detailsMap.deleted_at || timestamp) || timestamp;
+        if (resolvedActionType === 'delete-action' && !msgIdFromRowOrDetails) {
+          continue;
+        }
         const nextMatchedCount = matchedCount + 1;
         if (nextMatchedCount <= offset) {
           matchedCount = nextMatchedCount;
