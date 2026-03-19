@@ -376,17 +376,20 @@ export class MysqlLogsService {
         ? options.hardcodedGroupIds.map((value) => normalizeGroupKey(value)).filter(Boolean)
         : []
     );
-    const maxRawRowsToScan = Math.max(50000, Math.min(limit * 200, 2000000));
-    let rawOffset = offset;
+    const requiredMatches = offset + limit;
+    const maxRawRowsToScan = Math.max(50000, Math.min(requiredMatches * 220, 5000000));
+    let rawOffset = 0;
     let scannedRawRows = 0;
+    let matchedCount = 0;
     const messages: Record<string, unknown>[] = [];
 
-    while (messages.length < limit && scannedRawRows < maxRawRowsToScan) {
+    while (messages.length < limit && scannedRawRows < maxRawRowsToScan && matchedCount < requiredMatches) {
       const remainingToCollect = Math.max(1, limit - messages.length);
+      const remainingMatchesToScan = Math.max(1, requiredMatches - matchedCount);
       const remainingRawScan = Math.max(1, maxRawRowsToScan - scannedRawRows);
       const currentChunkSize = Math.max(
         3000,
-        Math.min(20000, Math.min(remainingRawScan, remainingToCollect * 12))
+        Math.min(25000, Math.min(remainingRawScan, Math.max(remainingToCollect * 12, remainingMatchesToScan * 6)))
       );
 
       const [rows] = await this.pool.query<MysqlLogRow[]>(
@@ -462,6 +465,11 @@ export class MysqlLogsService {
           detailsMap.messageId || detailsMap.message_id || detailsMap.targetMessageId
         ) || `db-logs-${timestamp}-${rawOffset + rowIndex}`;
         const deletedAt = parseFlexibleTimestamp(detailsMap.deletedAt || detailsMap.deleted_at || timestamp) || timestamp;
+        const nextMatchedCount = matchedCount + 1;
+        if (nextMatchedCount <= offset) {
+          matchedCount = nextMatchedCount;
+          continue;
+        }
 
         messages.push({
           id: `db-logs-${timestamp}-${rawOffset + rowIndex}`,
@@ -477,6 +485,7 @@ export class MysqlLogsService {
           groupId: toTrimmedString(detailsMap.groupId || detailsMap.group_id) || undefined,
           messageIds: toTrimmedString(detailsMap.messageIds || detailsMap.message_ids) || undefined
         });
+        matchedCount = nextMatchedCount;
       }
 
       rawOffset += rows.length;

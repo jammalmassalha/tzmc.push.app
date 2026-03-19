@@ -123,6 +123,22 @@ describe('ChatStoreService full sync ordering', () => {
     expect(chatMessages[0]['deletedAt']).toBe(deletedAt);
     expect(chatMessages[0]['body']).not.toBe('ghost text');
   });
+
+  it('does not drop logs message when group metadata is missing', () => {
+    const importable = (service as any).buildImportableLogsMessagesForSync([
+      {
+        sender: '0504444444',
+        messageId: 'logs-group-1',
+        body: 'group sync message',
+        timestamp: 1710000020000,
+        groupId: 'legacy-group'
+      }
+    ]);
+
+    expect(importable.length).toBe(1);
+    expect(importable[0]['groupId']).toBe('legacy-group');
+    expect(importable[0]['groupName']).toBe('legacy-group');
+  });
 });
 
 describe('ChatStoreService HR sector filtering', () => {

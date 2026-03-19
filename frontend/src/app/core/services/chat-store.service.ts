@@ -1622,12 +1622,10 @@ export class ChatStoreService {
 
     const normalizedLogs = this.normalizeLogsMessagesForImport(nonSystemLogs, fallbackGroups);
     const knownGroupNamesById = new Map<string, string>();
-    const knownGroupIds = new Set<string>();
     [...fallbackGroups, ...this.groups()].forEach((group) => {
       const groupId = this.normalizeChatId(String(group.id || '').trim());
       const groupName = String(group.name || '').trim();
       if (!groupId) return;
-      knownGroupIds.add(groupId);
       if (!groupName) return;
       if (this.normalizeChatId(groupName) === groupId) return;
       if (!knownGroupNamesById.has(groupId)) {
@@ -1641,19 +1639,13 @@ export class ChatStoreService {
         if (!groupId) return message;
         const incomingGroupName = String(message.groupName ?? '').trim();
         const knownGroupName = knownGroupNamesById.get(groupId) ?? '';
-        const hasResolvableGroup = Boolean(
-          incomingGroupName ||
-          knownGroupName ||
-          knownGroupIds.has(groupId)
-        );
-        if (!hasResolvableGroup) {
-          return null;
-        }
         if (incomingGroupName && this.normalizeChatId(incomingGroupName) !== groupId) {
           return message;
         }
         return {
           ...message,
+          // Never drop logs message just because group metadata was not preloaded.
+          // Use groupId fallback so full sync can still reconstruct the chat history.
           groupName: knownGroupName || incomingGroupName || groupId
         };
       })
@@ -1689,7 +1681,7 @@ export class ChatStoreService {
       const safeLimit = Number.isFinite(requestedLimit)
         ? Math.min(200000, Math.max(1, Math.floor(requestedLimit)))
         : LOGS_RECOVERY_MAX_FETCH_LIMIT;
-      const pageSize = Math.max(1, Math.min(10000, safeLimit));
+      const pageSize = Math.max(1, Math.min(50000, safeLimit));
       const logsMessages: IncomingServerMessage[] = [];
       let offset = 0;
       while (logsMessages.length < safeLimit) {
