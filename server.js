@@ -19,6 +19,7 @@ const { registerMessageController } = require('./backend/controllers/message.con
 const { registerShuttleController } = require('./backend/controllers/shuttle.controller');
 const {
     createSheetIntegrationServiceFromEnv,
+    createMysqlLogsServiceFromEnv,
     createWebhookRegistryFromEnv,
     createRedisStateStoreFromEnv,
     SessionTokenJweService,
@@ -33,6 +34,7 @@ const fetch = (...args) => {
 };
 
 const sheetIntegrationService = createSheetIntegrationServiceFromEnv(process.env);
+const mysqlLogsService = createMysqlLogsServiceFromEnv(process.env);
 const webhookRegistryService = createWebhookRegistryFromEnv(process.env);
 const GOOGLE_SHEET_URL = sheetIntegrationService.googleSheetUrl;
 const redisStateStorePromise = createRedisStateStoreFromEnv(process.env)
@@ -2871,6 +2873,14 @@ function buildGoogleSheetGetUrl(queryParams = {}, options = {}) {
     });
 }
 
+function buildLogsBackupSheetGetUrl(queryParams = {}, options = {}) {
+    return sheetIntegrationService.buildLogsBackupSheetGetUrl(queryParams, {
+        token: Object.prototype.hasOwnProperty.call(options, 'token')
+            ? (options && options.token)
+            : APP_SERVER_TOKEN
+    });
+}
+
 function normalizeAuthCode(value) {
     return String(value || '').replace(/\D/g, '').slice(0, AUTH_CODE_DIGITS);
 }
@@ -4838,22 +4848,95 @@ function buildMobileSubscriptionAuthJsonForLog(recipient, subscriptions = []) {
 
 // Helper: Log status to Google Sheets
 function logNotificationStatus(sender, recipient, messageShort, status, details, recipientAuthJson = '') {
-    return fetchWithRetry(GOOGLE_SHEET_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            action: 'save_log',
-            sender: sender || 'System',
-            recipient: recipient,
-            message: messageShort,
-            status: status,
-            details: details,
-            recipientAuthJson: recipientAuthJson || ''
-        })
-    }, { timeoutMs: 10000, retries: 2 }).catch(err => {
-        console.error('[LOG ERROR]', err.message);
+    return mysqlLogsService.insertLog({
+        sender: sender || 'System',
+        recipient: recipient,
+        message: messageShort,
+        status: status,
+        details: details,
+        recipientAuthJson: recipientAuthJson || ''
+    }).catch((err) => {
+        console.error('[LOG ERROR]', err && err.message ? err.message : err);
         return null;
     });
+}
+
+function parseLogsDumpDateTime(rawValue) {
+    if (rawValue instanceof Date) {
+        const timestamp = rawValue.getTime();
+        return Number.isFinite(timestamp) && timestamp > 0 ? rawValue : new Date();
+    }
+    const numeric = Number(rawValue);
+    if (Number.isFinite(numeric) && numeric > 0) {
+        return new Date(numeric);
+    }
+    const text = String(rawValue || '').trim();
+    if (!text) {
+        return new Date();
+    }
+    const parsed = Date.parse(text);
+    if (Number.isFinite(parsed) && parsed > 0) {
+        return new Date(parsed);
+    }
+    return new Date();
+}
+
+function mapLogsDumpRowForMysqlInsert(rawRow = {}) {
+    if (!rawRow || typeof rawRow !== 'object') {
+        return null;
+    }
+    const row = rawRow;
+    const sender = String(
+        row.fromUser ??
+        row.from ??
+        row.From ??
+        row.sender ??
+        'System'
+    ).trim() || 'System';
+    const recipient = String(
+        row.toUser ??
+        row.to ??
+        row.ToUser ??
+        row.recipient ??
+        ''
+    ).trim();
+    const message = String(
+        row.messagePreview ??
+        row.message ??
+        row['Message Preview'] ??
+        ''
+    ).trim();
+    const status = String(
+        row.successOrFailed ??
+        row.status ??
+        row.SuccessOrFailed ??
+        ''
+    ).trim();
+    const details = String(
+        row.errorMessageOrSuccessCount ??
+        row.details ??
+        row.ErrorMessageOrSuccessCount ??
+        ''
+    ).trim();
+    const recipientAuthJson = String(
+        row.recipientAuthJson ??
+        row.RecipientAuthJSON ??
+        ''
+    ).trim();
+    return {
+        sender,
+        recipient,
+        message,
+        status,
+        details,
+        recipientAuthJson,
+        dateTime: parseLogsDumpDateTime(
+            row.dateTime ??
+            row.DateTime ??
+            row.date ??
+            row.createdAt
+        )
+    };
 }
 
 async function updateSubscriptionAuthRefreshDateTime(usernames = [], requestId = '') {
@@ -5264,6 +5347,130 @@ app.get(['/delivery-telemetry/status', '/notify/delivery-telemetry/status'], (re
         devices: rows
     });
 });
+
+app.post(['/logs/import-sheet-to-db', '/notify/logs/import-sheet-to-db'], async (req, res) => {
+    if (!isSchedulerOpsRequestAuthorized(req)) {
+        return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const payload = req.body && typeof req.body === 'object' ? req.body : {};
+    const batchSizeRaw = parsePositiveInteger(payload.batchSize, 500);
+    const batchSize = Math.max(50, Math.min(batchSizeRaw || 500, 5000));
+    const maxRowsRaw = parsePositiveInteger(payload.maxRows, 0);
+    const maxRows = maxRowsRaw > 0 ? Math.min(maxRowsRaw, 1000000) : 0;
+    const truncateBeforeImport = parseBooleanInput(
+        payload.truncateBeforeImport ?? payload.truncate ?? false,
+        false
+    );
+    const dedupe = parseBooleanInput(
+        payload.dedupe ?? payload.skipExisting ?? false,
+        false
+    );
+    const dryRun = parseBooleanInput(payload.dryRun ?? false, false);
+    const initialOffset = Math.max(0, Number(payload.offset || 0) || 0);
+
+    try {
+        if (truncateBeforeImport && !dryRun && initialOffset === 0) {
+            await mysqlLogsService.truncateLogs();
+        }
+
+        let offset = initialOffset;
+        let batches = 0;
+        let imported = 0;
+        let scanned = 0;
+        let skippedExisting = 0;
+        let hasMore = true;
+
+        while (hasMore) {
+            const remaining = maxRows > 0 ? Math.max(0, maxRows - scanned) : batchSize;
+            if (maxRows > 0 && remaining <= 0) {
+                break;
+            }
+            const effectiveLimit = maxRows > 0
+                ? Math.max(1, Math.min(batchSize, remaining))
+                : batchSize;
+
+            const response = await fetchWithRetry(
+                buildLogsBackupSheetGetUrl({
+                    action: 'get_logs_dump',
+                    offset: String(offset),
+                    limit: String(effectiveLimit)
+                }),
+                {},
+                { timeoutMs: 20000, retries: 2, backoffMs: 700 }
+            );
+            if (!response.ok) {
+                throw new Error(`Sheet logs dump failed with ${response.status}`);
+            }
+
+            const dumpPayload = await response.json();
+            const result = String(dumpPayload && dumpPayload.result ? dumpPayload.result : '').trim().toLowerCase();
+            if (result && result !== 'success') {
+                const errorMessage = String(
+                    (dumpPayload && (dumpPayload.error || dumpPayload.message)) || 'Sheet logs dump failed'
+                ).trim();
+                if (/usernames parameter is missing/i.test(errorMessage)) {
+                    throw new Error('Google Apps Script deployment is outdated (missing get_logs_dump action). Deploy latest code.gs first.');
+                }
+                throw new Error(errorMessage || 'Sheet logs dump failed');
+            }
+
+            const rawRows = Array.isArray(dumpPayload && dumpPayload.rows) ? dumpPayload.rows : [];
+            if (!rawRows.length) {
+                hasMore = false;
+                break;
+            }
+
+            const normalizedRows = rawRows
+                .map((row) => mapLogsDumpRowForMysqlInsert(row))
+                .filter(Boolean);
+
+            if (!dryRun && normalizedRows.length) {
+                const insertedCount = await mysqlLogsService.insertLogsBulk(normalizedRows, {
+                    dedupeExisting: dedupe
+                });
+                imported += insertedCount;
+                if (dedupe) {
+                    skippedExisting += Math.max(0, normalizedRows.length - insertedCount);
+                }
+            } else if (dryRun && dedupe && normalizedRows.length) {
+                const rowsToInsert = await mysqlLogsService.filterNewLogsByCompositeKey(normalizedRows);
+                imported += rowsToInsert.length;
+                skippedExisting += Math.max(0, normalizedRows.length - rowsToInsert.length);
+            } else {
+                imported += normalizedRows.length;
+            }
+
+            scanned += rawRows.length;
+            offset += rawRows.length;
+            batches += 1;
+
+            const payloadHasMore = Boolean(dumpPayload && dumpPayload.hasMore === true);
+            hasMore = payloadHasMore;
+            if (!payloadHasMore && rawRows.length < effectiveLimit) {
+                hasMore = false;
+            }
+        }
+
+        return res.json({
+            result: 'success',
+            dryRun,
+            dedupe,
+            truncated: truncateBeforeImport && initialOffset === 0,
+            imported,
+            skippedExisting,
+            scanned,
+            batches,
+            nextOffset: initialOffset + scanned
+        });
+    } catch (error) {
+        console.error('[LOGS IMPORT] Failed:', error && error.message ? error.message : error);
+        return res.status(500).json({
+            result: 'error',
+            message: error && error.message ? error.message : 'Logs import failed'
+        });
+    }
+});
 // ======================================================
 // [UPDATED] BACKUP CHATS ENDPOINT (NON-BLOCKING)
 // ======================================================
@@ -5382,6 +5589,24 @@ app.post(
             notificationPayload,
             groupId || sender,
             { messageId, skipBadge: true }
+        );
+
+        const deleteLogDetails = [
+            'type=delete-action',
+            `messageId=${messageId}`,
+            `deletedAt=${deletedAt}`,
+            `sender=${sender}`,
+            `groupId=${groupId || ''}`,
+            `recipients=${recipients.join(',')}`,
+            `pushSuccess=${Number(result && result.success ? result.success : 0)}`,
+            `pushFailed=${Number(result && result.failed ? result.failed : 0)}`
+        ].join(' | ');
+        void logNotificationStatus(
+            sender,
+            recipients.join(','),
+            'Message deleted',
+            'Deleted',
+            deleteLogDetails
         );
 
         res.json({ status: 'success', details: result });
@@ -6294,6 +6519,8 @@ registerMessageController(app, {
     normalizeUserKey,
     fetchWithRetry,
     buildGoogleSheetGetUrl,
+    getLogsMessagesForUser: (user, options = {}) => mysqlLogsService.getLogsMessagesForUser(user, options),
+    hardcodedGroupIds: [DOVRUT_GROUP_ID, DOVRUT_TEST_GROUP_ID],
     getGroups: () => groups,
     getActiveRedisStateStore: () => activeRedisStateStore,
     getMessageQueue: () => messageQueue,

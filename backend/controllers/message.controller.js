@@ -4,6 +4,8 @@ function registerMessageController(app, deps = {}) {
         normalizeUserKey,
         fetchWithRetry,
         buildGoogleSheetGetUrl,
+        getLogsMessagesForUser,
+        hardcodedGroupIds,
         getGroups,
         getActiveRedisStateStore,
         getMessageQueue,
@@ -62,9 +64,9 @@ function registerMessageController(app, deps = {}) {
     };
     const buildPollingMessageFingerprint = (message, user) => {
         if (!message || typeof message !== 'object') return '';
-        const messageId = String(message.messageId || message.id || '').trim();
-        if (messageId) return `id:${messageId}`;
         const payloadType = String(message.type || 'message').trim().toLowerCase() || 'message';
+        const messageId = String(message.messageId || message.id || '').trim();
+        if (messageId) return `id:${payloadType}:${messageId}`;
         const sender = normalizeUserKey(message.sender || message.from || message.reactor || '');
         const recipient = normalizeUserKey(message.recipient || message.user || user || '');
         const groupId = normalizeUserKey(message.groupId || message.group_id || message.chatId || message.chat_id || '');
@@ -167,12 +169,14 @@ function registerMessageController(app, deps = {}) {
             if (!message || typeof message !== 'object') {
                 continue;
             }
+            const payloadType = String(message.type || 'message').trim().toLowerCase() || 'message';
             const messageId = String(message.messageId || message.id || '').trim();
             if (messageId) {
-                if (seenMessageIds.has(messageId)) {
+                const scopedMessageId = `${payloadType}:${messageId}`;
+                if (seenMessageIds.has(scopedMessageId)) {
                     continue;
                 }
-                seenMessageIds.add(messageId);
+                seenMessageIds.add(scopedMessageId);
             }
             const semanticKey = buildLogsSemanticFingerprint(message);
             if (semanticKey) {
@@ -350,9 +354,18 @@ function registerMessageController(app, deps = {}) {
             const user = sessionUser;
 
             const limitRaw = Number(req.query && req.query.limit);
-            const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.floor(limitRaw)), 1000) : 700;
+            const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.floor(limitRaw)), 200000) : 700;
+            const offsetRaw = Number(req.query && req.query.offset);
+            const offset = Number.isFinite(offsetRaw) ? Math.max(0, Math.floor(offsetRaw)) : 0;
             const knownGroupNamesById = new Map();
             const knownGroupIds = new Set();
+            const knownGroupIdByName = new Map();
+            const knownGroupTypeById = new Map();
+            const hardcodedGroupKeySet = new Set(
+                Array.isArray(hardcodedGroupIds)
+                    ? hardcodedGroupIds.map((value) => normalizeUserKey(value)).filter(Boolean)
+                    : []
+            );
             const parseFlexibleTimestamp = (...candidates) => {
                 for (const candidate of candidates) {
                     if (candidate === null || candidate === undefined) continue;
@@ -368,6 +381,40 @@ function registerMessageController(app, deps = {}) {
                     }
                 }
                 return 0;
+            };
+            const parseLogDetailsMap = (rawValue) => {
+                const detailsText = String(rawValue || '').trim();
+                if (!detailsText) {
+                    return {};
+                }
+                try {
+                    const parsed = JSON.parse(detailsText);
+                    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                        return Object.entries(parsed).reduce((acc, [key, value]) => {
+                            acc[String(key)] = String(value == null ? '' : value).trim();
+                            return acc;
+                        }, {});
+                    }
+                } catch (_error) {
+                    // Fallback to key=value parser.
+                }
+                return detailsText
+                    .split('|')
+                    .map((segment) => String(segment || '').trim())
+                    .filter(Boolean)
+                    .reduce((acc, segment) => {
+                        const separatorIndex = segment.indexOf('=');
+                        if (separatorIndex <= 0) {
+                            return acc;
+                        }
+                        const key = String(segment.slice(0, separatorIndex) || '').trim();
+                        const value = String(segment.slice(separatorIndex + 1) || '').trim();
+                        if (!key) {
+                            return acc;
+                        }
+                        acc[key] = value;
+                        return acc;
+                    }, {});
             };
             const isLikelyPhoneUser = (value) => {
                 const digits = String(value || '').replace(/\D/g, '');
@@ -403,6 +450,16 @@ function registerMessageController(app, deps = {}) {
                     const groupName = String(group.name || group.title || group.groupName || '').trim();
                     if (groupName) {
                         knownGroupNamesById.set(normalizedGroupId, groupName);
+                        const normalizedGroupNameKey = normalizeUserKey(groupName);
+                        if (normalizedGroupNameKey && !knownGroupIdByName.has(normalizedGroupNameKey)) {
+                            knownGroupIdByName.set(normalizedGroupNameKey, normalizedGroupId);
+                        }
+                    }
+                    const normalizedGroupType = String(group.type || group.groupType || '').trim().toLowerCase();
+                    if (normalizedGroupType === 'community' || normalizedGroupType === 'group') {
+                        knownGroupTypeById.set(normalizedGroupId, normalizedGroupType);
+                    } else if (hardcodedGroupKeySet.has(normalizedGroupId)) {
+                        knownGroupTypeById.set(normalizedGroupId, 'community');
                     }
                 });
             } catch (_error) {
@@ -410,41 +467,43 @@ function registerMessageController(app, deps = {}) {
             }
 
             try {
-                const response = await fetchWithRetry(
-                    buildGoogleSheetGetUrl({
-                        action: 'get_logs_messages',
-                        user,
-                        excludeSystem: '1',
-                        limit: String(limit)
-                    }),
-                    {},
-                    { timeoutMs: 15000, retries: 1 }
-                );
-                if (!response.ok) {
-                    return res.status(response.status).json({ messages: [] });
-                }
-
-                const payload = await response.json();
-                const payloadResult = String(payload && payload.result ? payload.result : '').trim().toLowerCase();
-                if (payloadResult && payloadResult !== 'success') {
-                    const payloadError = String(
-                        (payload && (payload.message || payload.error)) || 'Logs sync failed'
-                    ).trim();
-                    const statusCode = /unauthorized|forbidden/i.test(payloadError) ? 403 : 502;
-                    return res.status(statusCode).json({ messages: [], error: payloadError || 'Logs sync failed' });
-                }
-                const rawMessages = Array.isArray(payload && payload.messages) ? payload.messages : [];
+                const rawMessages = typeof getLogsMessagesForUser === 'function'
+                    ? await getLogsMessagesForUser(user, {
+                        limit,
+                        offset,
+                        excludeSystem: true,
+                        hardcodedGroupIds: Array.from(hardcodedGroupKeySet)
+                    })
+                    : [];
                 const messages = rawMessages
                     .map((message, index) => {
                         if (!message || typeof message !== 'object') {
                             return null;
                         }
+                        const messageStatus = String(
+                            message.status ??
+                            message.deliveryStatus ??
+                            ''
+                        ).trim().toLowerCase();
+                        const detailsMap = parseLogDetailsMap(
+                            message.details ??
+                            message.detail ??
+                            message.logDetails ??
+                            message.metadata ??
+                            ''
+                        );
                         const rawType = String(
                             message.type ??
                             message.eventType ??
                             message.event_type ??
                             message.actionType ??
                             message.action_type ??
+                            detailsMap.type ??
+                            detailsMap.eventType ??
+                            detailsMap.event_type ??
+                            detailsMap.actionType ??
+                            detailsMap.action_type ??
+                            (messageStatus.startsWith('deleted') ? 'delete-action' : '') ??
                             ''
                         ).trim().toLowerCase();
                         const supportedActionTypes = new Set([
@@ -510,6 +569,32 @@ function registerMessageController(app, deps = {}) {
                         let resolvedGroupId = normalizedExplicitGroupId;
                         if (
                             !resolvedGroupId &&
+                            sender &&
+                            hardcodedGroupKeySet.has(sender)
+                        ) {
+                            resolvedGroupId = sender;
+                        }
+                        if (
+                            !resolvedGroupId &&
+                            sender &&
+                            sender !== user &&
+                            !isLikelyPhoneUser(sender)
+                        ) {
+                            if (knownGroupIds.has(sender)) {
+                                resolvedGroupId = sender;
+                            } else if (knownGroupIdByName.has(sender)) {
+                                resolvedGroupId = knownGroupIdByName.get(sender) || '';
+                            }
+                        }
+                        if (
+                            !resolvedGroupId &&
+                            normalizedToUserCandidate &&
+                            hardcodedGroupKeySet.has(normalizedToUserCandidate)
+                        ) {
+                            resolvedGroupId = normalizedToUserCandidate;
+                        }
+                        if (
+                            !resolvedGroupId &&
                             normalizedToUserCandidate &&
                             normalizedToUserCandidate !== user &&
                             normalizedToUserCandidate !== sender &&
@@ -538,6 +623,10 @@ function registerMessageController(app, deps = {}) {
                             message.mid ??
                             message.uuid ??
                             message.id ??
+                            detailsMap.messageId ??
+                            detailsMap.message_id ??
+                            detailsMap.targetMessageId ??
+                            detailsMap.target_message_id ??
                             ''
                         ).trim();
                         const timestampSeed = String(
@@ -557,6 +646,10 @@ function registerMessageController(app, deps = {}) {
                             message.target_message_id ??
                             message.messageTargetId ??
                             message.message_target_id ??
+                            detailsMap.targetMessageId ??
+                            detailsMap.target_message_id ??
+                            detailsMap.messageId ??
+                            detailsMap.message_id ??
                             ''
                         ).trim();
                         const emoji = String(message.emoji ?? message.reaction ?? '').trim();
@@ -565,6 +658,8 @@ function registerMessageController(app, deps = {}) {
                             : String(
                                 message.messageIds ??
                                 message.message_ids ??
+                                detailsMap.messageIds ??
+                                detailsMap.message_ids ??
                                 message.messageId ??
                                 message.message_id ??
                                 ''
@@ -598,7 +693,14 @@ function registerMessageController(app, deps = {}) {
                             ? 'community'
                             : (groupTypeRaw === 'group'
                                 ? 'group'
-                                : (resolvedGroupId ? 'group' : undefined));
+                                : (
+                                    resolvedGroupId
+                                        ? (
+                                            knownGroupTypeById.get(resolvedGroupId) ||
+                                            (hardcodedGroupKeySet.has(resolvedGroupId) ? 'community' : 'group')
+                                        )
+                                        : undefined
+                                ));
 
                         if (isActionMessage) {
                             const normalizedReactor = normalizeUserKey(message.reactor || sender);
@@ -617,11 +719,15 @@ function registerMessageController(app, deps = {}) {
                             );
                             const editedAt = parseFlexibleTimestamp(
                                 message.editedAt,
-                                message.edited_at
+                                message.edited_at,
+                                detailsMap.editedAt,
+                                detailsMap.edited_at
                             );
                             const deletedAt = parseFlexibleTimestamp(
                                 message.deletedAt,
-                                message.deleted_at
+                                message.deleted_at,
+                                detailsMap.deletedAt,
+                                detailsMap.deleted_at
                             );
 
                             return {

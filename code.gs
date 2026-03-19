@@ -165,6 +165,40 @@ function parseRecipientUsernames(recipientRawValue) {
   return users;
 }
 
+function parseLogDetailsMap(detailsRawValue) {
+  var detailsText = String(detailsRawValue || '').trim();
+  if (!detailsText) return {};
+
+  // First try JSON payloads for forward compatibility.
+  try {
+    var parsed = JSON.parse(detailsText);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      var jsonResult = {};
+      for (var jsonKey in parsed) {
+        if (!Object.prototype.hasOwnProperty.call(parsed, jsonKey)) continue;
+        jsonResult[String(jsonKey)] = String(parsed[jsonKey] == null ? '' : parsed[jsonKey]).trim();
+      }
+      return jsonResult;
+    }
+  } catch (err) {
+    // Fallback to key=value parser below.
+  }
+
+  var result = {};
+  var segments = detailsText.split('|');
+  for (var i = 0; i < segments.length; i++) {
+    var segment = String(segments[i] || '').trim();
+    if (!segment) continue;
+    var equalsIndex = segment.indexOf('=');
+    if (equalsIndex <= 0) continue;
+    var key = String(segment.substring(0, equalsIndex) || '').trim();
+    var value = String(segment.substring(equalsIndex + 1) || '').trim();
+    if (!key) continue;
+    result[key] = value;
+  }
+  return result;
+}
+
 function getRecipientAuthJsonForLog(spreadsheet, recipientRawValue) {
   var users = parseRecipientUsernames(recipientRawValue);
   if (!users.length) return '';
@@ -302,17 +336,21 @@ function doGet(e) {
 
       var lastRow = getLastDataRow(sheet);
       if (!lastRow) return createJSON({ result: 'success', data: [] });
-      var data = getRangeValues(sheet, 2, 1, lastRow - 1, 4); // A..D
+      var data = getRangeValues(sheet, 2, 1, lastRow - 1, 5); // A..E
       var steps = [];
 
       for (var i = 0; i < data.length; i++) {
         var row = data[i];
         if (!row[0] || !row[1]) continue;
+        var showToAllUsersRaw = String(row[4] || '').trim();
+        var showToAllUsers = (showToAllUsersRaw === '1' || showToAllUsersRaw.toLowerCase() === 'true') ? 1 : 0;
         steps.push({
           id: row[0],
           name: row[1],
           subject: row[2] || '',
-          order: row[3] || 0
+          order: row[3] || 0,
+          showToAllUsers: showToAllUsers,
+          show_to_all_users: showToAllUsers
         });
       }
 
@@ -457,7 +495,95 @@ function doGet(e) {
     }
 
     // ======================================================
-    // 4. GET LOGS MESSAGES (From Sheet: Logs)
+    // 4. GET LOGS DUMP (From Sheet: Logs, raw rows)
+    // ======================================================
+    if (action === 'get_logs_dump') {
+      var configuredDumpToken = getServerGuardToken();
+      var providedDumpToken = String(e.parameter.token || e.parameter.serverToken || '').trim();
+      if (configuredDumpToken && providedDumpToken !== configuredDumpToken) {
+        return createError('Unauthorized get_logs_dump read');
+      }
+
+      var dumpSheet = spreadsheet.getSheetByName('Logs');
+      if (!dumpSheet) {
+        return createJSON({
+          result: 'success',
+          rows: [],
+          offset: 0,
+          nextOffset: 0,
+          count: 0,
+          totalRows: 0,
+          hasMore: false
+        });
+      }
+
+      var dumpLastRow = getLastDataRow(dumpSheet);
+      if (!dumpLastRow) {
+        return createJSON({
+          result: 'success',
+          rows: [],
+          offset: 0,
+          nextOffset: 0,
+          count: 0,
+          totalRows: 0,
+          hasMore: false
+        });
+      }
+
+      var dumpOffsetRaw = parseInt(String(e.parameter.offset || '0'), 10);
+      var dumpOffset = isNaN(dumpOffsetRaw) ? 0 : Math.max(0, dumpOffsetRaw);
+      var dumpLimitRaw = parseInt(String(e.parameter.limit || '1000'), 10);
+      var dumpLimit = isNaN(dumpLimitRaw) ? 1000 : Math.max(1, Math.min(dumpLimitRaw, 5000));
+      var dumpTotalRows = Math.max(0, dumpLastRow - 1);
+      var dumpRemaining = Math.max(0, dumpTotalRows - dumpOffset);
+      var dumpFetchRows = Math.min(dumpLimit, dumpRemaining);
+
+      if (dumpFetchRows <= 0) {
+        return createJSON({
+          result: 'success',
+          rows: [],
+          offset: dumpOffset,
+          nextOffset: dumpOffset,
+          count: 0,
+          totalRows: dumpTotalRows,
+          hasMore: false
+        });
+      }
+
+      var dumpValues = getRangeValues(dumpSheet, 2 + dumpOffset, 1, dumpFetchRows, 7);
+      var dumpRows = dumpValues.map(function (row) {
+        var rowDate = row[0];
+        var dateTimeText = '';
+        if (rowDate && Object.prototype.toString.call(rowDate) === '[object Date]') {
+          dateTimeText = rowDate.toISOString();
+        } else {
+          dateTimeText = String(rowDate || '').trim();
+        }
+        return {
+          dateTime: dateTimeText,
+          toUser: String(row[1] || '').trim(),
+          fromUser: String(row[2] || '').trim(),
+          messagePreview: String(row[3] || '').trim(),
+          successOrFailed: String(row[4] || '').trim(),
+          errorMessageOrSuccessCount: String(row[5] || '').trim(),
+          recipientAuthJson: String(row[6] || '').trim()
+        };
+      });
+
+      var dumpNextOffset = dumpOffset + dumpRows.length;
+      return createJSON({
+        result: 'success',
+        rows: dumpRows,
+        offset: dumpOffset,
+        nextOffset: dumpNextOffset,
+        count: dumpRows.length,
+        totalRows: dumpTotalRows,
+        hasMore: dumpNextOffset < dumpTotalRows
+      });
+    }
+
+    // ======================================================
+    // 5. GET LOGS MESSAGES (From Sheet: Logs)
     // ======================================================
     if (action === 'get_logs_messages') {
       var requestedLogsUser = normalizePhone(e.parameter.user || e.parameter.username || '');
@@ -503,16 +629,25 @@ function doGet(e) {
           continue;
         }
 
-        var body = String(row[3] || '').trim();
-        if (!body) continue;
-        var normalizedBody = body.toLowerCase();
-        if (normalizedBody === 'new notification') {
-          continue;
-        }
-
         var status = String(row[4] || '').trim().toLowerCase();
         if (status.indexOf('fail') === 0 || status.indexOf('error') === 0) {
           continue;
+        }
+        var details = String(row[5] || '').trim();
+        var parsedDetails = parseLogDetailsMap(details);
+        var actionTypeFromDetails = String(
+          parsedDetails.type || parsedDetails.actionType || parsedDetails.action_type || ''
+        ).trim().toLowerCase();
+        var isDeletedStatus = status.indexOf('deleted') === 0;
+        var resolvedActionType = isDeletedStatus ? 'delete-action' : actionTypeFromDetails;
+
+        var body = String(row[3] || '').trim();
+        if (!resolvedActionType) {
+          if (!body) continue;
+          var normalizedBody = body.toLowerCase();
+          if (normalizedBody === 'new notification') {
+            continue;
+          }
         }
 
         var timestamp = 0;
@@ -527,13 +662,28 @@ function doGet(e) {
         }
 
         var absoluteRow = rowIndex + 2;
+        var messageId = String(
+          parsedDetails.messageId || parsedDetails.message_id || parsedDetails.targetMessageId || ''
+        ).trim();
+        if (!messageId) {
+          messageId = 'logs-' + absoluteRow;
+        }
+        var deletedAtRaw = Number(parsedDetails.deletedAt || parsedDetails.deleted_at || timestamp);
+        var deletedAt = isNaN(deletedAtRaw) ? timestamp : deletedAtRaw;
+
         messages.push({
           id: 'logs-' + absoluteRow,
-          messageId: 'logs-' + absoluteRow,
+          messageId: messageId,
           sender: sender,
           body: body,
           timestamp: timestamp,
-          recipient: requestedLogsUser
+          recipient: requestedLogsUser,
+          status: status,
+          details: details,
+          type: resolvedActionType || undefined,
+          deletedAt: resolvedActionType === 'delete-action' ? deletedAt : undefined,
+          groupId: String(parsedDetails.groupId || parsedDetails.group_id || '').trim() || undefined,
+          messageIds: String(parsedDetails.messageIds || parsedDetails.message_ids || '').trim() || undefined
         });
       }
 
@@ -542,7 +692,7 @@ function doGet(e) {
     }
 
     // ======================================================
-    // 5. CHECK QUEUE (Polling)
+    // 6. CHECK QUEUE (Polling)
     // ======================================================
     if (action === 'check_queue') {
       var requestedUser = normalizePhone(e.parameter.user || e.parameter.username || '');

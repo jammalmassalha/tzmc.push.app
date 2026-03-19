@@ -49,6 +49,7 @@ const BADGE_RESET_MIN_INTERVAL_MS = 30000;
 const PUSH_RECOVERY_PULL_DELAYS_MS = [1200, 3600];
 const LOGS_RECOVERY_MIN_INTERVAL_MS = 2 * 60 * 1000;
 const LOGS_RECOVERY_MAX_FETCH_LIMIT = 1000;
+const LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT = 200000;
 const DELIVERY_TELEMETRY_FLUSH_INTERVAL_MS = 60 * 1000;
 const DELIVERY_TELEMETRY_FLUSH_MIN_EVENTS = 4;
 const DELIVERY_TELEMETRY_DEVICE_ID_KEY = 'modern-chat-delivery-device-id';
@@ -1559,7 +1560,8 @@ export class ChatStoreService {
     await this.recoverMissedMessagesFromLogs(user, {
       force: true,
       incrementUnread: false,
-      fallbackGroups: groupsSnapshotBeforeCacheClear
+      fallbackGroups: groupsSnapshotBeforeCacheClear,
+      limit: LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT
     });
     this.unreadByChat.set({});
     this.resetReadReceiptTrackingState();
@@ -1648,6 +1650,7 @@ export class ChatStoreService {
       force?: boolean;
       incrementUnread?: boolean;
       fallbackGroups?: ChatGroup[];
+      limit?: number;
     } = {}
   ): Promise<number> {
     const normalizedUser = this.normalizeUser(user);
@@ -1666,7 +1669,26 @@ export class ChatStoreService {
 
     this.logsRecoveryInFlight = true;
     try {
-      const logsMessages = await this.api.getMessagesFromLogs(normalizedUser, LOGS_RECOVERY_MAX_FETCH_LIMIT);
+      const requestedLimit = Number(options.limit);
+      const safeLimit = Number.isFinite(requestedLimit)
+        ? Math.min(200000, Math.max(1, Math.floor(requestedLimit)))
+        : LOGS_RECOVERY_MAX_FETCH_LIMIT;
+      const pageSize = Math.max(1, Math.min(10000, safeLimit));
+      const logsMessages: IncomingServerMessage[] = [];
+      let offset = 0;
+      while (logsMessages.length < safeLimit) {
+        const remaining = safeLimit - logsMessages.length;
+        const currentLimit = Math.max(1, Math.min(pageSize, remaining));
+        const page = await this.api.getMessagesFromLogs(normalizedUser, currentLimit, offset);
+        if (!page.length) {
+          break;
+        }
+        logsMessages.push(...page);
+        offset += page.length;
+        if (page.length < currentLimit) {
+          break;
+        }
+      }
       const fallbackGroups = Array.isArray(options.fallbackGroups) ? options.fallbackGroups : [];
       const importableLogs = this.buildImportableLogsMessagesForSync(logsMessages, fallbackGroups);
       if (!importableLogs.length) {
@@ -2169,7 +2191,14 @@ export class ChatStoreService {
       targetMessage?.groupType === 'community' || targetMessage?.groupType === 'group'
         ? targetMessage.groupType
         : (effectiveGroup?.type ?? null);
-    const isCommunityGroup = targetGroupType === 'community' || (!targetGroupType && !this.canSendToActiveChat());
+    const activeGroupIsCommunity = Boolean(
+      effectiveGroup && (effectiveGroup.type === 'community' || this.isDovrutGroup(effectiveGroup.id))
+    );
+    const isCommunityGroup = (
+      targetGroupType === 'community' ||
+      activeGroupIsCommunity ||
+      (!targetGroupType && !this.canSendToActiveChat())
+    );
     if (!isCommunityGroup) {
       throw new Error('ניתן להגיב רק בקבוצת קהילה.');
     }
@@ -2387,7 +2416,7 @@ export class ChatStoreService {
 
     const state = this.loadHrState(user) ?? { awaiting: 'step', stepId: null, actions: [] };
     if (state.awaiting === 'step') {
-      const steps = await this.fetchHrStepsCached();
+      const steps = await this.getHrStepsForCurrentUser();
       const index = Number.parseInt(trimmed, 10) - 1;
       if (!steps.length || Number.isNaN(index) || index < 0 || index >= steps.length) {
         this.sendHrSystemMessage('בחירה לא תקינה, נסה שוב.');
@@ -2454,6 +2483,98 @@ export class ChatStoreService {
     return false;
   }
 
+  private async getHrStepsForCurrentUser(): Promise<HrStepOption[]> {
+    const steps = await this.fetchHrStepsCached();
+    return this.filterHrStepsForCurrentUser(steps);
+  }
+
+  private filterHrStepsForCurrentUser(steps: HrStepOption[]): HrStepOption[] {
+    if (!Array.isArray(steps) || !steps.length) {
+      return [];
+    }
+    const sectorKeys = this.getCurrentUserHrSectorKeys();
+    return steps.filter((step) => this.isHrStepAllowedForCurrentUser(step, sectorKeys));
+  }
+
+  private isHrStepAllowedForCurrentUser(step: HrStepOption, sectorKeys: readonly string[]): boolean {
+    if (step.showToAllUsers) {
+      return true;
+    }
+    if (!sectorKeys.length) {
+      return false;
+    }
+    return this.isHrStepMatchForSector(step, sectorKeys);
+  }
+
+  private getCurrentUserHrSectorKeys(): string[] {
+    const currentUser = this.normalizeUser(this.currentUser() ?? '');
+    if (!currentUser) {
+      return [];
+    }
+    const currentContact = this.contacts().find((contact) => contact.username === currentUser);
+    if (!currentContact) {
+      return [];
+    }
+    const parsedDisplay = this.extractNameAndInfo(currentContact.displayName || '');
+    const rawValues = [currentContact.info, parsedDisplay.info]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean);
+    if (!rawValues.length) {
+      return [];
+    }
+    return Array.from(
+      new Set(
+        rawValues
+          .flatMap((value) => this.extractHrSectorTokens(value))
+          .map((token) => this.normalizeHrSectorKey(token))
+          .filter(Boolean)
+      )
+    );
+  }
+
+  private isHrStepMatchForSector(step: HrStepOption, sectorKeys: readonly string[]): boolean {
+    const stepTokens = Array.from(
+      new Set(
+        [step.subject, step.name]
+          .flatMap((value) => this.extractHrSectorTokens(String(value || '')))
+          .map((token) => this.normalizeHrSectorKey(token))
+          .filter(Boolean)
+      )
+    );
+    if (!stepTokens.length) {
+      return false;
+    }
+    return sectorKeys.some((sectorKey) =>
+      stepTokens.some(
+        (stepToken) =>
+          stepToken === sectorKey ||
+          stepToken.includes(sectorKey) ||
+          sectorKey.includes(stepToken)
+      )
+    );
+  }
+
+  private extractHrSectorTokens(value: string): string[] {
+    const source = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!source) {
+      return [];
+    }
+    return source
+      .split(/[|,;/\n]+/g)
+      .map((token) => token.trim())
+      .filter(Boolean);
+  }
+
+  private normalizeHrSectorKey(value: string): string {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/[()"'`]/g, ' ')
+      .replace(/[_-]/g, ' ')
+      .replace(/ענף|מחלקה|מחלקת|סקטור|sektor|sector|department/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   private async fetchHrStepsCached(): Promise<HrStepOption[]> {
     const now = Date.now();
     if (this.hrStepsCache.steps.length && now - this.hrStepsCache.at < HR_STEPS_CACHE_TTL_MS) {
@@ -2499,7 +2620,7 @@ export class ChatStoreService {
       localStorage.setItem(this.hrWelcomeKey(user), '1');
     }
 
-    const steps = await this.fetchHrStepsCached();
+    const steps = await this.getHrStepsForCurrentUser();
     if (steps.length) {
       this.sendHrSystemMessage(this.buildHrStepsMessage(steps), { recordType: 'hr-steps' });
     }
@@ -5441,6 +5562,7 @@ export class ChatStoreService {
     let appliedCount = 0;
     this.runIncomingBatch(() => {
       const bufferedRegularMessages: IncomingServerMessage[] = [];
+      const deferredActions: IncomingServerMessage[] = [];
       const flushBufferedRegularMessages = (): void => {
         if (!bufferedRegularMessages.length) return;
         appliedCount += this.applyRegularIncomingMessagesBulk(bufferedRegularMessages, options);
@@ -5454,8 +5576,16 @@ export class ChatStoreService {
             continue;
           }
           flushBufferedRegularMessages();
-          if (this.applyIncomingMessage(message)) {
+          const actionApplied = this.applyIncomingMessage(message);
+          if (actionApplied) {
             appliedCount += 1;
+            continue;
+          }
+
+          // Full sync batches can arrive out-of-order (action before base message).
+          // Retry mutating actions once after all regular messages are applied.
+          if (incomingType === 'delete-action' || incomingType === 'edit-action') {
+            deferredActions.push(message);
           }
           continue;
         }
@@ -5464,6 +5594,13 @@ export class ChatStoreService {
       }
 
       flushBufferedRegularMessages();
+      if (deferredActions.length) {
+        for (const deferredAction of deferredActions) {
+          if (this.applyIncomingMessage(deferredAction)) {
+            appliedCount += 1;
+          }
+        }
+      }
     });
 
     return appliedCount;
@@ -7455,6 +7592,19 @@ export class ChatStoreService {
     }
     const numericGroupUpdatedAt = Number(payload['groupUpdatedAt']);
     const numericReadAt = Number(payload['readAt']);
+    const numericPayloadTimestamp = Number(payload['timestamp']);
+    const numericPayloadReceivedAt = Number(
+      payload['receivedAt'] ??
+      payload['_swReceivedAt'] ??
+      payload['_queuedAt']
+    );
+    const resolvedIncomingTimestamp = Number.isFinite(numericPayloadTimestamp) && numericPayloadTimestamp > 0
+      ? numericPayloadTimestamp
+      : (
+          Number.isFinite(numericPayloadReceivedAt) && numericPayloadReceivedAt > 0
+            ? numericPayloadReceivedAt
+            : undefined
+        );
     const payloadMessageIds = Array.isArray(payload['messageIds'])
       ? payload['messageIds'].map((id) => String(id || '').trim()).filter(Boolean)
       : String(payload['messageId'] ?? '')
@@ -7484,7 +7634,8 @@ export class ChatStoreService {
         ? payload['groupAdmins'].map((admin) => String(admin || '').trim()).filter(Boolean)
         : undefined,
       groupUpdatedAt: Number.isFinite(numericGroupUpdatedAt) ? numericGroupUpdatedAt : undefined,
-      groupType: payload['groupType'] === 'community' ? 'community' : 'group'
+      groupType: payload['groupType'] === 'community' ? 'community' : 'group',
+      timestamp: resolvedIncomingTimestamp
     };
 
     if (payloadType !== 'reaction' && payloadType !== 'group-update' && payloadType !== 'read-receipt') {

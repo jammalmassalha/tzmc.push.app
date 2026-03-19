@@ -2,6 +2,7 @@ type QueryParamValue = string | number | boolean | null | undefined;
 
 export interface SheetIntegrationConfig {
   googleSheetUrl: string;
+  logsBackupSheetUrl?: string;
   shuttleUserOrdersUrl: string;
   defaultToken?: string;
 }
@@ -20,11 +21,13 @@ function normalizeUrl(value: unknown): string {
 
 export class SheetIntegrationService {
   readonly googleSheetUrl: string;
+  readonly logsBackupSheetUrl: string;
   readonly shuttleUserOrdersUrl: string;
   readonly defaultToken: string;
 
   constructor(config: SheetIntegrationConfig) {
     this.googleSheetUrl = normalizeUrl(config.googleSheetUrl);
+    this.logsBackupSheetUrl = normalizeUrl(config.logsBackupSheetUrl) || this.googleSheetUrl;
     this.shuttleUserOrdersUrl = normalizeUrl(config.shuttleUserOrdersUrl);
     this.defaultToken = toTrimmedString(config.defaultToken);
   }
@@ -34,6 +37,25 @@ export class SheetIntegrationService {
       throw new Error('GOOGLE_SHEET_URL is not configured');
     }
     const url = new URL(this.googleSheetUrl);
+    for (const [key, rawValue] of Object.entries(queryParams)) {
+      if (rawValue === null || rawValue === undefined) continue;
+      const value = toTrimmedString(rawValue);
+      if (!value) continue;
+      url.searchParams.set(key, value);
+    }
+
+    const token = toTrimmedString(Object.prototype.hasOwnProperty.call(options, 'token') ? options.token : this.defaultToken);
+    if (token) {
+      url.searchParams.set('token', token);
+    }
+    return url.toString();
+  }
+
+  buildLogsBackupSheetGetUrl(queryParams: Record<string, QueryParamValue> = {}, options: BuildUrlOptions = {}): string {
+    if (!this.logsBackupSheetUrl) {
+      throw new Error('LOGS_BACKUP_SHEET_URL is not configured');
+    }
+    const url = new URL(this.logsBackupSheetUrl);
     for (const [key, rawValue] of Object.entries(queryParams)) {
       if (rawValue === null || rawValue === undefined) continue;
       const value = toTrimmedString(rawValue);
@@ -65,7 +87,9 @@ export class SheetIntegrationService {
 
 export function createSheetIntegrationServiceFromEnv(env: NodeJS.ProcessEnv = process.env): SheetIntegrationService {
   const googleSheetUrl = toTrimmedString(env.GOOGLE_SHEET_URL)
-    || 'https://script.google.com/macros/s/AKfycbylA-hf-zUbRVieJuGeY-FLlmYHnKgkkebWgEXfOZnamtB7zf_CpWqJOt99RRmmPcpP/exec';
+    || 'https://script.google.com/macros/s/AKfycbxwGvC15zTXxqHnQP0E5NT1I5CRe6QE2SXKkU9NMnouhez0mZ_6YuJ_Bh0rxoxTOE1zQQ/exec';
+  const logsBackupSheetUrl = toTrimmedString(env.LOGS_BACKUP_SHEET_URL)
+    || 'https://script.google.com/macros/s/AKfycbzlnfZHiV1Wg6jt5VqbJ1HYViLr4s2vrJ63jUVfXAGBhTxbXh_5gDd5ADl-1V6NPxdhWw/exec';
   const shuttleUserOrdersUrl = toTrimmedString(env.SHUTTLE_USER_ORDERS_URL)
     || 'https://script.google.com/macros/s/AKfycbxbT0U2U5c0s4LAVPca8XsC8KwPIBIIgtKo1jfmHhUcE7yoF3SqaiC-Ki1vYSDj24ET/exec';
   const defaultToken = toTrimmedString(
@@ -78,6 +102,7 @@ export function createSheetIntegrationServiceFromEnv(env: NodeJS.ProcessEnv = pr
 
   return new SheetIntegrationService({
     googleSheetUrl,
+    logsBackupSheetUrl,
     shuttleUserOrdersUrl,
     defaultToken
   });

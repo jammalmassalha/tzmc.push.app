@@ -91,6 +91,8 @@ interface HrStepsResponse {
     id?: string | number;
     name?: string;
     subject?: string;
+    showToAllUsers?: number | string | boolean;
+    show_to_all_users?: number | string | boolean;
   }>;
 }
 
@@ -134,6 +136,7 @@ export interface HrStepOption {
   id: string;
   name: string;
   subject: string;
+  showToAllUsers: boolean;
 }
 
 export interface HrActionOption {
@@ -604,16 +607,19 @@ export class ChatApiService {
     return Array.isArray(body.messages) ? body.messages : [];
   }
 
-  async getMessagesFromLogs(user?: string, limit = 1000): Promise<IncomingServerMessage[]> {
+  async getMessagesFromLogs(user?: string, limit = 1000, offset = 0): Promise<IncomingServerMessage[]> {
     const normalizedUser = String(user || '').trim().toLowerCase();
     if (!normalizedUser) {
       return [];
     }
 
     const safeLimit = Number.isFinite(Number(limit))
-      ? Math.min(1000, Math.max(1, Math.floor(Number(limit))))
+      ? Math.min(200000, Math.max(1, Math.floor(Number(limit))))
       : 1000;
-    const url = `${this.notifyBaseUrl}/messages/logs?user=${encodeURIComponent(normalizedUser)}&excludeSystem=1&limit=${safeLimit}&_ts=${Date.now()}`;
+    const safeOffset = Number.isFinite(Number(offset))
+      ? Math.max(0, Math.floor(Number(offset)))
+      : 0;
+    const url = `${this.notifyBaseUrl}/messages/logs?user=${encodeURIComponent(normalizedUser)}&excludeSystem=1&limit=${safeLimit}&offset=${safeOffset}&_ts=${Date.now()}`;
     const response = await this.fetchWithRetry(
       url,
       { cache: 'no-store' },
@@ -919,7 +925,8 @@ export class ChatApiService {
       .map((item) => ({
         id: String(item.id ?? '').trim(),
         name: String(item.name ?? '').trim(),
-        subject: String(item.subject ?? '').trim()
+        subject: String(item.subject ?? '').trim(),
+        showToAllUsers: this.parseBooleanLike(item.showToAllUsers ?? item.show_to_all_users)
       }))
       .filter((item) => Boolean(item.id && item.name));
   }
@@ -1231,6 +1238,17 @@ export class ChatApiService {
     }
 
     throw lastError instanceof Error ? lastError : new Error('Network request failed');
+  }
+
+  private parseBooleanLike(value: unknown): boolean {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value === 'number') {
+      return Number.isFinite(value) && value === 1;
+    }
+    const normalized = String(value ?? '').trim().toLowerCase();
+    return normalized === '1' || normalized === 'true';
   }
 
   private sleep(ms: number): Promise<void> {

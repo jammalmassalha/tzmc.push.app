@@ -221,15 +221,22 @@ async function enqueuePendingPushPayload(payload) {
   if (!fingerprint) {
     return;
   }
+  const payloadReceivedAtRaw = Number(payload.receivedAt);
+  const payloadReceivedAt = Number.isFinite(payloadReceivedAtRaw) && payloadReceivedAtRaw > 0
+    ? payloadReceivedAtRaw
+    : Date.now();
   const queue = await readPendingPushQueue();
   const filteredQueue = queue.filter((entry) => {
     if (!entry || typeof entry !== 'object') return false;
     return String(entry.fingerprint || '').trim() !== fingerprint;
   });
   filteredQueue.push({
-    at: Date.now(),
+    at: payloadReceivedAt,
     fingerprint,
-    payload
+    payload: {
+      ...payload,
+      receivedAt: payloadReceivedAt
+    }
   });
   await persistPendingPushQueue(filteredQueue);
 }
@@ -239,7 +246,24 @@ async function drainPendingPushPayloadQueue() {
   await persistPendingPushQueue([]);
   return queue
     .filter((entry) => entry && typeof entry === 'object')
-    .map((entry) => entry.payload)
+    .map((entry) => {
+      const payload = entry.payload && typeof entry.payload === 'object'
+        ? entry.payload
+        : null;
+      if (!payload) {
+        return null;
+      }
+      const entryReceivedAtRaw = Number(entry.at);
+      const payloadReceivedAtRaw = Number(payload.receivedAt);
+      const resolvedReceivedAt = Number.isFinite(payloadReceivedAtRaw) && payloadReceivedAtRaw > 0
+        ? payloadReceivedAtRaw
+        : (Number.isFinite(entryReceivedAtRaw) && entryReceivedAtRaw > 0 ? entryReceivedAtRaw : Date.now());
+      return {
+        ...payload,
+        receivedAt: resolvedReceivedAt,
+        _queuedAt: Number.isFinite(entryReceivedAtRaw) && entryReceivedAtRaw > 0 ? entryReceivedAtRaw : undefined
+      };
+    })
     .filter((payload) => payload && typeof payload === 'object');
 }
 
@@ -738,29 +762,36 @@ function showDedupedNotification(title, options = {}) {
 
 self.addEventListener('push', (event) => {
   const payload = parsePushPayload(event);
-  const icon = buildIconUrl(payload);
-  const badgeCount = parseBadgeCount(payload);
-  const title = typeof payload.title === 'string' && payload.title ? payload.title : FALLBACK_TITLE;
-  const body = normalizeBody(payload) || FALLBACK_BODY;
+  const receivedAt = Date.now();
+  const payloadWithReceivedAt = {
+    ...payload,
+    receivedAt
+  };
+  const icon = buildIconUrl(payloadWithReceivedAt);
+  const badgeCount = parseBadgeCount(payloadWithReceivedAt);
+  const title = typeof payloadWithReceivedAt.title === 'string' && payloadWithReceivedAt.title ? payloadWithReceivedAt.title : FALLBACK_TITLE;
+  const body = normalizeBody(payloadWithReceivedAt) || FALLBACK_BODY;
   const url = normalizeTargetUrl(
-    typeof payload.url === 'string' && payload.url ? payload.url : new URL('./', self.registration.scope).toString()
+    typeof payloadWithReceivedAt.url === 'string' && payloadWithReceivedAt.url
+      ? payloadWithReceivedAt.url
+      : new URL('./', self.registration.scope).toString()
   );
 
   void persistSubscriptionContext({
-    username: payload.user || payload.username || '',
-    subscriptionUrl: payload.subscriptionUrl || '',
-    vapidPublicKey: payload.vapidPublicKey || ''
+    username: payloadWithReceivedAt.user || payloadWithReceivedAt.username || '',
+    subscriptionUrl: payloadWithReceivedAt.subscriptionUrl || '',
+    vapidPublicKey: payloadWithReceivedAt.vapidPublicKey || ''
   });
 
-  const tasks = [broadcastPushPayload(payload), enqueuePendingPushPayload(payload)];
-  if (String(payload.type || '').toLowerCase() === AUTH_REFRESH_PUSH_TYPE) {
-    tasks.push(refreshSubscriptionAuthInBackground(payload));
+  const tasks = [broadcastPushPayload(payloadWithReceivedAt), enqueuePendingPushPayload(payloadWithReceivedAt)];
+  if (String(payloadWithReceivedAt.type || '').toLowerCase() === AUTH_REFRESH_PUSH_TYPE) {
+    tasks.push(refreshSubscriptionAuthInBackground(payloadWithReceivedAt));
   }
   if (badgeCount !== null) {
     tasks.push(setHomeScreenBadgeCount(badgeCount));
   }
   tasks.push((async () => {
-    if (!shouldShowNotification(payload)) {
+    if (!shouldShowNotification(payloadWithReceivedAt)) {
       return;
     }
     const windowClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
@@ -771,11 +802,11 @@ self.addEventListener('push', (event) => {
       body,
       icon,
       badge: icon,
-      image: typeof payload.image === 'string' ? payload.image : undefined,
-      requireInteraction: Boolean(payload.requireInteraction),
-      tag: String(payload.messageId || '').trim() || undefined,
+      image: typeof payloadWithReceivedAt.image === 'string' ? payloadWithReceivedAt.image : undefined,
+      requireInteraction: Boolean(payloadWithReceivedAt.requireInteraction),
+      tag: String(payloadWithReceivedAt.messageId || '').trim() || undefined,
       data: {
-        ...payload,
+        ...payloadWithReceivedAt,
         url
       }
     });

@@ -1933,17 +1933,20 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     if (!message.messageId) return false;
     const activeChat = this.store.activeChat();
     if (!activeChat?.isGroup) return false;
+    const activeGroup = this.findActiveGroup();
+    const activeGroupIsCommunity = Boolean(
+      activeGroup && (activeGroup.type === 'community' || this.store.isDovrutGroupChat(activeGroup.id))
+    );
 
     if (message.groupType === 'community') {
       return true;
     }
     if (message.groupType === 'group') {
-      return false;
+      return activeGroupIsCommunity;
     }
 
-    const activeGroup = this.findActiveGroup();
     if (activeGroup) {
-      return activeGroup.type === 'community';
+      return activeGroupIsCommunity;
     }
 
     // Fallback for non-admin devices where group metadata is temporarily stale.
@@ -3199,7 +3202,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       }
     }
 
-    if (options.length < 2) {
+    if (options.length < 1) {
       return null;
     }
     const prompt = promptLines.join('\n').trim() || 'יש לבחור אפשרות מהרשימה:';
