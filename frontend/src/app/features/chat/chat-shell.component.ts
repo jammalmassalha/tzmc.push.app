@@ -3202,7 +3202,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       }
     }
 
-    if (options.length < 2) {
+    if (options.length < 1) {
       return null;
     }
     const prompt = promptLines.join('\n').trim() || 'יש לבחור אפשרות מהרשימה:';
