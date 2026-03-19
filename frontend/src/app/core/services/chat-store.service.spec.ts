@@ -57,6 +57,72 @@ describe('ChatStoreService full sync ordering', () => {
     expect(chatMessages[0]['deletedAt']).toBe(deletedAt);
     expect(chatMessages[0]['body']).not.toBe('hello world');
   });
+
+  it('keeps deleted incoming message hidden when duplicate arrives with new id', () => {
+    const sender = '0503333333';
+    const originalMessageId = 'msg-original-1';
+    const duplicateMessageId = 'msg-duplicate-2';
+    const messageTimestamp = 1710000010000;
+    const deletedAt = 1710000015000;
+
+    (service as any).applyIncomingMessagesBatch(
+      [
+        {
+          sender,
+          messageId: originalMessageId,
+          body: 'ghost text',
+          timestamp: messageTimestamp
+        }
+      ],
+      {
+        applyActions: true,
+        incrementUnread: false,
+        trackReadReceipts: false
+      }
+    );
+
+    (service as any).applyIncomingMessagesBatch(
+      [
+        {
+          type: 'delete-action',
+          sender,
+          messageId: originalMessageId,
+          deletedAt,
+          timestamp: deletedAt
+        }
+      ],
+      {
+        applyActions: true,
+        incrementUnread: false,
+        trackReadReceipts: false
+      }
+    );
+
+    (service as any).applyIncomingMessagesBatch(
+      [
+        {
+          sender,
+          messageId: duplicateMessageId,
+          body: 'ghost text',
+          timestamp: messageTimestamp
+        }
+      ],
+      {
+        applyActions: true,
+        incrementUnread: false,
+        trackReadReceipts: false
+      }
+    );
+
+    const chatId = (service as any).normalizeChatId(sender);
+    const messagesByChat = (service as any).messagesByChat() as Record<string, Array<Record<string, unknown>>>;
+    const chatMessages = messagesByChat[chatId] ?? [];
+
+    expect(chatMessages.length).toBe(1);
+    expect(chatMessages[0]['messageId']).toBe(originalMessageId);
+    expect(chatMessages[0]['deletedAt']).toBe(deletedAt);
+    expect(chatMessages[0]['body']).not.toBe('ghost text');
+  });
 });
 
 describe('ChatStoreService HR sector filtering', () => {

@@ -122,6 +122,9 @@ const TYPING_HEARTBEAT_MS = 1200;
 const TYPING_STALE_MS = 6500;
 const INCOMING_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS = 2000;
 const INCOMING_SYSTEM_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS = 90 * 1000;
+const DELETED_MESSAGE_SUPPRESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DELETED_MESSAGE_SUPPRESSION_MAX_ENTRIES = 2500;
+const DELETED_MESSAGE_SUPPRESSION_TIMESTAMP_TOLERANCE_MS = 2 * 60 * 1000;
 
 type HrAwaitingState = 'step' | 'action' | 'free-text';
 
@@ -189,6 +192,15 @@ interface MessageActionSnapshot {
   thumbnailUrl?: string | null;
   editedAt?: number | null;
   deletedAt?: number | null;
+}
+
+interface DeletedIncomingMessageFingerprint {
+  chatId: string;
+  sender: string;
+  body: string;
+  imageUrl: string;
+  timestamp: number;
+  deletedAt: number;
 }
 
 interface SendMessageOptions {
@@ -365,6 +377,8 @@ export class ChatStoreService {
   private readonly pendingReadReceiptByChat = new Map<string, Set<string>>();
   private readonly readReceiptFlushTimerByChat = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly readReceiptFlushInFlightByChat = new Set<string>();
+  private readonly deletedMessageIdTombstones = new Map<string, number>();
+  private deletedIncomingFingerprints: DeletedIncomingMessageFingerprint[] = [];
   private pushRegisterInFlight = false;
   private lastPushRegisterAttemptAt = 0;
   private contactsAccessSyncInFlight = false;
@@ -681,6 +695,7 @@ export class ChatStoreService {
 
     this.currentUser.set(user);
     this.initializedUser = null;
+    this.clearDeletedMessageSuppressions();
     this.contacts.set([]);
     this.groups.set([]);
     this.messagesByChat.set({});
@@ -726,6 +741,7 @@ export class ChatStoreService {
       localStorage.removeItem(this.homeViewKey(user));
     }
     this.currentUser.set(null);
+    this.clearDeletedMessageSuppressions();
     this.contacts.set([]);
     this.groups.set([]);
     this.messagesByChat.set({});
@@ -5681,6 +5697,20 @@ export class ChatStoreService {
       });
 
       const knownMessageIds = getMessageIdSet(chatId);
+      const deletedTombstone = this.getDeletedMessageTombstone(messageId);
+      if (deletedTombstone) {
+        const hadMessageInList = knownMessageIds.has(messageId);
+        knownMessageIds.add(messageId);
+        if (hadMessageInList) {
+          const list = getMutableList(chatId);
+          if (this.applyMessageDeleteInMutableList(list, messageId, deletedTombstone)) {
+            messagesChanged = true;
+            appliedCount += 1;
+          }
+        }
+        continue;
+      }
+
       if (knownMessageIds.has(messageId)) {
         if (!this.hasRenderableIncomingContent(incomingBody, incomingImageUrl)) {
           continue;
@@ -5694,6 +5724,17 @@ export class ChatStoreService {
       }
 
       if (!this.hasRenderableIncomingContent(incomingBody, incomingImageUrl)) {
+        continue;
+      }
+      if (this.isSuppressedByDeletedIncomingFingerprint({
+        chatId,
+        sender,
+        body: incomingBody,
+        imageUrl: incomingImageUrl,
+        timestamp: incomingTimestamp
+      })) {
+        this.rememberDeletedMessageTombstone(messageId, incomingTimestamp);
+        knownMessageIds.add(messageId);
         continue;
       }
 
@@ -5931,6 +5972,14 @@ export class ChatStoreService {
       sender,
       isGroup
     });
+    const deletedTombstone = this.getDeletedMessageTombstone(messageId);
+    if (deletedTombstone) {
+      const changed = this.applyMessageDeleteLocally(messageId, deletedTombstone, { skipPersist: true });
+      if (changed) {
+        this.schedulePersist();
+      }
+      return changed;
+    }
 
     this.clearTypingIndicatorForUser(chatId, sender);
 
@@ -5941,6 +5990,16 @@ export class ChatStoreService {
       return this.hydrateExistingIncomingMessage(chatId, messageId, incomingBody, incomingImageUrl);
     }
     if (!this.hasRenderableIncomingContent(incomingBody, incomingImageUrl)) {
+      return false;
+    }
+    if (this.isSuppressedByDeletedIncomingFingerprint({
+      chatId,
+      sender,
+      body: incomingBody,
+      imageUrl: incomingImageUrl,
+      timestamp: incomingTimestamp
+    })) {
+      this.rememberDeletedMessageTombstone(messageId, incomingTimestamp);
       return false;
     }
     const existingChatMessages = this.messagesByChat()[chatId] ?? [];
@@ -6217,6 +6276,27 @@ export class ChatStoreService {
     return true;
   }
 
+  private applyMessageDeleteInMutableList(list: ChatMessage[], messageId: string, deletedAt: number): boolean {
+    const index = list.findIndex((message) => message.messageId === messageId);
+    if (index < 0) {
+      return false;
+    }
+    const current = list[index];
+    if (current.deletedAt) {
+      return false;
+    }
+    this.rememberDeletedIncomingFingerprint(current, deletedAt);
+    list[index] = {
+      ...current,
+      body: DELETED_MESSAGE_PLACEHOLDER,
+      imageUrl: null,
+      thumbnailUrl: null,
+      editedAt: null,
+      deletedAt
+    };
+    return true;
+  }
+
   private applyIncomingGroupUpdate(incoming: IncomingServerMessage): boolean {
     const groupId = this.normalizeChatId(incoming.groupId ?? '');
     if (!groupId || !incoming.groupName) return false;
@@ -6269,13 +6349,16 @@ export class ChatStoreService {
     const deletedAtValue = Number(incoming.deletedAt ?? incoming.timestamp ?? Date.now());
     const deletedAt = Number.isFinite(deletedAtValue) ? deletedAtValue : Date.now();
     let changed = false;
+    let consumed = false;
     messageIds.forEach((messageId) => {
+      this.rememberDeletedMessageTombstone(messageId, deletedAt);
+      consumed = true;
       changed = this.applyMessageDeleteLocally(messageId, deletedAt, { skipPersist: true }) || changed;
     });
     if (changed) {
       this.schedulePersist();
     }
-    return changed;
+    return changed || consumed;
   }
 
   private applyIncomingReaction(incoming: IncomingServerMessage): boolean {
@@ -6608,6 +6691,7 @@ export class ChatStoreService {
   ): boolean {
     const normalizedId = String(messageId || '').trim();
     if (!normalizedId) return false;
+    this.rememberDeletedMessageTombstone(normalizedId, deletedAt);
 
     let changed = false;
     this.messagesByChat.update((messageMap) => {
@@ -6621,6 +6705,7 @@ export class ChatStoreService {
             return message;
           }
           changed = true;
+          this.rememberDeletedIncomingFingerprint(message, deletedAt);
           return {
             ...message,
             body: DELETED_MESSAGE_PLACEHOLDER,
@@ -6639,6 +6724,120 @@ export class ChatStoreService {
       this.schedulePersist();
     }
     return changed;
+  }
+
+  private clearDeletedMessageSuppressions(): void {
+    this.deletedMessageIdTombstones.clear();
+    this.deletedIncomingFingerprints = [];
+  }
+
+  private pruneDeletedMessageSuppressions(now = Date.now()): void {
+    const minKeptTimestamp = now - DELETED_MESSAGE_SUPPRESSION_TTL_MS;
+    for (const [messageId, deletedAt] of this.deletedMessageIdTombstones.entries()) {
+      if (!messageId || !Number.isFinite(deletedAt) || deletedAt < minKeptTimestamp) {
+        this.deletedMessageIdTombstones.delete(messageId);
+      }
+    }
+
+    this.deletedIncomingFingerprints = this.deletedIncomingFingerprints
+      .filter((entry) => Number.isFinite(entry.deletedAt) && entry.deletedAt >= minKeptTimestamp)
+      .slice(-DELETED_MESSAGE_SUPPRESSION_MAX_ENTRIES);
+  }
+
+  private rememberDeletedMessageTombstone(messageId: string, deletedAt: number): void {
+    const normalizedId = String(messageId || '').trim();
+    if (!normalizedId) {
+      return;
+    }
+    const resolvedDeletedAt = Number.isFinite(deletedAt) && deletedAt > 0 ? deletedAt : Date.now();
+    const existing = this.deletedMessageIdTombstones.get(normalizedId);
+    if (!existing || resolvedDeletedAt > existing) {
+      this.deletedMessageIdTombstones.set(normalizedId, resolvedDeletedAt);
+    }
+    this.pruneDeletedMessageSuppressions();
+  }
+
+  private getDeletedMessageTombstone(messageId: string): number | null {
+    const normalizedId = String(messageId || '').trim();
+    if (!normalizedId) {
+      return null;
+    }
+    this.pruneDeletedMessageSuppressions();
+    const deletedAt = this.deletedMessageIdTombstones.get(normalizedId);
+    if (!Number.isFinite(deletedAt || NaN) || Number(deletedAt) <= 0) {
+      return null;
+    }
+    return Number(deletedAt);
+  }
+
+  private rememberDeletedIncomingFingerprint(message: ChatMessage, deletedAt: number): void {
+    if (!message || message.direction !== 'incoming') {
+      return;
+    }
+    const chatId = this.normalizeChatId(message.chatId);
+    const sender = this.normalizeUser(message.sender);
+    const body = this.normalizeIncomingTextForDedup(String(message.body || ''));
+    const imageUrl = String(message.imageUrl || '').trim();
+    const timestamp = Number(message.timestamp || 0);
+    if (!chatId || !sender || !Number.isFinite(timestamp) || (!body && !imageUrl)) {
+      return;
+    }
+
+    const resolvedDeletedAt = Number.isFinite(deletedAt) && deletedAt > 0 ? deletedAt : Date.now();
+    this.pruneDeletedMessageSuppressions(resolvedDeletedAt);
+    const existingIndex = this.deletedIncomingFingerprints.findIndex((entry) =>
+      entry.chatId === chatId &&
+      entry.sender === sender &&
+      entry.body === body &&
+      entry.imageUrl === imageUrl &&
+      Math.abs(entry.timestamp - timestamp) <= DELETED_MESSAGE_SUPPRESSION_TIMESTAMP_TOLERANCE_MS
+    );
+
+    const nextEntry: DeletedIncomingMessageFingerprint = {
+      chatId,
+      sender,
+      body,
+      imageUrl,
+      timestamp,
+      deletedAt: resolvedDeletedAt
+    };
+
+    if (existingIndex >= 0) {
+      this.deletedIncomingFingerprints[existingIndex] = nextEntry;
+      return;
+    }
+    this.deletedIncomingFingerprints.push(nextEntry);
+    if (this.deletedIncomingFingerprints.length > DELETED_MESSAGE_SUPPRESSION_MAX_ENTRIES) {
+      this.deletedIncomingFingerprints = this.deletedIncomingFingerprints.slice(
+        -DELETED_MESSAGE_SUPPRESSION_MAX_ENTRIES
+      );
+    }
+  }
+
+  private isSuppressedByDeletedIncomingFingerprint(candidate: {
+    chatId: string;
+    sender: string;
+    body: string;
+    imageUrl: string | null;
+    timestamp: number;
+  }): boolean {
+    const chatId = this.normalizeChatId(candidate.chatId);
+    const sender = this.normalizeUser(candidate.sender);
+    const body = this.normalizeIncomingTextForDedup(candidate.body);
+    const imageUrl = String(candidate.imageUrl || '').trim();
+    const timestamp = Number(candidate.timestamp || 0);
+    if (!chatId || !sender || !Number.isFinite(timestamp) || (!body && !imageUrl)) {
+      return false;
+    }
+
+    this.pruneDeletedMessageSuppressions();
+    return this.deletedIncomingFingerprints.some((entry) =>
+      entry.chatId === chatId &&
+      entry.sender === sender &&
+      entry.body === body &&
+      entry.imageUrl === imageUrl &&
+      Math.abs(entry.timestamp - timestamp) <= DELETED_MESSAGE_SUPPRESSION_TIMESTAMP_TOLERANCE_MS
+    );
   }
 
   private appendMessage(message: ChatMessage): void {
@@ -7186,6 +7385,7 @@ export class ChatStoreService {
   }
 
   private resetRuntimeStateAfterCacheClear(user: string): void {
+    this.clearDeletedMessageSuppressions();
     this.contacts.set([]);
     this.groups.set([]);
     this.messagesByChat.set({});
