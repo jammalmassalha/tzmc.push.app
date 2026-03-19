@@ -58,3 +58,58 @@ describe('ChatStoreService full sync ordering', () => {
     expect(chatMessages[0]['body']).not.toBe('hello world');
   });
 });
+
+describe('ChatStoreService HR sector filtering', () => {
+  let service: ChatStoreService;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [
+        ChatStoreService,
+        {
+          provide: ChatApiService,
+          useValue: {}
+        }
+      ]
+    });
+    service = TestBed.inject(ChatStoreService);
+  });
+
+  it('keeps only HR steps that match current user sector', () => {
+    (service as any).currentUser.set('0501111111');
+    (service as any).contacts.set([
+      {
+        username: '0501111111',
+        displayName: 'בודק',
+        info: 'ענף הדרכה'
+      }
+    ]);
+
+    const filtered = (service as any).filterHrStepsForCurrentUser([
+      { id: '1', name: 'ענף רווחה', subject: '' },
+      { id: '2', name: 'ענף הדרכה', subject: '' },
+      { id: '3', name: 'טפסים', subject: 'הדרכה' }
+    ]);
+
+    expect(filtered.map((item: { id: string }) => item.id)).toEqual(['2', '3']);
+  });
+
+  it('falls back to full HR list when no sector match exists', () => {
+    (service as any).currentUser.set('0502222222');
+    (service as any).contacts.set([
+      {
+        username: '0502222222',
+        displayName: 'בודק',
+        info: 'לוגיסטיקה'
+      }
+    ]);
+
+    const original = [
+      { id: '1', name: 'ענף רווחה', subject: '' },
+      { id: '2', name: 'ענף הדרכה', subject: '' }
+    ];
+    const filtered = (service as any).filterHrStepsForCurrentUser(original);
+
+    expect(filtered.map((item: { id: string }) => item.id)).toEqual(['1', '2']);
+  });
+});

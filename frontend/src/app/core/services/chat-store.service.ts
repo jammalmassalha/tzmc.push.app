@@ -2416,7 +2416,7 @@ export class ChatStoreService {
 
     const state = this.loadHrState(user) ?? { awaiting: 'step', stepId: null, actions: [] };
     if (state.awaiting === 'step') {
-      const steps = await this.fetchHrStepsCached();
+      const steps = await this.getHrStepsForCurrentUser();
       const index = Number.parseInt(trimmed, 10) - 1;
       if (!steps.length || Number.isNaN(index) || index < 0 || index >= steps.length) {
         this.sendHrSystemMessage('בחירה לא תקינה, נסה שוב.');
@@ -2483,6 +2483,92 @@ export class ChatStoreService {
     return false;
   }
 
+  private async getHrStepsForCurrentUser(): Promise<HrStepOption[]> {
+    const steps = await this.fetchHrStepsCached();
+    return this.filterHrStepsForCurrentUser(steps);
+  }
+
+  private filterHrStepsForCurrentUser(steps: HrStepOption[]): HrStepOption[] {
+    if (!Array.isArray(steps) || !steps.length) {
+      return [];
+    }
+    const sectorKeys = this.getCurrentUserHrSectorKeys();
+    if (!sectorKeys.length) {
+      return steps;
+    }
+    const filtered = steps.filter((step) => this.isHrStepMatchForSector(step, sectorKeys));
+    return filtered.length ? filtered : steps;
+  }
+
+  private getCurrentUserHrSectorKeys(): string[] {
+    const currentUser = this.normalizeUser(this.currentUser() ?? '');
+    if (!currentUser) {
+      return [];
+    }
+    const currentContact = this.contacts().find((contact) => contact.username === currentUser);
+    if (!currentContact) {
+      return [];
+    }
+    const parsedDisplay = this.extractNameAndInfo(currentContact.displayName || '');
+    const rawValues = [currentContact.info, parsedDisplay.info]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean);
+    if (!rawValues.length) {
+      return [];
+    }
+    return Array.from(
+      new Set(
+        rawValues
+          .flatMap((value) => this.extractHrSectorTokens(value))
+          .map((token) => this.normalizeHrSectorKey(token))
+          .filter(Boolean)
+      )
+    );
+  }
+
+  private isHrStepMatchForSector(step: HrStepOption, sectorKeys: readonly string[]): boolean {
+    const stepTokens = Array.from(
+      new Set(
+        [step.subject, step.name]
+          .flatMap((value) => this.extractHrSectorTokens(String(value || '')))
+          .map((token) => this.normalizeHrSectorKey(token))
+          .filter(Boolean)
+      )
+    );
+    if (!stepTokens.length) {
+      return false;
+    }
+    return sectorKeys.some((sectorKey) =>
+      stepTokens.some(
+        (stepToken) =>
+          stepToken === sectorKey ||
+          stepToken.includes(sectorKey) ||
+          sectorKey.includes(stepToken)
+      )
+    );
+  }
+
+  private extractHrSectorTokens(value: string): string[] {
+    const source = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!source) {
+      return [];
+    }
+    return source
+      .split(/[|,;/\n]+/g)
+      .map((token) => token.trim())
+      .filter(Boolean);
+  }
+
+  private normalizeHrSectorKey(value: string): string {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/[()"'`]/g, ' ')
+      .replace(/[_-]/g, ' ')
+      .replace(/ענף|מחלקה|מחלקת|סקטור|sektor|sector|department/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   private async fetchHrStepsCached(): Promise<HrStepOption[]> {
     const now = Date.now();
     if (this.hrStepsCache.steps.length && now - this.hrStepsCache.at < HR_STEPS_CACHE_TTL_MS) {
@@ -2528,7 +2614,7 @@ export class ChatStoreService {
       localStorage.setItem(this.hrWelcomeKey(user), '1');
     }
 
-    const steps = await this.fetchHrStepsCached();
+    const steps = await this.getHrStepsForCurrentUser();
     if (steps.length) {
       this.sendHrSystemMessage(this.buildHrStepsMessage(steps), { recordType: 'hr-steps' });
     }
