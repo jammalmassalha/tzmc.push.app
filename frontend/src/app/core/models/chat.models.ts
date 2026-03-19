@@ -75,6 +75,8 @@ export interface ChatListItem {
 export interface IncomingServerMessage {
   messageId?: string;
   sender?: string;
+  toUser?: string;
+  recipient?: string;
   type?: string;
   chatId?: string;
   isTyping?: boolean;

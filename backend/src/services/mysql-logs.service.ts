@@ -16,6 +16,7 @@ export interface MysqlLogInsertPayload {
   message: string;
   status: string;
   details: string;
+  msgId?: string;
   recipientAuthJson?: string;
   dateTime?: Date;
 }
@@ -35,6 +36,7 @@ interface MysqlLogRow extends RowDataPacket {
   dateTime: Date | string | number | null;
   toUser: string | null;
   fromUser: string | null;
+  msgId: string | null;
   messagePreview: string | null;
   successOrFailed: string | null;
   errorMessageOrSuccessCount: string | null;
@@ -195,6 +197,20 @@ function parseLogDetailsMap(detailsRawValue: unknown): Record<string, string> {
     }, {});
 }
 
+function resolveLogMessageId(explicitMsgId: unknown, detailsRawValue: unknown): string {
+  const direct = toTrimmedString(explicitMsgId);
+  if (direct) {
+    return direct;
+  }
+  const detailsMap = parseLogDetailsMap(detailsRawValue);
+  return toTrimmedString(
+    detailsMap.messageId ||
+    detailsMap.message_id ||
+    detailsMap.targetMessageId ||
+    detailsMap.target_message_id
+  );
+}
+
 function normalizeTableName(rawValue: unknown): string {
   const fallback = 'Logs';
   const value = toTrimmedString(rawValue);
@@ -212,8 +228,8 @@ export class MysqlLogsService {
 
   constructor(config: MysqlLogsConfig) {
     this.tableName = normalizeTableName(config.table);
-    this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`;
+    this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
     this.pool = mysql.createPool({
       host: config.host,
       port: config.port,
@@ -254,10 +270,11 @@ export class MysqlLogsService {
     const message = toTrimmedString(payload.message);
     const status = toTrimmedString(payload.status);
     const details = toTrimmedString(payload.details);
+    const msgId = resolveLogMessageId(payload.msgId, details);
     const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
     const dateTime = normalizeDateTimeForStorage(payload.dateTime);
 
-    await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, message, status, details, recipientAuthJson]);
+    await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson]);
     return true;
   }
 
@@ -336,12 +353,14 @@ export class MysqlLogsService {
         const message = toTrimmedString(payload.message);
         const status = toTrimmedString(payload.status);
         const details = toTrimmedString(payload.details);
+        const msgId = resolveLogMessageId(payload.msgId, details);
         const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
         const dateTime = normalizeDateTimeForStorage(payload.dateTime);
         await connection.execute(this.insertQuery, [
           dateTime,
           recipient,
           sender,
+          msgId,
           message,
           status,
           details,
@@ -376,17 +395,20 @@ export class MysqlLogsService {
         ? options.hardcodedGroupIds.map((value) => normalizeGroupKey(value)).filter(Boolean)
         : []
     );
-    const maxRawRowsToScan = Math.max(50000, Math.min(limit * 200, 2000000));
-    let rawOffset = offset;
+    const requiredMatches = offset + limit;
+    const maxRawRowsToScan = Math.max(50000, Math.min(requiredMatches * 220, 5000000));
+    let rawOffset = 0;
     let scannedRawRows = 0;
+    let matchedCount = 0;
     const messages: Record<string, unknown>[] = [];
 
-    while (messages.length < limit && scannedRawRows < maxRawRowsToScan) {
+    while (messages.length < limit && scannedRawRows < maxRawRowsToScan && matchedCount < requiredMatches) {
       const remainingToCollect = Math.max(1, limit - messages.length);
+      const remainingMatchesToScan = Math.max(1, requiredMatches - matchedCount);
       const remainingRawScan = Math.max(1, maxRawRowsToScan - scannedRawRows);
       const currentChunkSize = Math.max(
         3000,
-        Math.min(20000, Math.min(remainingRawScan, remainingToCollect * 12))
+        Math.min(25000, Math.min(remainingRawScan, Math.max(remainingToCollect * 12, remainingMatchesToScan * 6)))
       );
 
       const [rows] = await this.pool.query<MysqlLogRow[]>(
@@ -394,6 +416,7 @@ export class MysqlLogsService {
           \`DateTime\` AS dateTime,
           \`ToUser\` AS toUser,
           \`From\` AS fromUser,
+          \`MsgID\` AS msgId,
           \`Message Preview\` AS messagePreview,
           \`SuccessOrFailed\` AS successOrFailed,
           \`ErrorMessageOrSuccessCount\` AS errorMessageOrSuccessCount,
@@ -412,6 +435,8 @@ export class MysqlLogsService {
         const row = rows[rowIndex];
         const senderRaw = toTrimmedString(row.fromUser);
         const sender = normalizePhone(senderRaw) || senderRaw;
+        const senderPhone = normalizePhone(sender);
+        const isOutgoingFromRequestedUser = Boolean(senderPhone && senderPhone === requestedUser);
         const isHardcodedGlobalGroupSender = hardcodedGroupKeySet.has(normalizeGroupKey(senderRaw));
         const rawToUser = toTrimmedString(row.toUser);
         const recipients = new Set<string>([
@@ -419,6 +444,7 @@ export class MysqlLogsService {
           ...parseRecipientsFromAuthJson(row.recipientAuthJson)
         ]);
         const toUserNormalizedPhone = normalizePhone(rawToUser);
+        const resolvedToUser = toUserNormalizedPhone || rawToUser;
         const toUserLower = rawToUser.toLowerCase();
         const isGroupTargetRow = Boolean(
           rawToUser &&
@@ -427,7 +453,7 @@ export class MysqlLogsService {
           toUserLower !== 'all' &&
           rawToUser !== '*'
         );
-        if (!recipients.has(requestedUser) && !isGroupTargetRow && !isHardcodedGlobalGroupSender) {
+        if (!recipients.has(requestedUser) && !isGroupTargetRow && !isHardcodedGlobalGroupSender && !isOutgoingFromRequestedUser) {
           continue;
         }
 
@@ -458,15 +484,28 @@ export class MysqlLogsService {
         }
 
         const timestamp = parseFlexibleTimestamp(row.dateTime) || Date.now();
-        const messageId = toTrimmedString(
-          detailsMap.messageId || detailsMap.message_id || detailsMap.targetMessageId
-        ) || `db-logs-${timestamp}-${rawOffset + rowIndex}`;
+        const msgIdFromRowOrDetails = toTrimmedString(
+          row.msgId ||
+          detailsMap.messageId ||
+          detailsMap.message_id ||
+          detailsMap.targetMessageId
+        );
+        const messageId = msgIdFromRowOrDetails || `db-logs-${timestamp}-${rawOffset + rowIndex}`;
         const deletedAt = parseFlexibleTimestamp(detailsMap.deletedAt || detailsMap.deleted_at || timestamp) || timestamp;
+        if (resolvedActionType === 'delete-action' && !msgIdFromRowOrDetails) {
+          continue;
+        }
+        const nextMatchedCount = matchedCount + 1;
+        if (nextMatchedCount <= offset) {
+          matchedCount = nextMatchedCount;
+          continue;
+        }
 
         messages.push({
           id: `db-logs-${timestamp}-${rawOffset + rowIndex}`,
           messageId,
           sender,
+          toUser: resolvedToUser || undefined,
           body,
           timestamp,
           recipient: requestedUser,
@@ -477,6 +516,7 @@ export class MysqlLogsService {
           groupId: toTrimmedString(detailsMap.groupId || detailsMap.group_id) || undefined,
           messageIds: toTrimmedString(detailsMap.messageIds || detailsMap.message_ids) || undefined
         });
+        matchedCount = nextMatchedCount;
       }
 
       rawOffset += rows.length;

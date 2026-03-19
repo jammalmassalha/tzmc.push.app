@@ -4846,11 +4846,32 @@ function buildMobileSubscriptionAuthJsonForLog(recipient, subscriptions = []) {
     return JSON.stringify(merged);
 }
 
-// Helper: Log status to Google Sheets
-function logNotificationStatus(sender, recipient, messageShort, status, details, recipientAuthJson = '') {
+function extractMessageIdFromLogDetails(details) {
+    const detailsText = String(details || '').trim();
+    if (!detailsText) return '';
+    const jsonStart = detailsText.charAt(0);
+    if (jsonStart === '{') {
+        try {
+            const parsed = JSON.parse(detailsText);
+            const fromJson = String(
+                parsed && (parsed.messageId || parsed.message_id || parsed.targetMessageId || parsed.target_message_id) || ''
+            ).trim();
+            if (fromJson) return fromJson;
+        } catch (_error) {
+            // Fallback to key=value scan.
+        }
+    }
+    const match = detailsText.match(/(?:^|\|)\s*(?:messageId|message_id|targetMessageId|target_message_id)\s*=\s*([^|]+)/i);
+    return match ? String(match[1] || '').trim() : '';
+}
+
+// Helper: Log status to MySQL logs table
+function logNotificationStatus(sender, recipient, messageShort, status, details, recipientAuthJson = '', msgId = '') {
+    const resolvedMsgId = String(msgId || '').trim() || extractMessageIdFromLogDetails(details);
     return mysqlLogsService.insertLog({
         sender: sender || 'System',
         recipient: recipient,
+        msgId: resolvedMsgId || '',
         message: messageShort,
         status: status,
         details: details,
@@ -4906,6 +4927,18 @@ function mapLogsDumpRowForMysqlInsert(rawRow = {}) {
         row['Message Preview'] ??
         ''
     ).trim();
+    const msgId = String(
+        row.msgId ??
+        row.MsgID ??
+        row.messageId ??
+        row.message_id ??
+        ''
+    ).trim() || extractMessageIdFromLogDetails(
+        row.errorMessageOrSuccessCount ??
+        row.details ??
+        row.ErrorMessageOrSuccessCount ??
+        ''
+    );
     const status = String(
         row.successOrFailed ??
         row.status ??
@@ -4926,6 +4959,7 @@ function mapLogsDumpRowForMysqlInsert(rawRow = {}) {
     return {
         sender,
         recipient,
+        msgId,
         message,
         status,
         details,
@@ -5606,7 +5640,9 @@ app.post(
             recipients.join(','),
             'Message deleted',
             'Deleted',
-            deleteLogDetails
+            deleteLogDetails,
+            '',
+            messageId
         );
 
         res.json({ status: 'success', details: result });
@@ -6100,7 +6136,8 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
             logContent,
             'Failed',
             'No subscriptions found',
-            recipientAuthJsonForLog
+            recipientAuthJsonForLog,
+            messageId
         );
         return { success: 0, failed: 0 };
     }
@@ -6320,7 +6357,8 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
             logContent,
             finalStatus,
             fullReport,
-            recipientAuthJsonForLog
+            recipientAuthJsonForLog,
+            messageId
         );
     }
 

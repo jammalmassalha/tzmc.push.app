@@ -748,6 +748,7 @@ function registerMessageController(app, deps = {}) {
                                 editedAt: normalizedType === 'edit-action' && editedAt > 0 ? editedAt : undefined,
                                 deletedAt: normalizedType === 'delete-action' && deletedAt > 0 ? deletedAt : undefined,
                                 timestamp,
+                                toUser: normalizedToUserCandidate || undefined,
                                 groupId: resolvedGroupId || undefined,
                                 groupName: resolvedGroupName || undefined,
                                 groupType: resolvedGroupType,
@@ -758,6 +759,7 @@ function registerMessageController(app, deps = {}) {
                         return {
                             messageId,
                             sender,
+                            toUser: normalizedToUserCandidate || undefined,
                             body,
                             timestamp,
                             groupId: resolvedGroupId || undefined,

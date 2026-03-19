@@ -57,6 +57,193 @@ describe('ChatStoreService full sync ordering', () => {
     expect(chatMessages[0]['deletedAt']).toBe(deletedAt);
     expect(chatMessages[0]['body']).not.toBe('hello world');
   });
+
+  it('keeps deleted incoming message hidden when duplicate arrives with new id', () => {
+    const sender = '0503333333';
+    const originalMessageId = 'msg-original-1';
+    const duplicateMessageId = 'msg-duplicate-2';
+    const messageTimestamp = 1710000010000;
+    const deletedAt = 1710000015000;
+
+    (service as any).applyIncomingMessagesBatch(
+      [
+        {
+          sender,
+          messageId: originalMessageId,
+          body: 'ghost text',
+          timestamp: messageTimestamp
+        }
+      ],
+      {
+        applyActions: true,
+        incrementUnread: false,
+        trackReadReceipts: false
+      }
+    );
+
+    (service as any).applyIncomingMessagesBatch(
+      [
+        {
+          type: 'delete-action',
+          sender,
+          messageId: originalMessageId,
+          deletedAt,
+          timestamp: deletedAt
+        }
+      ],
+      {
+        applyActions: true,
+        incrementUnread: false,
+        trackReadReceipts: false
+      }
+    );
+
+    (service as any).applyIncomingMessagesBatch(
+      [
+        {
+          sender,
+          messageId: duplicateMessageId,
+          body: 'ghost text',
+          timestamp: messageTimestamp
+        }
+      ],
+      {
+        applyActions: true,
+        incrementUnread: false,
+        trackReadReceipts: false
+      }
+    );
+
+    const chatId = (service as any).normalizeChatId(sender);
+    const messagesByChat = (service as any).messagesByChat() as Record<string, Array<Record<string, unknown>>>;
+    const chatMessages = messagesByChat[chatId] ?? [];
+
+    expect(chatMessages.length).toBe(1);
+    expect(chatMessages[0]['messageId']).toBe(originalMessageId);
+    expect(chatMessages[0]['deletedAt']).toBe(deletedAt);
+    expect(chatMessages[0]['body']).not.toBe('ghost text');
+  });
+
+  it('does not drop logs message when group metadata is missing', () => {
+    const importable = (service as any).buildImportableLogsMessagesForSync([
+      {
+        sender: '0504444444',
+        messageId: 'logs-group-1',
+        body: 'group sync message',
+        timestamp: 1710000020000,
+        groupId: 'legacy-group'
+      }
+    ]);
+
+    expect(importable.length).toBe(1);
+    expect(importable[0]['groupId']).toBe('legacy-group');
+    expect(importable[0]['groupName']).toBe('legacy-group');
+  });
+
+  it('maps current-user sent logs message as outgoing in recipient chat', () => {
+    const currentUser = '0505555555';
+    const recipient = '0506666666';
+    (service as any).currentUser.set(currentUser);
+
+    (service as any).applyIncomingMessagesBatch(
+      [
+        {
+          sender: currentUser,
+          toUser: recipient,
+          messageId: 'logs-outgoing-1',
+          body: 'sent from logs',
+          timestamp: 1710000030000
+        }
+      ],
+      {
+        applyActions: true,
+        incrementUnread: true,
+        trackReadReceipts: true
+      }
+    );
+
+    const chatId = (service as any).normalizeChatId(recipient);
+    const messagesByChat = (service as any).messagesByChat() as Record<string, Array<Record<string, unknown>>>;
+    const unreadByChat = (service as any).unreadByChat() as Record<string, number>;
+    const chatMessages = messagesByChat[chatId] ?? [];
+
+    expect(chatMessages.length).toBe(1);
+    expect(chatMessages[0]['direction']).toBe('outgoing');
+    expect(chatMessages[0]['chatId']).toBe(chatId);
+    expect(chatMessages[0]['sender']).toBe(currentUser);
+    expect(unreadByChat[chatId] ?? 0).toBe(0);
+  });
+
+  it('keeps deleted outgoing message hidden when duplicate arrives with new id', () => {
+    const currentUser = '0507777777';
+    const recipient = '0508888888';
+    const originalMessageId = 'msg-outgoing-original-1';
+    const duplicateMessageId = 'msg-outgoing-duplicate-2';
+    const messageTimestamp = 1710000040000;
+    const deletedAt = 1710000045000;
+    (service as any).currentUser.set(currentUser);
+
+    (service as any).applyIncomingMessagesBatch(
+      [
+        {
+          sender: currentUser,
+          toUser: recipient,
+          messageId: originalMessageId,
+          body: 'outgoing ghost text',
+          timestamp: messageTimestamp
+        }
+      ],
+      {
+        applyActions: true,
+        incrementUnread: false,
+        trackReadReceipts: false
+      }
+    );
+
+    (service as any).applyIncomingMessagesBatch(
+      [
+        {
+          type: 'delete-action',
+          sender: currentUser,
+          messageId: originalMessageId,
+          deletedAt,
+          timestamp: deletedAt
+        }
+      ],
+      {
+        applyActions: true,
+        incrementUnread: false,
+        trackReadReceipts: false
+      }
+    );
+
+    (service as any).applyIncomingMessagesBatch(
+      [
+        {
+          sender: currentUser,
+          toUser: recipient,
+          messageId: duplicateMessageId,
+          body: 'outgoing ghost text',
+          timestamp: messageTimestamp
+        }
+      ],
+      {
+        applyActions: true,
+        incrementUnread: false,
+        trackReadReceipts: false
+      }
+    );
+
+    const chatId = (service as any).normalizeChatId(recipient);
+    const messagesByChat = (service as any).messagesByChat() as Record<string, Array<Record<string, unknown>>>;
+    const chatMessages = messagesByChat[chatId] ?? [];
+
+    expect(chatMessages.length).toBe(1);
+    expect(chatMessages[0]['messageId']).toBe(originalMessageId);
+    expect(chatMessages[0]['direction']).toBe('outgoing');
+    expect(chatMessages[0]['deletedAt']).toBe(deletedAt);
+    expect(chatMessages[0]['body']).not.toBe('outgoing ghost text');
+  });
 });
 
 describe('ChatStoreService HR sector filtering', () => {
