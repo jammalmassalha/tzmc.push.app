@@ -2191,7 +2191,14 @@ export class ChatStoreService {
       targetMessage?.groupType === 'community' || targetMessage?.groupType === 'group'
         ? targetMessage.groupType
         : (effectiveGroup?.type ?? null);
-    const isCommunityGroup = targetGroupType === 'community' || (!targetGroupType && !this.canSendToActiveChat());
+    const activeGroupIsCommunity = Boolean(
+      effectiveGroup && (effectiveGroup.type === 'community' || this.isDovrutGroup(effectiveGroup.id))
+    );
+    const isCommunityGroup = (
+      targetGroupType === 'community' ||
+      activeGroupIsCommunity ||
+      (!targetGroupType && !this.canSendToActiveChat())
+    );
     if (!isCommunityGroup) {
       throw new Error('ניתן להגיב רק בקבוצת קהילה.');
     }

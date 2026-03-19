@@ -360,6 +360,7 @@ function registerMessageController(app, deps = {}) {
             const knownGroupNamesById = new Map();
             const knownGroupIds = new Set();
             const knownGroupIdByName = new Map();
+            const knownGroupTypeById = new Map();
             const hardcodedGroupKeySet = new Set(
                 Array.isArray(hardcodedGroupIds)
                     ? hardcodedGroupIds.map((value) => normalizeUserKey(value)).filter(Boolean)
@@ -453,6 +454,12 @@ function registerMessageController(app, deps = {}) {
                         if (normalizedGroupNameKey && !knownGroupIdByName.has(normalizedGroupNameKey)) {
                             knownGroupIdByName.set(normalizedGroupNameKey, normalizedGroupId);
                         }
+                    }
+                    const normalizedGroupType = String(group.type || group.groupType || '').trim().toLowerCase();
+                    if (normalizedGroupType === 'community' || normalizedGroupType === 'group') {
+                        knownGroupTypeById.set(normalizedGroupId, normalizedGroupType);
+                    } else if (hardcodedGroupKeySet.has(normalizedGroupId)) {
+                        knownGroupTypeById.set(normalizedGroupId, 'community');
                     }
                 });
             } catch (_error) {
@@ -686,7 +693,14 @@ function registerMessageController(app, deps = {}) {
                             ? 'community'
                             : (groupTypeRaw === 'group'
                                 ? 'group'
-                                : (resolvedGroupId ? 'group' : undefined));
+                                : (
+                                    resolvedGroupId
+                                        ? (
+                                            knownGroupTypeById.get(resolvedGroupId) ||
+                                            (hardcodedGroupKeySet.has(resolvedGroupId) ? 'community' : 'group')
+                                        )
+                                        : undefined
+                                ));
 
                         if (isActionMessage) {
                             const normalizedReactor = normalizeUserKey(message.reactor || sender);
