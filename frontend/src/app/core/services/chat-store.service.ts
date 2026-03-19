@@ -2493,11 +2493,17 @@ export class ChatStoreService {
       return [];
     }
     const sectorKeys = this.getCurrentUserHrSectorKeys();
-    if (!sectorKeys.length) {
-      return steps;
+    return steps.filter((step) => this.isHrStepAllowedForCurrentUser(step, sectorKeys));
+  }
+
+  private isHrStepAllowedForCurrentUser(step: HrStepOption, sectorKeys: readonly string[]): boolean {
+    if (step.showToAllUsers) {
+      return true;
     }
-    const filtered = steps.filter((step) => this.isHrStepMatchForSector(step, sectorKeys));
-    return filtered.length ? filtered : steps;
+    if (!sectorKeys.length) {
+      return false;
+    }
+    return this.isHrStepMatchForSector(step, sectorKeys);
   }
 
   private getCurrentUserHrSectorKeys(): string[] {

@@ -336,17 +336,21 @@ function doGet(e) {
 
       var lastRow = getLastDataRow(sheet);
       if (!lastRow) return createJSON({ result: 'success', data: [] });
-      var data = getRangeValues(sheet, 2, 1, lastRow - 1, 4); // A..D
+      var data = getRangeValues(sheet, 2, 1, lastRow - 1, 5); // A..E
       var steps = [];
 
       for (var i = 0; i < data.length; i++) {
         var row = data[i];
         if (!row[0] || !row[1]) continue;
+        var showToAllUsersRaw = String(row[4] || '').trim();
+        var showToAllUsers = (showToAllUsersRaw === '1' || showToAllUsersRaw.toLowerCase() === 'true') ? 1 : 0;
         steps.push({
           id: row[0],
           name: row[1],
           subject: row[2] || '',
-          order: row[3] || 0
+          order: row[3] || 0,
+          showToAllUsers: showToAllUsers,
+          show_to_all_users: showToAllUsers
         });
       }
 

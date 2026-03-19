@@ -91,6 +91,8 @@ interface HrStepsResponse {
     id?: string | number;
     name?: string;
     subject?: string;
+    showToAllUsers?: number | string | boolean;
+    show_to_all_users?: number | string | boolean;
   }>;
 }
 
@@ -134,6 +136,7 @@ export interface HrStepOption {
   id: string;
   name: string;
   subject: string;
+  showToAllUsers: boolean;
 }
 
 export interface HrActionOption {
@@ -922,7 +925,8 @@ export class ChatApiService {
       .map((item) => ({
         id: String(item.id ?? '').trim(),
         name: String(item.name ?? '').trim(),
-        subject: String(item.subject ?? '').trim()
+        subject: String(item.subject ?? '').trim(),
+        showToAllUsers: this.parseBooleanLike(item.showToAllUsers ?? item.show_to_all_users)
       }))
       .filter((item) => Boolean(item.id && item.name));
   }
@@ -1234,6 +1238,17 @@ export class ChatApiService {
     }
 
     throw lastError instanceof Error ? lastError : new Error('Network request failed');
+  }
+
+  private parseBooleanLike(value: unknown): boolean {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value === 'number') {
+      return Number.isFinite(value) && value === 1;
+    }
+    const normalized = String(value ?? '').trim().toLowerCase();
+    return normalized === '1' || normalized === 'true';
   }
 
   private sleep(ms: number): Promise<void> {
