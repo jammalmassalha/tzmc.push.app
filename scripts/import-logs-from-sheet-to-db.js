@@ -146,14 +146,21 @@ function parseDateTime(value) {
 
 function mapDumpRowToLogPayload(rawRow = {}) {
   if (!rawRow || typeof rawRow !== 'object') return null;
+  const details = String(
+    rawRow.errorMessageOrSuccessCount ?? rawRow.ErrorMessageOrSuccessCount ?? rawRow.details ?? ''
+  ).trim();
+  const msgIdMatch = details.match(
+    /(?:^|\|)\s*(?:messageId|message_id|targetMessageId|target_message_id)\s*=\s*([^|]+)/i
+  );
+  const msgIdFromDetails = msgIdMatch ? String(msgIdMatch[1] || '').trim() : '';
   return {
     dateTime: parseDateTime(rawRow.dateTime ?? rawRow.DateTime ?? ''),
     recipient: String(rawRow.toUser ?? rawRow.ToUser ?? rawRow.recipient ?? '').trim(),
     sender: String(rawRow.fromUser ?? rawRow.From ?? rawRow.sender ?? 'System').trim() || 'System',
-    msgId: String(rawRow.msgId ?? rawRow.MsgID ?? rawRow.messageId ?? rawRow.message_id ?? '').trim(),
+    msgId: String(rawRow.msgId ?? rawRow.MsgID ?? rawRow.messageId ?? rawRow.message_id ?? '').trim() || msgIdFromDetails,
     message: String(rawRow.messagePreview ?? rawRow['Message Preview'] ?? rawRow.message ?? '').trim(),
     status: String(rawRow.successOrFailed ?? rawRow.SuccessOrFailed ?? rawRow.status ?? '').trim(),
-    details: String(rawRow.errorMessageOrSuccessCount ?? rawRow.ErrorMessageOrSuccessCount ?? rawRow.details ?? '').trim(),
+    details,
     recipientAuthJson: String(rawRow.recipientAuthJson ?? rawRow.RecipientAuthJSON ?? '').trim()
   };
 }

@@ -157,6 +157,17 @@ function parseLogDetailsMap(detailsRawValue) {
         return acc;
     }, {});
 }
+function resolveLogMessageId(explicitMsgId, detailsRawValue) {
+    const direct = toTrimmedString(explicitMsgId);
+    if (direct) {
+        return direct;
+    }
+    const detailsMap = parseLogDetailsMap(detailsRawValue);
+    return toTrimmedString(detailsMap.messageId ||
+        detailsMap.message_id ||
+        detailsMap.targetMessageId ||
+        detailsMap.target_message_id);
+}
 function normalizeTableName(rawValue) {
     const fallback = 'Logs';
     const value = toTrimmedString(rawValue);
@@ -204,10 +215,10 @@ class MysqlLogsService {
     async insertLog(payload) {
         const sender = toTrimmedString(payload.sender) || 'System';
         const recipient = toTrimmedString(payload.recipient);
-        const msgId = toTrimmedString(payload.msgId);
         const message = toTrimmedString(payload.message);
         const status = toTrimmedString(payload.status);
         const details = toTrimmedString(payload.details);
+        const msgId = resolveLogMessageId(payload.msgId, details);
         const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
         const dateTime = normalizeDateTimeForStorage(payload.dateTime);
         await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson]);
@@ -267,10 +278,10 @@ class MysqlLogsService {
             for (const payload of rowsToInsert) {
                 const sender = toTrimmedString(payload.sender) || 'System';
                 const recipient = toTrimmedString(payload.recipient);
-                const msgId = toTrimmedString(payload.msgId);
                 const message = toTrimmedString(payload.message);
                 const status = toTrimmedString(payload.status);
                 const details = toTrimmedString(payload.details);
+                const msgId = resolveLogMessageId(payload.msgId, details);
                 const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
                 const dateTime = normalizeDateTimeForStorage(payload.dateTime);
                 await connection.execute(this.insertQuery, [

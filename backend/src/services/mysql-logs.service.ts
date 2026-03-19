@@ -197,6 +197,20 @@ function parseLogDetailsMap(detailsRawValue: unknown): Record<string, string> {
     }, {});
 }
 
+function resolveLogMessageId(explicitMsgId: unknown, detailsRawValue: unknown): string {
+  const direct = toTrimmedString(explicitMsgId);
+  if (direct) {
+    return direct;
+  }
+  const detailsMap = parseLogDetailsMap(detailsRawValue);
+  return toTrimmedString(
+    detailsMap.messageId ||
+    detailsMap.message_id ||
+    detailsMap.targetMessageId ||
+    detailsMap.target_message_id
+  );
+}
+
 function normalizeTableName(rawValue: unknown): string {
   const fallback = 'Logs';
   const value = toTrimmedString(rawValue);
@@ -253,10 +267,10 @@ export class MysqlLogsService {
   async insertLog(payload: MysqlLogInsertPayload): Promise<boolean> {
     const sender = toTrimmedString(payload.sender) || 'System';
     const recipient = toTrimmedString(payload.recipient);
-    const msgId = toTrimmedString(payload.msgId);
     const message = toTrimmedString(payload.message);
     const status = toTrimmedString(payload.status);
     const details = toTrimmedString(payload.details);
+    const msgId = resolveLogMessageId(payload.msgId, details);
     const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
     const dateTime = normalizeDateTimeForStorage(payload.dateTime);
 
@@ -336,10 +350,10 @@ export class MysqlLogsService {
       for (const payload of rowsToInsert) {
         const sender = toTrimmedString(payload.sender) || 'System';
         const recipient = toTrimmedString(payload.recipient);
-        const msgId = toTrimmedString(payload.msgId);
         const message = toTrimmedString(payload.message);
         const status = toTrimmedString(payload.status);
         const details = toTrimmedString(payload.details);
+        const msgId = resolveLogMessageId(payload.msgId, details);
         const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
         const dateTime = normalizeDateTimeForStorage(payload.dateTime);
         await connection.execute(this.insertQuery, [

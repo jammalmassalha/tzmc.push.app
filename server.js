@@ -4933,7 +4933,12 @@ function mapLogsDumpRowForMysqlInsert(rawRow = {}) {
         row.messageId ??
         row.message_id ??
         ''
-    ).trim();
+    ).trim() || extractMessageIdFromLogDetails(
+        row.errorMessageOrSuccessCount ??
+        row.details ??
+        row.ErrorMessageOrSuccessCount ??
+        ''
+    );
     const status = String(
         row.successOrFailed ??
         row.status ??
