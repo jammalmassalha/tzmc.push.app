@@ -718,6 +718,9 @@ mat-chip:not(.offline) {
 }
 
 .message-bubble {
+  -webkit-touch-callout: none;
+  user-select: none;
+
   position: relative;
   max-width: min(78%, 620px);
   border-radius: 16px;

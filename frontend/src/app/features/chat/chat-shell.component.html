@@ -501,7 +501,7 @@
               class="message-row"
               [class.outgoing]="message.direction === 'outgoing'"
               [attr.data-message-index]="messageAbsoluteIndex(index)">
-              <div class="message-bubble" [class.deleted]="isMessageDeleted(message)" (contextmenu)="onMessageContextMenu($event, message)">
+              <div class="message-bubble" [class.deleted]="isMessageDeleted(message)" (contextmenu)="onMessageContextMenu($event, message)" (touchstart)="onTouchStart($event, message)" (touchend)="onTouchEnd()" (touchmove)="onTouchMove()">
                 @if (message.direction === 'incoming' && message.groupId) {
                   <div class="message-sender">{{ message.senderDisplayName || message.sender }}</div>
                 }

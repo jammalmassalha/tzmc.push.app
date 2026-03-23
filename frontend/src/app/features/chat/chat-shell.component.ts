@@ -1930,6 +1930,36 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
 
+  longPressTimer: any;
+
+  onTouchStart(event: Event, message: ChatMessage): void {
+    if (!this.canReactToMessage(message)) return;
+    this.longPressTimer = setTimeout(() => {
+      this.triggerReactionMenu(event, message);
+    }, 500);
+  }
+
+  onTouchEnd(): void {
+    clearTimeout(this.longPressTimer);
+  }
+
+  onTouchMove(): void {
+    clearTimeout(this.longPressTimer);
+  }
+
+  triggerReactionMenu(event: Event, message: ChatMessage): void {
+    if (!this.canReactToMessage(message)) return;
+    const target = event.currentTarget as HTMLElement;
+    if (target) {
+      const reactBtn = target.querySelector('.message-react-btn') as HTMLElement;
+      if (reactBtn) {
+        if (event.preventDefault) event.preventDefault();
+        this.setReactionTarget(message);
+        reactBtn.click();
+      }
+    }
+  }
+
   onMessageContextMenu(event: MouseEvent | TouchEvent, message: ChatMessage): void {
     if (!this.canReactToMessage(message)) return;
     
@@ -1946,7 +1976,11 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     }
   }
 
-  canReactToMessage(message: ChatMessage): boolean {\n    return !!message.messageId;\n  }\n\n  setReactionTarget(message: ChatMessage): void {
+  canReactToMessage(message: ChatMessage): boolean {
+    return !!message.messageId;
+  }
+
+  setReactionTarget(message: ChatMessage): void {
     if (!this.canReactToMessage(message)) return;
     this.reactionTargetMessageId.set(message.messageId);
   }
