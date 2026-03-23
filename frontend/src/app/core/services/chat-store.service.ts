@@ -2195,21 +2195,6 @@ export class ChatStoreService {
       ? this.groups().find((item) => item.id === this.normalizeChatId(targetMessage.groupId || '')) ?? null
       : null;
     const effectiveGroup = group ?? fallbackGroup;
-    const targetGroupType: GroupType | null =
-      targetMessage?.groupType === 'community' || targetMessage?.groupType === 'group'
-        ? targetMessage.groupType
-        : (effectiveGroup?.type ?? null);
-    const activeGroupIsCommunity = Boolean(
-      effectiveGroup && (effectiveGroup.type === 'community' || this.isDovrutGroup(effectiveGroup.id))
-    );
-    const isCommunityGroup = (
-      targetGroupType === 'community' ||
-      activeGroupIsCommunity ||
-      (!targetGroupType && !this.canSendToActiveChat())
-    );
-    if (!isCommunityGroup) {
-      throw new Error('ניתן להגיב רק בקבוצת קהילה.');
-    }
 
     const reaction: MessageReaction = {
       emoji: normalizedEmoji,
@@ -2219,7 +2204,7 @@ export class ChatStoreService {
 
     const fallbackGroupId = this.normalizeChatId(activeChatId);
     if (!fallbackGroupId) {
-      throw new Error('קבוצת יעד לא נמצאה.');
+      throw new Error('יעד לא נמצא.');
     }
     this.applyReactionToMessage(fallbackGroupId, normalizedTargetId, reaction);
 
@@ -2229,26 +2214,32 @@ export class ChatStoreService {
     }
 
     const activeChat = this.activeChat();
-    const groupId = effectiveGroup?.id || fallbackGroupId;
-    const groupName = effectiveGroup?.name || activeChat?.title || groupId;
-    const groupMembers = effectiveGroup?.members ?? [];
-    const groupCreatedBy = effectiveGroup?.createdBy || '';
-    const groupUpdatedAt = effectiveGroup?.updatedAt || Date.now();
-    const groupType: GroupType = effectiveGroup?.type === 'group' ? 'group' : 'community';
+    let payload: ReactionPayload;
 
-    const payload: ReactionPayload = {
-      groupId,
-      groupName,
-      groupMembers,
-      groupCreatedBy,
-      groupAdmins: effectiveGroup?.admins ?? [],
-      groupUpdatedAt,
-      groupType,
-      targetMessageId: normalizedTargetId,
-      emoji: normalizedEmoji,
-      reactor: currentUser,
-      reactorName: reaction.reactorName || currentUser
-    };
+    if (effectiveGroup) {
+      payload = {
+        groupId: effectiveGroup.id,
+        groupName: effectiveGroup.name || activeChat?.title || effectiveGroup.id,
+        groupMembers: effectiveGroup.members ?? [],
+        groupCreatedBy: effectiveGroup.createdBy || '',
+        groupAdmins: effectiveGroup.admins ?? [],
+        groupUpdatedAt: effectiveGroup.updatedAt || Date.now(),
+        groupType: effectiveGroup.type === 'group' ? 'group' : 'community',
+        targetMessageId: normalizedTargetId,
+        emoji: normalizedEmoji,
+        reactor: currentUser,
+        reactorName: reaction.reactorName || currentUser
+      };
+    } else {
+      payload = {
+        targetUser: fallbackGroupId,
+        targetMessageId: normalizedTargetId,
+        emoji: normalizedEmoji,
+        reactor: currentUser,
+        reactorName: reaction.reactorName || currentUser
+      };
+    }
+    
     await this.sendReactionTransport(payload);
   }
 

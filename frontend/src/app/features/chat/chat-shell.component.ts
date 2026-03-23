@@ -1929,31 +1929,24 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     }
   }
 
-  canReactToMessage(message: ChatMessage): boolean {
-    if (!message.messageId) return false;
-    const activeChat = this.store.activeChat();
-    if (!activeChat?.isGroup) return false;
-    const activeGroup = this.findActiveGroup();
-    const activeGroupIsCommunity = Boolean(
-      activeGroup && (activeGroup.type === 'community' || this.store.isDovrutGroupChat(activeGroup.id))
-    );
 
-    if (message.groupType === 'community') {
-      return true;
+  onMessageContextMenu(event: MouseEvent | TouchEvent, message: ChatMessage): void {
+    if (!this.canReactToMessage(message)) return;
+    
+    // Attempt to locate the matMenuTrigger attached to the react button.
+    const target = event.currentTarget as HTMLElement;
+    if (target) {
+      const reactBtn = target.querySelector('.message-react-btn') as HTMLElement;
+      if (reactBtn) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.setReactionTarget(message);
+        reactBtn.click();
+      }
     }
-    if (message.groupType === 'group') {
-      return activeGroupIsCommunity;
-    }
-
-    if (activeGroup) {
-      return activeGroupIsCommunity;
-    }
-
-    // Fallback for non-admin devices where group metadata is temporarily stale.
-    return !this.store.canSendToActiveChat();
   }
 
-  setReactionTarget(message: ChatMessage): void {
+  canReactToMessage(message: ChatMessage): boolean {\n    return !!message.messageId;\n  }\n\n  setReactionTarget(message: ChatMessage): void {
     if (!this.canReactToMessage(message)) return;
     this.reactionTargetMessageId.set(message.messageId);
   }
