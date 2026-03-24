@@ -148,13 +148,14 @@ export interface GroupUpdatePayload {
 }
 
 export interface ReactionPayload {
-  groupId: string;
-  groupName: string;
-  groupMembers: string[];
-  groupCreatedBy: string;
+  groupId?: string;
+  groupName?: string;
+  groupMembers?: string[];
+  groupCreatedBy?: string;
   groupAdmins?: string[];
-  groupUpdatedAt: number;
-  groupType: GroupType;
+  groupUpdatedAt?: number;
+  groupType?: GroupType;
+  targetUser?: string;
   targetMessageId: string;
   emoji: string;
   reactor: string;

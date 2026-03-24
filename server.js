@@ -2654,75 +2654,39 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
         targetMessageId,
         emoji,
         reactor,
-        reactorName
+        reactorName,
+        targetUser,
+        originalSender
     } = rawPayload || {};
     const normalizedTargetMessageId = String(targetMessageId || '').trim();
     const normalizedEmoji = String(emoji || '').trim();
     const normalizedReactor = normalizeUserKey(resolvedUser || reactor || '');
-    if (!groupId || !normalizedTargetMessageId || !normalizedEmoji) {
+    const normalizedTargetUser = normalizeUserKey(targetUser || originalSender || '');
+    
+    if ((!groupId && !normalizedTargetUser) || !normalizedTargetMessageId || !normalizedEmoji) {
         throw createHttpError(400, 'Missing reaction fields');
     }
     if (!normalizedReactor) {
         throw createHttpError(400, 'Missing reaction user');
     }
 
-    const groupRecord = upsertGroup({
-        groupId,
-        groupName,
-        groupMembers,
-        groupCreatedBy,
-        groupAdmins,
-        groupUpdatedAt,
-        groupType
-    });
-    const storedMembers = groupRecord && Array.isArray(groupRecord.members) ? groupRecord.members : [];
-    const providedMembers = Array.isArray(groupMembers) ? groupMembers : [];
-    const recipientByKey = new Map();
-    [...storedMembers, ...providedMembers].forEach(member => {
-        const rawMember = String(member || '').trim();
-        const memberKey = normalizeUserKey(rawMember);
-        if (!memberKey || memberKey === normalizedReactor) return;
-        if (!recipientByKey.has(memberKey)) {
-            recipientByKey.set(memberKey, rawMember);
-        }
-    });
-    const membersToNotify = Array.from(recipientByKey.values());
-    if (!membersToNotify.length) {
-        return { status: 'success', details: { success: 0, failed: 0 } };
-    }
-    const adminByKey = new Map();
-    const adminCandidates = [
-        ...(groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : []),
-        ...(Array.isArray(groupAdmins) ? groupAdmins : []),
-        (groupRecord && groupRecord.createdBy) ? groupRecord.createdBy : '',
-        groupCreatedBy || ''
-    ];
-    adminCandidates.forEach((candidate) => {
-        const rawAdmin = String(candidate || '').trim();
-        const adminKey = normalizeUserKey(rawAdmin);
-        if (!adminKey || adminKey === normalizedReactor) return;
-        if (!adminByKey.has(adminKey)) {
-            adminByKey.set(adminKey, rawAdmin || adminKey);
-        }
-    });
-    const adminMembersToNotify = Array.from(adminByKey.values());
-
     const reactionId = generateMessageId();
-    const resolvedGroupName = (groupRecord && groupRecord.name) || String(groupName || '').trim() || 'קבוצה';
-    const resolvedGroupMembers = groupRecord && Array.isArray(groupRecord.members)
-        ? groupRecord.members
-        : providedMembers;
-    const resolvedGroupCreatedBy = (groupRecord && groupRecord.createdBy) || groupCreatedBy || null;
-    const resolvedGroupUpdatedAt = (groupRecord && groupRecord.updatedAt) || groupUpdatedAt || Date.now();
-    const resolvedGroupType = groupRecord
-        ? groupRecord.type
-        : normalizeGroupType(groupType || 'group');
     const resolvedReactorName = String(reactorName || reactor || 'משתמש').trim();
-    const reactionText = `${resolvedReactorName} הגיב ${normalizedEmoji}`;
+    const reactionText = `${resolvedReactorName} הגיב/ה ${normalizedEmoji}`;
 
-    const notificationData = {
+    let membersToNotify = [];
+    let adminMembersToNotify = [];
+    let reactionRecord = {
         messageId: reactionId,
-        title: resolvedGroupName || 'תגובה חדשה',
+        type: 'reaction',
+        targetMessageId: normalizedTargetMessageId,
+        emoji: normalizedEmoji,
+        reactor: normalizedReactor || reactor,
+        reactorName: resolvedReactorName,
+        timestamp: Date.now()
+    };
+    let notificationData = {
+        messageId: reactionId,
         body: {
             shortText: reactionText,
             longText: reactionText
@@ -2732,37 +2696,79 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
             targetMessageId: normalizedTargetMessageId,
             emoji: normalizedEmoji,
             reactor: normalizedReactor || reactor,
-            reactorName: resolvedReactorName,
-            groupId,
-            groupName: resolvedGroupName,
-            groupMembers: resolvedGroupMembers,
-            groupCreatedBy: resolvedGroupCreatedBy,
-            groupAdmins: groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : undefined,
-            groupUpdatedAt: resolvedGroupUpdatedAt,
-            groupType: resolvedGroupType
+            reactorName: resolvedReactorName
         }
     };
 
-    const reactionRecord = {
-        messageId: reactionId,
-        sender: groupId,
-        type: 'reaction',
-        targetMessageId: normalizedTargetMessageId,
-        emoji: normalizedEmoji,
-        reactor: normalizedReactor || reactor,
-        reactorName: resolvedReactorName,
-        timestamp: Date.now(),
-        groupId,
-        groupName: resolvedGroupName,
-        groupMembers: resolvedGroupMembers,
-        groupCreatedBy: resolvedGroupCreatedBy,
-        groupAdmins: groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : undefined,
-        groupUpdatedAt: resolvedGroupUpdatedAt,
-        groupType: resolvedGroupType
-    };
+    if (groupId) {
+        const groupRecord = upsertGroup({
+            groupId, groupName, groupMembers, groupCreatedBy, groupAdmins, groupUpdatedAt, groupType
+        });
+        const storedMembers = groupRecord && Array.isArray(groupRecord.members) ? groupRecord.members : [];
+        const providedMembers = Array.isArray(groupMembers) ? groupMembers : [];
+        const recipientByKey = new Map();
+        [...storedMembers, ...providedMembers].forEach(member => {
+            const rawMember = String(member || '').trim();
+            const memberKey = normalizeUserKey(rawMember);
+            if (!memberKey || memberKey === normalizedReactor) return;
+            if (!recipientByKey.has(memberKey)) {
+                recipientByKey.set(memberKey, rawMember);
+            }
+        });
+        membersToNotify = Array.from(recipientByKey.values());
+        
+        const adminByKey = new Map();
+        const adminCandidates = [
+            ...(groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : []),
+            ...(Array.isArray(groupAdmins) ? groupAdmins : []),
+            (groupRecord && groupRecord.createdBy) ? groupRecord.createdBy : '',
+            groupCreatedBy || ''
+        ];
+        adminCandidates.forEach((candidate) => {
+            const rawAdmin = String(candidate || '').trim();
+            const adminKey = normalizeUserKey(rawAdmin);
+            if (!adminKey || adminKey === normalizedReactor) return;
+            if (!adminByKey.has(adminKey)) {
+                adminByKey.set(adminKey, rawAdmin || adminKey);
+            }
+        });
+        adminMembersToNotify = Array.from(adminByKey.values());
+
+        const resolvedGroupName = (groupRecord && groupRecord.name) || String(groupName || '').trim() || 'קבוצה';
+        const resolvedGroupMembers = groupRecord && Array.isArray(groupRecord.members) ? groupRecord.members : providedMembers;
+        const resolvedGroupCreatedBy = (groupRecord && groupRecord.createdBy) || groupCreatedBy || null;
+        const resolvedGroupUpdatedAt = (groupRecord && groupRecord.updatedAt) || groupUpdatedAt || Date.now();
+        const resolvedGroupType = groupRecord ? groupRecord.type : normalizeGroupType(groupType || 'group');
+        
+        notificationData.title = resolvedGroupName || 'הודעה חדשה';
+        Object.assign(notificationData.data, {
+            groupId, groupName: resolvedGroupName, groupMembers: resolvedGroupMembers,
+            groupCreatedBy: resolvedGroupCreatedBy, groupAdmins: groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : undefined,
+            groupUpdatedAt: resolvedGroupUpdatedAt, groupType: resolvedGroupType
+        });
+        
+        Object.assign(reactionRecord, {
+            sender: groupId,
+            groupId, groupName: resolvedGroupName, groupMembers: resolvedGroupMembers,
+            groupCreatedBy: resolvedGroupCreatedBy, groupAdmins: groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : undefined,
+            groupUpdatedAt: resolvedGroupUpdatedAt, groupType: resolvedGroupType
+        });
+    } else {
+        if (normalizedTargetUser !== normalizedReactor) {
+            membersToNotify = [normalizedTargetUser];
+            adminMembersToNotify = [normalizedTargetUser];
+        }
+        reactionRecord.sender = normalizedReactor;
+        notificationData.title = `תגובה מ-${resolvedReactorName}`;
+    }
+
+    if (!membersToNotify.length) {
+        return { status: 'success', details: { success: 0, failed: 0 } };
+    }
+
     await addToQueue(membersToNotify, reactionRecord);
     const result = adminMembersToNotify.length
-        ? await sendPushNotificationToUser(adminMembersToNotify, notificationData, groupId, {
+        ? await sendPushNotificationToUser(adminMembersToNotify, notificationData, groupId || normalizedReactor, {
             messageId: reactionId,
             skipBadge: true,
             singlePerUser: true,
