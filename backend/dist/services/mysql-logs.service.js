@@ -144,18 +144,18 @@ function parseLogDetailsMap(detailsRawValue) {
         .map((segment) => toTrimmedString(segment))
         .filter(Boolean)
         .reduce((acc, segment) => {
-        const separatorIndex = segment.indexOf('=');
-        if (separatorIndex <= 0) {
+            const separatorIndex = segment.indexOf('=');
+            if (separatorIndex <= 0) {
+                return acc;
+            }
+            const key = toTrimmedString(segment.slice(0, separatorIndex));
+            const value = toTrimmedString(segment.slice(separatorIndex + 1));
+            if (!key) {
+                return acc;
+            }
+            acc[key] = value;
             return acc;
-        }
-        const key = toTrimmedString(segment.slice(0, separatorIndex));
-        const value = toTrimmedString(segment.slice(separatorIndex + 1));
-        if (!key) {
-            return acc;
-        }
-        acc[key] = value;
-        return acc;
-    }, {});
+        }, {});
 }
 function resolveLogMessageId(explicitMsgId, detailsRawValue) {
     const direct = toTrimmedString(explicitMsgId);
@@ -419,7 +419,10 @@ class MysqlLogsService {
                     type: resolvedActionType || undefined,
                     deletedAt: resolvedActionType === 'delete-action' ? deletedAt : undefined,
                     groupId: toTrimmedString(detailsMap.groupId || detailsMap.group_id) || undefined,
-                    messageIds: toTrimmedString(detailsMap.messageIds || detailsMap.message_ids) || undefined
+                    messageIds: toTrimmedString(detailsMap.messageIds || detailsMap.message_ids) || undefined,
+                    targetMessageId: toTrimmedString(detailsMap.targetMessageId || detailsMap.target_message_id || detailsMap.messageId || detailsMap.message_id) || undefined,
+                    emoji: toTrimmedString(detailsMap.emoji || detailsMap.reaction) || undefined,
+                    reactor: toTrimmedString(detailsMap.reactor || detailsMap.user) || undefined
                 });
                 matchedCount = nextMatchedCount;
             }

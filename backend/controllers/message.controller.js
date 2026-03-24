@@ -707,6 +707,8 @@ function registerMessageController(app, deps = {}) {
                             const reactorName = String(
                                 message.reactorName ??
                                 message.reactor_name ??
+                                detailsMap.reactorName ??
+                                detailsMap.reactor_name ??
                                 message.senderName ??
                                 message.sender_name ??
                                 ''
