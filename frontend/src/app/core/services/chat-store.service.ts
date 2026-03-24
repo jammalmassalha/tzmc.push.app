@@ -5583,7 +5583,12 @@ export class ChatStoreService {
 
           // Full sync batches can arrive out-of-order (action before base message).
           // Retry mutating actions once after all regular messages are applied.
-          if (incomingType === 'delete-action' || incomingType === 'edit-action') {
+          if (
+            incomingType === 'delete-action' || 
+            incomingType === 'edit-action' || 
+            incomingType === 'reaction' || 
+            incomingType === 'read-receipt'
+          ) {
             deferredActions.push(message);
           }
           continue;
