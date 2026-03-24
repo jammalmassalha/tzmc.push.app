@@ -514,7 +514,10 @@ export class MysqlLogsService {
           type: resolvedActionType || undefined,
           deletedAt: resolvedActionType === 'delete-action' ? deletedAt : undefined,
           groupId: toTrimmedString(detailsMap.groupId || detailsMap.group_id) || undefined,
-          messageIds: toTrimmedString(detailsMap.messageIds || detailsMap.message_ids) || undefined
+          messageIds: toTrimmedString(detailsMap.messageIds || detailsMap.message_ids) || undefined,
+          targetMessageId: toTrimmedString(detailsMap.targetMessageId || detailsMap.target_message_id || detailsMap.messageId || detailsMap.message_id) || undefined,
+          emoji: toTrimmedString(detailsMap.emoji || detailsMap.reaction) || undefined,
+          reactor: toTrimmedString(detailsMap.reactor || detailsMap.user) || undefined
         });
         matchedCount = nextMatchedCount;
       }
