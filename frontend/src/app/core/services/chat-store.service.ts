@@ -6517,64 +6517,63 @@ export class ChatStoreService {
     targetMessageId: string,
     reaction: MessageReaction
   ): boolean {
-    const normalizedChatId = this.normalizeChatId(chatId);
     const normalizedTargetId = String(targetMessageId || '').trim();
     const normalizedReactor = this.normalizeUser(reaction.reactor);
     const normalizedEmoji = String(reaction.emoji || '').trim();
-    if (!normalizedChatId || !normalizedTargetId || !normalizedReactor || !normalizedEmoji) {
+    if (!normalizedTargetId || !normalizedReactor || !normalizedEmoji) {
       return false;
     }
 
     let changed = false;
     this.messagesByChat.update((messageMap) => {
-      const list = messageMap[normalizedChatId];
-      if (!list?.length) {
-        return messageMap;
-      }
-
-      const nextList = list.map((message) => {
-        if (message.messageId !== normalizedTargetId) {
-          return message;
+      const nextMap: Record<string, ChatMessage[]> = {};
+      
+      // Iterate through all chats to find the target message ID securely
+      for (const [iterChatId, list] of Object.entries(messageMap)) {
+        if (!list?.length) {
+          nextMap[iterChatId] = list;
+          continue;
         }
 
-        const reactions = Array.isArray(message.reactions) ? [...message.reactions] : [];
-        const existingIndex = reactions.findIndex(
-          (item) => this.normalizeUser(item.reactor) === normalizedReactor
-        );
-        const nextReaction: MessageReaction = {
-          emoji: normalizedEmoji,
-          reactor: normalizedReactor,
-          reactorName: reaction.reactorName
-        };
-
-        if (existingIndex >= 0) {
-          const current = reactions[existingIndex];
-          if (
-            current.emoji === nextReaction.emoji &&
-            (current.reactorName ?? '') === (nextReaction.reactorName ?? '')
-          ) {
+        const nextList = list.map((message) => {
+          if (message.messageId !== normalizedTargetId) {
             return message;
           }
-          reactions[existingIndex] = nextReaction;
-        } else {
-          reactions.push(nextReaction);
-        }
 
-        changed = true;
-        return {
-          ...message,
-          reactions
-        };
-      });
+          const reactions = Array.isArray(message.reactions) ? [...message.reactions] : [];
+          const existingIndex = reactions.findIndex(
+            (item) => this.normalizeUser(item.reactor) === normalizedReactor
+          );
+          const nextReaction: MessageReaction = {
+            emoji: normalizedEmoji,
+            reactor: normalizedReactor,
+            reactorName: reaction.reactorName
+          };
 
-      if (!changed) {
-        return messageMap;
+          if (existingIndex >= 0) {
+            const current = reactions[existingIndex];
+            if (
+              current.emoji === nextReaction.emoji &&
+              (current.reactorName ?? '') === (nextReaction.reactorName ?? '')
+            ) {
+              return message;
+            }
+            reactions[existingIndex] = nextReaction;
+          } else {
+            reactions.push(nextReaction);
+          }
+
+          changed = true;
+          return {
+            ...message,
+            reactions
+          };
+        });
+
+        nextMap[iterChatId] = nextList;
       }
 
-      return {
-        ...messageMap,
-        [normalizedChatId]: nextList
-      };
+      return changed ? nextMap : messageMap;
     });
 
     if (changed) {
