@@ -2573,6 +2573,12 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     return chat.id;
   }
 
+  trackByMessageUpdate(_: number, message: ChatMessage): string {
+    const reactionCount = Array.isArray(message.reactions) ? message.reactions.length : 0;
+    const reactionEmojis = (message.reactions ?? []).map(r => r.emoji).join('');
+    return `${message.messageId}:${message.editedAt ?? ''}:${reactionCount}:${reactionEmojis}`;
+  }
+
   private shouldDisplayChatInContactsPane(chat: ChatListItem): boolean {
     if (chat.pinned || chat.isGroup) {
       return true;

@@ -491,7 +491,7 @@
             </section>
           }
 
-          @for (message of visibleMessages(); track message.messageId; let index = $index) {
+          @for (message of visibleMessages(); track trackByMessageUpdate(index, message); let index = $index) {
             @if (shouldShowMessageDateBadge(messageAbsoluteIndex(index), message.timestamp)) {
               <div class="message-date-badge">
                 <span>{{ formatMessageDateBadge(message.timestamp) }}</span>
