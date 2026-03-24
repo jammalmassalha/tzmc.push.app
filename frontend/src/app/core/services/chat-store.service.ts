@@ -2049,8 +2049,8 @@ export class ChatStoreService {
       : null;
     const recipients = group
       ? group.members
-          .map((member) => this.normalizeUser(member))
-          .filter((member) => Boolean(member && member !== normalizedUser))
+        .map((member) => this.normalizeUser(member))
+        .filter((member) => Boolean(member && member !== normalizedUser))
       : [this.normalizeUser(target.message.chatId)].filter(Boolean);
     const payload: EditMessagePayload = {
       sender: normalizedUser,
@@ -2116,8 +2116,8 @@ export class ChatStoreService {
       : null;
     const recipients = group
       ? group.members
-          .map((member) => this.normalizeUser(member))
-          .filter((member) => Boolean(member && member !== normalizedUser))
+        .map((member) => this.normalizeUser(member))
+        .filter((member) => Boolean(member && member !== normalizedUser))
       : [this.normalizeUser(target.message.chatId)].filter(Boolean);
     const payload: DeleteMessagePayload = {
       sender: normalizedUser,
@@ -2239,7 +2239,7 @@ export class ChatStoreService {
         reactorName: reaction.reactorName || currentUser
       };
     }
-    
+
     await this.sendReactionTransport(payload);
   }
 
@@ -2932,7 +2932,7 @@ export class ChatStoreService {
       this.sendShuttleSystemMessage(
         this.shuttleText('בחירה לא תקינה. נא לבחור אחת מהאפשרויות המוצגות.', 'Некорректный выбор. Выберите один из предложенных вариантов.'),
         {
-        recordType: 'shuttle-invalid'
+          recordType: 'shuttle-invalid'
         }
       );
       this.saveShuttleState(user, this.defaultShuttleState());
@@ -3993,10 +3993,10 @@ export class ChatStoreService {
     const bestName = this.shuttleNameWordCount(normalizedName) >= 2
       ? normalizedName
       : (
-          this.shuttleNameWordCount(preferred) >= 2
-            ? preferred
-            : (normalizedName || preferred)
-        );
+        this.shuttleNameWordCount(preferred) >= 2
+          ? preferred
+          : (normalizedName || preferred)
+      );
 
     if (bestName && normalizedPhone) {
       return `${bestName} ${normalizedPhone}`;
@@ -4336,9 +4336,9 @@ export class ChatStoreService {
       const notification = new Notification(
         this.shuttleText('תזכורת להסעה בעוד שעתיים', 'Напоминание о трансфере через 2 часа'),
         {
-        body: detailLine || this.shuttleText('בדוק את פרטי ההזמנה בצ׳אט.', 'Проверьте детали заказа в чате.'),
-        tag: `shuttle-reminder-2h:${reminderKey}`
-      });
+          body: detailLine || this.shuttleText('בדוק את פרטי ההזמנה בצ׳אט.', 'Проверьте детали заказа в чате.'),
+          tag: `shuttle-reminder-2h:${reminderKey}`
+        });
       notification.onclick = () => {
         try {
           window.focus();
@@ -5663,10 +5663,10 @@ export class ChatStoreService {
       const chatId = isGroup
         ? this.normalizeChatId(incoming.groupId ?? '')
         : (
-            isOutgoingFromCurrentUser && incomingToUser && incomingToUser !== currentUser
-              ? incomingToUser
-              : this.normalizeChatId(sender)
-          );
+          isOutgoingFromCurrentUser && incomingToUser && incomingToUser !== currentUser
+            ? incomingToUser
+            : this.normalizeChatId(sender)
+        );
       if (!chatId) continue;
       if (this.isShuttleChat(chatId) && !this.shuttleAccessAllowed()) {
         continue;
@@ -5956,10 +5956,10 @@ export class ChatStoreService {
     const chatId = isGroup
       ? this.normalizeChatId(incoming.groupId ?? '')
       : (
-          isOutgoingFromCurrentUser && incomingToUser && incomingToUser !== currentUser
-            ? incomingToUser
-            : this.normalizeChatId(sender)
-        );
+        isOutgoingFromCurrentUser && incomingToUser && incomingToUser !== currentUser
+          ? incomingToUser
+          : this.normalizeChatId(sender)
+      );
     if (!chatId) return false;
     if (this.isShuttleChat(chatId) && !this.shuttleAccessAllowed()) {
       return false;
@@ -6325,9 +6325,9 @@ export class ChatStoreService {
     const messageIds = Array.isArray(incoming.messageIds)
       ? incoming.messageIds.map((id) => String(id || '').trim()).filter(Boolean)
       : String(incoming.messageId ?? '')
-          .split(',')
-          .map((id) => String(id || '').trim())
-          .filter(Boolean);
+        .split(',')
+        .map((id) => String(id || '').trim())
+        .filter(Boolean);
     if (!messageIds.length) return false;
 
     return this.markOutgoingMessagesAsRead(messageIds);
@@ -6347,9 +6347,9 @@ export class ChatStoreService {
     const messageIds = Array.isArray(incoming.messageIds)
       ? incoming.messageIds.map((id) => String(id || '').trim()).filter(Boolean)
       : String(incoming.messageId ?? '')
-          .split(',')
-          .map((id) => String(id || '').trim())
-          .filter(Boolean);
+        .split(',')
+        .map((id) => String(id || '').trim())
+        .filter(Boolean);
     if (!messageIds.length) return false;
 
     const deletedAtValue = Number(incoming.deletedAt ?? incoming.timestamp ?? Date.now());
@@ -6368,10 +6368,24 @@ export class ChatStoreService {
   }
 
   private applyIncomingReaction(incoming: IncomingServerMessage): boolean {
-    const groupId = this.normalizeChatId(incoming.groupId ?? '');
-    if (!groupId) return false;
+    const isGroup = Boolean(incoming.groupId);
+    const sender = this.normalizeUser(incoming.reactor ?? incoming.sender ?? '');
+    const currentUser = this.normalizeUser(this.currentUser() ?? '');
+    const incomingToUser = this.normalizeChatId(String(incoming.toUser ?? incoming.recipient ?? (incoming as any).targetUser ?? '').trim());
+    const isOutgoingFromCurrentUser = Boolean(currentUser && sender === currentUser);
 
-    if (incoming.groupName) {
+    // Properly resolve the Chat ID regardless of whether it's a group or a direct message
+    const chatId = isGroup
+      ? this.normalizeChatId(incoming.groupId ?? '')
+      : (
+          isOutgoingFromCurrentUser && incomingToUser && incomingToUser !== currentUser
+            ? incomingToUser
+            : this.normalizeChatId(sender)
+        );
+
+    if (!chatId) return false;
+
+    if (isGroup && incoming.groupName) {
       this.ensureGroupFromIncoming(incoming);
     }
 
@@ -6388,24 +6402,24 @@ export class ChatStoreService {
       reactorName: String(incoming.reactorName ?? '').trim() || this.getDisplayName(reactor)
     };
 
-    const changed = this.applyReactionToMessage(groupId, targetMessageId, reaction);
+    // Apply to the specific resolved chatId
+    const changed = this.applyReactionToMessage(chatId, targetMessageId, reaction);
     if (!changed) return false;
 
-    const currentUser = this.normalizeUser(this.currentUser() ?? '');
     if (currentUser && reactor === currentUser) {
       return true;
     }
-    if (!this.canCurrentUserReceiveReactionNotification(groupId, incoming)) {
+    if (isGroup && !this.canCurrentUserReceiveReactionNotification(chatId, incoming)) {
       return true;
     }
 
-    const group = this.groups().find((item) => item.id === groupId);
-    const groupName = String(incoming.groupName ?? group?.name ?? groupId).trim() || groupId;
+    const group = isGroup ? this.groups().find((item) => item.id === chatId) : null;
+    const groupName = isGroup ? (String(incoming.groupName ?? group?.name ?? chatId).trim() || chatId) : '';
     const reactorName = reaction.reactorName || this.getDisplayName(reactor);
 
     this.incomingReactionNotice.set({
-      id: `${groupId}:${targetMessageId}:${reactor}:${emoji}`,
-      chatId: groupId,
+      id: `${chatId}:${targetMessageId}:${reactor}:${emoji}`,
+      chatId,
       groupName,
       reactorName,
       emoji
@@ -6474,20 +6488,20 @@ export class ChatStoreService {
       return groups.map((group) =>
         group.id === normalizedId
           ? {
-              ...group,
-              name: incoming.groupName ?? group.name,
-              members: Array.isArray(incoming.groupMembers)
-                ? incoming.groupMembers.map((member) => this.normalizeUser(member))
-                : group.members,
-              admins: normalizedAdmins.length
-                ? normalizedAdmins
-                : (Array.isArray(group.admins) ? group.admins : []),
-              createdBy: incoming.groupCreatedBy
-                ? this.normalizeUser(incoming.groupCreatedBy)
-                : (normalizedAdmins[0] || group.createdBy),
-              type: normalizedType,
-              updatedAt
-            }
+            ...group,
+            name: incoming.groupName ?? group.name,
+            members: Array.isArray(incoming.groupMembers)
+              ? incoming.groupMembers.map((member) => this.normalizeUser(member))
+              : group.members,
+            admins: normalizedAdmins.length
+              ? normalizedAdmins
+              : (Array.isArray(group.admins) ? group.admins : []),
+            createdBy: incoming.groupCreatedBy
+              ? this.normalizeUser(incoming.groupCreatedBy)
+              : (normalizedAdmins[0] || group.createdBy),
+            type: normalizedType,
+            updatedAt
+          }
           : group
       );
     });
@@ -7807,16 +7821,16 @@ export class ChatStoreService {
     const resolvedIncomingTimestamp = Number.isFinite(numericPayloadTimestamp) && numericPayloadTimestamp > 0
       ? numericPayloadTimestamp
       : (
-          Number.isFinite(numericPayloadReceivedAt) && numericPayloadReceivedAt > 0
-            ? numericPayloadReceivedAt
-            : undefined
-        );
+        Number.isFinite(numericPayloadReceivedAt) && numericPayloadReceivedAt > 0
+          ? numericPayloadReceivedAt
+          : undefined
+      );
     const payloadMessageIds = Array.isArray(payload['messageIds'])
       ? payload['messageIds'].map((id) => String(id || '').trim()).filter(Boolean)
       : String(payload['messageId'] ?? '')
-          .split(',')
-          .map((id) => String(id || '').trim())
-          .filter(Boolean);
+        .split(',')
+        .map((id) => String(id || '').trim())
+        .filter(Boolean);
 
     const incoming: IncomingServerMessage = {
       type: payloadType,
@@ -7830,6 +7844,7 @@ export class ChatStoreService {
       reactor: typeof payload['reactor'] === 'string' ? payload['reactor'] : undefined,
       reactorName: typeof payload['reactorName'] === 'string' ? payload['reactorName'] : undefined,
       groupId: typeof payload['groupId'] === 'string' ? payload['groupId'] : undefined,
+      toUser: typeof payload['toUser'] === 'string' ? payload['toUser'] : (typeof payload['targetUser'] === 'string' ? payload['targetUser'] : (typeof payload['recipient'] === 'string' ? payload['recipient'] : undefined)),
       groupName: typeof payload['groupName'] === 'string' ? payload['groupName'] : undefined,
       groupMembers: Array.isArray(payload['groupMembers'])
         ? payload['groupMembers'].map((member) => String(member || '').trim()).filter(Boolean)
