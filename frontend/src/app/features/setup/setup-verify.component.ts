@@ -104,7 +104,20 @@ export class SetupVerifyComponent implements OnInit, OnDestroy {
         await this.store.verifyUserVerificationCode(phone, this.form.controls.code.value);
         this.verificationCompleted.set(true);
       }
-      await this.store.ensurePushRegistrationReadyForCurrentUser({ promptIfNeeded: true });
+      
+      // FIX: Wrap push registration in its own try-catch so it doesn't block login!
+      try {
+        await this.store.ensurePushRegistrationReadyForCurrentUser({ promptIfNeeded: true });
+      } catch (pushError) {
+        console.warn('Push registration failed or unsupported, continuing to app:', pushError);
+        const msg = pushError instanceof Error ? pushError.message : '';
+        if (msg) {
+          // Optional: let the user know notifications won't work, but still let them in
+          this.snackBar.open(`${msg} (ממשיך לאפליקציה ללא התראות)`, 'סגור', { duration: 3500 });
+        }
+      }
+      
+      // Proceed to the app regardless of whether push registration succeeded
       await this.router.navigate(['/chats']);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'אימות הקוד נכשל';

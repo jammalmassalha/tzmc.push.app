@@ -570,6 +570,8 @@ export class ChatStoreService {
     await this.ensureSessionReady();
     const user = this.currentUser();
     if (!user) return;
+
+    // If already initialized for this user, just check for new background payloads
     if (this.initializedUser === user) {
       this.flushPendingServiceWorkerMessages();
       await this.consumePendingPushPayloadsFromServiceWorker();
@@ -579,8 +581,26 @@ export class ChatStoreService {
 
     this.initializedUser = user;
     this.flushPendingServiceWorkerMessages();
+
+    /**
+     * SYNC STEP 1: Drain Service Worker Cache
+     * Pulls messages that the Service Worker managed to catch while the app was closed.
+     */
     await this.consumePendingPushPayloadsFromServiceWorker();
     this.schedulePendingPushDrainRetry();
+
+    /**
+     * SYNC STEP 2: Aggressive Logs Recovery (The Fix)
+     * This fills any gaps that the Service Worker missed (e.g., if the phone was offline 
+     * or the OS killed the SW). We use 'force: true' to bypass the standard recovery cooldown.
+     */
+    void this.recoverMissedMessagesFromLogs(user, {
+      force: true,           // Ensures we sync every time the app starts
+      incrementUnread: true, // Marks missed messages as unread so they appear in badges
+      limit: 1000            // Window large enough to cover several hours of activity
+    }).catch(() => undefined);
+
+    // Continue with standard initialization
     await this.refreshShuttleAccessForCurrentUser(user, { force: true });
 
     // Open quickly from cached/local state only.
