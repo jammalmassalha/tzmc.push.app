@@ -1086,7 +1086,7 @@ const MOBILE_REREGISTER_SEND_CONCURRENCY = 20;
 const MOBILE_REREGISTER_MAX_TRACKED_CAMPAIGNS = 20;
 const SHUTTLE_CHAT_NAME = 'הזמנת הסעה';
 const SHUTTLE_USER_ORDERS_URL = sheetIntegrationService.shuttleUserOrdersUrl;
-const SHUTTLE_REMINDER_ENABLED = String(process.env.SHUTTLE_REMINDER_ENABLED || 'true').trim().toLowerCase() !== 'false';
+const SHUTTLE_REMINDER_ENABLED = false; String(process.env.SHUTTLE_REMINDER_ENABLED || 'true').trim().toLowerCase() !== 'false';
 const SHUTTLE_REMINDER_INTERVAL_MS = Math.max(
     15 * 1000,
     Number(process.env.SHUTTLE_REMINDER_INTERVAL_MS || 60 * 1000) || 60 * 1000
@@ -6987,7 +6987,7 @@ async function checkOutgoingQueue() {
 // Start the Timer (10,000 ms = 10 seconds)
 setInterval(checkOutgoingQueue, 10000);
 startSubscriptionAuthRefreshScheduler();
-startShuttleReminderScheduler();
+//startShuttleReminderScheduler();
 
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, () => {
