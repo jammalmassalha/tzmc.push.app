@@ -10,7 +10,8 @@ function registerMessageController(app, deps = {}) {
         getActiveRedisStateStore,
         getMessageQueue,
         scheduleStateSave,
-        sseClients
+        sseClients,
+        updateUserReceivedTime
     } = deps;
     const RECENT_POLLING_MESSAGE_DEDUP_TTL_MS = 10 * 60 * 1000;
     const LOGS_MESSAGE_SEMANTIC_DEDUP_WINDOW_MS = 2 * 60 * 1000;
@@ -539,7 +540,8 @@ function registerMessageController(app, deps = {}) {
                             groupId: resolvedGroupId || undefined,
                             groupName: resolvedGroupName || undefined,
                             groupType: resolvedGroupType,
-                            groupSenderName: groupSenderName || undefined
+                            groupSenderName: groupSenderName || undefined,
+                            userReceivedTime: parseFlexibleTimestamp(message.userReceivedTime) || undefined
                         };
                     }
 
@@ -552,7 +554,8 @@ function registerMessageController(app, deps = {}) {
                         groupId: resolvedGroupId || undefined,
                         groupName: resolvedGroupName || undefined,
                         groupType: resolvedGroupType,
-                        groupSenderName: groupSenderName || undefined
+                        groupSenderName: groupSenderName || undefined,
+                        userReceivedTime: parseFlexibleTimestamp(message.userReceivedTime) || undefined
                     };
                 }).filter(Boolean);
 
@@ -561,6 +564,36 @@ function registerMessageController(app, deps = {}) {
             } catch (error) {
                 console.error('[LOGS SYNC] Failed:', error.message);
                 return res.status(502).json({ messages: [], error: 'Logs sync failed' });
+            }
+        }
+    );
+
+    app.post(
+        ['/messages/received', '/notify/messages/received'],
+        requireAuthorizedUser({
+            required: true,
+            candidateKeys: ['user'],
+            onError: (_req, res, resolution) =>
+                res.status(resolution.status).json({ error: resolution.error })
+        }),
+        async (req, res) => {
+            const msgId = String((req.body && req.body.msgId) || '').trim();
+            const receivedAtRaw = Number(req.body && req.body.receivedAt);
+            if (!msgId) {
+                return res.status(400).json({ error: 'Missing msgId' });
+            }
+            if (!Number.isFinite(receivedAtRaw) || receivedAtRaw <= 0) {
+                return res.status(400).json({ error: 'Invalid receivedAt timestamp' });
+            }
+            if (typeof updateUserReceivedTime !== 'function') {
+                return res.status(500).json({ error: 'Server configuration error' });
+            }
+            try {
+                await updateUserReceivedTime(msgId, new Date(receivedAtRaw));
+                return res.json({ result: 'success' });
+            } catch (error) {
+                console.error('[RECEIVED TIME] Failed to update:', error.message);
+                return res.status(502).json({ error: 'Failed to update received time' });
             }
         }
     );

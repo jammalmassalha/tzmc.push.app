@@ -6569,7 +6569,8 @@ registerMessageController(app, {
     getActiveRedisStateStore: () => activeRedisStateStore,
     getMessageQueue: () => messageQueue,
     scheduleStateSave,
-    sseClients
+    sseClients,
+    updateUserReceivedTime: (msgId, receivedAt) => mysqlLogsService.updateUserReceivedTime(msgId, receivedAt)
 });
 
 app.post(['/upload', '/notify/upload'], uploadFieldsValidated, async (req, res) => {

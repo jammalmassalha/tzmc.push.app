@@ -58,6 +58,7 @@ export interface ChatMessage {
   forwarded?: boolean;
   forwardedFrom?: string | null;
   forwardedFromName?: string | null;
+  userReceivedTime?: number | null;
 }
 
 export interface ChatListItem {
@@ -107,6 +108,7 @@ export interface IncomingServerMessage {
   forwarded?: boolean;
   forwardedFrom?: string;
   forwardedFromName?: string;
+  userReceivedTime?: number;
 }
 
 export interface ReplyPayload {
