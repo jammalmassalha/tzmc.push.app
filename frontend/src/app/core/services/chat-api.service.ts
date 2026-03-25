@@ -628,6 +628,23 @@ export class ChatApiService {
     return Array.isArray(body.messages) ? body.messages : [];
   }
 
+  async reportMessageReceived(msgId: string, receivedAt: number): Promise<void> {
+    const safeMsgId = String(msgId || '').trim();
+    if (!safeMsgId || !Number.isFinite(receivedAt) || receivedAt <= 0) return;
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/messages/received`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ msgId: safeMsgId, receivedAt })
+      },
+      { retries: 1, timeoutMs: 10000, backoffMs: 500 }
+    );
+    if (!response.ok) {
+      throw new Error(`reportMessageReceived failed with ${response.status}`);
+    }
+  }
+
   createMessagesResource(user: Signal<string | null | undefined>): ResourceRef<IncomingServerMessage[]> {
     return resource({
       params: () => String(user() || '').trim().toLowerCase(),

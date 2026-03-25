@@ -5849,7 +5849,11 @@ export class ChatStoreService {
         replyTo,
         forwarded: Boolean(incoming.forwarded),
         forwardedFrom: forwardedFrom || null,
-        forwardedFromName: forwardedFromName || null
+        forwardedFromName: forwardedFromName || null,
+        userReceivedTime: (() => {
+          const ts = Number(incoming.userReceivedTime);
+          return Number.isFinite(ts) && ts > 0 ? ts : null;
+        })()
       };
 
       if (!list.length || list[list.length - 1].timestamp <= record.timestamp) {
@@ -7937,6 +7941,10 @@ export class ChatStoreService {
         this.incrementDeliveryTelemetry('pushImmediateMessageBuilt');
         if (this.applyIncomingMessage(immediateIncoming)) {
           this.incrementDeliveryTelemetry('pushMessageApplied');
+          const appliedMsgId = String(immediateIncoming.messageId ?? '').trim();
+          if (appliedMsgId && Number.isFinite(numericPayloadReceivedAt) && numericPayloadReceivedAt > 0) {
+            void this.api.reportMessageReceived(appliedMsgId, numericPayloadReceivedAt).catch(() => {});
+          }
         } else {
           this.incrementDeliveryTelemetry('pushMessageNoop');
         }

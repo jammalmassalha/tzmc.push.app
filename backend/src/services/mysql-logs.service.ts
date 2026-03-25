@@ -42,6 +42,7 @@ interface MysqlLogRow extends RowDataPacket {
   successOrFailed: string | null;
   errorMessageOrSuccessCount: string | null;
   recipientAuthJson: string | null;
+  userReceivedTime: Date | string | number | null;
 }
 
 function toTrimmedString(value: unknown): string {
@@ -427,7 +428,8 @@ export class MysqlLogsService {
           \`Message Preview\` AS messagePreview, 
           \`SuccessOrFailed\` AS successOrFailed, 
           \`ErrorMessageOrSuccessCount\` AS errorMessageOrSuccessCount, 
-          \`RecipientAuthJSON\` AS recipientAuthJson 
+          \`RecipientAuthJSON\` AS recipientAuthJson,
+          \`UserReceivedTime\` AS userReceivedTime 
         FROM \`${this.tableName}\` 
         WHERE 1=1`;
 
@@ -546,7 +548,8 @@ export class MysqlLogsService {
           messageIds: toTrimmedString(detailsMap.messageIds || detailsMap.message_ids) || undefined,
           targetMessageId: toTrimmedString(detailsMap.targetMessageId || detailsMap.target_message_id || detailsMap.messageId || detailsMap.message_id) || undefined,
           emoji: toTrimmedString(detailsMap.emoji || detailsMap.reaction) || undefined,
-          reactor: toTrimmedString(detailsMap.reactor || detailsMap.user) || undefined
+          reactor: toTrimmedString(detailsMap.reactor || detailsMap.user) || undefined,
+          userReceivedTime: parseFlexibleTimestamp(row.userReceivedTime) || undefined
         });
         matchedCount = nextMatchedCount;
       }
@@ -560,6 +563,14 @@ export class MysqlLogsService {
 
     messages.reverse();
     return messages;
+  }
+
+  async updateUserReceivedTime(msgId: string, receivedAt: Date): Promise<boolean> {
+    const safeMsgId = toTrimmedString(msgId);
+    if (!safeMsgId) return false;
+    const sql = `UPDATE \`${this.tableName}\` SET \`UserReceivedTime\` = ? WHERE \`MsgID\` = ?`;
+    const [result] = await this.pool.execute(sql, [receivedAt, safeMsgId]);
+    return Boolean(result && (result as any).affectedRows > 0);
   }
 
 }
