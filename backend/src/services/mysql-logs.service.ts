@@ -568,6 +568,8 @@ export class MysqlLogsService {
   async updateUserReceivedTime(msgId: string, receivedAt: Date): Promise<boolean> {
     const safeMsgId = toTrimmedString(msgId);
     if (!safeMsgId) return false;
+    // Only update if not yet acknowledged: NULL means never set, DateTime equality means
+    // the column still holds the default send-time and the real receive time is unknown.
     const sql = `UPDATE \`${this.tableName}\` SET \`UserReceivedTime\` = ? WHERE \`MsgID\` = ? AND (\`UserReceivedTime\` IS NULL OR \`UserReceivedTime\` = \`DateTime\`)`;
     const [result] = await this.pool.execute(sql, [receivedAt, safeMsgId]);
     return Boolean(result && (result as any).affectedRows > 0);
@@ -593,6 +595,7 @@ export class MysqlLogsService {
         inParams.push(entry.msgId);
       }
       const placeholders = chunk.map(() => '?').join(', ');
+      // Same idempotent guard as single update — skip rows already acknowledged.
       const sql = `UPDATE \`${this.tableName}\` SET \`UserReceivedTime\` = CASE \`MsgID\` ${cases.join(' ')} END WHERE \`MsgID\` IN (${placeholders}) AND (\`UserReceivedTime\` IS NULL OR \`UserReceivedTime\` = \`DateTime\`)`;
       const params = [...whenParams, ...inParams];
       const [result] = await this.pool.execute(sql, params);
