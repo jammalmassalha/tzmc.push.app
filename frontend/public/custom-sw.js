@@ -788,7 +788,7 @@ self.addEventListener('push', (event) => {
     vapidPublicKey: payloadWithReceivedAt.vapidPublicKey || ''
   });
 
-  const tasks = [broadcastPushPayload(payloadWithReceivedAt), enqueuePendingPushPayload(payloadWithReceivedAt)];
+  const tasks = [broadcastPushPayload(payloadWithReceivedAt)];
   if (String(payloadWithReceivedAt.type || '').toLowerCase() === AUTH_REFRESH_PUSH_TYPE) {
     tasks.push(refreshSubscriptionAuthInBackground(payloadWithReceivedAt));
   }
@@ -797,12 +797,18 @@ self.addEventListener('push', (event) => {
   }
   tasks.push((async () => {
     if (!shouldShowNotification(payloadWithReceivedAt)) {
+      // Still enqueue for offline recovery even if notification is silent.
+      await enqueuePendingPushPayload(payloadWithReceivedAt);
       return;
     }
     const windowClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
     if (hasVisibleWindowClient(windowClients)) {
+      // App is open and visible — the broadcast already delivered the payload.
+      // Skip enqueue to avoid processing the same message twice on drain.
       return;
     }
+    // App is not visible — enqueue for later drain and show notification.
+    await enqueuePendingPushPayload(payloadWithReceivedAt);
     await showDedupedNotification(title, {
       body,
       icon,

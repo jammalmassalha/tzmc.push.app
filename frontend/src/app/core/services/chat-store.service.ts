@@ -7697,9 +7697,10 @@ export class ChatStoreService {
 
   private handleWindowFocus = (): void => {
     this.refreshPushRegistrationForCurrentUser(false);
-    this.clearDeviceAttention({ resetServerBadge: true });
     this.flushPendingServiceWorkerMessages();
-    void this.consumePendingPushPayloadsFromServiceWorker();
+    void this.consumePendingPushPayloadsFromServiceWorker().finally(() => {
+      this.clearDeviceAttention({ resetServerBadge: true });
+    });
   };
 
   private handleVisibilityChange = (): void => {
@@ -7707,9 +7708,10 @@ export class ChatStoreService {
       return;
     }
     this.refreshPushRegistrationForCurrentUser(false);
-    this.clearDeviceAttention({ resetServerBadge: true });
     this.flushPendingServiceWorkerMessages();
-    void this.consumePendingPushPayloadsFromServiceWorker();
+    void this.consumePendingPushPayloadsFromServiceWorker().finally(() => {
+      this.clearDeviceAttention({ resetServerBadge: true });
+    });
   };
 
   private handleServiceWorkerMessage = (event: MessageEvent<unknown>): void => {
@@ -8164,7 +8166,7 @@ export class ChatStoreService {
         .catch(() => undefined);
     }
 
-    this.postBadgeMessageToServiceWorker({ action: 'clear-app-badge' });
+    this.postBadgeMessageToServiceWorker({ action: 'clear-device-attention' });
   }
 
   private isAppInForeground(): boolean {
