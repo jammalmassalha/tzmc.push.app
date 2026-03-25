@@ -343,7 +343,8 @@ class MysqlLogsService {
           \`Message Preview\` AS messagePreview, 
           \`SuccessOrFailed\` AS successOrFailed, 
           \`ErrorMessageOrSuccessCount\` AS errorMessageOrSuccessCount, 
-          \`RecipientAuthJSON\` AS recipientAuthJson 
+          \`RecipientAuthJSON\` AS recipientAuthJson,
+          \`UserReceivedTime\` AS userReceivedTime 
         FROM \`${this.tableName}\` 
         WHERE 1=1`;
             const params = [];
@@ -439,7 +440,8 @@ class MysqlLogsService {
                     messageIds: toTrimmedString(detailsMap.messageIds || detailsMap.message_ids) || undefined,
                     targetMessageId: toTrimmedString(detailsMap.targetMessageId || detailsMap.target_message_id || detailsMap.messageId || detailsMap.message_id) || undefined,
                     emoji: toTrimmedString(detailsMap.emoji || detailsMap.reaction) || undefined,
-                    reactor: toTrimmedString(detailsMap.reactor || detailsMap.user) || undefined
+                    reactor: toTrimmedString(detailsMap.reactor || detailsMap.user) || undefined,
+                    userReceivedTime: parseFlexibleTimestamp(row.userReceivedTime) || undefined
                 });
                 matchedCount = nextMatchedCount;
             }
@@ -451,6 +453,14 @@ class MysqlLogsService {
         }
         messages.reverse();
         return messages;
+    }
+    async updateUserReceivedTime(msgId, receivedAt) {
+        const safeMsgId = toTrimmedString(msgId);
+        if (!safeMsgId)
+            return false;
+        const sql = `UPDATE \`${this.tableName}\` SET \`UserReceivedTime\` = ? WHERE \`MsgID\` = ?`;
+        const [result] = await this.pool.execute(sql, [receivedAt, safeMsgId]);
+        return Boolean(result && result.affectedRows > 0);
     }
 }
 exports.MysqlLogsService = MysqlLogsService;
