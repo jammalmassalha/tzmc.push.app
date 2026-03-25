@@ -334,6 +334,8 @@ function registerMessageController(app, deps = {}) {
         }
     );
 
+    // backend/controllers/message.controller.js
+
     app.get(
         ['/messages/logs', '/notify/messages/logs'],
         requireAuthorizedUser({
@@ -357,6 +359,11 @@ function registerMessageController(app, deps = {}) {
             const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.floor(limitRaw)), 200000) : 700;
             const offsetRaw = Number(req.query && req.query.offset);
             const offset = Number.isFinite(offsetRaw) ? Math.max(0, Math.floor(offsetRaw)) : 0;
+
+            // --- OPTIMIZATION: Extract 'since' timestamp ---
+            const sinceRaw = Number(req.query && req.query.since);
+            const since = Number.isFinite(sinceRaw) && sinceRaw > 0 ? sinceRaw : 0;
+
             const knownGroupNamesById = new Map();
             const knownGroupIds = new Set();
             const knownGroupIdByName = new Map();
@@ -366,27 +373,23 @@ function registerMessageController(app, deps = {}) {
                     ? hardcodedGroupIds.map((value) => normalizeUserKey(value)).filter(Boolean)
                     : []
             );
+
             const parseFlexibleTimestamp = (...candidates) => {
                 for (const candidate of candidates) {
                     if (candidate === null || candidate === undefined) continue;
                     const numeric = Number(candidate);
-                    if (Number.isFinite(numeric) && numeric > 0) {
-                        return numeric;
-                    }
+                    if (Number.isFinite(numeric) && numeric > 0) return numeric;
                     const text = String(candidate || '').trim();
                     if (!text) continue;
                     const parsedDate = Date.parse(text);
-                    if (Number.isFinite(parsedDate) && parsedDate > 0) {
-                        return parsedDate;
-                    }
+                    if (Number.isFinite(parsedDate) && parsedDate > 0) return parsedDate;
                 }
                 return 0;
             };
+
             const parseLogDetailsMap = (rawValue) => {
                 const detailsText = String(rawValue || '').trim();
-                if (!detailsText) {
-                    return {};
-                }
+                if (!detailsText) return {};
                 try {
                     const parsed = JSON.parse(detailsText);
                     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -395,391 +398,168 @@ function registerMessageController(app, deps = {}) {
                             return acc;
                         }, {});
                     }
-                } catch (_error) {
-                    // Fallback to key=value parser.
-                }
-                return detailsText
-                    .split('|')
-                    .map((segment) => String(segment || '').trim())
-                    .filter(Boolean)
-                    .reduce((acc, segment) => {
-                        const separatorIndex = segment.indexOf('=');
-                        if (separatorIndex <= 0) {
-                            return acc;
-                        }
-                        const key = String(segment.slice(0, separatorIndex) || '').trim();
-                        const value = String(segment.slice(separatorIndex + 1) || '').trim();
-                        if (!key) {
-                            return acc;
-                        }
-                        acc[key] = value;
-                        return acc;
-                    }, {});
+                } catch (_error) { }
+                return detailsText.split('|').map(s => s.trim()).filter(Boolean).reduce((acc, segment) => {
+                    const sepIdx = segment.indexOf('=');
+                    if (sepIdx <= 0) return acc;
+                    const key = segment.slice(0, sepIdx).trim();
+                    const value = segment.slice(sepIdx + 1).trim();
+                    if (key) acc[key] = value;
+                    return acc;
+                }, {});
             };
+
             const isLikelyPhoneUser = (value) => {
                 const digits = String(value || '').replace(/\D/g, '');
                 if (!digits) return false;
-                return (
-                    /^05\d{8}$/.test(digits) ||
-                    /^5\d{8}$/.test(digits) ||
-                    /^9725\d{8}$/.test(digits) ||
-                    /^97205\d{8}$/.test(digits)
-                );
+                return /^05\d{8}$|^5\d{8}$|^9725\d{8}$|^97205\d{8}$/.test(digits);
             };
 
             try {
                 const groups = getGroups && typeof getGroups === 'function' ? getGroups() : {};
                 Object.values(groups || {}).forEach((group) => {
-                    if (!group || typeof group !== 'object') {
-                        return;
+                    if (!group || typeof group !== 'object') return;
+                    const members = Array.isArray(group.members) ? group.members : (group.memberList || []);
+                    const normalizedMembers = members.map(m => normalizeUserKey(m)).filter(Boolean);
+                    if (normalizedMembers.length > 0 && !normalizedMembers.includes(user)) return;
+                    const gid = normalizeUserKey(String(group.id || group.groupID || group.groupId || '').trim());
+                    if (!gid) return;
+                    knownGroupIds.add(gid);
+                    const gname = String(group.name || group.title || group.groupName || '').trim();
+                    if (gname) {
+                        knownGroupNamesById.set(gid, gname);
+                        const nameKey = normalizeUserKey(gname);
+                        if (nameKey && !knownGroupIdByName.has(nameKey)) knownGroupIdByName.set(nameKey, gid);
                     }
-                    const members = Array.isArray(group.members)
-                        ? group.members
-                        : (Array.isArray(group.memberList) ? group.memberList : []);
-                    const normalizedMembers = members.map((member) => normalizeUserKey(member)).filter(Boolean);
-                    if (normalizedMembers.length > 0 && !normalizedMembers.includes(user)) {
-                        return;
-                    }
-                    const normalizedGroupId = normalizeUserKey(
-                        String(group.id || group.groupID || group.groupId || '').trim()
-                    );
-                    if (!normalizedGroupId) {
-                        return;
-                    }
-                    knownGroupIds.add(normalizedGroupId);
-                    const groupName = String(group.name || group.title || group.groupName || '').trim();
-                    if (groupName) {
-                        knownGroupNamesById.set(normalizedGroupId, groupName);
-                        const normalizedGroupNameKey = normalizeUserKey(groupName);
-                        if (normalizedGroupNameKey && !knownGroupIdByName.has(normalizedGroupNameKey)) {
-                            knownGroupIdByName.set(normalizedGroupNameKey, normalizedGroupId);
-                        }
-                    }
-                    const normalizedGroupType = String(group.type || group.groupType || '').trim().toLowerCase();
-                    if (normalizedGroupType === 'community' || normalizedGroupType === 'group') {
-                        knownGroupTypeById.set(normalizedGroupId, normalizedGroupType);
-                    } else if (hardcodedGroupKeySet.has(normalizedGroupId)) {
-                        knownGroupTypeById.set(normalizedGroupId, 'community');
-                    }
+                    const gtype = String(group.type || group.groupType || '').trim().toLowerCase();
+                    if (gtype === 'community' || gtype === 'group') knownGroupTypeById.set(gid, gtype);
+                    else if (hardcodedGroupKeySet.has(gid)) knownGroupTypeById.set(gid, 'community');
                 });
-            } catch (_error) {
-                // Keep logs sync resilient even if in-memory groups are unavailable.
-            }
+            } catch (_error) { }
 
             try {
+                // CALLING OPTIMIZED SERVICE
                 const rawMessages = typeof getLogsMessagesForUser === 'function'
                     ? await getLogsMessagesForUser(user, {
                         limit,
                         offset,
+                        since, // Optimization passed here
                         excludeSystem: true,
                         hardcodedGroupIds: Array.from(hardcodedGroupKeySet)
                     })
                     : [];
-                const messages = rawMessages
-                    .map((message, index) => {
-                        if (!message || typeof message !== 'object') {
-                            return null;
-                        }
-                        const messageStatus = String(
-                            message.status ??
-                            message.deliveryStatus ??
-                            ''
-                        ).trim().toLowerCase();
-                        const detailsMap = parseLogDetailsMap(
-                            message.details ??
-                            message.detail ??
-                            message.logDetails ??
-                            message.metadata ??
-                            ''
-                        );
-                        const rawType = String(
-                            message.type ??
-                            message.eventType ??
-                            message.event_type ??
-                            message.actionType ??
-                            message.action_type ??
-                            detailsMap.type ??
-                            detailsMap.eventType ??
-                            detailsMap.event_type ??
-                            detailsMap.actionType ??
-                            detailsMap.action_type ??
-                            (messageStatus.startsWith('deleted') ? 'delete-action' : '') ??
-                            ''
-                        ).trim().toLowerCase();
-                        const supportedActionTypes = new Set([
-                            'reaction',
-                            'group-update',
-                            'read-receipt',
-                            'edit-action',
-                            'delete-action'
-                        ]);
-                        const normalizedType = supportedActionTypes.has(rawType) ? rawType : '';
-                        const isActionMessage = Boolean(normalizedType);
-                        const sender = normalizeUserKey(
-                            message.sender ||
-                            message.from ||
-                            message.reactor ||
-                            ''
-                        );
-                        if (!isActionMessage && (!sender || sender === 'system')) {
-                            return null;
-                        }
-                        const body = String(message.body ?? message.message ?? message.content ?? '').trim();
-                        if (!isActionMessage && !body) {
-                            return null;
-                        }
-                        const normalizedBody = body.toLowerCase();
-                        if (!isActionMessage && (normalizedBody === 'new notification' || normalizedBody === 'new reaction')) {
-                            return null;
-                        }
 
-                        const sourceTimestamp = parseFlexibleTimestamp(
-                            message.timestamp,
-                            message.sentAt,
-                            message.at,
-                            message.createdAt,
-                            message.created_at,
-                            message.dateTime,
-                            message.datetime,
-                            message.date,
-                            message.time
-                        );
-                        const timestamp = sourceTimestamp > 0
-                            ? sourceTimestamp
-                            : Date.now() + index;
-                        const explicitGroupIdRaw = String(
-                            message.groupId ??
-                            message.group_id ??
-                            message.chatId ??
-                            message.chat_id ??
-                            ''
-                        ).trim();
-                        const toUserCandidateRaw = String(
-                            message.toUser ??
-                            message.to_user ??
-                            message.to ??
-                            message.recipient ??
-                            message.targetUser ??
-                            message.target_user ??
-                            ''
-                        ).trim();
-                        const normalizedExplicitGroupId = normalizeUserKey(explicitGroupIdRaw);
-                        const normalizedToUserCandidate = normalizeUserKey(toUserCandidateRaw);
+                const messages = rawMessages.map((message, index) => {
+                    if (!message || typeof message !== 'object') return null;
 
-                        let resolvedGroupId = normalizedExplicitGroupId;
-                        if (
-                            !resolvedGroupId &&
-                            sender &&
-                            hardcodedGroupKeySet.has(sender)
-                        ) {
-                            resolvedGroupId = sender;
-                        }
-                        if (
-                            !resolvedGroupId &&
-                            sender &&
-                            sender !== user &&
-                            !isLikelyPhoneUser(sender)
-                        ) {
-                            if (knownGroupIds.has(sender)) {
-                                resolvedGroupId = sender;
-                            } else if (knownGroupIdByName.has(sender)) {
-                                resolvedGroupId = knownGroupIdByName.get(sender) || '';
-                            }
-                        }
-                        if (
-                            !resolvedGroupId &&
-                            normalizedToUserCandidate &&
-                            hardcodedGroupKeySet.has(normalizedToUserCandidate)
-                        ) {
-                            resolvedGroupId = normalizedToUserCandidate;
-                        }
-                        if (
-                            !resolvedGroupId &&
-                            normalizedToUserCandidate &&
-                            normalizedToUserCandidate !== user &&
-                            normalizedToUserCandidate !== sender &&
-                            (
-                                knownGroupIds.has(normalizedToUserCandidate) ||
-                                !isLikelyPhoneUser(normalizedToUserCandidate)
-                            )
-                        ) {
-                            resolvedGroupId = normalizedToUserCandidate;
-                        }
+                    const messageStatus = String(message.status ?? message.deliveryStatus ?? '').trim().toLowerCase();
+                    const detailsMap = parseLogDetailsMap(message.details ?? message.logDetails ?? message.metadata ?? '');
 
-                        const groupName = String(
-                            message.groupName ??
-                            message.group_name ??
-                            message.chatName ??
-                            message.chat_name ??
-                            ''
-                        ).trim();
-                        const resolvedGroupName = groupName
-                            || (resolvedGroupId ? (knownGroupNamesById.get(resolvedGroupId) || toUserCandidateRaw || resolvedGroupId) : '');
-                        const messageIdRaw = String(
-                            message.messageId ??
-                            message.message_id ??
-                            message.msgId ??
-                            message.msg_id ??
-                            message.mid ??
-                            message.uuid ??
-                            message.id ??
-                            detailsMap.messageId ??
-                            detailsMap.message_id ??
-                            detailsMap.targetMessageId ??
-                            detailsMap.target_message_id ??
-                            ''
-                        ).trim();
-                        const timestampSeed = String(
-                            message.timestamp ??
-                            message.sentAt ??
-                            message.at ??
-                            message.createdAt ??
-                            message.created_at ??
-                            message.dateTime ??
-                            message.datetime ??
-                            message.date ??
-                            message.time ??
-                            ''
-                        ).trim();
-                        const targetMessageId = String(
-                            message.targetMessageId ??
-                            message.target_message_id ??
-                            message.messageTargetId ??
-                            message.message_target_id ??
-                            detailsMap.targetMessageId ??
-                            detailsMap.target_message_id ??
-                            detailsMap.messageId ??
-                            detailsMap.message_id ??
-                            ''
-                        ).trim();
-                        const emoji = String(message.emoji ?? message.reaction ?? '').trim();
-                        const readMessageIds = Array.isArray(message.messageIds)
-                            ? message.messageIds.map((id) => String(id || '').trim()).filter(Boolean)
-                            : String(
-                                message.messageIds ??
-                                message.message_ids ??
-                                detailsMap.messageIds ??
-                                detailsMap.message_ids ??
-                                message.messageId ??
-                                message.message_id ??
-                                ''
-                            ).split(',').map((id) => String(id || '').trim()).filter(Boolean);
-                        const actionFingerprintSeed = isActionMessage
-                            ? `${normalizedType}|${targetMessageId}|${emoji}|${readMessageIds.join(',')}`
-                            : body;
-                        const fingerprintSource = `${sender || 'unknown'}|${resolvedGroupId || normalizedToUserCandidate || user}|${timestampSeed || 'na'}|${actionFingerprintSeed}`;
-                        let fingerprint = 0;
-                        for (let charIndex = 0; charIndex < fingerprintSource.length; charIndex += 1) {
-                            fingerprint = ((fingerprint << 5) - fingerprint + fingerprintSource.charCodeAt(charIndex)) | 0;
-                        }
-                        const messageId = messageIdRaw || `logs-${sender}-${timestamp}-${Math.abs(fingerprint).toString(36)}`;
-                        const groupTypeRaw = String(
-                            message.groupType ??
-                            message.group_type ??
-                            ''
-                        ).trim().toLowerCase();
-                        const groupSenderName = String(
-                            message.groupSenderName ??
-                            message.group_sender_name ??
-                            message.senderName ??
-                            message.sender_name ??
-                            message.fromName ??
-                            message.from_name ??
-                            message.senderDisplayName ??
-                            message.sender_name ??
-                            ''
-                        ).trim();
-                        const resolvedGroupType = groupTypeRaw === 'community'
-                            ? 'community'
-                            : (groupTypeRaw === 'group'
-                                ? 'group'
-                                : (
-                                    resolvedGroupId
-                                        ? (
-                                            knownGroupTypeById.get(resolvedGroupId) ||
-                                            (hardcodedGroupKeySet.has(resolvedGroupId) ? 'community' : 'group')
-                                        )
-                                        : undefined
-                                ));
+                    const rawType = String(
+                        message.type ?? message.eventType ?? message.actionType ??
+                        detailsMap.type ?? detailsMap.eventType ??
+                        (messageStatus.startsWith('deleted') ? 'delete-action' : '') ?? ''
+                    ).trim().toLowerCase();
 
-                        if (isActionMessage) {
-                            const normalizedReactor = normalizeUserKey(message.reactor || sender);
-                            const reactorName = String(
-                                message.reactorName ??
-                                message.reactor_name ??
-                                detailsMap.reactorName ??
-                                detailsMap.reactor_name ??
-                                message.senderName ??
-                                message.sender_name ??
-                                ''
-                            ).trim();
-                            const readAt = parseFlexibleTimestamp(
-                                message.readAt,
-                                message.read_at,
-                                message.readTime,
-                                message.read_time
-                            );
-                            const editedAt = parseFlexibleTimestamp(
-                                message.editedAt,
-                                message.edited_at,
-                                detailsMap.editedAt,
-                                detailsMap.edited_at
-                            );
-                            const deletedAt = parseFlexibleTimestamp(
-                                message.deletedAt,
-                                message.deleted_at,
-                                detailsMap.deletedAt,
-                                detailsMap.deleted_at
-                            );
+                    const supportedActionTypes = new Set(['reaction', 'group-update', 'read-receipt', 'edit-action', 'delete-action']);
+                    const normalizedType = supportedActionTypes.has(rawType) ? rawType : '';
+                    const isActionMessage = Boolean(normalizedType);
 
-                            return {
-                                type: normalizedType,
-                                messageId,
-                                messageIds: normalizedType === 'read-receipt' && readMessageIds.length
-                                    ? readMessageIds
-                                    : undefined,
-                                readAt: normalizedType === 'read-receipt' && readAt > 0 ? readAt : undefined,
-                                sender: sender || undefined,
-                                targetMessageId: normalizedType === 'reaction'
-                                    ? (targetMessageId || undefined)
-                                    : undefined,
-                                emoji: normalizedType === 'reaction' ? (emoji || undefined) : undefined,
-                                reactor: normalizedType === 'reaction' ? (normalizedReactor || undefined) : undefined,
-                                reactorName: normalizedType === 'reaction' ? (reactorName || undefined) : undefined,
-                                body: normalizedType === 'edit-action' ? (body || undefined) : undefined,
-                                editedAt: normalizedType === 'edit-action' && editedAt > 0 ? editedAt : undefined,
-                                deletedAt: normalizedType === 'delete-action' && deletedAt > 0 ? deletedAt : undefined,
-                                timestamp,
-                                toUser: normalizedToUserCandidate || undefined,
-                                groupId: resolvedGroupId || undefined,
-                                groupName: resolvedGroupName || undefined,
-                                groupType: resolvedGroupType,
-                                groupSenderName: groupSenderName || undefined
-                            };
-                        }
+                    const sender = normalizeUserKey(message.sender || message.from || message.reactor || '');
+                    if (!isActionMessage && (!sender || sender === 'system')) return null;
+
+                    const body = String(message.body ?? message.message ?? message.content ?? '').trim();
+                    if (!isActionMessage && !body) return null;
+
+                    const normalizedBody = body.toLowerCase();
+                    if (!isActionMessage && (normalizedBody === 'new notification' || normalizedBody === 'new reaction')) return null;
+
+                    const sourceTimestamp = parseFlexibleTimestamp(message.timestamp, message.sentAt, message.at, message.createdAt);
+                    const timestamp = sourceTimestamp > 0 ? sourceTimestamp : Date.now() + index;
+
+                    const explicitGroupIdRaw = String(message.groupId ?? message.chatId ?? '').trim();
+                    const toUserCandidateRaw = String(message.toUser ?? message.to ?? message.recipient ?? '').trim();
+                    const normalizedExplicitGroupId = normalizeUserKey(explicitGroupIdRaw);
+                    const normalizedToUserCandidate = normalizeUserKey(toUserCandidateRaw);
+
+                    let resolvedGroupId = normalizedExplicitGroupId;
+                    if (!resolvedGroupId && sender && hardcodedGroupKeySet.has(sender)) resolvedGroupId = sender;
+                    if (!resolvedGroupId && sender && sender !== user && !isLikelyPhoneUser(sender)) {
+                        if (knownGroupIds.has(sender)) resolvedGroupId = sender;
+                        else if (knownGroupIdByName.has(sender)) resolvedGroupId = knownGroupIdByName.get(sender) || '';
+                    }
+                    if (!resolvedGroupId && normalizedToUserCandidate && hardcodedGroupKeySet.has(normalizedToUserCandidate)) resolvedGroupId = normalizedToUserCandidate;
+                    if (!resolvedGroupId && normalizedToUserCandidate && normalizedToUserCandidate !== user && normalizedToUserCandidate !== sender && (knownGroupIds.has(normalizedToUserCandidate) || !isLikelyPhoneUser(normalizedToUserCandidate))) resolvedGroupId = normalizedToUserCandidate;
+
+                    const groupName = String(message.groupName ?? message.chatName ?? '').trim();
+                    const resolvedGroupName = groupName || (resolvedGroupId ? (knownGroupNamesById.get(resolvedGroupId) || toUserCandidateRaw || resolvedGroupId) : '');
+
+                    const messageIdRaw = String(message.messageId || message.id || detailsMap.messageId || '').trim();
+                    const timestampSeed = String(message.timestamp ?? message.sentAt ?? '').trim();
+                    const targetMessageId = String(message.targetMessageId ?? detailsMap.targetMessageId ?? '').trim();
+                    const emoji = String(message.emoji ?? message.reaction ?? '').trim();
+
+                    const readMessageIds = Array.isArray(message.messageIds)
+                        ? message.messageIds.map(id => String(id || '').trim()).filter(Boolean)
+                        : String(message.messageIds ?? detailsMap.messageIds ?? '').split(',').map(id => id.trim()).filter(Boolean);
+
+                    const actionFingerprintSeed = isActionMessage ? `${normalizedType}|${targetMessageId}|${emoji}|${readMessageIds.join(',')}` : body;
+                    const fingerprintSource = `${sender || 'unknown'}|${resolvedGroupId || normalizedToUserCandidate || user}|${timestampSeed || 'na'}|${actionFingerprintSeed}`;
+                    let fingerprint = 0;
+                    for (let i = 0; i < fingerprintSource.length; i++) fingerprint = ((fingerprint << 5) - fingerprint + fingerprintSource.charCodeAt(i)) | 0;
+
+                    const messageId = messageIdRaw || `logs-${sender}-${timestamp}-${Math.abs(fingerprint).toString(36)}`;
+                    const groupTypeRaw = String(message.groupType ?? '').trim().toLowerCase();
+                    const groupSenderName = String(message.groupSenderName ?? message.senderName ?? message.fromName ?? '').trim();
+
+                    const resolvedGroupType = groupTypeRaw === 'community' ? 'community' : (groupTypeRaw === 'group' ? 'group' : (resolvedGroupId ? (knownGroupTypeById.get(resolvedGroupId) || (hardcodedGroupKeySet.has(resolvedGroupId) ? 'community' : 'group')) : undefined));
+
+                    if (isActionMessage) {
+                        const normalizedReactor = normalizeUserKey(message.reactor || sender);
+                        const reactorName = String(message.reactorName ?? message.senderName ?? '').trim();
+                        const readAt = parseFlexibleTimestamp(message.readAt, message.readTime);
+                        const editedAt = parseFlexibleTimestamp(message.editedAt, detailsMap.editedAt);
+                        const deletedAt = parseFlexibleTimestamp(message.deletedAt, detailsMap.deletedAt);
 
                         return {
+                            type: normalizedType,
                             messageId,
-                            sender,
-                            toUser: normalizedToUserCandidate || undefined,
-                            body,
+                            messageIds: normalizedType === 'read-receipt' && readMessageIds.length ? readMessageIds : undefined,
+                            readAt: normalizedType === 'read-receipt' && readAt > 0 ? readAt : undefined,
+                            sender: sender || undefined,
+                            targetMessageId: normalizedType === 'reaction' ? (targetMessageId || undefined) : undefined,
+                            emoji: normalizedType === 'reaction' ? (emoji || undefined) : undefined,
+                            reactor: normalizedType === 'reaction' ? (normalizedReactor || undefined) : undefined,
+                            reactorName: normalizedType === 'reaction' ? (reactorName || undefined) : undefined,
+                            body: normalizedType === 'edit-action' ? (body || undefined) : undefined,
+                            editedAt: normalizedType === 'edit-action' && editedAt > 0 ? editedAt : undefined,
+                            deletedAt: normalizedType === 'delete-action' && deletedAt > 0 ? deletedAt : undefined,
                             timestamp,
+                            toUser: normalizedToUserCandidate || undefined,
                             groupId: resolvedGroupId || undefined,
                             groupName: resolvedGroupName || undefined,
                             groupType: resolvedGroupType,
                             groupSenderName: groupSenderName || undefined
                         };
-                    })
-                    .filter(Boolean);
+                    }
+
+                    return {
+                        messageId,
+                        sender,
+                        toUser: normalizedToUserCandidate || undefined,
+                        body,
+                        timestamp,
+                        groupId: resolvedGroupId || undefined,
+                        groupName: resolvedGroupName || undefined,
+                        groupType: resolvedGroupType,
+                        groupSenderName: groupSenderName || undefined
+                    };
+                }).filter(Boolean);
 
                 const dedupedMessages = dedupeLogsMessages(messages);
-                const dedupedCount = messages.length - dedupedMessages.length;
-                if (dedupedCount > 0) {
-                    console.warn(`[LOGS SYNC] Deduped ${dedupedCount} duplicate logs messages for ${user}`);
-                }
                 return res.json({ result: 'success', messages: dedupedMessages });
             } catch (error) {
-                console.error('[LOGS SYNC] Failed to load logs messages:', error && error.message ? error.message : error);
+                console.error('[LOGS SYNC] Failed:', error.message);
                 return res.status(502).json({ messages: [], error: 'Logs sync failed' });
             }
         }

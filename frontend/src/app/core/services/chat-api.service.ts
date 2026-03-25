@@ -607,29 +607,24 @@ export class ChatApiService {
     return Array.isArray(body.messages) ? body.messages : [];
   }
 
-  async getMessagesFromLogs(user?: string, limit = 1000, offset = 0): Promise<IncomingServerMessage[]> {
+  async getMessagesFromLogs(user?: string, limit = 1000, offset = 0, since = 0): Promise<IncomingServerMessage[]> {
     const normalizedUser = String(user || '').trim().toLowerCase();
-    if (!normalizedUser) {
-      return [];
-    }
-
-    const safeLimit = Number.isFinite(Number(limit))
-      ? Math.min(200000, Math.max(1, Math.floor(Number(limit))))
-      : 1000;
-    const safeOffset = Number.isFinite(Number(offset))
-      ? Math.max(0, Math.floor(Number(offset)))
-      : 0;
-    const url = `${this.notifyBaseUrl}/messages/logs?user=${encodeURIComponent(normalizedUser)}&excludeSystem=1&limit=${safeLimit}&offset=${safeOffset}&_ts=${Date.now()}`;
+    if (!normalizedUser) return [];
+  
+    const safeLimit = Math.min(200000, Math.max(1, Math.floor(limit)));
+    const safeOffset = Math.max(0, Math.floor(offset));
+    
+    // Append &since=${since} to the URL
+    const url = `${this.notifyBaseUrl}/messages/logs?user=${encodeURIComponent(normalizedUser)}&excludeSystem=1&limit=${safeLimit}&offset=${safeOffset}&since=${since}&_ts=${Date.now()}`;
+    
     const response = await this.fetchWithRetry(
       url,
       { cache: 'no-store' },
       { retries: 1, timeoutMs: 20000, backoffMs: 500 }
     );
-    if (!response.ok) {
-      throw new Error(`Logs messages request failed with ${response.status}`);
-    }
-
-    const body = (await response.json()) as LogsMessagesResponse;
+    
+    if (!response.ok) throw new Error(`Logs request failed: ${response.status}`);
+    const body = (await response.json()) as { messages?: IncomingServerMessage[] };
     return Array.isArray(body.messages) ? body.messages : [];
   }
 

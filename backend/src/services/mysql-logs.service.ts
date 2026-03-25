@@ -26,6 +26,7 @@ export interface MysqlLogsReadOptions {
   excludeSystem?: boolean;
   offset?: number;
   hardcodedGroupIds?: string[];
+  since?: number;
 }
 
 export interface MysqlLogsInsertBulkOptions {
@@ -390,11 +391,17 @@ export class MysqlLogsService {
     const limit = Math.max(1, Math.min(toPositiveInteger(options.limit, 700), 200000));
     const offset = Math.max(0, toPositiveInteger(options.offset, 0));
     const excludeSystem = options.excludeSystem !== false;
+
+    // OPTIMIZATION: Parse the 'since' timestamp into a Date object for MySQL
+    const sinceTimestamp = Number(options.since) || 0;
+    const sinceDate = sinceTimestamp > 0 ? new Date(sinceTimestamp) : null;
+
     const hardcodedGroupKeySet = new Set(
       Array.isArray(options.hardcodedGroupIds)
         ? options.hardcodedGroupIds.map((value) => normalizeGroupKey(value)).filter(Boolean)
         : []
     );
+
     const requiredMatches = offset + limit;
     const maxRawRowsToScan = Math.max(50000, Math.min(requiredMatches * 220, 5000000));
     let rawOffset = 0;
@@ -411,21 +418,29 @@ export class MysqlLogsService {
         Math.min(25000, Math.min(remainingRawScan, Math.max(remainingToCollect * 12, remainingMatchesToScan * 6)))
       );
 
-      const [rows] = await this.pool.query<MysqlLogRow[]>(
-        `SELECT
-          \`DateTime\` AS dateTime,
-          \`ToUser\` AS toUser,
-          \`From\` AS fromUser,
-          \`MsgID\` AS msgId,
-          \`Message Preview\` AS messagePreview,
-          \`SuccessOrFailed\` AS successOrFailed,
-          \`ErrorMessageOrSuccessCount\` AS errorMessageOrSuccessCount,
-          \`RecipientAuthJSON\` AS recipientAuthJson
-        FROM \`${this.tableName}\`
-        ORDER BY \`DateTime\` DESC
-        LIMIT ?, ?`,
-        [rawOffset, currentChunkSize]
-      );
+      // MODIFIED QUERY: Inject the DateTime > ? filter to skip old messages at the DB level
+      let sql = `SELECT 
+          \`DateTime\` AS dateTime, 
+          \`ToUser\` AS toUser, 
+          \`From\` AS fromUser, 
+          \`MsgID\` AS msgId, 
+          \`Message Preview\` AS messagePreview, 
+          \`SuccessOrFailed\` AS successOrFailed, 
+          \`ErrorMessageOrSuccessCount\` AS errorMessageOrSuccessCount, 
+          \`RecipientAuthJSON\` AS recipientAuthJson 
+        FROM \`${this.tableName}\` 
+        WHERE 1=1`;
+
+      const params: any[] = [];
+      if (sinceDate) {
+        sql += ` AND \`DateTime\` > ?`;
+        params.push(sinceDate);
+      }
+
+      sql += ` ORDER BY \`DateTime\` DESC LIMIT ?, ?`;
+      params.push(rawOffset, currentChunkSize);
+
+      const [rows] = await this.pool.query<MysqlLogRow[]>(sql, params);
 
       if (!rows.length) {
         break;
@@ -433,19 +448,24 @@ export class MysqlLogsService {
 
       for (let rowIndex = 0; rowIndex < rows.length && messages.length < limit; rowIndex += 1) {
         const row = rows[rowIndex];
+
+        // --- Preservation of your existing Sender/Recipient logic ---
         const senderRaw = toTrimmedString(row.fromUser);
         const sender = normalizePhone(senderRaw) || senderRaw;
         const senderPhone = normalizePhone(sender);
         const isOutgoingFromRequestedUser = Boolean(senderPhone && senderPhone === requestedUser);
         const isHardcodedGlobalGroupSender = hardcodedGroupKeySet.has(normalizeGroupKey(senderRaw));
+
         const rawToUser = toTrimmedString(row.toUser);
         const recipients = new Set<string>([
           ...parseRecipientUsernames(rawToUser),
           ...parseRecipientsFromAuthJson(row.recipientAuthJson)
         ]);
+
         const toUserNormalizedPhone = normalizePhone(rawToUser);
         const resolvedToUser = toUserNormalizedPhone || rawToUser;
         const toUserLower = rawToUser.toLowerCase();
+
         const isGroupTargetRow = Boolean(
           rawToUser &&
           !toUserNormalizedPhone &&
@@ -453,6 +473,8 @@ export class MysqlLogsService {
           toUserLower !== 'all' &&
           rawToUser !== '*'
         );
+
+        // Security/Filtering Check
         if (!recipients.has(requestedUser) && !isGroupTargetRow && !isHardcodedGlobalGroupSender && !isOutgoingFromRequestedUser) {
           continue;
         }
@@ -462,11 +484,13 @@ export class MysqlLogsService {
           continue;
         }
 
+        // Status Filtering
         const status = toTrimmedString(row.successOrFailed).toLowerCase();
         if (status.startsWith('fail') || status.startsWith('error')) {
           continue;
         }
 
+        // Action and Metadata Parsing
         const details = toTrimmedString(row.errorMessageOrSuccessCount);
         const detailsMap = parseLogDetailsMap(details);
         const actionTypeFromDetails = toTrimmedString(
@@ -490,17 +514,22 @@ export class MysqlLogsService {
           detailsMap.message_id ||
           detailsMap.targetMessageId
         );
+
         const messageId = msgIdFromRowOrDetails || `db-logs-${timestamp}-${rawOffset + rowIndex}`;
         const deletedAt = parseFlexibleTimestamp(detailsMap.deletedAt || detailsMap.deleted_at || timestamp) || timestamp;
+
         if (resolvedActionType === 'delete-action' && !msgIdFromRowOrDetails) {
           continue;
         }
+
+        // Pagination Logic
         const nextMatchedCount = matchedCount + 1;
         if (nextMatchedCount <= offset) {
           matchedCount = nextMatchedCount;
           continue;
         }
 
+        // Data Mapping
         messages.push({
           id: `db-logs-${timestamp}-${rawOffset + rowIndex}`,
           messageId,
@@ -532,6 +561,7 @@ export class MysqlLogsService {
     messages.reverse();
     return messages;
   }
+
 }
 
 export function createMysqlLogsServiceFromEnv(env: NodeJS.ProcessEnv = process.env): MysqlLogsService {
