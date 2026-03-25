@@ -570,6 +570,8 @@ export class ChatStoreService {
     await this.ensureSessionReady();
     const user = this.currentUser();
     if (!user) return;
+
+    // If already initialized for this user, just check for new background payloads
     if (this.initializedUser === user) {
       this.flushPendingServiceWorkerMessages();
       await this.consumePendingPushPayloadsFromServiceWorker();
@@ -579,8 +581,26 @@ export class ChatStoreService {
 
     this.initializedUser = user;
     this.flushPendingServiceWorkerMessages();
+
+    /**
+     * SYNC STEP 1: Drain Service Worker Cache
+     * Pulls messages that the Service Worker managed to catch while the app was closed.
+     */
     await this.consumePendingPushPayloadsFromServiceWorker();
     this.schedulePendingPushDrainRetry();
+
+    /**
+     * SYNC STEP 2: Aggressive Logs Recovery (The Fix)
+     * This fills any gaps that the Service Worker missed (e.g., if the phone was offline 
+     * or the OS killed the SW). We use 'force: true' to bypass the standard recovery cooldown.
+     */
+    void this.recoverMissedMessagesFromLogs(user, {
+      force: true,           // Ensures we sync every time the app starts
+      incrementUnread: true, // Marks missed messages as unread so they appear in badges
+      limit: 1000            // Window large enough to cover several hours of activity
+    }).catch(() => undefined);
+
+    // Continue with standard initialization
     await this.refreshShuttleAccessForCurrentUser(user, { force: true });
 
     // Open quickly from cached/local state only.
@@ -1652,6 +1672,28 @@ export class ChatStoreService {
       .filter((message): message is IncomingServerMessage => Boolean(message));
   }
 
+  // frontend/src/app/core/services/chat-store.service.ts
+
+  /**
+   * Finds the highest timestamp among all messages currently in the local store.
+   */
+  private getLatestMessageTimestamp(): number {
+    let maxTs = 0;
+    // Access the signal's value (messagesByChat is a Record of chatID -> messages)
+    const allChats = this.messagesByChat();
+
+    for (const chatId in allChats) {
+      const messages = allChats[chatId];
+      if (messages.length > 0) {
+        const lastMsg = messages[messages.length - 1];
+        if (lastMsg.timestamp > maxTs) {
+          maxTs = lastMsg.timestamp;
+        }
+      }
+    }
+    return maxTs;
+  }
+
   private async recoverMissedMessagesFromLogs(
     user: string,
     options: {
@@ -1668,6 +1710,8 @@ export class ChatStoreService {
 
     const force = Boolean(options.force);
     const now = Date.now();
+
+    // Prevent spamming the server if not forced
     if (!force && now - this.lastLogsRecoveryAt < LOGS_RECOVERY_MIN_INTERVAL_MS) {
       return 0;
     }
@@ -1680,30 +1724,44 @@ export class ChatStoreService {
       const requestedLimit = Number(options.limit);
       const safeLimit = Number.isFinite(requestedLimit)
         ? Math.min(200000, Math.max(1, Math.floor(requestedLimit)))
-        : LOGS_RECOVERY_MAX_FETCH_LIMIT;
-      const pageSize = Math.max(1, Math.min(50000, safeLimit));
+        : 1000; // Default limit
+
+      // GET THE TIMESTAMP OPTIMIZATION
+      const lastKnownTs = this.getLatestMessageTimestamp();
+
       const logsMessages: IncomingServerMessage[] = [];
       let offset = 0;
+      const pageSize = 500;
+
       while (logsMessages.length < safeLimit) {
         const remaining = safeLimit - logsMessages.length;
-        const currentLimit = Math.max(1, Math.min(pageSize, remaining));
-        const page = await this.api.getMessagesFromLogs(normalizedUser, currentLimit, offset);
-        if (!page.length) {
-          break;
-        }
+        const currentLimit = Math.min(pageSize, remaining);
+
+        // Pass lastKnownTs to the API
+        const page = await this.api.getMessagesFromLogs(
+          normalizedUser,
+          currentLimit,
+          offset,
+          lastKnownTs
+        );
+
+        if (!page.length) break;
+
         logsMessages.push(...page);
         offset += page.length;
-        if (page.length < currentLimit) {
-          break;
-        }
+
+        if (page.length < currentLimit) break;
       }
+
       const fallbackGroups = Array.isArray(options.fallbackGroups) ? options.fallbackGroups : [];
       const importableLogs = this.buildImportableLogsMessagesForSync(logsMessages, fallbackGroups);
+
       if (!importableLogs.length) {
         this.lastLogsRecoveryAt = Date.now();
         return 0;
       }
 
+      // Process and merge the new messages into the UI
       this.ensureGroupsFromImportedLogs(importableLogs, fallbackGroups);
       const appliedCount = this.applyIncomingMessagesBatch(importableLogs, {
         incrementUnread: options.incrementUnread !== false,
@@ -1711,9 +1769,11 @@ export class ChatStoreService {
         applyActions: true,
         updateGroupMetadata: false
       });
+
       this.lastLogsRecoveryAt = Date.now();
       return appliedCount;
-    } catch {
+    } catch (err) {
+      console.error('Failed to recover missed messages:', err);
       return 0;
     } finally {
       this.logsRecoveryInFlight = false;
@@ -5584,9 +5644,9 @@ export class ChatStoreService {
           // Full sync batches can arrive out-of-order (action before base message).
           // Retry mutating actions once after all regular messages are applied.
           if (
-            incomingType === 'delete-action' || 
-            incomingType === 'edit-action' || 
-            incomingType === 'reaction' || 
+            incomingType === 'delete-action' ||
+            incomingType === 'edit-action' ||
+            incomingType === 'reaction' ||
             incomingType === 'read-receipt'
           ) {
             deferredActions.push(message);
@@ -6383,10 +6443,10 @@ export class ChatStoreService {
     const chatId = isGroup
       ? this.normalizeChatId(incoming.groupId ?? '')
       : (
-          isOutgoingFromCurrentUser && incomingToUser && incomingToUser !== currentUser
-            ? incomingToUser
-            : this.normalizeChatId(sender)
-        );
+        isOutgoingFromCurrentUser && incomingToUser && incomingToUser !== currentUser
+          ? incomingToUser
+          : this.normalizeChatId(sender)
+      );
 
     if (!chatId) return false;
 
@@ -6527,7 +6587,7 @@ export class ChatStoreService {
     let changed = false;
     this.messagesByChat.update((messageMap) => {
       const nextMap: Record<string, ChatMessage[]> = {};
-      
+
       // Iterate through all chats to find the target message ID securely
       for (const [iterChatId, list] of Object.entries(messageMap)) {
         if (!list?.length) {

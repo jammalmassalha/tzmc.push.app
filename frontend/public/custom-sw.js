@@ -13,7 +13,7 @@ const SW_OFFLINE_REPLY_KEY = new URL('./__offline_replies__', self.registration.
 const OFFLINE_REPLY_SYNC_TAG = 'tzmc-offline-reply-sync-v1';
 const SW_PENDING_PUSH_CACHE = 'tzmc-sw-pending-push-v1';
 const SW_PENDING_PUSH_KEY = new URL('./__pending_push__', self.registration.scope).toString();
-const MAX_PENDING_PUSH_ITEMS = 80;
+const MAX_PENDING_PUSH_ITEMS = 500;
 const clientContextById = new Map();
 
 function sleep(ms) {
@@ -211,34 +211,28 @@ function buildPendingPushFingerprint(payload) {
 }
 
 async function enqueuePendingPushPayload(payload) {
-  if (!payload || typeof payload !== 'object') {
-    return;
-  }
-  if (String(payload.type || '').trim().toLowerCase() === AUTH_REFRESH_PUSH_TYPE) {
-    return;
-  }
+  if (!payload || typeof payload !== 'object') return;
+  
+  // Skip internal auth refresh types
+  if (String(payload.type || '').trim().toLowerCase() === AUTH_REFRESH_PUSH_TYPE) return;
+
   const fingerprint = buildPendingPushFingerprint(payload);
-  if (!fingerprint) {
-    return;
-  }
-  const payloadReceivedAtRaw = Number(payload.receivedAt);
-  const payloadReceivedAt = Number.isFinite(payloadReceivedAtRaw) && payloadReceivedAtRaw > 0
-    ? payloadReceivedAtRaw
-    : Date.now();
+  if (!fingerprint) return;
+
+  const payloadReceivedAt = Number(payload.receivedAt) || Date.now();
   const queue = await readPendingPushQueue();
-  const filteredQueue = queue.filter((entry) => {
-    if (!entry || typeof entry !== 'object') return false;
-    return String(entry.fingerprint || '').trim() !== fingerprint;
-  });
+  
+  // Dedup: remove any existing entry with the same fingerprint
+  const filteredQueue = queue.filter((entry) => String(entry.fingerprint || '') !== fingerprint);
+  
   filteredQueue.push({
     at: payloadReceivedAt,
     fingerprint,
-    payload: {
-      ...payload,
-      receivedAt: payloadReceivedAt
-    }
+    payload: { ...payload, receivedAt: payloadReceivedAt }
   });
-  await persistPendingPushQueue(filteredQueue);
+
+  // Keep the most recent items up to the new limit
+  await persistPendingPushQueue(filteredQueue.slice(-MAX_PENDING_PUSH_ITEMS));
 }
 
 async function drainPendingPushPayloadQueue() {
