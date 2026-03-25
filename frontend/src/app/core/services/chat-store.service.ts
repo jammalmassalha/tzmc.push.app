@@ -4980,8 +4980,8 @@ export class ChatStoreService {
           pendingSet.delete(messageId);
         });
       }
-    } catch {
-      // Best-effort only; remaining pending IDs stay queued for a later bottom reach.
+    } catch (err) {
+      console.warn('[ChatStore] Failed to flush read receipts for chat:', normalizedChatId, err);
     } finally {
       this.readReceiptFlushInFlightByChat.delete(normalizedChatId);
     }
@@ -7676,6 +7676,7 @@ export class ChatStoreService {
   private handleWindowFocus = (): void => {
     this.refreshPushRegistrationForCurrentUser(false);
     this.clearDeviceAttention({ resetServerBadge: true });
+    this.flushPendingServiceWorkerMessages();
     void this.consumePendingPushPayloadsFromServiceWorker();
   };
 
@@ -7685,6 +7686,7 @@ export class ChatStoreService {
     }
     this.refreshPushRegistrationForCurrentUser(false);
     this.clearDeviceAttention({ resetServerBadge: true });
+    this.flushPendingServiceWorkerMessages();
     void this.consumePendingPushPayloadsFromServiceWorker();
   };
 
@@ -7829,6 +7831,11 @@ export class ChatStoreService {
         void this.consumePendingPushPayloadsFromServiceWorker();
       }, delayMs);
     });
+  }
+
+  public async drainAllPendingPushPayloads(): Promise<void> {
+    this.flushPendingServiceWorkerMessages();
+    await this.consumePendingPushPayloadsFromServiceWorker();
   }
 
   private processServiceWorkerMessageData(

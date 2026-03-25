@@ -6931,6 +6931,12 @@ async function checkOutgoingQueue() {
                     (msg && (msg.messageId || msg.id || msg.queueId || msg.rowId || msg.sheetRow || msg.row || msg.uid || msg.createdAt || msg.timestamp)) ||
                     ''
                 ).trim();
+                if (!sourceUniqueId) {
+                    console.warn('[QUEUE] Message has no unique identifier; deduplication relies on content only.', {
+                        sender: senderName,
+                        recipients: targetUsers
+                    });
+                }
                 const senderKey = normalizeUserKey(senderName);
                 const recipientKey = targetUsers.map((entry) => normalizeUserKey(entry)).filter(Boolean).sort().join(',');
                 const normalizedBodyForDedup = normalizeQueueTextForDedup(bodyText);

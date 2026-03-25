@@ -865,6 +865,9 @@ function createJsonResponse(obj) {
 function doPost(e) {
   try {
     var spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
+    if (!e || !e.postData || !e.postData.contents) {
+      return createJSON({ result: 'error', message: 'Missing request body' });
+    }
     var data = JSON.parse(e.postData.contents);
     var configuredServerToken = getServerGuardToken();
     var providedServerToken = String(data.token || data.serverToken || '').trim();

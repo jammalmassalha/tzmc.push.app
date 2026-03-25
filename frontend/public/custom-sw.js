@@ -61,7 +61,8 @@ function isReplyMutationRequest(request) {
   try {
     const requestUrl = new URL(request.url, self.registration.scope);
     return /\/notify\/reply$/i.test(requestUrl.pathname) || /\/reply$/i.test(requestUrl.pathname);
-  } catch (_) {
+  } catch (err) {
+    console.warn('[SW] Failed to parse request URL for reply mutation detection:', err);
     return false;
   }
 }
@@ -73,7 +74,8 @@ async function readOfflineReplyQueue() {
     if (!response) return [];
     const payload = await response.json();
     return Array.isArray(payload) ? payload : [];
-  } catch (_) {
+  } catch (err) {
+    console.warn('[SW] Failed to read offline reply queue:', err);
     return [];
   }
 }
@@ -96,7 +98,8 @@ async function registerOfflineReplySync() {
   try {
     await self.registration.sync.register(OFFLINE_REPLY_SYNC_TAG);
     return true;
-  } catch (_) {
+  } catch (err) {
+    console.warn('[SW] Failed to register background sync tag:', err);
     return false;
   }
 }
@@ -124,7 +127,8 @@ async function enqueueOfflineReplyRequest(request) {
       }, 3000);
     }
     return true;
-  } catch (_) {
+  } catch (err) {
+    console.warn('[SW] Failed to enqueue offline reply request:', err);
     return false;
   }
 }
@@ -170,7 +174,8 @@ async function readPendingPushQueue() {
     if (!response) return [];
     const payload = await response.json();
     return Array.isArray(payload) ? payload : [];
-  } catch (_) {
+  } catch (err) {
+    console.warn('[SW] Failed to read pending push queue:', err);
     return [];
   }
 }
@@ -299,13 +304,14 @@ function parsePushPayload(event) {
         _hasNotificationEnvelope: Boolean(raw.notification && typeof raw.notification === 'object')
       };
     }
-  } catch (_) {
-    // Fallback to text payload below.
+  } catch (err) {
+    console.warn('[SW] Failed to parse push payload as JSON, falling back to text:', err);
   }
 
   try {
     return { body: event.data.text() };
-  } catch (_) {
+  } catch (err) {
+    console.warn('[SW] Failed to parse push payload as text:', err);
     return {};
   }
 }
@@ -440,7 +446,8 @@ async function postRegistrationPayloadToNotifyBackend(registerPayload) {
       body: JSON.stringify(registerPayload)
     }, { timeoutMs: 12000, retries: 2, backoffMs: 500 });
     return true;
-  } catch (_) {
+  } catch (err) {
+    console.warn('[SW] Failed to post registration payload to notify backend:', err);
     return false;
   }
 }
@@ -457,7 +464,8 @@ async function readSubscriptionContext() {
     const payload = await response.json();
     if (!payload || typeof payload !== 'object') return {};
     return payload;
-  } catch (_) {
+  } catch (err) {
+    console.warn('[SW] Failed to read subscription context from cache:', err);
     return {};
   }
 }
@@ -495,7 +503,8 @@ async function persistSubscriptionContext(partial = {}) {
       })
     );
     return true;
-  } catch (_) {
+  } catch (err) {
+    console.warn('[SW] Failed to persist subscription context:', err);
     return false;
   }
 }
@@ -554,7 +563,8 @@ async function registerSubscriptionFromStoredContext(newSubscription = null, rea
       vapidPublicKey
     });
     return true;
-  } catch (_) {
+  } catch (err) {
+    console.warn('[SW] Failed to register subscription from stored context:', err);
     return false;
   }
 }
@@ -579,8 +589,8 @@ async function refreshSubscriptionAuthInBackground(payload) {
     if (needsResubscribe && subscription) {
       try {
         await subscription.unsubscribe();
-      } catch (_) {
-        // Continue with fresh subscribe attempt.
+      } catch (err) {
+        console.warn('[SW] Failed to unsubscribe existing push subscription:', err);
       }
       subscription = null;
     }
@@ -619,7 +629,8 @@ async function refreshSubscriptionAuthInBackground(payload) {
       postRegistrationPayloadToNotifyBackend(registerPayload)
     ]);
     return true;
-  } catch (_) {
+  } catch (err) {
+    console.warn('[SW] Failed to refresh subscription auth in background:', err);
     return false;
   }
 }
@@ -962,25 +973,36 @@ self.addEventListener('notificationclick', (event) => {
           if (typeof openedClient.focus === 'function') {
             await openedClient.focus();
           }
-        } catch (_) {
-          // Keep click handling resilient across browser implementations.
+        } catch (err) {
+          console.warn('[SW] Failed to post notification-click message to opened client:', err);
         }
       }
 
       // Cold starts can race with app/bootstrap. Retry delivery a few times.
+      // Break early once a same-origin client acknowledges or becomes visible.
       const retryDelaysMs = [450, 1200, 2600];
       for (const delayMs of retryDelaysMs) {
         await sleep(delayMs);
         const retryClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
-        retryClients.forEach((client) => {
+        const sameOriginClients = retryClients.filter((client) => {
           try {
-            const clientUrl = new URL(client.url, self.registration.scope);
-            if (clientUrl.origin !== target.origin) return;
-            client.postMessage(clickMessage);
+            return new URL(client.url, self.registration.scope).origin === target.origin;
           } catch (_) {
-            // Ignore malformed client URLs and continue.
+            return false;
           }
         });
+        if (!sameOriginClients.length) continue;
+        sameOriginClients.forEach((client) => {
+          try {
+            client.postMessage(clickMessage);
+          } catch (err) {
+            console.warn('[SW] Failed to post retry notification-click message to client:', err);
+          }
+        });
+        // Stop retrying if any client is now visible/focused — it has received the message.
+        if (sameOriginClients.some((client) => client?.focused || client?.visibilityState === 'visible')) {
+          break;
+        }
       }
       return openedClient;
     }
