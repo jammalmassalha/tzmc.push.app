@@ -6044,9 +6044,6 @@ export class ChatStoreService {
     if (incomingType === 'read-receipt') {
       return this.applyIncomingReadReceipt(incoming);
     }
-    if (incomingType === 'typing') {
-      return this.applyIncomingTypingSignal(incoming);
-    }
 
     const sender = this.normalizeUser(incoming.sender ?? '');
     if (!sender) return false;

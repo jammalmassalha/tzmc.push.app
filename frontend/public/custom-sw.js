@@ -163,7 +163,11 @@ async function flushOfflineReplyQueue() {
     }
   }
 
-  await persistOfflineReplyQueue(remaining);
+  try {
+    await persistOfflineReplyQueue(remaining);
+  } catch (persistErr) {
+    console.error('[SW] Failed to persist offline reply queue:', persistErr);
+  }
   return { sent, remaining: remaining.length };
 }
 
@@ -854,7 +858,11 @@ self.addEventListener('sync', (event) => {
   if (!event || event.tag !== OFFLINE_REPLY_SYNC_TAG) {
     return;
   }
-  event.waitUntil(flushOfflineReplyQueue());
+  event.waitUntil(
+    flushOfflineReplyQueue().catch((err) => {
+      console.error('[SW] Background sync flushOfflineReplyQueue failed:', err);
+    })
+  );
 });
 
 self.addEventListener('message', (event) => {

@@ -1,6 +1,6 @@
 const vapidKeys = {
-    publicKey: "BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk",
-    privateKey: "fMQqCaakMboV7LEV57wJhxPAdyppOBRDBjRDVQBxg1s"
+    publicKey: process.env.VAPID_PUBLIC_KEY || "BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk",
+    privateKey: process.env.VAPID_PRIVATE_KEY || "fMQqCaakMboV7LEV57wJhxPAdyppOBRDBjRDVQBxg1s"
 };
 const express = require('express');
 const http = require('http');
@@ -2509,7 +2509,8 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
     } else if (originalSender && originalSender !== 'System') {
         targetToNotify = parseUsernamesInput([originalSender]);
     } else {
-        targetToNotify = ['jmassalha'];
+        console.warn('[REPLY] No valid recipients resolved – skipping push notification');
+        targetToNotify = [];
     }
 
     targetToNotify = parseUsernamesInput(targetToNotify)
@@ -6985,10 +6986,13 @@ async function checkOutgoingQueue() {
                 await addToQueue(targetUsers, pollingMessage);
 
                 // 2. Send Push Notification (Handles all devices)
-                await sendPushNotificationToUser(targetUsers, notificationData, senderName, {
+                const pushResult = await sendPushNotificationToUser(targetUsers, notificationData, senderName, {
                     messageId,
                     maxPerUserEndpoints: 1
                 });
+                if (pushResult && pushResult.failed > 0) {
+                    console.warn(`[QUEUE] Push notification partially failed: ${pushResult.failed} failed, ${pushResult.success} succeeded for messageId=${messageId}`);
+                }
                 const processedAt = Date.now();
                 recentProcessedQueueMessages.set(semanticDedupKey, processedAt);
                 if (sourceAwareDedupKey) {

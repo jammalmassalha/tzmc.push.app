@@ -20,7 +20,11 @@ function normalizePhone(value) {
     let text = toTrimmedString(value);
     if (!text)
         return '';
-    if (/^\d+$/.test(text) && text.charAt(0) !== '0') {
+    // Strip non-digit characters (dashes, spaces, parentheses, etc.) for consistent matching
+    text = text.replace(/\D/g, '');
+    if (!text)
+        return '';
+    if (text.charAt(0) !== '0') {
         text = `0${text}`;
     }
     return text;
