@@ -69,8 +69,8 @@ const SHUTTLE_LANGUAGE_KEY_PREFIX = 'shuttle_language_';
 const SHUTTLE_LIST_CACHE_TTL_MS = 5 * 60 * 1000;
 const SHUTTLE_REMOTE_ORDERS_SYNC_TTL_MS = 45 * 1000;
 const SHUTTLE_DATE_CHOICES_COUNT = 10;
-const SHUTTLE_REMINDER_LEAD_MS = 2 * 60 * 60 * 1000;
-const SHUTTLE_REMINDER_HISTORY_KEY_PREFIX = 'shuttle_reminder_2h_sent_';
+const SHUTTLE_REMINDER_LEAD_MS = 15 * 60 * 1000;
+const SHUTTLE_REMINDER_HISTORY_KEY_PREFIX = 'shuttle_reminder_15m_sent_';
 const SHUTTLE_REMINDER_HISTORY_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const SHUTTLE_STATUS_ACTIVE_VALUE = 'פעיל активный';
 const SHUTTLE_STATUS_CANCEL_VALUE = 'ביטול נסיעה отмена поезд';
@@ -4374,8 +4374,8 @@ export class ChatStoreService {
       statusValue: SHUTTLE_STATUS_ACTIVE_VALUE,
       statusLabel: this.resolveShuttleStatusLabel(SHUTTLE_STATUS_ACTIVE_VALUE)
     });
-    this.sendShuttleSystemMessage(`${this.shuttleText('⏰ תזכורת: נותרו כשעתיים להסעה שלך.', '⏰ Напоминание: до вашего трансфера осталось около двух часов.')}\n${activeSummary}`, {
-      recordType: 'shuttle-reminder-2h'
+    this.sendShuttleSystemMessage(`${this.shuttleText('⏰ תזכורת: נותרו כ-15 דקות להסעה שלך.', '⏰ Напоминание: до вашего трансфера осталось около 15 минут.')}\n${activeSummary}`, {
+      recordType: 'shuttle-reminder-15m'
     });
     this.showShuttleReminderBrowserNotification(order, reminderKey);
   }
@@ -4395,10 +4395,10 @@ export class ChatStoreService {
 
     try {
       const notification = new Notification(
-        this.shuttleText('תזכורת להסעה בעוד שעתיים', 'Напоминание о трансфере через 2 часа'),
+        this.shuttleText('תזכורת להסעה בעוד 15 דקות', 'Напоминание о трансфере через 15 минут'),
         {
           body: detailLine || this.shuttleText('בדוק את פרטי ההזמנה בצ׳אט.', 'Проверьте детали заказа в чате.'),
-          tag: `shuttle-reminder-2h:${reminderKey}`
+          tag: `shuttle-reminder-15m:${reminderKey}`
         });
       notification.onclick = () => {
         try {
