@@ -1726,8 +1726,9 @@ export class ChatStoreService {
         ? Math.min(200000, Math.max(1, Math.floor(requestedLimit)))
         : 1000; // Default limit
 
-      // GET THE TIMESTAMP OPTIMIZATION
-      const lastKnownTs = this.getLatestMessageTimestamp();
+      // When forcing a full sync, fetch ALL messages (since=0).
+      // Otherwise use the timestamp optimization to only fetch messages newer than what we already have.
+      const lastKnownTs = force ? 0 : this.getLatestMessageTimestamp();
 
       const logsMessages: IncomingServerMessage[] = [];
       let offset = 0;
