@@ -11,7 +11,8 @@ function registerMessageController(app, deps = {}) {
         getMessageQueue,
         scheduleStateSave,
         sseClients,
-        updateUserReceivedTime
+        updateUserReceivedTime,
+        updateUserReceivedTimeBatch
     } = deps;
     const RECENT_POLLING_MESSAGE_DEDUP_TTL_MS = 10 * 60 * 1000;
     const LOGS_MESSAGE_SEMANTIC_DEDUP_WINDOW_MS = 2 * 60 * 1000;
@@ -594,6 +595,45 @@ function registerMessageController(app, deps = {}) {
             } catch (error) {
                 console.error('[RECEIVED TIME] Failed to update:', error.message);
                 return res.status(502).json({ error: 'Failed to update received time' });
+            }
+        }
+    );
+
+    app.post(
+        ['/messages/received-batch', '/notify/messages/received-batch'],
+        requireAuthorizedUser({
+            required: true,
+            candidateKeys: ['user'],
+            onError: (_req, res, resolution) =>
+                res.status(resolution.status).json({ error: resolution.error })
+        }),
+        async (req, res) => {
+            const entries = Array.isArray(req.body && req.body.entries) ? req.body.entries : [];
+            if (!entries.length) {
+                return res.status(400).json({ error: 'Missing or empty entries array' });
+            }
+            const MAX_BATCH_SIZE = 200;
+            const validEntries = entries
+                .slice(0, MAX_BATCH_SIZE)
+                .map((e) => {
+                    const msgId = String((e && e.msgId) || '').trim();
+                    const receivedAtRaw = Number(e && e.receivedAt);
+                    if (!msgId || !Number.isFinite(receivedAtRaw) || receivedAtRaw <= 0) return null;
+                    return { msgId, receivedAt: new Date(receivedAtRaw) };
+                })
+                .filter(Boolean);
+            if (!validEntries.length) {
+                return res.status(400).json({ error: 'No valid entries' });
+            }
+            if (typeof updateUserReceivedTimeBatch !== 'function') {
+                return res.status(500).json({ error: 'Server configuration error' });
+            }
+            try {
+                const updated = await updateUserReceivedTimeBatch(validEntries);
+                return res.json({ result: 'success', updated });
+            } catch (error) {
+                console.error('[RECEIVED TIME BATCH] Failed to update:', error.message);
+                return res.status(502).json({ error: 'Failed to update received times' });
             }
         }
     );

@@ -6570,7 +6570,8 @@ registerMessageController(app, {
     getMessageQueue: () => messageQueue,
     scheduleStateSave,
     sseClients,
-    updateUserReceivedTime: (msgId, receivedAt) => mysqlLogsService.updateUserReceivedTime(msgId, receivedAt)
+    updateUserReceivedTime: (msgId, receivedAt) => mysqlLogsService.updateUserReceivedTime(msgId, receivedAt),
+    updateUserReceivedTimeBatch: (entries) => mysqlLogsService.updateUserReceivedTimeBatch(entries)
 });
 
 app.post(['/upload', '/notify/upload'], uploadFieldsValidated, async (req, res) => {

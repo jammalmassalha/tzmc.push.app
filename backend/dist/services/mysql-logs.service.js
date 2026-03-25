@@ -343,7 +343,8 @@ class MysqlLogsService {
           \`Message Preview\` AS messagePreview, 
           \`SuccessOrFailed\` AS successOrFailed, 
           \`ErrorMessageOrSuccessCount\` AS errorMessageOrSuccessCount, 
-          \`RecipientAuthJSON\` AS recipientAuthJson 
+          \`RecipientAuthJSON\` AS recipientAuthJson,
+          \`UserReceivedTime\` AS userReceivedTime 
         FROM \`${this.tableName}\` 
         WHERE 1=1`;
             const params = [];
@@ -439,7 +440,8 @@ class MysqlLogsService {
                     messageIds: toTrimmedString(detailsMap.messageIds || detailsMap.message_ids) || undefined,
                     targetMessageId: toTrimmedString(detailsMap.targetMessageId || detailsMap.target_message_id || detailsMap.messageId || detailsMap.message_id) || undefined,
                     emoji: toTrimmedString(detailsMap.emoji || detailsMap.reaction) || undefined,
-                    reactor: toTrimmedString(detailsMap.reactor || detailsMap.user) || undefined
+                    reactor: toTrimmedString(detailsMap.reactor || detailsMap.user) || undefined,
+                    userReceivedTime: parseFlexibleTimestamp(row.userReceivedTime) || undefined
                 });
                 matchedCount = nextMatchedCount;
             }
@@ -451,6 +453,42 @@ class MysqlLogsService {
         }
         messages.reverse();
         return messages;
+    }
+    async updateUserReceivedTime(msgId, receivedAt) {
+        const safeMsgId = toTrimmedString(msgId);
+        if (!safeMsgId)
+            return false;
+        const sql = `UPDATE \`${this.tableName}\` SET \`UserReceivedTime\` = ? WHERE \`MsgID\` = ? AND (\`UserReceivedTime\` IS NULL OR \`UserReceivedTime\` = \`DateTime\`)`;
+        const [result] = await this.pool.execute(sql, [receivedAt, safeMsgId]);
+        return Boolean(result && result.affectedRows > 0);
+    }
+    async updateUserReceivedTimeBatch(entries) {
+        if (!Array.isArray(entries) || entries.length === 0)
+            return 0;
+        const validEntries = entries
+            .map((e) => ({ msgId: toTrimmedString(e.msgId), receivedAt: e.receivedAt }))
+            .filter((e) => e.msgId);
+        if (!validEntries.length)
+            return 0;
+        let totalAffected = 0;
+        const chunkSize = 100;
+        for (let i = 0; i < validEntries.length; i += chunkSize) {
+            const chunk = validEntries.slice(i, i + chunkSize);
+            const cases = [];
+            const whenParams = [];
+            const inParams = [];
+            for (const entry of chunk) {
+                cases.push('WHEN ? THEN ?');
+                whenParams.push(entry.msgId, entry.receivedAt);
+                inParams.push(entry.msgId);
+            }
+            const placeholders = chunk.map(() => '?').join(', ');
+            const sql = `UPDATE \`${this.tableName}\` SET \`UserReceivedTime\` = CASE \`MsgID\` ${cases.join(' ')} END WHERE \`MsgID\` IN (${placeholders}) AND (\`UserReceivedTime\` IS NULL OR \`UserReceivedTime\` = \`DateTime\`)`;
+            const params = [...whenParams, ...inParams];
+            const [result] = await this.pool.execute(sql, params);
+            totalAffected += result.affectedRows || 0;
+        }
+        return totalAffected;
     }
 }
 exports.MysqlLogsService = MysqlLogsService;

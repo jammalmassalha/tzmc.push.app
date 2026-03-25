@@ -5701,6 +5701,7 @@ export class ChatStoreService {
     let messagesChanged = false;
     let unreadChanged = false;
     let appliedCount = 0;
+    const newlyReceivedMsgIds: string[] = [];
 
     const getMessageIdSet = (chatId: string): Set<string> => {
       const existing = knownMessageIdsByChat.get(chatId);
@@ -5867,6 +5868,10 @@ export class ChatStoreService {
       messagesChanged = true;
       appliedCount += 1;
 
+      if (!isOutgoingFromCurrentUser && !record.userReceivedTime) {
+        newlyReceivedMsgIds.push(messageId);
+      }
+
       if (
         options.trackReadReceipts !== false &&
         !isGroup &&
@@ -5896,6 +5901,12 @@ export class ChatStoreService {
       this.schedulePersist();
     }
 
+    if (newlyReceivedMsgIds.length) {
+      const receivedAt = Date.now();
+      const entries = newlyReceivedMsgIds.map((msgId) => ({ msgId, receivedAt }));
+      void this.api.reportMessagesReceivedBatch(entries).catch(() => {});
+    }
+
     return appliedCount;
   }
 
@@ -5907,6 +5918,11 @@ export class ChatStoreService {
         : rawData;
       if (this.applyIncomingMessage(message)) {
         this.incrementDeliveryTelemetry('sseMessageApplied');
+        const msgId = String(message.messageId ?? '').trim();
+        const incomingType = String(message.type ?? '').trim().toLowerCase();
+        if (msgId && !this.isIncomingActionType(incomingType)) {
+          void this.api.reportMessageReceived(msgId, Date.now()).catch(() => {});
+        }
       } else {
         this.incrementDeliveryTelemetry('sseMessageNoop');
       }

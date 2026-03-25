@@ -645,6 +645,28 @@ export class ChatApiService {
     }
   }
 
+  async reportMessagesReceivedBatch(entries: Array<{ msgId: string; receivedAt: number }>): Promise<void> {
+    const validEntries = (entries || [])
+      .map((e) => ({
+        msgId: String(e.msgId || '').trim(),
+        receivedAt: e.receivedAt
+      }))
+      .filter((e) => e.msgId && Number.isFinite(e.receivedAt) && e.receivedAt > 0);
+    if (!validEntries.length) return;
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/messages/received-batch`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entries: validEntries })
+      },
+      { retries: 1, timeoutMs: 15000, backoffMs: 500 }
+    );
+    if (!response.ok) {
+      throw new Error(`reportMessagesReceivedBatch failed with ${response.status}`);
+    }
+  }
+
   createMessagesResource(user: Signal<string | null | undefined>): ResourceRef<IncomingServerMessage[]> {
     return resource({
       params: () => String(user() || '').trim().toLowerCase(),

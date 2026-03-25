@@ -568,9 +568,37 @@ export class MysqlLogsService {
   async updateUserReceivedTime(msgId: string, receivedAt: Date): Promise<boolean> {
     const safeMsgId = toTrimmedString(msgId);
     if (!safeMsgId) return false;
-    const sql = `UPDATE \`${this.tableName}\` SET \`UserReceivedTime\` = ? WHERE \`MsgID\` = ?`;
+    const sql = `UPDATE \`${this.tableName}\` SET \`UserReceivedTime\` = ? WHERE \`MsgID\` = ? AND (\`UserReceivedTime\` IS NULL OR \`UserReceivedTime\` = \`DateTime\`)`;
     const [result] = await this.pool.execute(sql, [receivedAt, safeMsgId]);
     return Boolean(result && (result as any).affectedRows > 0);
+  }
+
+  async updateUserReceivedTimeBatch(entries: Array<{ msgId: string; receivedAt: Date }>): Promise<number> {
+    if (!Array.isArray(entries) || entries.length === 0) return 0;
+    const validEntries = entries
+      .map((e) => ({ msgId: toTrimmedString(e.msgId), receivedAt: e.receivedAt }))
+      .filter((e) => e.msgId);
+    if (!validEntries.length) return 0;
+
+    let totalAffected = 0;
+    const chunkSize = 100;
+    for (let i = 0; i < validEntries.length; i += chunkSize) {
+      const chunk = validEntries.slice(i, i + chunkSize);
+      const cases: string[] = [];
+      const whenParams: Array<string | Date> = [];
+      const inParams: string[] = [];
+      for (const entry of chunk) {
+        cases.push('WHEN ? THEN ?');
+        whenParams.push(entry.msgId, entry.receivedAt);
+        inParams.push(entry.msgId);
+      }
+      const placeholders = chunk.map(() => '?').join(', ');
+      const sql = `UPDATE \`${this.tableName}\` SET \`UserReceivedTime\` = CASE \`MsgID\` ${cases.join(' ')} END WHERE \`MsgID\` IN (${placeholders}) AND (\`UserReceivedTime\` IS NULL OR \`UserReceivedTime\` = \`DateTime\`)`;
+      const params = [...whenParams, ...inParams];
+      const [result] = await this.pool.execute(sql, params);
+      totalAffected += (result as any).affectedRows || 0;
+    }
+    return totalAffected;
   }
 
 }
