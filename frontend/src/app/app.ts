@@ -267,10 +267,18 @@ export class App implements OnDestroy {
     };
 
     postContext();
-    window.addEventListener('focus', postContext, { passive: true });
+    window.addEventListener('focus', () => {
+      postContext();
+      if (this.store.isAuthenticated()) {
+        void this.store.drainAllPendingPushPayloads();
+      }
+    }, { passive: true });
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
         postContext();
+        if (this.store.isAuthenticated()) {
+          void this.store.drainAllPendingPushPayloads();
+        }
       }
     });
   }
