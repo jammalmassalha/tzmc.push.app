@@ -1853,6 +1853,21 @@ export class ChatStoreService {
         const groupId = this.normalizeChatId(String(message.groupId ?? '').trim());
         if (!groupId) continue;
 
+        // Skip restricted hardcoded community groups the current user is not a member of.
+        const hardcodedConfig = HARDCODED_COMMUNITY_GROUPS.find(
+          (g) => this.normalizeChatId(g.id) === groupId
+        );
+        if (
+          hardcodedConfig &&
+          Array.isArray(hardcodedConfig.staticMembers) &&
+          hardcodedConfig.staticMembers.length > 0 &&
+          !hardcodedConfig.staticMembers
+            .map((m) => this.normalizeUser(m))
+            .includes(currentUser)
+        ) {
+          continue;
+        }
+
         const incomingGroupName = String(message.groupName ?? '').trim();
         const fallbackGroup = fallbackById.get(groupId) ?? null;
         const resolvedGroupName = (
@@ -6546,6 +6561,24 @@ export class ChatStoreService {
     if (!user) return;
 
     const normalizedId = this.normalizeChatId(incoming.groupId);
+
+    // Respect staticMembers restrictions: if this is a hardcoded community group
+    // with a static member list, only allow the group for listed members.
+    const hardcodedConfig = HARDCODED_COMMUNITY_GROUPS.find(
+      (g) => this.normalizeChatId(g.id) === normalizedId
+    );
+    if (
+      hardcodedConfig &&
+      Array.isArray(hardcodedConfig.staticMembers) &&
+      hardcodedConfig.staticMembers.length > 0
+    ) {
+      const normalizedUser = this.normalizeUser(user);
+      const isMember = hardcodedConfig.staticMembers
+        .map((m) => this.normalizeUser(m))
+        .includes(normalizedUser);
+      if (!isMember) return;
+    }
+
     const normalizedType: GroupType = incoming.groupType === 'community' ? 'community' : 'group';
     const updatedAt = Number(incoming.groupUpdatedAt ?? Date.now());
     const normalizedAdmins = Array.isArray(incoming.groupAdmins)

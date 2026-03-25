@@ -6565,6 +6565,15 @@ registerMessageController(app, {
     buildGoogleSheetGetUrl,
     getLogsMessagesForUser: (user, options = {}) => mysqlLogsService.getLogsMessagesForUser(user, options),
     hardcodedGroupIds: [DOVRUT_GROUP_ID, DOVRUT_TEST_GROUP_ID],
+    hardcodedGroupMembers: (() => {
+        const membersMap = {};
+        hardcodedCommunityGroupsByKey.forEach((policy, key) => {
+            if (Array.isArray(policy.members) && policy.members.length) {
+                membersMap[key] = policy.members;
+            }
+        });
+        return membersMap;
+    })(),
     getGroups: () => groups,
     getActiveRedisStateStore: () => activeRedisStateStore,
     getMessageQueue: () => messageQueue,

@@ -26,6 +26,7 @@ export interface MysqlLogsReadOptions {
   excludeSystem?: boolean;
   offset?: number;
   hardcodedGroupIds?: string[];
+  hardcodedGroupMembers?: Record<string, string[]>;
   since?: number;
 }
 
@@ -403,6 +404,20 @@ export class MysqlLogsService {
         : []
     );
 
+    // Build a map of restricted hardcoded groups to their normalized member lists.
+    // Groups without explicit members are considered open to all users.
+    const hardcodedGroupMembersMap = new Map<string, Set<string>>();
+    if (options.hardcodedGroupMembers && typeof options.hardcodedGroupMembers === 'object') {
+      for (const [groupId, members] of Object.entries(options.hardcodedGroupMembers)) {
+        const key = normalizeGroupKey(groupId);
+        if (!key || !Array.isArray(members) || !members.length) continue;
+        hardcodedGroupMembersMap.set(
+          key,
+          new Set(members.map((m) => normalizePhone(m) || toTrimmedString(m).toLowerCase()).filter(Boolean))
+        );
+      }
+    }
+
     const requiredMatches = offset + limit;
     const maxRawRowsToScan = Math.max(50000, Math.min(requiredMatches * 220, 5000000));
     let rawOffset = 0;
@@ -477,8 +492,24 @@ export class MysqlLogsService {
         );
 
         // Security/Filtering Check
-        if (!recipients.has(requestedUser) && !isGroupTargetRow && !isHardcodedGlobalGroupSender && !isOutgoingFromRequestedUser) {
-          continue;
+        if (!recipients.has(requestedUser) && !isOutgoingFromRequestedUser) {
+          if (isHardcodedGlobalGroupSender) {
+            // Check membership for restricted hardcoded groups.
+            const senderGroupKey = normalizeGroupKey(senderRaw);
+            const restrictedMembers = hardcodedGroupMembersMap.get(senderGroupKey);
+            if (restrictedMembers && !restrictedMembers.has(requestedUser)) {
+              continue;
+            }
+          } else if (isGroupTargetRow) {
+            // If the target is a restricted hardcoded group, verify membership.
+            const toGroupKey = normalizeGroupKey(rawToUser);
+            const restrictedMembers = hardcodedGroupMembersMap.get(toGroupKey);
+            if (restrictedMembers && !restrictedMembers.has(requestedUser)) {
+              continue;
+            }
+          } else {
+            continue;
+          }
         }
 
         if (!sender) continue;

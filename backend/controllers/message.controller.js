@@ -6,6 +6,7 @@ function registerMessageController(app, deps = {}) {
         buildGoogleSheetGetUrl,
         getLogsMessagesForUser,
         hardcodedGroupIds,
+        hardcodedGroupMembers,
         getGroups,
         getActiveRedisStateStore,
         getMessageQueue,
@@ -447,7 +448,8 @@ function registerMessageController(app, deps = {}) {
                         offset,
                         since, // Optimization passed here
                         excludeSystem: true,
-                        hardcodedGroupIds: Array.from(hardcodedGroupKeySet)
+                        hardcodedGroupIds: Array.from(hardcodedGroupKeySet),
+                        hardcodedGroupMembers: hardcodedGroupMembers || {}
                     })
                     : [];
 
