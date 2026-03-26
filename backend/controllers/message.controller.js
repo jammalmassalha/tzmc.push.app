@@ -476,9 +476,10 @@ function registerMessageController(app, deps = {}) {
                     const imageUrl = String(message.imageUrl ?? message.image ?? '').trim() || undefined;
 
                     // Strip placeholder body text when the actual image URL is present.
+                    const rawBodyLower = rawBody.toLowerCase();
                     const imagePlaceholders = new Set(['sent an image', '[image sent]', 'image attachment']);
-                    const isPlaceholderBody = imagePlaceholders.has(rawBody.toLowerCase()) ||
-                        rawBody.toLowerCase().startsWith('[image sent]:');
+                    const isPlaceholderBody = imagePlaceholders.has(rawBodyLower) ||
+                        rawBodyLower.startsWith('[image sent]:');
                     const body = (isPlaceholderBody && imageUrl) ? '' : rawBody;
 
                     if (!isActionMessage && !body && !imageUrl) return null;
