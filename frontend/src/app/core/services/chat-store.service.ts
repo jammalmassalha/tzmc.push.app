@@ -592,10 +592,12 @@ export class ChatStoreService {
 
     /**
      * SYNC STEP 2: Aggressive Logs Recovery (The Fix)
-     * This fills any gaps that the Service Worker missed (e.g., if the phone was offline 
+     * This fills any gaps that the Service Worker missed (e.g., if the phone was offline
      * or the OS killed the SW). We use 'force: true' to bypass the standard recovery cooldown.
+     * IMPORTANT: We await this so messages are loaded and placed in the correct chats
+     * before the UI renders — this is the first thing the user should see on app open.
      */
-    void this.recoverMissedMessagesFromLogs(user, {
+    await this.recoverMissedMessagesFromLogs(user, {
       force: true,           // Ensures we sync every time the app starts
       incrementUnread: true, // Marks missed messages as unread so they appear in badges
       limit: 1000            // Window large enough to cover several hours of activity
