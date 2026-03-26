@@ -14,6 +14,28 @@ const VALID_DEPARTMENTS = ['מערכות מידע', 'אחזקה'];
 const VALID_STATUSES = ['open', 'in_progress', 'resolved', 'closed'];
 const ONGOING_STATUSES = new Set(['open', 'in_progress']);
 
+// Simple rate limiting store (per-user, in-memory)
+const helpdeskRateLimitStore = new Map();
+
+function consumeHelpdeskRateLimit(user, maxAttempts, windowMs) {
+    const now = Date.now();
+    const key = toTrimmedString(user).toLowerCase();
+    if (!key) return { allowed: true };
+
+    const existing = Array.isArray(helpdeskRateLimitStore.get(key)) ? helpdeskRateLimitStore.get(key) : [];
+    const threshold = now - windowMs;
+    const recent = existing.filter((ts) => Number.isFinite(ts) && ts > threshold);
+
+    if (recent.length >= maxAttempts) {
+        helpdeskRateLimitStore.set(key, recent);
+        return { allowed: false };
+    }
+
+    recent.push(now);
+    helpdeskRateLimitStore.set(key, recent);
+    return { allowed: true };
+}
+
 function createHelpdeskPool(env = {}) {
     return mysql.createPool({
         host: toTrimmedString(env.LOGS_DB_HOST || env.MYSQL_HOST || env.DB_HOST || '127.0.0.1'),
@@ -96,8 +118,19 @@ function registerHelpdeskController(app, deps = {}) {
         })
         : (_req, _res, next) => next();
 
+    // Per-user rate limiting middleware factory
+    function helpdeskRateLimit(maxAttempts, windowMs) {
+        return function (req, res, next) {
+            const user = toTrimmedString(req.resolvedUser || req.body && req.body.user || '');
+            if (!consumeHelpdeskRateLimit(user, maxAttempts, windowMs).allowed) {
+                return res.status(429).json({ result: 'error', message: 'יותר מדי בקשות. נסה שוב בעוד דקה.' });
+            }
+            return next();
+        };
+    }
+
     // POST /helpdesk/tickets - Create a new ticket
-    app.post(['/helpdesk/tickets', '/notify/helpdesk/tickets'], requireUser, async (req, res) => {
+    app.post(['/helpdesk/tickets', '/notify/helpdesk/tickets'], requireUser, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
@@ -137,7 +170,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // GET /helpdesk/tickets/user - Get current user's tickets (dashboard)
-    app.get(['/helpdesk/tickets/user', '/notify/helpdesk/tickets/user'], requireUser, async (req, res) => {
+    app.get(['/helpdesk/tickets/user', '/notify/helpdesk/tickets/user'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
@@ -159,10 +192,13 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // POST /helpdesk/tickets/:id/notes - Add a note to a ticket
-    app.post(['/helpdesk/tickets/:id/notes', '/notify/helpdesk/tickets/:id/notes'], requireUser, async (req, res) => {
+    app.post(['/helpdesk/tickets/:id/notes', '/notify/helpdesk/tickets/:id/notes'], requireUser, helpdeskRateLimit(20, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
+        }
+        if (!consumeHelpdeskRateLimit(user, 20, 60 * 1000).allowed) {
+            return res.status(429).json({ result: 'error', message: 'יותר מדי בקשות. נסה שוב בעוד דקה.' });
         }
         const ticketId = toPositiveInteger(req.params && req.params.id, 0);
         if (!ticketId) {
@@ -202,7 +238,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // PUT /helpdesk/tickets/:id/status - Change ticket status
-    app.put(['/helpdesk/tickets/:id/status', '/notify/helpdesk/tickets/:id/status'], requireUser, async (req, res) => {
+    app.put(['/helpdesk/tickets/:id/status', '/notify/helpdesk/tickets/:id/status'], requireUser, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
