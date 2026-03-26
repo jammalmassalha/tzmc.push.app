@@ -149,6 +149,7 @@
       class="conversation-pane min-w-0"
       [class.hidden-mobile]="isMobile() && showContactsPane()"
       [class.shuttle-room-active]="isShuttleRoomActive()"
+      [class.helpdesk-room-active]="isHelpdeskRoomActive()"
       (touchstart)="onConversationTouchStart($event)"
       (touchmove)="onConversationTouchMove($event)"
       (touchend)="onConversationTouchEnd($event)"
@@ -255,7 +256,7 @@
         <div
           #messagesPanel
           class="messages-panel"
-          [class.shuttle-no-scroll]="isShuttleRoomActive()"
+          [class.shuttle-no-scroll]="isShuttleRoomActive() || isHelpdeskRoomActive()"
           (scroll)="onMessagesPanelScroll()">
           @if (stickyMessageDateLabel(); as stickyDateLabel) {
             <div class="messages-sticky-date">
@@ -491,6 +492,101 @@
             </section>
           }
 
+          @if (helpdeskDashboard(); as helpdeskDb) {
+            <section class="shuttle-orders-dashboard helpdesk-dashboard">
+              <div class="shuttle-orders-toolbar">
+                <div class="shuttle-orders-title">🎫 מוקד איחוד - הקריאות שלי</div>
+                <div class="shuttle-orders-toolbar-actions">
+                  <button
+                    type="button"
+                    class="shuttle-orders-refresh-btn"
+                    [disabled]="isLoadingHelpdeskTickets()"
+                    (click)="refreshHelpdeskTickets()">
+                    @if (isLoadingHelpdeskTickets()) {
+                      <mat-spinner diameter="14"></mat-spinner>
+                    } @else {
+                      <mat-icon>refresh</mat-icon>
+                    }
+                    <span>רענן</span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="shuttle-orders-tabs" role="tablist" aria-label="קריאות">
+                <button
+                  type="button"
+                  role="tab"
+                  class="shuttle-orders-tab-btn ongoing"
+                  [class.active]="helpdeskDashboardTab() === 'ongoing'"
+                  [attr.aria-selected]="helpdeskDashboardTab() === 'ongoing'"
+                  (click)="setHelpdeskDashboardTab('ongoing')">
+                  פתוחות ({{ helpdeskDb.ongoing.length }})
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  class="shuttle-orders-tab-btn past"
+                  [class.active]="helpdeskDashboardTab() === 'past'"
+                  [attr.aria-selected]="helpdeskDashboardTab() === 'past'"
+                  (click)="setHelpdeskDashboardTab('past')">
+                  טופלו ({{ helpdeskDb.past.length }})
+                </button>
+              </div>
+
+              <div class="shuttle-orders-tab-panel" role="tabpanel">
+                @if (helpdeskDashboardTab() === 'ongoing') {
+                  @if (!helpdeskDb.ongoing.length) {
+                    <div class="shuttle-orders-empty">אין קריאות פתוחות כרגע.</div>
+                  } @else {
+                    <div class="shuttle-orders-cards">
+                      @for (ticket of helpdeskDb.ongoing; track ticket.id) {
+                        <article class="shuttle-order-card ongoing helpdesk-ticket-card">
+                          <div class="shuttle-order-card-top">
+                            <span class="shuttle-order-status ongoing">#{{ ticket.id }} · {{ helpdeskStatusDisplayLabel(ticket.status) }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">כותרת</span>
+                            <span class="value">{{ ticket.title }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">מחלקה</span>
+                            <span class="value">{{ ticket.department }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">תאריך</span>
+                            <span class="value">{{ formatTime(parseHelpdeskTimestamp(ticket.createdAt)) }}</span>
+                          </div>
+                        </article>
+                      }
+                    </div>
+                  }
+                } @else {
+                  @if (!helpdeskDb.past.length) {
+                    <div class="shuttle-orders-empty">אין קריאות שטופלו.</div>
+                  } @else {
+                    <div class="shuttle-orders-cards">
+                      @for (ticket of helpdeskDb.past; track ticket.id) {
+                        <article class="shuttle-order-card past helpdesk-ticket-card">
+                          <div class="shuttle-order-card-top">
+                            <span class="shuttle-order-status past">#{{ ticket.id }} · {{ helpdeskStatusDisplayLabel(ticket.status) }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">כותרת</span>
+                            <span class="value">{{ ticket.title }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">מחלקה</span>
+                            <span class="value">{{ ticket.department }}</span>
+                          </div>
+                        </article>
+                      }
+                    </div>
+                  }
+                }
+              </div>
+            </section>
+          }
+
           @for (message of visibleMessages(); track trackByMessageUpdate(index, message); let index = $index) {
             @if (shouldShowMessageDateBadge(messageAbsoluteIndex(index), message.timestamp)) {
               <div class="message-date-badge">
@@ -565,6 +661,30 @@
                       <span class="label">{{ shuttleText('stationLabel') }}</span>
                       <span class="value">{{ shuttleCard.station }}</span>
                     </div>
+                  </div>
+                } @else if (helpdeskTicketMessageCard(message); as helpdeskCard) {
+                  <div class="helpdesk-message-card" [class.error]="helpdeskCard.isError">
+                    <div class="helpdesk-message-card-title">{{ helpdeskCard.title }}</div>
+                    @if (!helpdeskCard.isError) {
+                      @if (helpdeskCard.id) {
+                        <div class="helpdesk-message-card-row">
+                          <span class="label">מזהה קריאה</span>
+                          <span class="value">#{{ helpdeskCard.id }}</span>
+                        </div>
+                      }
+                      @if (helpdeskCard.department) {
+                        <div class="helpdesk-message-card-row">
+                          <span class="label">מחלקה</span>
+                          <span class="value">{{ helpdeskCard.department }}</span>
+                        </div>
+                      }
+                      @if (helpdeskCard.statusLabel) {
+                        <div class="helpdesk-message-card-row">
+                          <span class="label">סטטוס</span>
+                          <span class="value">{{ helpdeskCard.statusLabel }}</span>
+                        </div>
+                      }
+                    }
                   </div>
                 } @else if (message.body) {
                   @if (hrInlineChoicePayload(message); as hrChoice) {
@@ -857,6 +977,52 @@
                 (click)="goBackFromShuttlePicker()">
                 <mat-icon>arrow_back</mat-icon>
                 <span>{{ shuttleText('backToMenu') }}</span>
+              </button>
+            }
+          </section>
+        }
+
+        @if (helpdeskQuickPicker(); as helpdeskPicker) {
+          <section class="shuttle-picker-panel helpdesk-picker-panel">
+            <div class="shuttle-picker-header">
+              <div class="shuttle-picker-title">{{ helpdeskPicker.title }}</div>
+              @if (helpdeskPicker.helperText) {
+                <div class="shuttle-picker-helper">{{ helpdeskPicker.helperText }}</div>
+              }
+            </div>
+
+            <div class="shuttle-picker-buttons">
+              @for (option of helpdeskPicker.options; track option.value + '-' + $index) {
+                <button
+                  mat-stroked-button
+                  type="button"
+                  class="shuttle-picker-option-btn"
+                  [disabled]="isSubmittingHelpdeskTicket()"
+                  (click)="chooseHelpdeskPickerOption(option.value)">
+                  {{ option.label }}
+                </button>
+              }
+            </div>
+
+            @if (isSubmittingHelpdeskTicket()) {
+              <div class="shuttle-picker-processing-overlay" role="status" aria-live="polite" aria-busy="true">
+                <div class="shuttle-picker-processing-card">
+                  <mat-spinner diameter="38"></mat-spinner>
+                  <div class="shuttle-picker-processing-title">שולח קריאה...</div>
+                  <div class="shuttle-picker-processing-subtitle">אנא המתן</div>
+                </div>
+              </div>
+            }
+
+            @if (helpdeskPicker.allowBack) {
+              <button
+                mat-button
+                type="button"
+                class="shuttle-picker-back-btn"
+                [disabled]="isSubmittingHelpdeskTicket()"
+                (click)="goBackHelpdeskPicker()">
+                <mat-icon>arrow_back</mat-icon>
+                <span>חזרה</span>
               </button>
             }
           </section>

@@ -17,6 +17,7 @@ const { createAuthorizedUserMiddleware } = require('./backend/middleware/authori
 const { registerAuthController } = require('./backend/controllers/auth.controller');
 const { registerMessageController } = require('./backend/controllers/message.controller');
 const { registerShuttleController } = require('./backend/controllers/shuttle.controller');
+const { registerHelpdeskController } = require('./backend/controllers/helpdesk.controller');
 const {
     createSheetIntegrationServiceFromEnv,
     createMysqlLogsServiceFromEnv,
@@ -6559,6 +6560,11 @@ registerShuttleController(app, {
     parseBooleanInput,
     generateMessageId,
     runShuttleReminderJob
+});
+
+registerHelpdeskController(app, {
+    requireAuthorizedUser,
+    env: process.env
 });
 
 registerMessageController(app, {

@@ -10,6 +10,9 @@ import {
   EditMessagePayload,
   GroupUpdatePayload,
   GroupType,
+  HelpdeskDashboard,
+  HelpdeskTicket,
+  HelpdeskTicketPayload,
   IncomingServerMessage,
   MessageReference,
   MessageReaction,
@@ -55,8 +58,11 @@ const DELIVERY_TELEMETRY_FLUSH_MIN_EVENTS = 4;
 const DELIVERY_TELEMETRY_DEVICE_ID_KEY = 'modern-chat-delivery-device-id';
 const HR_CHAT_NAME = 'ציפי';
 const SHUTTLE_CHAT_NAME = 'הזמנת הסעה';
-const SHUTTLE_CHAT_TITLE = 'הזמנת הסעה / Заказ шаттла';
+const SHUTTLE_CHAT_TITLE = 'הזמנת הסעה / Заказ שаттла';
 const SHUTTLE_OPERATIONS_CHAT_NAME = 'הסעות';
+const HELPDESK_CHAT_NAME = 'מוקד איחוד - קריאות';
+const HELPDESK_STATE_KEY_PREFIX = 'helpdesk_state_';
+const HELPDESK_TICKETS_CACHE_TTL_MS = 60 * 1000;
 const HR_WELCOME_KEY_PREFIX = 'hr_welcome_sent_';
 const HR_STATE_KEY_PREFIX = 'hr_state_';
 const HR_UPLOAD_BASE_URL = '/notify/uploads/';
@@ -287,6 +293,13 @@ export interface ShuttleBreadcrumbStep {
   completed: boolean;
 }
 
+export type HelpdeskAwaiting = 'menu' | 'department';
+
+export interface HelpdeskConversationState {
+  awaiting: HelpdeskAwaiting;
+  draft?: { department?: string };
+}
+
 export type RealtimeTransportMode = 'socket' | 'sse' | 'polling';
 
 @Injectable({ providedIn: 'root' })
@@ -367,6 +380,12 @@ export class ChatStoreService {
   private readonly shuttleOrdersSyncPromiseByUser = new Map<string, Promise<void>>();
   private readonly shuttleReminderTimersByKey = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly shuttlePickerRevision = signal(0);
+  private readonly helpdeskPickerRevision = signal(0);
+  private helpdeskInitInFlight = false;
+  private readonly helpdeskTicketsSignal = signal<HelpdeskTicket[]>([]);
+  private readonly helpdeskTicketsLoadingSignal = signal(false);
+  private helpdeskTicketsSyncAt = 0;
+  private helpdeskTicketsSyncPromise: Promise<void> | null = null;
   private lastAppliedAppBadgeCount = -1;
   private lastServerBadgeResetAt = 0;
   private serverBadgeResetInFlight = false;
@@ -2426,11 +2445,19 @@ export class ChatStoreService {
         return;
       }
       await this.ensureShuttleFlowOnOpen();
+      return;
+    }
+    if (this.isHelpdeskChat(chatId)) {
+      await this.ensureHelpdeskFlowOnOpen();
     }
   }
 
   private isHrChat(chatId: string | null): boolean {
     return this.normalizeChatId(chatId ?? '') === this.normalizeChatId(HR_CHAT_NAME);
+  }
+
+  private isHelpdeskChat(chatId: string | null): boolean {
+    return this.normalizeChatId(chatId ?? '') === this.normalizeChatId(HELPDESK_CHAT_NAME);
   }
 
   private isShuttleChat(chatId: string | null): boolean {
@@ -4584,6 +4611,257 @@ export class ChatStoreService {
     }
   }
 
+  private sendHelpdeskSystemMessage(
+    body: string,
+    options: { recordType?: string } = {}
+  ): void {
+    const chatId = this.normalizeChatId(HELPDESK_CHAT_NAME);
+    const message: ChatMessage = {
+      id: this.generateId('rec'),
+      messageId: this.generateId('helpdesk'),
+      chatId,
+      sender: chatId,
+      senderDisplayName: HELPDESK_CHAT_NAME,
+      recordType: options.recordType,
+      body,
+      imageUrl: null,
+      direction: 'incoming',
+      timestamp: Date.now(),
+      deliveryStatus: 'delivered'
+    };
+
+    this.appendMessage(message);
+    if (this.activeChatId() !== chatId) {
+      this.unreadByChat.update((map) => ({
+        ...map,
+        [chatId]: (map[chatId] ?? 0) + 1
+      }));
+    }
+  }
+
+  private bumpHelpdeskPickerRevision(): void {
+    this.helpdeskPickerRevision.update((value) => value + 1);
+  }
+
+  private helpdeskStateKey(user: string): string {
+    return `${HELPDESK_STATE_KEY_PREFIX}${this.normalizeUser(user)}`;
+  }
+
+  private defaultHelpdeskState(): HelpdeskConversationState {
+    return { awaiting: 'menu' };
+  }
+
+  private loadHelpdeskState(user: string): HelpdeskConversationState | null {
+    try {
+      const raw = localStorage.getItem(this.helpdeskStateKey(user));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as HelpdeskConversationState;
+      if (!parsed || typeof parsed !== 'object') return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  private saveHelpdeskState(user: string, state: HelpdeskConversationState): void {
+    try {
+      localStorage.setItem(this.helpdeskStateKey(user), JSON.stringify(state));
+    } catch {
+      // ignore
+    }
+  }
+
+  getHelpdeskQuickPickerState(): ShuttleQuickPickerState | null {
+    this.helpdeskPickerRevision();
+    const activeChatId = this.activeChatId();
+    if (!this.isHelpdeskChat(activeChatId)) return null;
+    const user = this.currentUser();
+    if (!user) return null;
+
+    const state = this.loadHelpdeskState(user) ?? this.defaultHelpdeskState();
+
+    if (state.awaiting === 'menu') {
+      return {
+        key: 'menu',
+        title: 'מה תרצה לבצע?',
+        helperText: 'פתח קריאה חדשה למוקד הטכני',
+        mode: 'buttons',
+        options: [
+          { value: 'פתיחת קריאה חדשה', label: 'פתיחת קריאה חדשה' },
+          { value: 'הקריאות שלי', label: 'הקריאות שלי' }
+        ],
+        allowBack: false
+      };
+    }
+
+    if (state.awaiting === 'department') {
+      return {
+        key: 'department',
+        title: 'בחר מחלקה',
+        helperText: 'לאיזו מחלקה שייכת הבקשה?',
+        mode: 'buttons',
+        options: [
+          { value: 'מערכות מידע', label: '🖥️ מערכות מידע' },
+          { value: 'אחזקה', label: '🔧 אחזקה' }
+        ],
+        allowBack: true
+      };
+    }
+
+    return null;
+  }
+
+  getHelpdeskDashboard(): HelpdeskDashboard | null {
+    this.helpdeskPickerRevision();
+    const activeChatId = this.activeChatId();
+    if (!this.isHelpdeskChat(activeChatId)) return null;
+    const user = this.currentUser();
+    if (!user) return null;
+
+    const tickets = this.helpdeskTicketsSignal();
+    const ongoingStatuses = new Set<string>(['open', 'in_progress']);
+    const ongoing = tickets.filter((t) => ongoingStatuses.has(t.status));
+    const past = tickets.filter((t) => !ongoingStatuses.has(t.status));
+    return { ongoing, past };
+  }
+
+  getHelpdeskTicketsLoading(): boolean {
+    this.helpdeskPickerRevision();
+    return this.helpdeskTicketsLoadingSignal();
+  }
+
+  async chooseHelpdeskOption(value: string): Promise<void> {
+    const user = this.currentUser();
+    if (!user) return;
+
+    const state = this.loadHelpdeskState(user) ?? this.defaultHelpdeskState();
+
+    if (state.awaiting === 'menu') {
+      if (value === 'הקריאות שלי') {
+        // Refresh and show dashboard
+        await this.refreshHelpdeskTickets();
+        return;
+      }
+      if (value === 'פתיחת קריאה חדשה') {
+        this.saveHelpdeskState(user, { awaiting: 'department' });
+        this.bumpHelpdeskPickerRevision();
+        return;
+      }
+    }
+
+    if (state.awaiting === 'department') {
+      if (value === '0') {
+        // back
+        this.saveHelpdeskState(user, this.defaultHelpdeskState());
+        this.bumpHelpdeskPickerRevision();
+        return;
+      }
+      // Department selected — caller (component) should open dialog for title/description
+      this.saveHelpdeskState(user, { awaiting: 'department', draft: { department: value } });
+      this.bumpHelpdeskPickerRevision();
+    }
+  }
+
+  goBackHelpdeskPicker(): void {
+    const user = this.currentUser();
+    if (!user) return;
+    this.saveHelpdeskState(user, this.defaultHelpdeskState());
+    this.bumpHelpdeskPickerRevision();
+  }
+
+  async submitHelpdeskTicket(department: string, title: string, description: string): Promise<HelpdeskTicket> {
+    const user = this.currentUser();
+    if (!user) throw new Error('יש להתחבר לפני פתיחת קריאה');
+
+    const payload: HelpdeskTicketPayload = {
+      department: department as 'מערכות מידע' | 'אחזקה',
+      title,
+      description
+    };
+
+    let ticket: HelpdeskTicket;
+    try {
+      ticket = await this.api.createHelpdeskTicket(payload);
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : 'שגיאה ביצירת הקריאה';
+      this.sendHelpdeskSystemMessage(`❌ ${errMsg}`, { recordType: 'helpdesk-ticket-error' });
+      this.saveHelpdeskState(user, this.defaultHelpdeskState());
+      this.bumpHelpdeskPickerRevision();
+      throw error;
+    }
+
+    const statusLabel = this.helpdeskStatusLabel(ticket.status);
+    const cardBody = `✅ הקריאה נפתחה בהצלחה\n[#${ticket.id}] ${ticket.title}\nמחלקה: ${ticket.department}\nסטטוס: ${statusLabel}`;
+    this.sendHelpdeskSystemMessage(cardBody, { recordType: 'helpdesk-ticket-success' });
+
+    // Refresh tickets list
+    this.helpdeskTicketsSignal.update((list) => [ticket, ...list]);
+
+    this.saveHelpdeskState(user, this.defaultHelpdeskState());
+    this.bumpHelpdeskPickerRevision();
+    return ticket;
+  }
+
+  async refreshHelpdeskTickets(): Promise<void> {
+    const user = this.currentUser();
+    if (!user) return;
+    if (!this.isHelpdeskChat(this.activeChatId())) return;
+
+    const now = Date.now();
+    if (this.helpdeskTicketsSyncPromise) {
+      return this.helpdeskTicketsSyncPromise;
+    }
+    if (now - this.helpdeskTicketsSyncAt < HELPDESK_TICKETS_CACHE_TTL_MS) {
+      return;
+    }
+
+    this.helpdeskTicketsLoadingSignal.set(true);
+    this.bumpHelpdeskPickerRevision();
+
+    this.helpdeskTicketsSyncPromise = (async () => {
+      try {
+        const dashboard = await this.api.getHelpdeskUserDashboard();
+        this.helpdeskTicketsSignal.set([...dashboard.ongoing, ...dashboard.past]);
+        this.helpdeskTicketsSyncAt = Date.now();
+      } finally {
+        this.helpdeskTicketsLoadingSignal.set(false);
+        this.helpdeskTicketsSyncPromise = null;
+        this.bumpHelpdeskPickerRevision();
+      }
+    })();
+
+    return this.helpdeskTicketsSyncPromise;
+  }
+
+  helpdeskStatusLabel(status: string): string {
+    switch (status) {
+      case 'open': return 'פתוחה';
+      case 'in_progress': return 'בטיפול';
+      case 'resolved': return 'טופלה';
+      case 'closed': return 'סגורה';
+      default: return status;
+    }
+  }
+
+  private async ensureHelpdeskFlowOnOpen(): Promise<void> {
+    const user = this.currentUser();
+    if (!user || this.helpdeskInitInFlight) return;
+
+    this.helpdeskInitInFlight = true;
+    try {
+      // Initialize picker state if needed
+      const state = this.loadHelpdeskState(user);
+      if (!state) {
+        this.saveHelpdeskState(user, this.defaultHelpdeskState());
+        this.bumpHelpdeskPickerRevision();
+      }
+      // Load tickets in background
+      await this.refreshHelpdeskTickets();
+    } finally {
+      this.helpdeskInitInFlight = false;
+    }
+  }
+
   private async sendMessageInternal(payload: SendMessagePayload): Promise<void> {
     this.cancelTypingForActiveChat();
     const chatId = this.activeChatId();
@@ -4662,6 +4940,12 @@ export class ChatStoreService {
         this.setMessageStatus(messageId, 'delivered');
         return;
       }
+    }
+
+    if (this.isHelpdeskChat(chatId)) {
+      // Helpdesk chat is managed through the picker, not direct messages
+      this.setMessageStatus(messageId, 'delivered');
+      return;
     }
 
     if (!this.networkOnline()) {

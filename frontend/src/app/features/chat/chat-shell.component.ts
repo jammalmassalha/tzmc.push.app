@@ -32,6 +32,7 @@ import {
   ChatListItem,
   ChatMessage,
   DeliveryStatus,
+  HelpdeskDashboard,
   MessageReference
 } from '../../core/models/chat.models';
 import {
@@ -48,6 +49,7 @@ import { CreateGroupDialogComponent } from './dialogs/create-group-dialog.compon
 import { NewChatDialogComponent } from './dialogs/new-chat-dialog.component';
 import { ConfirmMessageActionDialogComponent } from './dialogs/confirm-message-action-dialog.component';
 import { ForwardMessageDialogComponent } from './dialogs/forward-message-dialog.component';
+import { HelpdeskTicketDialogComponent } from './dialogs/helpdesk-ticket-dialog.component';
 
 type MessageRenderPart =
   | { kind: 'text'; text: string }
@@ -422,8 +424,22 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     Boolean(this.shuttleOrdersDashboard() || this.shuttleQuickPicker() || this.isShuttleOperationsRoomActive())
   );
   readonly isComposerHidden = computed(() =>
-    Boolean(this.shuttleQuickPicker() || this.isShuttleOperationsRoomActive())
+    Boolean(this.shuttleQuickPicker() || this.isShuttleOperationsRoomActive() || this.helpdeskQuickPicker())
   );
+  readonly helpdeskQuickPicker = computed<ShuttleQuickPickerState | null>(() =>
+    this.store.getHelpdeskQuickPickerState()
+  );
+  readonly helpdeskDashboard = computed<HelpdeskDashboard | null>(() =>
+    this.store.getHelpdeskDashboard()
+  );
+  readonly isHelpdeskRoomActive = computed(() =>
+    Boolean(this.helpdeskQuickPicker() || this.helpdeskDashboard())
+  );
+  readonly isLoadingHelpdeskTickets = computed(() =>
+    this.store.getHelpdeskTicketsLoading()
+  );
+  readonly helpdeskDashboardTab = signal<'ongoing' | 'past'>('ongoing');
+  readonly isSubmittingHelpdeskTicket = signal(false);
   readonly expandedShuttleOperationsDates = signal<Set<string>>(new Set<string>());
   readonly shuttleBreadcrumbs = computed<ShuttleBreadcrumbStep[] | null>(() =>
     this.store.getShuttleFlowBreadcrumbs()
@@ -562,6 +578,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     () =>
       Boolean(this.store.activeChatId()) &&
       !this.isShuttleRoomActive() &&
+      !this.isHelpdeskRoomActive() &&
       this.store.activeMessages().length > 0 &&
       !this.isMessagesPanelAtBottom()
   );
@@ -1292,6 +1309,100 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     this.tryLoadOlderMessagesOnScroll();
     this.updateStickyMessageDateFromViewport();
     this.updateMessagesBottomState();
+  }
+
+  setHelpdeskDashboardTab(tab: 'ongoing' | 'past'): void {
+    this.helpdeskDashboardTab.set(tab);
+  }
+
+  async refreshHelpdeskTickets(): Promise<void> {
+    try {
+      await this.store.refreshHelpdeskTickets();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'שגיאה ברענון קריאות';
+      this.snackBar.open(message, 'סגור', { duration: 2800 });
+    }
+  }
+
+  async chooseHelpdeskPickerOption(value: string): Promise<void> {
+    const picker = this.helpdeskQuickPicker();
+    if (!picker || this.isSubmittingHelpdeskTicket()) return;
+
+    if (picker.key === 'department') {
+      // Strip emoji prefix to get clean department value
+      const cleanDepartment = value.replace(/^[^\u0590-\u05FF]*/, '').trim();
+      const dialogRef = this.dialog.open(HelpdeskTicketDialogComponent, {
+        width: '420px',
+        data: { department: cleanDepartment }
+      });
+      const result = await firstValueFrom(dialogRef.afterClosed());
+      if (!result) {
+        return;
+      }
+      this.isSubmittingHelpdeskTicket.set(true);
+      try {
+        await this.store.submitHelpdeskTicket(cleanDepartment, result.title, result.description);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'שגיאה בפתיחת הקריאה';
+        this.snackBar.open(message, 'סגור', { duration: 3200 });
+      } finally {
+        this.isSubmittingHelpdeskTicket.set(false);
+      }
+      return;
+    }
+
+    try {
+      await this.store.chooseHelpdeskOption(value);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'שגיאה בעיבוד הבחירה';
+      this.snackBar.open(message, 'סגור', { duration: 2800 });
+    }
+  }
+
+  goBackHelpdeskPicker(): void {
+    this.store.goBackHelpdeskPicker();
+  }
+
+  helpdeskTicketMessageCard(message: ChatMessage): { id: number; title: string; department: string; statusLabel: string; isError: boolean } | null {
+    const recordType = String(message.recordType || '').trim();
+    if (recordType !== 'helpdesk-ticket-success' && recordType !== 'helpdesk-ticket-error') {
+      return null;
+    }
+
+    const isError = recordType === 'helpdesk-ticket-error';
+    const body = String(message.body || '').trim();
+    if (!body) return null;
+
+    const lines = body.split('\n').map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) return null;
+
+    if (isError) {
+      return { id: 0, title: lines[0] || 'שגיאה', department: '', statusLabel: '', isError: true };
+    }
+
+    // Parse: [#ID] title
+    const idLine = lines.find((l) => l.startsWith('[#'));
+    const idMatch = idLine ? idLine.match(/^\[#(\d+)\]\s*(.+)$/) : null;
+    const id = idMatch ? parseInt(idMatch[1], 10) : 0;
+    const title = idMatch ? idMatch[2].trim() : (lines[1] || lines[0] || '');
+
+    const deptLine = lines.find((l) => l.startsWith('מחלקה:'));
+    const department = deptLine ? deptLine.replace('מחלקה:', '').trim() : '';
+
+    const statusLine = lines.find((l) => l.startsWith('סטטוס:'));
+    const statusLabel = statusLine ? statusLine.replace('סטטוס:', '').trim() : '';
+
+    return { id, title, department, statusLabel, isError: false };
+  }
+
+  helpdeskStatusDisplayLabel(status: string): string {
+    return this.store.helpdeskStatusLabel(status);
+  }
+
+  parseHelpdeskTimestamp(dateString: string | undefined): number {
+    if (!dateString) return 0;
+    const ts = Date.parse(dateString);
+    return Number.isFinite(ts) ? ts : 0;
   }
 
   messageAbsoluteIndex(index: number): number {

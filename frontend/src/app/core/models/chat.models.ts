@@ -243,6 +243,32 @@ export interface OutboxGroupUpdateItem {
 
 export type OutboxItem = OutboxDirectItem | OutboxGroupItem | OutboxGroupUpdateItem;
 
+export type HelpdeskDepartment = 'מערכות מידע' | 'אחזקה';
+export type HelpdeskStatus = 'open' | 'in_progress' | 'resolved' | 'closed';
+
+export interface HelpdeskTicketPayload {
+  department: HelpdeskDepartment;
+  title: string;
+  description: string;
+}
+
+export interface HelpdeskTicket {
+  id: number;
+  creatorUsername: string;
+  department: string;
+  title: string;
+  description: string;
+  status: HelpdeskStatus;
+  handlerUsername?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface HelpdeskDashboard {
+  ongoing: HelpdeskTicket[];
+  past: HelpdeskTicket[];
+}
+
 export interface PersistedChatState {
   contacts: Contact[];
   groups: ChatGroup[];

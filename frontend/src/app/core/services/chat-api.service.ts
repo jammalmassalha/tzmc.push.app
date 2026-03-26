@@ -6,6 +6,9 @@ import {
   DeleteMessagePayload,
   EditMessagePayload,
   GroupUpdatePayload,
+  HelpdeskDashboard,
+  HelpdeskTicket,
+  HelpdeskTicketPayload,
   IncomingServerMessage,
   ReadReceiptPayload,
   ReactionPayload,
@@ -1320,6 +1323,63 @@ export class ChatApiService {
     return rows
       .filter((item) => item && typeof item === 'object')
       .map((item) => item as ShuttleUserOrderPayload);
+  }
+
+  async createHelpdeskTicket(payload: HelpdeskTicketPayload): Promise<HelpdeskTicket> {
+    const url = `${this.notifyBaseUrl}/helpdesk/tickets`;
+    const response = await this.fetchWithRetry(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        cache: 'no-store'
+      },
+      { retries: 1, timeoutMs: 15000 }
+    );
+    const body = await response.json() as { result?: string; message?: string; ticket?: HelpdeskTicket };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה ביצירת הקריאה'));
+    }
+    if (!body.ticket) {
+      throw new Error('שגיאה בטעינת פרטי הקריאה החדשה');
+    }
+    return body.ticket;
+  }
+
+  async getHelpdeskUserDashboard(): Promise<HelpdeskDashboard> {
+    const url = `${this.notifyBaseUrl}/helpdesk/tickets/user?_ts=${Date.now()}&ngsw-bypass=1`;
+    const response = await this.fetchWithRetry(
+      url,
+      { cache: 'no-store', headers: { 'ngsw-bypass': 'true' } },
+      { retries: 1, timeoutMs: 15000 }
+    );
+    const body = await response.json() as { result?: string; message?: string; ongoing?: HelpdeskTicket[]; past?: HelpdeskTicket[] };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה בטעינת הקריאות'));
+    }
+    return {
+      ongoing: Array.isArray(body.ongoing) ? body.ongoing : [],
+      past: Array.isArray(body.past) ? body.past : []
+    };
+  }
+
+  async updateHelpdeskTicketStatus(id: number, status: string): Promise<void> {
+    const url = `${this.notifyBaseUrl}/helpdesk/tickets/${encodeURIComponent(String(id))}/status`;
+    const response = await this.fetchWithRetry(
+      url,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+        cache: 'no-store'
+      },
+      { retries: 1, timeoutMs: 10000 }
+    );
+    const body = await response.json() as { result?: string; message?: string };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה בעדכון הסטטוס'));
+    }
   }
 
   private isLikelyHtmlPayload(payloadText: string): boolean {
