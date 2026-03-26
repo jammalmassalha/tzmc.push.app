@@ -576,6 +576,7 @@ export class ChatStoreService {
       this.flushPendingServiceWorkerMessages();
       await this.consumePendingPushPayloadsFromServiceWorker();
       this.schedulePendingPushDrainRetry();
+      this.syncForegroundState();
       return;
     }
 
@@ -7731,6 +7732,7 @@ export class ChatStoreService {
     void this.consumePendingPushPayloadsFromServiceWorker().finally(() => {
       this.clearDeviceAttention({ resetServerBadge: true });
     });
+    this.syncForegroundState();
   };
 
   private handleVisibilityChange = (): void => {
@@ -7742,6 +7744,7 @@ export class ChatStoreService {
     void this.consumePendingPushPayloadsFromServiceWorker().finally(() => {
       this.clearDeviceAttention({ resetServerBadge: true });
     });
+    this.syncForegroundState();
   };
 
   private handleServiceWorkerMessage = (event: MessageEvent<unknown>): void => {
