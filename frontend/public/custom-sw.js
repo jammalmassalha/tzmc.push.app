@@ -14,7 +14,10 @@ const OFFLINE_REPLY_SYNC_TAG = 'tzmc-offline-reply-sync-v1';
 const SW_PENDING_PUSH_CACHE = 'tzmc-sw-pending-push-v1';
 const SW_PENDING_PUSH_KEY = new URL('./__pending_push__', self.registration.scope).toString();
 const MAX_PENDING_PUSH_ITEMS = 500;
+const RECENT_NOTIFICATION_TTL_MS = 30 * 1000;
+const MAX_RECENT_NOTIFICATION_TAGS = 200;
 const clientContextById = new Map();
+const recentlyShownNotificationTags = new Map();
 
 function sleep(ms) {
   return new Promise((resolve) => {
@@ -163,7 +166,11 @@ async function flushOfflineReplyQueue() {
     }
   }
 
-  await persistOfflineReplyQueue(remaining);
+  try {
+    await persistOfflineReplyQueue(remaining);
+  } catch (persistErr) {
+    console.error('[SW] Failed to persist offline reply queue:', persistErr);
+  }
   return { sent, remaining: remaining.length };
 }
 
@@ -753,8 +760,36 @@ function broadcastPushPayload(payload) {
   });
 }
 
+function pruneRecentNotificationTags() {
+  const now = Date.now();
+  for (const [key, shownAt] of recentlyShownNotificationTags.entries()) {
+    if (now - shownAt > RECENT_NOTIFICATION_TTL_MS) {
+      recentlyShownNotificationTags.delete(key);
+    }
+  }
+  if (recentlyShownNotificationTags.size > MAX_RECENT_NOTIFICATION_TAGS) {
+    const entries = Array.from(recentlyShownNotificationTags.entries())
+      .sort((a, b) => a[1] - b[1]);
+    const toRemove = entries.length - MAX_RECENT_NOTIFICATION_TAGS;
+    for (let i = 0; i < toRemove; i++) {
+      recentlyShownNotificationTags.delete(entries[i][0]);
+    }
+  }
+}
+
 function showDedupedNotification(title, options = {}) {
   const tag = typeof options.tag === 'string' ? options.tag.trim() : '';
+
+  // Prevent showing the same notification twice within the TTL window.
+  if (tag) {
+    pruneRecentNotificationTags();
+    const lastShown = recentlyShownNotificationTags.get(tag);
+    if (typeof lastShown === 'number' && Date.now() - lastShown < RECENT_NOTIFICATION_TTL_MS) {
+      return Promise.resolve();
+    }
+    recentlyShownNotificationTags.set(tag, Date.now());
+  }
+
   const closeDuplicatesTask = tag
     ? self.registration.getNotifications({ tag })
       .then((items) => {
@@ -788,7 +823,7 @@ self.addEventListener('push', (event) => {
     vapidPublicKey: payloadWithReceivedAt.vapidPublicKey || ''
   });
 
-  const tasks = [broadcastPushPayload(payloadWithReceivedAt), enqueuePendingPushPayload(payloadWithReceivedAt)];
+  const tasks = [broadcastPushPayload(payloadWithReceivedAt)];
   if (String(payloadWithReceivedAt.type || '').toLowerCase() === AUTH_REFRESH_PUSH_TYPE) {
     tasks.push(refreshSubscriptionAuthInBackground(payloadWithReceivedAt));
   }
@@ -797,19 +832,28 @@ self.addEventListener('push', (event) => {
   }
   tasks.push((async () => {
     if (!shouldShowNotification(payloadWithReceivedAt)) {
+      // Silent payload — only enqueue if no visible window received the broadcast.
+      const silentClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+      if (!hasVisibleWindowClient(silentClients)) {
+        await enqueuePendingPushPayload(payloadWithReceivedAt);
+      }
       return;
     }
     const windowClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
     if (hasVisibleWindowClient(windowClients)) {
+      // App is open and visible — the broadcast already delivered the payload.
+      // Skip enqueue to avoid processing the same message twice on drain.
       return;
     }
+    // App is not visible — enqueue for later drain and show notification.
+    await enqueuePendingPushPayload(payloadWithReceivedAt);
     await showDedupedNotification(title, {
       body,
       icon,
       badge: icon,
       image: typeof payloadWithReceivedAt.image === 'string' ? payloadWithReceivedAt.image : undefined,
       requireInteraction: Boolean(payloadWithReceivedAt.requireInteraction),
-      tag: String(payloadWithReceivedAt.messageId || '').trim() || undefined,
+      tag: String(payloadWithReceivedAt.messageId || '').trim() || buildPendingPushFingerprint(payloadWithReceivedAt) || undefined,
       data: {
         ...payloadWithReceivedAt,
         url
@@ -848,7 +892,11 @@ self.addEventListener('sync', (event) => {
   if (!event || event.tag !== OFFLINE_REPLY_SYNC_TAG) {
     return;
   }
-  event.waitUntil(flushOfflineReplyQueue());
+  event.waitUntil(
+    flushOfflineReplyQueue().catch((err) => {
+      console.error('[SW] Background sync flushOfflineReplyQueue failed:', err);
+    })
+  );
 });
 
 self.addEventListener('message', (event) => {

@@ -69,8 +69,8 @@ const SHUTTLE_LANGUAGE_KEY_PREFIX = 'shuttle_language_';
 const SHUTTLE_LIST_CACHE_TTL_MS = 5 * 60 * 1000;
 const SHUTTLE_REMOTE_ORDERS_SYNC_TTL_MS = 45 * 1000;
 const SHUTTLE_DATE_CHOICES_COUNT = 10;
-const SHUTTLE_REMINDER_LEAD_MS = 2 * 60 * 60 * 1000;
-const SHUTTLE_REMINDER_HISTORY_KEY_PREFIX = 'shuttle_reminder_2h_sent_';
+const SHUTTLE_REMINDER_LEAD_MS = 15 * 60 * 1000;
+const SHUTTLE_REMINDER_HISTORY_KEY_PREFIX = 'shuttle_reminder_15m_sent_';
 const SHUTTLE_REMINDER_HISTORY_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const SHUTTLE_STATUS_ACTIVE_VALUE = 'פעיל активный';
 const SHUTTLE_STATUS_CANCEL_VALUE = 'ביטול נסיעה отмена поезд';
@@ -120,7 +120,7 @@ const DELETED_MESSAGE_PLACEHOLDER = '🚫 הודעה זו נמחקה';
 const TYPING_IDLE_MS = 2200;
 const TYPING_HEARTBEAT_MS = 1200;
 const TYPING_STALE_MS = 6500;
-const INCOMING_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS = 2000;
+const INCOMING_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS = 30000;
 const INCOMING_SYSTEM_SEMANTIC_DEDUP_TIMESTAMP_TOLERANCE_MS = 90 * 1000;
 const DELETED_MESSAGE_SUPPRESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DELETED_MESSAGE_SUPPRESSION_MAX_ENTRIES = 2500;
@@ -576,6 +576,7 @@ export class ChatStoreService {
       this.flushPendingServiceWorkerMessages();
       await this.consumePendingPushPayloadsFromServiceWorker();
       this.schedulePendingPushDrainRetry();
+      this.syncForegroundState();
       return;
     }
 
@@ -591,10 +592,12 @@ export class ChatStoreService {
 
     /**
      * SYNC STEP 2: Aggressive Logs Recovery (The Fix)
-     * This fills any gaps that the Service Worker missed (e.g., if the phone was offline 
+     * This fills any gaps that the Service Worker missed (e.g., if the phone was offline
      * or the OS killed the SW). We use 'force: true' to bypass the standard recovery cooldown.
+     * IMPORTANT: We await this so messages are loaded and placed in the correct chats
+     * before the UI renders — this is the first thing the user should see on app open.
      */
-    void this.recoverMissedMessagesFromLogs(user, {
+    await this.recoverMissedMessagesFromLogs(user, {
       force: true,           // Ensures we sync every time the app starts
       incrementUnread: true, // Marks missed messages as unread so they appear in badges
       limit: 1000            // Window large enough to cover several hours of activity
@@ -1852,6 +1855,21 @@ export class ChatStoreService {
       for (const message of messages) {
         const groupId = this.normalizeChatId(String(message.groupId ?? '').trim());
         if (!groupId) continue;
+
+        // Skip restricted hardcoded community groups the current user is not a member of.
+        const hardcodedConfig = HARDCODED_COMMUNITY_GROUPS.find(
+          (g) => this.normalizeChatId(g.id) === groupId
+        );
+        if (
+          hardcodedConfig &&
+          Array.isArray(hardcodedConfig.staticMembers) &&
+          hardcodedConfig.staticMembers.length > 0 &&
+          !hardcodedConfig.staticMembers
+            .map((m) => this.normalizeUser(m))
+            .includes(currentUser)
+        ) {
+          continue;
+        }
 
         const incomingGroupName = String(message.groupName ?? '').trim();
         const fallbackGroup = fallbackById.get(groupId) ?? null;
@@ -4374,8 +4392,8 @@ export class ChatStoreService {
       statusValue: SHUTTLE_STATUS_ACTIVE_VALUE,
       statusLabel: this.resolveShuttleStatusLabel(SHUTTLE_STATUS_ACTIVE_VALUE)
     });
-    this.sendShuttleSystemMessage(`${this.shuttleText('⏰ תזכורת: נותרו כשעתיים להסעה שלך.', '⏰ Напоминание: до вашего трансфера осталось около двух часов.')}\n${activeSummary}`, {
-      recordType: 'shuttle-reminder-2h'
+    this.sendShuttleSystemMessage(`${this.shuttleText('⏰ תזכורת: נותרו כ-15 דקות להסעה שלך.', '⏰ Напоминание: до вашего трансфера осталось около 15 минут.')}\n${activeSummary}`, {
+      recordType: 'shuttle-reminder-15m'
     });
     this.showShuttleReminderBrowserNotification(order, reminderKey);
   }
@@ -4395,10 +4413,10 @@ export class ChatStoreService {
 
     try {
       const notification = new Notification(
-        this.shuttleText('תזכורת להסעה בעוד שעתיים', 'Напоминание о трансфере через 2 часа'),
+        this.shuttleText('תזכורת להסעה בעוד 15 דקות', 'Напоминание о трансфере через 15 минут'),
         {
           body: detailLine || this.shuttleText('בדוק את פרטי ההזמנה בצ׳אט.', 'Проверьте детали заказа в чате.'),
-          tag: `shuttle-reminder-2h:${reminderKey}`
+          tag: `shuttle-reminder-15m:${reminderKey}`
         });
       notification.onclick = () => {
         try {
@@ -5701,6 +5719,8 @@ export class ChatStoreService {
     let messagesChanged = false;
     let unreadChanged = false;
     let appliedCount = 0;
+    const batchReceivedAt = Date.now();
+    const newlyReceivedMsgIds: string[] = [];
 
     const getMessageIdSet = (chatId: string): Set<string> => {
       const existing = knownMessageIdsByChat.get(chatId);
@@ -5867,6 +5887,10 @@ export class ChatStoreService {
       messagesChanged = true;
       appliedCount += 1;
 
+      if (!isOutgoingFromCurrentUser && !record.userReceivedTime) {
+        newlyReceivedMsgIds.push(messageId);
+      }
+
       if (
         options.trackReadReceipts !== false &&
         !isGroup &&
@@ -5896,6 +5920,11 @@ export class ChatStoreService {
       this.schedulePersist();
     }
 
+    if (newlyReceivedMsgIds.length) {
+      const entries = newlyReceivedMsgIds.map((msgId) => ({ msgId, receivedAt: batchReceivedAt }));
+      void this.api.reportMessagesReceivedBatch(entries).catch(() => {});
+    }
+
     return appliedCount;
   }
 
@@ -5907,6 +5936,12 @@ export class ChatStoreService {
         : rawData;
       if (this.applyIncomingMessage(message)) {
         this.incrementDeliveryTelemetry('sseMessageApplied');
+        const msgId = String(message.messageId ?? '').trim();
+        const incomingType = String(message.type ?? '').trim().toLowerCase();
+        const hasExistingReceivedTime = Number.isFinite(Number(message.userReceivedTime)) && Number(message.userReceivedTime) > 0;
+        if (msgId && !this.isIncomingActionType(incomingType) && !hasExistingReceivedTime) {
+          void this.api.reportMessageReceived(msgId, Date.now()).catch(() => {});
+        }
       } else {
         this.incrementDeliveryTelemetry('sseMessageNoop');
       }
@@ -6011,9 +6046,6 @@ export class ChatStoreService {
     }
     if (incomingType === 'read-receipt') {
       return this.applyIncomingReadReceipt(incoming);
-    }
-    if (incomingType === 'typing') {
-      return this.applyIncomingTypingSignal(incoming);
     }
 
     const sender = this.normalizeUser(incoming.sender ?? '');
@@ -6529,6 +6561,24 @@ export class ChatStoreService {
     if (!user) return;
 
     const normalizedId = this.normalizeChatId(incoming.groupId);
+
+    // Respect staticMembers restrictions: if this is a hardcoded community group
+    // with a static member list, only allow the group for listed members.
+    const hardcodedConfig = HARDCODED_COMMUNITY_GROUPS.find(
+      (g) => this.normalizeChatId(g.id) === normalizedId
+    );
+    if (
+      hardcodedConfig &&
+      Array.isArray(hardcodedConfig.staticMembers) &&
+      hardcodedConfig.staticMembers.length > 0
+    ) {
+      const normalizedUser = this.normalizeUser(user);
+      const isMember = hardcodedConfig.staticMembers
+        .map((m) => this.normalizeUser(m))
+        .includes(normalizedUser);
+      if (!isMember) return;
+    }
+
     const normalizedType: GroupType = incoming.groupType === 'community' ? 'community' : 'group';
     const updatedAt = Number(incoming.groupUpdatedAt ?? Date.now());
     const normalizedAdmins = Array.isArray(incoming.groupAdmins)
@@ -7680,9 +7730,11 @@ export class ChatStoreService {
 
   private handleWindowFocus = (): void => {
     this.refreshPushRegistrationForCurrentUser(false);
-    this.clearDeviceAttention({ resetServerBadge: true });
     this.flushPendingServiceWorkerMessages();
-    void this.consumePendingPushPayloadsFromServiceWorker();
+    void this.consumePendingPushPayloadsFromServiceWorker().finally(() => {
+      this.clearDeviceAttention({ resetServerBadge: true });
+    });
+    this.syncForegroundState();
   };
 
   private handleVisibilityChange = (): void => {
@@ -7690,9 +7742,11 @@ export class ChatStoreService {
       return;
     }
     this.refreshPushRegistrationForCurrentUser(false);
-    this.clearDeviceAttention({ resetServerBadge: true });
     this.flushPendingServiceWorkerMessages();
-    void this.consumePendingPushPayloadsFromServiceWorker();
+    void this.consumePendingPushPayloadsFromServiceWorker().finally(() => {
+      this.clearDeviceAttention({ resetServerBadge: true });
+    });
+    this.syncForegroundState();
   };
 
   private handleServiceWorkerMessage = (event: MessageEvent<unknown>): void => {
@@ -8147,7 +8201,7 @@ export class ChatStoreService {
         .catch(() => undefined);
     }
 
-    this.postBadgeMessageToServiceWorker({ action: 'clear-app-badge' });
+    this.postBadgeMessageToServiceWorker({ action: 'clear-device-attention' });
   }
 
   private isAppInForeground(): boolean {

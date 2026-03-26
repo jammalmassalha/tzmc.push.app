@@ -20,7 +20,11 @@ function normalizePhone(value) {
     let text = toTrimmedString(value);
     if (!text)
         return '';
-    if (/^\d+$/.test(text) && text.charAt(0) !== '0') {
+    // Strip non-digit characters (dashes, spaces, parentheses, etc.) for consistent matching
+    text = text.replace(/\D/g, '');
+    if (!text)
+        return '';
+    if (text.charAt(0) !== '0') {
         text = `0${text}`;
     }
     return text;
@@ -182,10 +186,11 @@ class MysqlLogsService {
     pool;
     tableName;
     insertQuery;
+    imageUrlColumnReady = false;
     constructor(config) {
         this.tableName = normalizeTableName(config.table);
-        this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+        this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
         this.pool = promise_1.default.createPool({
             host: config.host,
             port: config.port,
@@ -195,6 +200,23 @@ class MysqlLogsService {
             connectionLimit: config.connectionLimit,
             charset: 'utf8mb4'
         });
+        void this.ensureImageUrlColumn();
+    }
+    async ensureImageUrlColumn() {
+        if (this.imageUrlColumnReady)
+            return;
+        try {
+            await this.pool.execute(`ALTER TABLE \`${this.tableName}\` ADD COLUMN \`ImageUrl\` TEXT NULL`);
+        }
+        catch (err) {
+            const code = err.code;
+            const message = String(err.message || '');
+            // ER_DUP_FIELDNAME = column already exists — expected on subsequent restarts.
+            if (code !== 'ER_DUP_FIELDNAME' && !message.includes('Duplicate column')) {
+                console.warn('[MYSQL] ensureImageUrlColumn warning:', message);
+            }
+        }
+        this.imageUrlColumnReady = true;
     }
     buildCompositeKeyFromPayload(payload) {
         return [
@@ -221,7 +243,8 @@ class MysqlLogsService {
         const msgId = resolveLogMessageId(payload.msgId, details);
         const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
         const dateTime = normalizeDateTimeForStorage(payload.dateTime);
-        await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson]);
+        const imageUrl = toTrimmedString(payload.imageUrl);
+        await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null]);
         return true;
     }
     async filterNewLogsByCompositeKey(payloads) {
@@ -284,6 +307,7 @@ class MysqlLogsService {
                 const msgId = resolveLogMessageId(payload.msgId, details);
                 const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
                 const dateTime = normalizeDateTimeForStorage(payload.dateTime);
+                const imageUrl = toTrimmedString(payload.imageUrl);
                 await connection.execute(this.insertQuery, [
                     dateTime,
                     recipient,
@@ -292,7 +316,8 @@ class MysqlLogsService {
                     message,
                     status,
                     details,
-                    recipientAuthJson
+                    recipientAuthJson,
+                    imageUrl || null
                 ]);
             }
             await connection.commit();
@@ -323,6 +348,17 @@ class MysqlLogsService {
         const hardcodedGroupKeySet = new Set(Array.isArray(options.hardcodedGroupIds)
             ? options.hardcodedGroupIds.map((value) => normalizeGroupKey(value)).filter(Boolean)
             : []);
+        // Build a map of restricted hardcoded groups to their normalized member lists.
+        // Groups without explicit members are considered open to all users.
+        const hardcodedGroupMembersMap = new Map();
+        if (options.hardcodedGroupMembers && typeof options.hardcodedGroupMembers === 'object') {
+            for (const [groupId, members] of Object.entries(options.hardcodedGroupMembers)) {
+                const key = normalizeGroupKey(groupId);
+                if (!key || !Array.isArray(members) || !members.length)
+                    continue;
+                hardcodedGroupMembersMap.set(key, new Set(members.map((m) => normalizePhone(m) || toTrimmedString(m).toLowerCase()).filter(Boolean)));
+            }
+        }
         const requiredMatches = offset + limit;
         const maxRawRowsToScan = Math.max(50000, Math.min(requiredMatches * 220, 5000000));
         let rawOffset = 0;
@@ -344,7 +380,8 @@ class MysqlLogsService {
           \`SuccessOrFailed\` AS successOrFailed, 
           \`ErrorMessageOrSuccessCount\` AS errorMessageOrSuccessCount, 
           \`RecipientAuthJSON\` AS recipientAuthJson,
-          \`UserReceivedTime\` AS userReceivedTime 
+          \`UserReceivedTime\` AS userReceivedTime,
+          \`ImageUrl\` AS imageUrl 
         FROM \`${this.tableName}\` 
         WHERE 1=1`;
             const params = [];
@@ -380,8 +417,37 @@ class MysqlLogsService {
                     toUserLower !== 'all' &&
                     rawToUser !== '*');
                 // Security/Filtering Check
-                if (!recipients.has(requestedUser) && !isGroupTargetRow && !isHardcodedGlobalGroupSender && !isOutgoingFromRequestedUser) {
-                    continue;
+                if (!recipients.has(requestedUser) && !isOutgoingFromRequestedUser) {
+                    if (isHardcodedGlobalGroupSender) {
+                        // Sender is a hardcoded group (e.g. 'דוברות').
+                        // Groups with an explicit members list are restricted; others are open to all.
+                        const senderGroupKey = normalizeGroupKey(senderRaw);
+                        const restrictedMembers = hardcodedGroupMembersMap.get(senderGroupKey);
+                        if (restrictedMembers && !restrictedMembers.has(requestedUser)) {
+                            continue;
+                        }
+                    }
+                    else if (isGroupTargetRow) {
+                        // ToUser is a group name (non-phone).
+                        const toGroupKey = normalizeGroupKey(rawToUser);
+                        const restrictedMembers = hardcodedGroupMembersMap.get(toGroupKey);
+                        if (restrictedMembers) {
+                            // Hardcoded group with explicit members – check membership.
+                            if (!restrictedMembers.has(requestedUser)) {
+                                continue;
+                            }
+                        }
+                        else if (hardcodedGroupKeySet.has(toGroupKey)) {
+                            // Hardcoded group without explicit members (e.g. 'דוברות') – open to all.
+                        }
+                        else {
+                            // Non-hardcoded group – user is not a listed recipient, skip.
+                            continue;
+                        }
+                    }
+                    else {
+                        continue;
+                    }
                 }
                 if (!sender)
                     continue;
@@ -400,8 +466,9 @@ class MysqlLogsService {
                 const isDeletedStatus = status.startsWith('deleted');
                 const resolvedActionType = isDeletedStatus ? 'delete-action' : actionTypeFromDetails;
                 const body = toTrimmedString(row.messagePreview);
+                const imageUrl = toTrimmedString(row.imageUrl);
                 if (!resolvedActionType) {
-                    if (!body)
+                    if (!body && !imageUrl)
                         continue;
                     if (body.toLowerCase() === 'new notification') {
                         continue;
@@ -430,6 +497,7 @@ class MysqlLogsService {
                     sender,
                     toUser: resolvedToUser || undefined,
                     body,
+                    imageUrl: imageUrl || undefined,
                     timestamp,
                     recipient: requestedUser,
                     status,
@@ -458,9 +526,40 @@ class MysqlLogsService {
         const safeMsgId = toTrimmedString(msgId);
         if (!safeMsgId)
             return false;
-        const sql = `UPDATE \`${this.tableName}\` SET \`UserReceivedTime\` = ? WHERE \`MsgID\` = ?`;
+        // Only update if not yet acknowledged: NULL means never set, DateTime equality means
+        // the column still holds the default send-time and the real receive time is unknown.
+        const sql = `UPDATE \`${this.tableName}\` SET \`UserReceivedTime\` = ? WHERE \`MsgID\` = ? AND (\`UserReceivedTime\` IS NULL OR \`UserReceivedTime\` = \`DateTime\`)`;
         const [result] = await this.pool.execute(sql, [receivedAt, safeMsgId]);
         return Boolean(result && result.affectedRows > 0);
+    }
+    async updateUserReceivedTimeBatch(entries) {
+        if (!Array.isArray(entries) || entries.length === 0)
+            return 0;
+        const validEntries = entries
+            .map((e) => ({ msgId: toTrimmedString(e.msgId), receivedAt: e.receivedAt }))
+            .filter((e) => e.msgId);
+        if (!validEntries.length)
+            return 0;
+        let totalAffected = 0;
+        const chunkSize = 100;
+        for (let i = 0; i < validEntries.length; i += chunkSize) {
+            const chunk = validEntries.slice(i, i + chunkSize);
+            const cases = [];
+            const whenParams = [];
+            const inParams = [];
+            for (const entry of chunk) {
+                cases.push('WHEN ? THEN ?');
+                whenParams.push(entry.msgId, entry.receivedAt);
+                inParams.push(entry.msgId);
+            }
+            const placeholders = chunk.map(() => '?').join(', ');
+            // Same idempotent guard as single update — skip rows already acknowledged.
+            const sql = `UPDATE \`${this.tableName}\` SET \`UserReceivedTime\` = CASE \`MsgID\` ${cases.join(' ')} END WHERE \`MsgID\` IN (${placeholders}) AND (\`UserReceivedTime\` IS NULL OR \`UserReceivedTime\` = \`DateTime\`)`;
+            const params = [...whenParams, ...inParams];
+            const [result] = await this.pool.execute(sql, params);
+            totalAffected += result.affectedRows || 0;
+        }
+        return totalAffected;
     }
 }
 exports.MysqlLogsService = MysqlLogsService;

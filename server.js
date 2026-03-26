@@ -1,6 +1,6 @@
 const vapidKeys = {
-    publicKey: "BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk",
-    privateKey: "fMQqCaakMboV7LEV57wJhxPAdyppOBRDBjRDVQBxg1s"
+    publicKey: process.env.VAPID_PUBLIC_KEY || "BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk",
+    privateKey: process.env.VAPID_PRIVATE_KEY || "fMQqCaakMboV7LEV57wJhxPAdyppOBRDBjRDVQBxg1s"
 };
 const express = require('express');
 const http = require('http');
@@ -1107,7 +1107,7 @@ const SHUTTLE_REMINDER_FETCH_RETRIES = Math.max(
     0,
     Number(process.env.SHUTTLE_REMINDER_FETCH_RETRIES || 0) || 0
 );
-const SHUTTLE_REMINDER_LEAD_MS = 2 * 60 * 60 * 1000;
+const SHUTTLE_REMINDER_LEAD_MS = 15 * 60 * 1000;
 const SHUTTLE_REMINDER_SENT_TTL_MS = Math.max(
     24 * 60 * 60 * 1000,
     Number(process.env.SHUTTLE_REMINDER_SENT_TTL_MS || 14 * 24 * 60 * 60 * 1000) || 14 * 24 * 60 * 60 * 1000
@@ -1124,12 +1124,12 @@ const SHUTTLE_REMINDER_TIMEZONE = String(
     process.env.SHUTTLE_REMINDER_TIMEZONE || 'Asia/Jerusalem'
 ).trim() || 'Asia/Jerusalem';
 const SHUTTLE_REMINDER_TITLE = String(
-    process.env.SHUTTLE_REMINDER_TITLE || 'תזכורת להסעה בעוד שעתיים'
-).trim() || 'תזכורת להסעה בעוד שעתיים';
+    process.env.SHUTTLE_REMINDER_TITLE || 'תזכורת להסעה בעוד 15 דקות'
+).trim() || 'תזכורת להסעה בעוד 15 דקות';
 const SHUTTLE_REMINDER_BODY_PREFIX = String(
-    process.env.SHUTTLE_REMINDER_BODY_PREFIX || 'נותרו כשעתיים להסעה שלך'
-).trim() || 'נותרו כשעתיים להסעה שלך';
-const SHUTTLE_REMINDER_TYPE = 'shuttle-reminder-2h';
+    process.env.SHUTTLE_REMINDER_BODY_PREFIX || 'נותרו כ-15 דקות להסעה שלך'
+).trim() || 'נותרו כ-15 דקות להסעה שלך';
+const SHUTTLE_REMINDER_TYPE = 'shuttle-reminder-15m';
 let subscriptionAuthRefreshState = {
     running: false,
     lastRunAt: 0,
@@ -2509,7 +2509,8 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
     } else if (originalSender && originalSender !== 'System') {
         targetToNotify = parseUsernamesInput([originalSender]);
     } else {
-        targetToNotify = ['jmassalha'];
+        console.warn('[REPLY] No valid recipients resolved – skipping push notification');
+        targetToNotify = [];
     }
 
     targetToNotify = parseUsernamesInput(targetToNotify)
@@ -4872,7 +4873,7 @@ function extractMessageIdFromLogDetails(details) {
 }
 
 // Helper: Log status to MySQL logs table
-function logNotificationStatus(sender, recipient, messageShort, status, details, recipientAuthJson = '', msgId = '') {
+function logNotificationStatus(sender, recipient, messageShort, status, details, recipientAuthJson = '', msgId = '', imageUrl = '') {
     const resolvedMsgId = String(msgId || '').trim() || extractMessageIdFromLogDetails(details);
     return mysqlLogsService.insertLog({
         sender: sender || 'System',
@@ -4881,7 +4882,8 @@ function logNotificationStatus(sender, recipient, messageShort, status, details,
         message: messageShort,
         status: status,
         details: details,
-        recipientAuthJson: recipientAuthJson || ''
+        recipientAuthJson: recipientAuthJson || '',
+        imageUrl: imageUrl || ''
     }).catch((err) => {
         console.error('[LOG ERROR]', err && err.message ? err.message : err);
         return null;
@@ -6364,7 +6366,8 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
             finalStatus,
             fullReport,
             recipientAuthJsonForLog,
-            messageId
+            messageId,
+            imageUrl || ''
         );
     }
 
@@ -6565,12 +6568,22 @@ registerMessageController(app, {
     buildGoogleSheetGetUrl,
     getLogsMessagesForUser: (user, options = {}) => mysqlLogsService.getLogsMessagesForUser(user, options),
     hardcodedGroupIds: [DOVRUT_GROUP_ID, DOVRUT_TEST_GROUP_ID],
+    hardcodedGroupMembers: (() => {
+        const membersMap = {};
+        hardcodedCommunityGroupsByKey.forEach((policy, key) => {
+            if (Array.isArray(policy.members) && policy.members.length) {
+                membersMap[key] = policy.members;
+            }
+        });
+        return membersMap;
+    })(),
     getGroups: () => groups,
     getActiveRedisStateStore: () => activeRedisStateStore,
     getMessageQueue: () => messageQueue,
     scheduleStateSave,
     sseClients,
-    updateUserReceivedTime: (msgId, receivedAt) => mysqlLogsService.updateUserReceivedTime(msgId, receivedAt)
+    updateUserReceivedTime: (msgId, receivedAt) => mysqlLogsService.updateUserReceivedTime(msgId, receivedAt),
+    updateUserReceivedTimeBatch: (entries) => mysqlLogsService.updateUserReceivedTimeBatch(entries)
 });
 
 app.post(['/upload', '/notify/upload'], uploadFieldsValidated, async (req, res) => {
@@ -6975,10 +6988,13 @@ async function checkOutgoingQueue() {
                 await addToQueue(targetUsers, pollingMessage);
 
                 // 2. Send Push Notification (Handles all devices)
-                await sendPushNotificationToUser(targetUsers, notificationData, senderName, {
+                const pushResult = await sendPushNotificationToUser(targetUsers, notificationData, senderName, {
                     messageId,
                     maxPerUserEndpoints: 1
                 });
+                if (pushResult && pushResult.failed > 0) {
+                    console.warn(`[QUEUE] Push notification partially failed: ${pushResult.failed} failed, ${pushResult.success} succeeded for messageId=${messageId}`);
+                }
                 const processedAt = Date.now();
                 recentProcessedQueueMessages.set(semanticDedupKey, processedAt);
                 if (sourceAwareDedupKey) {
