@@ -19,6 +19,7 @@ export interface MysqlLogInsertPayload {
   msgId?: string;
   recipientAuthJson?: string;
   dateTime?: Date;
+  imageUrl?: string;
 }
 
 export interface MysqlLogsReadOptions {
@@ -44,6 +45,7 @@ interface MysqlLogRow extends RowDataPacket {
   errorMessageOrSuccessCount: string | null;
   recipientAuthJson: string | null;
   userReceivedTime: Date | string | number | null;
+  imageUrl: string | null;
 }
 
 function toTrimmedString(value: unknown): string {
@@ -231,11 +233,12 @@ export class MysqlLogsService {
   private readonly pool: Pool;
   private readonly tableName: string;
   private readonly insertQuery: string;
+  private imageUrlColumnReady = false;
 
   constructor(config: MysqlLogsConfig) {
     this.tableName = normalizeTableName(config.table);
-    this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+    this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     this.pool = mysql.createPool({
       host: config.host,
       port: config.port,
@@ -245,6 +248,24 @@ export class MysqlLogsService {
       connectionLimit: config.connectionLimit,
       charset: 'utf8mb4'
     });
+    void this.ensureImageUrlColumn();
+  }
+
+  private async ensureImageUrlColumn(): Promise<void> {
+    if (this.imageUrlColumnReady) return;
+    try {
+      await this.pool.execute(
+        `ALTER TABLE \`${this.tableName}\` ADD COLUMN \`ImageUrl\` TEXT NULL`
+      );
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code;
+      const message = String((err as { message?: string }).message || '');
+      // ER_DUP_FIELDNAME = column already exists — expected on subsequent restarts.
+      if (code !== 'ER_DUP_FIELDNAME' && !message.includes('Duplicate column')) {
+        console.warn('[MYSQL] ensureImageUrlColumn warning:', message);
+      }
+    }
+    this.imageUrlColumnReady = true;
   }
 
   private buildCompositeKeyFromPayload(payload: MysqlLogInsertPayload): string {
@@ -279,8 +300,9 @@ export class MysqlLogsService {
     const msgId = resolveLogMessageId(payload.msgId, details);
     const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
     const dateTime = normalizeDateTimeForStorage(payload.dateTime);
+    const imageUrl = toTrimmedString(payload.imageUrl);
 
-    await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson]);
+    await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null]);
     return true;
   }
 
@@ -362,6 +384,7 @@ export class MysqlLogsService {
         const msgId = resolveLogMessageId(payload.msgId, details);
         const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
         const dateTime = normalizeDateTimeForStorage(payload.dateTime);
+        const imageUrl = toTrimmedString(payload.imageUrl);
         await connection.execute(this.insertQuery, [
           dateTime,
           recipient,
@@ -370,7 +393,8 @@ export class MysqlLogsService {
           message,
           status,
           details,
-          recipientAuthJson
+          recipientAuthJson,
+          imageUrl || null
         ]);
       }
       await connection.commit();
@@ -447,7 +471,8 @@ export class MysqlLogsService {
           \`SuccessOrFailed\` AS successOrFailed, 
           \`ErrorMessageOrSuccessCount\` AS errorMessageOrSuccessCount, 
           \`RecipientAuthJSON\` AS recipientAuthJson,
-          \`UserReceivedTime\` AS userReceivedTime 
+          \`UserReceivedTime\` AS userReceivedTime,
+          \`ImageUrl\` AS imageUrl 
         FROM \`${this.tableName}\` 
         WHERE 1=1`;
 
@@ -536,8 +561,9 @@ export class MysqlLogsService {
         const resolvedActionType = isDeletedStatus ? 'delete-action' : actionTypeFromDetails;
 
         const body = toTrimmedString(row.messagePreview);
+        const imageUrl = toTrimmedString(row.imageUrl);
         if (!resolvedActionType) {
-          if (!body) continue;
+          if (!body && !imageUrl) continue;
           if (body.toLowerCase() === 'new notification') {
             continue;
           }
@@ -572,6 +598,7 @@ export class MysqlLogsService {
           sender,
           toUser: resolvedToUser || undefined,
           body,
+          imageUrl: imageUrl || undefined,
           timestamp,
           recipient: requestedUser,
           status,

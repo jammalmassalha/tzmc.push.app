@@ -4873,7 +4873,7 @@ function extractMessageIdFromLogDetails(details) {
 }
 
 // Helper: Log status to MySQL logs table
-function logNotificationStatus(sender, recipient, messageShort, status, details, recipientAuthJson = '', msgId = '') {
+function logNotificationStatus(sender, recipient, messageShort, status, details, recipientAuthJson = '', msgId = '', imageUrl = '') {
     const resolvedMsgId = String(msgId || '').trim() || extractMessageIdFromLogDetails(details);
     return mysqlLogsService.insertLog({
         sender: sender || 'System',
@@ -4882,7 +4882,8 @@ function logNotificationStatus(sender, recipient, messageShort, status, details,
         message: messageShort,
         status: status,
         details: details,
-        recipientAuthJson: recipientAuthJson || ''
+        recipientAuthJson: recipientAuthJson || '',
+        imageUrl: imageUrl || ''
     }).catch((err) => {
         console.error('[LOG ERROR]', err && err.message ? err.message : err);
         return null;
@@ -6365,7 +6366,8 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
             finalStatus,
             fullReport,
             recipientAuthJsonForLog,
-            messageId
+            messageId,
+            imageUrl || ''
         );
     }
 

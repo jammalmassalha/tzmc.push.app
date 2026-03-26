@@ -472,8 +472,16 @@ function registerMessageController(app, deps = {}) {
                     const sender = normalizeUserKey(message.sender || message.from || message.reactor || '');
                     if (!isActionMessage && (!sender || sender === 'system')) return null;
 
-                    const body = String(message.body ?? message.message ?? message.content ?? '').trim();
-                    if (!isActionMessage && !body) return null;
+                    const rawBody = String(message.body ?? message.message ?? message.content ?? '').trim();
+                    const imageUrl = String(message.imageUrl ?? message.image ?? '').trim() || undefined;
+
+                    // Strip placeholder body text when the actual image URL is present.
+                    const imagePlaceholders = new Set(['sent an image', '[image sent]', 'image attachment']);
+                    const isPlaceholderBody = imagePlaceholders.has(rawBody.toLowerCase()) ||
+                        rawBody.toLowerCase().startsWith('[image sent]:');
+                    const body = (isPlaceholderBody && imageUrl) ? '' : rawBody;
+
+                    if (!isActionMessage && !body && !imageUrl) return null;
 
                     const normalizedBody = body.toLowerCase();
                     if (!isActionMessage && (normalizedBody === 'new notification' || normalizedBody === 'new reaction')) return null;
@@ -553,6 +561,7 @@ function registerMessageController(app, deps = {}) {
                         sender,
                         toUser: normalizedToUserCandidate || undefined,
                         body,
+                        imageUrl,
                         timestamp,
                         groupId: resolvedGroupId || undefined,
                         groupName: resolvedGroupName || undefined,
