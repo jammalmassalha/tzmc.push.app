@@ -6370,7 +6370,8 @@ export class ChatStoreService {
 
     const currentBody = String(current.body || '').trim();
     const currentImage = String(current.imageUrl || '').trim();
-    const nextBody = currentBody || incomingBody;
+    const normalizedIncoming = String(incomingBody || '').trim();
+    const nextBody = normalizedIncoming.length > currentBody.length ? normalizedIncoming : (currentBody || normalizedIncoming);
     const nextImage = currentImage || String(incomingImageUrl || '').trim();
     if (nextBody === currentBody && nextImage === currentImage) {
       return false;
