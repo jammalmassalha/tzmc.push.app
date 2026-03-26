@@ -522,17 +522,26 @@ export class MysqlLogsService {
         // Security/Filtering Check
         if (!recipients.has(requestedUser) && !isOutgoingFromRequestedUser) {
           if (isHardcodedGlobalGroupSender) {
-            // Check membership for restricted hardcoded groups.
+            // Sender is a hardcoded group (e.g. 'דוברות').
+            // Groups with an explicit members list are restricted; others are open to all.
             const senderGroupKey = normalizeGroupKey(senderRaw);
             const restrictedMembers = hardcodedGroupMembersMap.get(senderGroupKey);
             if (restrictedMembers && !restrictedMembers.has(requestedUser)) {
               continue;
             }
           } else if (isGroupTargetRow) {
-            // If the target is a restricted hardcoded group, verify membership.
+            // ToUser is a group name (non-phone).
             const toGroupKey = normalizeGroupKey(rawToUser);
             const restrictedMembers = hardcodedGroupMembersMap.get(toGroupKey);
-            if (restrictedMembers && !restrictedMembers.has(requestedUser)) {
+            if (restrictedMembers) {
+              // Hardcoded group with explicit members – check membership.
+              if (!restrictedMembers.has(requestedUser)) {
+                continue;
+              }
+            } else if (hardcodedGroupKeySet.has(toGroupKey)) {
+              // Hardcoded group without explicit members (e.g. 'דוברות') – open to all.
+            } else {
+              // Non-hardcoded group – user is not a listed recipient, skip.
               continue;
             }
           } else {
