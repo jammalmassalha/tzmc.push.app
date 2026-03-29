@@ -240,6 +240,7 @@ export class MysqlLogsService {
 
   constructor(config: MysqlLogsConfig) {
     this.tableName = normalizeTableName(config.table);
+    // 10 columns / 10 parameters — keep in sync with insertLog() and insertLogsBulk()
     this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     this.pool = mysql.createPool({
