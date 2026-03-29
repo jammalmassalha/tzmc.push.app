@@ -75,7 +75,7 @@ export const runtimeConfig: RuntimeConfig = {
   versionUrl: withOverride('versionUrl', `${backendOrigin}/notify/version`)
 };
 
-export const SYSTEM_CHAT_IDS = ['ציפי', 'הזמנת הסעה'] as const;
+export const SYSTEM_CHAT_IDS = ['ציפי', 'הזמנת הסעה', 'מוקד איחוד - קריאות'] as const;
 
 export function getNotifyBaseUrl(notifyReplyUrl: string): string {
   if (notifyReplyUrl.endsWith('/reply')) {

@@ -17,6 +17,7 @@ const { createAuthorizedUserMiddleware } = require('./backend/middleware/authori
 const { registerAuthController } = require('./backend/controllers/auth.controller');
 const { registerMessageController } = require('./backend/controllers/message.controller');
 const { registerShuttleController } = require('./backend/controllers/shuttle.controller');
+const { registerHelpdeskController } = require('./backend/controllers/helpdesk.controller');
 const {
     createSheetIntegrationServiceFromEnv,
     createMysqlLogsServiceFromEnv,
@@ -2450,6 +2451,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         reply,
         originalSender,
         imageUrl,
+        fileUrl,
         senderName,
         messageId: clientMessageId,
         groupId,
@@ -2602,6 +2604,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
                 groupMessageText: shortText,
                 groupSenderName: senderLabel
             } : {}),
+            ...(fileUrl ? { fileUrl } : {}),
             ...messageMetadata
         };
         const notificationData = {
@@ -2621,6 +2624,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             body: reply,
             timestamp: Date.now(),
             imageUrl: imageUrl || null,
+            fileUrl: fileUrl || null,
             groupId: groupId || null,
             groupName: groupName || null,
             groupMembers: groupMembers || null,
@@ -4873,7 +4877,7 @@ function extractMessageIdFromLogDetails(details) {
 }
 
 // Helper: Log status to MySQL logs table
-function logNotificationStatus(sender, recipient, messageShort, status, details, recipientAuthJson = '', msgId = '', imageUrl = '') {
+function logNotificationStatus(sender, recipient, messageShort, status, details, recipientAuthJson = '', msgId = '', imageUrl = '', fileUrl = '') {
     const resolvedMsgId = String(msgId || '').trim() || extractMessageIdFromLogDetails(details);
     return mysqlLogsService.insertLog({
         sender: sender || 'System',
@@ -4883,7 +4887,8 @@ function logNotificationStatus(sender, recipient, messageShort, status, details,
         status: status,
         details: details,
         recipientAuthJson: recipientAuthJson || '',
-        imageUrl: imageUrl || ''
+        imageUrl: imageUrl || '',
+        fileUrl: fileUrl || ''
     }).catch((err) => {
         console.error('[LOG ERROR]', err && err.message ? err.message : err);
         return null;
@@ -6020,6 +6025,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
         (Array.isArray(customData.groupMembers) && customData.groupMembers.length)
     );
     const imageUrl = message.image || null;
+    const fileUrl = (message.data && message.data.fileUrl) || null;
     const finalSender = senderuser || 'System';
     const singlePerUser = Boolean(options.singlePerUser || messageType === 'reaction');
     const allowSecondAttempt = options.allowSecondAttempt !== false && messageType !== 'reaction';
@@ -6367,7 +6373,8 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
             fullReport,
             recipientAuthJsonForLog,
             messageId,
-            imageUrl || ''
+            imageUrl || '',
+            fileUrl || ''
         );
     }
 
@@ -6559,6 +6566,11 @@ registerShuttleController(app, {
     parseBooleanInput,
     generateMessageId,
     runShuttleReminderJob
+});
+
+registerHelpdeskController(app, {
+    requireAuthorizedUser,
+    env: process.env
 });
 
 registerMessageController(app, {

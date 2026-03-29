@@ -1,0 +1,40 @@
+<h2 mat-dialog-title>קריאה חדשה · {{ data.department }}</h2>
+
+<mat-dialog-content>
+  <div class="helpdesk-dialog-grid">
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>כותרת הקריאה</mat-label>
+      <input matInput [formControl]="form.controls.title" placeholder="לדוגמה: מדפסת לא עובדת" autocomplete="off" />
+      @if (form.controls.title.hasError('required') && form.controls.title.touched) {
+        <mat-error>יש להזין כותרת.</mat-error>
+      }
+      @if (form.controls.title.hasError('minlength') && form.controls.title.touched) {
+        <mat-error>הכותרת חייבת להכיל לפחות 3 תווים.</mat-error>
+      }
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>תיאור הבעיה</mat-label>
+      <textarea
+        matInput
+        [formControl]="form.controls.description"
+        placeholder="תאר בפירוט את הבעיה..."
+        rows="5"
+        cdkTextareaAutosize
+        cdkAutosizeMinRows="4"
+        cdkAutosizeMaxRows="10">
+      </textarea>
+      @if (form.controls.description.hasError('required') && form.controls.description.touched) {
+        <mat-error>יש להזין תיאור.</mat-error>
+      }
+      @if (form.controls.description.hasError('minlength') && form.controls.description.touched) {
+        <mat-error>התיאור חייב להכיל לפחות 5 תווים.</mat-error>
+      }
+    </mat-form-field>
+  </div>
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-stroked-button mat-dialog-close>ביטול</button>
+  <button mat-flat-button color="primary" (click)="submit()">שלח קריאה</button>
+</mat-dialog-actions>

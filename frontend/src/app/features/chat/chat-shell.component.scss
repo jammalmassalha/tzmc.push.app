@@ -942,6 +942,98 @@ mat-chip:not(.offline) {
   word-break: break-word;
 }
 
+.message-file-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: #e8f0fe;
+  color: #1f4fc4;
+  text-decoration: none;
+  font-size: 13px;
+  cursor: pointer;
+  mat-icon {
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+  }
+}
+
+.upload-progress-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: #e3f2fd;
+  border-radius: 8px;
+  margin-bottom: 4px;
+}
+
+.upload-progress-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2.5px solid #90caf9;
+  border-top-color: #1976d2;
+  border-radius: 50%;
+  animation: upload-spin 0.8s linear infinite;
+}
+
+@keyframes upload-spin {
+  to { transform: rotate(360deg); }
+}
+
+.upload-progress-label {
+  font-size: 13px;
+  color: #1565c0;
+}
+
+.pending-attachment-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #f0f0f0;
+  border-radius: 8px;
+  margin-bottom: 4px;
+}
+
+.pending-attachment-thumb {
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 6px;
+}
+
+.pending-attachment-file {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: #333;
+}
+
+.pending-attachment-name {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pending-attachment-remove {
+  border: 0;
+  background: transparent;
+  padding: 2px;
+  cursor: pointer;
+  display: flex;
+  mat-icon {
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+    color: #666;
+  }
+}
+
 .message-phone {
   border: 0;
   padding: 0;
@@ -2739,5 +2831,150 @@ mat-chip:not(.offline) {
     bottom: calc(80px + env(safe-area-inset-bottom));
     width: 40px;
     height: 40px;
+  }
+}
+
+.helpdesk-message-card {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(16, 119, 186, 0.26);
+  background: linear-gradient(180deg, rgba(240, 250, 255, 0.98) 0%, rgba(228, 244, 255, 0.95) 100%);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.helpdesk-message-card.error {
+  border-color: rgba(186, 48, 48, 0.28);
+  background: rgba(255, 245, 245, 0.97);
+}
+
+.helpdesk-message-card-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0c4a7a;
+}
+
+.helpdesk-message-card.error .helpdesk-message-card-title {
+  color: #9b2020;
+}
+
+.helpdesk-message-card-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.helpdesk-message-card-row .label {
+  font-size: 11px;
+  color: #4a7a9b;
+}
+
+.helpdesk-message-card-row .value {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0d3d66;
+}
+
+.helpdesk-picker-panel {
+  border-top-color: rgba(16, 119, 186, 0.2);
+}
+
+.helpdesk-dashboard {
+  border-left: 3px solid #1077ba;
+}
+
+.helpdesk-ticket-card {
+  border-radius: 10px;
+  cursor: pointer;
+  transition: box-shadow 0.15s, transform 0.1s;
+
+  &:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+    transform: translateY(-1px);
+  }
+
+  &:active {
+    transform: translateY(0);
+  }
+}
+
+.helpdesk-assigned-badge {
+  display: inline-flex;
+  align-items: center;
+  background: #1565c0;
+  color: #fff;
+  border-radius: 10px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-right: auto;
+}
+
+.helpdesk-assigned-card {
+  border-right: 3px solid #1565c0 !important;
+}
+
+.helpdesk-editor-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #444;
+
+  mat-icon {
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+    color: #7b1fa2;
+  }
+}
+
+.helpdesk-role-badge {
+  display: inline-flex;
+  align-items: center;
+  background: #f3e5f5;
+  color: #7b1fa2;
+  border-radius: 10px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+.helpdesk-editor-card {
+  border-right: 3px solid #7b1fa2 !important;
+}
+
+.shuttle-orders-tab-btn.assigned {
+  background: rgba(21, 101, 192, 0.08);
+  color: #1565c0;
+
+  &.active {
+    background: #1565c0;
+    color: #fff;
+  }
+}
+
+.shuttle-orders-tab-btn.editor {
+  background: rgba(123, 31, 162, 0.08);
+  color: #7b1fa2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+
+  .tab-icon {
+    font-size: 16px;
+    width: 16px;
+    height: 16px;
+  }
+
+  &.active {
+    background: #7b1fa2;
+    color: #fff;
   }
 }

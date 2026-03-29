@@ -45,6 +45,7 @@ export interface ChatMessage {
   body: string;
   imageUrl?: string | null;
   thumbnailUrl?: string | null;
+  fileUrl?: string | null;
   direction: 'incoming' | 'outgoing';
   timestamp: number;
   deliveryStatus: DeliveryStatus;
@@ -92,6 +93,7 @@ export interface IncomingServerMessage {
   body?: string;
   timestamp?: number;
   imageUrl?: string | null;
+  fileUrl?: string | null;
   groupId?: string | null;
   groupName?: string | null;
   groupMembers?: string[] | null;
@@ -116,6 +118,7 @@ export interface ReplyPayload {
   senderName: string;
   reply: string;
   imageUrl: string | null;
+  fileUrl?: string | null;
   originalSender: string;
   messageId: string;
   membersToNotify?: string[];
@@ -242,6 +245,56 @@ export interface OutboxGroupUpdateItem {
 }
 
 export type OutboxItem = OutboxDirectItem | OutboxGroupItem | OutboxGroupUpdateItem;
+
+export type HelpdeskDepartment = 'מערכות מידע' | 'אחזקה';
+export type HelpdeskStatus = 'open' | 'in_progress' | 'resolved' | 'closed';
+export type HelpdeskRole = 'Admin' | 'Editor';
+
+export interface HelpdeskTicketPayload {
+  department: HelpdeskDepartment;
+  title: string;
+  description: string;
+}
+
+export interface HelpdeskTicket {
+  id: number;
+  creatorUsername: string;
+  department: string;
+  title: string;
+  description: string;
+  status: HelpdeskStatus;
+  handlerUsername?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface HelpdeskManagedUser {
+  username: string;
+  role: HelpdeskRole;
+  department: string;
+}
+
+export interface HelpdeskMyRole {
+  role: HelpdeskRole;
+  department: string;
+}
+
+export interface HelpdeskDashboard {
+  ongoing: HelpdeskTicket[];
+  past: HelpdeskTicket[];
+  assigned: HelpdeskTicket[];
+  myRole: HelpdeskMyRole | null;
+  editorTickets: HelpdeskTicket[] | null;
+  handlers: HelpdeskManagedUser[] | null;
+}
+
+export interface HelpdeskNote {
+  id: number;
+  ticketId: number;
+  authorUsername: string;
+  noteText: string;
+  createdAt: string;
+}
 
 export interface PersistedChatState {
   contacts: Contact[];

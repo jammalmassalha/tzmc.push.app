@@ -10,6 +10,11 @@ import {
   EditMessagePayload,
   GroupUpdatePayload,
   GroupType,
+  HelpdeskDashboard,
+  HelpdeskManagedUser,
+  HelpdeskMyRole,
+  HelpdeskTicket,
+  HelpdeskTicketPayload,
   IncomingServerMessage,
   MessageReference,
   MessageReaction,
@@ -55,8 +60,11 @@ const DELIVERY_TELEMETRY_FLUSH_MIN_EVENTS = 4;
 const DELIVERY_TELEMETRY_DEVICE_ID_KEY = 'modern-chat-delivery-device-id';
 const HR_CHAT_NAME = 'ציפי';
 const SHUTTLE_CHAT_NAME = 'הזמנת הסעה';
-const SHUTTLE_CHAT_TITLE = 'הזמנת הסעה / Заказ шаттла';
+const SHUTTLE_CHAT_TITLE = 'הזמנת הסעה / Заказ שаттла';
 const SHUTTLE_OPERATIONS_CHAT_NAME = 'הסעות';
+const HELPDESK_CHAT_NAME = 'מוקד איחוד - קריאות';
+const HELPDESK_STATE_KEY_PREFIX = 'helpdesk_state_';
+const HELPDESK_TICKETS_CACHE_TTL_MS = 60 * 1000;
 const HR_WELCOME_KEY_PREFIX = 'hr_welcome_sent_';
 const HR_STATE_KEY_PREFIX = 'hr_state_';
 const HR_UPLOAD_BASE_URL = '/notify/uploads/';
@@ -83,6 +91,7 @@ const DOVRUT_ALLOWED_WRITERS = ['0506501040', '0506267447', '0543108095'] as con
 const DOVRUT_TEST_ALLOWED_WRITERS = ['0546799693'] as const;
 const DOVRUT_TEST_GROUP_MEMBERS = ['0546799693', '0550000001', '0547997273', '0505203520'] as const;
 const SHUTTLE_OPERATIONS_GROUP_MEMBERS = ['0546799693', '0550000001', '0506267410', '0505203520'] as const;
+const HELPDESK_ALLOWED_USERS = ['0546799693', '0550000001'] as const;
 const BADGE_RESET_ALL_ALLOWED_USERS = ['0546799693'] as const;
 interface HardcodedCommunityGroupConfig {
   id: string;
@@ -215,6 +224,7 @@ interface SendMessagePayload extends SendMessageOptions {
   body: string;
   imageUrl: string | null;
   thumbnailUrl?: string | null;
+  fileUrl?: string | null;
 }
 
 interface DeliveryTelemetryCounters {
@@ -287,6 +297,13 @@ export interface ShuttleBreadcrumbStep {
   completed: boolean;
 }
 
+export type HelpdeskAwaiting = 'menu' | 'department';
+
+export interface HelpdeskConversationState {
+  awaiting: HelpdeskAwaiting;
+  draft?: { department?: string };
+}
+
 export type RealtimeTransportMode = 'socket' | 'sse' | 'polling';
 
 @Injectable({ providedIn: 'root' })
@@ -300,10 +317,17 @@ export class ChatStoreService {
   readonly loading = signal(false);
   readonly syncing = signal(false);
   readonly uploading = signal(false);
+  readonly pendingAttachment = signal<{ url: string; type: 'image' | 'file'; name: string; thumbUrl?: string | null } | null>(null);
   readonly networkOnline = signal(typeof navigator !== 'undefined' ? navigator.onLine : true);
   readonly lastError = signal<string | null>(null);
   readonly incomingReactionNotice = signal<IncomingReactionNotice | null>(null);
   readonly shuttleAccessAllowed = signal(true);
+  readonly helpdeskAccessAllowed = computed(() => {
+    const user = this.currentUser();
+    if (!user) return false;
+    const normalizedUser = this.normalizeUser(user);
+    return HELPDESK_ALLOWED_USERS.some((allowed) => this.normalizeUser(allowed) === normalizedUser);
+  });
   readonly realtimeTransportMode = signal<RealtimeTransportMode>('polling');
   readonly realtimeTransportLabel = computed(() => {
     const mode = this.realtimeTransportMode();
@@ -367,6 +391,16 @@ export class ChatStoreService {
   private readonly shuttleOrdersSyncPromiseByUser = new Map<string, Promise<void>>();
   private readonly shuttleReminderTimersByKey = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly shuttlePickerRevision = signal(0);
+  private readonly helpdeskPickerRevision = signal(0);
+  private helpdeskInitInFlight = false;
+  private readonly helpdeskTicketsSignal = signal<HelpdeskTicket[]>([]);
+  private readonly helpdeskAssignedSignal = signal<HelpdeskTicket[]>([]);
+  private readonly helpdeskMyRoleSignal = signal<HelpdeskMyRole | null>(null);
+  private readonly helpdeskEditorTicketsSignal = signal<HelpdeskTicket[] | null>(null);
+  private readonly helpdeskHandlersSignal = signal<HelpdeskManagedUser[] | null>(null);
+  private readonly helpdeskTicketsLoadingSignal = signal(false);
+  private helpdeskTicketsSyncAt = 0;
+  private helpdeskTicketsSyncPromise: Promise<void> | null = null;
   private lastAppliedAppBadgeCount = -1;
   private lastServerBadgeResetAt = 0;
   private serverBadgeResetInFlight = false;
@@ -438,8 +472,12 @@ export class ChatStoreService {
       chatIds.add(id);
     }
     const canAccessShuttle = this.shuttleAccessAllowed();
+    const canAccessHelpdesk = this.helpdeskAccessAllowed();
     for (const systemId of this.systemChatIdSet) {
       if (this.isShuttleChat(systemId) && !canAccessShuttle) {
+        continue;
+      }
+      if (this.isHelpdeskChat(systemId) && !canAccessHelpdesk) {
         continue;
       }
       chatIds.add(systemId);
@@ -453,6 +491,9 @@ export class ChatStoreService {
       const lastMessage = messages[messages.length - 1];
       const isShuttle = this.isShuttleChat(chatId);
       if (isShuttle && !canAccessShuttle) {
+        continue;
+      }
+      if (this.isHelpdeskChat(chatId) && !canAccessHelpdesk) {
         continue;
       }
 
@@ -581,7 +622,6 @@ export class ChatStoreService {
     }
 
     this.initializedUser = user;
-    this.flushPendingServiceWorkerMessages();
 
     /**
      * SYNC STEP 1: Drain Service Worker Cache
@@ -602,6 +642,15 @@ export class ChatStoreService {
       incrementUnread: true, // Marks missed messages as unread so they appear in badges
       limit: 1000            // Window large enough to cover several hours of activity
     }).catch(() => undefined);
+
+    /**
+     * SYNC STEP 3: Process pending SW messages AFTER drain + recovery.
+     * Flushing here (not at the top of initialize) ensures that when a
+     * 'notification-clicked' action fires setActiveChat(), the full set of
+     * messages is already in the store so unreadBeforeOpen is computed
+     * correctly and the chat scrolls to the first unread instead of the bottom.
+     */
+    this.flushPendingServiceWorkerMessages();
 
     // Continue with standard initialization
     await this.refreshShuttleAccessForCurrentUser(user, { force: true });
@@ -834,6 +883,9 @@ export class ChatStoreService {
 
     const normalized = this.normalizeChatId(chatId);
     if (this.isShuttleChat(normalized) && !this.shuttleAccessAllowed()) {
+      return;
+    }
+    if (this.isHelpdeskChat(normalized) && !this.helpdeskAccessAllowed()) {
       return;
     }
     const unreadBeforeOpen = Math.max(0, Math.floor(Number(this.unreadByChat()[normalized] ?? 0)));
@@ -1112,6 +1164,9 @@ export class ChatStoreService {
       return false;
     }
     if (this.isShuttleChat(normalizedChatId) && !this.shuttleAccessAllowed()) {
+      return false;
+    }
+    if (this.isHelpdeskChat(normalizedChatId) && !this.helpdeskAccessAllowed()) {
       return false;
     }
     const group = this.groups().find((item) => item.id === normalizedChatId);
@@ -1707,11 +1762,16 @@ export class ChatStoreService {
     } = {}
   ): Promise<number> {
     const normalizedUser = this.normalizeUser(user);
-    if (!normalizedUser || this.currentUser() !== normalizedUser || !this.isNetworkReachable()) {
+    const force = Boolean(options.force);
+    // When force=true the caller (initialize) has already completed a successful HTTP session
+    // call, so the network is definitely reachable. Skipping the isNetworkReachable() guard
+    // here prevents stale navigator.onLine values from blocking recovery on mobile cold starts.
+    if (!normalizedUser || this.currentUser() !== normalizedUser) {
       return 0;
     }
-
-    const force = Boolean(options.force);
+    if (!force && !this.isNetworkReachable()) {
+      return 0;
+    }
     const now = Date.now();
 
     // Prevent spamming the server if not forced
@@ -2254,6 +2314,56 @@ export class ChatStoreService {
     }
   }
 
+  /** Upload a file and stage it as a pending attachment without sending yet. */
+  async uploadAttachment(file: File): Promise<void> {
+    if (!file) return;
+
+    this.uploading.set(true);
+    this.lastError.set(null);
+    try {
+      const upload = await this.api.uploadFile(file);
+      if (upload.status !== 'success' || !upload.url) {
+        throw new Error('Upload did not return a file URL');
+      }
+
+      const lower = upload.url.toLowerCase();
+      const isDocument = /\.(pdf|doc|docx)(\?|$)/.test(lower);
+      this.pendingAttachment.set({
+        url: upload.url,
+        type: isDocument ? 'file' : 'image',
+        name: file.name,
+        thumbUrl: upload.thumbUrl ?? null
+      });
+    } catch {
+      this.lastError.set('שגיאה בהעלאת קובץ');
+    } finally {
+      this.uploading.set(false);
+    }
+  }
+
+  clearPendingAttachment(): void {
+    this.pendingAttachment.set(null);
+  }
+
+  /** Send a text message that may include a pending attachment (image + fileUrl). */
+  async sendMessageWithAttachment(text: string, options: SendMessageOptions = {}): Promise<void> {
+    const body = text.trim();
+    const attachment = this.pendingAttachment();
+    this.pendingAttachment.set(null);
+
+    if (!body && !attachment) return;
+
+    const payload: SendMessagePayload = {
+      body,
+      imageUrl: attachment?.type === 'image' ? attachment.url : null,
+      thumbnailUrl: attachment?.type === 'image' ? (attachment.thumbUrl ?? null) : null,
+      fileUrl: attachment?.type === 'file' ? attachment.url : null,
+      ...options
+    };
+
+    await this.sendMessageInternal(payload);
+  }
+
   async sendReaction(targetMessageId: string, emoji: string): Promise<void> {
     const currentUser = this.currentUser();
     const activeChatId = this.activeChatId();
@@ -2426,11 +2536,22 @@ export class ChatStoreService {
         return;
       }
       await this.ensureShuttleFlowOnOpen();
+      return;
+    }
+    if (this.isHelpdeskChat(chatId)) {
+      if (!this.helpdeskAccessAllowed()) {
+        return;
+      }
+      await this.ensureHelpdeskFlowOnOpen();
     }
   }
 
   private isHrChat(chatId: string | null): boolean {
     return this.normalizeChatId(chatId ?? '') === this.normalizeChatId(HR_CHAT_NAME);
+  }
+
+  private isHelpdeskChat(chatId: string | null): boolean {
+    return this.normalizeChatId(chatId ?? '') === this.normalizeChatId(HELPDESK_CHAT_NAME);
   }
 
   private isShuttleChat(chatId: string | null): boolean {
@@ -4584,6 +4705,275 @@ export class ChatStoreService {
     }
   }
 
+  private sendHelpdeskSystemMessage(
+    body: string,
+    options: { recordType?: string } = {}
+  ): void {
+    const chatId = this.normalizeChatId(HELPDESK_CHAT_NAME);
+    const message: ChatMessage = {
+      id: this.generateId('rec'),
+      messageId: this.generateId('helpdesk'),
+      chatId,
+      sender: chatId,
+      senderDisplayName: HELPDESK_CHAT_NAME,
+      recordType: options.recordType,
+      body,
+      imageUrl: null,
+      direction: 'incoming',
+      timestamp: Date.now(),
+      deliveryStatus: 'delivered'
+    };
+
+    this.appendMessage(message);
+    if (this.activeChatId() !== chatId) {
+      this.unreadByChat.update((map) => ({
+        ...map,
+        [chatId]: (map[chatId] ?? 0) + 1
+      }));
+    }
+  }
+
+  private bumpHelpdeskPickerRevision(): void {
+    this.helpdeskPickerRevision.update((value) => value + 1);
+  }
+
+  private helpdeskStateKey(user: string): string {
+    return `${HELPDESK_STATE_KEY_PREFIX}${this.normalizeUser(user)}`;
+  }
+
+  private defaultHelpdeskState(): HelpdeskConversationState {
+    return { awaiting: 'menu' };
+  }
+
+  private loadHelpdeskState(user: string): HelpdeskConversationState | null {
+    try {
+      const raw = localStorage.getItem(this.helpdeskStateKey(user));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as HelpdeskConversationState;
+      if (!parsed || typeof parsed !== 'object') return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  private saveHelpdeskState(user: string, state: HelpdeskConversationState): void {
+    try {
+      localStorage.setItem(this.helpdeskStateKey(user), JSON.stringify(state));
+    } catch {
+      // ignore
+    }
+  }
+
+  getHelpdeskQuickPickerState(): ShuttleQuickPickerState | null {
+    this.helpdeskPickerRevision();
+    const activeChatId = this.activeChatId();
+    if (!this.isHelpdeskChat(activeChatId)) return null;
+    const user = this.currentUser();
+    if (!user) return null;
+
+    const state = this.loadHelpdeskState(user) ?? this.defaultHelpdeskState();
+
+    if (state.awaiting === 'menu') {
+      return {
+        key: 'menu',
+        title: 'מה תרצה לבצע?',
+        helperText: 'פתח קריאה חדשה למוקד הטכני',
+        mode: 'buttons',
+        options: [
+          { value: 'פתיחת קריאה חדשה', label: 'פתיחת קריאה חדשה' },
+          { value: 'הקריאות שלי', label: 'הקריאות שלי' }
+        ],
+        allowBack: false
+      };
+    }
+
+    if (state.awaiting === 'department') {
+      return {
+        key: 'department',
+        title: 'בחר מחלקה',
+        helperText: 'לאיזו מחלקה שייכת הבקשה?',
+        mode: 'buttons',
+        options: [
+          { value: 'מערכות מידע', label: '🖥️ מערכות מידע' },
+          { value: 'אחזקה', label: '🔧 אחזקה' }
+        ],
+        allowBack: true
+      };
+    }
+
+    return null;
+  }
+
+  getHelpdeskDashboard(): HelpdeskDashboard | null {
+    this.helpdeskPickerRevision();
+    const activeChatId = this.activeChatId();
+    if (!this.isHelpdeskChat(activeChatId)) return null;
+    const user = this.currentUser();
+    if (!user) return null;
+
+    const tickets = this.helpdeskTicketsSignal();
+    const ongoingStatuses = new Set<string>(['open', 'in_progress']);
+    const ongoing = tickets.filter((t) => ongoingStatuses.has(t.status));
+    const past = tickets.filter((t) => !ongoingStatuses.has(t.status));
+    return {
+      ongoing,
+      past,
+      assigned: this.helpdeskAssignedSignal(),
+      myRole: this.helpdeskMyRoleSignal(),
+      editorTickets: this.helpdeskEditorTicketsSignal(),
+      handlers: this.helpdeskHandlersSignal()
+    };
+  }
+
+  getHelpdeskTicketsLoading(): boolean {
+    this.helpdeskPickerRevision();
+    return this.helpdeskTicketsLoadingSignal();
+  }
+
+  async chooseHelpdeskOption(value: string): Promise<void> {
+    const user = this.currentUser();
+    if (!user) return;
+
+    const state = this.loadHelpdeskState(user) ?? this.defaultHelpdeskState();
+
+    if (state.awaiting === 'menu') {
+      if (value === 'הקריאות שלי') {
+        // Refresh and show dashboard
+        await this.refreshHelpdeskTickets();
+        return;
+      }
+      if (value === 'פתיחת קריאה חדשה') {
+        this.saveHelpdeskState(user, { awaiting: 'department' });
+        this.bumpHelpdeskPickerRevision();
+        return;
+      }
+    }
+
+    if (state.awaiting === 'department') {
+      if (value === '0') {
+        // back
+        this.saveHelpdeskState(user, this.defaultHelpdeskState());
+        this.bumpHelpdeskPickerRevision();
+        return;
+      }
+      // Department selected — caller (component) should open dialog for title/description
+      this.saveHelpdeskState(user, { awaiting: 'department', draft: { department: value } });
+      this.bumpHelpdeskPickerRevision();
+    }
+  }
+
+  goBackHelpdeskPicker(): void {
+    const user = this.currentUser();
+    if (!user) return;
+    this.saveHelpdeskState(user, this.defaultHelpdeskState());
+    this.bumpHelpdeskPickerRevision();
+  }
+
+  async submitHelpdeskTicket(department: string, title: string, description: string): Promise<HelpdeskTicket> {
+    const user = this.currentUser();
+    if (!user) throw new Error('יש להתחבר לפני פתיחת קריאה');
+
+    const payload: HelpdeskTicketPayload = {
+      department: department as 'מערכות מידע' | 'אחזקה',
+      title,
+      description
+    };
+
+    let ticket: HelpdeskTicket;
+    try {
+      ticket = await this.api.createHelpdeskTicket(payload);
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : 'שגיאה ביצירת הקריאה';
+      this.sendHelpdeskSystemMessage(`❌ ${errMsg}`, { recordType: 'helpdesk-ticket-error' });
+      this.saveHelpdeskState(user, this.defaultHelpdeskState());
+      this.bumpHelpdeskPickerRevision();
+      throw error;
+    }
+
+    const statusLabel = this.helpdeskStatusLabel(ticket.status);
+    const cardBody = `✅ הקריאה נפתחה בהצלחה\n[#${ticket.id}] ${ticket.title}\nמחלקה: ${ticket.department}\nסטטוס: ${statusLabel}`;
+    this.sendHelpdeskSystemMessage(cardBody, { recordType: 'helpdesk-ticket-success' });
+
+    // Refresh tickets list
+    this.helpdeskTicketsSignal.update((list) => [ticket, ...list]);
+
+    this.saveHelpdeskState(user, this.defaultHelpdeskState());
+    this.bumpHelpdeskPickerRevision();
+    return ticket;
+  }
+
+  async assignHelpdeskHandler(ticketId: number, handlerUsername: string | null): Promise<void> {
+    await this.api.assignHelpdeskHandler(ticketId, handlerUsername);
+    // Force refresh to get updated tickets
+    this.helpdeskTicketsSyncAt = 0;
+    await this.refreshHelpdeskTickets();
+  }
+
+  async refreshHelpdeskTickets(): Promise<void> {
+    const user = this.currentUser();
+    if (!user) return;
+    if (!this.isHelpdeskChat(this.activeChatId())) return;
+
+    const now = Date.now();
+    if (this.helpdeskTicketsSyncPromise) {
+      return this.helpdeskTicketsSyncPromise;
+    }
+    if (now - this.helpdeskTicketsSyncAt < HELPDESK_TICKETS_CACHE_TTL_MS) {
+      return;
+    }
+
+    this.helpdeskTicketsLoadingSignal.set(true);
+    this.bumpHelpdeskPickerRevision();
+
+    this.helpdeskTicketsSyncPromise = (async () => {
+      try {
+        const dashboard = await this.api.getHelpdeskUserDashboard();
+        this.helpdeskTicketsSignal.set([...dashboard.ongoing, ...dashboard.past]);
+        this.helpdeskAssignedSignal.set(dashboard.assigned);
+        this.helpdeskMyRoleSignal.set(dashboard.myRole);
+        this.helpdeskEditorTicketsSignal.set(dashboard.editorTickets);
+        this.helpdeskHandlersSignal.set(dashboard.handlers);
+        this.helpdeskTicketsSyncAt = Date.now();
+      } finally {
+        this.helpdeskTicketsLoadingSignal.set(false);
+        this.helpdeskTicketsSyncPromise = null;
+        this.bumpHelpdeskPickerRevision();
+      }
+    })();
+
+    return this.helpdeskTicketsSyncPromise;
+  }
+
+  helpdeskStatusLabel(status: string): string {
+    switch (status) {
+      case 'open': return 'פתוחה';
+      case 'in_progress': return 'בטיפול';
+      case 'resolved': return 'טופלה';
+      case 'closed': return 'סגורה';
+      default: return status;
+    }
+  }
+
+  private async ensureHelpdeskFlowOnOpen(): Promise<void> {
+    const user = this.currentUser();
+    if (!user || this.helpdeskInitInFlight) return;
+
+    this.helpdeskInitInFlight = true;
+    try {
+      // Initialize picker state if needed
+      const state = this.loadHelpdeskState(user);
+      if (!state) {
+        this.saveHelpdeskState(user, this.defaultHelpdeskState());
+        this.bumpHelpdeskPickerRevision();
+      }
+      // Load tickets in background
+      await this.refreshHelpdeskTickets();
+    } finally {
+      this.helpdeskInitInFlight = false;
+    }
+  }
+
   private async sendMessageInternal(payload: SendMessagePayload): Promise<void> {
     this.cancelTypingForActiveChat();
     const chatId = this.activeChatId();
@@ -4628,6 +5018,7 @@ export class ChatStoreService {
       body: payload.body,
       imageUrl: payload.imageUrl,
       thumbnailUrl: payload.thumbnailUrl ?? null,
+      fileUrl: payload.fileUrl ?? null,
       direction: 'outgoing',
       timestamp: Date.now(),
       deliveryStatus: this.networkOnline() ? 'pending' : 'queued',
@@ -4664,22 +5055,28 @@ export class ChatStoreService {
       }
     }
 
+    if (this.isHelpdeskChat(chatId)) {
+      // Helpdesk chat is managed through the picker, not direct messages
+      this.setMessageStatus(messageId, 'delivered');
+      return;
+    }
+
     if (!this.networkOnline()) {
       if (group) {
-        this.queueGroupMessage(group, messageId, payload.body, payload.imageUrl, undefined, metadata);
+        this.queueGroupMessage(group, messageId, payload.body, payload.imageUrl, undefined, metadata, payload.fileUrl ?? null);
       } else {
-        this.queueDirectMessage(chatId, messageId, payload.body, payload.imageUrl, metadata);
+        this.queueDirectMessage(chatId, messageId, payload.body, payload.imageUrl, metadata, payload.fileUrl ?? null);
       }
       this.setMessageStatus(messageId, 'queued');
       return;
     }
 
     if (group) {
-      await this.sendGroupMessage(group, messageId, payload.body, payload.imageUrl, metadata);
+      await this.sendGroupMessage(group, messageId, payload.body, payload.imageUrl, metadata, payload.fileUrl ?? null);
       return;
     }
 
-    await this.sendDirectMessage(chatId, messageId, payload.body, payload.imageUrl, metadata);
+    await this.sendDirectMessage(chatId, messageId, payload.body, payload.imageUrl, metadata, payload.fileUrl ?? null);
   }
 
   private async sendDirectMessage(
@@ -4687,7 +5084,8 @@ export class ChatStoreService {
     messageId: string,
     body: string,
     imageUrl: string | null,
-    options: SendMessageOptions = {}
+    options: SendMessageOptions = {},
+    fileUrl: string | null = null
   ): Promise<void> {
     const user = this.currentUser();
     if (!user) return;
@@ -4698,6 +5096,7 @@ export class ChatStoreService {
       senderName: this.getDisplayName(user),
       reply: body,
       imageUrl,
+      fileUrl: fileUrl || undefined,
       originalSender,
       messageId,
       replyToMessageId: metadata.replyTo?.messageId,
@@ -4714,7 +5113,7 @@ export class ChatStoreService {
       await this.sendReplyTransport(payload);
       this.setMessageStatus(messageId, 'sent');
     } catch {
-      this.queueDirectMessage(originalSender, messageId, body, imageUrl, metadata);
+      this.queueDirectMessage(originalSender, messageId, body, imageUrl, metadata, fileUrl);
       this.setMessageStatus(messageId, 'queued');
     }
   }
@@ -4724,7 +5123,8 @@ export class ChatStoreService {
     messageId: string,
     body: string,
     imageUrl: string | null,
-    options: SendMessageOptions = {}
+    options: SendMessageOptions = {},
+    fileUrl: string | null = null
   ): Promise<void> {
     const user = this.currentUser();
     if (!user) return;
@@ -4735,6 +5135,7 @@ export class ChatStoreService {
       senderName: this.getDisplayName(user),
       reply: body,
       imageUrl,
+      fileUrl: fileUrl || undefined,
       messageId,
       groupId: group.id,
       groupName: group.name,
@@ -4771,7 +5172,7 @@ export class ChatStoreService {
         membersToNotify: recipients
       });
     } catch {
-      this.queueGroupMessage(group, messageId, body, imageUrl, recipients, metadata);
+      this.queueGroupMessage(group, messageId, body, imageUrl, recipients, metadata, fileUrl);
       this.setMessageStatus(messageId, 'queued');
       return;
     }
@@ -5091,7 +5492,8 @@ export class ChatStoreService {
     messageId: string,
     body: string,
     imageUrl: string | null,
-    options: SendMessageOptions = {}
+    options: SendMessageOptions = {},
+    fileUrl: string | null = null
   ): void {
     const user = this.currentUser();
     if (!user) return;
@@ -5105,6 +5507,7 @@ export class ChatStoreService {
         senderName: this.getDisplayName(user),
         reply: body,
         imageUrl,
+        fileUrl: fileUrl || undefined,
         originalSender,
         messageId,
         replyToMessageId: metadata.replyTo?.messageId,
@@ -5130,7 +5533,8 @@ export class ChatStoreService {
     body: string,
     imageUrl: string | null,
     recipients?: string[],
-    options: SendMessageOptions = {}
+    options: SendMessageOptions = {},
+    fileUrl: string | null = null
   ): void {
     const user = this.currentUser();
     if (!user) return;
@@ -5155,6 +5559,7 @@ export class ChatStoreService {
         senderName: this.getDisplayName(user),
         reply: body,
         imageUrl,
+        fileUrl: fileUrl || undefined,
         messageId,
         groupId: group.id,
         groupName: group.name,
@@ -5762,6 +6167,7 @@ export class ChatStoreService {
       if (!messageId) continue;
       const incomingBody = this.resolveIncomingMessageBody(incoming);
       const incomingImageUrl = this.resolveIncomingImageUrl(incoming);
+      const incomingFileUrl = this.resolveIncomingFileUrl(incoming);
       const incomingTimestampRaw = Number(incoming.timestamp ?? Date.now());
       const incomingTimestamp = Number.isFinite(incomingTimestampRaw) && incomingTimestampRaw > 0
         ? incomingTimestampRaw
@@ -5858,6 +6264,7 @@ export class ChatStoreService {
         senderDisplayName: incoming.groupSenderName || this.getDisplayName(sender),
         body: incomingBody,
         imageUrl: incomingImageUrl,
+        fileUrl: incomingFileUrl,
         direction: isOutgoingFromCurrentUser ? 'outgoing' : 'incoming',
         timestamp: incomingTimestamp,
         deliveryStatus: 'delivered',
@@ -6071,6 +6478,7 @@ export class ChatStoreService {
     if (!messageId) return false;
     const incomingBody = this.resolveIncomingMessageBody(incoming);
     const incomingImageUrl = this.resolveIncomingImageUrl(incoming);
+    const incomingFileUrl = this.resolveIncomingFileUrl(incoming);
     const incomingTimestampRaw = Number(incoming.timestamp ?? Date.now());
     const incomingTimestamp = Number.isFinite(incomingTimestampRaw) && incomingTimestampRaw > 0
       ? incomingTimestampRaw
@@ -6152,6 +6560,7 @@ export class ChatStoreService {
       senderDisplayName: incoming.groupSenderName || this.getDisplayName(sender),
       body: incomingBody,
       imageUrl: incomingImageUrl,
+      fileUrl: incomingFileUrl,
       direction: isOutgoingFromCurrentUser ? 'outgoing' : 'incoming',
       timestamp: incomingTimestamp,
       deliveryStatus: 'delivered',
@@ -6233,6 +6642,14 @@ export class ChatStoreService {
       ?? payload['imageUrl']
       ?? null;
     return this.normalizeIncomingImageValue(rawImage);
+  }
+
+  private resolveIncomingFileUrl(incoming: IncomingServerMessage): string | null {
+    const payload = incoming as Record<string, unknown>;
+    const rawFile = incoming.fileUrl
+      ?? payload['fileUrl']
+      ?? null;
+    return this.normalizeIncomingImageValue(rawFile);
   }
 
   private hasRenderableIncomingContent(body: string, imageUrl: string | null): boolean {
@@ -7916,8 +8333,11 @@ export class ChatStoreService {
       const clickedChatId = this.resolveNotificationChatId(messageData, currentUser);
       if (clickedChatId) {
         this.setActiveChat(clickedChatId);
-        // Opening from a notification is an explicit read intent for that chat.
-        this.clearUnreadCountForChat(clickedChatId);
+        // Unread is cleared naturally by markActiveChatReadAtBottom() when the
+        // user scrolls to the chat bottom. Clearing it here prematurely would
+        // wipe the count before the drain + DB recovery have finished loading
+        // all pending messages, causing the chat to scroll to the bottom instead
+        // of the first unread and hiding earlier unread messages.
       }
       return;
     }

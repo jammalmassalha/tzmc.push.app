@@ -6,6 +6,12 @@ import {
   DeleteMessagePayload,
   EditMessagePayload,
   GroupUpdatePayload,
+  HelpdeskDashboard,
+  HelpdeskManagedUser,
+  HelpdeskMyRole,
+  HelpdeskNote,
+  HelpdeskTicket,
+  HelpdeskTicketPayload,
   IncomingServerMessage,
   ReadReceiptPayload,
   ReactionPayload,
@@ -1320,6 +1326,127 @@ export class ChatApiService {
     return rows
       .filter((item) => item && typeof item === 'object')
       .map((item) => item as ShuttleUserOrderPayload);
+  }
+
+  async createHelpdeskTicket(payload: HelpdeskTicketPayload): Promise<HelpdeskTicket> {
+    const url = `${this.notifyBaseUrl}/helpdesk/tickets`;
+    const response = await this.fetchWithRetry(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        cache: 'no-store'
+      },
+      { retries: 1, timeoutMs: 15000 }
+    );
+    const body = await response.json() as { result?: string; message?: string; ticket?: HelpdeskTicket };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה ביצירת הקריאה'));
+    }
+    if (!body.ticket) {
+      throw new Error('שגיאה בטעינת פרטי הקריאה החדשה');
+    }
+    return body.ticket;
+  }
+
+  async getHelpdeskUserDashboard(): Promise<HelpdeskDashboard> {
+    const url = `${this.notifyBaseUrl}/helpdesk/tickets/user?_ts=${Date.now()}&ngsw-bypass=1`;
+    const response = await this.fetchWithRetry(
+      url,
+      { cache: 'no-store', headers: { 'ngsw-bypass': 'true' } },
+      { retries: 1, timeoutMs: 15000 }
+    );
+    const body = await response.json() as {
+      result?: string;
+      message?: string;
+      ongoing?: HelpdeskTicket[];
+      past?: HelpdeskTicket[];
+      assigned?: HelpdeskTicket[];
+      myRole?: HelpdeskMyRole | null;
+      editorTickets?: HelpdeskTicket[] | null;
+      handlers?: HelpdeskManagedUser[] | null;
+    };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה בטעינת הקריאות'));
+    }
+    return {
+      ongoing: Array.isArray(body.ongoing) ? body.ongoing : [],
+      past: Array.isArray(body.past) ? body.past : [],
+      assigned: Array.isArray(body.assigned) ? body.assigned : [],
+      myRole: body.myRole ?? null,
+      editorTickets: Array.isArray(body.editorTickets) ? body.editorTickets : null,
+      handlers: Array.isArray(body.handlers) ? body.handlers : null
+    };
+  }
+
+  async assignHelpdeskHandler(ticketId: number, handlerUsername: string | null): Promise<void> {
+    const url = `${this.notifyBaseUrl}/helpdesk/tickets/${encodeURIComponent(String(ticketId))}/handler`;
+    const response = await this.fetchWithRetry(
+      url,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ handler_username: handlerUsername }),
+        cache: 'no-store'
+      },
+      { retries: 1, timeoutMs: 10000 }
+    );
+    const body = await response.json() as { result?: string; message?: string };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה בשיוך מטפל'));
+    }
+  }
+
+  async updateHelpdeskTicketStatus(id: number, status: string): Promise<void> {
+    const url = `${this.notifyBaseUrl}/helpdesk/tickets/${encodeURIComponent(String(id))}/status`;
+    const response = await this.fetchWithRetry(
+      url,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+        cache: 'no-store'
+      },
+      { retries: 1, timeoutMs: 10000 }
+    );
+    const body = await response.json() as { result?: string; message?: string };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה בעדכון הסטטוס'));
+    }
+  }
+
+  async getHelpdeskTicketNotes(ticketId: number): Promise<HelpdeskNote[]> {
+    const url = `${this.notifyBaseUrl}/helpdesk/tickets/${encodeURIComponent(String(ticketId))}/notes?_ts=${Date.now()}&ngsw-bypass=1`;
+    const response = await this.fetchWithRetry(
+      url,
+      { cache: 'no-store', headers: { 'ngsw-bypass': 'true' } },
+      { retries: 1, timeoutMs: 10000 }
+    );
+    const body = await response.json() as { result?: string; message?: string; notes?: HelpdeskNote[] };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה בטעינת ההערות'));
+    }
+    return Array.isArray(body.notes) ? body.notes : [];
+  }
+
+  async addHelpdeskNote(ticketId: number, noteText: string): Promise<number> {
+    const url = `${this.notifyBaseUrl}/helpdesk/tickets/${encodeURIComponent(String(ticketId))}/notes`;
+    const response = await this.fetchWithRetry(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note_text: noteText }),
+        cache: 'no-store'
+      },
+      { retries: 1, timeoutMs: 10000 }
+    );
+    const body = await response.json() as { result?: string; message?: string; noteId?: number };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה בהוספת ההערה'));
+    }
+    return body.noteId ?? 0;
   }
 
   private isLikelyHtmlPayload(payloadText: string): boolean {
