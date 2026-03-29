@@ -20,6 +20,7 @@ export interface MysqlLogInsertPayload {
   recipientAuthJson?: string;
   dateTime?: Date;
   imageUrl?: string;
+  fileUrl?: string;
 }
 
 export interface MysqlLogsReadOptions {
@@ -46,6 +47,7 @@ interface MysqlLogRow extends RowDataPacket {
   recipientAuthJson: string | null;
   userReceivedTime: Date | string | number | null;
   imageUrl: string | null;
+  fileUrl: string | null;
 }
 
 function toTrimmedString(value: unknown): string {
@@ -234,11 +236,12 @@ export class MysqlLogsService {
   private readonly tableName: string;
   private readonly insertQuery: string;
   private imageUrlColumnReady = false;
+  private fileUrlColumnReady = false;
 
   constructor(config: MysqlLogsConfig) {
     this.tableName = normalizeTableName(config.table);
-    this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     this.pool = mysql.createPool({
       host: config.host,
       port: config.port,
@@ -249,6 +252,7 @@ export class MysqlLogsService {
       charset: 'utf8mb4'
     });
     void this.ensureImageUrlColumn();
+    void this.ensureFileUrlColumn();
   }
 
   private async ensureImageUrlColumn(): Promise<void> {
@@ -266,6 +270,22 @@ export class MysqlLogsService {
       }
     }
     this.imageUrlColumnReady = true;
+  }
+
+  private async ensureFileUrlColumn(): Promise<void> {
+    if (this.fileUrlColumnReady) return;
+    try {
+      await this.pool.execute(
+        `ALTER TABLE \`${this.tableName}\` ADD COLUMN \`FileUrl\` TEXT NULL`
+      );
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code;
+      const message = String((err as { message?: string }).message || '');
+      if (code !== 'ER_DUP_FIELDNAME' && !message.includes('Duplicate column')) {
+        console.warn('[MYSQL] ensureFileUrlColumn warning:', message);
+      }
+    }
+    this.fileUrlColumnReady = true;
   }
 
   private buildCompositeKeyFromPayload(payload: MysqlLogInsertPayload): string {
@@ -301,8 +321,9 @@ export class MysqlLogsService {
     const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
     const dateTime = normalizeDateTimeForStorage(payload.dateTime);
     const imageUrl = toTrimmedString(payload.imageUrl);
+    const fileUrl = toTrimmedString(payload.fileUrl);
 
-    await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null]);
+    await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null]);
     return true;
   }
 
@@ -385,6 +406,7 @@ export class MysqlLogsService {
         const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
         const dateTime = normalizeDateTimeForStorage(payload.dateTime);
         const imageUrl = toTrimmedString(payload.imageUrl);
+        const fileUrl = toTrimmedString(payload.fileUrl);
         await connection.execute(this.insertQuery, [
           dateTime,
           recipient,
@@ -394,7 +416,8 @@ export class MysqlLogsService {
           status,
           details,
           recipientAuthJson,
-          imageUrl || null
+          imageUrl || null,
+          fileUrl || null
         ]);
       }
       await connection.commit();
@@ -472,7 +495,8 @@ export class MysqlLogsService {
           \`ErrorMessageOrSuccessCount\` AS errorMessageOrSuccessCount, 
           \`RecipientAuthJSON\` AS recipientAuthJson,
           \`UserReceivedTime\` AS userReceivedTime,
-          \`ImageUrl\` AS imageUrl 
+          \`ImageUrl\` AS imageUrl,
+          \`FileUrl\` AS fileUrl 
         FROM \`${this.tableName}\` 
         WHERE 1=1`;
 
@@ -571,8 +595,9 @@ export class MysqlLogsService {
 
         const body = toTrimmedString(row.messagePreview);
         const imageUrl = toTrimmedString(row.imageUrl);
+        const fileUrl = toTrimmedString(row.fileUrl);
         if (!resolvedActionType) {
-          if (!body && !imageUrl) continue;
+          if (!body && !imageUrl && !fileUrl) continue;
           if (body.toLowerCase() === 'new notification') {
             continue;
           }
@@ -608,6 +633,7 @@ export class MysqlLogsService {
           toUser: resolvedToUser || undefined,
           body,
           imageUrl: imageUrl || undefined,
+          fileUrl: fileUrl || undefined,
           timestamp,
           recipient: requestedUser,
           status,
