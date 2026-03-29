@@ -42,16 +42,52 @@
         </div>
       </div>
 
-      @if (data.ticket.handlerUsername) {
-        <div class="detail-row">
-          <mat-icon class="detail-icon">support_agent</mat-icon>
-          <div class="detail-body">
-            <span class="detail-label">מטפל</span>
-            <span class="detail-value">{{ data.ticket.handlerUsername }}</span>
-          </div>
+      <div class="detail-row">
+        <mat-icon class="detail-icon">support_agent</mat-icon>
+        <div class="detail-body">
+          <span class="detail-label">מטפל</span>
+          <span class="detail-value">{{ data.ticket.handlerUsername || '—' }}</span>
         </div>
-      }
+      </div>
     </section>
+
+    <!-- Handler assignment (Editor/Admin only) -->
+    @if (canManageHandler) {
+      <mat-divider class="section-divider"></mat-divider>
+      <section class="handler-section">
+        <div class="handler-header">
+          <mat-icon>manage_accounts</mat-icon>
+          <span>שיוך מטפל</span>
+        </div>
+        <div class="handler-row">
+          <mat-form-field appearance="outline" class="handler-select-field">
+            <mat-label>בחר מטפל</mat-label>
+            <mat-select [(ngModel)]="selectedHandler" [ngModelOptions]="{standalone: true}">
+              <mat-option [value]="null">— ללא מטפל —</mat-option>
+              @for (h of availableHandlers; track h.username) {
+                <mat-option [value]="h.username">{{ h.username }}</mat-option>
+              }
+            </mat-select>
+          </mat-form-field>
+          <button
+            mat-flat-button
+            color="accent"
+            class="handler-save-btn"
+            [disabled]="isAssigningHandler()"
+            (click)="saveHandler()">
+            @if (isAssigningHandler()) {
+              <mat-spinner diameter="18" class="btn-spinner"></mat-spinner>
+            } @else {
+              <mat-icon>save</mat-icon>
+            }
+            <span>שמור</span>
+          </button>
+        </div>
+        @if (handlerError()) {
+          <div class="note-error">{{ handlerError() }}</div>
+        }
+      </section>
+    }
 
     <mat-divider class="section-divider"></mat-divider>
 
@@ -130,6 +166,6 @@
   </mat-dialog-content>
 
   <mat-dialog-actions align="end">
-    <button mat-stroked-button mat-dialog-close>סגור</button>
+    <button mat-stroked-button (click)="close()">סגור</button>
   </mat-dialog-actions>
 </div>

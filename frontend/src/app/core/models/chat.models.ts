@@ -245,6 +245,7 @@ export type OutboxItem = OutboxDirectItem | OutboxGroupItem | OutboxGroupUpdateI
 
 export type HelpdeskDepartment = 'מערכות מידע' | 'אחזקה';
 export type HelpdeskStatus = 'open' | 'in_progress' | 'resolved' | 'closed';
+export type HelpdeskRole = 'Admin' | 'Editor';
 
 export interface HelpdeskTicketPayload {
   department: HelpdeskDepartment;
@@ -264,9 +265,24 @@ export interface HelpdeskTicket {
   updatedAt: string;
 }
 
+export interface HelpdeskManagedUser {
+  username: string;
+  role: HelpdeskRole;
+  department: string;
+}
+
+export interface HelpdeskMyRole {
+  role: HelpdeskRole;
+  department: string;
+}
+
 export interface HelpdeskDashboard {
   ongoing: HelpdeskTicket[];
   past: HelpdeskTicket[];
+  assigned: HelpdeskTicket[];
+  myRole: HelpdeskMyRole | null;
+  editorTickets: HelpdeskTicket[] | null;
+  handlers: HelpdeskManagedUser[] | null;
 }
 
 export interface HelpdeskNote {

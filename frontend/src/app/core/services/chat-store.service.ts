@@ -11,6 +11,8 @@ import {
   GroupUpdatePayload,
   GroupType,
   HelpdeskDashboard,
+  HelpdeskManagedUser,
+  HelpdeskMyRole,
   HelpdeskTicket,
   HelpdeskTicketPayload,
   IncomingServerMessage,
@@ -390,6 +392,10 @@ export class ChatStoreService {
   private readonly helpdeskPickerRevision = signal(0);
   private helpdeskInitInFlight = false;
   private readonly helpdeskTicketsSignal = signal<HelpdeskTicket[]>([]);
+  private readonly helpdeskAssignedSignal = signal<HelpdeskTicket[]>([]);
+  private readonly helpdeskMyRoleSignal = signal<HelpdeskMyRole | null>(null);
+  private readonly helpdeskEditorTicketsSignal = signal<HelpdeskTicket[] | null>(null);
+  private readonly helpdeskHandlersSignal = signal<HelpdeskManagedUser[] | null>(null);
   private readonly helpdeskTicketsLoadingSignal = signal(false);
   private helpdeskTicketsSyncAt = 0;
   private helpdeskTicketsSyncPromise: Promise<void> | null = null;
@@ -4758,7 +4764,14 @@ export class ChatStoreService {
     const ongoingStatuses = new Set<string>(['open', 'in_progress']);
     const ongoing = tickets.filter((t) => ongoingStatuses.has(t.status));
     const past = tickets.filter((t) => !ongoingStatuses.has(t.status));
-    return { ongoing, past };
+    return {
+      ongoing,
+      past,
+      assigned: this.helpdeskAssignedSignal(),
+      myRole: this.helpdeskMyRoleSignal(),
+      editorTickets: this.helpdeskEditorTicketsSignal(),
+      handlers: this.helpdeskHandlersSignal()
+    };
   }
 
   getHelpdeskTicketsLoading(): boolean {
@@ -4838,6 +4851,13 @@ export class ChatStoreService {
     return ticket;
   }
 
+  async assignHelpdeskHandler(ticketId: number, handlerUsername: string | null): Promise<void> {
+    await this.api.assignHelpdeskHandler(ticketId, handlerUsername);
+    // Force refresh to get updated tickets
+    this.helpdeskTicketsSyncAt = 0;
+    await this.refreshHelpdeskTickets();
+  }
+
   async refreshHelpdeskTickets(): Promise<void> {
     const user = this.currentUser();
     if (!user) return;
@@ -4858,6 +4878,10 @@ export class ChatStoreService {
       try {
         const dashboard = await this.api.getHelpdeskUserDashboard();
         this.helpdeskTicketsSignal.set([...dashboard.ongoing, ...dashboard.past]);
+        this.helpdeskAssignedSignal.set(dashboard.assigned);
+        this.helpdeskMyRoleSignal.set(dashboard.myRole);
+        this.helpdeskEditorTicketsSignal.set(dashboard.editorTickets);
+        this.helpdeskHandlersSignal.set(dashboard.handlers);
         this.helpdeskTicketsSyncAt = Date.now();
       } finally {
         this.helpdeskTicketsLoadingSignal.set(false);

@@ -7,6 +7,8 @@ import {
   EditMessagePayload,
   GroupUpdatePayload,
   HelpdeskDashboard,
+  HelpdeskManagedUser,
+  HelpdeskMyRole,
   HelpdeskNote,
   HelpdeskTicket,
   HelpdeskTicketPayload,
@@ -1355,14 +1357,45 @@ export class ChatApiService {
       { cache: 'no-store', headers: { 'ngsw-bypass': 'true' } },
       { retries: 1, timeoutMs: 15000 }
     );
-    const body = await response.json() as { result?: string; message?: string; ongoing?: HelpdeskTicket[]; past?: HelpdeskTicket[] };
+    const body = await response.json() as {
+      result?: string;
+      message?: string;
+      ongoing?: HelpdeskTicket[];
+      past?: HelpdeskTicket[];
+      assigned?: HelpdeskTicket[];
+      myRole?: HelpdeskMyRole | null;
+      editorTickets?: HelpdeskTicket[] | null;
+      handlers?: HelpdeskManagedUser[] | null;
+    };
     if (!response.ok || body.result !== 'success') {
       throw new Error(String(body.message || 'שגיאה בטעינת הקריאות'));
     }
     return {
       ongoing: Array.isArray(body.ongoing) ? body.ongoing : [],
-      past: Array.isArray(body.past) ? body.past : []
+      past: Array.isArray(body.past) ? body.past : [],
+      assigned: Array.isArray(body.assigned) ? body.assigned : [],
+      myRole: body.myRole ?? null,
+      editorTickets: Array.isArray(body.editorTickets) ? body.editorTickets : null,
+      handlers: Array.isArray(body.handlers) ? body.handlers : null
     };
+  }
+
+  async assignHelpdeskHandler(ticketId: number, handlerUsername: string | null): Promise<void> {
+    const url = `${this.notifyBaseUrl}/helpdesk/tickets/${encodeURIComponent(String(ticketId))}/handler`;
+    const response = await this.fetchWithRetry(
+      url,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ handler_username: handlerUsername }),
+        cache: 'no-store'
+      },
+      { retries: 1, timeoutMs: 10000 }
+    );
+    const body = await response.json() as { result?: string; message?: string };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה בשיוך מטפל'));
+    }
   }
 
   async updateHelpdeskTicketStatus(id: number, status: string): Promise<void> {

@@ -531,9 +531,34 @@
                   (click)="setHelpdeskDashboardTab('past')">
                   טופלו ({{ helpdeskDb.past.length }})
                 </button>
+                @if (helpdeskDb.assigned.length > 0) {
+                  <button
+                    type="button"
+                    role="tab"
+                    class="shuttle-orders-tab-btn assigned"
+                    [class.active]="helpdeskDashboardTab() === 'assigned'"
+                    [attr.aria-selected]="helpdeskDashboardTab() === 'assigned'"
+                    (click)="setHelpdeskDashboardTab('assigned')">
+                    לביצוע ({{ helpdeskDb.assigned.length }})
+                  </button>
+                }
+                @if (helpdeskDb.myRole) {
+                  <button
+                    type="button"
+                    role="tab"
+                    class="shuttle-orders-tab-btn editor"
+                    [class.active]="helpdeskDashboardTab() === 'editor'"
+                    [attr.aria-selected]="helpdeskDashboardTab() === 'editor'"
+                    (click)="setHelpdeskDashboardTab('editor')">
+                    <mat-icon class="tab-icon">manage_accounts</mat-icon>
+                    ניהול
+                  </button>
+                }
               </div>
 
               <div class="shuttle-orders-tab-panel" role="tabpanel">
+
+                <!-- My open tickets -->
                 @if (helpdeskDashboardTab() === 'ongoing') {
                   @if (!helpdeskDb.ongoing.length) {
                     <div class="shuttle-orders-empty">אין קריאות פתוחות כרגע.</div>
@@ -560,7 +585,10 @@
                       }
                     </div>
                   }
-                } @else {
+                }
+
+                <!-- My past tickets -->
+                @else if (helpdeskDashboardTab() === 'past') {
                   @if (!helpdeskDb.past.length) {
                     <div class="shuttle-orders-empty">אין קריאות שטופלו.</div>
                   } @else {
@@ -583,6 +611,79 @@
                     </div>
                   }
                 }
+
+                <!-- Assigned to me (לביצוע) -->
+                @else if (helpdeskDashboardTab() === 'assigned') {
+                  @if (!helpdeskDb.assigned.length) {
+                    <div class="shuttle-orders-empty">אין קריאות לביצוע כרגע.</div>
+                  } @else {
+                    <div class="shuttle-orders-cards">
+                      @for (ticket of helpdeskDb.assigned; track ticket.id) {
+                        <article class="shuttle-order-card ongoing helpdesk-ticket-card helpdesk-assigned-card" role="button" tabindex="0" (click)="openHelpdeskTicketDetail(ticket)" (keydown.enter)="openHelpdeskTicketDetail(ticket)">
+                          <div class="shuttle-order-card-top">
+                            <span class="shuttle-order-status ongoing">#{{ ticket.id }} · {{ helpdeskStatusDisplayLabel(ticket.status) }}</span>
+                            <span class="helpdesk-assigned-badge">לביצוע שלי</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">כותרת</span>
+                            <span class="value">{{ ticket.title }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">מחלקה</span>
+                            <span class="value">{{ ticket.department }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">פותח</span>
+                            <span class="value">{{ ticket.creatorUsername }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">תאריך</span>
+                            <span class="value">{{ formatTime(parseHelpdeskTimestamp(ticket.createdAt)) }}</span>
+                          </div>
+                        </article>
+                      }
+                    </div>
+                  }
+                }
+
+                <!-- Editor/Admin department management -->
+                @else if (helpdeskDashboardTab() === 'editor' && helpdeskDb.myRole) {
+                  <div class="helpdesk-editor-header">
+                    <mat-icon>manage_accounts</mat-icon>
+                    <span>ניהול קריאות – {{ helpdeskDb.myRole.department }}</span>
+                    <span class="helpdesk-role-badge">{{ helpdeskDb.myRole.role }}</span>
+                  </div>
+                  @if (!helpdeskDb.editorTickets || !helpdeskDb.editorTickets.length) {
+                    <div class="shuttle-orders-empty">אין קריאות במחלקה זו.</div>
+                  } @else {
+                    <div class="shuttle-orders-cards">
+                      @for (ticket of helpdeskDb.editorTickets; track ticket.id) {
+                        <article class="shuttle-order-card helpdesk-ticket-card helpdesk-editor-card" [class.ongoing]="ticket.status === 'open' || ticket.status === 'in_progress'" [class.past]="ticket.status === 'resolved' || ticket.status === 'closed'" role="button" tabindex="0" (click)="openHelpdeskTicketDetail(ticket)" (keydown.enter)="openHelpdeskTicketDetail(ticket)">
+                          <div class="shuttle-order-card-top">
+                            <span class="shuttle-order-status" [class.ongoing]="ticket.status === 'open' || ticket.status === 'in_progress'" [class.past]="ticket.status === 'resolved' || ticket.status === 'closed'">#{{ ticket.id }} · {{ helpdeskStatusDisplayLabel(ticket.status) }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">כותרת</span>
+                            <span class="value">{{ ticket.title }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">פותח</span>
+                            <span class="value">{{ ticket.creatorUsername }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">מטפל</span>
+                            <span class="value">{{ ticket.handlerUsername || '—' }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">תאריך</span>
+                            <span class="value">{{ formatTime(parseHelpdeskTimestamp(ticket.createdAt)) }}</span>
+                          </div>
+                        </article>
+                      }
+                    </div>
+                  }
+                }
+
               </div>
             </section>
           }

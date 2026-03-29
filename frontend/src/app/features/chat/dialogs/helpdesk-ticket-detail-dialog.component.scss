@@ -245,7 +245,46 @@
   justify-content: flex-end;
 }
 
-.btn-spinner {
-  display: inline-flex;
-  vertical-align: middle;
+/* Handler assignment */
+.handler-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
+
+.handler-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #555;
+
+  mat-icon {
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+    color: #7b1fa2;
+  }
+}
+
+.handler-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.handler-select-field {
+  flex: 1;
+  min-width: 160px;
+}
+
+.handler-save-btn {
+  margin-top: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+

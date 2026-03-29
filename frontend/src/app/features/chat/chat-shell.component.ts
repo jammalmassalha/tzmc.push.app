@@ -440,7 +440,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   readonly isLoadingHelpdeskTickets = computed(() =>
     this.store.getHelpdeskTicketsLoading()
   );
-  readonly helpdeskDashboardTab = signal<'ongoing' | 'past'>('ongoing');
+  readonly helpdeskDashboardTab = signal<'ongoing' | 'past' | 'assigned' | 'editor'>('ongoing');
   readonly isSubmittingHelpdeskTicket = signal(false);
   readonly expandedShuttleOperationsDates = signal<Set<string>>(new Set<string>());
   readonly shuttleBreadcrumbs = computed<ShuttleBreadcrumbStep[] | null>(() =>
@@ -1313,7 +1313,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     this.updateMessagesBottomState();
   }
 
-  setHelpdeskDashboardTab(tab: 'ongoing' | 'past'): void {
+  setHelpdeskDashboardTab(tab: 'ongoing' | 'past' | 'assigned' | 'editor'): void {
     this.helpdeskDashboardTab.set(tab);
   }
 
@@ -1403,17 +1403,36 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
 
   openHelpdeskTicketDetail(ticket: HelpdeskTicket): void {
     const currentUsername = this.store.currentUser() ?? '';
-    this.dialog.open(HelpdeskTicketDetailDialogComponent, {
+    const dashboard = this.helpdeskDashboard();
+    const myRole = dashboard?.myRole ?? null;
+    const handlers = dashboard?.handlers ?? null;
+    const dialogRef = this.dialog.open(HelpdeskTicketDetailDialogComponent, {
       data: {
         ticket,
         currentUsername,
+        myRole,
+        handlers,
         statusLabel: (status: string) => this.store.helpdeskStatusLabel(status)
       },
-      width: '480px',
+      width: '520px',
       maxWidth: '96vw',
       maxHeight: '90vh',
       direction: 'rtl'
     });
+    dialogRef.afterClosed().subscribe((result) => {
+      if (result && result.handlerChanged) {
+        void this.store.refreshHelpdeskTickets();
+      }
+    });
+  }
+
+  async assignHelpdeskHandler(ticketId: number, handlerUsername: string | null): Promise<void> {
+    try {
+      await this.store.assignHelpdeskHandler(ticketId, handlerUsername);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'שגיאה בשיוך מטפל';
+      this.snackBar.open(message, 'סגור', { duration: 2800 });
+    }
   }
 
   parseHelpdeskTimestamp(dateString: string | undefined): number {
