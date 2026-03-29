@@ -1202,13 +1202,20 @@
               type="button"
               class="attach-btn"
               [matMenuTriggerFor]="attachMenu"
-              [disabled]="isComposerHidden() || !isHrTextInputEnabled() || !store.activeChat() || !store.canSendToActiveChat()"
+              [disabled]="isComposerHidden() || !isHrTextInputEnabled() || !store.activeChat() || !store.canSendToActiveChat() || store.uploading()"
               aria-label="Attach">
               <span class="attach-plus">+</span>
             </button>
 
             
           </div>
+
+          @if (store.uploading()) {
+            <div class="upload-progress-bar">
+              <div class="upload-progress-spinner"></div>
+              <span class="upload-progress-label">מעלה קובץ…</span>
+            </div>
+          }
 
           @if (store.pendingAttachment(); as attachment) {
             <div class="pending-attachment-preview">
@@ -1229,7 +1236,7 @@
           <button
             type="submit"
             class="send-btn"
-            [disabled]="!canSendMessage()"
+            [disabled]="!canSendMessage() || store.uploading()"
             aria-label="Send message">
             <mat-icon>send</mat-icon>
           </button>
