@@ -474,6 +474,7 @@ function registerMessageController(app, deps = {}) {
 
                     const rawBody = String(message.body ?? message.message ?? message.content ?? '').trim();
                     const imageUrl = String(message.imageUrl ?? message.image ?? '').trim() || undefined;
+                    const fileUrl = String(message.fileUrl ?? '').trim() || undefined;
 
                     // Strip placeholder body text when the actual image URL is present.
                     const rawBodyLower = rawBody.toLowerCase();
@@ -482,7 +483,7 @@ function registerMessageController(app, deps = {}) {
                         rawBodyLower.startsWith('[image sent]:');
                     const body = (isPlaceholderBody && imageUrl) ? '' : rawBody;
 
-                    if (!isActionMessage && !body && !imageUrl) return null;
+                    if (!isActionMessage && !body && !imageUrl && !fileUrl) return null;
 
                     const normalizedBody = body.toLowerCase();
                     if (!isActionMessage && (normalizedBody === 'new notification' || normalizedBody === 'new reaction')) return null;
@@ -563,6 +564,7 @@ function registerMessageController(app, deps = {}) {
                         toUser: normalizedToUserCandidate || undefined,
                         body,
                         imageUrl,
+                        fileUrl,
                         timestamp,
                         groupId: resolvedGroupId || undefined,
                         groupName: resolvedGroupName || undefined,

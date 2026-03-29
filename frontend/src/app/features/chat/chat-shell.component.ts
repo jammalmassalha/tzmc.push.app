@@ -1581,7 +1581,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       return;
     }
     if (!this.store.activeChat() || !this.store.canSendToActiveChat()) {
-      this.snackBar.open('לא ניתן לצרף תמונה בצ׳אט זה.', 'סגור', { duration: 2500 });
+      this.snackBar.open('לא ניתן לצרף קובץ בצ׳אט זה.', 'סגור', { duration: 2500 });
       return;
     }
     this.fileInputRef?.nativeElement.click();

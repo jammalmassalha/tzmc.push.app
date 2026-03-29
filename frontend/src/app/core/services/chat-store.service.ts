@@ -6167,6 +6167,7 @@ export class ChatStoreService {
       if (!messageId) continue;
       const incomingBody = this.resolveIncomingMessageBody(incoming);
       const incomingImageUrl = this.resolveIncomingImageUrl(incoming);
+      const incomingFileUrl = this.resolveIncomingFileUrl(incoming);
       const incomingTimestampRaw = Number(incoming.timestamp ?? Date.now());
       const incomingTimestamp = Number.isFinite(incomingTimestampRaw) && incomingTimestampRaw > 0
         ? incomingTimestampRaw
@@ -6263,6 +6264,7 @@ export class ChatStoreService {
         senderDisplayName: incoming.groupSenderName || this.getDisplayName(sender),
         body: incomingBody,
         imageUrl: incomingImageUrl,
+        fileUrl: incomingFileUrl,
         direction: isOutgoingFromCurrentUser ? 'outgoing' : 'incoming',
         timestamp: incomingTimestamp,
         deliveryStatus: 'delivered',
@@ -6476,6 +6478,7 @@ export class ChatStoreService {
     if (!messageId) return false;
     const incomingBody = this.resolveIncomingMessageBody(incoming);
     const incomingImageUrl = this.resolveIncomingImageUrl(incoming);
+    const incomingFileUrl = this.resolveIncomingFileUrl(incoming);
     const incomingTimestampRaw = Number(incoming.timestamp ?? Date.now());
     const incomingTimestamp = Number.isFinite(incomingTimestampRaw) && incomingTimestampRaw > 0
       ? incomingTimestampRaw
@@ -6557,6 +6560,7 @@ export class ChatStoreService {
       senderDisplayName: incoming.groupSenderName || this.getDisplayName(sender),
       body: incomingBody,
       imageUrl: incomingImageUrl,
+      fileUrl: incomingFileUrl,
       direction: isOutgoingFromCurrentUser ? 'outgoing' : 'incoming',
       timestamp: incomingTimestamp,
       deliveryStatus: 'delivered',
@@ -6638,6 +6642,14 @@ export class ChatStoreService {
       ?? payload['imageUrl']
       ?? null;
     return this.normalizeIncomingImageValue(rawImage);
+  }
+
+  private resolveIncomingFileUrl(incoming: IncomingServerMessage): string | null {
+    const payload = incoming as Record<string, unknown>;
+    const rawFile = incoming.fileUrl
+      ?? payload['fileUrl']
+      ?? null;
+    return this.normalizeIncomingImageValue(rawFile);
   }
 
   private hasRenderableIncomingContent(body: string, imageUrl: string | null): boolean {
