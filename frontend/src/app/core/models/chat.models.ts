@@ -45,6 +45,7 @@ export interface ChatMessage {
   body: string;
   imageUrl?: string | null;
   thumbnailUrl?: string | null;
+  fileUrl?: string | null;
   direction: 'incoming' | 'outgoing';
   timestamp: number;
   deliveryStatus: DeliveryStatus;
@@ -92,6 +93,7 @@ export interface IncomingServerMessage {
   body?: string;
   timestamp?: number;
   imageUrl?: string | null;
+  fileUrl?: string | null;
   groupId?: string | null;
   groupName?: string | null;
   groupMembers?: string[] | null;
@@ -116,6 +118,7 @@ export interface ReplyPayload {
   senderName: string;
   reply: string;
   imageUrl: string | null;
+  fileUrl?: string | null;
   originalSender: string;
   messageId: string;
   membersToNotify?: string[];

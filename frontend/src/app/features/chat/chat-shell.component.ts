@@ -1038,7 +1038,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       this.replyingMessageTarget.set(null);
     }
     try {
-      await this.store.sendTextMessage(content, replyReference ? { replyTo: replyReference } : {});
+      await this.store.sendMessageWithAttachment(content, replyReference ? { replyTo: replyReference } : {});
     } catch (error) {
       const message = error instanceof Error ? error.message : 'שליחת ההודעה נכשלה';
       this.snackBar.open(message, 'סגור', { duration: 3000 });
@@ -1563,8 +1563,12 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       return;
     }
 
-    await this.store.sendFile(file);
+    await this.store.uploadAttachment(file);
     input.value = '';
+  }
+
+  removePendingAttachment(): void {
+    this.store.clearPendingAttachment();
   }
 
   openImagePicker(): void {
@@ -1618,7 +1622,9 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     if (!this.isHrTextInputEnabled() && !this.editingMessageTarget()) {
       return false;
     }
-    return Boolean(this.messageValue().trim()) && this.store.canSendToActiveChat() && !!this.store.activeChat();
+    const hasText = Boolean(this.messageValue().trim());
+    const hasAttachment = Boolean(this.store.pendingAttachment());
+    return (hasText || hasAttachment) && this.store.canSendToActiveChat() && !!this.store.activeChat();
   }
 
   openNewChatDialog(): void {

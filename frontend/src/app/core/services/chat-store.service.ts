@@ -224,6 +224,7 @@ interface SendMessagePayload extends SendMessageOptions {
   body: string;
   imageUrl: string | null;
   thumbnailUrl?: string | null;
+  fileUrl?: string | null;
 }
 
 interface DeliveryTelemetryCounters {
@@ -316,6 +317,7 @@ export class ChatStoreService {
   readonly loading = signal(false);
   readonly syncing = signal(false);
   readonly uploading = signal(false);
+  readonly pendingAttachment = signal<{ url: string; type: 'image' | 'file'; name: string; thumbUrl?: string | null } | null>(null);
   readonly networkOnline = signal(typeof navigator !== 'undefined' ? navigator.onLine : true);
   readonly lastError = signal<string | null>(null);
   readonly incomingReactionNotice = signal<IncomingReactionNotice | null>(null);
@@ -2310,6 +2312,56 @@ export class ChatStoreService {
     } finally {
       this.uploading.set(false);
     }
+  }
+
+  /** Upload a file and stage it as a pending attachment without sending yet. */
+  async uploadAttachment(file: File): Promise<void> {
+    if (!file) return;
+
+    this.uploading.set(true);
+    this.lastError.set(null);
+    try {
+      const upload = await this.api.uploadFile(file);
+      if (upload.status !== 'success' || !upload.url) {
+        throw new Error('Upload did not return a file URL');
+      }
+
+      const lower = upload.url.toLowerCase();
+      const isDocument = /\.(pdf|doc|docx)(\?|$)/.test(lower);
+      this.pendingAttachment.set({
+        url: upload.url,
+        type: isDocument ? 'file' : 'image',
+        name: file.name,
+        thumbUrl: upload.thumbUrl ?? null
+      });
+    } catch {
+      this.lastError.set('שגיאה בהעלאת קובץ');
+    } finally {
+      this.uploading.set(false);
+    }
+  }
+
+  clearPendingAttachment(): void {
+    this.pendingAttachment.set(null);
+  }
+
+  /** Send a text message that may include a pending attachment (image + fileUrl). */
+  async sendMessageWithAttachment(text: string, options: SendMessageOptions = {}): Promise<void> {
+    const body = text.trim();
+    const attachment = this.pendingAttachment();
+    this.pendingAttachment.set(null);
+
+    if (!body && !attachment) return;
+
+    const payload: SendMessagePayload = {
+      body,
+      imageUrl: attachment?.type === 'image' ? attachment.url : null,
+      thumbnailUrl: attachment?.type === 'image' ? (attachment.thumbUrl ?? null) : null,
+      fileUrl: attachment?.type === 'file' ? attachment.url : null,
+      ...options
+    };
+
+    await this.sendMessageInternal(payload);
   }
 
   async sendReaction(targetMessageId: string, emoji: string): Promise<void> {
@@ -4966,6 +5018,7 @@ export class ChatStoreService {
       body: payload.body,
       imageUrl: payload.imageUrl,
       thumbnailUrl: payload.thumbnailUrl ?? null,
+      fileUrl: payload.fileUrl ?? null,
       direction: 'outgoing',
       timestamp: Date.now(),
       deliveryStatus: this.networkOnline() ? 'pending' : 'queued',
@@ -5010,20 +5063,20 @@ export class ChatStoreService {
 
     if (!this.networkOnline()) {
       if (group) {
-        this.queueGroupMessage(group, messageId, payload.body, payload.imageUrl, undefined, metadata);
+        this.queueGroupMessage(group, messageId, payload.body, payload.imageUrl, undefined, metadata, payload.fileUrl ?? null);
       } else {
-        this.queueDirectMessage(chatId, messageId, payload.body, payload.imageUrl, metadata);
+        this.queueDirectMessage(chatId, messageId, payload.body, payload.imageUrl, metadata, payload.fileUrl ?? null);
       }
       this.setMessageStatus(messageId, 'queued');
       return;
     }
 
     if (group) {
-      await this.sendGroupMessage(group, messageId, payload.body, payload.imageUrl, metadata);
+      await this.sendGroupMessage(group, messageId, payload.body, payload.imageUrl, metadata, payload.fileUrl ?? null);
       return;
     }
 
-    await this.sendDirectMessage(chatId, messageId, payload.body, payload.imageUrl, metadata);
+    await this.sendDirectMessage(chatId, messageId, payload.body, payload.imageUrl, metadata, payload.fileUrl ?? null);
   }
 
   private async sendDirectMessage(
@@ -5031,7 +5084,8 @@ export class ChatStoreService {
     messageId: string,
     body: string,
     imageUrl: string | null,
-    options: SendMessageOptions = {}
+    options: SendMessageOptions = {},
+    fileUrl: string | null = null
   ): Promise<void> {
     const user = this.currentUser();
     if (!user) return;
@@ -5042,6 +5096,7 @@ export class ChatStoreService {
       senderName: this.getDisplayName(user),
       reply: body,
       imageUrl,
+      fileUrl: fileUrl || undefined,
       originalSender,
       messageId,
       replyToMessageId: metadata.replyTo?.messageId,
@@ -5058,7 +5113,7 @@ export class ChatStoreService {
       await this.sendReplyTransport(payload);
       this.setMessageStatus(messageId, 'sent');
     } catch {
-      this.queueDirectMessage(originalSender, messageId, body, imageUrl, metadata);
+      this.queueDirectMessage(originalSender, messageId, body, imageUrl, metadata, fileUrl);
       this.setMessageStatus(messageId, 'queued');
     }
   }
@@ -5068,7 +5123,8 @@ export class ChatStoreService {
     messageId: string,
     body: string,
     imageUrl: string | null,
-    options: SendMessageOptions = {}
+    options: SendMessageOptions = {},
+    fileUrl: string | null = null
   ): Promise<void> {
     const user = this.currentUser();
     if (!user) return;
@@ -5079,6 +5135,7 @@ export class ChatStoreService {
       senderName: this.getDisplayName(user),
       reply: body,
       imageUrl,
+      fileUrl: fileUrl || undefined,
       messageId,
       groupId: group.id,
       groupName: group.name,
@@ -5115,7 +5172,7 @@ export class ChatStoreService {
         membersToNotify: recipients
       });
     } catch {
-      this.queueGroupMessage(group, messageId, body, imageUrl, recipients, metadata);
+      this.queueGroupMessage(group, messageId, body, imageUrl, recipients, metadata, fileUrl);
       this.setMessageStatus(messageId, 'queued');
       return;
     }
@@ -5435,7 +5492,8 @@ export class ChatStoreService {
     messageId: string,
     body: string,
     imageUrl: string | null,
-    options: SendMessageOptions = {}
+    options: SendMessageOptions = {},
+    fileUrl: string | null = null
   ): void {
     const user = this.currentUser();
     if (!user) return;
@@ -5449,6 +5507,7 @@ export class ChatStoreService {
         senderName: this.getDisplayName(user),
         reply: body,
         imageUrl,
+        fileUrl: fileUrl || undefined,
         originalSender,
         messageId,
         replyToMessageId: metadata.replyTo?.messageId,
@@ -5474,7 +5533,8 @@ export class ChatStoreService {
     body: string,
     imageUrl: string | null,
     recipients?: string[],
-    options: SendMessageOptions = {}
+    options: SendMessageOptions = {},
+    fileUrl: string | null = null
   ): void {
     const user = this.currentUser();
     if (!user) return;
@@ -5499,6 +5559,7 @@ export class ChatStoreService {
         senderName: this.getDisplayName(user),
         reply: body,
         imageUrl,
+        fileUrl: fileUrl || undefined,
         messageId,
         groupId: group.id,
         groupName: group.name,
