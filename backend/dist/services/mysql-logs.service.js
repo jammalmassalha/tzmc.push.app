@@ -187,10 +187,11 @@ class MysqlLogsService {
     tableName;
     insertQuery;
     imageUrlColumnReady = false;
+    fileUrlColumnReady = false;
     constructor(config) {
         this.tableName = normalizeTableName(config.table);
-        this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
         this.pool = promise_1.default.createPool({
             host: config.host,
             port: config.port,
@@ -201,6 +202,7 @@ class MysqlLogsService {
             charset: 'utf8mb4'
         });
         void this.ensureImageUrlColumn();
+        void this.ensureFileUrlColumn();
     }
     async ensureImageUrlColumn() {
         if (this.imageUrlColumnReady)
@@ -217,6 +219,21 @@ class MysqlLogsService {
             }
         }
         this.imageUrlColumnReady = true;
+    }
+    async ensureFileUrlColumn() {
+        if (this.fileUrlColumnReady)
+            return;
+        try {
+            await this.pool.execute(`ALTER TABLE \`${this.tableName}\` ADD COLUMN \`FileUrl\` TEXT NULL`);
+        }
+        catch (err) {
+            const code = err.code;
+            const message = String(err.message || '');
+            if (code !== 'ER_DUP_FIELDNAME' && !message.includes('Duplicate column')) {
+                console.warn('[MYSQL] ensureFileUrlColumn warning:', message);
+            }
+        }
+        this.fileUrlColumnReady = true;
     }
     buildCompositeKeyFromPayload(payload) {
         return [
@@ -244,7 +261,8 @@ class MysqlLogsService {
         const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
         const dateTime = normalizeDateTimeForStorage(payload.dateTime);
         const imageUrl = toTrimmedString(payload.imageUrl);
-        await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null]);
+        const fileUrl = toTrimmedString(payload.fileUrl);
+        await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null]);
         return true;
     }
     async filterNewLogsByCompositeKey(payloads) {
@@ -308,6 +326,7 @@ class MysqlLogsService {
                 const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
                 const dateTime = normalizeDateTimeForStorage(payload.dateTime);
                 const imageUrl = toTrimmedString(payload.imageUrl);
+                const fileUrl = toTrimmedString(payload.fileUrl);
                 await connection.execute(this.insertQuery, [
                     dateTime,
                     recipient,
@@ -317,7 +336,8 @@ class MysqlLogsService {
                     status,
                     details,
                     recipientAuthJson,
-                    imageUrl || null
+                    imageUrl || null,
+                    fileUrl || null
                 ]);
             }
             await connection.commit();
@@ -381,7 +401,8 @@ class MysqlLogsService {
           \`ErrorMessageOrSuccessCount\` AS errorMessageOrSuccessCount, 
           \`RecipientAuthJSON\` AS recipientAuthJson,
           \`UserReceivedTime\` AS userReceivedTime,
-          \`ImageUrl\` AS imageUrl 
+          \`ImageUrl\` AS imageUrl,
+          \`FileUrl\` AS fileUrl 
         FROM \`${this.tableName}\` 
         WHERE 1=1`;
             const params = [];
@@ -467,8 +488,9 @@ class MysqlLogsService {
                 const resolvedActionType = isDeletedStatus ? 'delete-action' : actionTypeFromDetails;
                 const body = toTrimmedString(row.messagePreview);
                 const imageUrl = toTrimmedString(row.imageUrl);
+                const fileUrl = toTrimmedString(row.fileUrl);
                 if (!resolvedActionType) {
-                    if (!body && !imageUrl)
+                    if (!body && !imageUrl && !fileUrl)
                         continue;
                     if (body.toLowerCase() === 'new notification') {
                         continue;
@@ -498,6 +520,7 @@ class MysqlLogsService {
                     toUser: resolvedToUser || undefined,
                     body,
                     imageUrl: imageUrl || undefined,
+                    fileUrl: fileUrl || undefined,
                     timestamp,
                     recipient: requestedUser,
                     status,
