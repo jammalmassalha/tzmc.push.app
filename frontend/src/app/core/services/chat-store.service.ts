@@ -614,7 +614,6 @@ export class ChatStoreService {
     }
 
     this.initializedUser = user;
-    this.flushPendingServiceWorkerMessages();
 
     /**
      * SYNC STEP 1: Drain Service Worker Cache
@@ -635,6 +634,15 @@ export class ChatStoreService {
       incrementUnread: true, // Marks missed messages as unread so they appear in badges
       limit: 1000            // Window large enough to cover several hours of activity
     }).catch(() => undefined);
+
+    /**
+     * SYNC STEP 3: Process pending SW messages AFTER drain + recovery.
+     * Flushing here (not at the top of initialize) ensures that when a
+     * 'notification-clicked' action fires setActiveChat(), the full set of
+     * messages is already in the store so unreadBeforeOpen is computed
+     * correctly and the chat scrolls to the first unread instead of the bottom.
+     */
+    this.flushPendingServiceWorkerMessages();
 
     // Continue with standard initialization
     await this.refreshShuttleAccessForCurrentUser(user, { force: true });
@@ -1746,11 +1754,16 @@ export class ChatStoreService {
     } = {}
   ): Promise<number> {
     const normalizedUser = this.normalizeUser(user);
-    if (!normalizedUser || this.currentUser() !== normalizedUser || !this.isNetworkReachable()) {
+    const force = Boolean(options.force);
+    // When force=true the caller (initialize) has already completed a successful HTTP session
+    // call, so the network is definitely reachable. Skipping the isNetworkReachable() guard
+    // here prevents stale navigator.onLine values from blocking recovery on mobile cold starts.
+    if (!normalizedUser || this.currentUser() !== normalizedUser) {
       return 0;
     }
-
-    const force = Boolean(options.force);
+    if (!force && !this.isNetworkReachable()) {
+      return 0;
+    }
     const now = Date.now();
 
     // Prevent spamming the server if not forced
@@ -8223,8 +8236,11 @@ export class ChatStoreService {
       const clickedChatId = this.resolveNotificationChatId(messageData, currentUser);
       if (clickedChatId) {
         this.setActiveChat(clickedChatId);
-        // Opening from a notification is an explicit read intent for that chat.
-        this.clearUnreadCountForChat(clickedChatId);
+        // Unread is cleared naturally by markActiveChatReadAtBottom() when the
+        // user scrolls to the chat bottom. Clearing it here prematurely would
+        // wipe the count before the drain + DB recovery have finished loading
+        // all pending messages, causing the chat to scroll to the bottom instead
+        // of the first unread and hiding earlier unread messages.
       }
       return;
     }
