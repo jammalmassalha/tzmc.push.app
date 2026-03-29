@@ -1175,6 +1175,13 @@
             }
           </div>
         }
+        @if (store.uploading()) {
+          <div class="upload-progress-bar">
+            <div class="upload-progress-spinner"></div>
+            <span class="upload-progress-label">מעלה קובץ…</span>
+          </div>
+        }
+
         @if (store.pendingAttachment(); as attachment) {
           <div class="pending-attachment-preview">
             @if (attachment.type === 'image') {
@@ -1224,28 +1231,7 @@
             
           </div>
 
-          @if (store.uploading()) {
-            <div class="upload-progress-bar">
-              <div class="upload-progress-spinner"></div>
-              <span class="upload-progress-label">מעלה קובץ…</span>
-            </div>
-          }
-
-          @if (store.pendingAttachment(); as attachment) {
-            <div class="pending-attachment-preview">
-              @if (attachment.type === 'image') {
-                <img class="pending-attachment-thumb" [src]="attachment.url" alt="Attachment preview" />
-              } @else {
-                <div class="pending-attachment-file">
-                  <mat-icon>description</mat-icon>
-                  <span class="pending-attachment-name">{{ attachment.name }}</span>
-                </div>
-              }
-              <button type="button" class="pending-attachment-remove" (click)="removePendingAttachment()" aria-label="Remove attachment">
-                <mat-icon>close</mat-icon>
-              </button>
-            </div>
-          }
+          
 
           <button
             type="submit"
