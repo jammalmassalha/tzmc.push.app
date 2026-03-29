@@ -942,6 +942,70 @@ mat-chip:not(.offline) {
   word-break: break-word;
 }
 
+.message-file-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: #e8f0fe;
+  color: #1f4fc4;
+  text-decoration: none;
+  font-size: 13px;
+  cursor: pointer;
+  mat-icon {
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+  }
+}
+
+.pending-attachment-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #f0f0f0;
+  border-radius: 8px;
+  margin-bottom: 4px;
+}
+
+.pending-attachment-thumb {
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 6px;
+}
+
+.pending-attachment-file {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: #333;
+}
+
+.pending-attachment-name {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pending-attachment-remove {
+  border: 0;
+  background: transparent;
+  padding: 2px;
+  cursor: pointer;
+  display: flex;
+  mat-icon {
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+    color: #666;
+  }
+}
+
 .message-phone {
   border: 0;
   padding: 0;

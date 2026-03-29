@@ -746,6 +746,13 @@
                   </button>
                 }
 
+                @if (message.fileUrl) {
+                  <a [href]="message.fileUrl" target="_blank" rel="noopener" class="message-file-btn">
+                    <mat-icon>description</mat-icon>
+                    <span>הצג קובץ</span>
+                  </a>
+                }
+
                 @if (shuttleOrderMessageCard(message); as shuttleCard) {
                   <div class="shuttle-message-card" [class.cancelled]="shuttleCard.cancelled">
                     <div class="shuttle-message-card-title">{{ shuttleCard.title }}</div>
@@ -826,6 +833,11 @@
                             aria-label="Open full image">
                             <img class="message-image" [src]="part.url" alt="Image" loading="lazy" />
                           </button>
+                        } @else if (part.kind === 'file') {
+                          <a [href]="part.url" target="_blank" rel="noopener" class="message-file-btn">
+                            <mat-icon>description</mat-icon>
+                            <span>{{ part.label }}</span>
+                          </a>
                         } @else {
                           <a [href]="part.url" target="_blank" rel="noopener" class="message-link">
                             {{ part.label }}
@@ -1173,7 +1185,7 @@
             #fileInput
             class="hidden-input"
             type="file"
-            accept="image/*"
+            accept="image/*,.pdf"
             (change)="onFileSelected($event)" />
 
           <div class="composer-input-shell">
@@ -1198,6 +1210,22 @@
             
           </div>
 
+          @if (store.pendingAttachment(); as attachment) {
+            <div class="pending-attachment-preview">
+              @if (attachment.type === 'image') {
+                <img class="pending-attachment-thumb" [src]="attachment.url" alt="Attachment preview" />
+              } @else {
+                <div class="pending-attachment-file">
+                  <mat-icon>description</mat-icon>
+                  <span class="pending-attachment-name">{{ attachment.name }}</span>
+                </div>
+              }
+              <button type="button" class="pending-attachment-remove" (click)="removePendingAttachment()" aria-label="Remove attachment">
+                <mat-icon>close</mat-icon>
+              </button>
+            </div>
+          }
+
           <button
             type="submit"
             class="send-btn"
@@ -1209,7 +1237,7 @@
           <mat-menu #attachMenu="matMenu">
             <button mat-menu-item type="button" (click)="openImagePicker()">
               <mat-icon>image</mat-icon>
-              <span>Pic</span>
+              <span>Pic / PDF</span>
             </button>
             <button mat-menu-item type="button" (click)="shareLocation()">
               <mat-icon>location_on</mat-icon>

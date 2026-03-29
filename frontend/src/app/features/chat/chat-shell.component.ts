@@ -58,7 +58,8 @@ type MessageRenderPart =
   | { kind: 'link'; url: string; label: string }
   | { kind: 'location'; url: string; label: string }
   | { kind: 'phone'; display: string; phone: string }
-  | { kind: 'image'; url: string };
+  | { kind: 'image'; url: string }
+  | { kind: 'file'; url: string; label: string };
 
 interface ParsedMessageCacheEntry {
   body: string;
@@ -3063,6 +3064,8 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
         parts.push({ kind: 'image', url: normalizedUrl });
       } else if (this.isLocationUrl(normalizedUrl)) {
         parts.push({ kind: 'location', url: normalizedUrl, label: 'המיקום שלי' });
+      } else if (this.isFileUrl(normalizedUrl)) {
+        parts.push({ kind: 'file', url: normalizedUrl, label: 'הצג קובץ' });
       } else {
         parts.push({ kind: 'link', url: normalizedUrl, label: 'לחץ כאן לפתיחת קובץ/קישור' });
       }
@@ -3204,6 +3207,10 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
 
   private isImageUrl(url: string): boolean {
     return /\.(jpeg|jpg|png|gif|webp)(\?|$)/i.test(url);
+  }
+
+  private isFileUrl(url: string): boolean {
+    return /\.(pdf|doc|docx)(\?|$)/i.test(url);
   }
 
   private isLocationUrl(url: string): boolean {
