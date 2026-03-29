@@ -540,7 +540,7 @@
                   } @else {
                     <div class="shuttle-orders-cards">
                       @for (ticket of helpdeskDb.ongoing; track ticket.id) {
-                        <article class="shuttle-order-card ongoing helpdesk-ticket-card">
+                        <article class="shuttle-order-card ongoing helpdesk-ticket-card" role="button" tabindex="0" (click)="openHelpdeskTicketDetail(ticket)" (keydown.enter)="openHelpdeskTicketDetail(ticket)">
                           <div class="shuttle-order-card-top">
                             <span class="shuttle-order-status ongoing">#{{ ticket.id }} · {{ helpdeskStatusDisplayLabel(ticket.status) }}</span>
                           </div>
@@ -566,7 +566,7 @@
                   } @else {
                     <div class="shuttle-orders-cards">
                       @for (ticket of helpdeskDb.past; track ticket.id) {
-                        <article class="shuttle-order-card past helpdesk-ticket-card">
+                        <article class="shuttle-order-card past helpdesk-ticket-card" role="button" tabindex="0" (click)="openHelpdeskTicketDetail(ticket)" (keydown.enter)="openHelpdeskTicketDetail(ticket)">
                           <div class="shuttle-order-card-top">
                             <span class="shuttle-order-status past">#{{ ticket.id }} · {{ helpdeskStatusDisplayLabel(ticket.status) }}</span>
                           </div>

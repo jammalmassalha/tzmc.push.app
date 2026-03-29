@@ -7,6 +7,7 @@ import {
   EditMessagePayload,
   GroupUpdatePayload,
   HelpdeskDashboard,
+  HelpdeskNote,
   HelpdeskTicket,
   HelpdeskTicketPayload,
   IncomingServerMessage,
@@ -1380,6 +1381,39 @@ export class ChatApiService {
     if (!response.ok || body.result !== 'success') {
       throw new Error(String(body.message || 'שגיאה בעדכון הסטטוס'));
     }
+  }
+
+  async getHelpdeskTicketNotes(ticketId: number): Promise<HelpdeskNote[]> {
+    const url = `${this.notifyBaseUrl}/helpdesk/tickets/${encodeURIComponent(String(ticketId))}/notes?_ts=${Date.now()}&ngsw-bypass=1`;
+    const response = await this.fetchWithRetry(
+      url,
+      { cache: 'no-store', headers: { 'ngsw-bypass': 'true' } },
+      { retries: 1, timeoutMs: 10000 }
+    );
+    const body = await response.json() as { result?: string; message?: string; notes?: HelpdeskNote[] };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה בטעינת ההערות'));
+    }
+    return Array.isArray(body.notes) ? body.notes : [];
+  }
+
+  async addHelpdeskNote(ticketId: number, noteText: string): Promise<number> {
+    const url = `${this.notifyBaseUrl}/helpdesk/tickets/${encodeURIComponent(String(ticketId))}/notes`;
+    const response = await this.fetchWithRetry(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note_text: noteText }),
+        cache: 'no-store'
+      },
+      { retries: 1, timeoutMs: 10000 }
+    );
+    const body = await response.json() as { result?: string; message?: string; noteId?: number };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה בהוספת ההערה'));
+    }
+    return body.noteId ?? 0;
   }
 
   private isLikelyHtmlPayload(payloadText: string): boolean {

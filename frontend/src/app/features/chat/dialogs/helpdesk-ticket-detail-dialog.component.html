@@ -1,0 +1,135 @@
+<div class="ticket-detail-dialog" dir="rtl">
+
+  <!-- Header -->
+  <div class="dialog-header" mat-dialog-title>
+    <div class="header-main">
+      <mat-icon class="header-icon">confirmation_number</mat-icon>
+      <div class="header-text">
+        <span class="ticket-id">#{{ data.ticket.id }}</span>
+        <span class="ticket-title">{{ data.ticket.title }}</span>
+      </div>
+    </div>
+    <span class="status-chip" [class]="statusChipClass">
+      {{ data.statusLabel(data.ticket.status) }}
+    </span>
+  </div>
+
+  <mat-dialog-content class="dialog-content">
+
+    <!-- Details section -->
+    <section class="details-section">
+      <div class="detail-row">
+        <mat-icon class="detail-icon">apartment</mat-icon>
+        <div class="detail-body">
+          <span class="detail-label">מחלקה</span>
+          <span class="detail-value">{{ data.ticket.department }}</span>
+        </div>
+      </div>
+
+      <div class="detail-row">
+        <mat-icon class="detail-icon">description</mat-icon>
+        <div class="detail-body">
+          <span class="detail-label">תיאור</span>
+          <span class="detail-value description-value">{{ data.ticket.description }}</span>
+        </div>
+      </div>
+
+      <div class="detail-row">
+        <mat-icon class="detail-icon">schedule</mat-icon>
+        <div class="detail-body">
+          <span class="detail-label">נפתחה</span>
+          <span class="detail-value">{{ formatDate(data.ticket.createdAt) }}</span>
+        </div>
+      </div>
+
+      @if (data.ticket.handlerUsername) {
+        <div class="detail-row">
+          <mat-icon class="detail-icon">support_agent</mat-icon>
+          <div class="detail-body">
+            <span class="detail-label">מטפל</span>
+            <span class="detail-value">{{ data.ticket.handlerUsername }}</span>
+          </div>
+        </div>
+      }
+    </section>
+
+    <mat-divider class="section-divider"></mat-divider>
+
+    <!-- Notes section -->
+    <section class="notes-section">
+      <div class="notes-header">
+        <mat-icon>chat_bubble_outline</mat-icon>
+        <span>הערות</span>
+      </div>
+
+      @if (isLoadingNotes()) {
+        <div class="notes-loading">
+          <mat-spinner diameter="24"></mat-spinner>
+        </div>
+      } @else if (notes().length === 0) {
+        <div class="notes-empty">אין הערות עדיין. היה הראשון להגיב!</div>
+      } @else {
+        <div class="notes-list">
+          @for (note of notes(); track note.id) {
+            <div class="note-item" [class.own-note]="note.authorUsername === data.currentUsername">
+              <div class="note-meta">
+                <span class="note-author">{{ note.authorUsername }}</span>
+                <span class="note-time">{{ formatDate(note.createdAt) }}</span>
+              </div>
+              <div class="note-text">{{ note.noteText }}</div>
+            </div>
+          }
+        </div>
+      }
+    </section>
+
+    <mat-divider class="section-divider"></mat-divider>
+
+    <!-- Add note -->
+    <section class="add-note-section">
+      <div class="add-note-header">
+        <mat-icon>edit_note</mat-icon>
+        <span>הוסף הערה</span>
+      </div>
+      <mat-form-field appearance="outline" class="note-field">
+        <mat-label>הערה חדשה</mat-label>
+        <textarea
+          matInput
+          [formControl]="noteControl"
+          placeholder="כתוב הערה..."
+          rows="3"
+          cdkTextareaAutosize
+          cdkAutosizeMinRows="3"
+          cdkAutosizeMaxRows="6">
+        </textarea>
+        @if (noteControl.hasError('minlength') && noteControl.touched) {
+          <mat-error>ההערה חייבת להכיל לפחות 2 תווים.</mat-error>
+        }
+      </mat-form-field>
+
+      @if (noteError()) {
+        <div class="note-error">{{ noteError() }}</div>
+      }
+
+      <div class="add-note-actions">
+        <button
+          mat-flat-button
+          color="primary"
+          [disabled]="noteControl.invalid || isSubmittingNote()"
+          (click)="submitNote()">
+          @if (isSubmittingNote()) {
+            <mat-spinner diameter="18" class="btn-spinner"></mat-spinner>
+          } @else {
+            <mat-icon>send</mat-icon>
+          }
+          <span>שלח</span>
+        </button>
+      </div>
+    </section>
+
+  </mat-dialog-content>
+
+  <mat-dialog-actions align="end">
+    <button mat-stroked-button mat-dialog-close>סגור</button>
+  </mat-dialog-actions>
+</div>

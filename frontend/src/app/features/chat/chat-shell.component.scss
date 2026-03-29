@@ -2796,4 +2796,15 @@ mat-chip:not(.offline) {
 
 .helpdesk-ticket-card {
   border-radius: 10px;
+  cursor: pointer;
+  transition: box-shadow 0.15s, transform 0.1s;
+
+  &:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+    transform: translateY(-1px);
+  }
+
+  &:active {
+    transform: translateY(0);
+  }
 }

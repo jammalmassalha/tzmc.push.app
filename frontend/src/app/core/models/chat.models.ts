@@ -269,6 +269,14 @@ export interface HelpdeskDashboard {
   past: HelpdeskTicket[];
 }
 
+export interface HelpdeskNote {
+  id: number;
+  ticketId: number;
+  authorUsername: string;
+  noteText: string;
+  createdAt: string;
+}
+
 export interface PersistedChatState {
   contacts: Contact[];
   groups: ChatGroup[];

@@ -237,6 +237,51 @@ function registerHelpdeskController(app, deps = {}) {
         }
     });
 
+    // GET /helpdesk/tickets/:id/notes - Get notes for a ticket
+    app.get(['/helpdesk/tickets/:id/notes', '/notify/helpdesk/tickets/:id/notes'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
+        const user = toTrimmedString(req.resolvedUser || '');
+        if (!user) {
+            return res.status(401).json({ result: 'error', message: 'Authentication required' });
+        }
+        const ticketId = toPositiveInteger(req.params && req.params.id, 0);
+        if (!ticketId) {
+            return res.status(400).json({ result: 'error', message: 'מזהה קריאה לא תקין' });
+        }
+
+        try {
+            // Verify the ticket exists and the user is authorized
+            const [ticketRows] = await pool.query(
+                'SELECT `id`, `creator_username`, `handler_username` FROM `helpdesk_tickets` WHERE `id` = ?',
+                [ticketId]
+            );
+            if (!ticketRows.length) {
+                return res.status(404).json({ result: 'error', message: 'קריאה לא נמצאה' });
+            }
+            const ticket = ticketRows[0];
+            const isAuthorized = ticket.creator_username === user || ticket.handler_username === user;
+            if (!isAuthorized) {
+                return res.status(403).json({ result: 'error', message: 'אין הרשאה לצפות בהערות קריאה זו' });
+            }
+
+            const [noteRows] = await pool.query(
+                'SELECT `id`, `ticket_id`, `author_username`, `note_text`, `created_at` FROM `helpdesk_notes` WHERE `ticket_id` = ? ORDER BY `created_at` ASC',
+                [ticketId]
+            );
+            const notes = noteRows.map((r) => ({
+                id: r.id,
+                ticketId: r.ticket_id,
+                authorUsername: r.author_username,
+                noteText: r.note_text,
+                createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at || '')
+            }));
+            return res.json({ result: 'success', notes });
+        } catch (error) {
+            const message = error && error.message ? error.message : 'Failed to load notes';
+            console.error('[HELPDESK] Load notes error:', message);
+            return res.status(500).json({ result: 'error', message: 'שגיאה בטעינת ההערות' });
+        }
+    });
+
     // PUT /helpdesk/tickets/:id/status - Change ticket status
     app.put(['/helpdesk/tickets/:id/status', '/notify/helpdesk/tickets/:id/status'], requireUser, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');

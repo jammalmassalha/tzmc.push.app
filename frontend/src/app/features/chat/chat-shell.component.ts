@@ -33,6 +33,7 @@ import {
   ChatMessage,
   DeliveryStatus,
   HelpdeskDashboard,
+  HelpdeskTicket,
   MessageReference
 } from '../../core/models/chat.models';
 import {
@@ -50,6 +51,7 @@ import { NewChatDialogComponent } from './dialogs/new-chat-dialog.component';
 import { ConfirmMessageActionDialogComponent } from './dialogs/confirm-message-action-dialog.component';
 import { ForwardMessageDialogComponent } from './dialogs/forward-message-dialog.component';
 import { HelpdeskTicketDialogComponent } from './dialogs/helpdesk-ticket-dialog.component';
+import { HelpdeskTicketDetailDialogComponent } from './dialogs/helpdesk-ticket-detail-dialog.component';
 
 type MessageRenderPart =
   | { kind: 'text'; text: string }
@@ -1397,6 +1399,21 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
 
   helpdeskStatusDisplayLabel(status: string): string {
     return this.store.helpdeskStatusLabel(status);
+  }
+
+  openHelpdeskTicketDetail(ticket: HelpdeskTicket): void {
+    const currentUsername = this.store.currentUser() ?? '';
+    this.dialog.open(HelpdeskTicketDetailDialogComponent, {
+      data: {
+        ticket,
+        currentUsername,
+        statusLabel: (status: string) => this.store.helpdeskStatusLabel(status)
+      },
+      width: '480px',
+      maxWidth: '96vw',
+      maxHeight: '90vh',
+      direction: 'rtl'
+    });
   }
 
   parseHelpdeskTimestamp(dateString: string | undefined): number {
