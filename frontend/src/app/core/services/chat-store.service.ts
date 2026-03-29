@@ -89,6 +89,7 @@ const DOVRUT_ALLOWED_WRITERS = ['0506501040', '0506267447', '0543108095'] as con
 const DOVRUT_TEST_ALLOWED_WRITERS = ['0546799693'] as const;
 const DOVRUT_TEST_GROUP_MEMBERS = ['0546799693', '0550000001', '0547997273', '0505203520'] as const;
 const SHUTTLE_OPERATIONS_GROUP_MEMBERS = ['0546799693', '0550000001', '0506267410', '0505203520'] as const;
+const HELPDESK_ALLOWED_USERS = ['0546799693'] as const;
 const BADGE_RESET_ALL_ALLOWED_USERS = ['0546799693'] as const;
 interface HardcodedCommunityGroupConfig {
   id: string;
@@ -317,6 +318,12 @@ export class ChatStoreService {
   readonly lastError = signal<string | null>(null);
   readonly incomingReactionNotice = signal<IncomingReactionNotice | null>(null);
   readonly shuttleAccessAllowed = signal(true);
+  readonly helpdeskAccessAllowed = computed(() => {
+    const user = this.currentUser();
+    if (!user) return false;
+    const normalizedUser = this.normalizeUser(user);
+    return HELPDESK_ALLOWED_USERS.some((allowed) => this.normalizeUser(allowed) === normalizedUser);
+  });
   readonly realtimeTransportMode = signal<RealtimeTransportMode>('polling');
   readonly realtimeTransportLabel = computed(() => {
     const mode = this.realtimeTransportMode();
@@ -457,8 +464,12 @@ export class ChatStoreService {
       chatIds.add(id);
     }
     const canAccessShuttle = this.shuttleAccessAllowed();
+    const canAccessHelpdesk = this.helpdeskAccessAllowed();
     for (const systemId of this.systemChatIdSet) {
       if (this.isShuttleChat(systemId) && !canAccessShuttle) {
+        continue;
+      }
+      if (this.isHelpdeskChat(systemId) && !canAccessHelpdesk) {
         continue;
       }
       chatIds.add(systemId);
@@ -472,6 +483,9 @@ export class ChatStoreService {
       const lastMessage = messages[messages.length - 1];
       const isShuttle = this.isShuttleChat(chatId);
       if (isShuttle && !canAccessShuttle) {
+        continue;
+      }
+      if (this.isHelpdeskChat(chatId) && !canAccessHelpdesk) {
         continue;
       }
 
@@ -855,6 +869,9 @@ export class ChatStoreService {
     if (this.isShuttleChat(normalized) && !this.shuttleAccessAllowed()) {
       return;
     }
+    if (this.isHelpdeskChat(normalized) && !this.helpdeskAccessAllowed()) {
+      return;
+    }
     const unreadBeforeOpen = Math.max(0, Math.floor(Number(this.unreadByChat()[normalized] ?? 0)));
     this.lastActivatedChatMeta.set({
       chatId: normalized,
@@ -1131,6 +1148,9 @@ export class ChatStoreService {
       return false;
     }
     if (this.isShuttleChat(normalizedChatId) && !this.shuttleAccessAllowed()) {
+      return false;
+    }
+    if (this.isHelpdeskChat(normalizedChatId) && !this.helpdeskAccessAllowed()) {
       return false;
     }
     const group = this.groups().find((item) => item.id === normalizedChatId);
@@ -2448,6 +2468,9 @@ export class ChatStoreService {
       return;
     }
     if (this.isHelpdeskChat(chatId)) {
+      if (!this.helpdeskAccessAllowed()) {
+        return;
+      }
       await this.ensureHelpdeskFlowOnOpen();
     }
   }
