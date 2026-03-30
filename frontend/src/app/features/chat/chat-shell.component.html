@@ -1206,7 +1206,13 @@
             #fileInput
             class="hidden-input"
             type="file"
-            accept="image/*,.pdf"
+            accept="image/*"
+            (change)="onFileSelected($event)" />
+          <input
+            #pdfInput
+            class="hidden-input"
+            type="file"
+            accept=".pdf,application/pdf"
             (change)="onFileSelected($event)" />
 
           <div class="composer-input-shell">
@@ -1244,7 +1250,11 @@
           <mat-menu #attachMenu="matMenu">
             <button mat-menu-item type="button" (click)="openImagePicker()">
               <mat-icon>image</mat-icon>
-              <span>Pic / PDF</span>
+              <span>תמונה</span>
+            </button>
+            <button mat-menu-item type="button" (click)="openPdfPicker()">
+              <mat-icon>picture_as_pdf</mat-icon>
+              <span>קובץ PDF</span>
             </button>
             <button mat-menu-item type="button" (click)="shareLocation()">
               <mat-icon>location_on</mat-icon>

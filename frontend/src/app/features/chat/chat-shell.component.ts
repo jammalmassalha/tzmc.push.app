@@ -297,6 +297,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   @ViewChild(CdkVirtualScrollViewport) contactsViewport?: CdkVirtualScrollViewport;
   @ViewChild('messagesPanel') messagesPanel?: ElementRef<HTMLDivElement>;
   @ViewChild('fileInput') fileInputRef?: ElementRef<HTMLInputElement>;
+  @ViewChild('pdfInput') pdfInputRef?: ElementRef<HTMLInputElement>;
   @ViewChild('composerTextarea') composerTextareaRef?: ElementRef<HTMLTextAreaElement>;
   private readonly avatarThumbCache = new Map<string, string>();
   private readonly avatarLqipCache = new Map<string, string>();
@@ -1596,6 +1597,21 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       return;
     }
     this.fileInputRef?.nativeElement.click();
+  }
+
+  openPdfPicker(): void {
+    if (this.isComposerHidden()) {
+      const message = this.isShuttleOperationsRoomActive()
+        ? 'בחדר זה לא ניתן לשלוח הודעות.'
+        : 'בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.';
+      this.snackBar.open(message, this.shuttleCloseActionLabel(), { duration: 2600 });
+      return;
+    }
+    if (!this.store.activeChat() || !this.store.canSendToActiveChat()) {
+      this.snackBar.open('לא ניתן לצרף קובץ בצ׳אט זה.', 'סגור', { duration: 2500 });
+      return;
+    }
+    this.pdfInputRef?.nativeElement.click();
   }
 
   async shareLocation(): Promise<void> {
