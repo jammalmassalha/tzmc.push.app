@@ -20,6 +20,7 @@ export interface HelpdeskTicketDetailDialogData {
   handlers: HelpdeskManagedUser[] | null;
   statusLabel: (status: string) => string;
   resolveUsername: (username: string) => string;
+  resolveContact: (username: string) => { displayName: string; info?: string; phone?: string };
   assignHandler: (ticketId: number, handlerUsername: string | null) => Promise<void>;
   updateStatus: (ticketId: number, status: string) => Promise<void>;
 }
@@ -88,6 +89,10 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
 
   get availableHandlers(): HelpdeskManagedUser[] {
     return this.data.handlers ?? [];
+  }
+
+  get creatorContact(): { displayName: string; info?: string; phone?: string } {
+    return this.data.resolveContact(this.data.ticket.creatorUsername);
   }
 
   resolveDisplay(username: string | null | undefined): string {

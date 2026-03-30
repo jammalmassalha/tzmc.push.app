@@ -42,11 +42,17 @@
         </div>
       </div>
 
-      <div class="detail-row">
+      <div class="detail-row creator-row">
         <mat-icon class="detail-icon">person</mat-icon>
         <div class="detail-body">
-          <span class="detail-label">פותח</span>
-          <span class="detail-value">{{ resolveDisplay(data.ticket.creatorUsername) }}</span>
+          <span class="detail-label">נפתח על ידי</span>
+          <span class="detail-value creator-name">{{ creatorContact.displayName }}</span>
+          @if (creatorContact.info) {
+            <span class="detail-sub">{{ creatorContact.info }}</span>
+          }
+          @if (creatorContact.phone) {
+            <span class="detail-sub">{{ creatorContact.phone }}</span>
+          }
         </div>
       </div>
 

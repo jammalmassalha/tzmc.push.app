@@ -634,7 +634,7 @@
                           </div>
                           <div class="shuttle-order-row">
                             <span class="label">פותח</span>
-                            <span class="value">{{ ticket.creatorUsername }}</span>
+                            <span class="value">{{ resolveHelpdeskDisplayName(ticket.creatorUsername) }}</span>
                           </div>
                           <div class="shuttle-order-row">
                             <span class="label">תאריך</span>
@@ -668,11 +668,11 @@
                           </div>
                           <div class="shuttle-order-row">
                             <span class="label">פותח</span>
-                            <span class="value">{{ ticket.creatorUsername }}</span>
+                            <span class="value">{{ resolveHelpdeskDisplayName(ticket.creatorUsername) }}</span>
                           </div>
                           <div class="shuttle-order-row">
                             <span class="label">מטפל</span>
-                            <span class="value">{{ ticket.handlerUsername || '—' }}</span>
+                            <span class="value">{{ resolveHelpdeskDisplayName(ticket.handlerUsername) }}</span>
                           </div>
                           <div class="shuttle-order-row">
                             <span class="label">תאריך</span>

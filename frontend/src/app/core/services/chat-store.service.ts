@@ -4922,6 +4922,16 @@ export class ChatStoreService {
     return this.getDisplayName(username);
   }
 
+  resolveHelpdeskContact(username: string): { displayName: string; info?: string; phone?: string } {
+    const normalized = this.normalizeUser(username);
+    const contact = this.contacts().find((item) => item.username === normalized);
+    return {
+      displayName: contact?.displayName || normalized,
+      info: contact?.info || undefined,
+      phone: contact?.phone || undefined
+    };
+  }
+
   private async forceRefreshHelpdeskTickets(): Promise<void> {
     this.helpdeskTicketsSyncAt = 0;
     await this.refreshHelpdeskTickets();

@@ -1402,6 +1402,11 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     return this.store.helpdeskStatusLabel(status);
   }
 
+  resolveHelpdeskDisplayName(username: string | null | undefined): string {
+    if (!username) return '—';
+    return this.store.resolveHelpdeskUsername(username) || username;
+  }
+
   openHelpdeskTicketDetail(ticket: HelpdeskTicket): void {
     const currentUsername = this.store.currentUser() ?? '';
     const dashboard = this.helpdeskDashboard();
@@ -1415,6 +1420,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
         handlers,
         statusLabel: (status: string) => this.store.helpdeskStatusLabel(status),
         resolveUsername: (username: string) => this.store.resolveHelpdeskUsername(username),
+        resolveContact: (username: string) => this.store.resolveHelpdeskContact(username),
         assignHandler: (ticketId: number, handlerUsername: string | null) =>
           this.store.assignHelpdeskHandler(ticketId, handlerUsername),
         updateStatus: (ticketId: number, status: string) =>
