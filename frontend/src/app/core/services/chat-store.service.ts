@@ -65,6 +65,7 @@ const SHUTTLE_OPERATIONS_CHAT_NAME = 'הסעות';
 const HELPDESK_CHAT_NAME = 'מוקד איחוד - קריאות';
 const HELPDESK_STATE_KEY_PREFIX = 'helpdesk_state_';
 const HELPDESK_TICKETS_CACHE_TTL_MS = 60 * 1000;
+const HELPDESK_TICKETS_POLL_INTERVAL_MS = 20 * 1000;
 const HR_WELCOME_KEY_PREFIX = 'hr_welcome_sent_';
 const HR_STATE_KEY_PREFIX = 'hr_state_';
 const HR_UPLOAD_BASE_URL = '/notify/uploads/';
@@ -393,6 +394,7 @@ export class ChatStoreService {
   private readonly shuttlePickerRevision = signal(0);
   private readonly helpdeskPickerRevision = signal(0);
   private helpdeskInitInFlight = false;
+  private helpdeskPollingTimer: ReturnType<typeof setInterval> | null = null;
   private readonly helpdeskTicketsSignal = signal<HelpdeskTicket[]>([]);
   private readonly helpdeskAssignedSignal = signal<HelpdeskTicket[]>([]);
   private readonly helpdeskMyRoleSignal = signal<HelpdeskMyRole | null>(null);
@@ -874,6 +876,9 @@ export class ChatStoreService {
     const previousActiveChat = this.activeChatId();
     if (previousActiveChat && previousActiveChat !== this.normalizeChatId(chatId ?? '')) {
       this.cancelTypingForActiveChat();
+      if (this.isHelpdeskChat(previousActiveChat)) {
+        this.stopHelpdeskPolling();
+      }
     }
     if (!chatId) {
       this.activeChatId.set(null);
@@ -4910,6 +4915,17 @@ export class ChatStoreService {
     await this.refreshHelpdeskTickets();
   }
 
+  async updateHelpdeskTicketStatus(ticketId: number, status: string): Promise<void> {
+    await this.api.updateHelpdeskTicketStatus(ticketId, status);
+    // Force refresh to get updated tickets
+    this.helpdeskTicketsSyncAt = 0;
+    await this.refreshHelpdeskTickets();
+  }
+
+  resolveHelpdeskUsername(username: string): string {
+    return this.getDisplayName(username);
+  }
+
   async refreshHelpdeskTickets(): Promise<void> {
     const user = this.currentUser();
     if (!user) return;
@@ -4971,6 +4987,23 @@ export class ChatStoreService {
       await this.refreshHelpdeskTickets();
     } finally {
       this.helpdeskInitInFlight = false;
+    }
+    // Start real-time polling for ticket updates
+    this.startHelpdeskPolling();
+  }
+
+  private startHelpdeskPolling(): void {
+    if (this.helpdeskPollingTimer) return;
+    this.helpdeskPollingTimer = setInterval(() => {
+      this.helpdeskTicketsSyncAt = 0;
+      void this.refreshHelpdeskTickets();
+    }, HELPDESK_TICKETS_POLL_INTERVAL_MS);
+  }
+
+  private stopHelpdeskPolling(): void {
+    if (this.helpdeskPollingTimer) {
+      clearInterval(this.helpdeskPollingTimer);
+      this.helpdeskPollingTimer = null;
     }
   }
 
@@ -5805,6 +5838,7 @@ export class ChatStoreService {
     this.clearTypingIndicators();
     this.stopSocketOnly();
     this.stopStreamOnly();
+    this.stopHelpdeskPolling();
 
     if (this.pollTimer) {
       clearInterval(this.pollTimer);

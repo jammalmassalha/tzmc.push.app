@@ -1413,7 +1413,12 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
         currentUsername,
         myRole,
         handlers,
-        statusLabel: (status: string) => this.store.helpdeskStatusLabel(status)
+        statusLabel: (status: string) => this.store.helpdeskStatusLabel(status),
+        resolveUsername: (username: string) => this.store.resolveHelpdeskUsername(username),
+        assignHandler: (ticketId: number, handlerUsername: string | null) =>
+          this.store.assignHelpdeskHandler(ticketId, handlerUsername),
+        updateStatus: (ticketId: number, status: string) =>
+          this.store.updateHelpdeskTicketStatus(ticketId, status)
       },
       width: '520px',
       maxWidth: '96vw',
@@ -1421,7 +1426,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       direction: 'rtl'
     });
     dialogRef.afterClosed().subscribe((result) => {
-      if (result && result.handlerChanged) {
+      if (result?.changed) {
         void this.store.refreshHelpdeskTickets();
       }
     });
