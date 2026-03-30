@@ -4910,20 +4910,21 @@ export class ChatStoreService {
 
   async assignHelpdeskHandler(ticketId: number, handlerUsername: string | null): Promise<void> {
     await this.api.assignHelpdeskHandler(ticketId, handlerUsername);
-    // Force refresh to get updated tickets
-    this.helpdeskTicketsSyncAt = 0;
-    await this.refreshHelpdeskTickets();
+    await this.forceRefreshHelpdeskTickets();
   }
 
   async updateHelpdeskTicketStatus(ticketId: number, status: string): Promise<void> {
     await this.api.updateHelpdeskTicketStatus(ticketId, status);
-    // Force refresh to get updated tickets
-    this.helpdeskTicketsSyncAt = 0;
-    await this.refreshHelpdeskTickets();
+    await this.forceRefreshHelpdeskTickets();
   }
 
   resolveHelpdeskUsername(username: string): string {
     return this.getDisplayName(username);
+  }
+
+  private async forceRefreshHelpdeskTickets(): Promise<void> {
+    this.helpdeskTicketsSyncAt = 0;
+    await this.refreshHelpdeskTickets();
   }
 
   async refreshHelpdeskTickets(): Promise<void> {
@@ -4995,8 +4996,9 @@ export class ChatStoreService {
   private startHelpdeskPolling(): void {
     if (this.helpdeskPollingTimer) return;
     this.helpdeskPollingTimer = setInterval(() => {
-      this.helpdeskTicketsSyncAt = 0;
-      void this.refreshHelpdeskTickets();
+      if (this.isHelpdeskChat(this.activeChatId())) {
+        void this.forceRefreshHelpdeskTickets();
+      }
     }, HELPDESK_TICKETS_POLL_INTERVAL_MS);
   }
 
