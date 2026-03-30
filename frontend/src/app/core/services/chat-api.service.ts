@@ -868,6 +868,30 @@ export class ChatApiService {
     };
   }
 
+  async broadcastVersionUpdate(user?: string): Promise<{ notifiedUsers: number }> {
+    const normalized = String(user || '').trim().toLowerCase();
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/broadcast-version-update`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user: normalized || undefined
+        })
+      },
+      { retries: 1, timeoutMs: 30000 }
+    );
+
+    const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!response.ok || String(body?.['status'] || '').trim().toLowerCase() !== 'success') {
+      throw new Error(String(body?.['message'] || '').trim() || `Broadcast version update failed with ${response.status}`);
+    }
+
+    return {
+      notifiedUsers: Number.isFinite(Number(body?.['notifiedUsers'])) ? Math.max(0, Math.floor(Number(body?.['notifiedUsers']))) : 0
+    };
+  }
+
   async uploadFile(file: File, thumbnail?: File | null): Promise<UploadResponse> {
     const formData = new FormData();
     formData.append('file', file, file.name);

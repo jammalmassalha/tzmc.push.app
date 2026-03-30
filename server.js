@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.41'; // Bumped version – force-reload on version change
+const SERVER_VERSION = '1.42'; // Added version update broadcast button
 const SERVER_RELEASE_NOTES = [
     'Update available toast with reload button.',
     'Release notes modal for new versions.',
@@ -1005,6 +1005,9 @@ const sessionTokenJweService = SESSION_JWE_SECRET
 const SESSION_USER_PATTERN = /^0\d{9}$/;
 const BADGE_RESET_ALL_ALLOWED_USERS = parseUsernamesInput(
     process.env.BADGE_RESET_ALL_ALLOWED_USERS || '0546799693'
+);
+const VERSION_UPDATE_BROADCAST_ALLOWED_USERS = parseUsernamesInput(
+    process.env.VERSION_UPDATE_BROADCAST_ALLOWED_USERS || '0546799693'
 );
 const AUTH_SESSION_RATE_LIMIT_WINDOW_MS = Math.max(
     60 * 1000,
@@ -6390,6 +6393,55 @@ app.get(['/version', '/notify/version'], (req, res) => {
     res.set('Cache-Control', 'no-store');
     res.json({ version: SERVER_VERSION, notes: SERVER_RELEASE_NOTES });
 });
+
+// --- BROADCAST VERSION UPDATE TO ALL USERS ---
+const versionUpdateBroadcastAllowedSet = new Set(
+    VERSION_UPDATE_BROADCAST_ALLOWED_USERS.map(normalizeUserKey).filter(Boolean)
+);
+
+app.post(
+    ['/broadcast-version-update', '/notify/broadcast-version-update'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ status: 'error', message: resolution.error })
+    }),
+    async (req, res) => {
+        const sender = normalizeUserKey(req.resolvedUser || '');
+        if (!sender || !versionUpdateBroadcastAllowedSet.has(sender)) {
+            return res.status(403).json({ status: 'error', message: 'Forbidden' });
+        }
+
+        const allUsers = Object.keys(deviceSubscriptionsByUser || {}).filter(Boolean);
+        if (!allUsers.length) {
+            return res.json({ status: 'success', notifiedUsers: 0 });
+        }
+
+        const pushTitle = 'עדכון גרסה';
+        const pushBody = 'גרסה חדשה זמינה – האפליקציה תתעדכן אוטומטית.';
+
+        const results = await Promise.allSettled(
+            allUsers.map((targetUser) =>
+                sendPushNotificationToUser(
+                    targetUser,
+                    {
+                        title: pushTitle,
+                        body: { shortText: pushBody },
+                        data: { type: 'version-update' }
+                    },
+                    'מערכת',
+                    { skipBadge: true }
+                )
+            )
+        );
+
+        const successCount = results.filter((r) => r.status === 'fulfilled').length;
+        const failCount = results.filter((r) => r.status === 'rejected').length;
+
+        console.log(`[VERSION-BROADCAST] Sent version update push to ${successCount}/${allUsers.length} users (${failCount} failed). Triggered by ${sender}.`);
+        return res.json({ status: 'success', notifiedUsers: successCount, failed: failCount, total: allUsers.length });
+    }
+);
 
 app.get(['/webhook-registry', '/notify/webhook-registry'], (_req, res) => {
     res.json({

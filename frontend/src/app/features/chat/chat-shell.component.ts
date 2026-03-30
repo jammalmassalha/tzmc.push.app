@@ -993,6 +993,16 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     }
   }
 
+  async broadcastVersionUpdate(): Promise<void> {
+    try {
+      const notifiedUsers = await this.store.broadcastVersionUpdate();
+      this.snackBar.open(`הודעת עדכון גרסה נשלחה ל-${notifiedUsers} משתמשים.`, 'סגור', { duration: 3500 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'שליחת עדכון גרסה נכשלה';
+      this.snackBar.open(message, 'סגור', { duration: 3200 });
+    }
+  }
+
   async sendMessage(): Promise<void> {
     this.store.cancelTypingForActiveChat();
     if (this.isComposerHidden() && !this.editingMessageTarget()) {

@@ -40,6 +40,12 @@
         <span>איפוס כל המונים</span>
       </button>
     }
+    @if (store.canCurrentUserBroadcastVersionUpdate()) {
+      <button mat-menu-item type="button" (click)="broadcastVersionUpdate()">
+        <mat-icon>system_update</mat-icon>
+        <span>שלח הודעה על עידכון גרסה</span>
+      </button>
+    }
     <button mat-menu-item type="button" (click)="openCreateGroupDialog()">
       <mat-icon>group_add</mat-icon>
       <span>קבוצה חדשה</span>

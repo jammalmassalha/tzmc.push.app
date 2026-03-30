@@ -94,6 +94,7 @@ const DOVRUT_TEST_GROUP_MEMBERS = ['0546799693', '0550000001', '0547997273', '05
 const SHUTTLE_OPERATIONS_GROUP_MEMBERS = ['0546799693', '0550000001', '0506267410', '0505203520'] as const;
 const HELPDESK_ALLOWED_USERS = ['0546799693', '0550000001'] as const;
 const BADGE_RESET_ALL_ALLOWED_USERS = ['0546799693'] as const;
+const VERSION_UPDATE_BROADCAST_ALLOWED_USERS = ['0546799693'] as const;
 interface HardcodedCommunityGroupConfig {
   id: string;
   name: string;
@@ -451,6 +452,9 @@ export class ChatStoreService {
   );
   private readonly badgeResetAllAdminUsersSet = new Set<string>(
     BADGE_RESET_ALL_ALLOWED_USERS.map((value) => this.normalizeUser(value)).filter(Boolean)
+  );
+  private readonly versionUpdateBroadcastAllowedUsersSet = new Set<string>(
+    VERSION_UPDATE_BROADCAST_ALLOWED_USERS.map((value) => this.normalizeUser(value)).filter(Boolean)
   );
   private incomingBatchDepth = 0;
   private pendingPersistAfterIncomingBatch = false;
@@ -1214,6 +1218,28 @@ export class ChatStoreService {
     this.clearDeviceAttention();
     this.schedulePersist();
     return result.clearedKeys;
+  }
+
+  canCurrentUserBroadcastVersionUpdate(): boolean {
+    const normalizedUser = this.normalizeUser(this.currentUser() ?? '');
+    if (!normalizedUser) return false;
+    return this.versionUpdateBroadcastAllowedUsersSet.has(normalizedUser);
+  }
+
+  async broadcastVersionUpdate(): Promise<number> {
+    const user = this.currentUser();
+    if (!user) {
+      throw new Error('יש להתחבר לפני שליחת עדכון גרסה');
+    }
+    if (!this.canCurrentUserBroadcastVersionUpdate()) {
+      throw new Error('אין הרשאה לשליחת עדכון גרסה');
+    }
+    if (!this.networkOnline()) {
+      throw new Error('אין חיבור לרשת');
+    }
+
+    const result = await this.api.broadcastVersionUpdate(user);
+    return result.notifiedUsers;
   }
 
   getHrComposerActionsForActiveChat(): {
