@@ -6435,7 +6435,7 @@ app.post(
                         body: { shortText: pushBody },
                         data: { type: 'version-update' }
                     },
-                    'מערכת',
+                    'מערכות מידע',
                     { skipBadge: true }
                 )
             )
