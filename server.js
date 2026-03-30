@@ -6398,6 +6398,7 @@ app.get(['/version', '/notify/version'], (req, res) => {
 const versionUpdateBroadcastAllowedSet = new Set(
     VERSION_UPDATE_BROADCAST_ALLOWED_USERS.map(normalizeUserKey).filter(Boolean)
 );
+const versionBroadcastRateLimitStore = new Map();
 
 app.post(
     ['/broadcast-version-update', '/notify/broadcast-version-update'],
@@ -6410,6 +6411,11 @@ app.post(
         const sender = normalizeUserKey(req.resolvedUser || '');
         if (!sender || !versionUpdateBroadcastAllowedSet.has(sender)) {
             return res.status(403).json({ status: 'error', message: 'Forbidden' });
+        }
+
+        const rateCheck = consumeRateLimitEntry(versionBroadcastRateLimitStore, sender, 1, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ status: 'error', message: `נסה שוב בעוד ${rateCheck.retryAfterSeconds} שניות` });
         }
 
         const allUsers = Object.keys(deviceSubscriptionsByUser || {}).filter(Boolean);
