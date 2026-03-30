@@ -31,10 +31,12 @@ type StartupLoaderPhase = 'auth' | 'contacts' | 'chats' | 'finalizing' | 'ready'
 })
 export class App implements OnDestroy {
   private static readonly MOBILE_CACHE_MAJOR_VERSION_KEY = 'mobile-cache-major-version-v1';
+  private static readonly KNOWN_APP_VERSION_KEY = 'tzmc-known-app-version-v1';
   private static readonly STARTUP_SYNC_TIMEOUT_MS = 7000;
   private static readonly STARTUP_LOADER_TIMEOUT_MS = 30000;
   private static readonly STARTUP_HIDE_DELAY_MS = 220;
   private static readonly APP_VERSION_FETCH_TIMEOUT_MS = 2500;
+  private static readonly VERSION_POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
   // Customize these labels to change startup loader text.
   private static readonly STARTUP_TEXT_BY_PHASE: Record<StartupLoaderPhase, string> = {
     auth: 'מאמת משתמש…',
@@ -72,6 +74,12 @@ export class App implements OnDestroy {
   private startupLoaderHideDelayId: number | null = null;
   private startupNavigationSub: Subscription | null = null;
   private startupStorePhaseEffectRef: EffectRef | null = null;
+  private versionPollIntervalId: number | null = null;
+  private readonly versionVisibilityListener = (): void => {
+    if (document.visibilityState === 'visible') {
+      void this.checkForAppUpdate();
+    }
+  };
 
   constructor(
     private readonly store: ChatStoreService,
@@ -80,10 +88,12 @@ export class App implements OnDestroy {
     this.startStartupLoader();
     this.scheduleCacheCleanupAfterInitialRender();
     this.bindServiceWorkerWindowContextSync();
+    this.startVersionPolling();
   }
 
   ngOnDestroy(): void {
     this.stopStartupLoaderTimers();
+    this.stopVersionPolling();
     if (this.startupLoaderHideDelayId !== null) {
       window.clearTimeout(this.startupLoaderHideDelayId);
       this.startupLoaderHideDelayId = null;
@@ -427,5 +437,98 @@ export class App implements OnDestroy {
 
   private isMobileDevice(): boolean {
     return /Android|iPhone|iPad|iPod|Mobile|IEMobile|Opera Mini/i.test(navigator.userAgent);
+  }
+
+  // ── Force-reload on new app version ──────────────────────────────────
+
+  private startVersionPolling(): void {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      return;
+    }
+
+    // Initial check after a short delay so startup isn't blocked.
+    window.setTimeout(() => {
+      void this.checkForAppUpdate();
+    }, 10_000);
+
+    this.versionPollIntervalId = window.setInterval(() => {
+      void this.checkForAppUpdate();
+    }, App.VERSION_POLL_INTERVAL_MS);
+
+    document.addEventListener('visibilitychange', this.versionVisibilityListener);
+  }
+
+  private stopVersionPolling(): void {
+    if (this.versionPollIntervalId !== null) {
+      window.clearInterval(this.versionPollIntervalId);
+      this.versionPollIntervalId = null;
+    }
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.versionVisibilityListener);
+    }
+  }
+
+  private async checkForAppUpdate(): Promise<void> {
+    try {
+      const serverVersion = await this.fetchCurrentAppVersion();
+      if (!serverVersion) {
+        return;
+      }
+
+      const knownVersion = this.readKnownAppVersion();
+
+      if (!knownVersion) {
+        // First time — just record and move on.
+        this.writeKnownAppVersion(serverVersion);
+        return;
+      }
+
+      if (knownVersion === serverVersion) {
+        return;
+      }
+
+      // Version changed — persist new version, clear caches, and hard-reload.
+      this.writeKnownAppVersion(serverVersion);
+      await this.forceHardReload();
+    } catch {
+      // Silently ignore fetch / storage errors so the app keeps running.
+    }
+  }
+
+  private readKnownAppVersion(): string | null {
+    try {
+      const value = localStorage.getItem(App.KNOWN_APP_VERSION_KEY);
+      return value ? value.trim() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private writeKnownAppVersion(version: string): void {
+    try {
+      localStorage.setItem(App.KNOWN_APP_VERSION_KEY, version);
+    } catch {
+      // Ignore storage write failures.
+    }
+  }
+
+  private async forceHardReload(): Promise<void> {
+    try {
+      // Unregister all service workers so the browser fetches fresh assets.
+      if ('serviceWorker' in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(registrations.map((r) => r.unregister().catch(() => undefined)));
+      }
+
+      // Delete all caches.
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((key) => caches.delete(key)));
+      }
+    } catch {
+      // Best-effort cleanup before reload.
+    }
+
+    window.location.reload();
   }
 }

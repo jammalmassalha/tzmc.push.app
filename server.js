@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.40'; // Bumped version
+const SERVER_VERSION = '1.41'; // Bumped version – force-reload on version change
 const SERVER_RELEASE_NOTES = [
     'Update available toast with reload button.',
     'Release notes modal for new versions.',
