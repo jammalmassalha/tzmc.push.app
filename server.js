@@ -4751,7 +4751,7 @@ function upsertGroup(payload = {}) {
 
     groups[groupId] = nextGroup;
     scheduleStateSave();
-    // Persist to MySQL (fire-and-forget to avoid blocking)
+    // Persist to MySQL asynchronously (errors are logged but do not block the caller)
     mysqlLogsService.upsertChatGroup({
         groupId: nextGroup.id,
         groupName: nextGroup.name,

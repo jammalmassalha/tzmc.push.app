@@ -935,8 +935,11 @@ export class MysqlLogsService {
 
   async upsertChatGroup(group: ChatGroupDbRecord): Promise<boolean> {
     await this.ensureChatGroupsTables();
+    const conn = await this.pool.getConnection();
     try {
-      await this.pool.execute(
+      await conn.beginTransaction();
+
+      await conn.execute(
         `INSERT INTO \`ChatGroups\` (\`GroupId\`, \`GroupName\`, \`CreatedBy\`, \`Type\`, \`CreatedAt\`, \`UpdatedAt\`)
          VALUES (?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
@@ -955,36 +958,44 @@ export class MysqlLogsService {
       );
 
       // Replace members
-      await this.pool.execute(
+      await conn.execute(
         'DELETE FROM `ChatGroupMembers` WHERE `GroupId` = ?',
         [group.groupId]
       );
-      for (const phone of group.members) {
-        if (!phone) continue;
-        await this.pool.execute(
-          'INSERT IGNORE INTO `ChatGroupMembers` (`GroupId`, `Phone`) VALUES (?, ?)',
-          [group.groupId, phone]
+      const validMembers = group.members.filter(Boolean);
+      if (validMembers.length > 0) {
+        const placeholders = validMembers.map(() => '(?, ?)').join(', ');
+        const params = validMembers.flatMap((phone) => [group.groupId, phone]);
+        await conn.execute(
+          `INSERT IGNORE INTO \`ChatGroupMembers\` (\`GroupId\`, \`Phone\`) VALUES ${placeholders}`,
+          params
         );
       }
 
       // Replace admins
-      await this.pool.execute(
+      await conn.execute(
         'DELETE FROM `ChatGroupAdmins` WHERE `GroupId` = ?',
         [group.groupId]
       );
-      for (const phone of group.admins) {
-        if (!phone) continue;
-        await this.pool.execute(
-          'INSERT IGNORE INTO `ChatGroupAdmins` (`GroupId`, `Phone`) VALUES (?, ?)',
-          [group.groupId, phone]
+      const validAdmins = group.admins.filter(Boolean);
+      if (validAdmins.length > 0) {
+        const placeholders = validAdmins.map(() => '(?, ?)').join(', ');
+        const params = validAdmins.flatMap((phone) => [group.groupId, phone]);
+        await conn.execute(
+          `INSERT IGNORE INTO \`ChatGroupAdmins\` (\`GroupId\`, \`Phone\`) VALUES ${placeholders}`,
+          params
         );
       }
 
+      await conn.commit();
       return true;
     } catch (err: unknown) {
+      await conn.rollback().catch(() => undefined);
       const message = String((err as { message?: string }).message || '');
       console.warn(`[MYSQL] upsertChatGroup(${group.groupId}) warning:`, message);
       return false;
+    } finally {
+      conn.release();
     }
   }
 
