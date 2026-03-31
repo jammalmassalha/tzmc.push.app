@@ -4,6 +4,7 @@ import {
   ChatGroup,
   ChatListItem,
   ChatMessage,
+  CommunityGroupConfig,
   DeleteMessagePayload,
   Contact,
   DeliveryStatus,
@@ -83,35 +84,23 @@ const SHUTTLE_REMINDER_HISTORY_KEY_PREFIX = 'shuttle_reminder_15m_sent_';
 const SHUTTLE_REMINDER_HISTORY_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const SHUTTLE_STATUS_ACTIVE_VALUE = 'פעיל активный';
 const SHUTTLE_STATUS_CANCEL_VALUE = 'ביטול נסיעה отмена поезд';
-const DOVRUT_GROUP_NAME = 'דוברות';
-const DOVRUT_GROUP_ID = DOVRUT_GROUP_NAME;
-const DOVRUT_TEST_GROUP_NAME = 'בדיקה - דוברות';
-const DOVRUT_TEST_GROUP_ID = DOVRUT_TEST_GROUP_NAME;
 const DOVRUT_SYSTEM_CREATOR = 'dovrut-system';
-const DOVRUT_ALLOWED_WRITERS = ['0506501040', '0506267447', '0543108095'] as const;
-const DOVRUT_TEST_ALLOWED_WRITERS = ['0546799693'] as const;
-const DOVRUT_TEST_GROUP_MEMBERS = ['0546799693', '0550000001', '0547997273', '0505203520'] as const;
 const SHUTTLE_OPERATIONS_GROUP_MEMBERS = ['0546799693', '0550000001', '0506267410', '0505203520'] as const;
 const HELPDESK_ALLOWED_USERS = ['0546799693', '0550000001'] as const;
 const BADGE_RESET_ALL_ALLOWED_USERS = ['0546799693'] as const;
 const VERSION_UPDATE_BROADCAST_ALLOWED_USERS = ['0546799693'] as const;
-interface HardcodedCommunityGroupConfig {
-  id: string;
-  name: string;
-  staticMembers?: readonly string[];
-  allowedWriters: readonly string[];
-}
-const HARDCODED_COMMUNITY_GROUPS: readonly HardcodedCommunityGroupConfig[] = [
+// Seed/fallback community group configs — replaced at runtime by DB-loaded configs
+const SEED_COMMUNITY_GROUPS: readonly CommunityGroupConfig[] = [
   {
-    id: DOVRUT_GROUP_ID,
-    name: DOVRUT_GROUP_NAME,
-    allowedWriters: DOVRUT_ALLOWED_WRITERS
+    id: 'דוברות',
+    name: 'דוברות',
+    allowedWriters: ['0506501040', '0506267447', '0543108095']
   },
   {
-    id: DOVRUT_TEST_GROUP_ID,
-    name: DOVRUT_TEST_GROUP_NAME,
-    staticMembers: DOVRUT_TEST_GROUP_MEMBERS,
-    allowedWriters: DOVRUT_TEST_ALLOWED_WRITERS
+    id: 'בדיקה - דוברות',
+    name: 'בדיקה - דוברות',
+    staticMembers: ['0546799693', '0550000001', '0547997273', '0505203520'],
+    allowedWriters: ['0546799693']
   }
 ];
 const SHUTTLE_DAY_NAMES_BY_LANGUAGE: Record<ShuttleLanguage, readonly string[]> = {
@@ -438,18 +427,9 @@ export class ChatStoreService {
   private readonly shuttleChatIdSet = new Set<string>(
     [SHUTTLE_CHAT_NAME, SHUTTLE_CHAT_TITLE].map((id) => this.normalizeChatId(id)).filter(Boolean)
   );
-  private readonly communityWriterSetByGroupId = new Map<string, Set<string>>(
-    HARDCODED_COMMUNITY_GROUPS.map((group) => [
-      this.normalizeChatId(group.id),
-      new Set(group.allowedWriters.map((value) => this.normalizeUser(value)).filter(Boolean))
-    ])
-  );
-  private readonly dovrutWriterSet = new Set<string>(
-    HARDCODED_COMMUNITY_GROUPS
-      .flatMap((group) => group.allowedWriters)
-      .map((value) => this.normalizeUser(value))
-      .filter(Boolean)
-  );
+  private communityGroupConfigs: CommunityGroupConfig[] = [...SEED_COMMUNITY_GROUPS];
+  private communityWriterSetByGroupId = new Map<string, Set<string>>();
+  private dovrutWriterSet = new Set<string>();
   private readonly badgeResetAllAdminUsersSet = new Set<string>(
     BADGE_RESET_ALL_ALLOWED_USERS.map((value) => this.normalizeUser(value)).filter(Boolean)
   );
@@ -569,6 +549,7 @@ export class ChatStoreService {
   });
 
   constructor(private readonly api: ChatApiService) {
+    this.rebuildCommunityGroupMaps(SEED_COMMUNITY_GROUPS);
     if (typeof window !== 'undefined') {
       window.addEventListener('online', this.handleOnline);
       window.addEventListener('offline', this.handleOffline);
@@ -583,6 +564,33 @@ export class ChatStoreService {
 
   isAuthenticated(): boolean {
     return Boolean(this.currentUser());
+  }
+
+  private rebuildCommunityGroupMaps(configs: readonly CommunityGroupConfig[]): void {
+    this.communityGroupConfigs = [...configs];
+    this.communityWriterSetByGroupId = new Map<string, Set<string>>(
+      configs.map((group) => [
+        this.normalizeChatId(group.id),
+        new Set(group.allowedWriters.map((value) => this.normalizeUser(value)).filter(Boolean))
+      ])
+    );
+    this.dovrutWriterSet = new Set<string>(
+      configs
+        .flatMap((group) => group.allowedWriters)
+        .map((value) => this.normalizeUser(value))
+        .filter(Boolean)
+    );
+  }
+
+  private async loadCommunityGroupConfigs(): Promise<void> {
+    try {
+      const configs = await this.api.getCommunityGroupConfigs();
+      if (configs.length > 0) {
+        this.rebuildCommunityGroupMaps(configs);
+      }
+    } catch {
+      // Fallback: keep current (seed) configs
+    }
   }
 
   async ensureSessionReady(): Promise<void> {
@@ -628,6 +636,9 @@ export class ChatStoreService {
     }
 
     this.initializedUser = user;
+
+    // Load community group configs from DB (async, non-blocking for critical path)
+    await this.loadCommunityGroupConfigs();
 
     /**
      * SYNC STEP 1: Drain Service Worker Cache
@@ -1336,8 +1347,8 @@ export class ChatStoreService {
       nextGroups = filteredGroups;
       changed = true;
     }
-    const hardcodedGroupIds = HARDCODED_COMMUNITY_GROUPS.map((group) => this.normalizeChatId(group.id));
-    for (const hardcodedGroup of HARDCODED_COMMUNITY_GROUPS) {
+    const hardcodedGroupIds = this.communityGroupConfigs.map((group) => this.normalizeChatId(group.id));
+    for (const hardcodedGroup of this.communityGroupConfigs) {
       const normalizedId = this.normalizeChatId(hardcodedGroup.id);
       const expectedMembers = this.resolveHardcodedCommunityMembers(hardcodedGroup, contacts);
       const existingIndex = nextGroups.findIndex((group) => group.id === normalizedId);
@@ -1398,7 +1409,7 @@ export class ChatStoreService {
     this.schedulePersist();
   }
 
-  private resolveHardcodedCommunityMembers(config: HardcodedCommunityGroupConfig, contacts: Contact[]): string[] {
+  private resolveHardcodedCommunityMembers(config: CommunityGroupConfig, contacts: Contact[]): string[] {
     if (Array.isArray(config.staticMembers) && config.staticMembers.length) {
       return Array.from(
         new Set(config.staticMembers.map((member) => this.normalizeUser(member)).filter(Boolean))
@@ -1947,8 +1958,8 @@ export class ChatStoreService {
         const groupId = this.normalizeChatId(String(message.groupId ?? '').trim());
         if (!groupId) continue;
 
-        // Skip restricted hardcoded community groups the current user is not a member of.
-        const hardcodedConfig = HARDCODED_COMMUNITY_GROUPS.find(
+        // Skip restricted community groups the current user is not a member of.
+        const hardcodedConfig = this.communityGroupConfigs.find(
           (g) => this.normalizeChatId(g.id) === groupId
         );
         if (
@@ -7052,9 +7063,9 @@ export class ChatStoreService {
 
     const normalizedId = this.normalizeChatId(incoming.groupId);
 
-    // Respect staticMembers restrictions: if this is a hardcoded community group
+    // Respect staticMembers restrictions: if this is a community group
     // with a static member list, only allow the group for listed members.
-    const hardcodedConfig = HARDCODED_COMMUNITY_GROUPS.find(
+    const hardcodedConfig = this.communityGroupConfigs.find(
       (g) => this.normalizeChatId(g.id) === normalizedId
     );
     if (

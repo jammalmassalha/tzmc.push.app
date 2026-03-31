@@ -2,6 +2,7 @@ import { Injectable, Signal, resource, ResourceRef } from '@angular/core';
 import { getNotifyBaseUrl, runtimeConfig } from '../config/runtime-config';
 import {
   ChatGroup,
+  CommunityGroupConfig,
   Contact,
   DeleteMessagePayload,
   EditMessagePayload,
@@ -587,6 +588,35 @@ export class ChatApiService {
       loader: async ({ params }) => this.getGroups(params || undefined),
       defaultValue: []
     });
+  }
+
+  async getCommunityGroupConfigs(): Promise<CommunityGroupConfig[]> {
+    try {
+      const response = await this.fetchWithRetry(
+        this.config.communityGroupConfigsUrl,
+        {},
+        { retries: 1, timeoutMs: 10000 }
+      );
+      if (!response.ok) return [];
+      const body = (await response.json()) as { configs?: Array<{
+        id?: string;
+        name?: string;
+        staticMembers?: string[];
+        allowedWriters?: string[];
+      }> };
+      return (body.configs ?? [])
+        .map((cfg) => ({
+          id: String(cfg.id ?? '').trim(),
+          name: String(cfg.name ?? '').trim(),
+          staticMembers: Array.isArray(cfg.staticMembers) && cfg.staticMembers.length > 0
+            ? cfg.staticMembers.map((m) => String(m).trim()).filter(Boolean)
+            : undefined,
+          allowedWriters: (cfg.allowedWriters ?? []).map((w) => String(w).trim()).filter(Boolean)
+        }))
+        .filter((cfg) => Boolean(cfg.id && cfg.name));
+    } catch {
+      return [];
+    }
   }
 
   async pollMessages(user?: string): Promise<IncomingServerMessage[]> {

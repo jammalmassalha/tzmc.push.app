@@ -27,6 +27,13 @@ export interface ChatGroup {
   type: GroupType;
 }
 
+export interface CommunityGroupConfig {
+  id: string;
+  name: string;
+  staticMembers?: string[];
+  allowedWriters: string[];
+}
+
 export interface MessageReference {
   messageId: string;
   sender: string;
