@@ -6441,6 +6441,7 @@ const versionUpdateBroadcastAllowedSet = new Set(
     VERSION_UPDATE_BROADCAST_ALLOWED_USERS.map(normalizeUserKey).filter(Boolean)
 );
 const versionBroadcastRateLimitStore = new Map();
+const communityGroupConfigsRateLimitStore = new Map();
 
 app.post(
     ['/broadcast-version-update', '/notify/broadcast-version-update'],
@@ -6497,6 +6498,15 @@ app.get(['/community-group-configs', '/notify/community-group-configs'],
         candidateKeys: ['user'],
         onError: (_req, res, resolution) => res.status(resolution.status).json({ configs: [], error: resolution.error })
     }),
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user) return res.status(401).json({ configs: [], error: 'Unauthorized' });
+        const rateCheck = consumeRateLimitEntry(communityGroupConfigsRateLimitStore, user, 10, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ configs: [], error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        next();
+    },
     async (_req, res) => {
         try {
             const configs = await mysqlLogsService.loadCommunityGroups();
