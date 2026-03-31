@@ -5,8 +5,11 @@ function registerMessageController(app, deps = {}) {
         fetchWithRetry,
         buildGoogleSheetGetUrl,
         getLogsMessagesForUser,
-        hardcodedGroupIds,
-        hardcodedGroupMembers,
+        getHardcodedGroupIds,
+        getHardcodedGroupMembers,
+        // Legacy static fallbacks (kept for backward compatibility)
+        hardcodedGroupIds: _legacyHardcodedGroupIds,
+        hardcodedGroupMembers: _legacyHardcodedGroupMembers,
         getGroups,
         getActiveRedisStateStore,
         getMessageQueue,
@@ -15,6 +18,11 @@ function registerMessageController(app, deps = {}) {
         updateUserReceivedTime,
         updateUserReceivedTimeBatch
     } = deps;
+    // Resolve dynamic getters with static fallbacks
+    const resolveHardcodedGroupIds = () =>
+        (typeof getHardcodedGroupIds === 'function' ? getHardcodedGroupIds() : _legacyHardcodedGroupIds) || [];
+    const resolveHardcodedGroupMembers = () =>
+        (typeof getHardcodedGroupMembers === 'function' ? getHardcodedGroupMembers() : _legacyHardcodedGroupMembers) || {};
     const RECENT_POLLING_MESSAGE_DEDUP_TTL_MS = 10 * 60 * 1000;
     const LOGS_MESSAGE_SEMANTIC_DEDUP_WINDOW_MS = 2 * 60 * 1000;
     const MAX_RECENT_POLLING_DEDUP_KEYS_PER_USER = 4000;
@@ -372,9 +380,12 @@ function registerMessageController(app, deps = {}) {
             const knownGroupIdByName = new Map();
             const knownGroupTypeById = new Map();
             const hardcodedGroupKeySet = new Set(
-                Array.isArray(hardcodedGroupIds)
-                    ? hardcodedGroupIds.map((value) => normalizeUserKey(value)).filter(Boolean)
-                    : []
+                (() => {
+                    const ids = resolveHardcodedGroupIds();
+                    return Array.isArray(ids)
+                        ? ids.map((value) => normalizeUserKey(value)).filter(Boolean)
+                        : [];
+                })()
             );
 
             const parseFlexibleTimestamp = (...candidates) => {
@@ -449,7 +460,7 @@ function registerMessageController(app, deps = {}) {
                         since, // Optimization passed here
                         excludeSystem: true,
                         hardcodedGroupIds: Array.from(hardcodedGroupKeySet),
-                        hardcodedGroupMembers: hardcodedGroupMembers || {}
+                        hardcodedGroupMembers: resolveHardcodedGroupMembers()
                     })
                     : [];
 

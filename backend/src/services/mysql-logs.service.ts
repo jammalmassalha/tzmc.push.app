@@ -36,6 +36,13 @@ export interface MysqlLogsInsertBulkOptions {
   dedupeExisting?: boolean;
 }
 
+export interface CommunityGroupDbConfig {
+  groupId: string;
+  groupName: string;
+  members: string[];
+  writers: string[];
+}
+
 interface MysqlLogRow extends RowDataPacket {
   dateTime: Date | string | number | null;
   toUser: string | null;
@@ -237,6 +244,7 @@ export class MysqlLogsService {
   private readonly insertQuery: string;
   private imageUrlColumnReady = false;
   private fileUrlColumnReady = false;
+  private communityGroupsTablesReady = false;
 
   constructor(config: MysqlLogsConfig) {
     this.tableName = normalizeTableName(config.table);
@@ -699,6 +707,125 @@ export class MysqlLogsService {
       totalAffected += (result as any).affectedRows || 0;
     }
     return totalAffected;
+  }
+
+  async ensureCommunityGroupsTables(): Promise<void> {
+    if (this.communityGroupsTablesReady) return;
+    try {
+      await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`CommunityGroups\` (
+          \`GroupId\` VARCHAR(255) NOT NULL,
+          \`GroupName\` VARCHAR(255) NOT NULL,
+          \`CreatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP,
+          \`UpdatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (\`GroupId\`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+      await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`CommunityGroupMembers\` (
+          \`GroupId\` VARCHAR(255) NOT NULL,
+          \`Phone\` VARCHAR(50) NOT NULL,
+          PRIMARY KEY (\`GroupId\`, \`Phone\`),
+          FOREIGN KEY (\`GroupId\`) REFERENCES \`CommunityGroups\`(\`GroupId\`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+      await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`CommunityGroupWriters\` (
+          \`GroupId\` VARCHAR(255) NOT NULL,
+          \`Phone\` VARCHAR(50) NOT NULL,
+          PRIMARY KEY (\`GroupId\`, \`Phone\`),
+          FOREIGN KEY (\`GroupId\`) REFERENCES \`CommunityGroups\`(\`GroupId\`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+      this.communityGroupsTablesReady = true;
+      console.log('[MYSQL] Community groups tables ensured.');
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.warn('[MYSQL] ensureCommunityGroupsTables warning:', message);
+    }
+  }
+
+  async loadCommunityGroups(): Promise<CommunityGroupDbConfig[]> {
+    await this.ensureCommunityGroupsTables();
+    try {
+      const [groupRows] = await this.pool.execute<RowDataPacket[]>(
+        'SELECT `GroupId`, `GroupName` FROM `CommunityGroups` ORDER BY `GroupId`'
+      );
+      if (!groupRows.length) return [];
+
+      const [memberRows] = await this.pool.execute<RowDataPacket[]>(
+        'SELECT `GroupId`, `Phone` FROM `CommunityGroupMembers` ORDER BY `GroupId`, `Phone`'
+      );
+      const [writerRows] = await this.pool.execute<RowDataPacket[]>(
+        'SELECT `GroupId`, `Phone` FROM `CommunityGroupWriters` ORDER BY `GroupId`, `Phone`'
+      );
+
+      const membersMap = new Map<string, string[]>();
+      for (const row of memberRows) {
+        const gid = toTrimmedString(row.GroupId);
+        const phone = toTrimmedString(row.Phone);
+        if (!gid || !phone) continue;
+        if (!membersMap.has(gid)) membersMap.set(gid, []);
+        membersMap.get(gid)!.push(phone);
+      }
+
+      const writersMap = new Map<string, string[]>();
+      for (const row of writerRows) {
+        const gid = toTrimmedString(row.GroupId);
+        const phone = toTrimmedString(row.Phone);
+        if (!gid || !phone) continue;
+        if (!writersMap.has(gid)) writersMap.set(gid, []);
+        writersMap.get(gid)!.push(phone);
+      }
+
+      return groupRows.map((row) => {
+        const groupId = toTrimmedString(row.GroupId);
+        return {
+          groupId,
+          groupName: toTrimmedString(row.GroupName),
+          members: membersMap.get(groupId) ?? [],
+          writers: writersMap.get(groupId) ?? []
+        };
+      }).filter((g) => g.groupId && g.groupName);
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.error('[MYSQL] loadCommunityGroups error:', message);
+      return [];
+    }
+  }
+
+  async seedCommunityGroupIfEmpty(config: CommunityGroupDbConfig): Promise<boolean> {
+    await this.ensureCommunityGroupsTables();
+    try {
+      const [existing] = await this.pool.execute<RowDataPacket[]>(
+        'SELECT `GroupId` FROM `CommunityGroups` WHERE `GroupId` = ?',
+        [config.groupId]
+      );
+      if (existing.length > 0) return false;
+
+      await this.pool.execute(
+        'INSERT INTO `CommunityGroups` (`GroupId`, `GroupName`) VALUES (?, ?)',
+        [config.groupId, config.groupName]
+      );
+      for (const phone of config.members) {
+        await this.pool.execute(
+          'INSERT IGNORE INTO `CommunityGroupMembers` (`GroupId`, `Phone`) VALUES (?, ?)',
+          [config.groupId, phone]
+        );
+      }
+      for (const phone of config.writers) {
+        await this.pool.execute(
+          'INSERT IGNORE INTO `CommunityGroupWriters` (`GroupId`, `Phone`) VALUES (?, ?)',
+          [config.groupId, phone]
+        );
+      }
+      console.log(`[MYSQL] Seeded community group: ${config.groupId}`);
+      return true;
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.warn(`[MYSQL] seedCommunityGroupIfEmpty(${config.groupId}) warning:`, message);
+      return false;
+    }
   }
 
 }

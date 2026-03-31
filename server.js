@@ -903,24 +903,27 @@ const fetchWithRetry = async (url, options = {}, retryOptions = {}) => {
 
 const normalizeUserKey = (value) => String(value || '').trim().toLowerCase();
 const normalizeGroupType = (value) => (value === 'community' ? 'community' : 'group');
-const DOVRUT_GROUP_ID = String(process.env.DOVRUT_GROUP_ID || 'דוברות').trim() || 'דוברות';
-const DOVRUT_ALLOWED_WRITERS = parseUsernamesInput(
-    process.env.DOVRUT_ALLOWED_WRITERS || '0506501040,0506267447,0543108095'
-);
-const dovrutWriterUserSet = new Set(
-    DOVRUT_ALLOWED_WRITERS.map((value) => normalizeUserKey(value)).filter(Boolean)
-);
-const DOVRUT_TEST_GROUP_ID = String(process.env.DOVRUT_TEST_GROUP_ID || 'בדיקה - דוברות').trim() || 'בדיקה - דוברות';
-const DOVRUT_TEST_ALLOWED_WRITERS = parseUsernamesInput(
-    process.env.DOVRUT_TEST_ALLOWED_WRITERS || '0546799693'
-);
-const DOVRUT_TEST_GROUP_MEMBERS = parseUsernamesInput(
-    process.env.DOVRUT_TEST_GROUP_MEMBERS || '0546799693,0550000001,0547997273,0505203520'
-);
-const dovrutTestWriterUserSet = new Set(
-    DOVRUT_TEST_ALLOWED_WRITERS.map((value) => normalizeUserKey(value)).filter(Boolean)
-);
+
+// ── Community Groups: loaded from DB, with hardcoded fallbacks for initial seed ──
+const SEED_COMMUNITY_GROUPS = [
+    {
+        groupId: String(process.env.DOVRUT_GROUP_ID || 'דוברות').trim() || 'דוברות',
+        groupName: String(process.env.DOVRUT_GROUP_ID || 'דוברות').trim() || 'דוברות',
+        members: [],
+        writers: parseUsernamesInput(process.env.DOVRUT_ALLOWED_WRITERS || '0506501040,0506267447,0543108095')
+    },
+    {
+        groupId: String(process.env.DOVRUT_TEST_GROUP_ID || 'בדיקה - דוברות').trim() || 'בדיקה - דוברות',
+        groupName: String(process.env.DOVRUT_TEST_GROUP_ID || 'בדיקה - דוברות').trim() || 'בדיקה - דוברות',
+        members: parseUsernamesInput(process.env.DOVRUT_TEST_GROUP_MEMBERS || '0546799693,0550000001,0547997273,0505203520'),
+        writers: parseUsernamesInput(process.env.DOVRUT_TEST_ALLOWED_WRITERS || '0546799693')
+    }
+];
+
 const hardcodedCommunityGroupsByKey = new Map();
+// Keep a list of community group IDs for passing to controllers (mutable, refreshed from DB).
+let communityGroupIds = [];
+
 function registerHardcodedCommunityGroup(groupKeys, writerSet, options = {}) {
     const keys = Array.isArray(groupKeys) ? groupKeys : [groupKeys];
     const normalizedKeys = Array.from(new Set(keys.map((value) => normalizeUserKey(value)).filter(Boolean)));
@@ -940,10 +943,46 @@ function registerHardcodedCommunityGroup(groupKeys, writerSet, options = {}) {
         hardcodedCommunityGroupsByKey.set(key, policy);
     });
 }
-registerHardcodedCommunityGroup(DOVRUT_GROUP_ID, dovrutWriterUserSet);
-registerHardcodedCommunityGroup(DOVRUT_TEST_GROUP_ID, dovrutTestWriterUserSet, {
-    members: DOVRUT_TEST_GROUP_MEMBERS
-});
+
+function rebuildCommunityGroupsFromConfigs(configs) {
+    hardcodedCommunityGroupsByKey.clear();
+    const ids = [];
+    for (const cfg of configs) {
+        const gid = String(cfg.groupId || '').trim();
+        if (!gid) continue;
+        ids.push(gid);
+        const writerSet = new Set(
+            (cfg.writers || []).map((v) => normalizeUserKey(v)).filter(Boolean)
+        );
+        registerHardcodedCommunityGroup(gid, writerSet, {
+            members: cfg.members || []
+        });
+    }
+    communityGroupIds = ids;
+    console.log(`[COMMUNITY-GROUPS] Loaded ${configs.length} community group(s) from DB: ${ids.join(', ')}`);
+}
+
+async function loadAndSeedCommunityGroups() {
+    try {
+        // Seed the DB with defaults if empty
+        for (const seed of SEED_COMMUNITY_GROUPS) {
+            await mysqlLogsService.seedCommunityGroupIfEmpty(seed);
+        }
+        // Load from DB
+        const configs = await mysqlLogsService.loadCommunityGroups();
+        if (configs.length > 0) {
+            rebuildCommunityGroupsFromConfigs(configs);
+            return;
+        }
+    } catch (err) {
+        console.warn('[COMMUNITY-GROUPS] Failed to load from DB, using seed fallback:', err && err.message ? err.message : err);
+    }
+    // Fallback: use seed values directly
+    rebuildCommunityGroupsFromConfigs(SEED_COMMUNITY_GROUPS);
+}
+
+// Initialize synchronously with seed values, then async-load from DB will override
+rebuildCommunityGroupsFromConfigs(SEED_COMMUNITY_GROUPS);
 const SUBSCRIPTION_LOOKUP_BATCH_SIZE = Math.max(
     10,
     Number(process.env.SUBSCRIPTION_LOOKUP_BATCH_SIZE || 40) || 40
@@ -4739,6 +4778,9 @@ async function loadState() {
         groups = normalizeGroupsCollection(groups);
         await hydrateGroupsFromLocalDb();
     }
+
+    // Load community group configs from MySQL (overrides seed values)
+    await loadAndSeedCommunityGroups();
 }
 
 async function persistState() {
@@ -6449,6 +6491,30 @@ app.post(
     }
 );
 
+app.get(['/community-group-configs', '/notify/community-group-configs'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ configs: [], error: resolution.error })
+    }),
+    async (_req, res) => {
+        try {
+            const configs = await mysqlLogsService.loadCommunityGroups();
+            return res.json({
+                configs: configs.map((cfg) => ({
+                    id: cfg.groupId,
+                    name: cfg.groupName,
+                    staticMembers: cfg.members,
+                    allowedWriters: cfg.writers
+                }))
+            });
+        } catch (err) {
+            console.error('[COMMUNITY-GROUPS] Failed to load configs:', err && err.message ? err.message : err);
+            return res.status(500).json({ configs: [], error: 'Failed to load community group configs' });
+        }
+    }
+);
+
 app.get(['/webhook-registry', '/notify/webhook-registry'], (_req, res) => {
     res.json({
         webhooks: webhookRegistryService.list()
@@ -6637,8 +6703,8 @@ registerMessageController(app, {
     fetchWithRetry,
     buildGoogleSheetGetUrl,
     getLogsMessagesForUser: (user, options = {}) => mysqlLogsService.getLogsMessagesForUser(user, options),
-    hardcodedGroupIds: [DOVRUT_GROUP_ID, DOVRUT_TEST_GROUP_ID],
-    hardcodedGroupMembers: (() => {
+    getHardcodedGroupIds: () => communityGroupIds,
+    getHardcodedGroupMembers: () => {
         const membersMap = {};
         hardcodedCommunityGroupsByKey.forEach((policy, key) => {
             if (Array.isArray(policy.members) && policy.members.length) {
@@ -6646,7 +6712,7 @@ registerMessageController(app, {
             }
         });
         return membersMap;
-    })(),
+    },
     getGroups: () => groups,
     getActiveRedisStateStore: () => activeRedisStateStore,
     getMessageQueue: () => messageQueue,
