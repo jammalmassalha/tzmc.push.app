@@ -48,6 +48,7 @@ const SOCKET_ACK_TIMEOUT_MS = 6000;
 const SOCKET_MAX_FAILURES_BEFORE_COOLDOWN = 3;
 const SOCKET_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
 const MAX_PERSISTED_MESSAGES = 2500;
+const GROUPS_DB_MIGRATION_KEY = 'tzmc-groups-db-migrated-v1';
 const PUSH_REGISTER_MIN_INTERVAL_MS = 30000;
 const PUSH_REGISTER_REFRESH_MS = 6 * 60 * 60 * 1000;
 const FOREGROUND_SYNC_MIN_INTERVAL_MS = 4000;
@@ -8051,10 +8052,19 @@ export class ChatStoreService {
     const raw = localStorage.getItem(this.stateKey(user));
     if (!raw) return;
 
+    // One-time migration: clear cached groups so they are re-fetched from DB.
+    const groupsMigrated = localStorage.getItem(GROUPS_DB_MIGRATION_KEY);
+    const shouldClearGroups = !groupsMigrated;
+    if (shouldClearGroups) {
+      localStorage.setItem(GROUPS_DB_MIGRATION_KEY, '1');
+    }
+
     try {
       const parsed = JSON.parse(raw) as Partial<PersistedChatState>;
       const contacts = this.normalizeContacts(Array.isArray(parsed.contacts) ? parsed.contacts : []);
-      const groups = this.normalizeGroups(Array.isArray(parsed.groups) ? parsed.groups : [], user);
+      const groups = shouldClearGroups
+        ? []
+        : this.normalizeGroups(Array.isArray(parsed.groups) ? parsed.groups : [], user);
       const groupsById = new Map(groups.map((group) => [group.id, group]));
       const unreadByChat = parsed.unreadByChat && typeof parsed.unreadByChat === 'object'
         ? parsed.unreadByChat

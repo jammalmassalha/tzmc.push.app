@@ -196,8 +196,10 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.42'; // Added version update broadcast button
+const SERVER_VERSION = '1.43'; // Community groups managed from DB
 const SERVER_RELEASE_NOTES = [
+    'Community groups now managed from database.',
+    'Group data cleared and refreshed from DB on first load after update.',
     'Update available toast with reload button.',
     'Release notes modal for new versions.',
     'Create groups and send messages to group members.',
