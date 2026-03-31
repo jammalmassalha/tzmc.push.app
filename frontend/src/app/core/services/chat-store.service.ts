@@ -48,7 +48,7 @@ const SOCKET_ACK_TIMEOUT_MS = 6000;
 const SOCKET_MAX_FAILURES_BEFORE_COOLDOWN = 3;
 const SOCKET_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
 const MAX_PERSISTED_MESSAGES = 2500;
-const GROUPS_DB_MIGRATION_KEY = 'tzmc-groups-db-migrated-v1';
+const GROUPS_DB_MIGRATION_KEY = 'tzmc-groups-db-migrated-v2';
 const PUSH_REGISTER_MIN_INTERVAL_MS = 30000;
 const PUSH_REGISTER_REFRESH_MS = 6 * 60 * 60 * 1000;
 const FOREGROUND_SYNC_MIN_INTERVAL_MS = 4000;
@@ -594,6 +594,29 @@ export class ChatStoreService {
     }
   }
 
+  private async loadUserChatGroupsFromDb(): Promise<void> {
+    try {
+      const dbGroups = await this.api.getUserChatGroups();
+      if (!dbGroups.length) return;
+      const currentGroups = this.groups();
+      const groupsById = new Map(currentGroups.map((g) => [g.id, g]));
+      let changed = false;
+      for (const dbGroup of dbGroups) {
+        const existing = groupsById.get(dbGroup.id);
+        if (!existing || (dbGroup.updatedAt || 0) >= (existing.updatedAt || 0)) {
+          groupsById.set(dbGroup.id, dbGroup);
+          changed = true;
+        }
+      }
+      if (changed) {
+        this.groups.set(Array.from(groupsById.values()));
+        this.schedulePersist();
+      }
+    } catch {
+      // Non-fatal: groups will be reconstructed from messages
+    }
+  }
+
   async ensureSessionReady(): Promise<void> {
     if (!this.authBootstrapPromise) {
       this.authBootstrapPromise = this.bootstrapSessionUser();
@@ -640,6 +663,9 @@ export class ChatStoreService {
 
     // Load community group configs from DB (async, non-blocking for critical path)
     await this.loadCommunityGroupConfigs();
+
+    // Load all user groups from MySQL DB
+    await this.loadUserChatGroupsFromDb();
 
     /**
      * SYNC STEP 1: Drain Service Worker Cache

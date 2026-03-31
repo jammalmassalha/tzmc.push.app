@@ -196,8 +196,10 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.43'; // Community groups managed from DB
+const SERVER_VERSION = '1.44'; // All groups data moved to MySQL DB
 const SERVER_RELEASE_NOTES = [
+    'All groups data now stored in MySQL database.',
+    'Groups are loaded from DB on first open after update.',
     'Community groups now managed from database.',
     'Group data cleared and refreshed from DB on first load after update.',
     'Update available toast with reload button.',
@@ -4657,6 +4659,54 @@ async function hydrateGroupsFromLocalDb() {
     ]);
 }
 
+async function hydrateGroupsFromMysql() {
+    try {
+        // One-time migration: seed MySQL from runtime groups if MySQL ChatGroups is empty
+        const runtimeGroupRecords = Object.values(groups || {})
+            .map((group) => normalizeRuntimeGroupRecord(group, group && group.id ? group.id : ''))
+            .filter(Boolean)
+            .map((group) => ({
+                groupId: group.id,
+                groupName: group.name,
+                members: Array.isArray(group.members) ? group.members : [],
+                admins: Array.isArray(group.admins) ? group.admins : [],
+                createdBy: group.createdBy || null,
+                type: group.type || 'group',
+                createdAt: group.createdAt || Date.now(),
+                updatedAt: group.updatedAt || Date.now()
+            }));
+        if (runtimeGroupRecords.length > 0) {
+            await mysqlLogsService.seedChatGroupsFromRuntime(runtimeGroupRecords);
+        }
+
+        // Load all groups from MySQL and merge into runtime (MySQL wins for same-or-newer updatedAt)
+        const mysqlGroups = await mysqlLogsService.loadAllChatGroups();
+        if (!mysqlGroups.length) return;
+        const mysqlNormalized = normalizeGroupsCollection(
+            mysqlGroups.map((record) => ({
+                id: record.groupId,
+                name: record.groupName,
+                members: record.members,
+                admins: record.admins,
+                createdBy: record.createdBy,
+                type: record.type,
+                createdAt: record.createdAt,
+                updatedAt: record.updatedAt
+            }))
+        );
+        // Merge: MySQL records override runtime if their updatedAt is >= runtime
+        for (const [groupId, mysqlGroup] of Object.entries(mysqlNormalized)) {
+            const existing = groups[groupId];
+            if (!existing || Number(mysqlGroup.updatedAt || 0) >= Number(existing.updatedAt || 0)) {
+                groups[groupId] = mysqlGroup;
+            }
+        }
+        console.log(`[GROUPS DB] Loaded ${mysqlGroups.length} group(s) from MySQL.`);
+    } catch (err) {
+        console.warn('[GROUPS DB] Failed to hydrate groups from MySQL:', err && err.message ? err.message : err);
+    }
+}
+
 function upsertGroup(payload = {}) {
     const groupId = String(payload.groupId || payload.groupID || '').trim();
     const groupName = String(payload.groupName || payload.title || '').trim();
@@ -4701,6 +4751,19 @@ function upsertGroup(payload = {}) {
 
     groups[groupId] = nextGroup;
     scheduleStateSave();
+    // Persist to MySQL (fire-and-forget to avoid blocking)
+    mysqlLogsService.upsertChatGroup({
+        groupId: nextGroup.id,
+        groupName: nextGroup.name,
+        members: Array.isArray(nextGroup.members) ? nextGroup.members : [],
+        admins: Array.isArray(nextGroup.admins) ? nextGroup.admins : [],
+        createdBy: nextGroup.createdBy || null,
+        type: nextGroup.type || 'group',
+        createdAt: nextGroup.createdAt || Date.now(),
+        updatedAt: nextGroup.updatedAt || Date.now()
+    }).catch((err) => {
+        console.warn('[GROUPS DB] MySQL upsert failed for', groupId, ':', err && err.message ? err.message : err);
+    });
     return nextGroup;
 }
 
@@ -4739,6 +4802,9 @@ async function loadState() {
                 });
                 await hydrateGroupsFromLocalDb();
                 console.log('[STATE] Loaded persisted state from Redis.');
+                await hydrateGroupsFromMysql();
+                // Load community group configs from MySQL (overrides seed values)
+                await loadAndSeedCommunityGroups();
                 return;
             }
         } catch (error) {
@@ -4780,6 +4846,8 @@ async function loadState() {
         groups = normalizeGroupsCollection(groups);
         await hydrateGroupsFromLocalDb();
     }
+
+    await hydrateGroupsFromMysql();
 
     // Load community group configs from MySQL (overrides seed values)
     await loadAndSeedCommunityGroups();
@@ -6523,6 +6591,51 @@ app.get(['/community-group-configs', '/notify/community-group-configs'],
         } catch (err) {
             console.error('[COMMUNITY-GROUPS] Failed to load configs:', err && err.message ? err.message : err);
             return res.status(500).json({ configs: [], error: 'Failed to load community group configs' });
+        }
+    }
+);
+
+const userGroupsRateLimitStore = new Map();
+
+app.get(['/user-chat-groups', '/notify/user-chat-groups'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ groups: [], error: resolution.error })
+    }),
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user) return res.status(401).json({ groups: [], error: 'Unauthorized' });
+        const rateCheck = consumeRateLimitEntry(userGroupsRateLimitStore, user, 10, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ groups: [], error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        next();
+    },
+    async (req, res) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        try {
+            const allGroups = await mysqlLogsService.loadAllChatGroups();
+            // Return only groups where the user is a member
+            const userGroups = allGroups.filter((group) => {
+                if (!Array.isArray(group.members) || group.members.length === 0) return true;
+                return group.members.some((member) => normalizeUserKey(member) === user);
+            });
+            return res.json({
+                groups: userGroups.map((g) => ({
+                    id: g.groupId,
+                    name: g.groupName,
+                    members: g.members,
+                    admins: g.admins,
+                    createdBy: g.createdBy,
+                    type: g.type,
+                    createdAt: g.createdAt,
+                    updatedAt: g.updatedAt
+                }))
+            });
+        } catch (err) {
+            console.error('[USER-GROUPS] Failed to load user groups:', err && err.message ? err.message : err);
+            return res.status(500).json({ groups: [], error: 'Failed to load user groups' });
         }
     }
 );

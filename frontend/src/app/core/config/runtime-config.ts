@@ -13,6 +13,7 @@ export interface RuntimeConfig {
   groupsUrl: string;
   versionUrl: string;
   communityGroupConfigsUrl: string;
+  userChatGroupsUrl: string;
 }
 
 const DEFAULT_REMOTE_ORIGIN = 'https://www.tzmc.co.il';
@@ -74,7 +75,8 @@ export const runtimeConfig: RuntimeConfig = {
   reactionUrl: withOverride('reactionUrl', `${backendOrigin}/notify/reaction`),
   groupsUrl: withOverride('groupsUrl', `${backendOrigin}/notify/groups`),
   versionUrl: withOverride('versionUrl', `${backendOrigin}/notify/version`),
-  communityGroupConfigsUrl: withOverride('communityGroupConfigsUrl', `${backendOrigin}/notify/community-group-configs`)
+  communityGroupConfigsUrl: withOverride('communityGroupConfigsUrl', `${backendOrigin}/notify/community-group-configs`),
+  userChatGroupsUrl: withOverride('userChatGroupsUrl', `${backendOrigin}/notify/user-chat-groups`)
 };
 
 export const SYSTEM_CHAT_IDS = ['ציפי', 'הזמנת הסעה', 'מוקד איחוד - קריאות'] as const;

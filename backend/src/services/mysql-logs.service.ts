@@ -43,6 +43,17 @@ export interface CommunityGroupDbConfig {
   writers: string[];
 }
 
+export interface ChatGroupDbRecord {
+  groupId: string;
+  groupName: string;
+  members: string[];
+  admins: string[];
+  createdBy: string | null;
+  type: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 interface MysqlLogRow extends RowDataPacket {
   dateTime: Date | string | number | null;
   toUser: string | null;
@@ -245,6 +256,7 @@ export class MysqlLogsService {
   private imageUrlColumnReady = false;
   private fileUrlColumnReady = false;
   private communityGroupsTablesReady = false;
+  private chatGroupsTablesReady = false;
 
   constructor(config: MysqlLogsConfig) {
     this.tableName = normalizeTableName(config.table);
@@ -826,6 +838,180 @@ export class MysqlLogsService {
       console.warn(`[MYSQL] seedCommunityGroupIfEmpty(${config.groupId}) warning:`, message);
       return false;
     }
+  }
+
+  // ── Chat Groups (all groups) MySQL persistence ──
+
+  async ensureChatGroupsTables(): Promise<void> {
+    if (this.chatGroupsTablesReady) return;
+    try {
+      await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`ChatGroups\` (
+          \`GroupId\` VARCHAR(255) NOT NULL,
+          \`GroupName\` VARCHAR(255) NOT NULL,
+          \`CreatedBy\` VARCHAR(100) DEFAULT NULL,
+          \`Type\` VARCHAR(50) DEFAULT 'group',
+          \`CreatedAt\` BIGINT DEFAULT NULL,
+          \`UpdatedAt\` BIGINT DEFAULT NULL,
+          PRIMARY KEY (\`GroupId\`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+      await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`ChatGroupMembers\` (
+          \`GroupId\` VARCHAR(255) NOT NULL,
+          \`Phone\` VARCHAR(100) NOT NULL,
+          PRIMARY KEY (\`GroupId\`, \`Phone\`),
+          FOREIGN KEY (\`GroupId\`) REFERENCES \`ChatGroups\`(\`GroupId\`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+      await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`ChatGroupAdmins\` (
+          \`GroupId\` VARCHAR(255) NOT NULL,
+          \`Phone\` VARCHAR(100) NOT NULL,
+          PRIMARY KEY (\`GroupId\`, \`Phone\`),
+          FOREIGN KEY (\`GroupId\`) REFERENCES \`ChatGroups\`(\`GroupId\`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+      this.chatGroupsTablesReady = true;
+      console.log('[MYSQL] Chat groups tables ensured.');
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.warn('[MYSQL] ensureChatGroupsTables warning:', message);
+    }
+  }
+
+  async loadAllChatGroups(): Promise<ChatGroupDbRecord[]> {
+    await this.ensureChatGroupsTables();
+    try {
+      const [groupRows] = await this.pool.execute<RowDataPacket[]>(
+        'SELECT `GroupId`, `GroupName`, `CreatedBy`, `Type`, `CreatedAt`, `UpdatedAt` FROM `ChatGroups` ORDER BY `GroupId`'
+      );
+      if (!groupRows.length) return [];
+
+      const [memberRows] = await this.pool.execute<RowDataPacket[]>(
+        'SELECT `GroupId`, `Phone` FROM `ChatGroupMembers` ORDER BY `GroupId`, `Phone`'
+      );
+      const [adminRows] = await this.pool.execute<RowDataPacket[]>(
+        'SELECT `GroupId`, `Phone` FROM `ChatGroupAdmins` ORDER BY `GroupId`, `Phone`'
+      );
+
+      const membersMap = new Map<string, string[]>();
+      for (const row of memberRows) {
+        const gid = toTrimmedString(row.GroupId);
+        const phone = toTrimmedString(row.Phone);
+        if (!gid || !phone) continue;
+        if (!membersMap.has(gid)) membersMap.set(gid, []);
+        membersMap.get(gid)!.push(phone);
+      }
+
+      const adminsMap = new Map<string, string[]>();
+      for (const row of adminRows) {
+        const gid = toTrimmedString(row.GroupId);
+        const phone = toTrimmedString(row.Phone);
+        if (!gid || !phone) continue;
+        if (!adminsMap.has(gid)) adminsMap.set(gid, []);
+        adminsMap.get(gid)!.push(phone);
+      }
+
+      return groupRows.map((row) => {
+        const groupId = toTrimmedString(row.GroupId);
+        return {
+          groupId,
+          groupName: toTrimmedString(row.GroupName),
+          members: membersMap.get(groupId) ?? [],
+          admins: adminsMap.get(groupId) ?? [],
+          createdBy: toTrimmedString(row.CreatedBy) || null,
+          type: toTrimmedString(row.Type) || 'group',
+          createdAt: Number(row.CreatedAt) || 0,
+          updatedAt: Number(row.UpdatedAt) || 0
+        };
+      }).filter((g) => g.groupId && g.groupName);
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.error('[MYSQL] loadAllChatGroups error:', message);
+      return [];
+    }
+  }
+
+  async upsertChatGroup(group: ChatGroupDbRecord): Promise<boolean> {
+    await this.ensureChatGroupsTables();
+    try {
+      await this.pool.execute(
+        `INSERT INTO \`ChatGroups\` (\`GroupId\`, \`GroupName\`, \`CreatedBy\`, \`Type\`, \`CreatedAt\`, \`UpdatedAt\`)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           \`GroupName\` = VALUES(\`GroupName\`),
+           \`CreatedBy\` = COALESCE(VALUES(\`CreatedBy\`), \`CreatedBy\`),
+           \`Type\` = VALUES(\`Type\`),
+           \`UpdatedAt\` = VALUES(\`UpdatedAt\`)`,
+        [
+          group.groupId,
+          group.groupName,
+          group.createdBy || null,
+          group.type || 'group',
+          group.createdAt || Date.now(),
+          group.updatedAt || Date.now()
+        ]
+      );
+
+      // Replace members
+      await this.pool.execute(
+        'DELETE FROM `ChatGroupMembers` WHERE `GroupId` = ?',
+        [group.groupId]
+      );
+      for (const phone of group.members) {
+        if (!phone) continue;
+        await this.pool.execute(
+          'INSERT IGNORE INTO `ChatGroupMembers` (`GroupId`, `Phone`) VALUES (?, ?)',
+          [group.groupId, phone]
+        );
+      }
+
+      // Replace admins
+      await this.pool.execute(
+        'DELETE FROM `ChatGroupAdmins` WHERE `GroupId` = ?',
+        [group.groupId]
+      );
+      for (const phone of group.admins) {
+        if (!phone) continue;
+        await this.pool.execute(
+          'INSERT IGNORE INTO `ChatGroupAdmins` (`GroupId`, `Phone`) VALUES (?, ?)',
+          [group.groupId, phone]
+        );
+      }
+
+      return true;
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.warn(`[MYSQL] upsertChatGroup(${group.groupId}) warning:`, message);
+      return false;
+    }
+  }
+
+  async seedChatGroupsFromRuntime(groups: ChatGroupDbRecord[]): Promise<number> {
+    await this.ensureChatGroupsTables();
+    let seeded = 0;
+    try {
+      const [existingRows] = await this.pool.execute<RowDataPacket[]>(
+        'SELECT `GroupId` FROM `ChatGroups`'
+      );
+      if (existingRows.length > 0) {
+        // DB already has groups – skip seeding
+        return 0;
+      }
+      for (const group of groups) {
+        if (!group.groupId || !group.groupName) continue;
+        const ok = await this.upsertChatGroup(group);
+        if (ok) seeded++;
+      }
+      if (seeded > 0) {
+        console.log(`[MYSQL] Seeded ${seeded} chat group(s) from runtime into DB.`);
+      }
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.warn('[MYSQL] seedChatGroupsFromRuntime warning:', message);
+    }
+    return seeded;
   }
 
 }

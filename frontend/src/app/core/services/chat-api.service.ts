@@ -619,6 +619,40 @@ export class ChatApiService {
     }
   }
 
+  async getUserChatGroups(): Promise<ChatGroup[]> {
+    try {
+      const response = await this.fetchWithRetry(
+        this.config.userChatGroupsUrl,
+        {},
+        { retries: 1, timeoutMs: 10000 }
+      );
+      if (!response.ok) return [];
+      const body = (await response.json()) as { groups?: Array<{
+        id?: string;
+        name?: string;
+        members?: string[];
+        admins?: string[];
+        createdBy?: string;
+        type?: string;
+        createdAt?: number;
+        updatedAt?: number;
+      }> };
+      return (body.groups ?? [])
+        .map((g) => ({
+          id: String(g.id ?? '').trim(),
+          name: String(g.name ?? '').trim(),
+          members: Array.isArray(g.members) ? g.members.map((m) => String(m).trim()).filter(Boolean) : [],
+          admins: Array.isArray(g.admins) ? g.admins.map((a) => String(a).trim()).filter(Boolean) : [],
+          createdBy: String(g.createdBy ?? '').trim(),
+          type: (g.type === 'community' ? 'community' : 'group') as ChatGroup['type'],
+          updatedAt: Number(g.updatedAt) || 0
+        }))
+        .filter((g) => Boolean(g.id && g.name));
+    } catch {
+      return [];
+    }
+  }
+
   async pollMessages(user?: string): Promise<IncomingServerMessage[]> {
     const normalizedUser = String(user || '').trim().toLowerCase();
     const candidateUrls = normalizedUser
