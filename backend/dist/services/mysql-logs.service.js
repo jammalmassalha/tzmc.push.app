@@ -188,6 +188,7 @@ class MysqlLogsService {
     insertQuery;
     imageUrlColumnReady = false;
     fileUrlColumnReady = false;
+    seenTimeColumnReady = false;
     communityGroupsTablesReady = false;
     chatGroupsTablesReady = false;
     constructor(config) {
@@ -206,6 +207,7 @@ class MysqlLogsService {
         });
         void this.ensureImageUrlColumn();
         void this.ensureFileUrlColumn();
+        void this.ensureSeenTimeColumn();
     }
     async ensureImageUrlColumn() {
         if (this.imageUrlColumnReady)
@@ -237,6 +239,21 @@ class MysqlLogsService {
             }
         }
         this.fileUrlColumnReady = true;
+    }
+    async ensureSeenTimeColumn() {
+        if (this.seenTimeColumnReady)
+            return;
+        try {
+            await this.pool.execute(`ALTER TABLE \`${this.tableName}\` ADD COLUMN \`SeenTime\` DATETIME NULL DEFAULT NULL`);
+        }
+        catch (err) {
+            const code = err.code;
+            const message = String(err.message || '');
+            if (code !== 'ER_DUP_FIELDNAME' && !message.includes('Duplicate column')) {
+                console.warn('[MYSQL] ensureSeenTimeColumn warning:', message);
+            }
+        }
+        this.seenTimeColumnReady = true;
     }
     buildCompositeKeyFromPayload(payload) {
         return [
@@ -405,7 +422,8 @@ class MysqlLogsService {
           \`RecipientAuthJSON\` AS recipientAuthJson,
           \`UserReceivedTime\` AS userReceivedTime,
           \`ImageUrl\` AS imageUrl,
-          \`FileUrl\` AS fileUrl 
+          \`FileUrl\` AS fileUrl,
+          \`SeenTime\` AS seenTime 
         FROM \`${this.tableName}\` 
         WHERE 1=1`;
             const params = [];
@@ -586,6 +604,108 @@ class MysqlLogsService {
             totalAffected += result.affectedRows || 0;
         }
         return totalAffected;
+    }
+    /**
+     * Mark messages as seen for a specific user.
+     * Sets SeenTime = NOW() for messages directed to the user in the given chat
+     * that have not yet been seen (SeenTime IS NULL).
+     */
+    async markMessagesSeen(user, chatId) {
+        await this.ensureSeenTimeColumn();
+        const safeUser = toTrimmedString(user).toLowerCase();
+        const safeChatId = toTrimmedString(chatId);
+        if (!safeUser || !safeChatId)
+            return 0;
+        try {
+            // For group/community messages the ToUser column holds the groupId,
+            // and `From` is the sender. For direct messages ToUser is the recipient.
+            // A message is "for this user in this chat" when:
+            //   (ToUser = chatId AND From != user)  — group msgs received
+            //   (ToUser = user AND From = chatId)   — DMs received from chatId
+            const sql = `UPDATE \`${this.tableName}\`
+        SET \`SeenTime\` = NOW()
+        WHERE \`SeenTime\` IS NULL
+          AND (
+            (LOWER(\`ToUser\`) = ? AND LOWER(\`From\`) != ?)
+            OR
+            (LOWER(\`ToUser\`) = ? AND LOWER(\`From\`) = ?)
+          )`;
+            const [result] = await this.pool.execute(sql, [
+                safeChatId, safeUser,
+                safeUser, safeChatId
+            ]);
+            return result.affectedRows || 0;
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.warn('[MYSQL] markMessagesSeen error:', message);
+            return 0;
+        }
+    }
+    /**
+     * Backfill SeenTime for all existing rows that have SeenTime IS NULL.
+     * Sets SeenTime = DateTime (the send time) so they count as "already seen".
+     * This should be called once during migration.
+     */
+    async backfillSeenTimeWithSendTime() {
+        await this.ensureSeenTimeColumn();
+        try {
+            const [result] = await this.pool.execute(`UPDATE \`${this.tableName}\` SET \`SeenTime\` = \`DateTime\` WHERE \`SeenTime\` IS NULL`);
+            const affected = result.affectedRows || 0;
+            if (affected > 0) {
+                console.log(`[MYSQL] Backfilled SeenTime for ${affected} existing log row(s).`);
+            }
+            return affected;
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.warn('[MYSQL] backfillSeenTimeWithSendTime error:', message);
+            return 0;
+        }
+    }
+    /**
+     * Get unseen message counts per chat for a given user.
+     * Returns a map of chatId → count of messages where SeenTime IS NULL.
+     */
+    async getUnseenCountsByUser(user) {
+        await this.ensureSeenTimeColumn();
+        const safeUser = toTrimmedString(user).toLowerCase();
+        if (!safeUser)
+            return {};
+        try {
+            // Group messages: ToUser = groupId, From != user
+            // DM messages: ToUser = user, From = sender
+            const sql = `SELECT
+          CASE
+            WHEN LOWER(\`ToUser\`) = ? THEN LOWER(\`From\`)
+            ELSE LOWER(\`ToUser\`)
+          END AS chatId,
+          COUNT(*) AS cnt
+        FROM \`${this.tableName}\`
+        WHERE \`SeenTime\` IS NULL
+          AND (
+            LOWER(\`ToUser\`) = ?
+            OR (LOWER(\`ToUser\`) != ? AND LOWER(\`From\`) != ?)
+          )
+        GROUP BY chatId`;
+            const [rows] = await this.pool.query(sql, [
+                safeUser, safeUser, safeUser, safeUser
+            ]);
+            const result = {};
+            for (const row of rows) {
+                const chatId = toTrimmedString(row.chatId);
+                const cnt = Number(row.cnt) || 0;
+                if (chatId && cnt > 0) {
+                    result[chatId] = cnt;
+                }
+            }
+            return result;
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.warn('[MYSQL] getUnseenCountsByUser error:', message);
+            return {};
+        }
     }
     async ensureCommunityGroupsTables() {
         if (this.communityGroupsTablesReady)
