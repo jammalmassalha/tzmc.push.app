@@ -90,6 +90,7 @@ const SHUTTLE_OPERATIONS_GROUP_MEMBERS = ['0546799693', '0550000001', '050626741
 const HELPDESK_ALLOWED_USERS = ['0546799693', '0550000001'] as const;
 const BADGE_RESET_ALL_ALLOWED_USERS = ['0546799693'] as const;
 const VERSION_UPDATE_BROADCAST_ALLOWED_USERS = ['0546799693'] as const;
+const BACKUP_GROUPS_ALLOWED_USERS = ['0546799693'] as const;
 // Seed/fallback community group configs — replaced at runtime by DB-loaded configs
 const SEED_COMMUNITY_GROUPS: readonly CommunityGroupConfig[] = [
   {
@@ -436,6 +437,9 @@ export class ChatStoreService {
   );
   private readonly versionUpdateBroadcastAllowedUsersSet = new Set<string>(
     VERSION_UPDATE_BROADCAST_ALLOWED_USERS.map((value) => this.normalizeUser(value)).filter(Boolean)
+  );
+  private readonly backupGroupsAllowedUsersSet = new Set<string>(
+    BACKUP_GROUPS_ALLOWED_USERS.map((value) => this.normalizeUser(value)).filter(Boolean)
   );
   private incomingBatchDepth = 0;
   private pendingPersistAfterIncomingBatch = false;
@@ -1278,6 +1282,38 @@ export class ChatStoreService {
 
     const result = await this.api.broadcastVersionUpdate(user);
     return result.notifiedUsers;
+  }
+
+  canCurrentUserBackupGroupsToDb(): boolean {
+    const normalizedUser = this.normalizeUser(this.currentUser() ?? '');
+    if (!normalizedUser) return false;
+    return this.backupGroupsAllowedUsersSet.has(normalizedUser);
+  }
+
+  async backupAllGroupsToDb(): Promise<{ backedUp: number; total: number }> {
+    const user = this.currentUser();
+    if (!user) {
+      throw new Error('יש להתחבר לפני העברת קבוצות');
+    }
+    if (!this.canCurrentUserBackupGroupsToDb()) {
+      throw new Error('אין הרשאה להעברת קבוצות');
+    }
+    if (!this.networkOnline()) {
+      throw new Error('אין חיבור לרשת');
+    }
+
+    return this.api.backupAllGroupsToDb(user);
+  }
+
+  async markChatSeen(chatId: string): Promise<void> {
+    const user = this.currentUser();
+    if (!user || !chatId) return;
+    if (!this.networkOnline()) return;
+    try {
+      await this.api.markMessagesSeen(user, chatId);
+    } catch (err) {
+      console.warn('[SEEN] Failed to mark chat as seen:', chatId, err);
+    }
   }
 
   getHrComposerActionsForActiveChat(): {
