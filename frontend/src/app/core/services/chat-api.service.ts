@@ -956,6 +956,45 @@ export class ChatApiService {
     };
   }
 
+  async markMessagesSeen(user: string, chatId: string): Promise<{ marked: number }> {
+    const normalized = String(user || '').trim().toLowerCase();
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/mark-seen`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user: normalized || undefined,
+          chatId: String(chatId || '').trim().toLowerCase()
+        })
+      },
+      { retries: 1, timeoutMs: 8000 }
+    );
+    const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+    return { marked: Number(body?.['marked']) || 0 };
+  }
+
+  async backupAllGroupsToDb(user: string): Promise<{ backedUp: number; total: number }> {
+    const normalized = String(user || '').trim().toLowerCase();
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/backup-all-groups-to-db`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: normalized || undefined })
+      },
+      { retries: 1, timeoutMs: 30000 }
+    );
+    const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!response.ok || String(body?.['status'] || '').trim().toLowerCase() !== 'success') {
+      throw new Error(String(body?.['message'] || '').trim() || `Backup groups failed with ${response.status}`);
+    }
+    return {
+      backedUp: Number(body?.['backedUp']) || 0,
+      total: Number(body?.['total']) || 0
+    };
+  }
+
   async uploadFile(file: File, thumbnail?: File | null): Promise<UploadResponse> {
     const formData = new FormData();
     formData.append('file', file, file.name);

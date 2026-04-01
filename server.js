@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.44'; // All groups data moved to MySQL DB
+const SERVER_VERSION = '1.45'; // SeenTime column, scroll fix, groups cleanup, admin backup
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',
@@ -4849,6 +4849,13 @@ async function loadState() {
 
     await hydrateGroupsFromMysql();
 
+    // One-time migration: backfill SeenTime for existing logs
+    try {
+        await mysqlLogsService.backfillSeenTimeWithSendTime();
+    } catch (err) {
+        console.warn('[SEEN-TIME] Backfill failed (non-fatal):', err && err.message ? err.message : err);
+    }
+
     // Load community group configs from MySQL (overrides seed values)
     await loadAndSeedCommunityGroups();
 }
@@ -6636,6 +6643,86 @@ app.get(['/user-chat-groups', '/notify/user-chat-groups'],
         } catch (err) {
             console.error('[USER-GROUPS] Failed to load user groups:', err && err.message ? err.message : err);
             return res.status(500).json({ groups: [], error: 'Failed to load user groups' });
+        }
+    }
+);
+
+// --- Mark messages as seen ---
+const markSeenRateLimitStore = new Map();
+
+app.post(['/mark-seen', '/notify/mark-seen'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user) return res.status(401).json({ error: 'Unauthorized' });
+        const rateCheck = consumeRateLimitEntry(markSeenRateLimitStore, user, 30, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        const chatId = String(req.body && req.body.chatId || '').trim().toLowerCase();
+        if (!chatId) {
+            return res.status(400).json({ error: 'Missing chatId' });
+        }
+        try {
+            const affected = await mysqlLogsService.markMessagesSeen(user, chatId);
+            return res.json({ status: 'ok', marked: affected });
+        } catch (err) {
+            console.error('[MARK-SEEN] Failed:', err && err.message ? err.message : err);
+            return res.status(500).json({ error: 'Failed to mark messages as seen' });
+        }
+    }
+);
+
+// --- Admin: backup all server groups to DB ---
+const BACKUP_GROUPS_ALLOWED_USERS_SET = new Set(
+    ['0546799693'].map(normalizeUserKey).filter(Boolean)
+);
+const backupGroupsRateLimitStore = new Map();
+
+app.post(['/backup-all-groups-to-db', '/notify/backup-all-groups-to-db'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ status: 'error', message: resolution.error })
+    }),
+    async (req, res) => {
+        const sender = normalizeUserKey(req.resolvedUser || '');
+        if (!sender || !BACKUP_GROUPS_ALLOWED_USERS_SET.has(sender)) {
+            return res.status(403).json({ status: 'error', message: 'Forbidden' });
+        }
+
+        const rateCheck = consumeRateLimitEntry(backupGroupsRateLimitStore, sender, 1, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ status: 'error', message: `נסה שוב בעוד ${rateCheck.retryAfterSeconds} שניות` });
+        }
+
+        try {
+            const allGroupIds = Object.keys(groups || {});
+            let upsertedCount = 0;
+            for (const groupId of allGroupIds) {
+                const group = groups[groupId];
+                if (!group || !group.id || !group.name) continue;
+                const ok = await mysqlLogsService.upsertChatGroup({
+                    groupId: group.id,
+                    groupName: group.name,
+                    members: Array.isArray(group.members) ? group.members : [],
+                    admins: Array.isArray(group.admins) ? group.admins : [],
+                    createdBy: group.createdBy || null,
+                    type: group.type || 'group',
+                    createdAt: group.createdAt || Date.now(),
+                    updatedAt: group.updatedAt || Date.now()
+                });
+                if (ok) upsertedCount++;
+            }
+            console.log(`[BACKUP-GROUPS] ${sender} backed up ${upsertedCount}/${allGroupIds.length} groups to DB.`);
+            return res.json({ status: 'success', backedUp: upsertedCount, total: allGroupIds.length });
+        } catch (err) {
+            console.error('[BACKUP-GROUPS] Failed:', err && err.message ? err.message : err);
+            return res.status(500).json({ status: 'error', message: 'Failed to backup groups' });
         }
     }
 );
