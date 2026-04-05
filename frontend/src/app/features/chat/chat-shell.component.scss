@@ -583,7 +583,8 @@ mat-chip:not(.offline) {
   min-width: 28px;
   color: #3952ad;
   padding: 0;
-  position: static;
+  position: absolute;
+  left: 10px;
 }
 
 .conversation-title-actions-btn mat-icon {
