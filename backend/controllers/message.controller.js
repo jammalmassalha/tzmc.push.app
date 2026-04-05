@@ -5,8 +5,11 @@ function registerMessageController(app, deps = {}) {
         fetchWithRetry,
         buildGoogleSheetGetUrl,
         getLogsMessagesForUser,
-        hardcodedGroupIds,
-        hardcodedGroupMembers,
+        getHardcodedGroupIds,
+        getHardcodedGroupMembers,
+        // Legacy static fallbacks (kept for backward compatibility)
+        hardcodedGroupIds: _legacyHardcodedGroupIds,
+        hardcodedGroupMembers: _legacyHardcodedGroupMembers,
         getGroups,
         getActiveRedisStateStore,
         getMessageQueue,
@@ -15,6 +18,11 @@ function registerMessageController(app, deps = {}) {
         updateUserReceivedTime,
         updateUserReceivedTimeBatch
     } = deps;
+    // Resolve dynamic getters with static fallbacks
+    const resolveHardcodedGroupIds = () =>
+        (typeof getHardcodedGroupIds === 'function' ? getHardcodedGroupIds() : _legacyHardcodedGroupIds) || [];
+    const resolveHardcodedGroupMembers = () =>
+        (typeof getHardcodedGroupMembers === 'function' ? getHardcodedGroupMembers() : _legacyHardcodedGroupMembers) || {};
     const RECENT_POLLING_MESSAGE_DEDUP_TTL_MS = 10 * 60 * 1000;
     const LOGS_MESSAGE_SEMANTIC_DEDUP_WINDOW_MS = 2 * 60 * 1000;
     const MAX_RECENT_POLLING_DEDUP_KEYS_PER_USER = 4000;
@@ -372,9 +380,12 @@ function registerMessageController(app, deps = {}) {
             const knownGroupIdByName = new Map();
             const knownGroupTypeById = new Map();
             const hardcodedGroupKeySet = new Set(
-                Array.isArray(hardcodedGroupIds)
-                    ? hardcodedGroupIds.map((value) => normalizeUserKey(value)).filter(Boolean)
-                    : []
+                (() => {
+                    const ids = resolveHardcodedGroupIds();
+                    return Array.isArray(ids)
+                        ? ids.map((value) => normalizeUserKey(value)).filter(Boolean)
+                        : [];
+                })()
             );
 
             const parseFlexibleTimestamp = (...candidates) => {
@@ -449,7 +460,7 @@ function registerMessageController(app, deps = {}) {
                         since, // Optimization passed here
                         excludeSystem: true,
                         hardcodedGroupIds: Array.from(hardcodedGroupKeySet),
-                        hardcodedGroupMembers: hardcodedGroupMembers || {}
+                        hardcodedGroupMembers: resolveHardcodedGroupMembers()
                     })
                     : [];
 
@@ -501,12 +512,23 @@ function registerMessageController(app, deps = {}) {
                     if (!resolvedGroupId && sender && sender !== user && !isLikelyPhoneUser(sender)) {
                         if (knownGroupIds.has(sender)) resolvedGroupId = sender;
                         else if (knownGroupIdByName.has(sender)) resolvedGroupId = knownGroupIdByName.get(sender) || '';
+                        // Sender starting with "group:" is always a group ID
+                        else if (sender.startsWith('group:')) resolvedGroupId = sender;
                     }
                     if (!resolvedGroupId && normalizedToUserCandidate && hardcodedGroupKeySet.has(normalizedToUserCandidate)) resolvedGroupId = normalizedToUserCandidate;
-                    if (!resolvedGroupId && normalizedToUserCandidate && normalizedToUserCandidate !== user && normalizedToUserCandidate !== sender && (knownGroupIds.has(normalizedToUserCandidate) || !isLikelyPhoneUser(normalizedToUserCandidate))) resolvedGroupId = normalizedToUserCandidate;
+                    // Only treat toUser as a group ID if it's a single non-phone identifier that matches a known group.
+                    // Comma-separated recipient lists (e.g. "054xxx,055xxx") should never become group IDs.
+                    if (!resolvedGroupId && normalizedToUserCandidate) {
+                        const isSingleValue = !normalizedToUserCandidate.includes(',');
+                        const isDistinctFromParticipants = normalizedToUserCandidate !== user && normalizedToUserCandidate !== sender;
+                        const isKnownGroup = knownGroupIds.has(normalizedToUserCandidate) || (!isLikelyPhoneUser(normalizedToUserCandidate) && knownGroupIdByName.has(normalizedToUserCandidate));
+                        if (isSingleValue && isDistinctFromParticipants && isKnownGroup) {
+                            resolvedGroupId = normalizedToUserCandidate;
+                        }
+                    }
 
                     const groupName = String(message.groupName ?? message.chatName ?? '').trim();
-                    const resolvedGroupName = groupName || (resolvedGroupId ? (knownGroupNamesById.get(resolvedGroupId) || toUserCandidateRaw || resolvedGroupId) : '');
+                    const resolvedGroupName = groupName || (resolvedGroupId ? (knownGroupNamesById.get(resolvedGroupId) || resolvedGroupId) : '');
 
                     const messageIdRaw = String(message.messageId || message.id || detailsMap.messageId || '').trim();
                     const timestampSeed = String(message.timestamp ?? message.sentAt ?? '').trim();
@@ -524,7 +546,18 @@ function registerMessageController(app, deps = {}) {
 
                     const messageId = messageIdRaw || `logs-${sender}-${timestamp}-${Math.abs(fingerprint).toString(36)}`;
                     const groupTypeRaw = String(message.groupType ?? '').trim().toLowerCase();
-                    const groupSenderName = String(message.groupSenderName ?? message.senderName ?? message.fromName ?? '').trim();
+                    let groupSenderName = String(message.groupSenderName ?? message.senderName ?? message.fromName ?? '').trim();
+
+                    // For group messages from DB logs, the body is stored as "SenderName: message text".
+                    // Extract the sender name from the body prefix if not already set.
+                    let resolvedBody = body;
+                    if (!groupSenderName && resolvedGroupId && body) {
+                        const senderPrefixMatch = body.match(/^([^:\n]{1,80})\s*:\s*([\s\S]+)$/);
+                        if (senderPrefixMatch) {
+                            groupSenderName = String(senderPrefixMatch[1] || '').trim();
+                            resolvedBody = String(senderPrefixMatch[2] || '').trim() || body;
+                        }
+                    }
 
                     const resolvedGroupType = groupTypeRaw === 'community' ? 'community' : (groupTypeRaw === 'group' ? 'group' : (resolvedGroupId ? (knownGroupTypeById.get(resolvedGroupId) || (hardcodedGroupKeySet.has(resolvedGroupId) ? 'community' : 'group')) : undefined));
 
@@ -562,7 +595,7 @@ function registerMessageController(app, deps = {}) {
                         messageId,
                         sender,
                         toUser: normalizedToUserCandidate || undefined,
-                        body,
+                        body: resolvedBody,
                         imageUrl,
                         fileUrl,
                         timestamp,

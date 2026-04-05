@@ -196,8 +196,12 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.40'; // Bumped version
+const SERVER_VERSION = '1.45'; // SeenTime column, scroll fix, groups cleanup, admin backup
 const SERVER_RELEASE_NOTES = [
+    'All groups data now stored in MySQL database.',
+    'Groups are loaded from DB on first open after update.',
+    'Community groups now managed from database.',
+    'Group data cleared and refreshed from DB on first load after update.',
     'Update available toast with reload button.',
     'Release notes modal for new versions.',
     'Create groups and send messages to group members.',
@@ -903,24 +907,27 @@ const fetchWithRetry = async (url, options = {}, retryOptions = {}) => {
 
 const normalizeUserKey = (value) => String(value || '').trim().toLowerCase();
 const normalizeGroupType = (value) => (value === 'community' ? 'community' : 'group');
-const DOVRUT_GROUP_ID = String(process.env.DOVRUT_GROUP_ID || 'דוברות').trim() || 'דוברות';
-const DOVRUT_ALLOWED_WRITERS = parseUsernamesInput(
-    process.env.DOVRUT_ALLOWED_WRITERS || '0506501040,0506267447,0543108095'
-);
-const dovrutWriterUserSet = new Set(
-    DOVRUT_ALLOWED_WRITERS.map((value) => normalizeUserKey(value)).filter(Boolean)
-);
-const DOVRUT_TEST_GROUP_ID = String(process.env.DOVRUT_TEST_GROUP_ID || 'בדיקה - דוברות').trim() || 'בדיקה - דוברות';
-const DOVRUT_TEST_ALLOWED_WRITERS = parseUsernamesInput(
-    process.env.DOVRUT_TEST_ALLOWED_WRITERS || '0546799693'
-);
-const DOVRUT_TEST_GROUP_MEMBERS = parseUsernamesInput(
-    process.env.DOVRUT_TEST_GROUP_MEMBERS || '0546799693,0550000001,0547997273,0505203520'
-);
-const dovrutTestWriterUserSet = new Set(
-    DOVRUT_TEST_ALLOWED_WRITERS.map((value) => normalizeUserKey(value)).filter(Boolean)
-);
+
+// ── Community Groups: loaded from DB, with hardcoded fallbacks for initial seed ──
+const SEED_COMMUNITY_GROUPS = [
+    {
+        groupId: String(process.env.DOVRUT_GROUP_ID || 'דוברות').trim() || 'דוברות',
+        groupName: String(process.env.DOVRUT_GROUP_ID || 'דוברות').trim() || 'דוברות',
+        members: [],
+        writers: parseUsernamesInput(process.env.DOVRUT_ALLOWED_WRITERS || '0506501040,0506267447,0543108095')
+    },
+    {
+        groupId: String(process.env.DOVRUT_TEST_GROUP_ID || 'בדיקה - דוברות').trim() || 'בדיקה - דוברות',
+        groupName: String(process.env.DOVRUT_TEST_GROUP_ID || 'בדיקה - דוברות').trim() || 'בדיקה - דוברות',
+        members: parseUsernamesInput(process.env.DOVRUT_TEST_GROUP_MEMBERS || '0546799693,0550000001,0547997273,0505203520'),
+        writers: parseUsernamesInput(process.env.DOVRUT_TEST_ALLOWED_WRITERS || '0546799693')
+    }
+];
+
 const hardcodedCommunityGroupsByKey = new Map();
+// Keep a list of community group IDs for passing to controllers (mutable, refreshed from DB).
+let communityGroupIds = [];
+
 function registerHardcodedCommunityGroup(groupKeys, writerSet, options = {}) {
     const keys = Array.isArray(groupKeys) ? groupKeys : [groupKeys];
     const normalizedKeys = Array.from(new Set(keys.map((value) => normalizeUserKey(value)).filter(Boolean)));
@@ -940,10 +947,46 @@ function registerHardcodedCommunityGroup(groupKeys, writerSet, options = {}) {
         hardcodedCommunityGroupsByKey.set(key, policy);
     });
 }
-registerHardcodedCommunityGroup(DOVRUT_GROUP_ID, dovrutWriterUserSet);
-registerHardcodedCommunityGroup(DOVRUT_TEST_GROUP_ID, dovrutTestWriterUserSet, {
-    members: DOVRUT_TEST_GROUP_MEMBERS
-});
+
+function rebuildCommunityGroupsFromConfigs(configs) {
+    hardcodedCommunityGroupsByKey.clear();
+    const ids = [];
+    for (const cfg of configs) {
+        const gid = String(cfg.groupId || '').trim();
+        if (!gid) continue;
+        ids.push(gid);
+        const writerSet = new Set(
+            (cfg.writers || []).map((v) => normalizeUserKey(v)).filter(Boolean)
+        );
+        registerHardcodedCommunityGroup(gid, writerSet, {
+            members: cfg.members || []
+        });
+    }
+    communityGroupIds = ids;
+    console.log(`[COMMUNITY-GROUPS] Loaded ${configs.length} community group(s) from DB: ${ids.join(', ')}`);
+}
+
+async function loadAndSeedCommunityGroups() {
+    try {
+        // Seed the DB with defaults if empty
+        for (const seed of SEED_COMMUNITY_GROUPS) {
+            await mysqlLogsService.seedCommunityGroupIfEmpty(seed);
+        }
+        // Load from DB
+        const configs = await mysqlLogsService.loadCommunityGroups();
+        if (configs.length > 0) {
+            rebuildCommunityGroupsFromConfigs(configs);
+            return;
+        }
+    } catch (err) {
+        console.warn('[COMMUNITY-GROUPS] Failed to load from DB, using seed fallback:', err && err.message ? err.message : err);
+    }
+    // Fallback: use seed values directly
+    rebuildCommunityGroupsFromConfigs(SEED_COMMUNITY_GROUPS);
+}
+
+// Initialize synchronously with seed values, then async-load from DB will override
+rebuildCommunityGroupsFromConfigs(SEED_COMMUNITY_GROUPS);
 const SUBSCRIPTION_LOOKUP_BATCH_SIZE = Math.max(
     10,
     Number(process.env.SUBSCRIPTION_LOOKUP_BATCH_SIZE || 40) || 40
@@ -1005,6 +1048,9 @@ const sessionTokenJweService = SESSION_JWE_SECRET
 const SESSION_USER_PATTERN = /^0\d{9}$/;
 const BADGE_RESET_ALL_ALLOWED_USERS = parseUsernamesInput(
     process.env.BADGE_RESET_ALL_ALLOWED_USERS || '0546799693'
+);
+const VERSION_UPDATE_BROADCAST_ALLOWED_USERS = parseUsernamesInput(
+    process.env.VERSION_UPDATE_BROADCAST_ALLOWED_USERS || '0546799693'
 );
 const AUTH_SESSION_RATE_LIMIT_WINDOW_MS = Math.max(
     60 * 1000,
@@ -4613,6 +4659,54 @@ async function hydrateGroupsFromLocalDb() {
     ]);
 }
 
+async function hydrateGroupsFromMysql() {
+    try {
+        // One-time migration: seed MySQL from runtime groups if MySQL ChatGroups is empty
+        const runtimeGroupRecords = Object.values(groups || {})
+            .map((group) => normalizeRuntimeGroupRecord(group, group && group.id ? group.id : ''))
+            .filter(Boolean)
+            .map((group) => ({
+                groupId: group.id,
+                groupName: group.name,
+                members: Array.isArray(group.members) ? group.members : [],
+                admins: Array.isArray(group.admins) ? group.admins : [],
+                createdBy: group.createdBy || null,
+                type: group.type || 'group',
+                createdAt: group.createdAt || Date.now(),
+                updatedAt: group.updatedAt || Date.now()
+            }));
+        if (runtimeGroupRecords.length > 0) {
+            await mysqlLogsService.seedChatGroupsFromRuntime(runtimeGroupRecords);
+        }
+
+        // Load all groups from MySQL and merge into runtime (MySQL wins for same-or-newer updatedAt)
+        const mysqlGroups = await mysqlLogsService.loadAllChatGroups();
+        if (!mysqlGroups.length) return;
+        const mysqlNormalized = normalizeGroupsCollection(
+            mysqlGroups.map((record) => ({
+                id: record.groupId,
+                name: record.groupName,
+                members: record.members,
+                admins: record.admins,
+                createdBy: record.createdBy,
+                type: record.type,
+                createdAt: record.createdAt,
+                updatedAt: record.updatedAt
+            }))
+        );
+        // Merge: MySQL records override runtime if their updatedAt is >= runtime
+        for (const [groupId, mysqlGroup] of Object.entries(mysqlNormalized)) {
+            const existing = groups[groupId];
+            if (!existing || Number(mysqlGroup.updatedAt || 0) >= Number(existing.updatedAt || 0)) {
+                groups[groupId] = mysqlGroup;
+            }
+        }
+        console.log(`[GROUPS DB] Loaded ${mysqlGroups.length} group(s) from MySQL.`);
+    } catch (err) {
+        console.warn('[GROUPS DB] Failed to hydrate groups from MySQL:', err && err.message ? err.message : err);
+    }
+}
+
 function upsertGroup(payload = {}) {
     const groupId = String(payload.groupId || payload.groupID || '').trim();
     const groupName = String(payload.groupName || payload.title || '').trim();
@@ -4657,6 +4751,19 @@ function upsertGroup(payload = {}) {
 
     groups[groupId] = nextGroup;
     scheduleStateSave();
+    // Persist to MySQL asynchronously (errors are logged but do not block the caller)
+    mysqlLogsService.upsertChatGroup({
+        groupId: nextGroup.id,
+        groupName: nextGroup.name,
+        members: Array.isArray(nextGroup.members) ? nextGroup.members : [],
+        admins: Array.isArray(nextGroup.admins) ? nextGroup.admins : [],
+        createdBy: nextGroup.createdBy || null,
+        type: nextGroup.type || 'group',
+        createdAt: nextGroup.createdAt || Date.now(),
+        updatedAt: nextGroup.updatedAt || Date.now()
+    }).catch((err) => {
+        console.warn('[GROUPS DB] MySQL upsert failed for', groupId, ':', err && err.message ? err.message : err);
+    });
     return nextGroup;
 }
 
@@ -4695,6 +4802,9 @@ async function loadState() {
                 });
                 await hydrateGroupsFromLocalDb();
                 console.log('[STATE] Loaded persisted state from Redis.');
+                await hydrateGroupsFromMysql();
+                // Load community group configs from MySQL (overrides seed values)
+                await loadAndSeedCommunityGroups();
                 return;
             }
         } catch (error) {
@@ -4736,6 +4846,18 @@ async function loadState() {
         groups = normalizeGroupsCollection(groups);
         await hydrateGroupsFromLocalDb();
     }
+
+    await hydrateGroupsFromMysql();
+
+    // One-time migration: backfill SeenTime for existing logs
+    try {
+        await mysqlLogsService.backfillSeenTimeWithSendTime();
+    } catch (err) {
+        console.warn('[SEEN-TIME] Backfill failed (non-fatal):', err && err.message ? err.message : err);
+    }
+
+    // Load community group configs from MySQL (overrides seed values)
+    await loadAndSeedCommunityGroups();
 }
 
 async function persistState() {
@@ -6391,6 +6513,220 @@ app.get(['/version', '/notify/version'], (req, res) => {
     res.json({ version: SERVER_VERSION, notes: SERVER_RELEASE_NOTES });
 });
 
+// --- BROADCAST VERSION UPDATE TO ALL USERS ---
+const versionUpdateBroadcastAllowedSet = new Set(
+    VERSION_UPDATE_BROADCAST_ALLOWED_USERS.map(normalizeUserKey).filter(Boolean)
+);
+const versionBroadcastRateLimitStore = new Map();
+const communityGroupConfigsRateLimitStore = new Map();
+
+app.post(
+    ['/broadcast-version-update', '/notify/broadcast-version-update'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ status: 'error', message: resolution.error })
+    }),
+    async (req, res) => {
+        const sender = normalizeUserKey(req.resolvedUser || '');
+        if (!sender || !versionUpdateBroadcastAllowedSet.has(sender)) {
+            return res.status(403).json({ status: 'error', message: 'Forbidden' });
+        }
+
+        const rateCheck = consumeRateLimitEntry(versionBroadcastRateLimitStore, sender, 1, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ status: 'error', message: `נסה שוב בעוד ${rateCheck.retryAfterSeconds} שניות` });
+        }
+
+        const allUsers = Object.keys(deviceSubscriptionsByUser || {}).filter(Boolean);
+        if (!allUsers.length) {
+            return res.json({ status: 'success', notifiedUsers: 0 });
+        }
+
+        const pushTitle = 'עדכון גרסה';
+        const pushBody = 'גרסה חדשה זמינה – האפליקציה תתעדכן אוטומטית.';
+
+        const results = await Promise.allSettled(
+            allUsers.map((targetUser) =>
+                sendPushNotificationToUser(
+                    targetUser,
+                    {
+                        title: pushTitle,
+                        body: { shortText: pushBody },
+                        data: { type: 'version-update' }
+                    },
+                    'מערכות מידע',
+                    { skipBadge: true }
+                )
+            )
+        );
+
+        const successCount = results.filter((r) => r.status === 'fulfilled').length;
+        const failCount = results.filter((r) => r.status === 'rejected').length;
+
+        console.log(`[VERSION-BROADCAST] Sent version update push to ${successCount}/${allUsers.length} users (${failCount} failed). Triggered by ${sender}.`);
+        return res.json({ status: 'success', notifiedUsers: successCount, failed: failCount, total: allUsers.length });
+    }
+);
+
+app.get(['/community-group-configs', '/notify/community-group-configs'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ configs: [], error: resolution.error })
+    }),
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user) return res.status(401).json({ configs: [], error: 'Unauthorized' });
+        const rateCheck = consumeRateLimitEntry(communityGroupConfigsRateLimitStore, user, 10, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ configs: [], error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        next();
+    },
+    async (_req, res) => {
+        try {
+            const configs = await mysqlLogsService.loadCommunityGroups();
+            return res.json({
+                configs: configs.map((cfg) => ({
+                    id: cfg.groupId,
+                    name: cfg.groupName,
+                    staticMembers: cfg.members,
+                    allowedWriters: cfg.writers
+                }))
+            });
+        } catch (err) {
+            console.error('[COMMUNITY-GROUPS] Failed to load configs:', err && err.message ? err.message : err);
+            return res.status(500).json({ configs: [], error: 'Failed to load community group configs' });
+        }
+    }
+);
+
+const userGroupsRateLimitStore = new Map();
+
+app.get(['/user-chat-groups', '/notify/user-chat-groups'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ groups: [], error: resolution.error })
+    }),
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user) return res.status(401).json({ groups: [], error: 'Unauthorized' });
+        const rateCheck = consumeRateLimitEntry(userGroupsRateLimitStore, user, 10, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ groups: [], error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        next();
+    },
+    async (req, res) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        try {
+            const allGroups = await mysqlLogsService.loadAllChatGroups();
+            // Return only groups where the user is a member
+            const userGroups = allGroups.filter((group) => {
+                if (!Array.isArray(group.members) || group.members.length === 0) return true;
+                return group.members.some((member) => normalizeUserKey(member) === user);
+            });
+            return res.json({
+                groups: userGroups.map((g) => ({
+                    id: g.groupId,
+                    name: g.groupName,
+                    members: g.members,
+                    admins: g.admins,
+                    createdBy: g.createdBy,
+                    type: g.type,
+                    createdAt: g.createdAt,
+                    updatedAt: g.updatedAt
+                }))
+            });
+        } catch (err) {
+            console.error('[USER-GROUPS] Failed to load user groups:', err && err.message ? err.message : err);
+            return res.status(500).json({ groups: [], error: 'Failed to load user groups' });
+        }
+    }
+);
+
+// --- Mark messages as seen ---
+const markSeenRateLimitStore = new Map();
+
+app.post(['/mark-seen', '/notify/mark-seen'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user) return res.status(401).json({ error: 'Unauthorized' });
+        const rateCheck = consumeRateLimitEntry(markSeenRateLimitStore, user, 30, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        const chatId = String(req.body && req.body.chatId || '').trim().toLowerCase();
+        if (!chatId) {
+            return res.status(400).json({ error: 'Missing chatId' });
+        }
+        try {
+            const affected = await mysqlLogsService.markMessagesSeen(user, chatId);
+            return res.json({ status: 'ok', marked: affected });
+        } catch (err) {
+            console.error('[MARK-SEEN] Failed:', err && err.message ? err.message : err);
+            return res.status(500).json({ error: 'Failed to mark messages as seen' });
+        }
+    }
+);
+
+// --- Admin: backup all server groups to DB ---
+const BACKUP_GROUPS_ALLOWED_USERS_SET = new Set(
+    ['0546799693'].map(normalizeUserKey).filter(Boolean)
+);
+const backupGroupsRateLimitStore = new Map();
+
+app.post(['/backup-all-groups-to-db', '/notify/backup-all-groups-to-db'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ status: 'error', message: resolution.error })
+    }),
+    async (req, res) => {
+        const sender = normalizeUserKey(req.resolvedUser || '');
+        if (!sender || !BACKUP_GROUPS_ALLOWED_USERS_SET.has(sender)) {
+            return res.status(403).json({ status: 'error', message: 'Forbidden' });
+        }
+
+        const rateCheck = consumeRateLimitEntry(backupGroupsRateLimitStore, sender, 1, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ status: 'error', message: `נסה שוב בעוד ${rateCheck.retryAfterSeconds} שניות` });
+        }
+
+        try {
+            const allGroupIds = Object.keys(groups || {});
+            let upsertedCount = 0;
+            for (const groupId of allGroupIds) {
+                const group = groups[groupId];
+                if (!group || !group.id || !group.name) continue;
+                const ok = await mysqlLogsService.upsertChatGroup({
+                    groupId: group.id,
+                    groupName: group.name,
+                    members: Array.isArray(group.members) ? group.members : [],
+                    admins: Array.isArray(group.admins) ? group.admins : [],
+                    createdBy: group.createdBy || null,
+                    type: group.type || 'group',
+                    createdAt: group.createdAt || Date.now(),
+                    updatedAt: group.updatedAt || Date.now()
+                });
+                if (ok) upsertedCount++;
+            }
+            console.log(`[BACKUP-GROUPS] ${sender} backed up ${upsertedCount}/${allGroupIds.length} groups to DB.`);
+            return res.json({ status: 'success', backedUp: upsertedCount, total: allGroupIds.length });
+        } catch (err) {
+            console.error('[BACKUP-GROUPS] Failed:', err && err.message ? err.message : err);
+            return res.status(500).json({ status: 'error', message: 'Failed to backup groups' });
+        }
+    }
+);
+
 app.get(['/webhook-registry', '/notify/webhook-registry'], (_req, res) => {
     res.json({
         webhooks: webhookRegistryService.list()
@@ -6579,8 +6915,8 @@ registerMessageController(app, {
     fetchWithRetry,
     buildGoogleSheetGetUrl,
     getLogsMessagesForUser: (user, options = {}) => mysqlLogsService.getLogsMessagesForUser(user, options),
-    hardcodedGroupIds: [DOVRUT_GROUP_ID, DOVRUT_TEST_GROUP_ID],
-    hardcodedGroupMembers: (() => {
+    getHardcodedGroupIds: () => communityGroupIds,
+    getHardcodedGroupMembers: () => {
         const membersMap = {};
         hardcodedCommunityGroupsByKey.forEach((policy, key) => {
             if (Array.isArray(policy.members) && policy.members.length) {
@@ -6588,7 +6924,7 @@ registerMessageController(app, {
             }
         });
         return membersMap;
-    })(),
+    },
     getGroups: () => groups,
     getActiveRedisStateStore: () => activeRedisStateStore,
     getMessageQueue: () => messageQueue,

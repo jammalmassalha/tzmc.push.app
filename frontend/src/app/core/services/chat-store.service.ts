@@ -4,6 +4,7 @@ import {
   ChatGroup,
   ChatListItem,
   ChatMessage,
+  CommunityGroupConfig,
   DeleteMessagePayload,
   Contact,
   DeliveryStatus,
@@ -47,6 +48,7 @@ const SOCKET_ACK_TIMEOUT_MS = 6000;
 const SOCKET_MAX_FAILURES_BEFORE_COOLDOWN = 3;
 const SOCKET_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
 const MAX_PERSISTED_MESSAGES = 2500;
+const GROUPS_DB_MIGRATION_KEY = 'tzmc-groups-db-migrated-v3';
 const PUSH_REGISTER_MIN_INTERVAL_MS = 30000;
 const PUSH_REGISTER_REFRESH_MS = 6 * 60 * 60 * 1000;
 const FOREGROUND_SYNC_MIN_INTERVAL_MS = 4000;
@@ -65,6 +67,7 @@ const SHUTTLE_OPERATIONS_CHAT_NAME = 'הסעות';
 const HELPDESK_CHAT_NAME = 'מוקד איחוד - קריאות';
 const HELPDESK_STATE_KEY_PREFIX = 'helpdesk_state_';
 const HELPDESK_TICKETS_CACHE_TTL_MS = 60 * 1000;
+const HELPDESK_TICKETS_POLL_INTERVAL_MS = 20 * 1000;
 const HR_WELCOME_KEY_PREFIX = 'hr_welcome_sent_';
 const HR_STATE_KEY_PREFIX = 'hr_state_';
 const HR_UPLOAD_BASE_URL = '/notify/uploads/';
@@ -82,34 +85,24 @@ const SHUTTLE_REMINDER_HISTORY_KEY_PREFIX = 'shuttle_reminder_15m_sent_';
 const SHUTTLE_REMINDER_HISTORY_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const SHUTTLE_STATUS_ACTIVE_VALUE = 'פעיל активный';
 const SHUTTLE_STATUS_CANCEL_VALUE = 'ביטול נסיעה отмена поезд';
-const DOVRUT_GROUP_NAME = 'דוברות';
-const DOVRUT_GROUP_ID = DOVRUT_GROUP_NAME;
-const DOVRUT_TEST_GROUP_NAME = 'בדיקה - דוברות';
-const DOVRUT_TEST_GROUP_ID = DOVRUT_TEST_GROUP_NAME;
 const DOVRUT_SYSTEM_CREATOR = 'dovrut-system';
-const DOVRUT_ALLOWED_WRITERS = ['0506501040', '0506267447', '0543108095'] as const;
-const DOVRUT_TEST_ALLOWED_WRITERS = ['0546799693'] as const;
-const DOVRUT_TEST_GROUP_MEMBERS = ['0546799693', '0550000001', '0547997273', '0505203520'] as const;
 const SHUTTLE_OPERATIONS_GROUP_MEMBERS = ['0546799693', '0550000001', '0506267410', '0505203520'] as const;
 const HELPDESK_ALLOWED_USERS = ['0546799693', '0550000001'] as const;
 const BADGE_RESET_ALL_ALLOWED_USERS = ['0546799693'] as const;
-interface HardcodedCommunityGroupConfig {
-  id: string;
-  name: string;
-  staticMembers?: readonly string[];
-  allowedWriters: readonly string[];
-}
-const HARDCODED_COMMUNITY_GROUPS: readonly HardcodedCommunityGroupConfig[] = [
+const VERSION_UPDATE_BROADCAST_ALLOWED_USERS = ['0546799693'] as const;
+const BACKUP_GROUPS_ALLOWED_USERS = ['0546799693'] as const;
+// Seed/fallback community group configs — replaced at runtime by DB-loaded configs
+const SEED_COMMUNITY_GROUPS: readonly CommunityGroupConfig[] = [
   {
-    id: DOVRUT_GROUP_ID,
-    name: DOVRUT_GROUP_NAME,
-    allowedWriters: DOVRUT_ALLOWED_WRITERS
+    id: 'דוברות',
+    name: 'דוברות',
+    allowedWriters: ['0506501040', '0506267447', '0543108095']
   },
   {
-    id: DOVRUT_TEST_GROUP_ID,
-    name: DOVRUT_TEST_GROUP_NAME,
-    staticMembers: DOVRUT_TEST_GROUP_MEMBERS,
-    allowedWriters: DOVRUT_TEST_ALLOWED_WRITERS
+    id: 'בדיקה - דוברות',
+    name: 'בדיקה - דוברות',
+    staticMembers: ['0546799693', '0550000001', '0547997273', '0505203520'],
+    allowedWriters: ['0546799693']
   }
 ];
 const SHUTTLE_DAY_NAMES_BY_LANGUAGE: Record<ShuttleLanguage, readonly string[]> = {
@@ -393,6 +386,7 @@ export class ChatStoreService {
   private readonly shuttlePickerRevision = signal(0);
   private readonly helpdeskPickerRevision = signal(0);
   private helpdeskInitInFlight = false;
+  private helpdeskPollingTimer: ReturnType<typeof setInterval> | null = null;
   private readonly helpdeskTicketsSignal = signal<HelpdeskTicket[]>([]);
   private readonly helpdeskAssignedSignal = signal<HelpdeskTicket[]>([]);
   private readonly helpdeskMyRoleSignal = signal<HelpdeskMyRole | null>(null);
@@ -435,20 +429,17 @@ export class ChatStoreService {
   private readonly shuttleChatIdSet = new Set<string>(
     [SHUTTLE_CHAT_NAME, SHUTTLE_CHAT_TITLE].map((id) => this.normalizeChatId(id)).filter(Boolean)
   );
-  private readonly communityWriterSetByGroupId = new Map<string, Set<string>>(
-    HARDCODED_COMMUNITY_GROUPS.map((group) => [
-      this.normalizeChatId(group.id),
-      new Set(group.allowedWriters.map((value) => this.normalizeUser(value)).filter(Boolean))
-    ])
-  );
-  private readonly dovrutWriterSet = new Set<string>(
-    HARDCODED_COMMUNITY_GROUPS
-      .flatMap((group) => group.allowedWriters)
-      .map((value) => this.normalizeUser(value))
-      .filter(Boolean)
-  );
+  private communityGroupConfigs: CommunityGroupConfig[] = [...SEED_COMMUNITY_GROUPS];
+  private communityWriterSetByGroupId = new Map<string, Set<string>>();
+  private dovrutWriterSet = new Set<string>();
   private readonly badgeResetAllAdminUsersSet = new Set<string>(
     BADGE_RESET_ALL_ALLOWED_USERS.map((value) => this.normalizeUser(value)).filter(Boolean)
+  );
+  private readonly versionUpdateBroadcastAllowedUsersSet = new Set<string>(
+    VERSION_UPDATE_BROADCAST_ALLOWED_USERS.map((value) => this.normalizeUser(value)).filter(Boolean)
+  );
+  private readonly backupGroupsAllowedUsersSet = new Set<string>(
+    BACKUP_GROUPS_ALLOWED_USERS.map((value) => this.normalizeUser(value)).filter(Boolean)
   );
   private incomingBatchDepth = 0;
   private pendingPersistAfterIncomingBatch = false;
@@ -497,7 +488,8 @@ export class ChatStoreService {
         continue;
       }
 
-      const title = group?.name ?? contact?.displayName ?? (isShuttle ? SHUTTLE_CHAT_TITLE : chatId);
+      const rawGroupName = group?.name ?? '';
+      const title = rawGroupName || contact?.displayName || (isShuttle ? SHUTTLE_CHAT_TITLE : chatId);
       const subtitle = lastMessage ? this.getMessagePreview(lastMessage) : (group ? 'אין הודעות בקבוצה' : '');
       const lastTimestamp = lastMessage?.timestamp ?? 0;
       const unread = unreadMap[chatId] ?? 0;
@@ -563,6 +555,7 @@ export class ChatStoreService {
   });
 
   constructor(private readonly api: ChatApiService) {
+    this.rebuildCommunityGroupMaps(SEED_COMMUNITY_GROUPS);
     if (typeof window !== 'undefined') {
       window.addEventListener('online', this.handleOnline);
       window.addEventListener('offline', this.handleOffline);
@@ -577,6 +570,56 @@ export class ChatStoreService {
 
   isAuthenticated(): boolean {
     return Boolean(this.currentUser());
+  }
+
+  private rebuildCommunityGroupMaps(configs: readonly CommunityGroupConfig[]): void {
+    this.communityGroupConfigs = [...configs];
+    this.communityWriterSetByGroupId = new Map<string, Set<string>>(
+      configs.map((group) => [
+        this.normalizeChatId(group.id),
+        new Set(group.allowedWriters.map((value) => this.normalizeUser(value)).filter(Boolean))
+      ])
+    );
+    this.dovrutWriterSet = new Set<string>(
+      configs
+        .flatMap((group) => group.allowedWriters)
+        .map((value) => this.normalizeUser(value))
+        .filter(Boolean)
+    );
+  }
+
+  private async loadCommunityGroupConfigs(): Promise<void> {
+    try {
+      const configs = await this.api.getCommunityGroupConfigs();
+      if (configs.length > 0) {
+        this.rebuildCommunityGroupMaps(configs);
+      }
+    } catch {
+      // Fallback: keep current (seed) configs
+    }
+  }
+
+  private async loadUserChatGroupsFromDb(): Promise<void> {
+    try {
+      const dbGroups = await this.api.getUserChatGroups();
+      if (!dbGroups.length) return;
+      const currentGroups = this.groups();
+      const groupsById = new Map(currentGroups.map((g) => [g.id, g]));
+      let changed = false;
+      for (const dbGroup of dbGroups) {
+        const existing = groupsById.get(dbGroup.id);
+        if (!existing || (dbGroup.updatedAt || 0) >= (existing.updatedAt || 0)) {
+          groupsById.set(dbGroup.id, dbGroup);
+          changed = true;
+        }
+      }
+      if (changed) {
+        this.groups.set(Array.from(groupsById.values()));
+        this.schedulePersist();
+      }
+    } catch {
+      // Non-fatal: groups will be reconstructed from messages
+    }
   }
 
   async ensureSessionReady(): Promise<void> {
@@ -622,6 +665,12 @@ export class ChatStoreService {
     }
 
     this.initializedUser = user;
+
+    // Load community group configs from DB (async, non-blocking for critical path)
+    await this.loadCommunityGroupConfigs();
+
+    // Load all user groups from MySQL DB
+    await this.loadUserChatGroupsFromDb();
 
     /**
      * SYNC STEP 1: Drain Service Worker Cache
@@ -874,6 +923,9 @@ export class ChatStoreService {
     const previousActiveChat = this.activeChatId();
     if (previousActiveChat && previousActiveChat !== this.normalizeChatId(chatId ?? '')) {
       this.cancelTypingForActiveChat();
+      if (this.isHelpdeskChat(previousActiveChat)) {
+        this.stopHelpdeskPolling();
+      }
     }
     if (!chatId) {
       this.activeChatId.set(null);
@@ -1211,6 +1263,60 @@ export class ChatStoreService {
     return result.clearedKeys;
   }
 
+  canCurrentUserBroadcastVersionUpdate(): boolean {
+    const normalizedUser = this.normalizeUser(this.currentUser() ?? '');
+    if (!normalizedUser) return false;
+    return this.versionUpdateBroadcastAllowedUsersSet.has(normalizedUser);
+  }
+
+  async broadcastVersionUpdate(): Promise<number> {
+    const user = this.currentUser();
+    if (!user) {
+      throw new Error('יש להתחבר לפני שליחת עדכון גרסה');
+    }
+    if (!this.canCurrentUserBroadcastVersionUpdate()) {
+      throw new Error('אין הרשאה לשליחת עדכון גרסה');
+    }
+    if (!this.networkOnline()) {
+      throw new Error('אין חיבור לרשת');
+    }
+
+    const result = await this.api.broadcastVersionUpdate(user);
+    return result.notifiedUsers;
+  }
+
+  canCurrentUserBackupGroupsToDb(): boolean {
+    const normalizedUser = this.normalizeUser(this.currentUser() ?? '');
+    if (!normalizedUser) return false;
+    return this.backupGroupsAllowedUsersSet.has(normalizedUser);
+  }
+
+  async backupAllGroupsToDb(): Promise<{ backedUp: number; total: number }> {
+    const user = this.currentUser();
+    if (!user) {
+      throw new Error('יש להתחבר לפני העברת קבוצות');
+    }
+    if (!this.canCurrentUserBackupGroupsToDb()) {
+      throw new Error('אין הרשאה להעברת קבוצות');
+    }
+    if (!this.networkOnline()) {
+      throw new Error('אין חיבור לרשת');
+    }
+
+    return this.api.backupAllGroupsToDb(user);
+  }
+
+  async markChatSeen(chatId: string): Promise<void> {
+    const user = this.currentUser();
+    if (!user || !chatId) return;
+    if (!this.networkOnline()) return;
+    try {
+      await this.api.markMessagesSeen(user, chatId);
+    } catch (err) {
+      console.warn('[SEEN] Failed to mark chat as seen:', chatId, err);
+    }
+  }
+
   getHrComposerActionsForActiveChat(): {
     canGoBack: boolean;
     hasOpenSession: boolean;
@@ -1305,8 +1411,8 @@ export class ChatStoreService {
       nextGroups = filteredGroups;
       changed = true;
     }
-    const hardcodedGroupIds = HARDCODED_COMMUNITY_GROUPS.map((group) => this.normalizeChatId(group.id));
-    for (const hardcodedGroup of HARDCODED_COMMUNITY_GROUPS) {
+    const hardcodedGroupIds = this.communityGroupConfigs.map((group) => this.normalizeChatId(group.id));
+    for (const hardcodedGroup of this.communityGroupConfigs) {
       const normalizedId = this.normalizeChatId(hardcodedGroup.id);
       const expectedMembers = this.resolveHardcodedCommunityMembers(hardcodedGroup, contacts);
       const existingIndex = nextGroups.findIndex((group) => group.id === normalizedId);
@@ -1367,7 +1473,7 @@ export class ChatStoreService {
     this.schedulePersist();
   }
 
-  private resolveHardcodedCommunityMembers(config: HardcodedCommunityGroupConfig, contacts: Contact[]): string[] {
+  private resolveHardcodedCommunityMembers(config: CommunityGroupConfig, contacts: Contact[]): string[] {
     if (Array.isArray(config.staticMembers) && config.staticMembers.length) {
       return Array.from(
         new Set(config.staticMembers.map((member) => this.normalizeUser(member)).filter(Boolean))
@@ -1723,7 +1829,7 @@ export class ChatStoreService {
         return {
           ...message,
           // Never drop logs message just because group metadata was not preloaded.
-          // Use groupId fallback so full sync can still reconstruct the chat history.
+          // Use known group name if available; preserve groupId as fallback identifier.
           groupName: knownGroupName || incomingGroupName || groupId
         };
       })
@@ -1881,7 +1987,7 @@ export class ChatStoreService {
         this.normalizeChatId(normalizedGroupName) === resolvedGroupId
       );
       const rawBody = String(incoming.body ?? '').trim();
-      const senderPrefixMatch = rawBody.match(/^([^:\n]{1,80})\s*:\s*(.+)$/);
+      const senderPrefixMatch = rawBody.match(/^([^:\n]{1,80})\s*:\s*([\s\S]+)$/);
       const inferredSenderName = senderPrefixMatch ? String(senderPrefixMatch[1] || '').trim() : '';
       const inferredBody = senderPrefixMatch ? String(senderPrefixMatch[2] || '').trim() : rawBody;
 
@@ -1916,8 +2022,8 @@ export class ChatStoreService {
         const groupId = this.normalizeChatId(String(message.groupId ?? '').trim());
         if (!groupId) continue;
 
-        // Skip restricted hardcoded community groups the current user is not a member of.
-        const hardcodedConfig = HARDCODED_COMMUNITY_GROUPS.find(
+        // Skip restricted community groups the current user is not a member of.
+        const hardcodedConfig = this.communityGroupConfigs.find(
           (g) => this.normalizeChatId(g.id) === groupId
         );
         if (
@@ -1933,10 +2039,13 @@ export class ChatStoreService {
 
         const incomingGroupName = String(message.groupName ?? '').trim();
         const fallbackGroup = fallbackById.get(groupId) ?? null;
+        const fallbackName = fallbackGroup?.name
+          ? (this.normalizeChatId(fallbackGroup.name) !== groupId ? fallbackGroup.name : '')
+          : '';
         const resolvedGroupName = (
           incomingGroupName && this.normalizeChatId(incomingGroupName) !== groupId
             ? incomingGroupName
-            : (fallbackGroup?.name || incomingGroupName || groupId)
+            : (fallbackName || incomingGroupName || groupId)
         );
         const resolvedType: GroupType = message.groupType === 'community' ? 'community' : 'group';
 
@@ -4905,7 +5014,29 @@ export class ChatStoreService {
 
   async assignHelpdeskHandler(ticketId: number, handlerUsername: string | null): Promise<void> {
     await this.api.assignHelpdeskHandler(ticketId, handlerUsername);
-    // Force refresh to get updated tickets
+    await this.forceRefreshHelpdeskTickets();
+  }
+
+  async updateHelpdeskTicketStatus(ticketId: number, status: string): Promise<void> {
+    await this.api.updateHelpdeskTicketStatus(ticketId, status);
+    await this.forceRefreshHelpdeskTickets();
+  }
+
+  resolveHelpdeskUsername(username: string): string {
+    return this.getDisplayName(username);
+  }
+
+  resolveHelpdeskContact(username: string): { displayName: string; info?: string; phone?: string } {
+    const normalized = this.normalizeUser(username);
+    const contact = this.contacts().find((item) => item.username === normalized);
+    return {
+      displayName: contact?.displayName || normalized,
+      info: contact?.info || undefined,
+      phone: contact?.phone || undefined
+    };
+  }
+
+  private async forceRefreshHelpdeskTickets(): Promise<void> {
     this.helpdeskTicketsSyncAt = 0;
     await this.refreshHelpdeskTickets();
   }
@@ -4971,6 +5102,24 @@ export class ChatStoreService {
       await this.refreshHelpdeskTickets();
     } finally {
       this.helpdeskInitInFlight = false;
+    }
+    // Start real-time polling for ticket updates
+    this.startHelpdeskPolling();
+  }
+
+  private startHelpdeskPolling(): void {
+    if (this.helpdeskPollingTimer) return;
+    this.helpdeskPollingTimer = setInterval(() => {
+      if (this.isHelpdeskChat(this.activeChatId())) {
+        void this.forceRefreshHelpdeskTickets();
+      }
+    }, HELPDESK_TICKETS_POLL_INTERVAL_MS);
+  }
+
+  private stopHelpdeskPolling(): void {
+    if (this.helpdeskPollingTimer) {
+      clearInterval(this.helpdeskPollingTimer);
+      this.helpdeskPollingTimer = null;
     }
   }
 
@@ -5805,6 +5954,7 @@ export class ChatStoreService {
     this.clearTypingIndicators();
     this.stopSocketOnly();
     this.stopStreamOnly();
+    this.stopHelpdeskPolling();
 
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
@@ -6980,9 +7130,9 @@ export class ChatStoreService {
 
     const normalizedId = this.normalizeChatId(incoming.groupId);
 
-    // Respect staticMembers restrictions: if this is a hardcoded community group
+    // Respect staticMembers restrictions: if this is a community group
     // with a static member list, only allow the group for listed members.
-    const hardcodedConfig = HARDCODED_COMMUNITY_GROUPS.find(
+    const hardcodedConfig = this.communityGroupConfigs.find(
       (g) => this.normalizeChatId(g.id) === normalizedId
     );
     if (
@@ -7968,10 +8118,19 @@ export class ChatStoreService {
     const raw = localStorage.getItem(this.stateKey(user));
     if (!raw) return;
 
+    // One-time migration: clear cached groups so they are re-fetched from DB.
+    const groupsMigrated = localStorage.getItem(GROUPS_DB_MIGRATION_KEY);
+    const shouldClearGroups = !groupsMigrated;
+    if (shouldClearGroups) {
+      localStorage.setItem(GROUPS_DB_MIGRATION_KEY, '1');
+    }
+
     try {
       const parsed = JSON.parse(raw) as Partial<PersistedChatState>;
       const contacts = this.normalizeContacts(Array.isArray(parsed.contacts) ? parsed.contacts : []);
-      const groups = this.normalizeGroups(Array.isArray(parsed.groups) ? parsed.groups : [], user);
+      const groups = shouldClearGroups
+        ? []
+        : this.normalizeGroups(Array.isArray(parsed.groups) ? parsed.groups : [], user);
       const groupsById = new Map(groups.map((group) => [group.id, group]));
       const unreadByChat = parsed.unreadByChat && typeof parsed.unreadByChat === 'object'
         ? parsed.unreadByChat

@@ -10,7 +10,7 @@
       </div>
     </div>
     <span class="status-chip" [class]="statusChipClass">
-      {{ data.statusLabel(data.ticket.status) }}
+      {{ data.statusLabel(currentTicketStatus()) }}
     </span>
   </div>
 
@@ -42,11 +42,25 @@
         </div>
       </div>
 
+      <div class="detail-row creator-row">
+        <mat-icon class="detail-icon">person</mat-icon>
+        <div class="detail-body">
+          <span class="detail-label">נפתח על ידי</span>
+          <span class="detail-value creator-name">{{ creatorContact.displayName }}</span>
+          @if (creatorContact.info) {
+            <span class="detail-sub">{{ creatorContact.info }}</span>
+          }
+          @if (creatorContact.phone) {
+            <span class="detail-sub">{{ creatorContact.phone }}</span>
+          }
+        </div>
+      </div>
+
       <div class="detail-row">
         <mat-icon class="detail-icon">support_agent</mat-icon>
         <div class="detail-body">
           <span class="detail-label">מטפל</span>
-          <span class="detail-value">{{ data.ticket.handlerUsername || '—' }}</span>
+          <span class="detail-value">{{ resolveDisplay(data.ticket.handlerUsername) }}</span>
         </div>
       </div>
     </section>
@@ -65,7 +79,7 @@
             <mat-select [(ngModel)]="selectedHandler" [ngModelOptions]="{standalone: true}">
               <mat-option [value]="null">— ללא מטפל —</mat-option>
               @for (h of availableHandlers; track h.username) {
-                <mat-option [value]="h.username">{{ h.username }}</mat-option>
+                <mat-option [value]="h.username">{{ resolveDisplay(h.username) }}</mat-option>
               }
             </mat-select>
           </mat-form-field>
@@ -85,6 +99,43 @@
         </div>
         @if (handlerError()) {
           <div class="note-error">{{ handlerError() }}</div>
+        }
+      </section>
+    }
+
+    <!-- Status change (creator, handler, or Editor) -->
+    @if (canChangeStatus) {
+      <mat-divider class="section-divider"></mat-divider>
+      <section class="handler-section">
+        <div class="handler-header">
+          <mat-icon>update</mat-icon>
+          <span>עדכון סטטוס</span>
+        </div>
+        <div class="handler-row">
+          <mat-form-field appearance="outline" class="handler-select-field">
+            <mat-label>סטטוס</mat-label>
+            <mat-select [(ngModel)]="selectedStatus" [ngModelOptions]="{standalone: true}">
+              @for (s of allStatuses; track s) {
+                <mat-option [value]="s">{{ data.statusLabel(s) }}</mat-option>
+              }
+            </mat-select>
+          </mat-form-field>
+          <button
+            mat-flat-button
+            color="accent"
+            class="handler-save-btn"
+            [disabled]="isUpdatingStatus()"
+            (click)="saveStatus()">
+            @if (isUpdatingStatus()) {
+              <mat-spinner diameter="18" class="btn-spinner"></mat-spinner>
+            } @else {
+              <mat-icon>save</mat-icon>
+            }
+            <span>שמור</span>
+          </button>
+        </div>
+        @if (statusError()) {
+          <div class="note-error">{{ statusError() }}</div>
         }
       </section>
     }
@@ -109,7 +160,7 @@
           @for (note of notes(); track note.id) {
             <div class="note-item" [class.own-note]="note.authorUsername === data.currentUsername">
               <div class="note-meta">
-                <span class="note-author">{{ note.authorUsername }}</span>
+                <span class="note-author">{{ resolveDisplay(note.authorUsername) }}</span>
                 <span class="note-time">{{ formatDate(note.createdAt) }}</span>
               </div>
               <div class="note-text">{{ note.noteText }}</div>

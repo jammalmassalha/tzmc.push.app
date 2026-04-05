@@ -188,8 +188,12 @@ class MysqlLogsService {
     insertQuery;
     imageUrlColumnReady = false;
     fileUrlColumnReady = false;
+    seenTimeColumnReady = false;
+    communityGroupsTablesReady = false;
+    chatGroupsTablesReady = false;
     constructor(config) {
         this.tableName = normalizeTableName(config.table);
+        // 10 columns / 10 parameters — keep in sync with insertLog() and insertLogsBulk()
         this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
         this.pool = promise_1.default.createPool({
@@ -203,6 +207,7 @@ class MysqlLogsService {
         });
         void this.ensureImageUrlColumn();
         void this.ensureFileUrlColumn();
+        void this.ensureSeenTimeColumn();
     }
     async ensureImageUrlColumn() {
         if (this.imageUrlColumnReady)
@@ -234,6 +239,21 @@ class MysqlLogsService {
             }
         }
         this.fileUrlColumnReady = true;
+    }
+    async ensureSeenTimeColumn() {
+        if (this.seenTimeColumnReady)
+            return;
+        try {
+            await this.pool.execute(`ALTER TABLE \`${this.tableName}\` ADD COLUMN \`SeenTime\` DATETIME NULL DEFAULT NULL`);
+        }
+        catch (err) {
+            const code = err.code;
+            const message = String(err.message || '');
+            if (code !== 'ER_DUP_FIELDNAME' && !message.includes('Duplicate column')) {
+                console.warn('[MYSQL] ensureSeenTimeColumn warning:', message);
+            }
+        }
+        this.seenTimeColumnReady = true;
     }
     buildCompositeKeyFromPayload(payload) {
         return [
@@ -402,7 +422,8 @@ class MysqlLogsService {
           \`RecipientAuthJSON\` AS recipientAuthJson,
           \`UserReceivedTime\` AS userReceivedTime,
           \`ImageUrl\` AS imageUrl,
-          \`FileUrl\` AS fileUrl 
+          \`FileUrl\` AS fileUrl,
+          \`SeenTime\` AS seenTime 
         FROM \`${this.tableName}\` 
         WHERE 1=1`;
             const params = [];
@@ -583,6 +604,373 @@ class MysqlLogsService {
             totalAffected += result.affectedRows || 0;
         }
         return totalAffected;
+    }
+    /**
+     * Mark messages as seen for a specific user.
+     * Sets SeenTime = NOW() for messages directed to the user in the given chat
+     * that have not yet been seen (SeenTime IS NULL).
+     */
+    async markMessagesSeen(user, chatId) {
+        await this.ensureSeenTimeColumn();
+        const safeUser = toTrimmedString(user).toLowerCase();
+        const safeChatId = toTrimmedString(chatId);
+        if (!safeUser || !safeChatId)
+            return 0;
+        try {
+            // For group/community messages the ToUser column holds the groupId,
+            // and `From` is the sender. For direct messages ToUser is the recipient.
+            // A message is "for this user in this chat" when:
+            //   (ToUser = chatId AND From != user)  — group msgs received
+            //   (ToUser = user AND From = chatId)   — DMs received from chatId
+            const sql = `UPDATE \`${this.tableName}\`
+        SET \`SeenTime\` = NOW()
+        WHERE \`SeenTime\` IS NULL
+          AND (
+            (LOWER(\`ToUser\`) = ? AND LOWER(\`From\`) != ?)
+            OR
+            (LOWER(\`ToUser\`) = ? AND LOWER(\`From\`) = ?)
+          )`;
+            const [result] = await this.pool.execute(sql, [
+                safeChatId, safeUser,
+                safeUser, safeChatId
+            ]);
+            return result.affectedRows || 0;
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.warn('[MYSQL] markMessagesSeen error:', message);
+            return 0;
+        }
+    }
+    /**
+     * Backfill SeenTime for all existing rows that have SeenTime IS NULL.
+     * Sets SeenTime = DateTime (the send time) so they count as "already seen".
+     * This should be called once during migration.
+     */
+    async backfillSeenTimeWithSendTime() {
+        await this.ensureSeenTimeColumn();
+        try {
+            const [result] = await this.pool.execute(`UPDATE \`${this.tableName}\` SET \`SeenTime\` = \`DateTime\` WHERE \`SeenTime\` IS NULL`);
+            const affected = result.affectedRows || 0;
+            if (affected > 0) {
+                console.log(`[MYSQL] Backfilled SeenTime for ${affected} existing log row(s).`);
+            }
+            return affected;
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.warn('[MYSQL] backfillSeenTimeWithSendTime error:', message);
+            return 0;
+        }
+    }
+    /**
+     * Get unseen message counts per chat for a given user.
+     * Returns a map of chatId → count of messages where SeenTime IS NULL.
+     */
+    async getUnseenCountsByUser(user) {
+        await this.ensureSeenTimeColumn();
+        const safeUser = toTrimmedString(user).toLowerCase();
+        if (!safeUser)
+            return {};
+        try {
+            // Group messages: ToUser = groupId, From != user
+            // DM messages: ToUser = user, From = sender
+            const sql = `SELECT
+          CASE
+            WHEN LOWER(\`ToUser\`) = ? THEN LOWER(\`From\`)
+            ELSE LOWER(\`ToUser\`)
+          END AS chatId,
+          COUNT(*) AS cnt
+        FROM \`${this.tableName}\`
+        WHERE \`SeenTime\` IS NULL
+          AND (
+            LOWER(\`ToUser\`) = ?
+            OR (LOWER(\`ToUser\`) != ? AND LOWER(\`From\`) != ?)
+          )
+        GROUP BY chatId`;
+            const [rows] = await this.pool.query(sql, [
+                safeUser, safeUser, safeUser, safeUser
+            ]);
+            const result = {};
+            for (const row of rows) {
+                const chatId = toTrimmedString(row.chatId);
+                const cnt = Number(row.cnt) || 0;
+                if (chatId && cnt > 0) {
+                    result[chatId] = cnt;
+                }
+            }
+            return result;
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.warn('[MYSQL] getUnseenCountsByUser error:', message);
+            return {};
+        }
+    }
+    async ensureCommunityGroupsTables() {
+        if (this.communityGroupsTablesReady)
+            return;
+        try {
+            await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`CommunityGroups\` (
+          \`GroupId\` VARCHAR(255) NOT NULL,
+          \`GroupName\` VARCHAR(255) NOT NULL,
+          \`CreatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP,
+          \`UpdatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (\`GroupId\`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+            await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`CommunityGroupMembers\` (
+          \`GroupId\` VARCHAR(255) NOT NULL,
+          \`Phone\` VARCHAR(50) NOT NULL,
+          PRIMARY KEY (\`GroupId\`, \`Phone\`),
+          FOREIGN KEY (\`GroupId\`) REFERENCES \`CommunityGroups\`(\`GroupId\`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+            await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`CommunityGroupWriters\` (
+          \`GroupId\` VARCHAR(255) NOT NULL,
+          \`Phone\` VARCHAR(50) NOT NULL,
+          PRIMARY KEY (\`GroupId\`, \`Phone\`),
+          FOREIGN KEY (\`GroupId\`) REFERENCES \`CommunityGroups\`(\`GroupId\`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+            this.communityGroupsTablesReady = true;
+            console.log('[MYSQL] Community groups tables ensured.');
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.warn('[MYSQL] ensureCommunityGroupsTables warning:', message);
+        }
+    }
+    async loadCommunityGroups() {
+        await this.ensureCommunityGroupsTables();
+        try {
+            const [groupRows] = await this.pool.execute('SELECT `GroupId`, `GroupName` FROM `CommunityGroups` ORDER BY `GroupId`');
+            if (!groupRows.length)
+                return [];
+            const [memberRows] = await this.pool.execute('SELECT `GroupId`, `Phone` FROM `CommunityGroupMembers` ORDER BY `GroupId`, `Phone`');
+            const [writerRows] = await this.pool.execute('SELECT `GroupId`, `Phone` FROM `CommunityGroupWriters` ORDER BY `GroupId`, `Phone`');
+            const membersMap = new Map();
+            for (const row of memberRows) {
+                const gid = toTrimmedString(row.GroupId);
+                const phone = toTrimmedString(row.Phone);
+                if (!gid || !phone)
+                    continue;
+                if (!membersMap.has(gid))
+                    membersMap.set(gid, []);
+                membersMap.get(gid).push(phone);
+            }
+            const writersMap = new Map();
+            for (const row of writerRows) {
+                const gid = toTrimmedString(row.GroupId);
+                const phone = toTrimmedString(row.Phone);
+                if (!gid || !phone)
+                    continue;
+                if (!writersMap.has(gid))
+                    writersMap.set(gid, []);
+                writersMap.get(gid).push(phone);
+            }
+            return groupRows.map((row) => {
+                const groupId = toTrimmedString(row.GroupId);
+                return {
+                    groupId,
+                    groupName: toTrimmedString(row.GroupName),
+                    members: membersMap.get(groupId) ?? [],
+                    writers: writersMap.get(groupId) ?? []
+                };
+            }).filter((g) => g.groupId && g.groupName);
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.error('[MYSQL] loadCommunityGroups error:', message);
+            return [];
+        }
+    }
+    async seedCommunityGroupIfEmpty(config) {
+        await this.ensureCommunityGroupsTables();
+        try {
+            const [existing] = await this.pool.execute('SELECT `GroupId` FROM `CommunityGroups` WHERE `GroupId` = ?', [config.groupId]);
+            if (existing.length > 0)
+                return false;
+            await this.pool.execute('INSERT INTO `CommunityGroups` (`GroupId`, `GroupName`) VALUES (?, ?)', [config.groupId, config.groupName]);
+            for (const phone of config.members) {
+                await this.pool.execute('INSERT IGNORE INTO `CommunityGroupMembers` (`GroupId`, `Phone`) VALUES (?, ?)', [config.groupId, phone]);
+            }
+            for (const phone of config.writers) {
+                await this.pool.execute('INSERT IGNORE INTO `CommunityGroupWriters` (`GroupId`, `Phone`) VALUES (?, ?)', [config.groupId, phone]);
+            }
+            console.log(`[MYSQL] Seeded community group: ${config.groupId}`);
+            return true;
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.warn(`[MYSQL] seedCommunityGroupIfEmpty(${config.groupId}) warning:`, message);
+            return false;
+        }
+    }
+    // ── Chat Groups (all groups) MySQL persistence ──
+    async ensureChatGroupsTables() {
+        if (this.chatGroupsTablesReady)
+            return;
+        try {
+            await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`ChatGroups\` (
+          \`GroupId\` VARCHAR(255) NOT NULL,
+          \`GroupName\` VARCHAR(255) NOT NULL,
+          \`CreatedBy\` VARCHAR(100) DEFAULT NULL,
+          \`Type\` VARCHAR(50) DEFAULT 'group',
+          \`CreatedAt\` BIGINT DEFAULT NULL,
+          \`UpdatedAt\` BIGINT DEFAULT NULL,
+          PRIMARY KEY (\`GroupId\`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+            await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`ChatGroupMembers\` (
+          \`GroupId\` VARCHAR(255) NOT NULL,
+          \`Phone\` VARCHAR(100) NOT NULL,
+          PRIMARY KEY (\`GroupId\`, \`Phone\`),
+          FOREIGN KEY (\`GroupId\`) REFERENCES \`ChatGroups\`(\`GroupId\`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+            await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`ChatGroupAdmins\` (
+          \`GroupId\` VARCHAR(255) NOT NULL,
+          \`Phone\` VARCHAR(100) NOT NULL,
+          PRIMARY KEY (\`GroupId\`, \`Phone\`),
+          FOREIGN KEY (\`GroupId\`) REFERENCES \`ChatGroups\`(\`GroupId\`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+            this.chatGroupsTablesReady = true;
+            console.log('[MYSQL] Chat groups tables ensured.');
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.warn('[MYSQL] ensureChatGroupsTables warning:', message);
+        }
+    }
+    async loadAllChatGroups() {
+        await this.ensureChatGroupsTables();
+        try {
+            const [groupRows] = await this.pool.execute('SELECT `GroupId`, `GroupName`, `CreatedBy`, `Type`, `CreatedAt`, `UpdatedAt` FROM `ChatGroups` ORDER BY `GroupId`');
+            if (!groupRows.length)
+                return [];
+            const [memberRows] = await this.pool.execute('SELECT `GroupId`, `Phone` FROM `ChatGroupMembers` ORDER BY `GroupId`, `Phone`');
+            const [adminRows] = await this.pool.execute('SELECT `GroupId`, `Phone` FROM `ChatGroupAdmins` ORDER BY `GroupId`, `Phone`');
+            const membersMap = new Map();
+            for (const row of memberRows) {
+                const gid = toTrimmedString(row.GroupId);
+                const phone = toTrimmedString(row.Phone);
+                if (!gid || !phone)
+                    continue;
+                if (!membersMap.has(gid))
+                    membersMap.set(gid, []);
+                membersMap.get(gid).push(phone);
+            }
+            const adminsMap = new Map();
+            for (const row of adminRows) {
+                const gid = toTrimmedString(row.GroupId);
+                const phone = toTrimmedString(row.Phone);
+                if (!gid || !phone)
+                    continue;
+                if (!adminsMap.has(gid))
+                    adminsMap.set(gid, []);
+                adminsMap.get(gid).push(phone);
+            }
+            return groupRows.map((row) => {
+                const groupId = toTrimmedString(row.GroupId);
+                return {
+                    groupId,
+                    groupName: toTrimmedString(row.GroupName),
+                    members: membersMap.get(groupId) ?? [],
+                    admins: adminsMap.get(groupId) ?? [],
+                    createdBy: toTrimmedString(row.CreatedBy) || null,
+                    type: toTrimmedString(row.Type) || 'group',
+                    createdAt: Number(row.CreatedAt) || 0,
+                    updatedAt: Number(row.UpdatedAt) || 0
+                };
+            }).filter((g) => g.groupId && g.groupName);
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.error('[MYSQL] loadAllChatGroups error:', message);
+            return [];
+        }
+    }
+    async upsertChatGroup(group) {
+        await this.ensureChatGroupsTables();
+        const conn = await this.pool.getConnection();
+        try {
+            await conn.beginTransaction();
+            await conn.execute(`INSERT INTO \`ChatGroups\` (\`GroupId\`, \`GroupName\`, \`CreatedBy\`, \`Type\`, \`CreatedAt\`, \`UpdatedAt\`)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           \`GroupName\` = VALUES(\`GroupName\`),
+           \`CreatedBy\` = COALESCE(VALUES(\`CreatedBy\`), \`CreatedBy\`),
+           \`Type\` = VALUES(\`Type\`),
+           \`UpdatedAt\` = VALUES(\`UpdatedAt\`)`, [
+                group.groupId,
+                group.groupName,
+                group.createdBy || null,
+                group.type || 'group',
+                group.createdAt || Date.now(),
+                group.updatedAt || Date.now()
+            ]);
+            // Replace members
+            await conn.execute('DELETE FROM `ChatGroupMembers` WHERE `GroupId` = ?', [group.groupId]);
+            const validMembers = group.members.filter(Boolean);
+            if (validMembers.length > 0) {
+                const placeholders = validMembers.map(() => '(?, ?)').join(', ');
+                const params = validMembers.flatMap((phone) => [group.groupId, phone]);
+                await conn.execute(`INSERT IGNORE INTO \`ChatGroupMembers\` (\`GroupId\`, \`Phone\`) VALUES ${placeholders}`, params);
+            }
+            // Replace admins
+            await conn.execute('DELETE FROM `ChatGroupAdmins` WHERE `GroupId` = ?', [group.groupId]);
+            const validAdmins = group.admins.filter(Boolean);
+            if (validAdmins.length > 0) {
+                const placeholders = validAdmins.map(() => '(?, ?)').join(', ');
+                const params = validAdmins.flatMap((phone) => [group.groupId, phone]);
+                await conn.execute(`INSERT IGNORE INTO \`ChatGroupAdmins\` (\`GroupId\`, \`Phone\`) VALUES ${placeholders}`, params);
+            }
+            await conn.commit();
+            return true;
+        }
+        catch (err) {
+            await conn.rollback().catch(() => undefined);
+            const message = String(err.message || '');
+            console.warn(`[MYSQL] upsertChatGroup(${group.groupId}) warning:`, message);
+            return false;
+        }
+        finally {
+            conn.release();
+        }
+    }
+    async seedChatGroupsFromRuntime(groups) {
+        await this.ensureChatGroupsTables();
+        let seeded = 0;
+        try {
+            const [existingRows] = await this.pool.execute('SELECT `GroupId` FROM `ChatGroups`');
+            if (existingRows.length > 0) {
+                // DB already has groups – skip seeding
+                return 0;
+            }
+            for (const group of groups) {
+                if (!group.groupId || !group.groupName)
+                    continue;
+                const ok = await this.upsertChatGroup(group);
+                if (ok)
+                    seeded++;
+            }
+            if (seeded > 0) {
+                console.log(`[MYSQL] Seeded ${seeded} chat group(s) from runtime into DB.`);
+            }
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.warn('[MYSQL] seedChatGroupsFromRuntime warning:', message);
+        }
+        return seeded;
     }
 }
 exports.MysqlLogsService = MysqlLogsService;

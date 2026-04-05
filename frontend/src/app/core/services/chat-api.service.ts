@@ -2,6 +2,7 @@ import { Injectable, Signal, resource, ResourceRef } from '@angular/core';
 import { getNotifyBaseUrl, runtimeConfig } from '../config/runtime-config';
 import {
   ChatGroup,
+  CommunityGroupConfig,
   Contact,
   DeleteMessagePayload,
   EditMessagePayload,
@@ -589,6 +590,69 @@ export class ChatApiService {
     });
   }
 
+  async getCommunityGroupConfigs(): Promise<CommunityGroupConfig[]> {
+    try {
+      const response = await this.fetchWithRetry(
+        this.config.communityGroupConfigsUrl,
+        {},
+        { retries: 1, timeoutMs: 10000 }
+      );
+      if (!response.ok) return [];
+      const body = (await response.json()) as { configs?: Array<{
+        id?: string;
+        name?: string;
+        staticMembers?: string[];
+        allowedWriters?: string[];
+      }> };
+      return (body.configs ?? [])
+        .map((cfg) => ({
+          id: String(cfg.id ?? '').trim(),
+          name: String(cfg.name ?? '').trim(),
+          staticMembers: Array.isArray(cfg.staticMembers) && cfg.staticMembers.length > 0
+            ? cfg.staticMembers.map((m) => String(m).trim()).filter(Boolean)
+            : undefined,
+          allowedWriters: (cfg.allowedWriters ?? []).map((w) => String(w).trim()).filter(Boolean)
+        }))
+        .filter((cfg) => Boolean(cfg.id && cfg.name));
+    } catch {
+      return [];
+    }
+  }
+
+  async getUserChatGroups(): Promise<ChatGroup[]> {
+    try {
+      const response = await this.fetchWithRetry(
+        this.config.userChatGroupsUrl,
+        {},
+        { retries: 1, timeoutMs: 10000 }
+      );
+      if (!response.ok) return [];
+      const body = (await response.json()) as { groups?: Array<{
+        id?: string;
+        name?: string;
+        members?: string[];
+        admins?: string[];
+        createdBy?: string;
+        type?: string;
+        createdAt?: number;
+        updatedAt?: number;
+      }> };
+      return (body.groups ?? [])
+        .map((g) => ({
+          id: String(g.id ?? '').trim(),
+          name: String(g.name ?? '').trim(),
+          members: Array.isArray(g.members) ? g.members.map((m) => String(m).trim()).filter(Boolean) : [],
+          admins: Array.isArray(g.admins) ? g.admins.map((a) => String(a).trim()).filter(Boolean) : [],
+          createdBy: String(g.createdBy ?? '').trim(),
+          type: (g.type === 'community' ? 'community' : 'group') as ChatGroup['type'],
+          updatedAt: Number(g.updatedAt) || 0
+        }))
+        .filter((g) => Boolean(g.id && g.name));
+    } catch {
+      return [];
+    }
+  }
+
   async pollMessages(user?: string): Promise<IncomingServerMessage[]> {
     const normalizedUser = String(user || '').trim().toLowerCase();
     const candidateUrls = normalizedUser
@@ -865,6 +929,69 @@ export class ChatApiService {
 
     return {
       clearedKeys: Number.isFinite(Number(body?.clearedKeys)) ? Math.max(0, Math.floor(Number(body?.clearedKeys))) : 0
+    };
+  }
+
+  async broadcastVersionUpdate(user?: string): Promise<{ notifiedUsers: number }> {
+    const normalized = String(user || '').trim().toLowerCase();
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/broadcast-version-update`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user: normalized || undefined
+        })
+      },
+      { retries: 1, timeoutMs: 30000 }
+    );
+
+    const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!response.ok || String(body?.['status'] || '').trim().toLowerCase() !== 'success') {
+      throw new Error(String(body?.['message'] || '').trim() || `Broadcast version update failed with ${response.status}`);
+    }
+
+    return {
+      notifiedUsers: Number.isFinite(Number(body?.['notifiedUsers'])) ? Math.max(0, Math.floor(Number(body?.['notifiedUsers']))) : 0
+    };
+  }
+
+  async markMessagesSeen(user: string, chatId: string): Promise<{ marked: number }> {
+    const normalized = String(user || '').trim().toLowerCase();
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/mark-seen`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user: normalized || undefined,
+          chatId: String(chatId || '').trim().toLowerCase()
+        })
+      },
+      { retries: 1, timeoutMs: 8000 }
+    );
+    const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+    return { marked: Number(body?.['marked']) || 0 };
+  }
+
+  async backupAllGroupsToDb(user: string): Promise<{ backedUp: number; total: number }> {
+    const normalized = String(user || '').trim().toLowerCase();
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/backup-all-groups-to-db`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: normalized || undefined })
+      },
+      { retries: 1, timeoutMs: 30000 }
+    );
+    const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!response.ok || String(body?.['status'] || '').trim().toLowerCase() !== 'success') {
+      throw new Error(String(body?.['message'] || '').trim() || `Backup groups failed with ${response.status}`);
+    }
+    return {
+      backedUp: Number(body?.['backedUp']) || 0,
+      total: Number(body?.['total']) || 0
     };
   }
 

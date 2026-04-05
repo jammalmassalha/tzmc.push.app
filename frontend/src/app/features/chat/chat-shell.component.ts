@@ -297,6 +297,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   @ViewChild(CdkVirtualScrollViewport) contactsViewport?: CdkVirtualScrollViewport;
   @ViewChild('messagesPanel') messagesPanel?: ElementRef<HTMLDivElement>;
   @ViewChild('fileInput') fileInputRef?: ElementRef<HTMLInputElement>;
+  @ViewChild('pdfInput') pdfInputRef?: ElementRef<HTMLInputElement>;
   @ViewChild('composerTextarea') composerTextareaRef?: ElementRef<HTMLTextAreaElement>;
   private readonly avatarThumbCache = new Map<string, string>();
   private readonly avatarLqipCache = new Map<string, string>();
@@ -992,6 +993,16 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     }
   }
 
+  async broadcastVersionUpdate(): Promise<void> {
+    try {
+      const notifiedUsers = await this.store.broadcastVersionUpdate();
+      this.snackBar.open(`הודעת עדכון גרסה נשלחה ל-${notifiedUsers} משתמשים.`, 'סגור', { duration: 3500 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'שליחת עדכון גרסה נכשלה';
+      this.snackBar.open(message, 'סגור', { duration: 3200 });
+    }
+  }
+
   async sendMessage(): Promise<void> {
     this.store.cancelTypingForActiveChat();
     if (this.isComposerHidden() && !this.editingMessageTarget()) {
@@ -1402,6 +1413,11 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     return this.store.helpdeskStatusLabel(status);
   }
 
+  resolveHelpdeskDisplayName(username: string | null | undefined): string {
+    if (!username) return '—';
+    return this.store.resolveHelpdeskUsername(username) || username;
+  }
+
   openHelpdeskTicketDetail(ticket: HelpdeskTicket): void {
     const currentUsername = this.store.currentUser() ?? '';
     const dashboard = this.helpdeskDashboard();
@@ -1413,7 +1429,13 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
         currentUsername,
         myRole,
         handlers,
-        statusLabel: (status: string) => this.store.helpdeskStatusLabel(status)
+        statusLabel: (status: string) => this.store.helpdeskStatusLabel(status),
+        resolveUsername: (username: string) => this.store.resolveHelpdeskUsername(username),
+        resolveContact: (username: string) => this.store.resolveHelpdeskContact(username),
+        assignHandler: (ticketId: number, handlerUsername: string | null) =>
+          this.store.assignHelpdeskHandler(ticketId, handlerUsername),
+        updateStatus: (ticketId: number, status: string) =>
+          this.store.updateHelpdeskTicketStatus(ticketId, status)
       },
       width: '520px',
       maxWidth: '96vw',
@@ -1421,7 +1443,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       direction: 'rtl'
     });
     dialogRef.afterClosed().subscribe((result) => {
-      if (result && result.handlerChanged) {
+      if (result?.changed) {
         void this.store.refreshHelpdeskTickets();
       }
     });
@@ -1585,6 +1607,21 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       return;
     }
     this.fileInputRef?.nativeElement.click();
+  }
+
+  openPdfPicker(): void {
+    if (this.isComposerHidden()) {
+      const message = this.isShuttleOperationsRoomActive()
+        ? 'בחדר זה לא ניתן לשלוח הודעות.'
+        : 'בחדר זה בוחרים אפשרויות דרך הכפתורים בלבד.';
+      this.snackBar.open(message, this.shuttleCloseActionLabel(), { duration: 2600 });
+      return;
+    }
+    if (!this.store.activeChat() || !this.store.canSendToActiveChat()) {
+      this.snackBar.open('לא ניתן לצרף קובץ בצ׳אט זה.', 'סגור', { duration: 2500 });
+      return;
+    }
+    this.pdfInputRef?.nativeElement.click();
   }
 
   async shareLocation(): Promise<void> {

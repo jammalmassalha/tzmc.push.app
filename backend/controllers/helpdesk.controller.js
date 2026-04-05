@@ -415,15 +415,15 @@ function registerHelpdeskController(app, deps = {}) {
 
         try {
             const [ticketRows] = await pool.query(
-                'SELECT `id`, `creator_username`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
+                'SELECT `id`, `creator_username`, `handler_username`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
                 [ticketId]
             );
             if (!ticketRows.length) {
                 return res.status(404).json({ result: 'error', message: 'קריאה לא נמצאה' });
             }
             const ticket = ticketRows[0];
-            // Allow creator or Editor of the same department to change status
-            let isAuthorized = ticket.creator_username === user;
+            // Allow creator, assigned handler, or Editor of the same department to change status
+            let isAuthorized = ticket.creator_username === user || ticket.handler_username === user;
             if (!isAuthorized) {
                 const editorRole = await getHelpdeskUserRole(pool, user);
                 isAuthorized = Boolean(editorRole && editorRole.department === ticket.department);
