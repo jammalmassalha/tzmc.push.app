@@ -193,6 +193,7 @@ class MysqlLogsService {
     imageUrlColumnReady = false;
     fileUrlColumnReady = false;
     seenTimeColumnReady = false;
+    msgIdIndexReady = false;
     communityGroupsTablesReady = false;
     chatGroupsTablesReady = false;
     constructor(config) {
@@ -259,6 +260,22 @@ class MysqlLogsService {
         }
         this.seenTimeColumnReady = true;
     }
+    async ensureMsgIdIndex() {
+        if (this.msgIdIndexReady)
+            return;
+        try {
+            await this.pool.execute(`CREATE INDEX \`idx_msgid_touser\` ON \`${this.tableName}\` (\`MsgID\`(100), \`ToUser\`(50))`);
+        }
+        catch (err) {
+            const code = err.code;
+            const message = String(err.message || '');
+            // ER_DUP_KEYNAME = index already exists — expected on subsequent restarts.
+            if (code !== 'ER_DUP_KEYNAME' && !message.includes('Duplicate key name')) {
+                console.warn('[MYSQL] ensureMsgIdIndex warning:', message);
+            }
+        }
+        this.msgIdIndexReady = true;
+    }
     buildCompositeKeyFromPayload(payload) {
         return [
             normalizeDateTimeKey(payload.dateTime),
@@ -295,6 +312,7 @@ class MysqlLogsService {
      * Returns true if a new row was inserted, false if it was a duplicate.
      */
     async insertLogIfNotDuplicate(payload) {
+        await this.ensureMsgIdIndex();
         const sender = toTrimmedString(payload.sender) || 'System';
         const recipient = toTrimmedString(payload.recipient);
         const message = toTrimmedString(payload.message);
@@ -327,6 +345,7 @@ class MysqlLogsService {
      * Check if a log entry with the given MsgID and recipient already exists.
      */
     async hasLogWithMsgId(msgId, recipient) {
+        await this.ensureMsgIdIndex();
         const normalizedMsgId = toTrimmedString(msgId);
         const normalizedRecipient = toTrimmedString(recipient);
         if (!normalizedMsgId)

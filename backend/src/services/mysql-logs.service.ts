@@ -262,6 +262,7 @@ export class MysqlLogsService {
   private imageUrlColumnReady = false;
   private fileUrlColumnReady = false;
   private seenTimeColumnReady = false;
+  private msgIdIndexReady = false;
   private communityGroupsTablesReady = false;
   private chatGroupsTablesReady = false;
 
@@ -333,6 +334,23 @@ export class MysqlLogsService {
     this.seenTimeColumnReady = true;
   }
 
+  private async ensureMsgIdIndex(): Promise<void> {
+    if (this.msgIdIndexReady) return;
+    try {
+      await this.pool.execute(
+        `CREATE INDEX \`idx_msgid_touser\` ON \`${this.tableName}\` (\`MsgID\`(100), \`ToUser\`(50))`
+      );
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code;
+      const message = String((err as { message?: string }).message || '');
+      // ER_DUP_KEYNAME = index already exists — expected on subsequent restarts.
+      if (code !== 'ER_DUP_KEYNAME' && !message.includes('Duplicate key name')) {
+        console.warn('[MYSQL] ensureMsgIdIndex warning:', message);
+      }
+    }
+    this.msgIdIndexReady = true;
+  }
+
   private buildCompositeKeyFromPayload(payload: MysqlLogInsertPayload): string {
     return [
       normalizeDateTimeKey(payload.dateTime),
@@ -378,6 +396,7 @@ export class MysqlLogsService {
    * Returns true if a new row was inserted, false if it was a duplicate.
    */
   async insertLogIfNotDuplicate(payload: MysqlLogInsertPayload): Promise<boolean> {
+    await this.ensureMsgIdIndex();
     const sender = toTrimmedString(payload.sender) || 'System';
     const recipient = toTrimmedString(payload.recipient);
     const message = toTrimmedString(payload.message);
@@ -413,6 +432,7 @@ export class MysqlLogsService {
    * Check if a log entry with the given MsgID and recipient already exists.
    */
   async hasLogWithMsgId(msgId: string, recipient: string): Promise<boolean> {
+    await this.ensureMsgIdIndex();
     const normalizedMsgId = toTrimmedString(msgId);
     const normalizedRecipient = toTrimmedString(recipient);
     if (!normalizedMsgId) return false;

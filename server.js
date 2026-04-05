@@ -7336,12 +7336,10 @@ async function checkOutgoingQueue() {
                 //    This survives server restarts (unlike the in-memory map).
                 let alreadyInDb = false;
                 try {
-                    for (const user of targetUsers) {
-                        if (await mysqlLogsService.hasLogWithMsgId(messageId, user)) {
-                            alreadyInDb = true;
-                            break;
-                        }
-                    }
+                    const dbChecks = await Promise.all(
+                        targetUsers.map((user) => mysqlLogsService.hasLogWithMsgId(messageId, user).catch(() => false))
+                    );
+                    alreadyInDb = dbChecks.some(Boolean);
                 } catch (_dbErr) {
                     // On DB error, proceed with in-memory dedup only.
                 }
