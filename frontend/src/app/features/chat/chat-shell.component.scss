@@ -394,6 +394,71 @@ mat-chip:not(.offline) {
   text-align: center;
 }
 
+.sync-loader-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(11, 20, 26, 0.46);
+  backdrop-filter: blur(2px);
+}
+
+.sync-loader-card {
+  width: min(90vw, 320px);
+  min-height: 200px;
+  border-radius: 16px;
+  padding: 22px 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: #fff;
+  color: #1f273d;
+  box-shadow: 0 14px 34px rgba(8, 18, 44, 0.22);
+}
+
+.sync-loader-card mat-spinner {
+  --mdc-circular-progress-active-indicator-color: #2f56b7;
+}
+
+.sync-loader-title {
+  font-size: 16px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.sync-loader-progress {
+  font-size: 22px;
+  font-weight: 800;
+  color: #2f56b7;
+  text-align: center;
+  letter-spacing: 0.5px;
+}
+
+.sync-loader-bar-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 4px;
+  background: #e0e4ec;
+  overflow: hidden;
+}
+
+.sync-loader-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #2f56b7, #4a90d9);
+  transition: width 0.35s ease;
+}
+
+.sync-loader-subtitle {
+  font-size: 13px;
+  color: #5f6982;
+  text-align: center;
+}
+
 .avatar-preview-backdrop {
   position: fixed;
   inset: 0;

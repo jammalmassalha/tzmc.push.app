@@ -309,6 +309,8 @@ export class ChatStoreService {
   readonly unreadByChat = signal<Record<string, number>>({});
   readonly loading = signal(false);
   readonly syncing = signal(false);
+  readonly syncProgressPercent = signal(0);
+  readonly syncProgressLabel = signal('');
   readonly uploading = signal(false);
   readonly pendingAttachment = signal<{ url: string; type: 'image' | 'file'; name: string; thumbUrl?: string | null } | null>(null);
   readonly networkOnline = signal(typeof navigator !== 'undefined' ? navigator.onLine : true);
@@ -1760,50 +1762,83 @@ export class ChatStoreService {
       throw new Error('אין חיבור לרשת');
     }
 
-    // Try sending pending outgoing items before full wipe.
-    await this.flushOutbox();
-
-    const groupsSnapshotBeforeCacheClear = this.groups().map((group) => ({
-      ...group,
-      members: Array.isArray(group.members) ? [...group.members] : []
-    }));
-
-    // Clear ALL local data – localStorage keys for this user.
-    this.clearLocalChatCacheForUser(user, { keepOutbox: false });
-    this.resetRuntimeStateAfterCacheClear(user);
+    this.syncing.set(true);
+    this.syncProgressPercent.set(0);
+    this.syncProgressLabel.set('שולח הודעות ממתינות...');
 
     try {
-      if ('caches' in window) {
-        const keys = await caches.keys();
-        await Promise.all(keys.map((key) => caches.delete(key)));
+      // Try sending pending outgoing items before full wipe.
+      await this.flushOutbox();
+      this.syncProgressPercent.set(10);
+      this.syncProgressLabel.set('מנקה מטמון מקומי...');
+
+      const groupsSnapshotBeforeCacheClear = this.groups().map((group) => ({
+        ...group,
+        members: Array.isArray(group.members) ? [...group.members] : []
+      }));
+
+      // Clear ALL local data – localStorage keys for this user.
+      this.clearLocalChatCacheForUser(user, { keepOutbox: false });
+      this.resetRuntimeStateAfterCacheClear(user);
+
+      try {
+        if ('caches' in window) {
+          const keys = await caches.keys();
+          await Promise.all(keys.map((key) => caches.delete(key)));
+        }
+      } catch { /* best-effort */ }
+      this.syncProgressPercent.set(20);
+      this.syncProgressLabel.set('טוען הגדרות קבוצות...');
+
+      // Reload fresh data from server DB.
+      await this.loadCommunityGroupConfigs();
+      this.syncProgressPercent.set(30);
+      this.syncProgressLabel.set('טוען קבוצות משתמש...');
+
+      await this.loadUserChatGroupsFromDb();
+      this.syncProgressPercent.set(40);
+      this.syncProgressLabel.set('מרענן נתונים...');
+
+      await this.refresh(true);
+      this.syncProgressPercent.set(50);
+      this.syncProgressLabel.set('מושך הודעות...');
+
+      await this.pullMessages(user);
+      this.syncProgressPercent.set(65);
+      this.syncProgressLabel.set('משחזר הודעות מהשרת...');
+
+      await this.recoverMissedMessagesFromLogs(user, {
+        force: true,
+        incrementUnread: false,
+        fallbackGroups: groupsSnapshotBeforeCacheClear,
+        limit: LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT
+      });
+      this.syncProgressPercent.set(80);
+      this.syncProgressLabel.set('מעדכן הגדרות נוספות...');
+
+      this.unreadByChat.set({});
+      this.resetReadReceiptTrackingState();
+
+      await this.refreshShuttleAccessForCurrentUser(user, { force: true });
+      if (this.shuttleAccessAllowed()) {
+        await this.refreshShuttleOrdersFromRemote(user, { force: true, throwOnError: true });
       }
-    } catch { /* best-effort */ }
+      this.syncProgressPercent.set(90);
 
-    // Reload fresh data from server DB.
-    await this.loadCommunityGroupConfigs();
-    await this.loadUserChatGroupsFromDb();
+      await this.refreshShuttleOperationsOrders({ force: true });
+      this.syncProgressPercent.set(95);
+      this.syncProgressLabel.set('מסיים...');
 
-    await this.refresh(true);
-    await this.pullMessages(user);
-    await this.recoverMissedMessagesFromLogs(user, {
-      force: true,
-      incrementUnread: false,
-      fallbackGroups: groupsSnapshotBeforeCacheClear,
-      limit: LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT
-    });
-    this.unreadByChat.set({});
-    this.resetReadReceiptTrackingState();
-
-    await this.refreshShuttleAccessForCurrentUser(user, { force: true });
-    if (this.shuttleAccessAllowed()) {
-      await this.refreshShuttleOrdersFromRemote(user, { force: true, throwOnError: true });
+      this.applyInitialChatSelection(user);
+      this.schedulePersist();
+      this.lastServerBadgeResetAt = 0;
+      this.clearDeviceAttention({ resetServerBadge: true, forceServerBadgeReset: true });
+      this.syncProgressPercent.set(100);
+    } finally {
+      this.syncing.set(false);
+      this.syncProgressPercent.set(0);
+      this.syncProgressLabel.set('');
     }
-    await this.refreshShuttleOperationsOrders({ force: true });
-
-    this.applyInitialChatSelection(user);
-    this.schedulePersist();
-    this.lastServerBadgeResetAt = 0;
-    this.clearDeviceAttention({ resetServerBadge: true, forceServerBadgeReset: true });
   }
 
   private shouldSkipLogsMessage(message: IncomingServerMessage): boolean {

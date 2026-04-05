@@ -1368,6 +1368,20 @@
     </div>
   }
 
+  @if (store.syncing()) {
+    <div class="sync-loader-backdrop" role="status" aria-live="polite" aria-busy="true">
+      <div class="sync-loader-card">
+        <mat-spinner diameter="54"></mat-spinner>
+        <div class="sync-loader-title">מסנכרן הודעות...</div>
+        <div class="sync-loader-progress">{{ store.syncProgressPercent() }}%</div>
+        <div class="sync-loader-bar-track">
+          <div class="sync-loader-bar-fill" [style.width.%]="store.syncProgressPercent()"></div>
+        </div>
+        <div class="sync-loader-subtitle">{{ store.syncProgressLabel() }}</div>
+      </div>
+    </div>
+  }
+
   @if (avatarPreview(); as avatar) {
     <div class="avatar-preview-backdrop" (click)="closeChatAvatar()">
       <div class="avatar-preview-dialog" (click)="$event.stopPropagation()">
