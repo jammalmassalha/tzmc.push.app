@@ -263,6 +263,13 @@ class MysqlLogsService {
     async ensureDedupIndex() {
         if (this.dedupIndexReady)
             return;
+        // Drop obsolete MsgID-based index from v1.57 if it exists.
+        try {
+            await this.pool.execute(`DROP INDEX \`idx_msgid_touser\` ON \`${this.tableName}\``);
+        }
+        catch (_dropErr) {
+            // Index may not exist — ignore.
+        }
         try {
             await this.pool.execute(`CREATE INDEX \`idx_dedup_composite\` ON \`${this.tableName}\` (\`From\`(50), \`ToUser\`(50), \`DateTime\`)`);
         }
