@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.54'; // Add sync progress loader with percentage for message sync
+const SERVER_VERSION = '1.55'; // Fix: update SeenTime in DB when user reads messages via /read endpoint
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',
@@ -7195,6 +7195,11 @@ app.post(
             readAt: effectiveReadAt,
             sender: normalizedReader,
             timestamp: Date.now()
+        });
+
+        // Persist SeenTime in the database so it reflects that this reader read the chat.
+        mysqlLogsService.markMessagesSeen(normalizedReader, normalizedSender).catch((err) => {
+            console.warn('[READ RECEIPT] Failed to update SeenTime in DB:', err && err.message ? err.message : err);
         });
 
         const result = await sendPushNotificationToUser(normalizedSender, payload, normalizedReader, { skipBadge: true });
