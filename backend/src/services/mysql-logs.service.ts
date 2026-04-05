@@ -29,6 +29,8 @@ export interface MysqlLogsReadOptions {
   offset?: number;
   hardcodedGroupIds?: string[];
   hardcodedGroupMembers?: Record<string, string[]>;
+  /** Dynamic (non-hardcoded) group IDs the user belongs to, e.g. group:grp_xxx */
+  dynamicGroupIds?: string[];
   since?: number;
 }
 
@@ -84,6 +86,9 @@ function toPositiveInteger(value: unknown, fallbackValue: number): number {
 function normalizePhone(value: unknown): string {
   let text = toTrimmedString(value);
   if (!text) return '';
+  // Group identifiers (e.g. "group:grp_xxx") must never be treated as phone numbers.
+  // They contain hex digits that would be extracted into a meaningless number string.
+  if (text.includes(':') || text.startsWith('group')) return '';
   // Strip non-digit characters (dashes, spaces, parentheses, etc.) for consistent matching
   text = text.replace(/\D/g, '');
   if (!text) return '';
@@ -508,6 +513,14 @@ export class MysqlLogsService {
       }
     }
 
+    // Dynamic (non-hardcoded) groups the requesting user belongs to.
+    // Messages whose sender or toUser matches a dynamic group ID are allowed through.
+    const dynamicGroupKeySet = new Set(
+      Array.isArray(options.dynamicGroupIds)
+        ? options.dynamicGroupIds.map((value) => normalizeGroupKey(value)).filter(Boolean)
+        : []
+    );
+
     const requiredMatches = offset + limit;
     const maxRawRowsToScan = Math.max(50000, Math.min(requiredMatches * 220, 5000000));
     let rawOffset = 0;
@@ -561,10 +574,13 @@ export class MysqlLogsService {
 
         // --- Preservation of your existing Sender/Recipient logic ---
         const senderRaw = toTrimmedString(row.fromUser);
+        const senderLower = senderRaw.toLowerCase();
         const sender = normalizePhone(senderRaw) || senderRaw;
         const senderPhone = normalizePhone(sender);
         const isOutgoingFromRequestedUser = Boolean(senderPhone && senderPhone === requestedUser);
         const isHardcodedGlobalGroupSender = hardcodedGroupKeySet.has(normalizeGroupKey(senderRaw));
+        // Dynamic group: sender or toUser is a "group:xxx" identifier
+        const isDynamicGroupSender = senderLower.startsWith('group:');
 
         const rawToUser = toTrimmedString(row.toUser);
         const recipients = new Set<string>([
@@ -575,6 +591,7 @@ export class MysqlLogsService {
         const toUserNormalizedPhone = normalizePhone(rawToUser);
         const resolvedToUser = toUserNormalizedPhone || rawToUser;
         const toUserLower = rawToUser.toLowerCase();
+        const isDynamicGroupToUser = toUserLower.startsWith('group:');
 
         const isGroupTargetRow = Boolean(
           rawToUser &&
@@ -594,6 +611,10 @@ export class MysqlLogsService {
             if (restrictedMembers && !restrictedMembers.has(requestedUser)) {
               continue;
             }
+          } else if (isDynamicGroupSender && dynamicGroupKeySet.has(senderLower)) {
+            // Sender is a dynamic group (e.g. "group:grp_xxx") the user belongs to — allow.
+          } else if (isDynamicGroupToUser && dynamicGroupKeySet.has(toUserLower)) {
+            // ToUser is a dynamic group the user belongs to — allow.
           } else if (isGroupTargetRow) {
             // ToUser is a group name (non-phone).
             const toGroupKey = normalizeGroupKey(rawToUser);
@@ -681,7 +702,9 @@ export class MysqlLogsService {
           details,
           type: resolvedActionType || undefined,
           deletedAt: resolvedActionType === 'delete-action' ? deletedAt : undefined,
-          groupId: toTrimmedString(detailsMap.groupId || detailsMap.group_id) || undefined,
+          groupId: toTrimmedString(detailsMap.groupId || detailsMap.group_id)
+            || (isDynamicGroupSender ? senderRaw : undefined)
+            || (isDynamicGroupToUser ? rawToUser : undefined),
           messageIds: toTrimmedString(detailsMap.messageIds || detailsMap.message_ids) || undefined,
           targetMessageId: toTrimmedString(detailsMap.targetMessageId || detailsMap.target_message_id || detailsMap.messageId || detailsMap.message_id) || undefined,
           emoji: toTrimmedString(detailsMap.emoji || detailsMap.reaction) || undefined,

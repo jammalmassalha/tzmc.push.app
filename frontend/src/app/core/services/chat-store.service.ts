@@ -48,7 +48,7 @@ const SOCKET_ACK_TIMEOUT_MS = 6000;
 const SOCKET_MAX_FAILURES_BEFORE_COOLDOWN = 3;
 const SOCKET_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
 const MAX_PERSISTED_MESSAGES = 2500;
-const GROUPS_DB_MIGRATION_KEY = 'tzmc-groups-db-migrated-v3';
+const GROUPS_DB_MIGRATION_KEY = 'tzmc-groups-db-migrated-v4';
 const PUSH_REGISTER_MIN_INTERVAL_MS = 30000;
 const PUSH_REGISTER_REFRESH_MS = 6 * 60 * 60 * 1000;
 const FOREGROUND_SYNC_MIN_INTERVAL_MS = 4000;
@@ -488,8 +488,18 @@ export class ChatStoreService {
         continue;
       }
 
+      // Skip ghost group chats: chat IDs that look like group identifiers
+      // (e.g. "group:grp_xxx") but have no corresponding group entry in the store.
+      if (!group && chatId.startsWith('group:')) {
+        continue;
+      }
+
       const rawGroupName = group?.name ?? '';
-      const title = rawGroupName || contact?.displayName || (isShuttle ? SHUTTLE_CHAT_TITLE : chatId);
+      // If the group exists but its display name is the raw group ID, show a fallback label
+      const groupNameLooksLikeId = rawGroupName && this.normalizeChatId(rawGroupName) === chatId;
+      const title = (rawGroupName && !groupNameLooksLikeId)
+        ? rawGroupName
+        : (contact?.displayName || (isShuttle ? SHUTTLE_CHAT_TITLE : (group ? 'קבוצה' : chatId)));
       const subtitle = lastMessage ? this.getMessagePreview(lastMessage) : (group ? 'אין הודעות בקבוצה' : '');
       const lastTimestamp = lastMessage?.timestamp ?? 0;
       const unread = unreadMap[chatId] ?? 0;

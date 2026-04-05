@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.46'; // Groups from MySQL, ghost-group fix
+const SERVER_VERSION = '1.47'; // Fix group:grp_xxx shown as number, dynamic group security
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',

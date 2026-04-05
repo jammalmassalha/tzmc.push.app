@@ -513,6 +513,9 @@ function registerMessageController(app, deps = {}) {
             } catch (_dbError) { }
 
             try {
+                // Build dynamic group IDs (group:xxx style) from the DB/runtime groups the user belongs to.
+                const dynamicGroupIds = Array.from(knownGroupIds).filter(gid => gid.startsWith('group:'));
+
                 // CALLING OPTIMIZED SERVICE
                 const rawMessages = typeof getLogsMessagesForUser === 'function'
                     ? await getLogsMessagesForUser(user, {
@@ -521,7 +524,8 @@ function registerMessageController(app, deps = {}) {
                         since, // Optimization passed here
                         excludeSystem: true,
                         hardcodedGroupIds: Array.from(hardcodedGroupKeySet),
-                        hardcodedGroupMembers: resolveHardcodedGroupMembers()
+                        hardcodedGroupMembers: resolveHardcodedGroupMembers(),
+                        dynamicGroupIds
                     })
                     : [];
 
