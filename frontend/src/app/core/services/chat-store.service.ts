@@ -1761,7 +1761,7 @@ export class ChatStoreService {
       members: Array.isArray(group.members) ? [...group.members] : []
     }));
 
-    // Clear ALL local data – localStorage, Service Worker caches, and IndexedDB.
+    // Clear ALL local data – localStorage keys for this user.
     this.clearLocalChatCacheForUser(user, { keepOutbox: false });
     this.resetRuntimeStateAfterCacheClear(user);
 
