@@ -407,6 +407,7 @@ export class ChatStoreService {
   private readonly pendingReadReceiptByChat = new Map<string, Set<string>>();
   private readonly readReceiptFlushTimerByChat = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly readReceiptFlushInFlightByChat = new Set<string>();
+  private readonly markSeenTimerByChat = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly deletedMessageIdTombstones = new Map<string, number>();
   private deletedIncomingFingerprints: DeletedIncomingMessageFingerprint[] = [];
   private pushRegisterInFlight = false;
@@ -986,6 +987,10 @@ export class ChatStoreService {
     const isGroupChat = this.groups().some((group) => group.id === normalizedChatId);
     const isSystemChat = this.isSystemChat(normalizedChatId);
     if (isGroupChat || isSystemChat) {
+      // Groups/system chats don't send per-message read receipts, but we still
+      // need to persist SeenTime in the DB so the server knows the user read them.
+      // Debounce to avoid hammering the endpoint on every scroll event.
+      this.scheduleMarkChatSeen(normalizedChatId);
       return;
     }
 
@@ -1333,6 +1338,18 @@ export class ChatStoreService {
     } catch (err) {
       console.warn('[SEEN] Failed to mark chat as seen:', chatId, err);
     }
+  }
+
+  private scheduleMarkChatSeen(chatId: string): void {
+    const existing = this.markSeenTimerByChat.get(chatId);
+    if (existing) {
+      clearTimeout(existing);
+    }
+    const timer = setTimeout(() => {
+      this.markSeenTimerByChat.delete(chatId);
+      void this.markChatSeen(chatId);
+    }, 900);
+    this.markSeenTimerByChat.set(chatId, timer);
   }
 
   getHrComposerActionsForActiveChat(): {

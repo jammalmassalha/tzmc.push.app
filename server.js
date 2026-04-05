@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.55'; // Fix: update SeenTime in DB when user reads messages via /read endpoint
+const SERVER_VERSION = '1.56'; // Fix: update SeenTime in DB for group chats via /mark-seen
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',
