@@ -193,7 +193,7 @@ class MysqlLogsService {
     imageUrlColumnReady = false;
     fileUrlColumnReady = false;
     seenTimeColumnReady = false;
-    msgIdIndexReady = false;
+    dedupIndexReady = false;
     communityGroupsTablesReady = false;
     chatGroupsTablesReady = false;
     constructor(config) {
@@ -260,21 +260,21 @@ class MysqlLogsService {
         }
         this.seenTimeColumnReady = true;
     }
-    async ensureMsgIdIndex() {
-        if (this.msgIdIndexReady)
+    async ensureDedupIndex() {
+        if (this.dedupIndexReady)
             return;
         try {
-            await this.pool.execute(`CREATE INDEX \`idx_msgid_touser\` ON \`${this.tableName}\` (\`MsgID\`(100), \`ToUser\`(50))`);
+            await this.pool.execute(`CREATE INDEX \`idx_dedup_composite\` ON \`${this.tableName}\` (\`From\`(50), \`ToUser\`(50), \`DateTime\`)`);
         }
         catch (err) {
             const code = err.code;
             const message = String(err.message || '');
             // ER_DUP_KEYNAME = index already exists — expected on subsequent restarts.
             if (code !== 'ER_DUP_KEYNAME' && !message.includes('Duplicate key name')) {
-                console.warn('[MYSQL] ensureMsgIdIndex warning:', message);
+                console.warn('[MYSQL] ensureDedupIndex warning:', message);
             }
         }
-        this.msgIdIndexReady = true;
+        this.dedupIndexReady = true;
     }
     buildCompositeKeyFromPayload(payload) {
         return [
@@ -307,12 +307,13 @@ class MysqlLogsService {
         return true;
     }
     /**
-     * Insert a log entry only if no row with the same MsgID already exists.
-     * Used for queue-originated messages to prevent duplicate DB rows.
+     * Insert a log entry only if no row with the same [From, ToUser, Message Preview]
+     * already exists within a recent time window (default 5 minutes).
+     * Composite key: [From, To, DateTime(window), Content].
      * Returns true if a new row was inserted, false if it was a duplicate.
      */
-    async insertLogIfNotDuplicate(payload) {
-        await this.ensureMsgIdIndex();
+    async insertLogIfNotDuplicate(payload, windowMinutes = 5) {
+        await this.ensureDedupIndex();
         const sender = toTrimmedString(payload.sender) || 'System';
         const recipient = toTrimmedString(payload.recipient);
         const message = toTrimmedString(payload.message);
@@ -323,35 +324,45 @@ class MysqlLogsService {
         const dateTime = normalizeDateTimeForStorage(payload.dateTime);
         const imageUrl = toTrimmedString(payload.imageUrl);
         const fileUrl = toTrimmedString(payload.fileUrl);
-        if (!msgId) {
-            // No MsgID → fall back to normal insert (cannot deduplicate without an ID)
+        if (!recipient || !message) {
+            // Cannot deduplicate without recipient and content — fall back to normal insert
             await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null]);
             return true;
         }
+        const safeWindow = Math.max(1, Math.min(windowMinutes, 60));
         const sql = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`)
        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
        FROM DUAL
        WHERE NOT EXISTS (
-         SELECT 1 FROM \`${this.tableName}\` WHERE \`MsgID\` = ? AND \`ToUser\` = ? LIMIT 1
+         SELECT 1 FROM \`${this.tableName}\`
+         WHERE \`From\` = ? AND \`ToUser\` = ? AND \`Message Preview\` = ?
+           AND \`DateTime\` >= DATE_SUB(NOW(), INTERVAL ${safeWindow} MINUTE)
+         LIMIT 1
        )`;
         const [result] = await this.pool.execute(sql, [
             dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null,
-            msgId, recipient
+            sender, recipient, message
         ]);
         const affectedRows = result.affectedRows ?? 0;
         return affectedRows > 0;
     }
     /**
-     * Check if a log entry with the given MsgID and recipient already exists.
+     * Check if a log entry with the same [From, ToUser, Message Preview] already exists
+     * within a recent time window (default 5 minutes).
      */
-    async hasLogWithMsgId(msgId, recipient) {
-        await this.ensureMsgIdIndex();
-        const normalizedMsgId = toTrimmedString(msgId);
+    async hasRecentDuplicateLog(sender, recipient, message, windowMinutes = 5) {
+        await this.ensureDedupIndex();
+        const normalizedSender = toTrimmedString(sender) || 'System';
         const normalizedRecipient = toTrimmedString(recipient);
-        if (!normalizedMsgId)
+        const normalizedMessage = toTrimmedString(message);
+        if (!normalizedRecipient || !normalizedMessage)
             return false;
-        const sql = `SELECT 1 FROM \`${this.tableName}\` WHERE \`MsgID\` = ? AND \`ToUser\` = ? LIMIT 1`;
-        const [rows] = await this.pool.query(sql, [normalizedMsgId, normalizedRecipient]);
+        const safeWindow = Math.max(1, Math.min(windowMinutes, 60));
+        const sql = `SELECT 1 FROM \`${this.tableName}\`
+       WHERE \`From\` = ? AND \`ToUser\` = ? AND \`Message Preview\` = ?
+         AND \`DateTime\` >= DATE_SUB(NOW(), INTERVAL ${safeWindow} MINUTE)
+       LIMIT 1`;
+        const [rows] = await this.pool.query(sql, [normalizedSender, normalizedRecipient, normalizedMessage]);
         return Array.isArray(rows) && rows.length > 0;
     }
     async filterNewLogsByCompositeKey(payloads) {

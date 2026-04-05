@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.57'; // Fix: queue message dedup — DB-level insert guard, longer TTL, DB pre-check
+const SERVER_VERSION = '1.58'; // Fix: dedup uses composite key [From,To,DateTime,Content] instead of MsgID
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',
@@ -1209,7 +1209,7 @@ const RECENT_REPLY_MESSAGE_TTL_MS = Math.max(
 const recentProcessedReplyMessages = new Map();
 const RECENT_QUEUE_MESSAGE_TTL_MS = Math.max(
     30 * 1000,
-    Number(process.env.RECENT_QUEUE_MESSAGE_TTL_MS || 60 * 60 * 1000) || 60 * 60 * 1000
+    Number(process.env.RECENT_QUEUE_MESSAGE_TTL_MS || 3 * 60 * 1000) || 3 * 60 * 1000
 );
 const recentProcessedQueueMessages = new Map();
 let mobileReregisterCampaignState = {
@@ -7332,12 +7332,12 @@ async function checkOutgoingQueue() {
                     ? String(msg.messageId).trim()
                     : `queue-${hashStringToShortId(sourceAwareDedupKey || semanticDedupKey)}`;
 
-                // 0. DB-backed dedup: check if this messageId was already logged for any target user.
-                //    This survives server restarts (unlike the in-memory map).
+                // 0. DB-backed dedup: check if same From+To+Content was already logged recently.
+                //    Uses composite key [From, To, DateTime(window), Content] — survives server restarts.
                 let alreadyInDb = false;
                 try {
                     const dbChecks = await Promise.all(
-                        targetUsers.map((user) => mysqlLogsService.hasLogWithMsgId(messageId, user).catch(() => false))
+                        targetUsers.map((user) => mysqlLogsService.hasRecentDuplicateLog(senderName, user, bodyText, 5).catch(() => false))
                     );
                     alreadyInDb = dbChecks.some(Boolean);
                 } catch (_dbErr) {
