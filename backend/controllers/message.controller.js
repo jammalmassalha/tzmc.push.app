@@ -493,6 +493,7 @@ function registerMessageController(app, deps = {}) {
             } catch (_error) { }
 
             // Supplement group maps with MySQL DB groups (authoritative source)
+            const userDynamicGroupIds = [];
             try {
                 const dbGroups = typeof loadAllChatGroups === 'function'
                     ? await loadAllChatGroups()
@@ -509,13 +510,17 @@ function registerMessageController(app, deps = {}) {
                     const gtype = String(dbGroup.type || '').trim().toLowerCase();
                     if (gtype === 'community' || gtype === 'group') knownGroupTypeById.set(gid, gtype);
                     else if (hardcodedGroupKeySet.has(gid)) knownGroupTypeById.set(gid, 'community');
+                    // Track dynamic groups (group:xxx) the user actually belongs to
+                    if (gid.startsWith('group:')) {
+                        const normalizedMembers = (dbGroup.members || []).map(normalizeUserKey);
+                        if (!normalizedMembers.length || normalizedMembers.includes(user)) {
+                            userDynamicGroupIds.push(gid);
+                        }
+                    }
                 }
             } catch (_dbError) { }
 
             try {
-                // Build dynamic group IDs (group:xxx style) from the DB/runtime groups the user belongs to.
-                const dynamicGroupIds = Array.from(knownGroupIds).filter(gid => gid.startsWith('group:'));
-
                 // CALLING OPTIMIZED SERVICE
                 const rawMessages = typeof getLogsMessagesForUser === 'function'
                     ? await getLogsMessagesForUser(user, {
@@ -525,7 +530,7 @@ function registerMessageController(app, deps = {}) {
                         excludeSystem: true,
                         hardcodedGroupIds: Array.from(hardcodedGroupKeySet),
                         hardcodedGroupMembers: resolveHardcodedGroupMembers(),
-                        dynamicGroupIds
+                        dynamicGroupIds: userDynamicGroupIds
                     })
                     : [];
 

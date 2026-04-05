@@ -496,8 +496,7 @@ export class ChatStoreService {
 
       const rawGroupName = group?.name ?? '';
       // If the group exists but its display name is the raw group ID, show a fallback label
-      const groupNameLooksLikeId = rawGroupName && this.normalizeChatId(rawGroupName) === chatId;
-      const title = (rawGroupName && !groupNameLooksLikeId)
+      const title = (rawGroupName && !this.isGroupNameLikeId(rawGroupName, chatId))
         ? rawGroupName
         : (contact?.displayName || (isShuttle ? SHUTTLE_CHAT_TITLE : (group ? 'קבוצה' : chatId)));
       const subtitle = lastMessage ? this.getMessagePreview(lastMessage) : (group ? 'אין הודעות בקבוצה' : '');
@@ -2064,8 +2063,7 @@ export class ChatStoreService {
           // Only create a new group if it exists in the DB-loaded fallbackGroups
           // or has a real name (not just an ID). This prevents "ghost" groups
           // from appearing when a message references an unknown group ID.
-          const resolvedNameLooksLikeId = this.normalizeChatId(resolvedGroupName) === groupId;
-          if (!fallbackGroup && resolvedNameLooksLikeId) {
+          if (!fallbackGroup && this.isGroupNameLikeId(resolvedGroupName, groupId)) {
             continue;
           }
           changed = true;
@@ -2086,9 +2084,7 @@ export class ChatStoreService {
         }
 
         const existingName = String(existing.name || '').trim();
-        const existingNameLooksLikeId = this.normalizeChatId(existingName) === groupId;
-        const resolvedNameLooksLikeId = this.normalizeChatId(resolvedGroupName) === groupId;
-        if (existingNameLooksLikeId && !resolvedNameLooksLikeId) {
+        if (this.isGroupNameLikeId(existingName, groupId) && !this.isGroupNameLikeId(resolvedGroupName, groupId)) {
           changed = true;
           const updatedGroup: ChatGroup = {
             ...existing,
@@ -8053,6 +8049,11 @@ export class ChatStoreService {
 
   private normalizeChatId(value: string): string {
     return this.normalizeUser(value);
+  }
+
+  /** Returns true if the group display name is just the raw group ID (no real name). */
+  private isGroupNameLikeId(groupName: string, groupId: string): boolean {
+    return Boolean(groupName) && this.normalizeChatId(groupName) === this.normalizeChatId(groupId);
   }
 
   private isSystemChat(chatId: string): boolean {

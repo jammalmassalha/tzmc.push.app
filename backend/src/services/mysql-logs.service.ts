@@ -88,7 +88,7 @@ function normalizePhone(value: unknown): string {
   if (!text) return '';
   // Group identifiers (e.g. "group:grp_xxx") must never be treated as phone numbers.
   // They contain hex digits that would be extracted into a meaningless number string.
-  if (text.includes(':') || text.startsWith('group')) return '';
+  if (text.includes(':')) return '';
   // Strip non-digit characters (dashes, spaces, parentheses, etc.) for consistent matching
   text = text.replace(/\D/g, '');
   if (!text) return '';
