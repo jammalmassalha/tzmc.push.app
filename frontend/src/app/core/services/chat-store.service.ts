@@ -489,9 +489,7 @@ export class ChatStoreService {
       }
 
       const rawGroupName = group?.name ?? '';
-      const groupNameLooksLikeId = rawGroupName ? this.normalizeChatId(rawGroupName) === chatId : false;
-      const effectiveGroupName = rawGroupName && !groupNameLooksLikeId ? rawGroupName : '';
-      const title = effectiveGroupName || contact?.displayName || (isShuttle ? SHUTTLE_CHAT_TITLE : (group ? 'קבוצה' : chatId));
+      const title = rawGroupName || contact?.displayName || (isShuttle ? SHUTTLE_CHAT_TITLE : chatId);
       const subtitle = lastMessage ? this.getMessagePreview(lastMessage) : (group ? 'אין הודעות בקבוצה' : '');
       const lastTimestamp = lastMessage?.timestamp ?? 0;
       const unread = unreadMap[chatId] ?? 0;
