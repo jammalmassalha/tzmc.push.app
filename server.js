@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.50'; // Fix group chat names showing 'קבוצה' instead of real names
+const SERVER_VERSION = '1.51'; // Fix outgoing group messages showing on left instead of right
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',

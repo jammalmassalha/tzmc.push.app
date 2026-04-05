@@ -6330,9 +6330,10 @@ export class ChatStoreService {
       if (!sender) continue;
       const currentUser = this.normalizeUser(this.currentUser() ?? '');
       const incomingToUser = this.normalizeChatId(String(incoming.toUser ?? incoming.recipient ?? '').trim());
-      const isOutgoingFromCurrentUser = Boolean(currentUser && sender === currentUser);
-
       const isGroup = Boolean(incoming.groupId);
+      const isOutgoingFromCurrentUser = Boolean(currentUser && sender === currentUser) ||
+        Boolean(currentUser && isGroup && this.isGroupSenderCurrentUser(incoming.groupSenderName, currentUser));
+
       const chatId = isGroup
         ? this.normalizeChatId(incoming.groupId ?? '')
         : (
@@ -6641,9 +6642,10 @@ export class ChatStoreService {
     if (!sender) return false;
     const currentUser = this.normalizeUser(this.currentUser() ?? '');
     const incomingToUser = this.normalizeChatId(String(incoming.toUser ?? incoming.recipient ?? '').trim());
-    const isOutgoingFromCurrentUser = Boolean(currentUser && sender === currentUser);
-
     const isGroup = Boolean(incoming.groupId);
+    const isOutgoingFromCurrentUser = Boolean(currentUser && sender === currentUser) ||
+      Boolean(currentUser && isGroup && this.isGroupSenderCurrentUser(incoming.groupSenderName, currentUser));
+
     const chatId = isGroup
       ? this.normalizeChatId(incoming.groupId ?? '')
       : (
@@ -8026,6 +8028,30 @@ export class ChatStoreService {
     }
     // Fallback: resolve the sender field itself (could be a groupId or phone).
     return this.getDisplayName(sender);
+  }
+
+  /**
+   * Detect if the groupSenderName (extracted from message body prefix or backend)
+   * identifies the current user. Handles phone-number forms and display-name match.
+   */
+  private isGroupSenderCurrentUser(
+    groupSenderName: string | null | undefined,
+    currentUser: string
+  ): boolean {
+    if (!currentUser) return false;
+    const raw = String(groupSenderName ?? '').trim();
+    if (!raw) return false;
+    // Direct normalized match (phone number form)
+    if (this.normalizeUser(raw) === currentUser) return true;
+    // Digits-only match after stripping formatting (e.g. "054-679-9693")
+    const digits = raw.replace(/[\s\-()]/g, '');
+    if (/^\d{7,15}$/.test(digits) && this.normalizeUser(digits) === currentUser) return true;
+    // Display-name match: compare against the current user's resolved display name
+    const currentDisplayName = this.getDisplayName(currentUser);
+    if (currentDisplayName && currentDisplayName !== currentUser && raw === currentDisplayName) {
+      return true;
+    }
+    return false;
   }
 
   private normalizeContacts(contacts: Contact[]): Contact[] {
