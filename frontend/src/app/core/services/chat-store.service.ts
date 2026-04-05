@@ -2006,6 +2006,16 @@ export class ChatStoreService {
         resolvedGroupId = this.normalizeChatId(normalizedSender);
       }
       if (!resolvedGroupId) {
+        // Even without a resolved group ID, attempt to strip sender prefix from
+        // the body if the message has a known groupSenderName. This prevents the
+        // sender name from appearing inside the message text.
+        const existingGroupSenderName = String(incoming.groupSenderName ?? '').trim();
+        if (existingGroupSenderName && incoming.body) {
+          return {
+            ...incoming,
+            body: this.stripGroupSenderPrefixFromBody(String(incoming.body), existingGroupSenderName)
+          };
+        }
         return incoming;
       }
 
@@ -6439,13 +6449,17 @@ export class ChatStoreService {
       });
       const forwardedFrom = incoming.forwardedFrom ? this.normalizeUser(incoming.forwardedFrom) : '';
       const forwardedFromName = String(incoming.forwardedFromName || '').trim();
+      // Safety net: strip redundant sender prefix from body for group messages
+      const finalBody = isGroup
+        ? this.stripGroupSenderPrefixFromBody(incomingBody, incoming.groupSenderName)
+        : incomingBody;
       const record: ChatMessage = {
         id: this.generateId('rec'),
         messageId,
         chatId,
         sender,
         senderDisplayName: this.resolveGroupSenderDisplayName(incoming.groupSenderName, sender),
-        body: incomingBody,
+        body: finalBody,
         imageUrl: incomingImageUrl,
         fileUrl: incomingFileUrl,
         direction: isOutgoingFromCurrentUser ? 'outgoing' : 'incoming',
@@ -6736,13 +6750,17 @@ export class ChatStoreService {
     });
     const forwardedFrom = incoming.forwardedFrom ? this.normalizeUser(incoming.forwardedFrom) : '';
     const forwardedFromName = String(incoming.forwardedFromName || '').trim();
+    // Safety net: strip redundant sender prefix from body for group messages
+    const finalBody = isGroup
+      ? this.stripGroupSenderPrefixFromBody(incomingBody, incoming.groupSenderName)
+      : incomingBody;
     const record: ChatMessage = {
       id: this.generateId('rec'),
       messageId,
       chatId,
       sender,
       senderDisplayName: this.resolveGroupSenderDisplayName(incoming.groupSenderName, sender),
-      body: incomingBody,
+      body: finalBody,
       imageUrl: incomingImageUrl,
       fileUrl: incomingFileUrl,
       direction: isOutgoingFromCurrentUser ? 'outgoing' : 'incoming',
@@ -7999,6 +8017,25 @@ export class ChatStoreService {
   }
 
   /**
+   * Strip redundant "SenderName: " prefix from a group message body when the
+   * sender name is already known. This prevents the sender name from appearing
+   * both as the sender label above the bubble and inside the body text.
+   */
+  private stripGroupSenderPrefixFromBody(body: string, groupSenderName: string | null | undefined): string {
+    const trimmedBody = String(body || '').trim();
+    const senderName = String(groupSenderName ?? '').trim();
+    if (!senderName || !trimmedBody) return trimmedBody;
+    // Check if body starts with "SenderName:" (case-sensitive, with optional whitespace around colon)
+    const escapedName = senderName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const prefixPattern = new RegExp(`^${escapedName}\\s*:\\s*`);
+    if (prefixPattern.test(trimmedBody)) {
+      const stripped = trimmedBody.replace(prefixPattern, '').trim();
+      if (stripped) return stripped;
+    }
+    return trimmedBody;
+  }
+
+  /**
    * Resolve the display name for a sender in a group message.
    * The groupSenderName (extracted from body prefix or provided by backend) may be
    * a phone number rather than a proper display name. In that case, look up the
@@ -8250,7 +8287,9 @@ export class ChatStoreService {
             record.sender ?? ''
           ),
           messageId: String(record.messageId || this.generateId('msg')),
-          body: String(record.body ?? ''),
+          body: normalizedGroupId
+            ? this.stripGroupSenderPrefixFromBody(String(record.body ?? ''), record.senderDisplayName)
+            : String(record.body ?? ''),
           timestamp: Number(record.timestamp ?? Date.now()),
           direction: record.direction === 'incoming' ? 'incoming' : 'outgoing',
           deliveryStatus: record.deliveryStatus ?? 'sent',

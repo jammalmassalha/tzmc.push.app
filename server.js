@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.52'; // Add group actions dropdown menu to conversation header
+const SERVER_VERSION = '1.53'; // Fix group sender name appearing inside message body text
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',

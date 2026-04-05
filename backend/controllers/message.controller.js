@@ -620,12 +620,29 @@ function registerMessageController(app, deps = {}) {
 
                     // For group messages from DB logs, the body is stored as "SenderName: message text".
                     // Extract the sender name from the body prefix if not already set.
+                    // Use a broad condition: strip whenever the message is group-like (resolved group ID,
+                    // sender that looks like a group identifier, or sender matching a known/hardcoded group).
+                    const looksLikeGroupMessage = resolvedGroupId || sender.startsWith('group:') || hardcodedGroupKeySet.has(sender) || knownGroupIds.has(sender);
                     let resolvedBody = body;
-                    if (!groupSenderName && resolvedGroupId && body) {
+                    if (!groupSenderName && looksLikeGroupMessage && body) {
                         const senderPrefixMatch = body.match(/^([^:\n]{1,80})\s*:\s*([\s\S]+)$/);
                         if (senderPrefixMatch) {
                             groupSenderName = String(senderPrefixMatch[1] || '').trim();
                             resolvedBody = String(senderPrefixMatch[2] || '').trim() || body;
+                        }
+                    }
+                    // Safety net: if groupSenderName is already known and the body still starts
+                    // with "SenderName: ...", strip the redundant prefix to prevent duplication.
+                    if (groupSenderName && resolvedBody && resolvedBody !== body) {
+                        // Already stripped above – no further action needed.
+                    } else if (groupSenderName && looksLikeGroupMessage && body) {
+                        const escapedName = groupSenderName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        const prefixPattern = new RegExp(`^${escapedName}\\s*:\\s*`);
+                        if (prefixPattern.test(body)) {
+                            const stripped = body.replace(prefixPattern, '').trim();
+                            if (stripped) {
+                                resolvedBody = stripped;
+                            }
                         }
                     }
 
