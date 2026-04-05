@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.45'; // SeenTime column, scroll fix, groups cleanup, admin backup
+const SERVER_VERSION = '1.46'; // Groups from MySQL, ghost-group fix
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',
@@ -6926,6 +6926,7 @@ registerMessageController(app, {
         return membersMap;
     },
     getGroups: () => groups,
+    loadAllChatGroups: () => mysqlLogsService.loadAllChatGroups(),
     getActiveRedisStateStore: () => activeRedisStateStore,
     getMessageQueue: () => messageQueue,
     scheduleStateSave,

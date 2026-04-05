@@ -2051,6 +2051,13 @@ export class ChatStoreService {
 
         const existing = existingById.get(groupId) ?? null;
         if (!existing) {
+          // Only create a new group if it exists in the DB-loaded fallbackGroups
+          // or has a real name (not just an ID). This prevents "ghost" groups
+          // from appearing when a message references an unknown group ID.
+          const resolvedNameLooksLikeId = this.normalizeChatId(resolvedGroupName) === groupId;
+          if (!fallbackGroup && resolvedNameLooksLikeId) {
+            continue;
+          }
           changed = true;
           const members = Array.isArray(fallbackGroup?.members)
             ? Array.from(new Set(fallbackGroup!.members.map((member) => this.normalizeUser(member)).filter(Boolean)))
