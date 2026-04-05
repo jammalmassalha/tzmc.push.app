@@ -1084,6 +1084,8 @@ export class MysqlLogsService {
     try {
       await conn.beginTransaction();
 
+      // Preserve existing real group name when the incoming name equals the GroupId.
+      // This prevents ID-like values (e.g. "group:grp_xyz") from overwriting real names.
       await conn.execute(
         `INSERT INTO \`ChatGroups\` (\`GroupId\`, \`GroupName\`, \`CreatedBy\`, \`Type\`, \`CreatedAt\`, \`UpdatedAt\`)
          VALUES (?, ?, ?, ?, ?, ?)
