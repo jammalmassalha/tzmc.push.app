@@ -577,6 +577,22 @@ mat-chip:not(.offline) {
   line-height: 16px;
 }
 
+.conversation-title-actions-btn {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  color: #3952ad;
+  padding: 0;
+  position: static;
+}
+
+.conversation-title-actions-btn mat-icon {
+  width: 18px;
+  height: 18px;
+  font-size: 18px;
+  line-height: 18px;
+}
+
 .conversation-title-inline-edit {
   display: flex;
   align-items: center;

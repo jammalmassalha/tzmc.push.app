@@ -1773,6 +1773,11 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     this.groupMembersPreview.set(this.buildGroupMembersPreview(group));
   }
 
+  openGroupMemberAdd(): void {
+    this.openGroupMembers();
+    this.groupMemberAddOpen.set(true);
+  }
+
   async addSelectedCommunityMembers(): Promise<void> {
     const preview = this.groupMembersPreview();
     if (!preview?.canManageMembers) return;

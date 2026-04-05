@@ -239,12 +239,23 @@
                       <button
                         mat-icon-button
                         type="button"
-                        class="conversation-title-edit-btn"
-                        (click)="startInlineGroupTitleEdit($event)"
-                        aria-label="ערוך שם קבוצה"
-                        title="ערוך שם קבוצה">
-                        <mat-icon>edit</mat-icon>
+                        class="conversation-title-actions-btn"
+                        [matMenuTriggerFor]="groupActionsMenu"
+                        (click)="$event.stopPropagation()"
+                        aria-label="פעולות קבוצה"
+                        title="פעולות קבוצה">
+                        <mat-icon>more_vert</mat-icon>
                       </button>
+                      <mat-menu #groupActionsMenu="matMenu" xPosition="before">
+                        <button mat-menu-item type="button" title="ערוך שם קבוצה" (click)="startInlineGroupTitleEdit($event)">
+                          <mat-icon>edit</mat-icon>
+                          <span>ערוך שם קבוצה</span>
+                        </button>
+                        <button mat-menu-item type="button" title="הוספת חבר לקבוצה" (click)="openGroupMemberAdd()">
+                          <mat-icon>person_add</mat-icon>
+                          <span>הוספת חבר לקבוצה</span>
+                        </button>
+                      </mat-menu>
                     }
                   </div>
                 }
