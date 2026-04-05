@@ -6424,7 +6424,7 @@ export class ChatStoreService {
         messageId,
         chatId,
         sender,
-        senderDisplayName: incoming.groupSenderName || this.getDisplayName(sender),
+        senderDisplayName: this.resolveGroupSenderDisplayName(incoming.groupSenderName, sender),
         body: incomingBody,
         imageUrl: incomingImageUrl,
         fileUrl: incomingFileUrl,
@@ -6720,7 +6720,7 @@ export class ChatStoreService {
       messageId,
       chatId,
       sender,
-      senderDisplayName: incoming.groupSenderName || this.getDisplayName(sender),
+      senderDisplayName: this.resolveGroupSenderDisplayName(incoming.groupSenderName, sender),
       body: incomingBody,
       imageUrl: incomingImageUrl,
       fileUrl: incomingFileUrl,
@@ -7977,6 +7977,37 @@ export class ChatStoreService {
     return normalized;
   }
 
+  /**
+   * Resolve the display name for a sender in a group message.
+   * The groupSenderName (extracted from body prefix or provided by backend) may be
+   * a phone number rather than a proper display name. In that case, look up the
+   * contact list to find a better name. Falls back to getDisplayName(sender).
+   */
+  private resolveGroupSenderDisplayName(
+    groupSenderName: string | null | undefined,
+    sender: string
+  ): string {
+    const raw = String(groupSenderName ?? '').trim();
+    if (raw) {
+      // If the extracted sender name looks like a phone number, try to resolve it.
+      const digits = raw.replace(/[\s\-()]/g, '');
+      const looksLikePhone = /^\d{7,15}$/.test(digits);
+      if (looksLikePhone) {
+        const resolved = this.getDisplayName(raw);
+        // getDisplayName returns the normalized input when no match is found.
+        // If it found a real name (different from the normalized phone), use it.
+        if (resolved !== this.normalizeUser(raw)) {
+          return resolved;
+        }
+      } else {
+        // Not a phone number – use the provided name as-is.
+        return raw;
+      }
+    }
+    // Fallback: resolve the sender field itself (could be a groupId or phone).
+    return this.getDisplayName(sender);
+  }
+
   private normalizeContacts(contacts: Contact[]): Contact[] {
     const seen = new Set<string>();
     return contacts
@@ -8167,6 +8198,10 @@ export class ChatStoreService {
           ...record,
           chatId,
           sender: this.normalizeUser(record.sender),
+          senderDisplayName: this.resolveGroupSenderDisplayName(
+            record.senderDisplayName,
+            record.sender ?? ''
+          ),
           messageId: String(record.messageId || this.generateId('msg')),
           body: String(record.body ?? ''),
           timestamp: Number(record.timestamp ?? Date.now()),
