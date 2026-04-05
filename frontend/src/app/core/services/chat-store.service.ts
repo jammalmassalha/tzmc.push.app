@@ -488,7 +488,10 @@ export class ChatStoreService {
         continue;
       }
 
-      const title = group?.name ?? contact?.displayName ?? (isShuttle ? SHUTTLE_CHAT_TITLE : chatId);
+      const rawGroupName = group?.name ?? '';
+      const groupNameLooksLikeId = rawGroupName ? this.normalizeChatId(rawGroupName) === chatId : false;
+      const effectiveGroupName = rawGroupName && !groupNameLooksLikeId ? rawGroupName : '';
+      const title = effectiveGroupName || contact?.displayName || (isShuttle ? SHUTTLE_CHAT_TITLE : (group ? 'קבוצה' : chatId));
       const subtitle = lastMessage ? this.getMessagePreview(lastMessage) : (group ? 'אין הודעות בקבוצה' : '');
       const lastTimestamp = lastMessage?.timestamp ?? 0;
       const unread = unreadMap[chatId] ?? 0;
@@ -1828,7 +1831,7 @@ export class ChatStoreService {
         return {
           ...message,
           // Never drop logs message just because group metadata was not preloaded.
-          // Use groupId fallback so full sync can still reconstruct the chat history.
+          // Use known group name if available; preserve groupId as fallback identifier.
           groupName: knownGroupName || incomingGroupName || groupId
         };
       })
@@ -1986,7 +1989,7 @@ export class ChatStoreService {
         this.normalizeChatId(normalizedGroupName) === resolvedGroupId
       );
       const rawBody = String(incoming.body ?? '').trim();
-      const senderPrefixMatch = rawBody.match(/^([^:\n]{1,80})\s*:\s*(.+)$/);
+      const senderPrefixMatch = rawBody.match(/^([^:\n]{1,80})\s*:\s*([\s\S]+)$/);
       const inferredSenderName = senderPrefixMatch ? String(senderPrefixMatch[1] || '').trim() : '';
       const inferredBody = senderPrefixMatch ? String(senderPrefixMatch[2] || '').trim() : rawBody;
 
@@ -2038,10 +2041,13 @@ export class ChatStoreService {
 
         const incomingGroupName = String(message.groupName ?? '').trim();
         const fallbackGroup = fallbackById.get(groupId) ?? null;
+        const fallbackName = fallbackGroup?.name
+          ? (this.normalizeChatId(fallbackGroup.name) !== groupId ? fallbackGroup.name : '')
+          : '';
         const resolvedGroupName = (
           incomingGroupName && this.normalizeChatId(incomingGroupName) !== groupId
             ? incomingGroupName
-            : (fallbackGroup?.name || incomingGroupName || groupId)
+            : (fallbackName || incomingGroupName || groupId)
         );
         const resolvedType: GroupType = message.groupType === 'community' ? 'community' : 'group';
 
