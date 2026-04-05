@@ -7990,6 +7990,7 @@ export class ChatStoreService {
     const raw = String(groupSenderName ?? '').trim();
     if (raw) {
       // If the extracted sender name looks like a phone number, try to resolve it.
+      // 7-15 digits covers Israeli local (10 digits) and international formats.
       const digits = raw.replace(/[\s\-()]/g, '');
       const looksLikePhone = /^\d{7,15}$/.test(digits);
       if (looksLikePhone) {

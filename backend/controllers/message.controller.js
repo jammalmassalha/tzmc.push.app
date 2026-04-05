@@ -512,8 +512,8 @@ function registerMessageController(app, deps = {}) {
                     else if (hardcodedGroupKeySet.has(gid)) knownGroupTypeById.set(gid, 'community');
                     // Track dynamic groups (group:xxx) the user actually belongs to
                     if (gid.startsWith('group:')) {
-                        const normalizedMembers = (dbGroup.members || []).map(normalizeUserKey);
-                        if (!normalizedMembers.length || normalizedMembers.includes(user)) {
+                        const normalizedMembers = (dbGroup.members || []).map(normalizeUserKey).filter(Boolean);
+                        if (normalizedMembers.length > 0 && normalizedMembers.includes(user)) {
                             userDynamicGroupIds.push(gid);
                         }
                     }
