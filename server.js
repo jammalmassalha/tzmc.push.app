@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.56'; // Fix: update SeenTime in DB for group chats via /mark-seen
+const SERVER_VERSION = '1.57'; // Fix: queue message dedup — DB-level insert guard, longer TTL, DB pre-check
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',
@@ -1209,7 +1209,7 @@ const RECENT_REPLY_MESSAGE_TTL_MS = Math.max(
 const recentProcessedReplyMessages = new Map();
 const RECENT_QUEUE_MESSAGE_TTL_MS = Math.max(
     30 * 1000,
-    Number(process.env.RECENT_QUEUE_MESSAGE_TTL_MS || 10 * 60 * 1000) || 10 * 60 * 1000
+    Number(process.env.RECENT_QUEUE_MESSAGE_TTL_MS || 60 * 60 * 1000) || 60 * 60 * 1000
 );
 const recentProcessedQueueMessages = new Map();
 let mobileReregisterCampaignState = {
@@ -4999,9 +4999,9 @@ function extractMessageIdFromLogDetails(details) {
 }
 
 // Helper: Log status to MySQL logs table
-function logNotificationStatus(sender, recipient, messageShort, status, details, recipientAuthJson = '', msgId = '', imageUrl = '', fileUrl = '') {
+function logNotificationStatus(sender, recipient, messageShort, status, details, recipientAuthJson = '', msgId = '', imageUrl = '', fileUrl = '', options = {}) {
     const resolvedMsgId = String(msgId || '').trim() || extractMessageIdFromLogDetails(details);
-    return mysqlLogsService.insertLog({
+    const logPayload = {
         sender: sender || 'System',
         recipient: recipient,
         msgId: resolvedMsgId || '',
@@ -5011,7 +5011,11 @@ function logNotificationStatus(sender, recipient, messageShort, status, details,
         recipientAuthJson: recipientAuthJson || '',
         imageUrl: imageUrl || '',
         fileUrl: fileUrl || ''
-    }).catch((err) => {
+    };
+    const insertFn = options.dedup
+        ? mysqlLogsService.insertLogIfNotDuplicate(logPayload)
+        : mysqlLogsService.insertLog(logPayload);
+    return insertFn.catch((err) => {
         console.error('[LOG ERROR]', err && err.message ? err.message : err);
         return null;
     });
@@ -6169,6 +6173,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     const logContent = msgText || messageType || 'System Notification';
     const shouldPersistPushLog = messageType !== 'read-receipt';
     const messageId = options.messageId || message.messageId || generateMessageId();
+    const shouldDedupLog = Boolean(options.dedupLog);
     const shouldIncrementBadge = !options.skipBadge;
     let normalizedTargetUsers = Array.from(
         new Set(targetUsersArray.map(normalizeUserKey).filter(Boolean))
@@ -6273,7 +6278,10 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
             'Failed',
             'No subscriptions found',
             recipientAuthJsonForLog,
-            messageId
+            messageId,
+            '',
+            '',
+            { dedup: shouldDedupLog }
         );
         return { success: 0, failed: 0 };
     }
@@ -6496,7 +6504,8 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
             recipientAuthJsonForLog,
             messageId,
             imageUrl || '',
-            fileUrl || ''
+            fileUrl || '',
+            { dedup: shouldDedupLog }
         );
     }
 
@@ -7322,6 +7331,30 @@ async function checkOutgoingQueue() {
                 const messageId = (msg && msg.messageId)
                     ? String(msg.messageId).trim()
                     : `queue-${hashStringToShortId(sourceAwareDedupKey || semanticDedupKey)}`;
+
+                // 0. DB-backed dedup: check if this messageId was already logged for any target user.
+                //    This survives server restarts (unlike the in-memory map).
+                let alreadyInDb = false;
+                try {
+                    for (const user of targetUsers) {
+                        if (await mysqlLogsService.hasLogWithMsgId(messageId, user)) {
+                            alreadyInDb = true;
+                            break;
+                        }
+                    }
+                } catch (_dbErr) {
+                    // On DB error, proceed with in-memory dedup only.
+                }
+                if (alreadyInDb) {
+                    console.log(`[QUEUE] Skipping duplicate (DB): messageId=${messageId}`);
+                    const processedNow = Date.now();
+                    recentProcessedQueueMessages.set(semanticDedupKey, processedNow);
+                    if (sourceAwareDedupKey) {
+                        recentProcessedQueueMessages.set(sourceAwareDedupKey, processedNow);
+                    }
+                    continue;
+                }
+
                 const notificationData = {
                     messageId,
                     title: `Message from ${senderName}`,
@@ -7344,7 +7377,8 @@ async function checkOutgoingQueue() {
                 // 2. Send Push Notification (Handles all devices)
                 const pushResult = await sendPushNotificationToUser(targetUsers, notificationData, senderName, {
                     messageId,
-                    maxPerUserEndpoints: 1
+                    maxPerUserEndpoints: 1,
+                    dedupLog: true
                 });
                 if (pushResult && pushResult.failed > 0) {
                     console.warn(`[QUEUE] Push notification partially failed: ${pushResult.failed} failed, ${pushResult.success} succeeded for messageId=${messageId}`);

@@ -372,6 +372,55 @@ export class MysqlLogsService {
     return true;
   }
 
+  /**
+   * Insert a log entry only if no row with the same MsgID already exists.
+   * Used for queue-originated messages to prevent duplicate DB rows.
+   * Returns true if a new row was inserted, false if it was a duplicate.
+   */
+  async insertLogIfNotDuplicate(payload: MysqlLogInsertPayload): Promise<boolean> {
+    const sender = toTrimmedString(payload.sender) || 'System';
+    const recipient = toTrimmedString(payload.recipient);
+    const message = toTrimmedString(payload.message);
+    const status = toTrimmedString(payload.status);
+    const details = toTrimmedString(payload.details);
+    const msgId = resolveLogMessageId(payload.msgId, details);
+    const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
+    const dateTime = normalizeDateTimeForStorage(payload.dateTime);
+    const imageUrl = toTrimmedString(payload.imageUrl);
+    const fileUrl = toTrimmedString(payload.fileUrl);
+
+    if (!msgId) {
+      // No MsgID → fall back to normal insert (cannot deduplicate without an ID)
+      await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null]);
+      return true;
+    }
+
+    const sql = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       FROM DUAL
+       WHERE NOT EXISTS (
+         SELECT 1 FROM \`${this.tableName}\` WHERE \`MsgID\` = ? AND \`ToUser\` = ? LIMIT 1
+       )`;
+    const [result] = await this.pool.execute(sql, [
+      dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null,
+      msgId, recipient
+    ]);
+    const affectedRows = (result as { affectedRows?: number }).affectedRows ?? 0;
+    return affectedRows > 0;
+  }
+
+  /**
+   * Check if a log entry with the given MsgID and recipient already exists.
+   */
+  async hasLogWithMsgId(msgId: string, recipient: string): Promise<boolean> {
+    const normalizedMsgId = toTrimmedString(msgId);
+    const normalizedRecipient = toTrimmedString(recipient);
+    if (!normalizedMsgId) return false;
+    const sql = `SELECT 1 FROM \`${this.tableName}\` WHERE \`MsgID\` = ? AND \`ToUser\` = ? LIMIT 1`;
+    const [rows] = await this.pool.query(sql, [normalizedMsgId, normalizedRecipient]);
+    return Array.isArray(rows) && rows.length > 0;
+  }
+
   async filterNewLogsByCompositeKey(payloads: MysqlLogInsertPayload[]): Promise<MysqlLogInsertPayload[]> {
     const normalizedPayloads = Array.isArray(payloads) ? payloads.filter(Boolean) : [];
     if (!normalizedPayloads.length) {
