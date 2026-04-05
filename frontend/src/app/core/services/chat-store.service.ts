@@ -1753,7 +1753,7 @@ export class ChatStoreService {
       throw new Error('אין חיבור לרשת');
     }
 
-    // First, try sending pending outgoing items before cache reset.
+    // Try sending pending outgoing items before full wipe.
     await this.flushOutbox();
 
     const groupsSnapshotBeforeCacheClear = this.groups().map((group) => ({
@@ -1761,8 +1761,20 @@ export class ChatStoreService {
       members: Array.isArray(group.members) ? [...group.members] : []
     }));
 
-    this.clearLocalChatCacheForUser(user, { keepOutbox: true });
+    // Clear ALL local data – localStorage, Service Worker caches, and IndexedDB.
+    this.clearLocalChatCacheForUser(user, { keepOutbox: false });
     this.resetRuntimeStateAfterCacheClear(user);
+
+    try {
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((key) => caches.delete(key)));
+      }
+    } catch { /* best-effort */ }
+
+    // Reload fresh data from server DB.
+    await this.loadCommunityGroupConfigs();
+    await this.loadUserChatGroupsFromDb();
 
     await this.refresh(true);
     await this.pullMessages(user);
@@ -8139,6 +8151,7 @@ export class ChatStoreService {
     localStorage.removeItem(this.shuttleOrdersKey(user));
     localStorage.removeItem(this.shuttleLanguageKey(user));
     localStorage.removeItem(this.shuttleReminderHistoryKey(user));
+    localStorage.removeItem(this.helpdeskStateKey(user));
   }
 
   private resetRuntimeStateAfterCacheClear(user: string): void {
