@@ -1003,6 +1003,16 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     }
   }
 
+  async backupGroupsToDb(): Promise<void> {
+    try {
+      const result = await this.store.backupAllGroupsToDb();
+      this.snackBar.open(`גיבוי הושלם: ${result.backedUp} מתוך ${result.total} קבוצות.`, 'סגור', { duration: 3500 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'גיבוי קבוצות נכשל';
+      this.snackBar.open(message, 'סגור', { duration: 3200 });
+    }
+  }
+
   async sendMessage(): Promise<void> {
     this.store.cancelTypingForActiveChat();
     if (this.isComposerHidden() && !this.editingMessageTarget()) {

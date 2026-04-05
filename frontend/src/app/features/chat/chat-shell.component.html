@@ -46,6 +46,12 @@
         <span>שלח הודעה על עידכון גרסה</span>
       </button>
     }
+    @if (store.canCurrentUserBackupGroupsToDb()) {
+      <button mat-menu-item role="menuitem" type="button" (click)="backupGroupsToDb()">
+        <mat-icon>backup</mat-icon>
+        <span>גיבוי קבוצות למסד נתונים</span>
+      </button>
+    }
     <button mat-menu-item type="button" (click)="openCreateGroupDialog()">
       <mat-icon>group_add</mat-icon>
       <span>קבוצה חדשה</span>
