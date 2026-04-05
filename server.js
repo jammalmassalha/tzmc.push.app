@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.58'; // Fix: dedup uses composite key [From,To,DateTime,Content] instead of MsgID
+const SERVER_VERSION = '1.59'; // Fix: dedup unique key is [From,To,DateTime] — content is NOT part of the key
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',
@@ -7309,47 +7309,43 @@ async function checkOutgoingQueue() {
                     ''
                 ).trim();
                 if (!sourceUniqueId) {
-                    console.warn('[QUEUE] Message has no unique identifier; deduplication relies on content only.', {
+                    console.warn('[QUEUE] Message has no unique identifier; deduplication relies on sender+recipients only.', {
                         sender: senderName,
                         recipients: targetUsers
                     });
                 }
                 const senderKey = normalizeUserKey(senderName);
                 const recipientKey = targetUsers.map((entry) => normalizeUserKey(entry)).filter(Boolean).sort().join(',');
-                const normalizedBodyForDedup = normalizeQueueTextForDedup(bodyText);
-                const semanticDedupKey = `${senderKey}|${recipientKey}|${normalizedBodyForDedup || bodyText}`;
-                const sourceAwareDedupKey = sourceUniqueId
-                    ? `${semanticDedupKey}|${sourceUniqueId}`
-                    : '';
-                if (
-                    recentProcessedQueueMessages.has(semanticDedupKey) ||
-                    (sourceAwareDedupKey && recentProcessedQueueMessages.has(sourceAwareDedupKey))
-                ) {
+                // Dedup key: [From, To, sourceUniqueId] — content is NOT part of the key.
+                // Same content with different DateTime/sourceId is a new message.
+                const dedupKey = sourceUniqueId
+                    ? `${senderKey}|${recipientKey}|${sourceUniqueId}`
+                    : `${senderKey}|${recipientKey}|${Date.now()}`;
+                if (recentProcessedQueueMessages.has(dedupKey)) {
                     continue;
                 }
 
                 const messageId = (msg && msg.messageId)
                     ? String(msg.messageId).trim()
-                    : `queue-${hashStringToShortId(sourceAwareDedupKey || semanticDedupKey)}`;
+                    : `queue-${hashStringToShortId(dedupKey)}`;
 
-                // 0. DB-backed dedup: check if same From+To+Content was already logged recently.
-                //    Uses composite key [From, To, DateTime(window), Content] — survives server restarts.
+                // 0. DB-backed dedup: check if same [From, To, DateTime] already logged.
+                //    Uniqueness = [From, To, DateTime] — content is NOT part of the key.
+                //    Survives server restarts (unlike in-memory map).
                 let alreadyInDb = false;
-                try {
-                    const dbChecks = await Promise.all(
-                        targetUsers.map((user) => mysqlLogsService.hasRecentDuplicateLog(senderName, user, bodyText, 5).catch(() => false))
-                    );
-                    alreadyInDb = dbChecks.some(Boolean);
-                } catch (_dbErr) {
-                    // On DB error, proceed with in-memory dedup only.
+                if (sourceUniqueId) {
+                    try {
+                        const dbChecks = await Promise.all(
+                            targetUsers.map((user) => mysqlLogsService.hasDuplicateLog(senderName, user, sourceUniqueId).catch(() => false))
+                        );
+                        alreadyInDb = dbChecks.some(Boolean);
+                    } catch (_dbErr) {
+                        // On DB error, proceed with in-memory dedup only.
+                    }
                 }
                 if (alreadyInDb) {
                     console.log(`[QUEUE] Skipping duplicate (DB): messageId=${messageId}`);
-                    const processedNow = Date.now();
-                    recentProcessedQueueMessages.set(semanticDedupKey, processedNow);
-                    if (sourceAwareDedupKey) {
-                        recentProcessedQueueMessages.set(sourceAwareDedupKey, processedNow);
-                    }
+                    recentProcessedQueueMessages.set(dedupKey, Date.now());
                     continue;
                 }
 
@@ -7382,10 +7378,7 @@ async function checkOutgoingQueue() {
                     console.warn(`[QUEUE] Push notification partially failed: ${pushResult.failed} failed, ${pushResult.success} succeeded for messageId=${messageId}`);
                 }
                 const processedAt = Date.now();
-                recentProcessedQueueMessages.set(semanticDedupKey, processedAt);
-                if (sourceAwareDedupKey) {
-                    recentProcessedQueueMessages.set(sourceAwareDedupKey, processedAt);
-                }
+                recentProcessedQueueMessages.set(dedupKey, processedAt);
             }
         }
     } catch (error) {

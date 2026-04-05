@@ -361,8 +361,7 @@ export class MysqlLogsService {
     return [
       normalizeDateTimeKey(payload.dateTime),
       toTrimmedString(payload.recipient),
-      toTrimmedString(payload.sender) || 'System',
-      toTrimmedString(payload.message)
+      toTrimmedString(payload.sender) || 'System'
     ].join('|');
   }
 
@@ -370,13 +369,12 @@ export class MysqlLogsService {
     dateTime: unknown;
     toUser: unknown;
     fromUser: unknown;
-    messagePreview: unknown;
+    messagePreview?: unknown;
   }): string {
     return [
       normalizeDateTimeKey(row.dateTime),
       toTrimmedString(row.toUser),
-      toTrimmedString(row.fromUser) || 'System',
-      toTrimmedString(row.messagePreview)
+      toTrimmedString(row.fromUser) || 'System'
     ].join('|');
   }
 
@@ -397,12 +395,12 @@ export class MysqlLogsService {
   }
 
   /**
-   * Insert a log entry only if no row with the same [From, ToUser, Message Preview]
-   * already exists within a recent time window (default 5 minutes).
-   * Composite key: [From, To, DateTime(window), Content].
+   * Insert a log entry only if no row with the same [From, ToUser, DateTime]
+   * already exists. Uniqueness = [From, To, DateTime].
+   * Same content with a different DateTime is a NEW message.
    * Returns true if a new row was inserted, false if it was a duplicate.
    */
-  async insertLogIfNotDuplicate(payload: MysqlLogInsertPayload, windowMinutes = 5): Promise<boolean> {
+  async insertLogIfNotDuplicate(payload: MysqlLogInsertPayload): Promise<boolean> {
     await this.ensureDedupIndex();
     const sender = toTrimmedString(payload.sender) || 'System';
     const recipient = toTrimmedString(payload.recipient);
@@ -415,46 +413,42 @@ export class MysqlLogsService {
     const imageUrl = toTrimmedString(payload.imageUrl);
     const fileUrl = toTrimmedString(payload.fileUrl);
 
-    if (!recipient || !message) {
-      // Cannot deduplicate without recipient and content — fall back to normal insert
+    if (!recipient) {
+      // Cannot deduplicate without recipient — fall back to normal insert
       await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null]);
       return true;
     }
 
-    const safeWindow = Math.max(1, Math.min(windowMinutes, 60));
     const sql = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`)
        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
        FROM DUAL
        WHERE NOT EXISTS (
          SELECT 1 FROM \`${this.tableName}\`
-         WHERE \`From\` = ? AND \`ToUser\` = ? AND \`Message Preview\` = ?
-           AND \`DateTime\` >= DATE_SUB(NOW(), INTERVAL ${safeWindow} MINUTE)
+         WHERE \`From\` = ? AND \`ToUser\` = ? AND \`DateTime\` = ?
          LIMIT 1
        )`;
     const [result] = await this.pool.execute(sql, [
       dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null,
-      sender, recipient, message
+      sender, recipient, dateTime
     ]);
     const affectedRows = (result as { affectedRows?: number }).affectedRows ?? 0;
     return affectedRows > 0;
   }
 
   /**
-   * Check if a log entry with the same [From, ToUser, Message Preview] already exists
-   * within a recent time window (default 5 minutes).
+   * Check if a log entry with the same [From, ToUser, DateTime] already exists.
+   * Uniqueness = [From, To, DateTime] — content is NOT part of the key.
    */
-  async hasRecentDuplicateLog(sender: string, recipient: string, message: string, windowMinutes = 5): Promise<boolean> {
+  async hasDuplicateLog(sender: string, recipient: string, dateTime: unknown): Promise<boolean> {
     await this.ensureDedupIndex();
     const normalizedSender = toTrimmedString(sender) || 'System';
     const normalizedRecipient = toTrimmedString(recipient);
-    const normalizedMessage = toTrimmedString(message);
-    if (!normalizedRecipient || !normalizedMessage) return false;
-    const safeWindow = Math.max(1, Math.min(windowMinutes, 60));
+    const normalizedDateTime = normalizeDateTimeForStorage(dateTime);
+    if (!normalizedRecipient) return false;
     const sql = `SELECT 1 FROM \`${this.tableName}\`
-       WHERE \`From\` = ? AND \`ToUser\` = ? AND \`Message Preview\` = ?
-         AND \`DateTime\` >= DATE_SUB(NOW(), INTERVAL ${safeWindow} MINUTE)
+       WHERE \`From\` = ? AND \`ToUser\` = ? AND \`DateTime\` = ?
        LIMIT 1`;
-    const [rows] = await this.pool.query(sql, [normalizedSender, normalizedRecipient, normalizedMessage]);
+    const [rows] = await this.pool.query(sql, [normalizedSender, normalizedRecipient, normalizedDateTime]);
     return Array.isArray(rows) && rows.length > 0;
   }
 
