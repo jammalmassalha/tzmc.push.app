@@ -6928,6 +6928,8 @@ export class ChatStoreService {
     }
   ): number {
     const candidateSender = this.normalizeUser(candidate.sender);
+    const candidateBody = this.normalizeIncomingTextForDedup(candidate.body);
+    const candidateImage = String(candidate.imageUrl || '').trim();
     const candidateTimestamp = Number(candidate.timestamp) || 0;
     const candidateGroupId = this.normalizeChatId(String(candidate.groupId || ''));
     const toleranceMs = Math.max(
@@ -6937,9 +6939,13 @@ export class ChatStoreService {
     if (!candidateSender || !Number.isFinite(candidateTimestamp)) {
       return -1;
     }
+    if (!candidateBody && !candidateImage) {
+      return -1;
+    }
 
-    // Unique key: [From, To, DateTime] — content is NOT part of the key.
-    // Same content with different DateTime is a new message.
+    // Content IS part of the comparison to distinguish different messages from the
+    // same sender at similar timestamps. Only collapse true duplicates (same sender +
+    // same body + same image + close timestamp).
     return list.findIndex((message) => {
       if (!message || message.direction !== 'incoming' || message.deletedAt) {
         return false;
@@ -6949,6 +6955,11 @@ export class ChatStoreService {
       }
       const messageGroupId = this.normalizeChatId(String(message.groupId || ''));
       if (candidateGroupId && messageGroupId !== candidateGroupId) {
+        return false;
+      }
+      const messageBody = this.normalizeIncomingTextForDedup(message.body);
+      const messageImage = String(message.imageUrl || '').trim();
+      if (messageBody !== candidateBody || messageImage !== candidateImage) {
         return false;
       }
       const messageTimestamp = Number(message.timestamp) || 0;

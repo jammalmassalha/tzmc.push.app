@@ -148,6 +148,8 @@ function registerMessageController(app, deps = {}) {
         const sender = normalizeUserKey(message.sender || message.reactor || message.from || '');
         const groupId = normalizeUserKey(message.groupId || message.group_id || message.chatId || message.chat_id || '');
         const payloadType = String(message.type || 'message').trim().toLowerCase() || 'message';
+        const body = normalizeTextForDedup(message.body || message.message || message.content || '');
+        const imageUrl = normalizeTextForDedup(message.imageUrl || message.image || message.thumbnailUrl || '');
         const targetMessageId = String(
             message.targetMessageId ||
             message.target_message_id ||
@@ -157,15 +159,18 @@ function registerMessageController(app, deps = {}) {
         ).trim();
         const emoji = normalizeTextForDedup(message.emoji || message.reaction || '');
         const messageIds = buildMessageIdsDedupKey(message.messageIds || message.message_ids);
-        // Unique key: [From, To, DateTime] — content is NOT part of the key.
-        // Same content with different DateTime is a new message.
+        // Content IS part of the semantic key to distinguish different messages
+        // from the same sender at similar timestamps. The timestamp-window dedup
+        // then only collapses true duplicates (same sender + same body + close time).
         return [
             payloadType,
             sender || 'na',
             groupId || 'na',
             targetMessageId || 'na',
             emoji || 'na',
-            messageIds || 'na'
+            messageIds || 'na',
+            body || 'na',
+            imageUrl || 'na'
         ].join('|');
     };
     const dedupeLogsMessages = (messages) => {
