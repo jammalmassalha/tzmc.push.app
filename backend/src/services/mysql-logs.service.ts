@@ -478,12 +478,11 @@ export class MysqlLogsService {
       const orClauses: string[] = [];
       const params: Array<string | Date> = [];
       chunk.forEach((payload) => {
-        orClauses.push('(`DateTime` = ? AND `ToUser` = ? AND `From` = ? AND `Message Preview` = ?)');
+        orClauses.push('(`DateTime` = ? AND `ToUser` = ? AND `From` = ?)');
         params.push(
           normalizeDateTimeForStorage(payload.dateTime),
           toTrimmedString(payload.recipient),
-          toTrimmedString(payload.sender) || 'System',
-          toTrimmedString(payload.message)
+          toTrimmedString(payload.sender) || 'System'
         );
       });
       const [rows] = await this.pool.query<Array<RowDataPacket & {

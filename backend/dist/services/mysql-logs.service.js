@@ -391,8 +391,8 @@ class MysqlLogsService {
             const orClauses = [];
             const params = [];
             chunk.forEach((payload) => {
-                orClauses.push('(`DateTime` = ? AND `ToUser` = ? AND `From` = ? AND `Message Preview` = ?)');
-                params.push(normalizeDateTimeForStorage(payload.dateTime), toTrimmedString(payload.recipient), toTrimmedString(payload.sender) || 'System', toTrimmedString(payload.message));
+                orClauses.push('(`DateTime` = ? AND `ToUser` = ? AND `From` = ?)');
+                params.push(normalizeDateTimeForStorage(payload.dateTime), toTrimmedString(payload.recipient), toTrimmedString(payload.sender) || 'System');
             });
             const [rows] = await this.pool.query(`SELECT \`DateTime\` AS dateTime, \`ToUser\` AS toUser, \`From\` AS fromUser, \`Message Preview\` AS messagePreview
          FROM \`${this.tableName}\`

@@ -148,8 +148,6 @@ function registerMessageController(app, deps = {}) {
         const sender = normalizeUserKey(message.sender || message.reactor || message.from || '');
         const groupId = normalizeUserKey(message.groupId || message.group_id || message.chatId || message.chat_id || '');
         const payloadType = String(message.type || 'message').trim().toLowerCase() || 'message';
-        const body = normalizeTextForDedup(message.body || message.message || message.content || '');
-        const imageUrl = normalizeTextForDedup(message.imageUrl || message.image || message.thumbnailUrl || '');
         const targetMessageId = String(
             message.targetMessageId ||
             message.target_message_id ||
@@ -159,15 +157,15 @@ function registerMessageController(app, deps = {}) {
         ).trim();
         const emoji = normalizeTextForDedup(message.emoji || message.reaction || '');
         const messageIds = buildMessageIdsDedupKey(message.messageIds || message.message_ids);
+        // Unique key: [From, To, DateTime] — content is NOT part of the key.
+        // Same content with different DateTime is a new message.
         return [
             payloadType,
             sender || 'na',
             groupId || 'na',
             targetMessageId || 'na',
             emoji || 'na',
-            messageIds || 'na',
-            body || 'na',
-            imageUrl || 'na'
+            messageIds || 'na'
         ].join('|');
     };
     const dedupeLogsMessages = (messages) => {

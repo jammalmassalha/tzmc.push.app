@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.59'; // Fix: dedup unique key is [From,To,DateTime] — content is NOT part of the key
+const SERVER_VERSION = '1.60'; // Fix: remove content from ALL dedup layers (backend logs API, frontend sync)
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',
