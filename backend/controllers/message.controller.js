@@ -518,7 +518,14 @@ function registerMessageController(app, deps = {}) {
                     if (!resolvedGroupId && normalizedToUserCandidate && hardcodedGroupKeySet.has(normalizedToUserCandidate)) resolvedGroupId = normalizedToUserCandidate;
                     // Only treat toUser as a group ID if it's a single non-phone identifier that matches a known group.
                     // Comma-separated recipient lists (e.g. "054xxx,055xxx") should never become group IDs.
-                    if (!resolvedGroupId && normalizedToUserCandidate && !normalizedToUserCandidate.includes(',') && normalizedToUserCandidate !== user && normalizedToUserCandidate !== sender && (knownGroupIds.has(normalizedToUserCandidate) || (!isLikelyPhoneUser(normalizedToUserCandidate) && knownGroupIdByName.has(normalizedToUserCandidate)))) resolvedGroupId = normalizedToUserCandidate;
+                    if (!resolvedGroupId && normalizedToUserCandidate) {
+                        const isSingleValue = !normalizedToUserCandidate.includes(',');
+                        const isDistinctFromParticipants = normalizedToUserCandidate !== user && normalizedToUserCandidate !== sender;
+                        const isKnownGroup = knownGroupIds.has(normalizedToUserCandidate) || (!isLikelyPhoneUser(normalizedToUserCandidate) && knownGroupIdByName.has(normalizedToUserCandidate));
+                        if (isSingleValue && isDistinctFromParticipants && isKnownGroup) {
+                            resolvedGroupId = normalizedToUserCandidate;
+                        }
+                    }
 
                     const groupName = String(message.groupName ?? message.chatName ?? '').trim();
                     const resolvedGroupName = groupName || (resolvedGroupId ? (knownGroupNamesById.get(resolvedGroupId) || resolvedGroupId) : '');
