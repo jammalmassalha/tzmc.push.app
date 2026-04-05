@@ -495,10 +495,8 @@ export class ChatStoreService {
       }
 
       const rawGroupName = group?.name ?? '';
-      // If the group exists but its display name is the raw group ID, show a fallback label
-      const title = (rawGroupName && !this.isGroupNameLikeId(rawGroupName, chatId))
-        ? rawGroupName
-        : (contact?.displayName || (isShuttle ? SHUTTLE_CHAT_TITLE : (group ? 'קבוצה' : chatId)));
+      const title = rawGroupName
+        || (contact?.displayName || (isShuttle ? SHUTTLE_CHAT_TITLE : (group ? 'קבוצה' : chatId)));
       const subtitle = lastMessage ? this.getMessagePreview(lastMessage) : (group ? 'אין הודעות בקבוצה' : '');
       const lastTimestamp = lastMessage?.timestamp ?? 0;
       const unread = unreadMap[chatId] ?? 0;
@@ -618,7 +616,16 @@ export class ChatStoreService {
       for (const dbGroup of dbGroups) {
         const existing = groupsById.get(dbGroup.id);
         if (!existing || (dbGroup.updatedAt || 0) >= (existing.updatedAt || 0)) {
-          groupsById.set(dbGroup.id, dbGroup);
+          // Preserve a real cached name when the DB name is just the group ID.
+          if (
+            existing &&
+            !this.isGroupNameLikeId(existing.name, existing.id) &&
+            this.isGroupNameLikeId(dbGroup.name, dbGroup.id)
+          ) {
+            groupsById.set(dbGroup.id, { ...dbGroup, name: existing.name });
+          } else {
+            groupsById.set(dbGroup.id, dbGroup);
+          }
           changed = true;
         }
       }

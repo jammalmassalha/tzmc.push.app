@@ -1088,7 +1088,7 @@ export class MysqlLogsService {
         `INSERT INTO \`ChatGroups\` (\`GroupId\`, \`GroupName\`, \`CreatedBy\`, \`Type\`, \`CreatedAt\`, \`UpdatedAt\`)
          VALUES (?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
-           \`GroupName\` = VALUES(\`GroupName\`),
+           \`GroupName\` = IF(VALUES(\`GroupName\`) != \`GroupId\`, VALUES(\`GroupName\`), \`GroupName\`),
            \`CreatedBy\` = COALESCE(VALUES(\`CreatedBy\`), \`CreatedBy\`),
            \`Type\` = VALUES(\`Type\`),
            \`UpdatedAt\` = VALUES(\`UpdatedAt\`)`,
