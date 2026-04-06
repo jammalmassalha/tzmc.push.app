@@ -2416,7 +2416,13 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   };
 
   getPinnedChatIcon(chat: ChatListItem): string {
-    return ChatShellComponent.PINNED_ICON_MAP[chat.title] || 'chat';
+    const exact = ChatShellComponent.PINNED_ICON_MAP[chat.title];
+    if (exact) return exact;
+    // Fallback: match when the chat title starts with a known key (handles bilingual titles)
+    for (const [key, icon] of Object.entries(ChatShellComponent.PINNED_ICON_MAP)) {
+      if (chat.title.startsWith(key)) return icon;
+    }
+    return 'chat';
   }
 
   chatAvatarThumb(chat: ChatListItem): string {
