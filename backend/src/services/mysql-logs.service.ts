@@ -265,6 +265,7 @@ export class MysqlLogsService {
   private dedupIndexReady = false;
   private communityGroupsTablesReady = false;
   private chatGroupsTablesReady = false;
+  private messageActivitiesTableReady = false;
 
   constructor(config: MysqlLogsConfig) {
     this.tableName = normalizeTableName(config.table);
@@ -1249,6 +1250,80 @@ export class MysqlLogsService {
       console.warn('[MYSQL] seedChatGroupsFromRuntime warning:', message);
     }
     return seeded;
+  }
+
+  // ─── MessageActivities audit table ──────────────────────────────────────────
+
+  async ensureMessageActivitiesTable(): Promise<void> {
+    if (this.messageActivitiesTableReady) return;
+    try {
+      await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`MessageActivities\` (
+          \`Id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          \`ActionType\` VARCHAR(50) NOT NULL,
+          \`MessageId\` VARCHAR(255) DEFAULT NULL,
+          \`Sender\` VARCHAR(100) NOT NULL,
+          \`Recipient\` VARCHAR(255) DEFAULT NULL,
+          \`GroupId\` VARCHAR(255) DEFAULT NULL,
+          \`Body\` TEXT DEFAULT NULL,
+          \`ImageUrl\` TEXT DEFAULT NULL,
+          \`FileUrl\` TEXT DEFAULT NULL,
+          \`Emoji\` VARCHAR(50) DEFAULT NULL,
+          \`TargetMessageId\` VARCHAR(255) DEFAULT NULL,
+          \`ActionTimestamp\` BIGINT NOT NULL,
+          \`CreatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (\`Id\`),
+          INDEX \`idx_ma_sender\` (\`Sender\`(50)),
+          INDEX \`idx_ma_action_type\` (\`ActionType\`),
+          INDEX \`idx_ma_message_id\` (\`MessageId\`(100)),
+          INDEX \`idx_ma_group_id\` (\`GroupId\`(100)),
+          INDEX \`idx_ma_created_at\` (\`CreatedAt\`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+      this.messageActivitiesTableReady = true;
+      console.log('[MYSQL] MessageActivities table ensured.');
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.warn('[MYSQL] ensureMessageActivitiesTable warning:', message);
+    }
+  }
+
+  async insertMessageActivity(activity: {
+    actionType: string;
+    messageId?: string;
+    sender: string;
+    recipient?: string;
+    groupId?: string;
+    body?: string;
+    imageUrl?: string;
+    fileUrl?: string;
+    emoji?: string;
+    targetMessageId?: string;
+    actionTimestamp?: number;
+  }): Promise<void> {
+    await this.ensureMessageActivitiesTable();
+    const actionType = toTrimmedString(activity.actionType) || 'unknown';
+    const messageId = toTrimmedString(activity.messageId) || null;
+    const sender = toTrimmedString(activity.sender) || 'unknown';
+    const recipient = toTrimmedString(activity.recipient) || null;
+    const groupId = toTrimmedString(activity.groupId) || null;
+    const body = activity.body != null ? String(activity.body) : null;
+    const imageUrl = toTrimmedString(activity.imageUrl) || null;
+    const fileUrl = toTrimmedString(activity.fileUrl) || null;
+    const emoji = toTrimmedString(activity.emoji) || null;
+    const targetMessageId = toTrimmedString(activity.targetMessageId) || null;
+    const actionTimestamp = Number(activity.actionTimestamp) || Date.now();
+    try {
+      await this.pool.execute(
+        `INSERT INTO \`MessageActivities\`
+           (\`ActionType\`, \`MessageId\`, \`Sender\`, \`Recipient\`, \`GroupId\`, \`Body\`, \`ImageUrl\`, \`FileUrl\`, \`Emoji\`, \`TargetMessageId\`, \`ActionTimestamp\`)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [actionType, messageId, sender, recipient, groupId, body, imageUrl, fileUrl, emoji, targetMessageId, actionTimestamp]
+      );
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.error('[MYSQL] insertMessageActivity error:', message);
+    }
   }
 
 }

@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.61'; // Fix: restore content in semantic dedup fingerprints (read-side only); DB insert dedup remains [From,To,DateTime]
+const SERVER_VERSION = '1.62'; // Add MessageActivities audit table for tracking user message actions (create, edit, delete, reaction)
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',
@@ -2686,6 +2686,20 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         const senderForPush = isGroup ? groupId : user;
         const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, { messageId });
         recentProcessedReplyMessages.set(messageId, Date.now());
+
+        // Audit: log message creation to MessageActivities table (fire-and-forget).
+        void mysqlLogsService.insertMessageActivity({
+            actionType: 'message',
+            messageId,
+            sender: user,
+            recipient: groupId || (originalSender || ''),
+            groupId: groupId || null,
+            body: reply || null,
+            imageUrl: imageUrl || null,
+            fileUrl: fileUrl || null,
+            actionTimestamp: Date.now()
+        }).catch(() => {});
+
         return { status: 'success', details: result };
     } catch (error) {
         recentProcessedReplyMessages.delete(messageId);
@@ -2826,6 +2840,19 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
             allowSecondAttempt: false
         })
         : { success: 0, failed: 0 };
+
+    // Audit: log reaction to MessageActivities table (fire-and-forget).
+    void mysqlLogsService.insertMessageActivity({
+        actionType: 'reaction',
+        messageId: reactionId,
+        sender: normalizedReactor,
+        recipient: normalizedTargetUser || null,
+        groupId: groupId || null,
+        emoji: normalizedEmoji || null,
+        targetMessageId: normalizedTargetMessageId || null,
+        actionTimestamp: Date.now()
+    }).catch(() => {});
+
     return { status: 'success', details: result };
 }
 
@@ -5784,6 +5811,16 @@ app.post(
             messageId
         );
 
+        // Audit: log message deletion to MessageActivities table (fire-and-forget).
+        void mysqlLogsService.insertMessageActivity({
+            actionType: 'delete-action',
+            messageId,
+            sender,
+            recipient: recipients.join(','),
+            groupId: groupId || null,
+            actionTimestamp: deletedAt
+        }).catch(() => {});
+
         res.json({ status: 'success', details: result });
     } catch (e) {
         console.error('[DELETE ERROR]', e);
@@ -5875,6 +5912,17 @@ app.post(
             groupId || sender,
             { messageId, skipBadge: true }
         );
+
+        // Audit: log message edit to MessageActivities table (fire-and-forget).
+        void mysqlLogsService.insertMessageActivity({
+            actionType: 'edit-action',
+            messageId,
+            sender,
+            recipient: recipients.join(','),
+            groupId: groupId || null,
+            body: editedBody || null,
+            actionTimestamp: editedAt
+        }).catch(() => {});
 
         res.json({ status: 'success', details: result });
     } catch (e) {
