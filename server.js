@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.63'; // Move insertMessageActivity before log/push — audit is recorded before queue and notification dispatch
+const SERVER_VERSION = '1.64'; // Add insertMessageActivity audit for ToSend queue messages
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',
@@ -7407,6 +7407,21 @@ async function checkOutgoingQueue() {
                         longText: bodyText
                     }
                 };
+
+                // 0.5 Audit: record the queue message in MessageActivities
+                for (const recipient of targetUsers) {
+                    void mysqlLogsService.insertMessageActivity({
+                        actionType: 'queue-message',
+                        messageId,
+                        sender: senderName,
+                        recipient,
+                        groupId: null,
+                        body: bodyText || null,
+                        imageUrl: null,
+                        fileUrl: null,
+                        actionTimestamp: Date.now()
+                    }).catch(() => {});
+                }
 
                 // 1. Add to Polling Queue
                 const pollingMessage = {
