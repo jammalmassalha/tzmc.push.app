@@ -1335,6 +1335,20 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     };
   }
 
+  isVersionUpdateMessage(message: ChatMessage): boolean {
+    return String(message.recordType || '').trim() === 'version-update';
+  }
+
+  async triggerAppReset(): Promise<void> {
+    try {
+      await this.store.forceSyncAllMessagesAndClearCache();
+      this.snackBar.open('האפליקציה עודכנה בהצלחה.', 'סגור', { duration: 2200 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'העדכון נכשל. נסה שוב.';
+      this.snackBar.open(message, 'סגור', { duration: 2800 });
+    }
+  }
+
   onMessagesPanelScroll(): void {
     this.tryLoadOlderMessagesOnScroll();
     this.updateStickyMessageDateFromViewport();

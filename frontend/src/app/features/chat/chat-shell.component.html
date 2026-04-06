@@ -795,7 +795,23 @@
                   </a>
                 }
 
-                @if (shuttleOrderMessageCard(message); as shuttleCard) {
+                @if (isVersionUpdateMessage(message)) {
+                  <div class="version-update-card">
+                    <div class="version-update-card-icon">
+                      <mat-icon>system_update</mat-icon>
+                    </div>
+                    <div class="version-update-card-title">עדכון גרסה</div>
+                    <div class="version-update-card-body">{{ message.body }}</div>
+                    <button
+                      type="button"
+                      class="version-update-card-btn"
+                      [disabled]="store.syncing()"
+                      (click)="triggerAppReset()">
+                      <mat-icon>refresh</mat-icon>
+                      <span>עדכן ורענן את האפליקציה</span>
+                    </button>
+                  </div>
+                } @else if (shuttleOrderMessageCard(message); as shuttleCard) {
                   <div class="shuttle-message-card" [class.cancelled]="shuttleCard.cancelled">
                     <div class="shuttle-message-card-title">{{ shuttleCard.title }}</div>
                     <div class="shuttle-message-card-status">{{ shuttleCard.statusLabel }}</div>

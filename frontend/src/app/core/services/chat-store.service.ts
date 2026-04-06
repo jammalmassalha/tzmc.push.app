@@ -1308,6 +1308,44 @@ export class ChatStoreService {
     return result.notifiedUsers;
   }
 
+  private createVersionUpdateMessage(payload: Record<string, unknown>): void {
+    const senderName = String(payload['sender'] ?? 'מערכת').trim();
+    const chatId = this.normalizeChatId(senderName);
+    if (!chatId) return;
+    const messageId = String(payload['messageId'] ?? this.generateId('ver')).trim();
+    const bodyText = String(
+      payload['body'] ??
+      payload['shortText'] ??
+      payload['text'] ??
+      'גרסה חדשה זמינה – לחצו על הכפתור לעדכון.'
+    ).trim();
+    const existingMessages = this.messagesByChat()[chatId] ?? [];
+    if (existingMessages.some((m) => m.messageId === messageId)) return;
+
+    const message: ChatMessage = {
+      id: this.generateId('rec'),
+      messageId,
+      chatId,
+      sender: chatId,
+      senderDisplayName: senderName,
+      recordType: 'version-update',
+      body: bodyText,
+      imageUrl: null,
+      direction: 'incoming',
+      timestamp: Date.now(),
+      deliveryStatus: 'delivered'
+    };
+
+    this.appendMessage(message);
+    if (this.activeChatId() !== chatId) {
+      this.unreadByChat.update((map) => ({
+        ...map,
+        [chatId]: (map[chatId] ?? 0) + 1
+      }));
+    }
+    this.schedulePersist();
+  }
+
   canCurrentUserBackupGroupsToDb(): boolean {
     const normalizedUser = this.normalizeUser(this.currentUser() ?? '');
     if (!normalizedUser) return false;
@@ -8712,6 +8750,10 @@ export class ChatStoreService {
     const payloadType = String(payload['type'] ?? '').trim().toLowerCase();
     if (payloadType === 'subscription-auth-refresh') {
       this.refreshPushRegistrationForCurrentUser(true);
+      return;
+    }
+    if (payloadType === 'version-update') {
+      this.createVersionUpdateMessage(payload);
       return;
     }
     const numericGroupUpdatedAt = Number(payload['groupUpdatedAt']);

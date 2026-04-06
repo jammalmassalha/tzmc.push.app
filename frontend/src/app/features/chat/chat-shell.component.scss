@@ -1706,6 +1706,78 @@ mat-chip:not(.offline) {
   line-height: 16px;
 }
 
+.version-update-card {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(33, 150, 83, 0.28);
+  background: linear-gradient(180deg, rgba(240, 253, 244, 0.98) 0%, rgba(220, 252, 231, 0.95) 100%);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.version-update-card-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(33, 150, 83, 0.13);
+  display: grid;
+  place-items: center;
+  color: #1b7a44;
+
+  mat-icon {
+    font-size: 26px;
+    width: 26px;
+    height: 26px;
+  }
+}
+
+.version-update-card-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1a5632;
+}
+
+.version-update-card-body {
+  font-size: 12.5px;
+  color: #3a6b4a;
+  line-height: 1.45;
+}
+
+.version-update-card-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 8px 18px;
+  border-radius: 999px;
+  border: none;
+  background: #1b7a44;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease;
+
+  &:hover:not(:disabled) {
+    background: #15633a;
+  }
+
+  &:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  mat-icon {
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+  }
+}
+
 .shuttle-message-card {
   width: 100%;
   border-radius: 12px;
