@@ -366,6 +366,12 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     );
   });
 
+  /** Pinned chats displayed as compact icon chips at the top */
+  readonly pinnedChats = computed(() => this.filteredChats().filter((c) => c.pinned));
+
+  /** Non-pinned chats for the main virtual-scroll list */
+  readonly unpinnedChats = computed(() => this.filteredChats().filter((c) => !c.pinned));
+
   readonly composerPlaceholder = computed(() => {
     const activeChat = this.store.activeChat();
     if (!activeChat) {
@@ -2397,6 +2403,20 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     const source = String(chat.title || chat.id || '').trim();
     if (!source) return '?';
     return source.charAt(0).toUpperCase();
+  }
+
+  /** Map pinned chat titles to Material Design icon names for the compact pinned row. */
+  private static readonly PINNED_ICON_MAP: Record<string, string> = {
+    'דוברות': 'campaign',
+    'ציפי': 'support_agent',
+    'מוקד איחוד - קריאות': 'local_hospital',
+    'הסעות': 'directions_bus',
+    'בדיקה - דוברות': 'science',
+    'הזמנת הסעה': 'directions_bus',
+  };
+
+  getPinnedChatIcon(chat: ChatListItem): string {
+    return ChatShellComponent.PINNED_ICON_MAP[chat.title] || 'chat';
   }
 
   chatAvatarThumb(chat: ChatListItem): string {

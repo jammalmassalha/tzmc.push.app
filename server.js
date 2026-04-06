@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.65'; // Add GET /message-activities endpoint to sync all MessageActivities data
+const SERVER_VERSION = '1.66'; // Pinned chats compact icon row UI
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',

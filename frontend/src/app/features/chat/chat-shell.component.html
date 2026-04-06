@@ -105,11 +105,30 @@
       @if (!filteredChats().length) {
         <div class="empty-chat-list">אין צ׳אטים פעילים. צור צ׳אט חדש כדי להתחיל.</div>
       } @else {
+        @if (pinnedChats().length) {
+          <div class="pinned-row">
+            @for (chat of pinnedChats(); track chat.id) {
+              <button
+                type="button"
+                class="pinned-chip"
+                [class.active]="store.activeChatId() === chat.id"
+                (click)="openChat(chat.id)">
+                <span class="pinned-chip-icon">
+                  <mat-icon>{{ getPinnedChatIcon(chat) }}</mat-icon>
+                  @if (chat.unread > 0) {
+                    <span class="pinned-chip-badge">{{ chat.unread > 9 ? '9+' : chat.unread }}</span>
+                  }
+                </span>
+                <span class="pinned-chip-label">{{ chat.title }}</span>
+              </button>
+            }
+          </div>
+        }
         <cdk-virtual-scroll-viewport class="contacts-viewport" [itemSize]="84" [minBufferPx]="336" [maxBufferPx]="840">
           <button
             type="button"
             class="chat-item"
-            *cdkVirtualFor="let chat of filteredChats(); trackBy: trackByChatId"
+            *cdkVirtualFor="let chat of unpinnedChats(); trackBy: trackByChatId"
             [class.active]="store.activeChatId() === chat.id"
             (click)="openChat(chat.id)">
             <div class="chat-item-main">
