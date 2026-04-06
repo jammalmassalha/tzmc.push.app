@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.62'; // Add MessageActivities audit table for tracking user message actions (create, edit, delete, reaction)
+const SERVER_VERSION = '1.63'; // Move insertMessageActivity before log/push — audit is recorded before queue and notification dispatch
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',
@@ -2681,12 +2681,6 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             groupSenderName: senderLabel,
             ...messageMetadata
         };
-        await addToQueue(targetToNotify, pollingMessage);
-
-        const senderForPush = isGroup ? groupId : user;
-        const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, { messageId });
-        recentProcessedReplyMessages.set(messageId, Date.now());
-
         // Audit: log message creation to MessageActivities table (fire-and-forget).
         void mysqlLogsService.insertMessageActivity({
             actionType: 'message',
@@ -2699,6 +2693,12 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             fileUrl: fileUrl || null,
             actionTimestamp: Date.now()
         }).catch(() => {});
+
+        await addToQueue(targetToNotify, pollingMessage);
+
+        const senderForPush = isGroup ? groupId : user;
+        const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, { messageId });
+        recentProcessedReplyMessages.set(messageId, Date.now());
 
         return { status: 'success', details: result };
     } catch (error) {
@@ -2831,16 +2831,6 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
         return { status: 'success', details: { success: 0, failed: 0 } };
     }
 
-    await addToQueue(membersToNotify, reactionRecord);
-    const result = adminMembersToNotify.length
-        ? await sendPushNotificationToUser(adminMembersToNotify, notificationData, groupId || normalizedReactor, {
-            messageId: reactionId,
-            skipBadge: true,
-            singlePerUser: true,
-            allowSecondAttempt: false
-        })
-        : { success: 0, failed: 0 };
-
     // Audit: log reaction to MessageActivities table (fire-and-forget).
     void mysqlLogsService.insertMessageActivity({
         actionType: 'reaction',
@@ -2852,6 +2842,16 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
         targetMessageId: normalizedTargetMessageId || null,
         actionTimestamp: Date.now()
     }).catch(() => {});
+
+    await addToQueue(membersToNotify, reactionRecord);
+    const result = adminMembersToNotify.length
+        ? await sendPushNotificationToUser(adminMembersToNotify, notificationData, groupId || normalizedReactor, {
+            messageId: reactionId,
+            skipBadge: true,
+            singlePerUser: true,
+            allowSecondAttempt: false
+        })
+        : { success: 0, failed: 0 };
 
     return { status: 'success', details: result };
 }
@@ -5770,6 +5770,17 @@ app.post(
             groupUpdatedAt: Number.isFinite(resolvedGroupUpdatedAt) ? resolvedGroupUpdatedAt : deletedAt,
             groupType: resolvedGroupType
         };
+
+        // Audit: log message deletion to MessageActivities table (fire-and-forget).
+        void mysqlLogsService.insertMessageActivity({
+            actionType: 'delete-action',
+            messageId,
+            sender,
+            recipient: recipients.join(','),
+            groupId: groupId || null,
+            actionTimestamp: deletedAt
+        }).catch(() => {});
+
         await addToQueue(recipients, actionRecord);
 
         const notificationPayload = {
@@ -5810,16 +5821,6 @@ app.post(
             '',
             messageId
         );
-
-        // Audit: log message deletion to MessageActivities table (fire-and-forget).
-        void mysqlLogsService.insertMessageActivity({
-            actionType: 'delete-action',
-            messageId,
-            sender,
-            recipient: recipients.join(','),
-            groupId: groupId || null,
-            actionTimestamp: deletedAt
-        }).catch(() => {});
 
         res.json({ status: 'success', details: result });
     } catch (e) {
@@ -5892,6 +5893,18 @@ app.post(
             groupUpdatedAt: Number.isFinite(resolvedGroupUpdatedAt) ? resolvedGroupUpdatedAt : editedAt,
             groupType: resolvedGroupType
         };
+
+        // Audit: log message edit to MessageActivities table (fire-and-forget).
+        void mysqlLogsService.insertMessageActivity({
+            actionType: 'edit-action',
+            messageId,
+            sender,
+            recipient: recipients.join(','),
+            groupId: groupId || null,
+            body: editedBody || null,
+            actionTimestamp: editedAt
+        }).catch(() => {});
+
         await addToQueue(recipients, actionRecord);
 
         const notificationPayload = {
@@ -5912,17 +5925,6 @@ app.post(
             groupId || sender,
             { messageId, skipBadge: true }
         );
-
-        // Audit: log message edit to MessageActivities table (fire-and-forget).
-        void mysqlLogsService.insertMessageActivity({
-            actionType: 'edit-action',
-            messageId,
-            sender,
-            recipient: recipients.join(','),
-            groupId: groupId || null,
-            body: editedBody || null,
-            actionTimestamp: editedAt
-        }).catch(() => {});
 
         res.json({ status: 'success', details: result });
     } catch (e) {
