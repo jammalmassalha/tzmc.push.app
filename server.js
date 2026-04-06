@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.68'; // Allow concurrent sessions for same user on multiple devices
+const SERVER_VERSION = '1.69'; // Echo sent messages to sender's other devices for real-time multi-device sync
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',
@@ -2710,6 +2710,34 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, { messageId });
         recentProcessedReplyMessages.set(messageId, Date.now());
 
+        // ── Self-echo: notify sender's other devices so sent messages appear in real time ──
+        if (senderUserKey) {
+            const selfEchoMessage = {
+                ...pollingMessage,
+                toUser: isGroup ? undefined : (normalizeUserKey(originalSender) || undefined)
+            };
+            void addToQueue(senderUserKey, selfEchoMessage).catch(() => {});
+
+            const selfEchoNotification = {
+                messageId,
+                title: '',
+                body: { shortText: '', longText: '' },
+                image: imageUrl,
+                data: {
+                    ...(notificationExtraData || {}),
+                    skipNotification: true,
+                    toUser: isGroup ? undefined : (normalizeUserKey(originalSender) || undefined),
+                    messageText: reply || null,
+                    imageUrl: imageUrl || null,
+                    fileUrl: fileUrl || null
+                }
+            };
+            void sendPushNotificationToUser(senderUserKey, selfEchoNotification, senderForPush, {
+                messageId,
+                skipBadge: true
+            }).catch(() => {});
+        }
+
         return { status: 'success', details: result };
     } catch (error) {
         recentProcessedReplyMessages.delete(messageId);
@@ -2862,6 +2890,26 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
             allowSecondAttempt: false
         })
         : { success: 0, failed: 0 };
+
+    // ── Self-echo: notify reactor's other devices ──
+    if (normalizedReactor) {
+        void addToQueue(normalizedReactor, reactionRecord).catch(() => {});
+        const selfEchoReactionNotification = {
+            messageId: reactionId,
+            title: '',
+            body: { shortText: '', longText: '' },
+            data: {
+                ...reactionRecord,
+                skipNotification: true
+            }
+        };
+        void sendPushNotificationToUser(normalizedReactor, selfEchoReactionNotification, groupId || normalizedReactor, {
+            messageId: reactionId,
+            skipBadge: true,
+            singlePerUser: true,
+            allowSecondAttempt: false
+        }).catch(() => {});
+    }
 
     return { status: 'success', details: result };
 }
@@ -5812,6 +5860,15 @@ app.post(
             { messageId, skipBadge: true }
         );
 
+        // ── Self-echo: notify sender's other devices ──
+        if (sender) {
+            void addToQueue(sender, actionRecord).catch(() => {});
+            void sendPushNotificationToUser(sender, notificationPayload, groupId || sender, {
+                messageId,
+                skipBadge: true
+            }).catch(() => {});
+        }
+
         const deleteLogDetails = [
             'type=delete-action',
             `messageId=${messageId}`,
@@ -5935,6 +5992,15 @@ app.post(
             groupId || sender,
             { messageId, skipBadge: true }
         );
+
+        // ── Self-echo: notify sender's other devices ──
+        if (sender) {
+            void addToQueue(sender, actionRecord).catch(() => {});
+            void sendPushNotificationToUser(sender, notificationPayload, groupId || sender, {
+                messageId,
+                skipBadge: true
+            }).catch(() => {});
+        }
 
         res.json({ status: 'success', details: result });
     } catch (e) {
