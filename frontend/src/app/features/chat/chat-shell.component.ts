@@ -1342,7 +1342,8 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   async triggerAppReset(): Promise<void> {
     try {
       await this.store.forceSyncAllMessagesAndClearCache();
-      this.snackBar.open('האפליקציה עודכנה בהצלחה.', 'סגור', { duration: 2200 });
+      this.snackBar.open('האפליקציה עודכנה בהצלחה. טוען מחדש...', 'סגור', { duration: 2200 });
+      setTimeout(() => window.location.reload(), 1200);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'העדכון נכשל. נסה שוב.';
       this.snackBar.open(message, 'סגור', { duration: 2800 });
