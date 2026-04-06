@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.66'; // Pinned chats compact icon row UI
+const SERVER_VERSION = '1.68'; // Allow concurrent sessions for same user on multiple devices
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',
@@ -1194,7 +1194,7 @@ let shuttleReminderState = {
 let shuttleReminderSentAtByKey = {};
 const shuttleReminderKnownUsersCache = { at: 0, users: [] };
 const shuttleReminderOrdersCacheByUser = {};
-const activeSessionIdByUser = new Map();
+const activeSessionIdsByUser = new Map();
 const authSessionRateLimitByIp = new Map();
 const authSessionRateLimitByUser = new Map();
 const authCodeRequestRateLimitByIp = new Map();
@@ -2236,7 +2236,10 @@ function createSessionToken(user) {
     const sessionId = generateRandomToken(18);
     const csrfToken = generateRandomToken(24);
     const expiresAt = Date.now() + SESSION_COOKIE_TTL_MS;
-    activeSessionIdByUser.set(normalizedUser, sessionId);
+    if (!activeSessionIdsByUser.has(normalizedUser)) {
+        activeSessionIdsByUser.set(normalizedUser, new Set());
+    }
+    activeSessionIdsByUser.get(normalizedUser).add(sessionId);
     const payloadObject = {
         user: normalizedUser,
         expiresAt,
@@ -2255,7 +2258,11 @@ function createSessionToken(user) {
     const payload = encodeBase64Url(JSON.stringify(payloadObject));
     const signature = signSessionPayload(payload);
     if (!signature) {
-        activeSessionIdByUser.delete(normalizedUser);
+        const userSessions = activeSessionIdsByUser.get(normalizedUser);
+        if (userSessions) {
+            userSessions.delete(sessionId);
+            if (userSessions.size === 0) activeSessionIdsByUser.delete(normalizedUser);
+        }
         return null;
     }
     return {
@@ -2308,12 +2315,15 @@ function getSessionFromToken(rawToken) {
             return null;
         }
 
-        const activeSessionId = String(activeSessionIdByUser.get(user) || '').trim();
-        if (activeSessionId && activeSessionId !== sessionId) {
+        const userSessions = activeSessionIdsByUser.get(user);
+        if (userSessions && userSessions.size > 0 && !userSessions.has(sessionId)) {
             return null;
         }
-        if (!activeSessionId) {
-            activeSessionIdByUser.set(user, sessionId);
+        if (!userSessions || !userSessions.has(sessionId)) {
+            if (!activeSessionIdsByUser.has(user)) {
+                activeSessionIdsByUser.set(user, new Set());
+            }
+            activeSessionIdsByUser.get(user).add(sessionId);
         }
         return {
             user,
@@ -5458,7 +5468,7 @@ registerAuthController(app, {
     fetchWithRetry,
     buildGoogleSheetGetUrl,
     googleSheetUrl: GOOGLE_SHEET_URL,
-    activeSessionIdByUser,
+    activeSessionIdsByUser,
     clearSessionCookie,
     SESSION_USER_PATTERN,
     ensureRegistrationFlowOnly,

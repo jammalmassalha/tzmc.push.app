@@ -5,7 +5,7 @@ function registerAuthController(app, deps = {}) {
         fetchWithRetry,
         buildGoogleSheetGetUrl,
         googleSheetUrl,
-        activeSessionIdByUser,
+        activeSessionIdsByUser,
         clearSessionCookie,
         SESSION_USER_PATTERN,
         ensureRegistrationFlowOnly,
@@ -313,9 +313,10 @@ function registerAuthController(app, deps = {}) {
     app.delete(['/auth/session', '/notify/auth/session'], (req, res) => {
         const authSession = req.authSession && typeof req.authSession === 'object' ? req.authSession : null;
         if (authSession && authSession.user) {
-            const currentSessionId = String(activeSessionIdByUser.get(authSession.user) || '').trim();
-            if (!currentSessionId || currentSessionId === String(authSession.sessionId || '')) {
-                activeSessionIdByUser.delete(authSession.user);
+            const userSessions = activeSessionIdsByUser.get(authSession.user);
+            if (userSessions) {
+                userSessions.delete(String(authSession.sessionId || ''));
+                if (userSessions.size === 0) activeSessionIdsByUser.delete(authSession.user);
             }
         }
         clearSessionCookie(res, req);
