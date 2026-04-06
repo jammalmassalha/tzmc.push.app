@@ -1132,6 +1132,18 @@ class MysqlLogsService {
             console.error('[MYSQL] insertMessageActivity error:', message);
         }
     }
+    async getAllMessageActivities() {
+        await this.ensureMessageActivitiesTable();
+        try {
+            const [rows] = await this.pool.execute(`SELECT * FROM \`MessageActivities\` ORDER BY \`Id\` ASC`);
+            return rows;
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.error('[MYSQL] getAllMessageActivities error:', message);
+            return [];
+        }
+    }
 }
 exports.MysqlLogsService = MysqlLogsService;
 function createMysqlLogsServiceFromEnv(env = process.env) {
