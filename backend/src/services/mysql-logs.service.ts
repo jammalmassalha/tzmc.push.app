@@ -1326,6 +1326,20 @@ export class MysqlLogsService {
     }
   }
 
+  async getAllMessageActivities(): Promise<Record<string, unknown>[]> {
+    await this.ensureMessageActivitiesTable();
+    try {
+      const [rows] = await this.pool.execute(
+        `SELECT * FROM \`MessageActivities\` ORDER BY \`Id\` ASC`
+      );
+      return rows as Record<string, unknown>[];
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.error('[MYSQL] getAllMessageActivities error:', message);
+      return [];
+    }
+  }
+
 }
 
 export function createMysqlLogsServiceFromEnv(env: NodeJS.ProcessEnv = process.env): MysqlLogsService {

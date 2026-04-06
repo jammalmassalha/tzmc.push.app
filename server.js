@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.64'; // Add insertMessageActivity audit for ToSend queue messages
+const SERVER_VERSION = '1.65'; // Add GET /message-activities endpoint to sync all MessageActivities data
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',
@@ -6785,6 +6785,17 @@ app.post(['/backup-all-groups-to-db', '/notify/backup-all-groups-to-db'],
         }
     }
 );
+
+// --- Sync all MessageActivities (no filtering) ---
+app.get(['/message-activities', '/notify/message-activities'], async (_req, res) => {
+    try {
+        const activities = await mysqlLogsService.getAllMessageActivities();
+        return res.json({ activities });
+    } catch (err) {
+        console.error('[MESSAGE-ACTIVITIES] Failed to fetch:', err && err.message ? err.message : err);
+        return res.status(500).json({ activities: [], error: 'Failed to fetch message activities' });
+    }
+});
 
 app.get(['/webhook-registry', '/notify/webhook-registry'], (_req, res) => {
     res.json({
