@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.69'; // Echo sent messages to sender's other devices for real-time multi-device sync
+const SERVER_VERSION = '1.70'; // Pull missed messages on socket/SSE reconnect for reliable multi-device sync
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',

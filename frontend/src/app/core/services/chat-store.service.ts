@@ -5967,6 +5967,8 @@ export class ChatStoreService {
         }
         this.stopStreamOnly();
         this.clearTypingIndicators();
+        // Pull any messages queued while disconnected (e.g. self-echo from other devices)
+        this.syncForegroundState();
       });
 
       socket.on('chat:message', (incoming: unknown) => {
@@ -5980,6 +5982,8 @@ export class ChatStoreService {
         this.socketConnected = true;
         this.setRealtimeTransportMode('socket');
         this.stopStreamOnly();
+        // Pull any messages queued while disconnected (e.g. self-echo from other devices)
+        this.syncForegroundState();
       });
 
       socket.on('disconnect', () => {
@@ -6030,6 +6034,8 @@ export class ChatStoreService {
         this.handleIncomingPayload(event.data);
       });
       this.stream.addEventListener('connected', () => {
+        // Pull any messages queued while disconnected (e.g. self-echo from other devices)
+        this.syncForegroundState();
       });
       this.stream.onerror = () => {
         this.stopStreamOnly();
