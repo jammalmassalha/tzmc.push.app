@@ -1446,7 +1446,7 @@
     <div class="image-preview-backdrop" (click)="closeFullImage()">
       <div class="image-preview-dialog" (click)="$event.stopPropagation()">
         <div class="image-preview-toolbar">
-          <button type="button" class="image-preview-action" (click)="downloadPreviewImage()" aria-label="Open in new tab">
+          <button type="button" class="image-preview-action" (click)="openPreviewImageInNewTab()" aria-label="Open in new tab">
             <mat-icon>open_in_new</mat-icon>
           </button>
           <button type="button" class="image-preview-action" (click)="closeFullImage()" aria-label="Close">

@@ -2517,7 +2517,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     this.imagePreviewLoaded.set(true);
   }
 
-  downloadPreviewImage(): void {
+  openPreviewImageInNewTab(): void {
     const url = this.imagePreviewUrl();
     if (!url) return;
     window.open(url, '_blank', 'noopener,noreferrer');
