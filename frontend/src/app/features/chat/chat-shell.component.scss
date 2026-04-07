@@ -1112,6 +1112,7 @@ mat-chip:not(.offline) {
   place-items: center;
   padding: 0;
   background: rgba(11, 20, 26, 0.92);
+  cursor: pointer;
 }
 
 .image-preview-dialog {
@@ -1181,6 +1182,7 @@ mat-chip:not(.offline) {
   display: block;
   opacity: 0;
   transition: opacity 220ms ease;
+  cursor: default;
 }
 
 .image-preview-media.loaded .image-preview-image {

@@ -1444,8 +1444,8 @@
 
   @if (imagePreviewUrl(); as previewUrl) {
     <div class="image-preview-backdrop" (click)="closeFullImage()">
-      <div class="image-preview-dialog" (click)="$event.stopPropagation()">
-        <div class="image-preview-toolbar">
+      <div class="image-preview-dialog">
+        <div class="image-preview-toolbar" (click)="$event.stopPropagation()">
           <button type="button" class="image-preview-action" (click)="openPreviewImageInNewTab()" aria-label="Open in new tab">
             <mat-icon>open_in_new</mat-icon>
           </button>
@@ -1461,6 +1461,7 @@
             alt="Image preview"
             loading="eager"
             decoding="async"
+            (click)="$event.stopPropagation()"
             (load)="onImagePreviewLoaded()"
             (error)="onImagePreviewLoaded()" />
         </div>
