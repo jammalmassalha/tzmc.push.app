@@ -1395,27 +1395,7 @@ mat-chip:not(.offline) {
   line-height: 23px;
 }
 
-.shuttle-orders-dashboard {
-  margin: 6px 8px 10px;
-  padding: 35px 10px 10px;
-  border-radius: 16px;
-  background: linear-gradient(180deg, #f7f9fffa, #eff4fff5);
-  border: 1px solid rgba(71, 97, 188, .18);
-  box-shadow: 0 10px 24px #14287017;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  top: auto;
-  z-index: 2;
-  height: calc(100vh - 252px);
-  min-height: 0;
-  overflow: auto;
-  overscroll-behavior: contain;
-  position: fixed;
-  left: 15px;
-  width: calc(100% - 30px);
-  right: 15px;
-}
+
 
 .messages-panel.shuttle-no-scroll .shuttle-orders-dashboard {
   flex: 1 1 auto;
@@ -3034,7 +3014,50 @@ mat-chip:not(.offline) {
   font-size: 11px;
   color: #677084;
 }
-
+.shuttle-orders-dashboard {
+  margin: 6px 8px 10px;
+  padding: 35px 10px 10px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #f7f9fffa, #eff4fff5);
+  border: 1px solid rgba(71, 97, 188, .18);
+  box-shadow: 0 10px 24px #14287017;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  top: auto;
+  z-index: 2;
+  height: calc(100vh - 252px);
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  position: fixed;
+  left: 15px;
+  width: calc(100% - 400px);
+  right: auto;
+}
+@media (max-width: 960px) {
+  .shuttle-orders-dashboard {
+    margin: 6px 8px 10px;
+    padding: 35px 10px 10px;
+    border-radius: 16px;
+    background: linear-gradient(180deg, #f7f9fffa, #eff4fff5);
+    border: 1px solid rgba(71, 97, 188, .18);
+    box-shadow: 0 10px 24px #14287017;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    top: auto;
+    z-index: 2;
+    height: calc(100vh - 252px);
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    position: fixed;
+    left: 15px;
+    width: calc(100% - 30px);
+    right: 15px;
+  }
+}
 @media (max-width: 960px) {
   .chat-root {
     --app-toolbar-height: 56px;
