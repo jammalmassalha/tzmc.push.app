@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.70'; // Pull missed messages on socket/SSE reconnect for reliable multi-device sync
+const SERVER_VERSION = '1.71'; // Fix multi-device sessions: always accept valid tokens, add session renewal on activity
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',
@@ -1029,6 +1029,7 @@ const SESSION_COOKIE_TTL_MS = Math.max(
     5 * 60 * 1000,
     Number(process.env.SESSION_COOKIE_TTL_MS || 30 * 24 * 60 * 60 * 1000) || 30 * 24 * 60 * 60 * 1000
 );
+const SESSION_RENEWAL_THRESHOLD_MS = Math.floor(SESSION_COOKIE_TTL_MS / 2);
 const SESSION_COOKIE_SAME_SITE = String(process.env.SESSION_COOKIE_SAMESITE || 'Lax').trim();
 const SESSION_COOKIE_SECURE = String(process.env.SESSION_COOKIE_SECURE || 'true').trim().toLowerCase() !== 'false';
 const SESSION_SIGNING_SECRET = String(
@@ -2315,16 +2316,14 @@ function getSessionFromToken(rawToken) {
             return null;
         }
 
-        const userSessions = activeSessionIdsByUser.get(user);
-        if (userSessions && userSessions.size > 0 && !userSessions.has(sessionId)) {
-            return null;
+        // Always accept a cryptographically valid token and track its sessionId.
+        // Previous logic rejected sessions not already in the in-memory Set, which
+        // caused the second device to be locked out after a server restart (only the
+        // first device to reconnect would get auto-added).
+        if (!activeSessionIdsByUser.has(user)) {
+            activeSessionIdsByUser.set(user, new Set());
         }
-        if (!userSessions || !userSessions.has(sessionId)) {
-            if (!activeSessionIdsByUser.has(user)) {
-                activeSessionIdsByUser.set(user, new Set());
-            }
-            activeSessionIdsByUser.get(user).add(sessionId);
-        }
+        activeSessionIdsByUser.get(user).add(sessionId);
         return {
             user,
             expiresAt,
@@ -5401,6 +5400,38 @@ app.use((req, _res, next) => {
     req.authUser = authSession && authSession.user ? authSession.user : '';
     next();
 });
+
+// ── Session renewal: extend active sessions so they stay alive indefinitely ──
+app.use((req, res, next) => {
+    const session = req.authSession;
+    if (!session || !session.user || !session.expiresAt) {
+        return next();
+    }
+    const remainingMs = Number(session.expiresAt) - Date.now();
+    if (remainingMs > SESSION_RENEWAL_THRESHOLD_MS) {
+        return next();
+    }
+    // Session is past the halfway point – issue a fresh token with a new TTL.
+    const renewed = createSessionToken(session.user);
+    if (!renewed) {
+        return next();
+    }
+    // Remove the old sessionId so the in-memory set doesn't grow unbounded.
+    const userSessions = activeSessionIdsByUser.get(session.user);
+    if (userSessions) {
+        userSessions.delete(String(session.sessionId || ''));
+        if (userSessions.size === 0) activeSessionIdsByUser.delete(session.user);
+    }
+    setSessionCookie(res, req, renewed.token, renewed.expiresAt);
+    req.authSession = {
+        user: session.user,
+        expiresAt: renewed.expiresAt,
+        sessionId: renewed.sessionId,
+        csrfToken: renewed.csrfToken
+    };
+    return next();
+});
+
 app.use(attachResolvedUser);
 
 app.use((req, res, next) => {
