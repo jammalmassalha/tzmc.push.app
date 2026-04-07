@@ -1102,6 +1102,95 @@ mat-chip:not(.offline) {
   display: block;
 }
 
+/* ── WhatsApp-style image preview modal ── */
+
+.image-preview-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  background: rgba(11, 20, 26, 0.92);
+}
+
+.image-preview-dialog {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.image-preview-toolbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 10px 14px;
+  z-index: 2;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.35) 0%, transparent 100%);
+}
+
+.image-preview-action {
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.88);
+  cursor: pointer;
+  transition: background 160ms ease;
+}
+
+.image-preview-action:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.image-preview-media {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.image-preview-skeleton {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, rgba(63, 75, 88, 0.95) 8%, rgba(102, 116, 133, 0.82) 18%, rgba(63, 75, 88, 0.95) 33%);
+  background-size: 200% 100%;
+  animation: avatar-shimmer 1.2s linear infinite;
+  filter: blur(1.2px);
+  transition: opacity 220ms ease;
+}
+
+.image-preview-image {
+  position: relative;
+  z-index: 1;
+  max-width: 92vw;
+  max-height: 92vh;
+  object-fit: contain;
+  display: block;
+  opacity: 0;
+  transition: opacity 220ms ease;
+}
+
+.image-preview-media.loaded .image-preview-image {
+  opacity: 1;
+}
+
+.image-preview-media.loaded .image-preview-skeleton {
+  opacity: 0;
+}
+
 .message-link {
   color: #1f4fc4;
   text-decoration: none;

@@ -482,6 +482,8 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   readonly stickyMessageTimestamp = signal<number | null>(null);
   readonly isMessagesPanelAtBottom = signal(true);
   readonly avatarPreview = signal<AvatarPreview | null>(null);
+  readonly imagePreviewUrl = signal<string | null>(null);
+  readonly imagePreviewLoaded = signal(false);
   readonly reactionTargetMessageId = signal<string | null>(null);
   readonly messageActionTarget = signal<ChatMessage | null>(null);
   readonly editingMessageTarget = signal<ChatMessage | null>(null);
@@ -2501,6 +2503,22 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   openFullImage(url: string): void {
+    if (!url) return;
+    this.imagePreviewLoaded.set(false);
+    this.imagePreviewUrl.set(url);
+  }
+
+  closeFullImage(): void {
+    this.imagePreviewLoaded.set(false);
+    this.imagePreviewUrl.set(null);
+  }
+
+  onImagePreviewLoaded(): void {
+    this.imagePreviewLoaded.set(true);
+  }
+
+  downloadPreviewImage(): void {
+    const url = this.imagePreviewUrl();
     if (!url) return;
     window.open(url, '_blank', 'noopener,noreferrer');
   }

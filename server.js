@@ -196,7 +196,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.71'; // Fix multi-device sessions: always accept valid tokens, add session renewal on activity
+const SERVER_VERSION = '1.72'; // WhatsApp-style image preview modal instead of window.open
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',

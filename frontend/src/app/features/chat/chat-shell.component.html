@@ -1442,6 +1442,32 @@
     </div>
   }
 
+  @if (imagePreviewUrl(); as previewUrl) {
+    <div class="image-preview-backdrop" (click)="closeFullImage()">
+      <div class="image-preview-dialog" (click)="$event.stopPropagation()">
+        <div class="image-preview-toolbar">
+          <button type="button" class="image-preview-action" (click)="downloadPreviewImage()" aria-label="Open in new tab">
+            <mat-icon>open_in_new</mat-icon>
+          </button>
+          <button type="button" class="image-preview-action" (click)="closeFullImage()" aria-label="Close">
+            <mat-icon>close</mat-icon>
+          </button>
+        </div>
+        <div class="image-preview-media" [class.loaded]="imagePreviewLoaded()">
+          <div class="image-preview-skeleton" aria-hidden="true"></div>
+          <img
+            class="image-preview-image"
+            [src]="previewUrl"
+            alt="Image preview"
+            loading="eager"
+            decoding="async"
+            (load)="onImagePreviewLoaded()"
+            (error)="onImagePreviewLoaded()" />
+        </div>
+      </div>
+    </div>
+  }
+
   @if (reactionDetailsPreview(); as details) {
     <div class="reaction-details-backdrop" (click)="closeReactionDetails()">
       <div class="reaction-details-dialog" (click)="$event.stopPropagation()">
