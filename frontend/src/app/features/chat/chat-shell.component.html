@@ -695,11 +695,43 @@
                     <span>ניהול קריאות – {{ helpdeskDb.myRole.department }}</span>
                     <span class="helpdesk-role-badge">{{ helpdeskDb.myRole.role }}</span>
                   </div>
-                  @if (!helpdeskDb.editorTickets || !helpdeskDb.editorTickets.length) {
-                    <div class="shuttle-orders-empty">אין קריאות במחלקה זו.</div>
+
+                  <!-- Editor sub-tabs: חדש / בתהליך / סגור -->
+                  <div class="helpdesk-editor-sub-tabs" role="tablist" aria-label="סינון קריאות">
+                    <button
+                      type="button"
+                      role="tab"
+                      class="helpdesk-editor-sub-tab"
+                      [class.active]="helpdeskEditorSubTab() === 'new'"
+                      [attr.aria-selected]="helpdeskEditorSubTab() === 'new'"
+                      (click)="setHelpdeskEditorSubTab('new')">
+                      חדש ({{ helpdeskEditorFilteredTickets(helpdeskDb.editorTickets, 'new').length }})
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      class="helpdesk-editor-sub-tab"
+                      [class.active]="helpdeskEditorSubTab() === 'in_progress'"
+                      [attr.aria-selected]="helpdeskEditorSubTab() === 'in_progress'"
+                      (click)="setHelpdeskEditorSubTab('in_progress')">
+                      בתהליך ({{ helpdeskEditorFilteredTickets(helpdeskDb.editorTickets, 'in_progress').length }})
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      class="helpdesk-editor-sub-tab"
+                      [class.active]="helpdeskEditorSubTab() === 'closed'"
+                      [attr.aria-selected]="helpdeskEditorSubTab() === 'closed'"
+                      (click)="setHelpdeskEditorSubTab('closed')">
+                      סגור ({{ helpdeskEditorFilteredTickets(helpdeskDb.editorTickets, 'closed').length }})
+                    </button>
+                  </div>
+
+                  @if (helpdeskEditorFilteredTickets(helpdeskDb.editorTickets, helpdeskEditorSubTab()).length === 0) {
+                    <div class="shuttle-orders-empty">אין קריאות בקטגוריה זו.</div>
                   } @else {
                     <div class="shuttle-orders-cards">
-                      @for (ticket of helpdeskDb.editorTickets; track ticket.id) {
+                      @for (ticket of helpdeskEditorFilteredTickets(helpdeskDb.editorTickets, helpdeskEditorSubTab()); track ticket.id) {
                         <article class="shuttle-order-card helpdesk-ticket-card helpdesk-editor-card" [class.ongoing]="ticket.status === 'open' || ticket.status === 'in_progress'" [class.past]="ticket.status === 'resolved' || ticket.status === 'closed'" role="button" tabindex="0" (click)="openHelpdeskTicketDetail(ticket)" (keydown.enter)="openHelpdeskTicketDetail(ticket)">
                           <div class="shuttle-order-card-top">
                             <span class="shuttle-order-status" [class.ongoing]="ticket.status === 'open' || ticket.status === 'in_progress'" [class.past]="ticket.status === 'resolved' || ticket.status === 'closed'">#{{ ticket.id }} · {{ helpdeskStatusDisplayLabel(ticket.status) }}</span>

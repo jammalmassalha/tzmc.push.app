@@ -449,6 +449,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     this.store.getHelpdeskTicketsLoading()
   );
   readonly helpdeskDashboardTab = signal<'ongoing' | 'past' | 'assigned' | 'editor'>('ongoing');
+  readonly helpdeskEditorSubTab = signal<'new' | 'in_progress' | 'closed'>('new');
   readonly isSubmittingHelpdeskTicket = signal(false);
   readonly expandedShuttleOperationsDates = signal<Set<string>>(new Set<string>());
   readonly shuttleBreadcrumbs = computed<ShuttleBreadcrumbStep[] | null>(() =>
@@ -1360,6 +1361,20 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
 
   setHelpdeskDashboardTab(tab: 'ongoing' | 'past' | 'assigned' | 'editor'): void {
     this.helpdeskDashboardTab.set(tab);
+  }
+
+  setHelpdeskEditorSubTab(tab: 'new' | 'in_progress' | 'closed'): void {
+    this.helpdeskEditorSubTab.set(tab);
+  }
+
+  helpdeskEditorFilteredTickets(tickets: any[] | null, subTab: 'new' | 'in_progress' | 'closed'): any[] {
+    if (!tickets) return [];
+    switch (subTab) {
+      case 'new': return tickets.filter((t: any) => t.status === 'open');
+      case 'in_progress': return tickets.filter((t: any) => t.status === 'in_progress');
+      case 'closed': return tickets.filter((t: any) => t.status === 'resolved' || t.status === 'closed');
+      default: return tickets;
+    }
   }
 
   async refreshHelpdeskTickets(): Promise<void> {
