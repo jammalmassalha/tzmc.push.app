@@ -65,6 +65,50 @@
       </div>
     </section>
 
+    <!-- Status History section -->
+    <mat-divider class="section-divider"></mat-divider>
+    <section class="history-section">
+      <div class="history-header">
+        <mat-icon>history</mat-icon>
+        <span>היסטוריית סטטוס</span>
+        @if (totalDuration) {
+          <span class="total-duration-badge">
+            <mat-icon class="duration-icon">timer</mat-icon>
+            {{ totalDuration }}
+          </span>
+        }
+      </div>
+
+      @if (isLoadingHistory()) {
+        <div class="notes-loading">
+          <mat-spinner diameter="24"></mat-spinner>
+        </div>
+      } @else if (statusHistory().length === 0) {
+        <div class="notes-empty">אין היסטוריית שינויי סטטוס.</div>
+      } @else {
+        <div class="history-timeline">
+          @for (entry of statusHistory(); track entry.id) {
+            <div class="history-entry">
+              <div class="history-dot"></div>
+              <div class="history-content">
+                <div class="history-meta">
+                  <span class="history-user">{{ resolveDisplay(entry.changedBy) }}</span>
+                  <span class="history-time">{{ formatDate(entry.createdAt) }}</span>
+                </div>
+                <div class="history-change">
+                  @if (entry.oldStatus) {
+                    <span class="history-status old">{{ statusDisplayLabel(entry.oldStatus) }}</span>
+                    <mat-icon class="history-arrow">arrow_back</mat-icon>
+                  }
+                  <span class="history-status new">{{ statusDisplayLabel(entry.newStatus) }}</span>
+                </div>
+              </div>
+            </div>
+          }
+        </div>
+      }
+    </section>
+
     <!-- Handler assignment (Editor/Admin only) -->
     @if (canManageHandler) {
       <mat-divider class="section-divider"></mat-divider>

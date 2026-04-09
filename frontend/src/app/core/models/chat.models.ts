@@ -303,6 +303,15 @@ export interface HelpdeskNote {
   createdAt: string;
 }
 
+export interface HelpdeskStatusHistoryEntry {
+  id: number;
+  ticketId: number;
+  oldStatus: string | null;
+  newStatus: string;
+  changedBy: string;
+  createdAt: string;
+}
+
 export interface PersistedChatState {
   contacts: Contact[];
   groups: ChatGroup[];
