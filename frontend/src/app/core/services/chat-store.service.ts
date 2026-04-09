@@ -8808,6 +8808,7 @@ export class ChatStoreService {
         : undefined,
       groupUpdatedAt: Number.isFinite(numericGroupUpdatedAt) ? numericGroupUpdatedAt : undefined,
       groupType: payload['groupType'] === 'community' ? 'community' : 'group',
+      groupSenderName: typeof payload['groupSenderName'] === 'string' ? payload['groupSenderName'] : undefined,
       timestamp: resolvedIncomingTimestamp
     };
 
@@ -8876,6 +8877,10 @@ export class ChatStoreService {
       incoming.groupId = groupId;
       incoming.groupName = String(payload['groupName'] ?? seed.groupName ?? '').trim() || groupId;
       incoming.groupType = payload['groupType'] === 'community' ? 'community' : (seed.groupType ?? 'group');
+      const rawGroupSenderName = String(payload['groupSenderName'] ?? seed.groupSenderName ?? '').trim();
+      if (rawGroupSenderName) {
+        incoming.groupSenderName = rawGroupSenderName;
+      }
     }
     return incoming;
   }

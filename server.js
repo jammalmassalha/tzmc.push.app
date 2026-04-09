@@ -57,7 +57,7 @@ const app = express();
 const httpServer = http.createServer(app);
 app.disable('x-powered-by');
 
-const DEFAULT_ALLOWED_HOSTS = ['tzmc.co.il', 'www.tzmc.co.il', '*.tzmc.co.il', 'localhost', '127.0.0.1', '::1'];
+const DEFAULT_ALLOWED_HOSTS = ['tzmc.co.il', 'www.tzmc.co.il', '*.tzmc.co.il', 'localhost', '127.0.0.1', '::1', '0.0.0.0'];
 // Auto-detect the server's own hostname and IP addresses so requests arriving
 // via the machine's public/private IPs are not rejected by the host-header guard.
 (() => {
