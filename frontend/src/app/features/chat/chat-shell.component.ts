@@ -1367,12 +1367,12 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     this.helpdeskEditorSubTab.set(tab);
   }
 
-  helpdeskEditorFilteredTickets(tickets: any[] | null, subTab: 'new' | 'in_progress' | 'closed'): any[] {
+  helpdeskEditorFilteredTickets(tickets: HelpdeskTicket[] | null, subTab: 'new' | 'in_progress' | 'closed'): HelpdeskTicket[] {
     if (!tickets) return [];
     switch (subTab) {
-      case 'new': return tickets.filter((t: any) => t.status === 'open');
-      case 'in_progress': return tickets.filter((t: any) => t.status === 'in_progress');
-      case 'closed': return tickets.filter((t: any) => t.status === 'resolved' || t.status === 'closed');
+      case 'new': return tickets.filter((t) => t.status === 'open');
+      case 'in_progress': return tickets.filter((t) => t.status === 'in_progress');
+      case 'closed': return tickets.filter((t) => t.status === 'resolved' || t.status === 'closed');
       default: return tickets;
     }
   }

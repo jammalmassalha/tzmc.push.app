@@ -435,7 +435,7 @@ function registerHelpdeskController(app, deps = {}) {
 
         try {
             const [ticketRows] = await pool.query(
-                'SELECT `id`, `creator_username`, `handler_username`, `department`, `status` AS `old_status` FROM `helpdesk_tickets` WHERE `id` = ?',
+                'SELECT `id`, `creator_username`, `handler_username`, `department`, `status` FROM `helpdesk_tickets` WHERE `id` = ?',
                 [ticketId]
             );
             if (!ticketRows.length) {
@@ -452,6 +452,7 @@ function registerHelpdeskController(app, deps = {}) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה לשנות את הסטטוס' });
             }
 
+            const previousStatus = ticket.status;
             await pool.execute(
                 'UPDATE `helpdesk_tickets` SET `status` = ? WHERE `id` = ?',
                 [status, ticketId]
@@ -459,7 +460,7 @@ function registerHelpdeskController(app, deps = {}) {
             // Record status change in history
             pool.execute(
                 'INSERT INTO `helpdesk_status_history` (`ticket_id`, `old_status`, `new_status`, `changed_by`) VALUES (?, ?, ?, ?)',
-                [ticketId, ticket.old_status || null, status, user]
+                [ticketId, previousStatus || null, status, user]
             ).catch((err) => console.error('[HELPDESK] Insert status history error:', err && err.message ? err.message : err));
             return res.json({ result: 'success' });
         } catch (error) {
