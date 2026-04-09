@@ -57,7 +57,7 @@ const app = express();
 const httpServer = http.createServer(app);
 app.disable('x-powered-by');
 
-const DEFAULT_ALLOWED_HOSTS = ['tzmc.co.il', 'www.tzmc.co.il', '*.tzmc.co.il', 'localhost', '127.0.0.1', '::1', '0.0.0.0'];
+const DEFAULT_ALLOWED_HOSTS = ['tzmc.co.il', 'www.tzmc.co.il', '*.tzmc.co.il', 'localhost', '127.0.0.1', '::1'];
 // Auto-detect the server's own hostname and IP addresses so requests arriving
 // via the machine's public/private IPs are not rejected by the host-header guard.
 (() => {
@@ -78,6 +78,13 @@ const DEFAULT_ALLOWED_HOSTS = ['tzmc.co.il', 'www.tzmc.co.il', '*.tzmc.co.il', '
 const ALLOWED_HOSTS = buildHostAllowlist(
     String(process.env.ALLOWED_HOSTS || DEFAULT_ALLOWED_HOSTS.join(','))
 );
+if (!ALLOWED_HOSTS.allowAny) {
+    console.log(`[HOST-GUARD] Allowed exact hosts: ${[...ALLOWED_HOSTS.exactHosts].join(', ') || '(none)'}`);
+    if (ALLOWED_HOSTS.wildcardSuffixes.length) {
+        console.log(`[HOST-GUARD] Allowed wildcard suffixes: ${ALLOWED_HOSTS.wildcardSuffixes.map(s => `*.${s}`).join(', ')}`);
+    }
+    console.log('[HOST-GUARD] Set ALLOWED_HOSTS=* environment variable to allow all hosts');
+}
 
 const CONTENT_SECURITY_POLICY = [
     "default-src 'self' https: data: blob:",
