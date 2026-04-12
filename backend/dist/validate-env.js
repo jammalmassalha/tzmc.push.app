@@ -62,8 +62,8 @@ function validateEnvOrExit(env = process.env) {
     if (!result.valid) {
         console.error(`[ENV] Missing required environment variables:\n` +
             result.missing.map((v) => `  - ${v}`).join('\n') +
-            `\n\nCopy backend/.env.example to .env and fill in the values.`);
+            `\n\nCopy backend/.env.example to .env in the project root and fill in the values.`);
         process.exit(1);
     }
-    console.log('[ENV] All required environment variables are set.');
+    console.log('[ENV] All required environment variables are set. (See backend/.env.example for reference)');
 }
