@@ -117,7 +117,7 @@ function validateJpegStructure(buffer: Buffer): boolean {
   // after the SOI — not necessarily at the very end of the file.
   const eoiMarker = Buffer.from([0xff, 0xd9]);
   const eoiIndex = buffer.lastIndexOf(eoiMarker);
-  return eoiIndex >= 2;
+  return eoiIndex > 2;
 }
 
 function validateBmpStructure(buffer: Buffer): boolean {
