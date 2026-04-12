@@ -4876,6 +4876,14 @@ function upsertGroup(payload = {}) {
     return nextGroup;
 }
 
+function resetShuttleReminderCaches() {
+    shuttleReminderKnownUsersCache.at = 0;
+    shuttleReminderKnownUsersCache.users = [];
+    Object.keys(shuttleReminderOrdersCacheByUser).forEach((userKey) => {
+        delete shuttleReminderOrdersCacheByUser[userKey];
+    });
+}
+
 async function loadState() {
     // Set up Redis for queue pub/sub (message delivery), independent of state persistence
     const redisStore = await redisStateStorePromise;
@@ -4907,11 +4915,7 @@ async function loadState() {
                     ? mysqlState.shuttleReminderSentAtByKey
                     : {}
             );
-            shuttleReminderKnownUsersCache.at = 0;
-            shuttleReminderKnownUsersCache.users = [];
-            Object.keys(shuttleReminderOrdersCacheByUser).forEach((userKey) => {
-                delete shuttleReminderOrdersCacheByUser[userKey];
-            });
+            resetShuttleReminderCaches();
             console.log('[STATE] Loaded persisted state from MySQL.');
             mysqlStateEnabled = true;
             await hydrateGroupsFromMysql();
@@ -4919,6 +4923,7 @@ async function loadState() {
             return;
         }
     } catch (error) {
+        mysqlStateEnabled = false;
         console.warn('[STATE] MySQL state load failed, falling back:', error && error.message ? error.message : error);
     }
 
@@ -4946,11 +4951,7 @@ async function loadState() {
                         ? redisState.shuttleReminderSentAtByKey
                         : {}
                 );
-                shuttleReminderKnownUsersCache.at = 0;
-                shuttleReminderKnownUsersCache.users = [];
-                Object.keys(shuttleReminderOrdersCacheByUser).forEach((userKey) => {
-                    delete shuttleReminderOrdersCacheByUser[userKey];
-                });
+                resetShuttleReminderCaches();
                 await hydrateGroupsFromLocalDb();
                 console.log('[STATE] Loaded persisted state from Redis (legacy). Will migrate to MySQL on next save.');
                 await hydrateGroupsFromMysql();
@@ -4982,11 +4983,7 @@ async function loadState() {
                 ? data.shuttleReminderSentAtByKey
                 : {}
         );
-        shuttleReminderKnownUsersCache.at = 0;
-        shuttleReminderKnownUsersCache.users = [];
-        Object.keys(shuttleReminderOrdersCacheByUser).forEach((userKey) => {
-            delete shuttleReminderOrdersCacheByUser[userKey];
-        });
+        resetShuttleReminderCaches();
         await hydrateGroupsFromLocalDb();
         console.log('[STATE] Loaded persisted state from file (legacy). Will migrate to MySQL on next save.');
     } catch (err) {
