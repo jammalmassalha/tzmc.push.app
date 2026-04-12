@@ -649,9 +649,16 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
         window.cancelAnimationFrame(this.openBoundaryScrollRafId);
         this.openBoundaryScrollRafId = null;
       }
-      queueMicrotask(() => {
-        window.requestAnimationFrame(() => this.scrollMessagesToBottom('auto'));
-      });
+      const meta = this.store.lastActivatedChatMeta();
+      const unread = this.resolveUnreadBeforeOpen(activeChatId, meta);
+      if (unread > 0) {
+        this.pendingOpenScroll = { chatId: activeChatId, unreadBeforeOpen: unread };
+        queueMicrotask(() => this.scheduleOpenBoundaryScroll());
+      } else {
+        queueMicrotask(() => {
+          window.requestAnimationFrame(() => this.scrollMessagesToBottom('auto'));
+        });
+      }
       return;
     }
 
