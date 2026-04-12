@@ -24,7 +24,10 @@ const {
     createWebhookRegistryFromEnv,
     createRedisStateStoreFromEnv,
     SessionTokenJweService,
-    looksLikeJweCompactToken
+    looksLikeJweCompactToken,
+    UploadSecurityService,
+    NotificationService,
+    SessionService
 } = require('./backend/dist/services');
 
 const fetch = (...args) => {
@@ -53,6 +56,10 @@ const redisStateStorePromise = createRedisStateStoreFromEnv(process.env)
 // --- 1. SETUP UPLOADS FOLDER ---
 const uploadDir = path.join(__dirname, 'uploads');
 const uploadSecurityWorkerPath = path.join(__dirname, 'backend', 'dist', 'services', 'upload-security-worker.js');
+const uploadSecurityService = new UploadSecurityService({
+    uploadDir,
+    workerPath: uploadSecurityWorkerPath
+});
 const app = express();
 const httpServer = http.createServer(app);
 app.disable('x-powered-by');
@@ -220,7 +227,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.72'; // WhatsApp-style image preview modal instead of window.open
+const SERVER_VERSION = '1.74'; // Modularize server.js into UploadSecurityService, NotificationService, SessionService
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',
@@ -248,6 +255,7 @@ let stateSaveTimer = null;
 let activeRedisStateStore = null;
 let redisQueuePubSubActive = false;
 let redisQueuePubSubStartPromise = null;
+let mysqlStateEnabled = false; // Set to true on successful MySQL state load
 
 let unreadCounts = {};
 let groups = {};
@@ -336,352 +344,14 @@ if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir);
 }
 
-const ALLOWED_IMAGE_EXTENSIONS = new Set([
-    '.jpg',
-    '.jpeg',
-    '.png',
-    '.gif',
-    '.webp',
-    '.bmp',
-    '.avif',
-    '.heic',
-    '.heif'
-]);
-const PDF_EXTENSION = '.pdf';
-const PDF_MIME_TYPE = 'application/pdf';
-const MAX_UPLOAD_INSPECTION_BYTES = 40 * 1024 * 1024;
-const ISO_BMFF_IMAGE_BRANDS = new Set(['avif', 'avis', 'heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1']);
-const PDF_DISALLOWED_TOKENS = [
-    /\/javascript\b/i,
-    /\/js\b/i,
-    /\/openaction\b/i,
-    /\/launch\b/i,
-    /\/aa\b/i,
-    /\/richmedia\b/i,
-    /\/submitform\b/i,
-    /\/embeddedfile\b/i,
-    /\/encrypt\b/i
-];
-
-function normalizeUploadMimeType(file = {}) {
-    return String(file.mimetype || '').trim().toLowerCase();
-}
-
-function normalizeUploadExtension(file = {}) {
-    return path.extname(String(file.originalname || '')).toLowerCase();
-}
-
-function isImageUpload(file = {}) {
-    const mimeType = normalizeUploadMimeType(file);
-    const extension = normalizeUploadExtension(file);
-    return mimeType.startsWith('image/') || ALLOWED_IMAGE_EXTENSIONS.has(extension);
-}
-
-function isPdfUpload(file = {}) {
-    const mimeType = normalizeUploadMimeType(file);
-    const extension = normalizeUploadExtension(file);
-    return mimeType === PDF_MIME_TYPE || extension === PDF_EXTENSION;
-}
-
-function isAllowedMainUpload(file = {}) {
-    return isImageUpload(file) || isPdfUpload(file);
-}
-
-function isAllowedThumbnailUpload(file = {}) {
-    return isImageUpload(file);
-}
-
-function chooseSafeUploadExtension(file = {}) {
-    const ext = normalizeUploadExtension(file);
-    if (ALLOWED_IMAGE_EXTENSIONS.has(ext) || ext === PDF_EXTENSION) {
-        return ext;
-    }
-    const mimeType = normalizeUploadMimeType(file);
-    if (mimeType === 'image/jpeg') return '.jpg';
-    if (mimeType === 'image/png') return '.png';
-    if (mimeType === 'image/gif') return '.gif';
-    if (mimeType === 'image/webp') return '.webp';
-    if (mimeType === 'image/bmp' || mimeType === 'image/x-ms-bmp') return '.bmp';
-    if (mimeType === 'image/avif') return '.avif';
-    if (mimeType === 'image/heic') return '.heic';
-    if (mimeType === 'image/heif') return '.heif';
-    if (mimeType === PDF_MIME_TYPE) return PDF_EXTENSION;
-    if (mimeType.startsWith('image/')) return '.jpg';
-    return '';
-}
-
-function sanitizeUploadBaseName(rawName = '') {
-    const base = path.basename(String(rawName || '').trim());
-    const ext = path.extname(base);
-    const stem = base.slice(0, Math.max(0, base.length - ext.length));
-    const sanitized = stem
-        .normalize('NFKD')
-        .replace(/[^a-zA-Z0-9._-]+/g, '-')
-        .replace(/-+/g, '-')
-        .replace(/^[._-]+|[._-]+$/g, '')
-        .slice(0, 40);
-    return sanitized || 'upload';
-}
-
-function buildSafeUploadFilename(file = {}) {
-    const originalName = path.basename(String(file.originalname || '').trim());
-    if (originalName && originalName !== '.' && originalName !== '..') {
-        // Keep client filename as requested (without directory traversal segments).
-        return originalName;
-    }
-
-    const safeStem = sanitizeUploadBaseName(file.originalname || '');
-    const extension = chooseSafeUploadExtension(file);
-    const uniqueSuffix = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-    return `${safeStem}-${uniqueSuffix}${extension}`;
-}
-
-function bufferStartsWith(buffer, signature) {
-    if (!Buffer.isBuffer(buffer) || !Buffer.isBuffer(signature)) return false;
-    if (buffer.length < signature.length) return false;
-    return buffer.subarray(0, signature.length).equals(signature);
-}
-
-function validatePngStructure(buffer) {
-    const pngSignature = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
-    if (!bufferStartsWith(buffer, pngSignature)) {
-        return false;
-    }
-
-    let offset = pngSignature.length;
-    while (offset + 12 <= buffer.length) {
-        const chunkLength = buffer.readUInt32BE(offset);
-        const chunkType = buffer.toString('ascii', offset + 4, offset + 8);
-        const nextOffset = offset + 12 + chunkLength;
-        if (nextOffset > buffer.length) {
-            return false;
-        }
-        if (chunkType === 'IEND') {
-            return nextOffset === buffer.length;
-        }
-        offset = nextOffset;
-    }
-    return false;
-}
-
-function validateWebpStructure(buffer) {
-    if (buffer.length < 12) return false;
-    if (!buffer.subarray(0, 4).equals(Buffer.from('RIFF'))) return false;
-    if (!buffer.subarray(8, 12).equals(Buffer.from('WEBP'))) return false;
-    const declaredSize = buffer.readUInt32LE(4) + 8;
-    return declaredSize === buffer.length;
-}
-
-function validateBmpStructure(buffer) {
-    if (buffer.length < 14) return false;
-    if (!buffer.subarray(0, 2).equals(Buffer.from('BM'))) return false;
-    const declaredSize = buffer.readUInt32LE(2);
-    return declaredSize === buffer.length;
-}
-
-function validateIsoBmffStructure(buffer) {
-    if (buffer.length < 16) return false;
-    if (buffer.toString('ascii', 4, 8) !== 'ftyp') return false;
-    const brand = buffer.toString('ascii', 8, 12).toLowerCase();
-    if (!ISO_BMFF_IMAGE_BRANDS.has(brand)) return false;
-
-    let offset = 0;
-    while (offset + 8 <= buffer.length) {
-        let boxSize = buffer.readUInt32BE(offset);
-        if (boxSize === 0) {
-            return offset + 8 <= buffer.length;
-        }
-        if (boxSize === 1) {
-            if (offset + 16 > buffer.length) return false;
-            const extendedSize = Number(buffer.readBigUInt64BE(offset + 8));
-            if (!Number.isFinite(extendedSize) || extendedSize < 16) return false;
-            boxSize = extendedSize;
-        } else if (boxSize < 8) {
-            return false;
-        }
-
-        const nextOffset = offset + boxSize;
-        if (nextOffset > buffer.length) {
-            return false;
-        }
-        offset = nextOffset;
-    }
-    return offset === buffer.length;
-}
-
-function detectImageFormat(buffer) {
-    if (validatePngStructure(buffer)) return 'png';
-    if (bufferStartsWith(buffer, Buffer.from([0xFF, 0xD8])) && buffer.subarray(buffer.length - 2).equals(Buffer.from([0xFF, 0xD9]))) {
-        return 'jpeg';
-    }
-    if ((bufferStartsWith(buffer, Buffer.from('GIF87a')) || bufferStartsWith(buffer, Buffer.from('GIF89a'))) && buffer[buffer.length - 1] === 0x3B) {
-        return 'gif';
-    }
-    if (validateWebpStructure(buffer)) return 'webp';
-    if (validateBmpStructure(buffer)) return 'bmp';
-    if (validateIsoBmffStructure(buffer)) return 'iso-bmff';
-    return '';
-}
-
-function hasUnsafePdfContent(buffer) {
-    if (!bufferStartsWith(buffer, Buffer.from('%PDF-'))) {
-        return { unsafe: true, reason: 'Invalid PDF file signature' };
-    }
-    const eofMarker = Buffer.from('%%EOF');
-    const eofIndex = buffer.lastIndexOf(eofMarker);
-    if (eofIndex < 0) {
-        return { unsafe: true, reason: 'Invalid PDF structure' };
-    }
-    const trailing = buffer.subarray(eofIndex + eofMarker.length).toString('latin1').trim();
-    if (trailing) {
-        return { unsafe: true, reason: 'PDF contains trailing hidden data' };
-    }
-
-    const text = buffer.toString('latin1');
-    if (/<script\b/i.test(text) || /javascript:/i.test(text)) {
-        return { unsafe: true, reason: 'PDF contains script content' };
-    }
-    for (const tokenRegex of PDF_DISALLOWED_TOKENS) {
-        if (tokenRegex.test(text)) {
-            return { unsafe: true, reason: 'PDF contains active or encrypted content' };
-        }
-    }
-    return { unsafe: false, reason: '' };
-}
-
-async function safelyDeleteUploadedFile(file = null) {
-    if (!file || !file.path) return;
-    try {
-        const resolvedUploadDir = path.resolve(uploadDir) + path.sep;
-        const resolvedPath = path.resolve(String(file.path));
-        if (!resolvedPath.startsWith(resolvedUploadDir)) {
-            return;
-        }
-        await fsp.unlink(resolvedPath);
-    } catch (error) {
-        // Ignore cleanup failures to keep request handling stable.
-    }
-}
-
-async function validateUploadedFileSecurityInProcess(file = {}, options = {}) {
-    const allowImage = options.allowImage !== false;
-    const allowPdf = options.allowPdf !== false;
-    if (!file || !file.path) {
-        return { ok: false, message: 'Invalid uploaded file data' };
-    }
-
-    const fileSize = Number(file.size || 0);
-    if (!Number.isFinite(fileSize) || fileSize <= 0) {
-        return { ok: false, message: 'Uploaded file is empty' };
-    }
-    if (fileSize > MAX_UPLOAD_INSPECTION_BYTES) {
-        return { ok: false, message: 'File is too large for security inspection' };
-    }
-
-    const fileBuffer = await fsp.readFile(file.path);
-    if (!fileBuffer.length) {
-        return { ok: false, message: 'Uploaded file is empty' };
-    }
-
-    const isPdfCandidate = allowPdf && isPdfUpload(file);
-    if (isPdfCandidate) {
-        const pdfResult = hasUnsafePdfContent(fileBuffer);
-        if (pdfResult.unsafe) {
-            return { ok: false, message: pdfResult.reason || 'Unsafe PDF content detected' };
-        }
-        return { ok: true, message: '' };
-    }
-
-    const isImageCandidate = allowImage && isImageUpload(file);
-    if (isImageCandidate) {
-        const detectedFormat = detectImageFormat(fileBuffer);
-        if (!detectedFormat) {
-            return { ok: false, message: 'Invalid image content or hidden payload detected' };
-        }
-        return { ok: true, message: '' };
-    }
-
-    return { ok: false, message: 'Only secure image and PDF files are allowed' };
-}
-
-function normalizeUploadValidationResult(result) {
-    if (!result || typeof result !== 'object') {
-        return { ok: false, message: 'File content validation failed' };
-    }
-    return {
-        ok: result.ok === true,
-        message: typeof result.message === 'string' ? result.message : ''
-    };
-}
-
-function runUploadValidationWorker(file = {}, options = {}) {
-    return new Promise((resolve, reject) => {
-        const worker = new Worker(uploadSecurityWorkerPath, {
-            workerData: {
-                file: {
-                    path: file.path,
-                    size: file.size,
-                    mimetype: file.mimetype,
-                    originalname: file.originalname
-                },
-                options,
-                maxInspectionBytes: MAX_UPLOAD_INSPECTION_BYTES
-            }
-        });
-
-        let settled = false;
-        const finish = (handler, value) => {
-            if (settled) return;
-            settled = true;
-            handler(value);
-        };
-
-        const timeoutId = setTimeout(() => {
-            try {
-                worker.terminate();
-            } catch (_error) {
-                // Ignore termination errors.
-            }
-            finish(reject, new Error('Upload security validation timed out'));
-        }, 90000);
-
-        worker.once('message', (payload) => {
-            clearTimeout(timeoutId);
-            finish(resolve, normalizeUploadValidationResult(payload));
-        });
-        worker.once('error', (error) => {
-            clearTimeout(timeoutId);
-            finish(reject, error);
-        });
-        worker.once('exit', (code) => {
-            if (settled) {
-                return;
-            }
-            clearTimeout(timeoutId);
-            if (code === 0) {
-                finish(resolve, { ok: false, message: 'File content validation failed' });
-                return;
-            }
-            finish(reject, new Error(`Upload validation worker exited with code ${code}`));
-        });
-    });
-}
-
-async function validateUploadedFileSecurity(file = {}, options = {}) {
-    if (!file || !file.path) {
-        return { ok: false, message: 'Invalid uploaded file data' };
-    }
-
-    if (Worker && fs.existsSync(uploadSecurityWorkerPath)) {
-        try {
-            return await runUploadValidationWorker(file, options);
-        } catch (error) {
-            console.warn('[UPLOAD SECURITY] Worker validation failed, falling back to in-process scan:', error && error.message ? error.message : error);
-        }
-    }
-
-    return validateUploadedFileSecurityInProcess(file, options);
-}
+// ── Upload functions delegated to UploadSecurityService ──
+function isImageUpload(file) { return uploadSecurityService.isImageUpload(file || {}); }
+function isPdfUpload(file) { return uploadSecurityService.isPdfUpload(file || {}); }
+function isAllowedMainUpload(file) { return uploadSecurityService.isAllowedMainUpload(file || {}); }
+function isAllowedThumbnailUpload(file) { return uploadSecurityService.isAllowedThumbnailUpload(file || {}); }
+function buildSafeUploadFilename(file) { return uploadSecurityService.buildSafeUploadFilename(file || {}); }
+function safelyDeleteUploadedFile(file) { return uploadSecurityService.safelyDeleteUploadedFile(file); }
+function validateUploadedFileSecurity(file, options) { return uploadSecurityService.validateUploadedFileSecurity(file || {}, options); }
 
 // --- 2. STORAGE CONFIG ---
 const storage = multer.diskStorage({
@@ -1070,6 +740,23 @@ const SESSION_JWE_SECRET = String(
 const sessionTokenJweService = SESSION_JWE_SECRET
     ? new SessionTokenJweService(SESSION_JWE_SECRET)
     : null;
+// Declared here (before SessionService) so it is available during construction.
+const activeSessionIdsByUser = new Map();
+const sessionService = new SessionService(
+    {
+        signingSecret: SESSION_SIGNING_SECRET,
+        cookieName: SESSION_COOKIE_NAME,
+        cookieTtlMs: SESSION_COOKIE_TTL_MS,
+        cookieSameSite: SESSION_COOKIE_SAME_SITE,
+        cookieSecure: SESSION_COOKIE_SECURE,
+        jweService: sessionTokenJweService,
+        looksLikeJweCompactToken
+    },
+    {
+        normalizeUserCandidate,
+        activeSessionIdsByUser
+    }
+);
 const SESSION_USER_PATTERN = /^0\d{9}$/;
 const BADGE_RESET_ALL_ALLOWED_USERS = parseUsernamesInput(
     process.env.BADGE_RESET_ALL_ALLOWED_USERS || '0546799693'
@@ -1219,7 +906,7 @@ let shuttleReminderState = {
 let shuttleReminderSentAtByKey = {};
 const shuttleReminderKnownUsersCache = { at: 0, users: [] };
 const shuttleReminderOrdersCacheByUser = {};
-const activeSessionIdsByUser = new Map();
+// activeSessionIdsByUser is declared earlier (before SessionService instantiation).
 const authSessionRateLimitByIp = new Map();
 const authSessionRateLimitByUser = new Map();
 const authCodeRequestRateLimitByIp = new Map();
@@ -2135,274 +1822,20 @@ function getClientIpAddress(req) {
     ).trim() || 'unknown';
 }
 
+// ── Session functions delegated to SessionService ──
 function consumeRateLimitEntry(store, key, maxAttempts, windowMs) {
-    const now = Date.now();
-    const normalizedKey = String(key || '').trim().toLowerCase();
-    if (!normalizedKey) {
-        return { allowed: true, retryAfterSeconds: 0, remaining: maxAttempts };
-    }
-
-    const existing = Array.isArray(store.get(normalizedKey)) ? store.get(normalizedKey) : [];
-    const threshold = now - windowMs;
-    const recent = existing.filter((timestamp) => Number.isFinite(timestamp) && timestamp > threshold);
-    if (recent.length >= maxAttempts) {
-        const oldestActive = recent[0] || now;
-        const retryAfterMs = Math.max(1000, windowMs - Math.max(0, now - oldestActive));
-        store.set(normalizedKey, recent);
-        return {
-            allowed: false,
-            retryAfterSeconds: Math.ceil(retryAfterMs / 1000),
-            remaining: 0
-        };
-    }
-
-    recent.push(now);
-    store.set(normalizedKey, recent);
-    return {
-        allowed: true,
-        retryAfterSeconds: 0,
-        remaining: Math.max(0, maxAttempts - recent.length)
-    };
+    return sessionService.consumeRateLimitEntry(store, key, maxAttempts, windowMs);
 }
-
-function normalizeSameSiteValue(rawValue) {
-    const normalized = String(rawValue || '').trim().toLowerCase();
-    if (normalized === 'none') return 'None';
-    if (normalized === 'strict') return 'Strict';
-    return 'Lax';
-}
-
-function normalizeCookieHost(rawHost) {
-    return normalizeHostValue(rawHost || '').replace(/\.+$/, '');
-}
-
-function shouldUseSecureSessionCookie(req) {
-    if (!SESSION_COOKIE_SECURE) {
-        return false;
-    }
-    const hostHeader = req && req.headers ? req.headers.host : '';
-    const hostname = normalizeCookieHost(hostHeader);
-    if (!hostname) {
-        return true;
-    }
-    return !['localhost', '127.0.0.1', '::1'].includes(hostname);
-}
-
-function parseCookiesFromHeader(cookieHeader) {
-    const result = {};
-    String(cookieHeader || '')
-        .split(';')
-        .forEach((entry) => {
-            const trimmed = String(entry || '').trim();
-            if (!trimmed) return;
-            const separatorIndex = trimmed.indexOf('=');
-            if (separatorIndex <= 0) return;
-            const key = trimmed.slice(0, separatorIndex).trim();
-            if (!key) return;
-            const value = trimmed.slice(separatorIndex + 1).trim();
-            try {
-                result[key] = decodeURIComponent(value);
-            } catch (error) {
-                result[key] = value;
-            }
-        });
-    return result;
-}
-
-function encodeBase64Url(input) {
-    return Buffer.from(String(input || ''), 'utf8')
-        .toString('base64')
-        .replace(/\+/g, '-')
-        .replace(/\//g, '_')
-        .replace(/=+$/g, '');
-}
-
-function decodeBase64Url(input) {
-    const normalized = String(input || '').replace(/-/g, '+').replace(/_/g, '/');
-    const remainder = normalized.length % 4;
-    const padding = remainder === 0 ? '' : '='.repeat(4 - remainder);
-    return Buffer.from(normalized + padding, 'base64').toString('utf8');
-}
-
-function signSessionPayload(payload) {
-    if (!SESSION_SIGNING_SECRET) return '';
-    return crypto
-        .createHmac('sha256', SESSION_SIGNING_SECRET)
-        .update(String(payload || ''))
-        .digest('base64')
-        .replace(/\+/g, '-')
-        .replace(/\//g, '_')
-        .replace(/=+$/g, '');
-}
-
-function safeTimingCompare(leftValue, rightValue) {
-    const leftBuffer = Buffer.from(String(leftValue || ''), 'utf8');
-    const rightBuffer = Buffer.from(String(rightValue || ''), 'utf8');
-    if (leftBuffer.length !== rightBuffer.length) {
-        return false;
-    }
-    return crypto.timingSafeEqual(leftBuffer, rightBuffer);
-}
-
-function generateRandomToken(byteLength = 24) {
-    return crypto
-        .randomBytes(byteLength)
-        .toString('base64')
-        .replace(/\+/g, '-')
-        .replace(/\//g, '_')
-        .replace(/=+$/g, '');
-}
-
-function createSessionToken(user) {
-    const normalizedUser = normalizeUserCandidate(user);
-    if (!normalizedUser || (!SESSION_SIGNING_SECRET && !sessionTokenJweService)) {
-        return null;
-    }
-    const sessionId = generateRandomToken(18);
-    const csrfToken = generateRandomToken(24);
-    const expiresAt = Date.now() + SESSION_COOKIE_TTL_MS;
-    if (!activeSessionIdsByUser.has(normalizedUser)) {
-        activeSessionIdsByUser.set(normalizedUser, new Set());
-    }
-    activeSessionIdsByUser.get(normalizedUser).add(sessionId);
-    const payloadObject = {
-        user: normalizedUser,
-        expiresAt,
-        sid: sessionId,
-        csrfToken
-    };
-    const jweToken = sessionTokenJweService ? sessionTokenJweService.encrypt(payloadObject) : '';
-    if (jweToken) {
-        return {
-            token: jweToken,
-            expiresAt,
-            sessionId,
-            csrfToken
-        };
-    }
-    const payload = encodeBase64Url(JSON.stringify(payloadObject));
-    const signature = signSessionPayload(payload);
-    if (!signature) {
-        const userSessions = activeSessionIdsByUser.get(normalizedUser);
-        if (userSessions) {
-            userSessions.delete(sessionId);
-            if (userSessions.size === 0) activeSessionIdsByUser.delete(normalizedUser);
-        }
-        return null;
-    }
-    return {
-        token: `${payload}.${signature}`,
-        expiresAt,
-        sessionId,
-        csrfToken
-    };
-}
-
-function getSessionFromToken(rawToken) {
-    const token = String(rawToken || '').trim();
-    if (!token) {
-        return null;
-    }
-
-    let parsed = null;
-    if (sessionTokenJweService && looksLikeJweCompactToken(token)) {
-        parsed = sessionTokenJweService.decrypt(token);
-    } else if (SESSION_SIGNING_SECRET) {
-        const parts = token.split('.');
-        if (parts.length !== 2) {
-            return null;
-        }
-        const payloadEncoded = parts[0];
-        const providedSignature = parts[1];
-        const expectedSignature = signSessionPayload(payloadEncoded);
-        if (!expectedSignature || !safeTimingCompare(providedSignature, expectedSignature)) {
-            return null;
-        }
-        try {
-            parsed = JSON.parse(decodeBase64Url(payloadEncoded));
-        } catch (error) {
-            parsed = null;
-        }
-    }
-    if (!parsed || typeof parsed !== 'object') {
-        return null;
-    }
-
-    try {
-        const user = normalizeUserCandidate(parsed && parsed.user);
-        const expiresAt = Number(parsed && parsed.expiresAt);
-        const sessionId = String((parsed && parsed.sid) || '').trim();
-        const csrfToken = String((parsed && parsed.csrfToken) || '').trim();
-        if (!user || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-            return null;
-        }
-        if (!sessionId || !csrfToken) {
-            return null;
-        }
-
-        // Always accept a cryptographically valid token and track its sessionId.
-        // Previous logic rejected sessions not already in the in-memory Set, which
-        // caused the second device to be locked out after a server restart (only the
-        // first device to reconnect would get auto-added).
-        if (!activeSessionIdsByUser.has(user)) {
-            activeSessionIdsByUser.set(user, new Set());
-        }
-        activeSessionIdsByUser.get(user).add(sessionId);
-        return {
-            user,
-            expiresAt,
-            sessionId,
-            csrfToken
-        };
-    } catch (error) {
-        return null;
-    }
-}
-
-function setSessionCookie(res, req, tokenValue, expiresAt) {
-    const sameSite = normalizeSameSiteValue(SESSION_COOKIE_SAME_SITE);
-    const secure = shouldUseSecureSessionCookie(req);
-    const maxAgeSeconds = Math.max(1, Math.floor((Number(expiresAt) - Date.now()) / 1000));
-    const cookieParts = [
-        `${SESSION_COOKIE_NAME}=${encodeURIComponent(String(tokenValue || ''))}`,
-        'Path=/',
-        'HttpOnly',
-        `SameSite=${sameSite}`,
-        `Max-Age=${maxAgeSeconds}`,
-        `Expires=${new Date(Date.now() + maxAgeSeconds * 1000).toUTCString()}`
-    ];
-    if (secure) {
-        cookieParts.push('Secure');
-    }
-    res.setHeader('Set-Cookie', cookieParts.join('; '));
-}
-
-function clearSessionCookie(res, req) {
-    const sameSite = normalizeSameSiteValue(SESSION_COOKIE_SAME_SITE);
-    const secure = shouldUseSecureSessionCookie(req);
-    const cookieParts = [
-        `${SESSION_COOKIE_NAME}=`,
-        'Path=/',
-        'HttpOnly',
-        `SameSite=${sameSite}`,
-        'Max-Age=0',
-        'Expires=Thu, 01 Jan 1970 00:00:00 GMT'
-    ];
-    if (secure) {
-        cookieParts.push('Secure');
-    }
-    res.setHeader('Set-Cookie', cookieParts.join('; '));
-}
-
-function extractSessionFromRequest(req) {
-    const cookieMap = parseCookiesFromHeader(req && req.headers ? req.headers.cookie : '');
-    return getSessionFromToken(cookieMap[SESSION_COOKIE_NAME]);
-}
-
-function extractSessionUserFromRequest(req) {
-    const session = extractSessionFromRequest(req);
-    return session && session.user ? session.user : '';
-}
+function parseCookiesFromHeader(cookieHeader) { return sessionService.parseCookiesFromHeader(cookieHeader); }
+function encodeBase64Url(input) { return sessionService.encodeBase64Url(input); }
+function decodeBase64Url(input) { return sessionService.decodeBase64Url(input); }
+function generateRandomToken(byteLength) { return sessionService.generateRandomToken(byteLength); }
+function createSessionToken(user) { return sessionService.createSessionToken(user); }
+function getSessionFromToken(rawToken) { return sessionService.getSessionFromToken(rawToken); }
+function setSessionCookie(res, req, tokenValue, expiresAt) { return sessionService.setSessionCookie(res, req, tokenValue, expiresAt); }
+function clearSessionCookie(res, req) { return sessionService.clearSessionCookie(res, req); }
+function extractSessionFromRequest(req) { return sessionService.extractSessionFromRequest(req); }
+function extractSessionUserFromRequest(req) { return sessionService.extractSessionUserFromRequest(req); }
 
 function resolveAuthorizedUser(req, candidateUser, options = {}) {
     const required = options.required !== false;
@@ -4875,18 +4308,65 @@ function upsertGroup(payload = {}) {
     return nextGroup;
 }
 
+function resetShuttleReminderCaches() {
+    shuttleReminderKnownUsersCache.at = 0;
+    shuttleReminderKnownUsersCache.users = [];
+    Object.keys(shuttleReminderOrdersCacheByUser).forEach((userKey) => {
+        delete shuttleReminderOrdersCacheByUser[userKey];
+    });
+}
+
 async function loadState() {
+    // Set up Redis for queue pub/sub (message delivery), independent of state persistence
     const redisStore = await redisStateStorePromise;
     if (redisStore && redisStore.isEnabled) {
         activeRedisStateStore = redisStore;
         await ensureRedisQueuePubSubBridge();
+    }
+
+    // ── Primary: load persisted state from MySQL ──
+    try {
+        const mysqlState = await mysqlLogsService.loadServerState();
+        if (mysqlState) {
+            const nextUnreadCounts = (mysqlState.unreadCounts && typeof mysqlState.unreadCounts === 'object')
+                ? mysqlState.unreadCounts
+                : {};
+            replaceObjectContents(unreadCounts, nextUnreadCounts);
+            messageQueue = {};
+            groups = (mysqlState.groups && typeof mysqlState.groups === 'object')
+                ? mysqlState.groups
+                : {};
+            groups = normalizeGroupsCollection(groups);
+            deviceSubscriptionsByUser = normalizeLocalDeviceSubscriptionsRegistry(
+                (mysqlState.deviceSubscriptionsByUser && typeof mysqlState.deviceSubscriptionsByUser === 'object')
+                    ? mysqlState.deviceSubscriptionsByUser
+                    : {}
+            );
+            shuttleReminderSentAtByKey = normalizeShuttleReminderSentState(
+                (mysqlState.shuttleReminderSentAtByKey && typeof mysqlState.shuttleReminderSentAtByKey === 'object')
+                    ? mysqlState.shuttleReminderSentAtByKey
+                    : {}
+            );
+            resetShuttleReminderCaches();
+            console.log('[STATE] Loaded persisted state from MySQL.');
+            mysqlStateEnabled = true;
+            await hydrateGroupsFromMysql();
+            await loadAndSeedCommunityGroups();
+            return;
+        }
+    } catch (error) {
+        mysqlStateEnabled = false;
+        console.warn('[STATE] MySQL state load failed, falling back:', error && error.message ? error.message : error);
+    }
+
+    // ── Fallback: load from Redis (legacy) ──
+    if (activeRedisStateStore && activeRedisStateStore.isEnabled) {
         try {
-            const redisState = await redisStore.loadState();
+            const redisState = await activeRedisStateStore.loadState();
             if (redisState) {
                 const nextUnreadCounts = (redisState.unreadCounts && typeof redisState.unreadCounts === 'object')
                     ? redisState.unreadCounts
                     : {};
-                // Keep a stable reference so controllers/middlewares mutate the live map.
                 replaceObjectContents(unreadCounts, nextUnreadCounts);
                 messageQueue = {};
                 groups = (redisState.groups && typeof redisState.groups === 'object')
@@ -4903,15 +4383,10 @@ async function loadState() {
                         ? redisState.shuttleReminderSentAtByKey
                         : {}
                 );
-                shuttleReminderKnownUsersCache.at = 0;
-                shuttleReminderKnownUsersCache.users = [];
-                Object.keys(shuttleReminderOrdersCacheByUser).forEach((userKey) => {
-                    delete shuttleReminderOrdersCacheByUser[userKey];
-                });
+                resetShuttleReminderCaches();
                 await hydrateGroupsFromLocalDb();
-                console.log('[STATE] Loaded persisted state from Redis.');
+                console.log('[STATE] Loaded persisted state from Redis (legacy). Will migrate to MySQL on next save.');
                 await hydrateGroupsFromMysql();
-                // Load community group configs from MySQL (overrides seed values)
                 await loadAndSeedCommunityGroups();
                 return;
             }
@@ -4920,12 +4395,12 @@ async function loadState() {
         }
     }
 
+    // ── Fallback: load from local file (legacy) ──
     try {
         await fsp.mkdir(stateDir, { recursive: true });
         const raw = await fsp.readFile(stateFile, 'utf8');
         const data = JSON.parse(raw);
         const nextUnreadCounts = (data.unreadCounts && typeof data.unreadCounts === 'object') ? data.unreadCounts : {};
-        // Keep a stable reference so controllers/middlewares mutate the live map.
         replaceObjectContents(unreadCounts, nextUnreadCounts);
         messageQueue = (data.messageQueue && typeof data.messageQueue === 'object') ? data.messageQueue : {};
         groups = (data.groups && typeof data.groups === 'object') ? data.groups : {};
@@ -4940,13 +4415,9 @@ async function loadState() {
                 ? data.shuttleReminderSentAtByKey
                 : {}
         );
-        shuttleReminderKnownUsersCache.at = 0;
-        shuttleReminderKnownUsersCache.users = [];
-        Object.keys(shuttleReminderOrdersCacheByUser).forEach((userKey) => {
-            delete shuttleReminderOrdersCacheByUser[userKey];
-        });
+        resetShuttleReminderCaches();
         await hydrateGroupsFromLocalDb();
-        console.log('[STATE] Loaded persisted state.');
+        console.log('[STATE] Loaded persisted state from file (legacy). Will migrate to MySQL on next save.');
     } catch (err) {
         if (err.code !== 'ENOENT') {
             console.warn('[STATE] Failed to load state:', err.message);
@@ -4969,6 +4440,22 @@ async function loadState() {
 }
 
 async function persistState() {
+    // ── Primary: persist to MySQL ──
+    if (mysqlStateEnabled) {
+        try {
+            await mysqlLogsService.persistServerState({
+                unreadCounts,
+                groups,
+                deviceSubscriptionsByUser,
+                shuttleReminderSentAtByKey
+            });
+            return;
+        } catch (error) {
+            console.warn('[STATE] MySQL persist failed, falling back:', error && error.message ? error.message : error);
+        }
+    }
+
+    // ── Fallback: persist to Redis ──
     if (activeRedisStateStore && activeRedisStateStore.isEnabled) {
         try {
             await activeRedisStateStore.persistState({
@@ -4985,7 +4472,9 @@ async function persistState() {
         }
     }
 
+    // ── Fallback: persist to local file ──
     try {
+        await fsp.mkdir(stateDir, { recursive: true });
         const payload = JSON.stringify({
             unreadCounts,
             messageQueue,
@@ -6117,11 +5606,7 @@ app.post(['/verify-status', '/notify/verify-status'], async (req, res) => {
     }
 });
 // ======================================================
-// [UPDATED] CORE SENDING LOGIC (Data-Only Payload Fix)
-// ======================================================
-// ======================================================
-// ======================================================
-// [FINAL FIX] CORE SENDING LOGIC (Collision Proof)
+// [UPDATED] CORE SENDING LOGIC – delegated to NotificationService
 // ======================================================
 const MAX_PUSH_PAYLOAD_BYTES = Math.max(
     2048,
@@ -6144,553 +5629,46 @@ const UNKNOWN_USER_FALLBACK_MAX_ENDPOINTS = Math.max(
     Number(process.env.UNKNOWN_USER_FALLBACK_MAX_ENDPOINTS || 4) || 4
 );
 
-function trimPushTextValue(value, maxLength = MAX_PUSH_TEXT_LENGTH) {
-    const text = String(value || '');
-    if (text.length <= maxLength) return text;
-    if (maxLength <= 3) return text.slice(0, maxLength);
-    return `${text.slice(0, maxLength - 3)}...`;
-}
-
-function buildCompactPushCustomData(rawData = {}, messageType = '') {
-    if (!rawData || typeof rawData !== 'object') {
-        return {};
+const notificationService = new NotificationService(
+    {
+        maxPushPayloadBytes: MAX_PUSH_PAYLOAD_BYTES,
+        maxPushTextLength: MAX_PUSH_TEXT_LENGTH,
+        defaultMaxEndpointsPerUser: DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER,
+        singleTargetMaxSafeSubscriptions: SINGLE_TARGET_MAX_SAFE_SUBSCRIPTIONS,
+        unknownUserFallbackMaxEndpoints: UNKNOWN_USER_FALLBACK_MAX_ENDPOINTS
+    },
+    {
+        sendNotification: (sub, payload, options) => webpush.sendNotification(sub, payload, options),
+        normalizeUserKey,
+        normalizeSubscriptionType,
+        dedupeSubscriptionsByEndpoint,
+        parseUsernamesInput,
+        buildUserAliasLookupMap,
+        resolveCanonicalUserFromLookup,
+        generateMessageId,
+        getSubscriptionFromSheet,
+        getAllSubscriptionsForAuthRefresh,
+        getLocalDeviceSubscriptionsForUsers,
+        removeLocalDeviceSubscriptionEndpoint,
+        removeStaleSubscriptionsFromSheet,
+        buildSubscriptionCacheKey,
+        pruneSubscriptionCacheEndpoint,
+        subscriptionCache,
+        unreadCounts,
+        scheduleStateSave,
+        logNotificationStatus,
+        buildMobileSubscriptionAuthJsonForLog,
+        AUTH_REFRESH_PUSH_TYPE
     }
+);
 
-    const compact = {};
-    Object.entries(rawData).forEach(([key, rawValue]) => {
-        if (rawValue === undefined || rawValue === null) {
-            return;
-        }
-        if (key === 'membersToNotify') {
-            // This list is transport-only and can make payloads oversized for large groups.
-            return;
-        }
-        if (key === 'groupMembers') {
-            if (messageType === 'group-update') {
-                compact.groupMembers = parseUsernamesInput(rawValue).slice(0, 120);
-            }
-            return;
-        }
-        if (typeof rawValue === 'string') {
-            compact[key] = trimPushTextValue(rawValue);
-            return;
-        }
-        if (Array.isArray(rawValue)) {
-            compact[key] = rawValue.slice(0, 20);
-            return;
-        }
-        compact[key] = rawValue;
-    });
-    return compact;
-}
-
-function buildPushPayloadString(payloadData = {}, options = {}) {
-    const includeNotification = options.includeNotification !== false;
-    const buildPayloadEnvelope = (dataPayload) => {
-        if (!includeNotification) {
-            return { data: dataPayload };
-        }
-        const title = String(dataPayload.title || '').trim();
-        const body = String(
-            dataPayload.body || dataPayload.groupMessageText || dataPayload.messageText || 'New Notification'
-        ).trim();
-        const notification = {
-            title: title || 'Work Alert',
-            body: body || 'New Notification',
-            icon: dataPayload.icon || dataPayload.badge,
-            badge: dataPayload.badge || dataPayload.icon,
-            image: dataPayload.image || undefined,
-            requireInteraction: Boolean(dataPayload.requireInteraction),
-            tag: String(dataPayload.messageId || '').trim() || undefined
-        };
-        return {
-            notification,
-            data: dataPayload
-        };
-    };
-
-    let compactData = { ...payloadData };
-    let payload = JSON.stringify(buildPayloadEnvelope(compactData));
-    if (Buffer.byteLength(payload, 'utf8') <= MAX_PUSH_PAYLOAD_BYTES) {
-        return payload;
-    }
-
-    delete compactData.groupMembers;
-    delete compactData.membersToNotify;
-    delete compactData.replyToBody;
-    delete compactData.replyToImageUrl;
-    delete compactData.forwardedFromName;
-    if (typeof compactData.groupMessageText === 'string') {
-        compactData.groupMessageText = trimPushTextValue(compactData.groupMessageText, 120);
-    }
-    if (typeof compactData.body === 'string') {
-        compactData.body = trimPushTextValue(compactData.body, 120);
-    }
-
-    payload = JSON.stringify(buildPayloadEnvelope(compactData));
-    if (Buffer.byteLength(payload, 'utf8') <= MAX_PUSH_PAYLOAD_BYTES) {
-        return payload;
-    }
-
-    const emergencyData = {
-        type: compactData.type,
-        messageId: compactData.messageId,
-        groupId: compactData.groupId,
-        groupName: compactData.groupName,
-        sender: compactData.sender,
-        user: compactData.user,
-        title: compactData.title,
-        body: trimPushTextValue(
-            compactData.body || compactData.groupMessageText || compactData.messageText || 'New Notification',
-            120
-        ),
-        image: compactData.image,
-        url: compactData.url,
-        badge: compactData.badge,
-        icon: compactData.icon,
-        requireInteraction: compactData.requireInteraction
-    };
-    return JSON.stringify(buildPayloadEnvelope(emergencyData));
-}
-
-function isLikelyPhoneUserKey(userKey) {
-    const digits = String(userKey || '').replace(/\D/g, '');
-    return (
-        /^0\d{9}$/.test(digits) ||
-        /^5\d{8}$/.test(digits) ||
-        /^9725\d{8}$/.test(digits) ||
-        /^97205\d{8}$/.test(digits)
-    );
-}
-
-function limitSubscriptionsPerUser(subscriptions = [], maxPerUser = DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER) {
-    const normalizedMax = Math.max(1, Number(maxPerUser) || DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER);
-    const byUser = new Map();
-    const orderedUsers = [];
-
-    (Array.isArray(subscriptions) ? subscriptions : []).forEach((subscription) => {
-        if (!subscription || typeof subscription !== 'object') return;
-        const userKey = normalizeUserKey(subscription.username || subscription.user || '');
-        if (!userKey) return;
-        if (!byUser.has(userKey)) {
-            byUser.set(userKey, { mobile: [], pc: [], unknown: [] });
-            orderedUsers.push(userKey);
-        }
-        const bucket = byUser.get(userKey);
-        const type = normalizeSubscriptionType(subscription.type || subscription.deviceType || '');
-        if (type === 'mobile') {
-            bucket.mobile.push(subscription);
-            return;
-        }
-        if (type === 'pc') {
-            bucket.pc.push(subscription);
-            return;
-        }
-        bucket.unknown.push(subscription);
-    });
-
-    const selected = [];
-    orderedUsers.forEach((userKey) => {
-        const bucket = byUser.get(userKey);
-        if (!bucket) return;
-        const pickedForUser = [];
-        const pickOne = (list) => {
-            if (!Array.isArray(list) || !list.length) return;
-            pickedForUser.push(list[0]);
-        };
-        pickOne(bucket.mobile);
-        pickOne(bucket.pc);
-        if (!pickedForUser.length) {
-            pickOne(bucket.unknown);
-        }
-        const overflowPool = [
-            ...bucket.mobile.slice(1),
-            ...bucket.pc.slice(1),
-            ...bucket.unknown.slice(1)
-        ];
-        while (pickedForUser.length < normalizedMax && overflowPool.length) {
-            pickedForUser.push(overflowPool.shift());
-        }
-        selected.push(...pickedForUser.slice(0, normalizedMax));
-    });
-
-    return dedupeSubscriptionsByEndpoint(selected);
-}
-
-async function sendPushNotificationToUser(targetUser, message, senderuser, options = {}) {
-    const targetUsersArray = Array.isArray(targetUser) ? targetUser : [targetUser];
-    
-    // 1. Prepare Content
-    const msgBody = message.body || {};
-    const customData = message.data || {};
-    const messageType = String(customData.type || '').trim().toLowerCase();
-    const isGroupScopedPush = Boolean(
-        customData.groupId ||
-        customData.groupName ||
-        messageType === 'group-update' ||
-        messageType === 'reaction' ||
-        (Array.isArray(customData.groupMembers) && customData.groupMembers.length)
-    );
-    const imageUrl = message.image || null;
-    const fileUrl = (message.data && message.data.fileUrl) || null;
-    const finalSender = senderuser || 'System';
-    const singlePerUser = Boolean(options.singlePerUser || messageType === 'reaction');
-    const allowSecondAttempt = options.allowSecondAttempt !== false && messageType !== 'reaction';
-    const shouldLimitPerUserEndpoints = options.limitPerUserEndpoints !== false && !messageType;
-    const configuredMaxEndpointsPerUser = Number(options.maxPerUserEndpoints);
-    const maxEndpointsPerUser = (
-        Number.isFinite(configuredMaxEndpointsPerUser) && configuredMaxEndpointsPerUser > 0
-    )
-        ? Math.floor(configuredMaxEndpointsPerUser)
-        : (shouldLimitPerUserEndpoints ? DEFAULT_CHAT_PUSH_MAX_ENDPOINTS_PER_USER : 0);
-    const compactCustomData = buildCompactPushCustomData(customData, messageType);
-    let msgTitle = message.title || 'Work Alert';
-    let msgText = msgBody.shortText || 'New Notification';
-    if (messageType === 'reaction') {
-        const reactionGroupName = String(customData.groupName || message.title || finalSender || '').trim();
-        msgTitle = reactionGroupName || 'Group';
-        msgText = 'new reaction';
-    }
-    const logContent = msgText || messageType || 'System Notification';
-    const shouldPersistPushLog = messageType !== 'read-receipt';
-    const messageId = options.messageId || message.messageId || generateMessageId();
-    const shouldDedupLog = Boolean(options.dedupLog);
-    const shouldIncrementBadge = !options.skipBadge;
-    let normalizedTargetUsers = Array.from(
-        new Set(targetUsersArray.map(normalizeUserKey).filter(Boolean))
-    );
-    if (!isGroupScopedPush && normalizedTargetUsers.length > 3) {
-        console.warn(
-            `[PUSH] Direct-target users trimmed: ${normalizedTargetUsers.length} -> 3`
-        );
-        normalizedTargetUsers = normalizedTargetUsers.slice(0, 3);
-    }
-    const targetAliasToCanonical = buildUserAliasLookupMap(normalizedTargetUsers);
-    const targetUsersSet = new Set(normalizedTargetUsers);
-    const singleTargetUser = normalizedTargetUsers.length === 1 ? normalizedTargetUsers[0] : '';
-    const normalizeAndFilterTargetSubscriptions = (subscriptions, options = {}) => {
-        const allowUnknownUser = Boolean(options.allowUnknownUser);
-        const normalized = dedupeSubscriptionsByEndpoint(subscriptions || []);
-        const matched = [];
-        const unknownWithoutUser = [];
-        normalized.forEach((subscription) => {
-            const rawUser = normalizeUserKey(subscription && (subscription.username || subscription.user));
-            const canonicalUser = resolveCanonicalUserFromLookup(
-                rawUser,
-                targetAliasToCanonical
-            );
-            if (canonicalUser) {
-                matched.push({
-                    ...subscription,
-                    username: canonicalUser
-                });
-                return;
-            }
-            // Explicitly scoped to another user -> never treat as current target.
-            if (rawUser) {
-                return;
-            }
-            if (!allowUnknownUser || !singleTargetUser) {
-                return;
-            }
-            unknownWithoutUser.push({
-                ...subscription,
-                username: singleTargetUser
-            });
-        });
-        if (matched.length) {
-            return matched;
-        }
-        if (unknownWithoutUser.length > 0 && unknownWithoutUser.length <= UNKNOWN_USER_FALLBACK_MAX_ENDPOINTS) {
-            return unknownWithoutUser;
-        }
-        return [];
-    };
-
-    console.log(`[PUSH] Searching subs for: ${targetUsersArray.join(', ')} from ${finalSender}`);
-
-    let rawSubscriptions = normalizeAndFilterTargetSubscriptions(
-        await getSubscriptionFromSheet(targetUsersArray),
-        { allowUnknownUser: true }
-    );
-    if (!rawSubscriptions.length) {
-        // Force refresh once to avoid stale cache windows (common after iOS resubscribe).
-        rawSubscriptions = normalizeAndFilterTargetSubscriptions(
-            await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true }),
-            { allowUnknownUser: true }
-        );
-    }
-    if (!rawSubscriptions.length) {
-        // Some script deployments occasionally return an empty filtered lookup even though
-        // valid endpoint rows still exist in the full subscription feed.
-        const fallbackDiscovery = await getAllSubscriptionsForAuthRefresh({ usernames: targetUsersArray });
-        const discoveredSubscriptions = Array.isArray(fallbackDiscovery.subscriptions)
-            ? fallbackDiscovery.subscriptions
-            : [];
-        rawSubscriptions = normalizeAndFilterTargetSubscriptions(discoveredSubscriptions, { allowUnknownUser: false });
-        if (rawSubscriptions.length) {
-            const cacheKey = buildSubscriptionCacheKey(targetUsersArray);
-            if (cacheKey) {
-                subscriptionCache.set(cacheKey, { at: Date.now(), subscriptions: rawSubscriptions });
-            }
-        }
-    }
-    const localSubscriptions = getLocalDeviceSubscriptionsForUsers(targetUsersArray);
-    if (localSubscriptions.length) {
-        rawSubscriptions = normalizeAndFilterTargetSubscriptions([
-            ...rawSubscriptions,
-            ...localSubscriptions
-        ], { allowUnknownUser: true });
-        const cacheKey = buildSubscriptionCacheKey(targetUsersArray);
-        if (cacheKey && rawSubscriptions.length) {
-            subscriptionCache.set(cacheKey, { at: Date.now(), subscriptions: rawSubscriptions });
-        }
-    }
-    const recipientAuthJsonForLog = buildMobileSubscriptionAuthJsonForLog(
-        targetUsersArray.join(','),
-        rawSubscriptions || []
-    );
-
-    if (!rawSubscriptions.length) {
-        logNotificationStatus(
-            finalSender,
-            targetUsersArray.join(','),
-            logContent,
-            'Failed',
-            'No subscriptions found',
-            recipientAuthJsonForLog,
-            messageId,
-            '',
-            '',
-            { dedup: shouldDedupLog }
-        );
-        return { success: 0, failed: 0 };
-    }
-
-    const sendToSubscriptions = async (subscriptions, allowBadgeIncrement) => {
-        const badgeCountByUser = new Map();
-        return Promise.all(
-            subscriptions.map(async (subscription) => {
-                // Increment unread badge once per user, not once per device endpoint.
-                const userKey = normalizeUserKey(
-                    subscription.username || subscription.user
-                );
-                const hasExplicitUser = Boolean(userKey);
-                const resolvedUserKey = userKey || singleTargetUser;
-                if (hasExplicitUser && targetUsersSet.size && !targetUsersSet.has(userKey)) {
-                    return {
-                        ok: false,
-                        username: userKey || 'unknown',
-                        statusCode: 'SKIP',
-                        message: 'Subscription user mismatch'
-                    };
-                }
-                let currentCount = resolvedUserKey ? (unreadCounts[resolvedUserKey] || 0) : 0;
-                if (shouldIncrementBadge && resolvedUserKey) {
-                    if (allowBadgeIncrement) {
-                        if (badgeCountByUser.has(resolvedUserKey)) {
-                            currentCount = badgeCountByUser.get(resolvedUserKey);
-                        } else {
-                            currentCount = currentCount + 1;
-                            unreadCounts[resolvedUserKey] = currentCount;
-                            badgeCountByUser.set(resolvedUserKey, currentCount);
-                        }
-                    } else {
-                        currentCount = unreadCounts[resolvedUserKey] || 0;
-                    }
-                }
-
-                const clickUrl = `/subscribes/?chat=${encodeURIComponent(finalSender)}`;
-                const payloadData = {
-                    ...compactCustomData,
-                    title: msgTitle,
-                    body: msgText || 'New Notification',
-                    badge: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
-                    icon: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
-                    requireInteraction: true,
-                    image: imageUrl,
-                    url: clickUrl,
-                    user: resolvedUserKey,
-                    sender: finalSender,
-                    messageId: messageId
-                };
-                if (shouldIncrementBadge && resolvedUserKey) {
-                    payloadData.badgeCount = currentCount;
-                }
-
-                const includeNotificationPayload = !(
-                    payloadData.skipNotification === true ||
-                    messageType === 'read-receipt' ||
-                    messageType === 'group-update' ||
-                    messageType === 'delete-action' ||
-                    messageType === 'edit-action' ||
-                    messageType === AUTH_REFRESH_PUSH_TYPE
-                );
-                const payload = buildPushPayloadString(payloadData, {
-                    includeNotification: includeNotificationPayload
-                });
-
-                try {
-                    const pushOptions = {
-                        TTL: 604800,
-                        headers: { 'Urgency': 'high' },
-                        timeout: 15000
-                    };
-                    await webpush.sendNotification(subscription, payload, pushOptions);
-                    return {
-                        ok: true,
-                        username: subscription.username || resolvedUserKey || 'unknown',
-                        badge: currentCount,
-                        endpoint: subscription.endpoint
-                    };
-                } catch (err) {
-                    const statusCode = err.statusCode || 'N/A';
-                    if (statusCode === 404 || statusCode === 410) {
-                        pruneSubscriptionCacheEndpoint(subscription.endpoint);
-                    }
-                    return {
-                        ok: false,
-                        username: subscription.username || resolvedUserKey || 'unknown',
-                        statusCode,
-                        message: err.message,
-                        endpoint: subscription.endpoint
-                    };
-                }
-            })
-        );
-    };
-
-    let uniqueSubscriptions = normalizeAndFilterTargetSubscriptions(rawSubscriptions);
-    if (singlePerUser) {
-        const oneSubscriptionPerUser = new Map();
-        uniqueSubscriptions.forEach((subscription) => {
-            const userKey = normalizeUserKey(
-                subscription.username || subscription.user || ''
-            );
-            if (!userKey) return;
-            // Keep latest observed subscription per user to prevent duplicate pushes.
-            oneSubscriptionPerUser.set(userKey, subscription);
-        });
-        uniqueSubscriptions = Array.from(oneSubscriptionPerUser.values());
-    } else if (maxEndpointsPerUser > 0) {
-        uniqueSubscriptions = limitSubscriptionsPerUser(uniqueSubscriptions, maxEndpointsPerUser);
-    }
-    if (singleTargetUser && uniqueSubscriptions.length > SINGLE_TARGET_MAX_SAFE_SUBSCRIPTIONS) {
-        console.warn(
-            `[PUSH] Single-target subscriptions trimmed for ${singleTargetUser}: ` +
-            `${uniqueSubscriptions.length} -> ${SINGLE_TARGET_MAX_SAFE_SUBSCRIPTIONS}`
-        );
-        uniqueSubscriptions = uniqueSubscriptions.slice(0, SINGLE_TARGET_MAX_SAFE_SUBSCRIPTIONS);
-    }
-    if (!isGroupScopedPush) {
-        const maxDirectSubscriptions = Math.max(
-            1,
-            Math.min(24, normalizedTargetUsers.length * SINGLE_TARGET_MAX_SAFE_SUBSCRIPTIONS)
-        );
-        if (uniqueSubscriptions.length > maxDirectSubscriptions) {
-            console.warn(
-                `[PUSH] Direct subscriptions hard-trimmed: ${uniqueSubscriptions.length} -> ${maxDirectSubscriptions}`
-            );
-            uniqueSubscriptions = uniqueSubscriptions.slice(0, maxDirectSubscriptions);
-        }
-    }
-    let sendResults = await sendToSubscriptions(uniqueSubscriptions, true);
-
-    let successCount = 0;
-    let failCount = 0;
-    const executionLogs = [];
-    const appendResultsToLogs = (results) => {
-        for (const result of results) {
-            if (result.ok) {
-                successCount++;
-                executionLogs.push(`Device (${result.username}): ✅ Delivered (Badge: ${result.badge})`);
-            } else {
-                failCount++;
-                executionLogs.push(`Device (${result.username}): ❌ Failed [${result.statusCode}]`);
-                console.error(`[PUSH FAIL] ${result.username}:`, result.message);
-            }
-        }
-    };
-
-    appendResultsToLogs(sendResults);
-
-    if (successCount === 0 && allowSecondAttempt) {
-        const cacheKey = buildSubscriptionCacheKey(targetUsersArray);
-        if (cacheKey) {
-            subscriptionCache.delete(cacheKey);
-        }
-
-        const refreshedRawSubscriptions = await getSubscriptionFromSheet(targetUsersArray, { forceRefresh: true });
-        let refreshedUniqueSubscriptions = normalizeAndFilterTargetSubscriptions([
-            ...(Array.isArray(refreshedRawSubscriptions) ? refreshedRawSubscriptions : []),
-            ...getLocalDeviceSubscriptionsForUsers(targetUsersArray)
-        ]);
-        if (!singlePerUser && maxEndpointsPerUser > 0) {
-            refreshedUniqueSubscriptions = limitSubscriptionsPerUser(refreshedUniqueSubscriptions, maxEndpointsPerUser);
-        }
-        if (refreshedUniqueSubscriptions.length) {
-            const existingEndpoints = new Set(uniqueSubscriptions.map((sub) => sub.endpoint));
-            const retryTargets = refreshedUniqueSubscriptions.filter(
-                (sub) => !existingEndpoints.has(sub.endpoint)
-            );
-            const effectiveRetryTargets = retryTargets.length ? retryTargets : refreshedUniqueSubscriptions;
-
-            const retryResults = await sendToSubscriptions(effectiveRetryTargets, false);
-            appendResultsToLogs(retryResults);
-            sendResults = [...sendResults, ...retryResults];
-        }
-    }
-
-    const staleEndpoints = Array.from(
-        new Set(
-            sendResults
-                .filter((result) => !result.ok && (result.statusCode === 404 || result.statusCode === 410))
-                .map((result) => String(result.endpoint || '').trim())
-                .filter(Boolean)
-        )
-    );
-    if (staleEndpoints.length) {
-        let localRemoved = 0;
-        staleEndpoints.forEach((endpoint) => {
-            if (removeLocalDeviceSubscriptionEndpoint(endpoint)) {
-                localRemoved += 1;
-            }
-        });
-        let staleCleanupSummary = null;
-        try {
-            staleCleanupSummary = await removeStaleSubscriptionsFromSheet(staleEndpoints);
-        } catch (_error) {
-            staleCleanupSummary = null;
-        }
-        if (localRemoved > 0 || staleCleanupSummary) {
-            executionLogs.push(
-                `[STALE CLEANUP] endpoints=${staleEndpoints.length}, localRemoved=${localRemoved}, ` +
-                `sheetCleared=${Number(staleCleanupSummary && staleCleanupSummary.clearedSubscriptions || 0)}`
-            );
-        }
-    }
-
-    scheduleStateSave();
-
-    // Skip sheet logs for read-receipt ("seen") transport events.
-    if (shouldPersistPushLog) {
-        const fullReport = executionLogs.join('\n');
-        const finalStatus = successCount > 0 ? 'Sent' : 'Failed';
-        logNotificationStatus(
-            finalSender,
-            targetUsersArray.join(','),
-            logContent,
-            finalStatus,
-            fullReport,
-            recipientAuthJsonForLog,
-            messageId,
-            imageUrl || '',
-            fileUrl || '',
-            { dedup: shouldDedupLog }
-        );
-    }
-
-    return { success: successCount, failed: failCount };
+function trimPushTextValue(value, maxLength) { return notificationService.trimPushTextValue(value, maxLength); }
+function buildCompactPushCustomData(rawData, messageType) { return notificationService.buildCompactPushCustomData(rawData, messageType); }
+function buildPushPayloadString(payloadData, options) { return notificationService.buildPushPayloadString(payloadData, options); }
+function isLikelyPhoneUserKey(userKey) { return notificationService.isLikelyPhoneUserKey(userKey); }
+function limitSubscriptionsPerUser(subscriptions, maxPerUser) { return notificationService.limitSubscriptionsPerUser(subscriptions, maxPerUser); }
+async function sendPushNotificationToUser(targetUser, message, senderuser, options) {
+    return notificationService.sendPushNotificationToUser(targetUser, message, senderuser, options);
 }
 // --- ROUTES ---
 

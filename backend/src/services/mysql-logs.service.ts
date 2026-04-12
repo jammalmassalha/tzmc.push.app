@@ -255,6 +255,13 @@ function normalizeTableName(rawValue: unknown): string {
   return value;
 }
 
+export interface MysqlPersistedServerState {
+  unreadCounts: Record<string, unknown>;
+  groups: Record<string, unknown>;
+  deviceSubscriptionsByUser: Record<string, unknown>;
+  shuttleReminderSentAtByKey: Record<string, unknown>;
+}
+
 export class MysqlLogsService {
   private readonly pool: Pool;
   private readonly tableName: string;
@@ -266,6 +273,7 @@ export class MysqlLogsService {
   private communityGroupsTablesReady = false;
   private chatGroupsTablesReady = false;
   private messageActivitiesTableReady = false;
+  private serverStateTableReady = false;
 
   constructor(config: MysqlLogsConfig) {
     this.tableName = normalizeTableName(config.table);
@@ -1337,6 +1345,97 @@ export class MysqlLogsService {
       const message = String((err as { message?: string }).message || '');
       console.error('[MYSQL] getAllMessageActivities error:', message);
       return [];
+    }
+  }
+
+  // ─── Server State persistence (replaces file-based state.json) ───────────────
+
+  private async ensureServerStateTable(): Promise<void> {
+    if (this.serverStateTableReady) return;
+    try {
+      await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`ServerState\` (
+          \`StateKey\` VARCHAR(100) NOT NULL,
+          \`StateValue\` LONGTEXT NOT NULL,
+          \`UpdatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (\`StateKey\`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+      this.serverStateTableReady = true;
+      console.log('[MYSQL] ServerState table ensured.');
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.warn('[MYSQL] ensureServerStateTable warning:', message);
+    }
+  }
+
+  async loadServerState(): Promise<MysqlPersistedServerState | null> {
+    await this.ensureServerStateTable();
+    try {
+      const [rows] = await this.pool.execute<RowDataPacket[]>(
+        'SELECT `StateKey`, `StateValue` FROM `ServerState`'
+      );
+      if (!rows.length) return null;
+      const stateMap = new Map<string, string>();
+      for (const row of rows) {
+        stateMap.set(
+          toTrimmedString(row.StateKey),
+          String(row.StateValue ?? '{}')
+        );
+      }
+
+      const parseValue = <T>(key: string, fallback: T): T => {
+        const raw = stateMap.get(key);
+        if (!raw) return fallback;
+        try {
+          const parsed = JSON.parse(raw) as T;
+          return (parsed && typeof parsed === 'object') ? parsed : fallback;
+        } catch {
+          return fallback;
+        }
+      };
+
+      return {
+        unreadCounts: parseValue<Record<string, unknown>>('unreadCounts', {}),
+        groups: parseValue<Record<string, unknown>>('groups', {}),
+        deviceSubscriptionsByUser: parseValue<Record<string, unknown>>('deviceSubscriptionsByUser', {}),
+        shuttleReminderSentAtByKey: parseValue<Record<string, unknown>>('shuttleReminderSentAtByKey', {})
+      };
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.error('[MYSQL] loadServerState error:', message);
+      return null;
+    }
+  }
+
+  async persistServerState(state: MysqlPersistedServerState): Promise<void> {
+    await this.ensureServerStateTable();
+    const entries: Array<[string, unknown]> = [
+      ['unreadCounts', state.unreadCounts ?? {}],
+      ['groups', state.groups ?? {}],
+      ['deviceSubscriptionsByUser', state.deviceSubscriptionsByUser ?? {}],
+      ['shuttleReminderSentAtByKey', state.shuttleReminderSentAtByKey ?? {}]
+    ];
+    const conn = await this.pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      for (const [key, value] of entries) {
+        const jsonPayload = JSON.stringify(value);
+        await conn.execute(
+          `INSERT INTO \`ServerState\` (\`StateKey\`, \`StateValue\`)
+           VALUES (?, ?)
+           ON DUPLICATE KEY UPDATE \`StateValue\` = VALUES(\`StateValue\`)`,
+          [key, jsonPayload]
+        );
+      }
+      await conn.commit();
+    } catch (err: unknown) {
+      await conn.rollback().catch(() => undefined);
+      const message = String((err as { message?: string }).message || '');
+      console.error('[MYSQL] persistServerState error:', message);
+      throw err;
+    } finally {
+      conn.release();
     }
   }
 

@@ -197,6 +197,7 @@ class MysqlLogsService {
     communityGroupsTablesReady = false;
     chatGroupsTablesReady = false;
     messageActivitiesTableReady = false;
+    serverStateTableReady = false;
     constructor(config) {
         this.tableName = normalizeTableName(config.table);
         // 10 columns / 10 parameters — keep in sync with insertLog() and insertLogsBulk()
@@ -1142,6 +1143,91 @@ class MysqlLogsService {
             const message = String(err.message || '');
             console.error('[MYSQL] getAllMessageActivities error:', message);
             return [];
+        }
+    }
+    // ─── Server State persistence (replaces file-based state.json) ───────────────
+    async ensureServerStateTable() {
+        if (this.serverStateTableReady)
+            return;
+        try {
+            await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`ServerState\` (
+          \`StateKey\` VARCHAR(100) NOT NULL,
+          \`StateValue\` LONGTEXT NOT NULL,
+          \`UpdatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (\`StateKey\`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+            this.serverStateTableReady = true;
+            console.log('[MYSQL] ServerState table ensured.');
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.warn('[MYSQL] ensureServerStateTable warning:', message);
+        }
+    }
+    async loadServerState() {
+        await this.ensureServerStateTable();
+        try {
+            const [rows] = await this.pool.execute('SELECT `StateKey`, `StateValue` FROM `ServerState`');
+            if (!rows.length)
+                return null;
+            const stateMap = new Map();
+            for (const row of rows) {
+                stateMap.set(toTrimmedString(row.StateKey), String(row.StateValue ?? '{}'));
+            }
+            const parseValue = (key, fallback) => {
+                const raw = stateMap.get(key);
+                if (!raw)
+                    return fallback;
+                try {
+                    const parsed = JSON.parse(raw);
+                    return (parsed && typeof parsed === 'object') ? parsed : fallback;
+                }
+                catch {
+                    return fallback;
+                }
+            };
+            return {
+                unreadCounts: parseValue('unreadCounts', {}),
+                groups: parseValue('groups', {}),
+                deviceSubscriptionsByUser: parseValue('deviceSubscriptionsByUser', {}),
+                shuttleReminderSentAtByKey: parseValue('shuttleReminderSentAtByKey', {})
+            };
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.error('[MYSQL] loadServerState error:', message);
+            return null;
+        }
+    }
+    async persistServerState(state) {
+        await this.ensureServerStateTable();
+        const entries = [
+            ['unreadCounts', state.unreadCounts ?? {}],
+            ['groups', state.groups ?? {}],
+            ['deviceSubscriptionsByUser', state.deviceSubscriptionsByUser ?? {}],
+            ['shuttleReminderSentAtByKey', state.shuttleReminderSentAtByKey ?? {}]
+        ];
+        const conn = await this.pool.getConnection();
+        try {
+            await conn.beginTransaction();
+            for (const [key, value] of entries) {
+                const jsonPayload = JSON.stringify(value);
+                await conn.execute(`INSERT INTO \`ServerState\` (\`StateKey\`, \`StateValue\`)
+           VALUES (?, ?)
+           ON DUPLICATE KEY UPDATE \`StateValue\` = VALUES(\`StateValue\`)`, [key, jsonPayload]);
+            }
+            await conn.commit();
+        }
+        catch (err) {
+            await conn.rollback().catch(() => undefined);
+            const message = String(err.message || '');
+            console.error('[MYSQL] persistServerState error:', message);
+            throw err;
+        }
+        finally {
+            conn.release();
         }
     }
 }
