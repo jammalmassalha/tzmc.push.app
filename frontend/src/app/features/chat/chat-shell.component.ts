@@ -1035,6 +1035,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     if (this.isComposerHidden() && !this.editingMessageTarget()) {
       return;
     }
+    // Block send while a file is still uploading to prevent sending without the attachment
     if (this.store.uploading()) return;
     if (!this.canSendMessage()) return;
 
