@@ -220,7 +220,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.72'; // WhatsApp-style image preview modal instead of window.open
+const SERVER_VERSION = '1.73'; // Migrate backend state persistence from file/Redis to MySQL
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',
@@ -248,6 +248,7 @@ let stateSaveTimer = null;
 let activeRedisStateStore = null;
 let redisQueuePubSubActive = false;
 let redisQueuePubSubStartPromise = null;
+let mysqlStateEnabled = true; // Primary state store is MySQL
 
 let unreadCounts = {};
 let groups = {};
@@ -4876,17 +4877,59 @@ function upsertGroup(payload = {}) {
 }
 
 async function loadState() {
+    // Set up Redis for queue pub/sub (message delivery), independent of state persistence
     const redisStore = await redisStateStorePromise;
     if (redisStore && redisStore.isEnabled) {
         activeRedisStateStore = redisStore;
         await ensureRedisQueuePubSubBridge();
+    }
+
+    // ── Primary: load persisted state from MySQL ──
+    try {
+        const mysqlState = await mysqlLogsService.loadServerState();
+        if (mysqlState) {
+            const nextUnreadCounts = (mysqlState.unreadCounts && typeof mysqlState.unreadCounts === 'object')
+                ? mysqlState.unreadCounts
+                : {};
+            replaceObjectContents(unreadCounts, nextUnreadCounts);
+            messageQueue = {};
+            groups = (mysqlState.groups && typeof mysqlState.groups === 'object')
+                ? mysqlState.groups
+                : {};
+            groups = normalizeGroupsCollection(groups);
+            deviceSubscriptionsByUser = normalizeLocalDeviceSubscriptionsRegistry(
+                (mysqlState.deviceSubscriptionsByUser && typeof mysqlState.deviceSubscriptionsByUser === 'object')
+                    ? mysqlState.deviceSubscriptionsByUser
+                    : {}
+            );
+            shuttleReminderSentAtByKey = normalizeShuttleReminderSentState(
+                (mysqlState.shuttleReminderSentAtByKey && typeof mysqlState.shuttleReminderSentAtByKey === 'object')
+                    ? mysqlState.shuttleReminderSentAtByKey
+                    : {}
+            );
+            shuttleReminderKnownUsersCache.at = 0;
+            shuttleReminderKnownUsersCache.users = [];
+            Object.keys(shuttleReminderOrdersCacheByUser).forEach((userKey) => {
+                delete shuttleReminderOrdersCacheByUser[userKey];
+            });
+            console.log('[STATE] Loaded persisted state from MySQL.');
+            mysqlStateEnabled = true;
+            await hydrateGroupsFromMysql();
+            await loadAndSeedCommunityGroups();
+            return;
+        }
+    } catch (error) {
+        console.warn('[STATE] MySQL state load failed, falling back:', error && error.message ? error.message : error);
+    }
+
+    // ── Fallback: load from Redis (legacy) ──
+    if (activeRedisStateStore && activeRedisStateStore.isEnabled) {
         try {
-            const redisState = await redisStore.loadState();
+            const redisState = await activeRedisStateStore.loadState();
             if (redisState) {
                 const nextUnreadCounts = (redisState.unreadCounts && typeof redisState.unreadCounts === 'object')
                     ? redisState.unreadCounts
                     : {};
-                // Keep a stable reference so controllers/middlewares mutate the live map.
                 replaceObjectContents(unreadCounts, nextUnreadCounts);
                 messageQueue = {};
                 groups = (redisState.groups && typeof redisState.groups === 'object')
@@ -4909,9 +4952,8 @@ async function loadState() {
                     delete shuttleReminderOrdersCacheByUser[userKey];
                 });
                 await hydrateGroupsFromLocalDb();
-                console.log('[STATE] Loaded persisted state from Redis.');
+                console.log('[STATE] Loaded persisted state from Redis (legacy). Will migrate to MySQL on next save.');
                 await hydrateGroupsFromMysql();
-                // Load community group configs from MySQL (overrides seed values)
                 await loadAndSeedCommunityGroups();
                 return;
             }
@@ -4920,12 +4962,12 @@ async function loadState() {
         }
     }
 
+    // ── Fallback: load from local file (legacy) ──
     try {
         await fsp.mkdir(stateDir, { recursive: true });
         const raw = await fsp.readFile(stateFile, 'utf8');
         const data = JSON.parse(raw);
         const nextUnreadCounts = (data.unreadCounts && typeof data.unreadCounts === 'object') ? data.unreadCounts : {};
-        // Keep a stable reference so controllers/middlewares mutate the live map.
         replaceObjectContents(unreadCounts, nextUnreadCounts);
         messageQueue = (data.messageQueue && typeof data.messageQueue === 'object') ? data.messageQueue : {};
         groups = (data.groups && typeof data.groups === 'object') ? data.groups : {};
@@ -4946,7 +4988,7 @@ async function loadState() {
             delete shuttleReminderOrdersCacheByUser[userKey];
         });
         await hydrateGroupsFromLocalDb();
-        console.log('[STATE] Loaded persisted state.');
+        console.log('[STATE] Loaded persisted state from file (legacy). Will migrate to MySQL on next save.');
     } catch (err) {
         if (err.code !== 'ENOENT') {
             console.warn('[STATE] Failed to load state:', err.message);
@@ -4969,6 +5011,22 @@ async function loadState() {
 }
 
 async function persistState() {
+    // ── Primary: persist to MySQL ──
+    if (mysqlStateEnabled) {
+        try {
+            await mysqlLogsService.persistServerState({
+                unreadCounts,
+                groups,
+                deviceSubscriptionsByUser,
+                shuttleReminderSentAtByKey
+            });
+            return;
+        } catch (error) {
+            console.warn('[STATE] MySQL persist failed, falling back:', error && error.message ? error.message : error);
+        }
+    }
+
+    // ── Fallback: persist to Redis ──
     if (activeRedisStateStore && activeRedisStateStore.isEnabled) {
         try {
             await activeRedisStateStore.persistState({
@@ -4985,7 +5043,9 @@ async function persistState() {
         }
     }
 
+    // ── Fallback: persist to local file ──
     try {
+        await fsp.mkdir(stateDir, { recursive: true });
         const payload = JSON.stringify({
             unreadCounts,
             messageQueue,
