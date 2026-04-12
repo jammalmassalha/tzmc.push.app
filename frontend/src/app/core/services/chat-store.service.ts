@@ -5063,7 +5063,7 @@ export class ChatStoreService {
     return {
       ongoing,
       past,
-      assigned: this.helpdeskAssignedSignal(),
+      assigned: this.helpdeskAssignedSignal().filter((t) => t.status !== 'closed'),
       myRole: this.helpdeskMyRoleSignal(),
       editorTickets: this.helpdeskEditorTicketsSignal(),
       handlers: this.helpdeskHandlersSignal()

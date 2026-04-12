@@ -228,8 +228,8 @@ function registerHelpdeskController(app, deps = {}) {
                     [user]
                 ),
                 pool.query(
-                    'SELECT * FROM `helpdesk_tickets` WHERE `handler_username` = ? ORDER BY `created_at` DESC LIMIT 100',
-                    [user]
+                    'SELECT * FROM `helpdesk_tickets` WHERE `handler_username` = ? AND `status` != ? ORDER BY `created_at` DESC LIMIT 100',
+                    [user, 'closed']
                 )
             ]);
 
