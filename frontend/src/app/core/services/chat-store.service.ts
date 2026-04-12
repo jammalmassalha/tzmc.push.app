@@ -36,6 +36,13 @@ import {
   ShuttleUserOrderPayload,
   UserPushSubscriptionPayload
 } from './chat-api.service';
+import {
+  clearIdbForUser,
+  needsIdbMigration,
+  markIdbMigrationDone,
+  persistToIdb,
+  restoreFromIdb
+} from './chat-db.service';
 
 const CONTACTS_TTL_MS = 5 * 60 * 1000;
 const CONTACTS_ACCESS_SYNC_INTERVAL_MS = 60 * 1000;
@@ -662,7 +669,7 @@ export class ChatStoreService {
         return;
       }
       this.currentUser.set(user);
-      this.restoreState(user);
+      await this.restoreState(user);
       this.rescheduleShuttleRemindersForUser(user);
     } catch {
       this.currentUser.set(null);
@@ -849,7 +856,7 @@ export class ChatStoreService {
     this.activeChatId.set(null);
     this.lastError.set(null);
 
-    this.restoreState(user);
+    await this.restoreState(user);
     this.rescheduleShuttleRemindersForUser(user);
     try {
       await this.ensurePushRegistrationHealth(user, {
@@ -8321,6 +8328,8 @@ export class ChatStoreService {
     localStorage.removeItem(this.shuttleLanguageKey(user));
     localStorage.removeItem(this.shuttleReminderHistoryKey(user));
     localStorage.removeItem(this.helpdeskStateKey(user));
+    // Also clear IndexedDB state for this user (fire-and-forget).
+    clearIdbForUser(user).catch(() => { /* best-effort */ });
   }
 
   private resetRuntimeStateAfterCacheClear(user: string): void {
@@ -8346,10 +8355,7 @@ export class ChatStoreService {
     this.resetReadReceiptTrackingState();
   }
 
-  private restoreState(user: string): void {
-    const raw = localStorage.getItem(this.stateKey(user));
-    if (!raw) return;
-
+  private async restoreState(user: string): Promise<void> {
     // One-time migration: clear cached groups so they are re-fetched from DB.
     const groupsMigrated = localStorage.getItem(GROUPS_DB_MIGRATION_KEY);
     const shouldClearGroups = !groupsMigrated;
@@ -8358,7 +8364,28 @@ export class ChatStoreService {
     }
 
     try {
-      const parsed = JSON.parse(raw) as Partial<PersistedChatState>;
+      // Try to load from IndexedDB first.
+      let parsed: Partial<PersistedChatState> | null = null;
+
+      const idbData = await restoreFromIdb(user);
+      if (idbData) {
+        parsed = idbData;
+      } else {
+        // Fallback: migrate from localStorage if available.
+        const raw = localStorage.getItem(this.stateKey(user));
+        if (raw) {
+          parsed = JSON.parse(raw) as Partial<PersistedChatState>;
+          // Remove old localStorage entry after successful parse.
+          localStorage.removeItem(this.stateKey(user));
+        }
+      }
+
+      if (needsIdbMigration()) {
+        markIdbMigrationDone();
+      }
+
+      if (!parsed) return;
+
       const contacts = this.normalizeContacts(Array.isArray(parsed.contacts) ? parsed.contacts : []);
       const groups = shouldClearGroups
         ? []
@@ -8459,17 +8486,18 @@ export class ChatStoreService {
     if (!user) return;
 
     const flattened = Object.values(this.messagesByChat()).flat();
-    flattened.sort((a, b) => a.timestamp - b.timestamp);
-    const tail = flattened.slice(-MAX_PERSISTED_MESSAGES);
 
-    const payload: PersistedChatState = {
-      contacts: this.contacts(),
-      groups: this.groups(),
-      unreadByChat: this.unreadByChat(),
-      messages: tail
-    };
-
-    localStorage.setItem(this.stateKey(user), JSON.stringify(payload));
+    // Fire-and-forget async write to IndexedDB.
+    persistToIdb(
+      user,
+      this.contacts(),
+      this.groups(),
+      this.unreadByChat(),
+      flattened,
+      MAX_PERSISTED_MESSAGES
+    ).catch(() => {
+      // Best-effort: if IndexedDB write fails, silently ignore.
+    });
   }
 
   private loadOutbox(user: string): OutboxItem[] {
