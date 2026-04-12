@@ -2581,8 +2581,10 @@ async function postInforuSmsXml(xmlPayload) {
     const rawResponse = await response.text();
     const statusCode = extractInforuStatusCode(rawResponse);
     const description = extractInforuStatusDescription(rawResponse);
+    const ok = Boolean(response.ok && statusCode === '1');
+    console.log(`[SMS] InforU response: HTTP ${response.status}, status=${statusCode}, ok=${ok}, desc="${description}"`);
     return {
-        ok: Boolean(response.ok && statusCode === '1'),
+        ok,
         statusCode,
         description,
         httpStatus: response.status
@@ -2593,6 +2595,18 @@ function resolveAuthCodeSmsDestination(user) {
     const normalizedUser = normalizeUserCandidate(user);
     if (!normalizedUser) return '';
     return AUTH_CODE_SMS_DESTINATION_OVERRIDES.get(normalizedUser) || normalizedUser;
+}
+
+/**
+ * Convert a local Israeli phone number (0XXXXXXXXX) to international format (972XXXXXXXXX)
+ * for reliable SMS gateway delivery. Returns unchanged if already international or non-standard.
+ */
+function toInternationalPhoneFormat(phone) {
+    const digits = String(phone || '').replace(/\D/g, '');
+    if (/^0\d{9}$/.test(digits)) {
+        return '972' + digits.slice(1);
+    }
+    return digits || phone;
 }
 
 async function sendAuthCodeSms(user, code) {
@@ -2606,12 +2620,15 @@ async function sendAuthCodeSms(user, code) {
         throw new Error('Invalid SMS verification payload');
     }
 
+    const internationalPhone = toInternationalPhoneFormat(smsDestination);
+    console.log(`[SMS] Sending auth code to ${smsDestination} (intl: ${internationalPhone})`);
+
     const message = formatAuthCodeSmsMessage(normalizedCode);
     const primaryXmlPayload = buildInforuSmsXmlPayload({
         username: INFORU_USERNAME,
         apiToken: INFORU_API_TOKEN,
         message,
-        phone: smsDestination,
+        phone: internationalPhone,
         sender: INFORU_SENDER,
         includeSender: true
     });
@@ -2619,11 +2636,12 @@ async function sendAuthCodeSms(user, code) {
 
     // Some InforU accounts reject a sender alias and accept account default.
     if (!sendResult.ok && sendResult.statusCode === '-17' && INFORU_SENDER) {
+        console.log(`[SMS] Sender alias rejected, retrying without sender for ${internationalPhone}`);
         const fallbackXmlPayload = buildInforuSmsXmlPayload({
             username: INFORU_USERNAME,
             apiToken: INFORU_API_TOKEN,
             message,
-            phone: smsDestination,
+            phone: internationalPhone,
             sender: '',
             includeSender: false
         });
@@ -2633,8 +2651,11 @@ async function sendAuthCodeSms(user, code) {
     if (!sendResult.ok) {
         const statusPart = sendResult.statusCode || `HTTP-${sendResult.httpStatus || 'n/a'}`;
         const descriptionPart = sendResult.description ? `: ${sendResult.description}` : '';
+        console.error(`[SMS] Failed to send auth code to ${internationalPhone}: ${statusPart}${descriptionPart}`);
         throw new Error(`SMS gateway rejected request (${statusPart}${descriptionPart})`);
     }
+
+    console.log(`[SMS] Auth code sent successfully to ${internationalPhone}`);
 }
 
 async function setAuthCodeOnSubscribeSheet(user, code) {
