@@ -2606,7 +2606,7 @@ function toInternationalPhoneFormat(phone) {
     if (/^0\d{9}$/.test(digits)) {
         return '972' + digits.slice(1);
     }
-    return digits || phone;
+    return digits || String(phone || '');
 }
 
 async function sendAuthCodeSms(user, code) {
