@@ -255,7 +255,7 @@ let stateSaveTimer = null;
 let activeRedisStateStore = null;
 let redisQueuePubSubActive = false;
 let redisQueuePubSubStartPromise = null;
-let mysqlStateEnabled = true; // Primary state store is MySQL
+let mysqlStateEnabled = false; // Set to true on successful MySQL state load
 
 let unreadCounts = {};
 let groups = {};

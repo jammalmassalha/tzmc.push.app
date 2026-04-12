@@ -9,6 +9,14 @@ export interface SessionPayload {
   csrfToken: string;
 }
 
+/** Wire format stored in the JWT/cookie (uses short key `sid` for compactness). */
+interface SessionWirePayload {
+  user: string;
+  expiresAt: number;
+  sid: string;
+  csrfToken: string;
+}
+
 export interface SessionToken {
   token: string;
   expiresAt: number;
@@ -148,7 +156,7 @@ export class SessionService {
     }
     this.deps.activeSessionIdsByUser.get(normalizedUser)!.add(sessionId);
 
-    const payloadObject: SessionPayload = { user: normalizedUser, expiresAt, sid: sessionId, csrfToken } as unknown as SessionPayload;
+    const payloadObject: SessionWirePayload = { user: normalizedUser, expiresAt, sid: sessionId, csrfToken };
     const jweToken = this.jweService ? this.jweService.encrypt(payloadObject) : '';
     if (jweToken) return { token: jweToken, expiresAt, sessionId, csrfToken };
 

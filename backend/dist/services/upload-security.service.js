@@ -275,6 +275,12 @@ class UploadSecurityService {
         if (!file || !file.path) {
             return { ok: false, message: 'Invalid uploaded file data' };
         }
+        // Guard against path traversal — only allow reading files inside the upload directory.
+        const resolvedUploadDir = node_path_1.default.resolve(this.uploadDir) + node_path_1.default.sep;
+        const resolvedPath = node_path_1.default.resolve(String(file.path));
+        if (!resolvedPath.startsWith(resolvedUploadDir)) {
+            return { ok: false, message: 'Invalid uploaded file path' };
+        }
         const fileSize = Number(file.size || 0);
         if (!Number.isFinite(fileSize) || fileSize <= 0) {
             return { ok: false, message: 'Uploaded file is empty' };
