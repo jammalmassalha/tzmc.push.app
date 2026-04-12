@@ -740,6 +740,8 @@ const SESSION_JWE_SECRET = String(
 const sessionTokenJweService = SESSION_JWE_SECRET
     ? new SessionTokenJweService(SESSION_JWE_SECRET)
     : null;
+// Declared here (before SessionService) so it is available during construction.
+const activeSessionIdsByUser = new Map();
 const sessionService = new SessionService(
     {
         signingSecret: SESSION_SIGNING_SECRET,
@@ -904,7 +906,7 @@ let shuttleReminderState = {
 let shuttleReminderSentAtByKey = {};
 const shuttleReminderKnownUsersCache = { at: 0, users: [] };
 const shuttleReminderOrdersCacheByUser = {};
-const activeSessionIdsByUser = new Map();
+// activeSessionIdsByUser is declared earlier (before SessionService instantiation).
 const authSessionRateLimitByIp = new Map();
 const authSessionRateLimitByUser = new Map();
 const authCodeRequestRateLimitByIp = new Map();
