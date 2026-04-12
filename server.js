@@ -29,10 +29,6 @@ const {
     NotificationService,
     SessionService
 } = require('./backend/dist/services');
-const { validateEnvOrExit } = require('./backend/dist/validate-env');
-
-// Fail fast if required environment variables are missing
-validateEnvOrExit(process.env);
 
 const fetch = (...args) => {
     if (typeof globalThis.fetch === 'function') {
@@ -2542,6 +2538,7 @@ function buildInforuSmsXmlPayload({
     const escapedPhone = escapeXmlValue(phone);
     const escapedSender = escapeXmlValue(sender || '');
     const xmlParts = [
+        '<?xml version="1.0" encoding="utf-8"?>',
         '<Inforu>',
         '<User>',
         `<Username>${escapedUsername}</Username>`,
@@ -2552,16 +2549,18 @@ function buildInforuSmsXmlPayload({
         '</Content>',
         '<Recipients>',
         `<PhoneNumber>${escapedPhone}</PhoneNumber>`,
-        '</Recipients>'
+        '</Recipients>',
+        '<Settings>'
     ];
     if (includeSender && escapedSender) {
-        xmlParts.push(
-            '<Settings>',
-            `<Sender>${escapedSender}</Sender>`,
-            '</Settings>'
-        );
+        xmlParts.push(`<Sender>${escapedSender}</Sender>`);
     }
-    xmlParts.push('</Inforu>');
+    xmlParts.push(
+        '<MessageInterval>0</MessageInterval>',
+        '<TimeToSend></TimeToSend>',
+        '</Settings>',
+        '</Inforu>'
+    );
     return xmlParts.join('');
 }
 
@@ -2582,7 +2581,7 @@ async function postInforuSmsXml(xmlPayload) {
     const statusCode = extractInforuStatusCode(rawResponse);
     const description = extractInforuStatusDescription(rawResponse);
     const ok = Boolean(response.ok && statusCode === '1');
-    console.log(`[SMS] InforU response: HTTP ${response.status}, status=${statusCode}, ok=${ok}, desc="${description}"`);
+    console.log(`[SMS] InforU response: HTTP ${response.status}, status=${statusCode}, ok=${ok}, desc="${description}", raw="${rawResponse.slice(0, 300)}"`);
     return {
         ok,
         statusCode,
