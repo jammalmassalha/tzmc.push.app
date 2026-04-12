@@ -1268,12 +1268,13 @@
         @if (store.uploading()) {
           <div class="upload-progress-bar">
             <div class="upload-progress-spinner"></div>
-            <span class="upload-progress-label">מעלה קובץ…</span>
+            <span class="upload-progress-label">מעלה: {{ uploadingFileName() || 'קובץ' }}…</span>
           </div>
         }
 
         @if (store.pendingAttachment(); as attachment) {
           <div class="pending-attachment-preview">
+            <mat-icon class="pending-attachment-check">check_circle</mat-icon>
             @if (attachment.type === 'image') {
               <img class="pending-attachment-thumb" [src]="attachment.url" alt="Attachment preview" />
             } @else {

@@ -451,6 +451,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   readonly helpdeskDashboardTab = signal<'ongoing' | 'past' | 'assigned' | 'editor'>('ongoing');
   readonly helpdeskEditorSubTab = signal<'new' | 'in_progress' | 'closed'>('new');
   readonly isSubmittingHelpdeskTicket = signal(false);
+  readonly uploadingFileName = signal('');
   readonly expandedShuttleOperationsDates = signal<Set<string>>(new Set<string>());
   readonly shuttleBreadcrumbs = computed<ShuttleBreadcrumbStep[] | null>(() =>
     this.store.getShuttleFlowBreadcrumbs()
@@ -1034,6 +1035,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     if (this.isComposerHidden() && !this.editingMessageTarget()) {
       return;
     }
+    if (this.store.uploading()) return;
     if (!this.canSendMessage()) return;
 
     const content = this.messageControl.value;
@@ -1641,8 +1643,16 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       return;
     }
 
+    this.uploadingFileName.set(file.name);
     await this.store.uploadAttachment(file);
+    this.uploadingFileName.set('');
     input.value = '';
+
+    if (this.store.pendingAttachment()) {
+      this.snackBar.open('הקובץ צורף בהצלחה. לחץ על שלח לשליחה.', 'סגור', { duration: 3000 });
+    } else {
+      this.snackBar.open('שגיאה בהעלאת הקובץ. נסה שנית.', 'סגור', { duration: 4000 });
+    }
   }
 
   removePendingAttachment(): void {

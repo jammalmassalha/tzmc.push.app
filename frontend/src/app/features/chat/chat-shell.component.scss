@@ -1243,6 +1243,10 @@ mat-chip:not(.offline) {
 .upload-progress-label {
   font-size: 13px;
   color: #1565c0;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pending-attachment-preview {
@@ -1250,9 +1254,18 @@ mat-chip:not(.offline) {
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  background: #f0f0f0;
+  background: #e8f5e9;
   border-radius: 8px;
   margin-bottom: 4px;
+  border: 1px solid #a5d6a7;
+}
+
+.pending-attachment-check {
+  color: #2e7d32;
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
 }
 
 .pending-attachment-thumb {
