@@ -32,10 +32,11 @@ import {
   ChatApiService,
   HrActionOption,
   HrStepOption,
-  RealtimeSocket,
   ShuttleUserOrderPayload,
   UserPushSubscriptionPayload
 } from './chat-api.service';
+import { RealtimeTransportService } from './realtime-transport.service';
+export type { RealtimeTransportMode } from './realtime-transport.service';
 import {
   clearIdbForUser,
   needsIdbMigration,
@@ -47,13 +48,6 @@ import {
 const CONTACTS_TTL_MS = 5 * 60 * 1000;
 const CONTACTS_ACCESS_SYNC_INTERVAL_MS = 60 * 1000;
 const GROUPS_TTL_MS = 2 * 60 * 1000;
-const POLL_INTERVAL_MS = 15000;
-const STREAM_RETRY_MS = 5000;
-const SOCKET_RETRY_MS = 3500;
-const SOCKET_FALLBACK_TO_SSE_DELAY_MS = 1800;
-const SOCKET_ACK_TIMEOUT_MS = 6000;
-const SOCKET_MAX_FAILURES_BEFORE_COOLDOWN = 3;
-const SOCKET_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
 const MAX_PERSISTED_MESSAGES = 2500;
 const GROUPS_DB_MIGRATION_KEY = 'tzmc-groups-db-migrated-v4';
 const PUSH_REGISTER_MIN_INTERVAL_MS = 30000;
@@ -304,8 +298,6 @@ export interface HelpdeskConversationState {
   draft?: { department?: string };
 }
 
-export type RealtimeTransportMode = 'socket' | 'sse' | 'polling';
-
 @Injectable({ providedIn: 'root' })
 export class ChatStoreService {
   readonly currentUser = signal<string | null>(null);
@@ -330,13 +322,8 @@ export class ChatStoreService {
     const normalizedUser = this.normalizeUser(user);
     return HELPDESK_ALLOWED_USERS.some((allowed) => this.normalizeUser(allowed) === normalizedUser);
   });
-  readonly realtimeTransportMode = signal<RealtimeTransportMode>('polling');
-  readonly realtimeTransportLabel = computed(() => {
-    const mode = this.realtimeTransportMode();
-    if (mode === 'socket') return 'Socket';
-    if (mode === 'sse') return 'SSE';
-    return 'Polling';
-  });
+  readonly realtimeTransportMode = computed(() => this.transport.transportMode());
+  readonly realtimeTransportLabel = computed(() => this.transport.transportLabel());
   readonly typingUsersByChat = signal<Record<string, string[]>>({});
   readonly activeTypingLabel = computed<string | null>(() => {
     const activeChatId = this.activeChatId();
@@ -354,18 +341,7 @@ export class ChatStoreService {
   });
 
   private readonly messagesByChat = signal<Record<string, ChatMessage[]>>({});
-  private socket: RealtimeSocket | null = null;
-  private socketConnected = false;
-  private socketConnecting = false;
-  private stream: EventSource | null = null;
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
   private contactsAccessSyncTimer: ReturnType<typeof setInterval> | null = null;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private socketReconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private socketSseFallbackTimer: ReturnType<typeof setTimeout> | null = null;
-  private shuttingDownRealtime = false;
-  private socketConsecutiveFailures = 0;
-  private socketDisabledUntil = 0;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private typingStopTimer: ReturnType<typeof setTimeout> | null = null;
   private typingStateChatId: string | null = null;
@@ -571,7 +547,10 @@ export class ChatStoreService {
     this.syncHardcodedCommunityGroups(contacts, groups);
   });
 
-  constructor(private readonly api: ChatApiService) {
+  constructor(
+    private readonly api: ChatApiService,
+    private readonly transport: RealtimeTransportService
+  ) {
     this.rebuildCommunityGroupMaps(SEED_COMMUNITY_GROUPS);
     if (typeof window !== 'undefined') {
       window.addEventListener('online', this.handleOnline);
@@ -583,6 +562,19 @@ export class ChatStoreService {
       navigator.serviceWorker.addEventListener('message', this.handleServiceWorkerMessage);
     }
     this.clearHomeScreenBadgeOnAppOpen();
+
+    // Subscribe to transport events
+    this.transport.message$.subscribe((data) => {
+      this.handleIncomingPayload(data as string | IncomingServerMessage);
+    });
+    this.transport.connected$.subscribe(() => {
+      this.clearTypingIndicators();
+      this.syncForegroundState();
+    });
+    this.transport.pollTick$.subscribe(() => {
+      const user = this.currentUser();
+      if (user) void this.pullMessages(user);
+    });
   }
 
   isAuthenticated(): boolean {
@@ -2020,9 +2012,13 @@ export class ChatStoreService {
         ? Math.min(200000, Math.max(1, Math.floor(requestedLimit)))
         : 1000; // Default limit
 
-      // When forcing a full sync, fetch ALL messages (since=0).
-      // Otherwise use the timestamp optimization to only fetch messages newer than what we already have.
-      const lastKnownTs = force ? 0 : this.getLatestMessageTimestamp();
+      // Gap Analysis: always use the highest local timestamp to request only the
+      // missing window from the server.  When there are no local messages (first
+      // install or after a cache clear) getLatestMessageTimestamp() returns 0
+      // which causes the server to return all available messages.  The `force`
+      // flag still bypasses the cooldown timer and network-reachability guard
+      // but no longer forces a full re-download when local data is available.
+      const lastKnownTs = this.getLatestMessageTimestamp();
 
       const logsMessages: IncomingServerMessage[] = [];
       let offset = 0;
@@ -5471,33 +5467,9 @@ export class ChatStoreService {
   private async emitSocketWithAck(
     eventName: string,
     payload: unknown,
-    timeoutMs = SOCKET_ACK_TIMEOUT_MS
+    timeoutMs = 6000
   ): Promise<Record<string, unknown> | null> {
-    if (!this.socket || !this.socketConnected) {
-      return null;
-    }
-
-    return new Promise<Record<string, unknown> | null>((resolve) => {
-      let settled = false;
-      const done = (value: Record<string, unknown> | null): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeoutId);
-        resolve(value);
-      };
-      const timeoutId = setTimeout(() => done(null), timeoutMs);
-      try {
-        this.socket?.emit(eventName, payload, (ackPayload: unknown) => {
-          if (ackPayload && typeof ackPayload === 'object') {
-            done(ackPayload as Record<string, unknown>);
-            return;
-          }
-          done(null);
-        });
-      } catch {
-        done(null);
-      }
-    });
+    return this.transport.emitWithAck(eventName, payload, timeoutMs);
   }
 
   private async sendReplyTransport(payload: ReplyPayload): Promise<void> {
@@ -5890,239 +5862,18 @@ export class ChatStoreService {
 
   private connectRealtime(user: string): void {
     this.stopRealtime();
-    if (!this.isNetworkReachable()) {
-      return;
-    }
-    void this.connectSocketPreferred(user);
-  }
-
-  private setRealtimeTransportMode(mode: RealtimeTransportMode): void {
-    if (this.realtimeTransportMode() === mode) {
-      return;
-    }
-    this.realtimeTransportMode.set(mode);
-  }
-
-  private resetSocketFailureState(): void {
-    this.socketConsecutiveFailures = 0;
-    this.socketDisabledUntil = 0;
-  }
-
-  private handleSocketConnectFailure(user: string): void {
-    if (this.currentUser() !== user) {
-      return;
-    }
-    this.socketConsecutiveFailures += 1;
-    this.startSseFallback(user);
-
-    if (this.socketConsecutiveFailures >= SOCKET_MAX_FAILURES_BEFORE_COOLDOWN) {
-      this.socketConsecutiveFailures = 0;
-      this.socketDisabledUntil = Date.now() + SOCKET_FAILURE_COOLDOWN_MS;
-    }
-
-    this.scheduleSocketReconnect(user);
-  }
-
-  private async connectSocketPreferred(user: string): Promise<void> {
-    this.shuttingDownRealtime = false;
-    if (this.socketDisabledUntil > Date.now()) {
-      this.startSseFallback(user);
-      this.scheduleSocketReconnect(user);
-      return;
-    }
-    if (!this.isNetworkReachable()) {
-      this.startSseFallback(user);
-      return;
-    }
-    if (this.socketConnecting) {
-      return;
-    }
-    this.socketConnecting = true;
-
-    if (this.socketSseFallbackTimer) {
-      clearTimeout(this.socketSseFallbackTimer);
-      this.socketSseFallbackTimer = null;
-    }
-
-    this.socketSseFallbackTimer = setTimeout(() => {
-      this.socketSseFallbackTimer = null;
-      if (!this.socketConnected && this.currentUser() === user) {
-        this.startSseFallback(user);
-      }
-    }, SOCKET_FALLBACK_TO_SSE_DELAY_MS);
-
-    try {
-      const socket = await this.api.createRealtimeSocket(user);
-      if (this.currentUser() !== user) {
-        socket.disconnect();
-        return;
-      }
-      this.shuttingDownRealtime = true;
-      this.stopSocketOnly();
-      this.shuttingDownRealtime = false;
-      this.socket = socket;
-
-      socket.on('connect', () => {
-        if (this.currentUser() !== user) return;
-        this.resetSocketFailureState();
-        this.socketConnected = true;
-        this.socketConnecting = false;
-        this.setRealtimeTransportMode('socket');
-        if (this.socketSseFallbackTimer) {
-          clearTimeout(this.socketSseFallbackTimer);
-          this.socketSseFallbackTimer = null;
-        }
-        this.stopStreamOnly();
-        this.clearTypingIndicators();
-        // Pull any messages queued while disconnected (e.g. self-echo from other devices)
-        this.syncForegroundState();
-      });
-
-      socket.on('chat:message', (incoming: unknown) => {
-        if (!incoming || typeof incoming !== 'object') return;
-        this.handleIncomingPayload(incoming as IncomingServerMessage);
-      });
-
-      socket.on('chat:connected', () => {
-        if (this.currentUser() !== user) return;
-        this.resetSocketFailureState();
-        this.socketConnected = true;
-        this.setRealtimeTransportMode('socket');
-        this.stopStreamOnly();
-        // Pull any messages queued while disconnected (e.g. self-echo from other devices)
-        this.syncForegroundState();
-      });
-
-      socket.on('disconnect', () => {
-        if (this.shuttingDownRealtime || this.currentUser() !== user) return;
-        this.shuttingDownRealtime = true;
-        this.stopSocketOnly();
-        this.shuttingDownRealtime = false;
-        this.socketConnected = false;
-        this.socketConnecting = false;
-        this.setRealtimeTransportMode('polling');
-        this.handleSocketConnectFailure(user);
-      });
-
-      socket.on('connect_error', () => {
-        if (this.shuttingDownRealtime || this.currentUser() !== user) return;
-        this.shuttingDownRealtime = true;
-        this.stopSocketOnly();
-        this.shuttingDownRealtime = false;
-        this.socketConnected = false;
-        this.socketConnecting = false;
-        this.setRealtimeTransportMode('polling');
-        this.handleSocketConnectFailure(user);
-      });
-
-      socket.connect();
-    } catch {
-      this.shuttingDownRealtime = true;
-      this.stopSocketOnly();
-      this.shuttingDownRealtime = false;
-      this.socketConnecting = false;
-      this.socketConnected = false;
-      this.setRealtimeTransportMode('polling');
-      this.handleSocketConnectFailure(user);
-    }
-  }
-
-  private startSseFallback(user: string): void {
-    if (this.socketConnected || !this.isNetworkReachable()) {
-      return;
-    }
-    if (this.stream) {
-      return;
-    }
-    try {
-      this.stream = this.api.createMessageStream(user);
-      this.setRealtimeTransportMode('sse');
-      this.stream.addEventListener('message', (event: MessageEvent<string>) => {
-        this.handleIncomingPayload(event.data);
-      });
-      this.stream.addEventListener('connected', () => {
-        // Pull any messages queued while disconnected (e.g. self-echo from other devices)
-        this.syncForegroundState();
-      });
-      this.stream.onerror = () => {
-        this.stopStreamOnly();
-        this.scheduleStreamReconnect(user);
-      };
-    } catch {
-      this.scheduleStreamReconnect(user);
-    }
-  }
-
-  private startPolling(user: string): void {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-    }
-
-    this.pollTimer = setInterval(() => {
-      void this.pullMessages(user);
-    }, POLL_INTERVAL_MS);
-
-    if (!this.socketConnected && !this.stream) {
-      this.setRealtimeTransportMode('polling');
-    }
-
-    void this.pullMessages(user);
-  }
-
-  private stopSocketOnly(): void {
-    this.socketConnected = false;
-    this.socketConnecting = false;
-    if (this.socket) {
-      this.socket.disconnect();
-      this.socket = null;
-    }
-    if (this.stream) {
-      this.setRealtimeTransportMode('sse');
-    } else {
-      this.setRealtimeTransportMode('polling');
-    }
-  }
-
-  private stopStreamOnly(): void {
-    if (this.stream) {
-      this.stream.close();
-      this.stream = null;
-    }
-    if (!this.socketConnected) {
-      this.setRealtimeTransportMode('polling');
-    }
+    this.transport.connect(user, () => this.isNetworkReachable());
   }
 
   private stopRealtime(): void {
-    this.shuttingDownRealtime = true;
     this.cancelTypingForActiveChat();
     this.clearTypingIndicators();
-    this.stopSocketOnly();
-    this.stopStreamOnly();
     this.stopHelpdeskPolling();
-
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
-    }
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    if (this.socketReconnectTimer) {
-      clearTimeout(this.socketReconnectTimer);
-      this.socketReconnectTimer = null;
-    }
-    if (this.socketSseFallbackTimer) {
-      clearTimeout(this.socketSseFallbackTimer);
-      this.socketSseFallbackTimer = null;
-    }
+    this.transport.disconnect();
     if (this.typingStopTimer) {
       clearTimeout(this.typingStopTimer);
       this.typingStopTimer = null;
     }
-    this.setRealtimeTransportMode('polling');
-    this.shuttingDownRealtime = false;
   }
 
   private startBackgroundContactsAccessSync(user: string): void {
@@ -6284,27 +6035,6 @@ export class ChatStoreService {
     } finally {
       this.deliveryTelemetryInFlight = false;
     }
-  }
-
-  private scheduleStreamReconnect(user: string): void {
-    if (this.socketConnected || this.reconnectTimer) return;
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      if (this.currentUser() !== user) return;
-      this.startSseFallback(user);
-    }, STREAM_RETRY_MS);
-  }
-
-  private scheduleSocketReconnect(user: string): void {
-    if (this.socketReconnectTimer) return;
-    const waitMs = this.socketDisabledUntil > Date.now()
-      ? Math.max(SOCKET_RETRY_MS, this.socketDisabledUntil - Date.now())
-      : SOCKET_RETRY_MS;
-    this.socketReconnectTimer = setTimeout(() => {
-      this.socketReconnectTimer = null;
-      if (this.currentUser() !== user || !this.isNetworkReachable()) return;
-      void this.connectSocketPreferred(user);
-    }, waitMs);
   }
 
   private async pullMessages(user: string): Promise<void> {
