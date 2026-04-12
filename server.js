@@ -29,6 +29,10 @@ const {
     NotificationService,
     SessionService
 } = require('./backend/dist/services');
+const { validateEnvOrExit } = require('./backend/dist/validate-env');
+
+// Fail fast if required environment variables are missing
+validateEnvOrExit(process.env);
 
 const fetch = (...args) => {
     if (typeof globalThis.fetch === 'function') {
