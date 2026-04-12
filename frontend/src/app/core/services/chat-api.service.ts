@@ -11,6 +11,7 @@ import {
   HelpdeskManagedUser,
   HelpdeskMyRole,
   HelpdeskNote,
+  HelpdeskStatusHistoryEntry,
   HelpdeskTicket,
   HelpdeskTicketPayload,
   IncomingServerMessage,
@@ -1574,6 +1575,20 @@ export class ChatApiService {
       throw new Error(String(body.message || 'שגיאה בהוספת ההערה'));
     }
     return body.noteId ?? 0;
+  }
+
+  async getHelpdeskTicketHistory(ticketId: number): Promise<HelpdeskStatusHistoryEntry[]> {
+    const url = `${this.notifyBaseUrl}/helpdesk/tickets/${encodeURIComponent(String(ticketId))}/history?_ts=${Date.now()}&ngsw-bypass=1`;
+    const response = await this.fetchWithRetry(
+      url,
+      { cache: 'no-store', headers: { 'ngsw-bypass': 'true' } },
+      { retries: 1, timeoutMs: 10000 }
+    );
+    const body = await response.json() as { result?: string; message?: string; history?: HelpdeskStatusHistoryEntry[] };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה בטעינת ההיסטוריה'));
+    }
+    return Array.isArray(body.history) ? body.history : [];
   }
 
   private isLikelyHtmlPayload(payloadText: string): boolean {

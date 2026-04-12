@@ -10,7 +10,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatSelectModule } from '@angular/material/select';
-import { HelpdeskManagedUser, HelpdeskMyRole, HelpdeskNote, HelpdeskStatus, HelpdeskTicket } from '../../../core/models/chat.models';
+import { HelpdeskManagedUser, HelpdeskMyRole, HelpdeskNote, HelpdeskStatus, HelpdeskStatusHistoryEntry, HelpdeskTicket } from '../../../core/models/chat.models';
 import { ChatApiService } from '../../../core/services/chat-api.service';
 
 export interface HelpdeskTicketDetailDialogData {
@@ -59,6 +59,9 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
   readonly isSubmittingNote = signal(false);
   readonly noteError = signal<string | null>(null);
 
+  readonly statusHistory = signal<HelpdeskStatusHistoryEntry[]>([]);
+  readonly isLoadingHistory = signal(true);
+
   readonly isAssigningHandler = signal(false);
   readonly handlerError = signal<string | null>(null);
   selectedHandler: string | null = this.data.ticket.handlerUsername ?? null;
@@ -102,6 +105,19 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
 
   ngOnInit(): void {
     this.loadNotes();
+    this.loadHistory();
+  }
+
+  private async loadHistory(): Promise<void> {
+    this.isLoadingHistory.set(true);
+    try {
+      const loaded = await this.api.getHelpdeskTicketHistory(this.data.ticket.id);
+      this.statusHistory.set(loaded);
+    } catch {
+      // non-critical — history just won't show
+    } finally {
+      this.isLoadingHistory.set(false);
+    }
   }
 
   private async loadNotes(): Promise<void> {
@@ -191,5 +207,39 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
       case 'closed': return 'chip-closed';
       default: return '';
     }
+  }
+
+  get totalDuration(): string {
+    const history = this.statusHistory();
+    if (!history.length) return '';
+    const first = history[0];
+    const openTime = new Date(first.createdAt).getTime();
+    if (!Number.isFinite(openTime)) return '';
+
+    // Find the last closed/resolved entry, or use now
+    const closedEntry = [...history].reverse().find(
+      (h) => h.newStatus === 'closed' || h.newStatus === 'resolved'
+    );
+    const endTime = closedEntry ? new Date(closedEntry.createdAt).getTime() : Date.now();
+    if (!Number.isFinite(endTime)) return '';
+
+    const diffMs = endTime - openTime;
+    if (diffMs < 0) return '';
+    const diffMin = Math.floor(diffMs / 60000);
+    const hours = Math.floor(diffMin / 60);
+    const mins = diffMin % 60;
+    const days = Math.floor(hours / 24);
+    const remainingHours = hours % 24;
+    if (days > 0) {
+      return `${days} ימים, ${remainingHours} שעות, ${mins} דקות`;
+    }
+    if (hours > 0) {
+      return `${hours} שעות, ${mins} דקות`;
+    }
+    return `${mins} דקות`;
+  }
+
+  statusDisplayLabel(status: string): string {
+    return this.data.statusLabel(status);
   }
 }

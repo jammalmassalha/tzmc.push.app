@@ -1,7 +1,31 @@
 import { TestBed } from '@angular/core/testing';
 import { ChatApiService } from './chat-api.service';
 import { ChatStoreService } from './chat-store.service';
+import { RealtimeTransportService } from './realtime-transport.service';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { signal, computed } from '@angular/core';
+import { Subject } from 'rxjs';
+import { RealtimeTransportMode } from './realtime-transport.service';
+
+function createMockTransport() {
+  const transportMode = signal<RealtimeTransportMode>('polling');
+  return {
+    transportMode,
+    transportLabel: computed(() => {
+      const m = transportMode();
+      if (m === 'socket') return 'Socket';
+      if (m === 'sse') return 'SSE';
+      return 'Polling';
+    }),
+    message$: new Subject(),
+    connected$: new Subject<void>(),
+    pollTick$: new Subject<void>(),
+    connect: () => {},
+    disconnect: () => {},
+    emitWithAck: () => Promise.resolve(null),
+    startPolling: () => {}
+  };
+}
 
 describe('ChatStoreService full sync ordering', () => {
   let service: ChatStoreService;
@@ -12,7 +36,11 @@ describe('ChatStoreService full sync ordering', () => {
         ChatStoreService,
         {
           provide: ChatApiService,
-          useValue: {}
+          useValue: { reportMessagesReceivedBatch: () => Promise.resolve() }
+        },
+        {
+          provide: RealtimeTransportService,
+          useFactory: createMockTransport
         }
       ]
     });
@@ -255,7 +283,11 @@ describe('ChatStoreService HR sector filtering', () => {
         ChatStoreService,
         {
           provide: ChatApiService,
-          useValue: {}
+          useValue: { reportMessagesReceivedBatch: () => Promise.resolve() }
+        },
+        {
+          provide: RealtimeTransportService,
+          useFactory: createMockTransport
         }
       ]
     });

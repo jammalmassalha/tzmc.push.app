@@ -57,10 +57,34 @@ const app = express();
 const httpServer = http.createServer(app);
 app.disable('x-powered-by');
 
-const DEFAULT_ALLOWED_HOSTS = ['tzmc.co.il', 'www.tzmc.co.il', 'localhost', '127.0.0.1', '::1'];
+const DEFAULT_ALLOWED_HOSTS = ['tzmc.co.il', 'www.tzmc.co.il', '*.tzmc.co.il', 'localhost', '127.0.0.1', '::1'];
+// Auto-detect the server's own hostname and IP addresses so requests arriving
+// via the machine's public/private IPs are not rejected by the host-header guard.
+(() => {
+    try {
+        const os = require('os');
+        const hostname = os.hostname();
+        if (hostname) DEFAULT_ALLOWED_HOSTS.push(hostname);
+        const ifaces = os.networkInterfaces();
+        for (const addrs of Object.values(ifaces)) {
+            for (const addr of addrs) {
+                if (addr.address && !DEFAULT_ALLOWED_HOSTS.includes(addr.address)) {
+                    DEFAULT_ALLOWED_HOSTS.push(addr.address);
+                }
+            }
+        }
+    } catch (_) { /* ignore – os module unavailable */ }
+})();
 const ALLOWED_HOSTS = buildHostAllowlist(
     String(process.env.ALLOWED_HOSTS || DEFAULT_ALLOWED_HOSTS.join(','))
 );
+if (!ALLOWED_HOSTS.allowAny) {
+    console.log(`[HOST-GUARD] Allowed exact hosts: ${[...ALLOWED_HOSTS.exactHosts].join(', ') || '(none)'}`);
+    if (ALLOWED_HOSTS.wildcardSuffixes.length) {
+        console.log(`[HOST-GUARD] Allowed wildcard suffixes: ${ALLOWED_HOSTS.wildcardSuffixes.map(s => `*.${s}`).join(', ')}`);
+    }
+    console.log('[HOST-GUARD] Set ALLOWED_HOSTS=* environment variable to allow all hosts');
+}
 
 const CONTENT_SECURITY_POLICY = [
     "default-src 'self' https: data: blob:",
@@ -196,7 +220,7 @@ app.use((req, res, next) => {
     next();
 });
 
-const SERVER_VERSION = '1.45'; // SeenTime column, scroll fix, groups cleanup, admin backup
+const SERVER_VERSION = '1.72'; // WhatsApp-style image preview modal instead of window.open
 const SERVER_RELEASE_NOTES = [
     'All groups data now stored in MySQL database.',
     'Groups are loaded from DB on first open after update.',
@@ -1029,6 +1053,7 @@ const SESSION_COOKIE_TTL_MS = Math.max(
     5 * 60 * 1000,
     Number(process.env.SESSION_COOKIE_TTL_MS || 30 * 24 * 60 * 60 * 1000) || 30 * 24 * 60 * 60 * 1000
 );
+const SESSION_RENEWAL_THRESHOLD_MS = Math.floor(SESSION_COOKIE_TTL_MS / 2);
 const SESSION_COOKIE_SAME_SITE = String(process.env.SESSION_COOKIE_SAMESITE || 'Lax').trim();
 const SESSION_COOKIE_SECURE = String(process.env.SESSION_COOKIE_SECURE || 'true').trim().toLowerCase() !== 'false';
 const SESSION_SIGNING_SECRET = String(
@@ -1194,7 +1219,7 @@ let shuttleReminderState = {
 let shuttleReminderSentAtByKey = {};
 const shuttleReminderKnownUsersCache = { at: 0, users: [] };
 const shuttleReminderOrdersCacheByUser = {};
-const activeSessionIdByUser = new Map();
+const activeSessionIdsByUser = new Map();
 const authSessionRateLimitByIp = new Map();
 const authSessionRateLimitByUser = new Map();
 const authCodeRequestRateLimitByIp = new Map();
@@ -1209,7 +1234,7 @@ const RECENT_REPLY_MESSAGE_TTL_MS = Math.max(
 const recentProcessedReplyMessages = new Map();
 const RECENT_QUEUE_MESSAGE_TTL_MS = Math.max(
     30 * 1000,
-    Number(process.env.RECENT_QUEUE_MESSAGE_TTL_MS || 10 * 60 * 1000) || 10 * 60 * 1000
+    Number(process.env.RECENT_QUEUE_MESSAGE_TTL_MS || 3 * 60 * 1000) || 3 * 60 * 1000
 );
 const recentProcessedQueueMessages = new Map();
 let mobileReregisterCampaignState = {
@@ -2236,7 +2261,10 @@ function createSessionToken(user) {
     const sessionId = generateRandomToken(18);
     const csrfToken = generateRandomToken(24);
     const expiresAt = Date.now() + SESSION_COOKIE_TTL_MS;
-    activeSessionIdByUser.set(normalizedUser, sessionId);
+    if (!activeSessionIdsByUser.has(normalizedUser)) {
+        activeSessionIdsByUser.set(normalizedUser, new Set());
+    }
+    activeSessionIdsByUser.get(normalizedUser).add(sessionId);
     const payloadObject = {
         user: normalizedUser,
         expiresAt,
@@ -2255,7 +2283,11 @@ function createSessionToken(user) {
     const payload = encodeBase64Url(JSON.stringify(payloadObject));
     const signature = signSessionPayload(payload);
     if (!signature) {
-        activeSessionIdByUser.delete(normalizedUser);
+        const userSessions = activeSessionIdsByUser.get(normalizedUser);
+        if (userSessions) {
+            userSessions.delete(sessionId);
+            if (userSessions.size === 0) activeSessionIdsByUser.delete(normalizedUser);
+        }
         return null;
     }
     return {
@@ -2308,13 +2340,14 @@ function getSessionFromToken(rawToken) {
             return null;
         }
 
-        const activeSessionId = String(activeSessionIdByUser.get(user) || '').trim();
-        if (activeSessionId && activeSessionId !== sessionId) {
-            return null;
+        // Always accept a cryptographically valid token and track its sessionId.
+        // Previous logic rejected sessions not already in the in-memory Set, which
+        // caused the second device to be locked out after a server restart (only the
+        // first device to reconnect would get auto-added).
+        if (!activeSessionIdsByUser.has(user)) {
+            activeSessionIdsByUser.set(user, new Set());
         }
-        if (!activeSessionId) {
-            activeSessionIdByUser.set(user, sessionId);
-        }
+        activeSessionIdsByUser.get(user).add(sessionId);
         return {
             user,
             expiresAt,
@@ -2681,11 +2714,53 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             groupSenderName: senderLabel,
             ...messageMetadata
         };
+        // Audit: log message creation to MessageActivities table (fire-and-forget).
+        void mysqlLogsService.insertMessageActivity({
+            actionType: 'message',
+            messageId,
+            sender: user,
+            recipient: groupId || (originalSender || ''),
+            groupId: groupId || null,
+            body: reply || null,
+            imageUrl: imageUrl || null,
+            fileUrl: fileUrl || null,
+            actionTimestamp: Date.now()
+        }).catch(() => {});
+
         await addToQueue(targetToNotify, pollingMessage);
 
         const senderForPush = isGroup ? groupId : user;
         const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, { messageId });
         recentProcessedReplyMessages.set(messageId, Date.now());
+
+        // ── Self-echo: notify sender's other devices so sent messages appear in real time ──
+        if (senderUserKey) {
+            const selfEchoMessage = {
+                ...pollingMessage,
+                toUser: isGroup ? undefined : (normalizeUserKey(originalSender) || undefined)
+            };
+            void addToQueue(senderUserKey, selfEchoMessage).catch(() => {});
+
+            const selfEchoNotification = {
+                messageId,
+                title: '',
+                body: { shortText: '', longText: '' },
+                image: imageUrl,
+                data: {
+                    ...(notificationExtraData || {}),
+                    skipNotification: true,
+                    toUser: isGroup ? undefined : (normalizeUserKey(originalSender) || undefined),
+                    messageText: reply || null,
+                    imageUrl: imageUrl || null,
+                    fileUrl: fileUrl || null
+                }
+            };
+            void sendPushNotificationToUser(senderUserKey, selfEchoNotification, senderForPush, {
+                messageId,
+                skipBadge: true
+            }).catch(() => {});
+        }
+
         return { status: 'success', details: result };
     } catch (error) {
         recentProcessedReplyMessages.delete(messageId);
@@ -2817,6 +2892,18 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
         return { status: 'success', details: { success: 0, failed: 0 } };
     }
 
+    // Audit: log reaction to MessageActivities table (fire-and-forget).
+    void mysqlLogsService.insertMessageActivity({
+        actionType: 'reaction',
+        messageId: reactionId,
+        sender: normalizedReactor,
+        recipient: normalizedTargetUser || null,
+        groupId: groupId || null,
+        emoji: normalizedEmoji || null,
+        targetMessageId: normalizedTargetMessageId || null,
+        actionTimestamp: Date.now()
+    }).catch(() => {});
+
     await addToQueue(membersToNotify, reactionRecord);
     const result = adminMembersToNotify.length
         ? await sendPushNotificationToUser(adminMembersToNotify, notificationData, groupId || normalizedReactor, {
@@ -2826,6 +2913,27 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
             allowSecondAttempt: false
         })
         : { success: 0, failed: 0 };
+
+    // ── Self-echo: notify reactor's other devices ──
+    if (normalizedReactor) {
+        void addToQueue(normalizedReactor, reactionRecord).catch(() => {});
+        const selfEchoReactionNotification = {
+            messageId: reactionId,
+            title: '',
+            body: { shortText: '', longText: '' },
+            data: {
+                ...reactionRecord,
+                skipNotification: true
+            }
+        };
+        void sendPushNotificationToUser(normalizedReactor, selfEchoReactionNotification, groupId || normalizedReactor, {
+            messageId: reactionId,
+            skipBadge: true,
+            singlePerUser: true,
+            allowSecondAttempt: false
+        }).catch(() => {});
+    }
+
     return { status: 'success', details: result };
 }
 
@@ -4999,9 +5107,9 @@ function extractMessageIdFromLogDetails(details) {
 }
 
 // Helper: Log status to MySQL logs table
-function logNotificationStatus(sender, recipient, messageShort, status, details, recipientAuthJson = '', msgId = '', imageUrl = '', fileUrl = '') {
+function logNotificationStatus(sender, recipient, messageShort, status, details, recipientAuthJson = '', msgId = '', imageUrl = '', fileUrl = '', options = {}) {
     const resolvedMsgId = String(msgId || '').trim() || extractMessageIdFromLogDetails(details);
-    return mysqlLogsService.insertLog({
+    const logPayload = {
         sender: sender || 'System',
         recipient: recipient,
         msgId: resolvedMsgId || '',
@@ -5011,7 +5119,11 @@ function logNotificationStatus(sender, recipient, messageShort, status, details,
         recipientAuthJson: recipientAuthJson || '',
         imageUrl: imageUrl || '',
         fileUrl: fileUrl || ''
-    }).catch((err) => {
+    };
+    const insertFn = options.dedup
+        ? mysqlLogsService.insertLogIfNotDuplicate(logPayload)
+        : mysqlLogsService.insertLog(logPayload);
+    return insertFn.catch((err) => {
         console.error('[LOG ERROR]', err && err.message ? err.message : err);
         return null;
     });
@@ -5312,6 +5424,38 @@ app.use((req, _res, next) => {
     req.authUser = authSession && authSession.user ? authSession.user : '';
     next();
 });
+
+// ── Session renewal: extend active sessions so they stay alive indefinitely ──
+app.use((req, res, next) => {
+    const session = req.authSession;
+    if (!session || !session.user || !session.expiresAt) {
+        return next();
+    }
+    const remainingMs = Number(session.expiresAt) - Date.now();
+    if (remainingMs > SESSION_RENEWAL_THRESHOLD_MS) {
+        return next();
+    }
+    // Session is past the halfway point – issue a fresh token with a new TTL.
+    const renewed = createSessionToken(session.user);
+    if (!renewed) {
+        return next();
+    }
+    // Remove the old sessionId so the in-memory set doesn't grow unbounded.
+    const userSessions = activeSessionIdsByUser.get(session.user);
+    if (userSessions) {
+        userSessions.delete(String(session.sessionId || ''));
+        if (userSessions.size === 0) activeSessionIdsByUser.delete(session.user);
+    }
+    setSessionCookie(res, req, renewed.token, renewed.expiresAt);
+    req.authSession = {
+        user: session.user,
+        expiresAt: renewed.expiresAt,
+        sessionId: renewed.sessionId,
+        csrfToken: renewed.csrfToken
+    };
+    return next();
+});
+
 app.use(attachResolvedUser);
 
 app.use((req, res, next) => {
@@ -5427,7 +5571,7 @@ registerAuthController(app, {
     fetchWithRetry,
     buildGoogleSheetGetUrl,
     googleSheetUrl: GOOGLE_SHEET_URL,
-    activeSessionIdByUser,
+    activeSessionIdsByUser,
     clearSessionCookie,
     SESSION_USER_PATTERN,
     ensureRegistrationFlowOnly,
@@ -5739,6 +5883,17 @@ app.post(
             groupUpdatedAt: Number.isFinite(resolvedGroupUpdatedAt) ? resolvedGroupUpdatedAt : deletedAt,
             groupType: resolvedGroupType
         };
+
+        // Audit: log message deletion to MessageActivities table (fire-and-forget).
+        void mysqlLogsService.insertMessageActivity({
+            actionType: 'delete-action',
+            messageId,
+            sender,
+            recipient: recipients.join(','),
+            groupId: groupId || null,
+            actionTimestamp: deletedAt
+        }).catch(() => {});
+
         await addToQueue(recipients, actionRecord);
 
         const notificationPayload = {
@@ -5759,6 +5914,15 @@ app.post(
             groupId || sender,
             { messageId, skipBadge: true }
         );
+
+        // ── Self-echo: notify sender's other devices ──
+        if (sender) {
+            void addToQueue(sender, actionRecord).catch(() => {});
+            void sendPushNotificationToUser(sender, notificationPayload, groupId || sender, {
+                messageId,
+                skipBadge: true
+            }).catch(() => {});
+        }
 
         const deleteLogDetails = [
             'type=delete-action',
@@ -5851,6 +6015,18 @@ app.post(
             groupUpdatedAt: Number.isFinite(resolvedGroupUpdatedAt) ? resolvedGroupUpdatedAt : editedAt,
             groupType: resolvedGroupType
         };
+
+        // Audit: log message edit to MessageActivities table (fire-and-forget).
+        void mysqlLogsService.insertMessageActivity({
+            actionType: 'edit-action',
+            messageId,
+            sender,
+            recipient: recipients.join(','),
+            groupId: groupId || null,
+            body: editedBody || null,
+            actionTimestamp: editedAt
+        }).catch(() => {});
+
         await addToQueue(recipients, actionRecord);
 
         const notificationPayload = {
@@ -5871,6 +6047,15 @@ app.post(
             groupId || sender,
             { messageId, skipBadge: true }
         );
+
+        // ── Self-echo: notify sender's other devices ──
+        if (sender) {
+            void addToQueue(sender, actionRecord).catch(() => {});
+            void sendPushNotificationToUser(sender, notificationPayload, groupId || sender, {
+                messageId,
+                skipBadge: true
+            }).catch(() => {});
+        }
 
         res.json({ status: 'success', details: result });
     } catch (e) {
@@ -6169,6 +6354,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     const logContent = msgText || messageType || 'System Notification';
     const shouldPersistPushLog = messageType !== 'read-receipt';
     const messageId = options.messageId || message.messageId || generateMessageId();
+    const shouldDedupLog = Boolean(options.dedupLog);
     const shouldIncrementBadge = !options.skipBadge;
     let normalizedTargetUsers = Array.from(
         new Set(targetUsersArray.map(normalizeUserKey).filter(Boolean))
@@ -6273,7 +6459,10 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
             'Failed',
             'No subscriptions found',
             recipientAuthJsonForLog,
-            messageId
+            messageId,
+            '',
+            '',
+            { dedup: shouldDedupLog }
         );
         return { success: 0, failed: 0 };
     }
@@ -6496,7 +6685,8 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
             recipientAuthJsonForLog,
             messageId,
             imageUrl || '',
-            fileUrl || ''
+            fileUrl || '',
+            { dedup: shouldDedupLog }
         );
     }
 
@@ -6727,6 +6917,17 @@ app.post(['/backup-all-groups-to-db', '/notify/backup-all-groups-to-db'],
     }
 );
 
+// --- Sync all MessageActivities (no filtering) ---
+app.get(['/message-activities', '/notify/message-activities'], async (_req, res) => {
+    try {
+        const activities = await mysqlLogsService.getAllMessageActivities();
+        return res.json({ activities });
+    } catch (err) {
+        console.error('[MESSAGE-ACTIVITIES] Failed to fetch:', err && err.message ? err.message : err);
+        return res.status(500).json({ activities: [], error: 'Failed to fetch message activities' });
+    }
+});
+
 app.get(['/webhook-registry', '/notify/webhook-registry'], (_req, res) => {
     res.json({
         webhooks: webhookRegistryService.list()
@@ -6926,6 +7127,7 @@ registerMessageController(app, {
         return membersMap;
     },
     getGroups: () => groups,
+    loadAllChatGroups: () => mysqlLogsService.loadAllChatGroups(),
     getActiveRedisStateStore: () => activeRedisStateStore,
     getMessageQueue: () => messageQueue,
     scheduleStateSave,
@@ -7196,6 +7398,11 @@ app.post(
             timestamp: Date.now()
         });
 
+        // Persist SeenTime in the database so it reflects that this reader read the chat.
+        mysqlLogsService.markMessagesSeen(normalizedReader, normalizedSender).catch((err) => {
+            console.warn('[READ RECEIPT] Failed to update SeenTime in DB:', err && err.message ? err.message : err);
+        });
+
         const result = await sendPushNotificationToUser(normalizedSender, payload, normalizedReader, { skipBadge: true });
         res.json({ status: 'ok', details: result });
     } catch (err) {
@@ -7294,28 +7501,46 @@ async function checkOutgoingQueue() {
                     ''
                 ).trim();
                 if (!sourceUniqueId) {
-                    console.warn('[QUEUE] Message has no unique identifier; deduplication relies on content only.', {
+                    console.warn('[QUEUE] Message has no unique identifier; deduplication relies on sender+recipients only.', {
                         sender: senderName,
                         recipients: targetUsers
                     });
                 }
                 const senderKey = normalizeUserKey(senderName);
                 const recipientKey = targetUsers.map((entry) => normalizeUserKey(entry)).filter(Boolean).sort().join(',');
-                const normalizedBodyForDedup = normalizeQueueTextForDedup(bodyText);
-                const semanticDedupKey = `${senderKey}|${recipientKey}|${normalizedBodyForDedup || bodyText}`;
-                const sourceAwareDedupKey = sourceUniqueId
-                    ? `${semanticDedupKey}|${sourceUniqueId}`
-                    : '';
-                if (
-                    recentProcessedQueueMessages.has(semanticDedupKey) ||
-                    (sourceAwareDedupKey && recentProcessedQueueMessages.has(sourceAwareDedupKey))
-                ) {
+                // Dedup key: [From, To, sourceUniqueId] — content is NOT part of the key.
+                // Same content with different DateTime/sourceId is a new message.
+                const dedupKey = sourceUniqueId
+                    ? `${senderKey}|${recipientKey}|${sourceUniqueId}`
+                    : `${senderKey}|${recipientKey}|${Date.now()}`;
+                if (recentProcessedQueueMessages.has(dedupKey)) {
                     continue;
                 }
 
                 const messageId = (msg && msg.messageId)
                     ? String(msg.messageId).trim()
-                    : `queue-${hashStringToShortId(sourceAwareDedupKey || semanticDedupKey)}`;
+                    : `queue-${hashStringToShortId(dedupKey)}`;
+
+                // 0. DB-backed dedup: check if same [From, To, DateTime] already logged.
+                //    Uniqueness = [From, To, DateTime] — content is NOT part of the key.
+                //    Survives server restarts (unlike in-memory map).
+                let alreadyInDb = false;
+                if (sourceUniqueId) {
+                    try {
+                        const dbChecks = await Promise.all(
+                            targetUsers.map((user) => mysqlLogsService.hasDuplicateLog(senderName, user, sourceUniqueId).catch(() => false))
+                        );
+                        alreadyInDb = dbChecks.some(Boolean);
+                    } catch (_dbErr) {
+                        // On DB error, proceed with in-memory dedup only.
+                    }
+                }
+                if (alreadyInDb) {
+                    console.log(`[QUEUE] Skipping duplicate (DB): messageId=${messageId}`);
+                    recentProcessedQueueMessages.set(dedupKey, Date.now());
+                    continue;
+                }
+
                 const notificationData = {
                     messageId,
                     title: `Message from ${senderName}`,
@@ -7324,6 +7549,21 @@ async function checkOutgoingQueue() {
                         longText: bodyText
                     }
                 };
+
+                // 0.5 Audit: record the queue message in MessageActivities
+                for (const recipient of targetUsers) {
+                    void mysqlLogsService.insertMessageActivity({
+                        actionType: 'queue-message',
+                        messageId,
+                        sender: senderName,
+                        recipient,
+                        groupId: null,
+                        body: bodyText || null,
+                        imageUrl: null,
+                        fileUrl: null,
+                        actionTimestamp: Date.now()
+                    }).catch(() => {});
+                }
 
                 // 1. Add to Polling Queue
                 const pollingMessage = {
@@ -7338,16 +7578,14 @@ async function checkOutgoingQueue() {
                 // 2. Send Push Notification (Handles all devices)
                 const pushResult = await sendPushNotificationToUser(targetUsers, notificationData, senderName, {
                     messageId,
-                    maxPerUserEndpoints: 1
+                    maxPerUserEndpoints: 1,
+                    dedupLog: true
                 });
                 if (pushResult && pushResult.failed > 0) {
                     console.warn(`[QUEUE] Push notification partially failed: ${pushResult.failed} failed, ${pushResult.success} succeeded for messageId=${messageId}`);
                 }
                 const processedAt = Date.now();
-                recentProcessedQueueMessages.set(semanticDedupKey, processedAt);
-                if (sourceAwareDedupKey) {
-                    recentProcessedQueueMessages.set(sourceAwareDedupKey, processedAt);
-                }
+                recentProcessedQueueMessages.set(dedupKey, processedAt);
             }
         }
     } catch (error) {

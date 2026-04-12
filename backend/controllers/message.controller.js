@@ -11,6 +11,7 @@ function registerMessageController(app, deps = {}) {
         hardcodedGroupIds: _legacyHardcodedGroupIds,
         hardcodedGroupMembers: _legacyHardcodedGroupMembers,
         getGroups,
+        loadAllChatGroups,
         getActiveRedisStateStore,
         getMessageQueue,
         scheduleStateSave,
@@ -158,6 +159,9 @@ function registerMessageController(app, deps = {}) {
         ).trim();
         const emoji = normalizeTextForDedup(message.emoji || message.reaction || '');
         const messageIds = buildMessageIdsDedupKey(message.messageIds || message.message_ids);
+        // Content IS part of the semantic key to distinguish different messages
+        // from the same sender at similar timestamps. The timestamp-window dedup
+        // then only collapses true duplicates (same sender + same body + close time).
         return [
             payloadType,
             sender || 'na',
@@ -250,6 +254,31 @@ function registerMessageController(app, deps = {}) {
         }
     );
 
+    const resolveRuntimeGroupsForUser = (user) => {
+        const groups = getGroups();
+        return Object.values(groups || {})
+            .map((group) => {
+                if (!group || typeof group !== 'object') return null;
+                const members = Array.isArray(group.members)
+                    ? group.members
+                    : (Array.isArray(group.memberList) ? group.memberList : []);
+                const admins = Array.isArray(group.admins)
+                    ? group.admins
+                    : (Array.isArray(group.groupAdmins) ? group.groupAdmins : []);
+                if (!members.length) return null;
+                if (!members.map(normalizeUserKey).includes(user)) return null;
+                return {
+                    ...group,
+                    groupID: group.id || group.groupID || group.groupId || null,
+                    title: group.name || group.title || null,
+                    memberList: members,
+                    members,
+                    admins
+                };
+            })
+            .filter(Boolean);
+    };
+
     app.get(
         ['/groups', '/notify/groups'],
         requireAuthorizedUser({
@@ -257,33 +286,48 @@ function registerMessageController(app, deps = {}) {
             candidateKeys: ['user'],
             onError: (_req, res, resolution) => res.status(resolution.status).json({ groups: [], error: resolution.error })
         }),
-        (req, res) => {
+        async (req, res) => {
             const user = req.resolvedUser;
             if (!user) return res.json({ groups: [] });
 
-            const groups = getGroups();
-            const result = Object.values(groups || {})
-                .map((group) => {
-                    if (!group || typeof group !== 'object') return null;
-                    const members = Array.isArray(group.members)
-                        ? group.members
-                        : (Array.isArray(group.memberList) ? group.memberList : []);
-                    const admins = Array.isArray(group.admins)
-                        ? group.admins
-                        : (Array.isArray(group.groupAdmins) ? group.groupAdmins : []);
-                    if (!members.length) return null;
-                    if (!members.map(normalizeUserKey).includes(user)) return null;
-                    return {
-                        ...group,
-                        groupID: group.id || group.groupID || group.groupId || null,
-                        title: group.name || group.title || null,
-                        memberList: members,
-                        members,
-                        admins
-                    };
-                })
-                .filter(Boolean);
-            return res.json({ groups: result });
+            try {
+                // Primary source: MySQL database
+                const dbGroups = typeof loadAllChatGroups === 'function'
+                    ? await loadAllChatGroups()
+                    : [];
+
+                if (dbGroups && dbGroups.length > 0) {
+                    const result = dbGroups
+                        .filter((group) => {
+                            if (!group || !group.groupId) return false;
+                            const normalizedMembers = (group.members || []).map(normalizeUserKey);
+                            return normalizedMembers.includes(user);
+                        })
+                        .map((group) => ({
+                            id: group.groupId,
+                            name: group.groupName,
+                            members: group.members || [],
+                            admins: group.admins || [],
+                            createdBy: group.createdBy || null,
+                            type: group.type || 'group',
+                            updatedAt: group.updatedAt || 0,
+                            groupID: group.groupId,
+                            title: group.groupName,
+                            memberList: group.members || []
+                        }));
+                    return res.json({ groups: result });
+                }
+
+                // Fallback: runtime memory (if DB is empty or unavailable)
+                return res.json({ groups: resolveRuntimeGroupsForUser(user) });
+            } catch (error) {
+                console.error('[DB GROUPS] Fetch failed:', error && error.message ? error.message : error);
+                try {
+                    return res.json({ groups: resolveRuntimeGroupsForUser(user) });
+                } catch (_fallbackError) {
+                    return res.status(502).json({ groups: [], error: 'Database fetch failed' });
+                }
+            }
         }
     );
 
@@ -451,6 +495,34 @@ function registerMessageController(app, deps = {}) {
                 });
             } catch (_error) { }
 
+            // Supplement group maps with MySQL DB groups (authoritative source)
+            const userDynamicGroupIds = [];
+            try {
+                const dbGroups = typeof loadAllChatGroups === 'function'
+                    ? await loadAllChatGroups()
+                    : [];
+                for (const dbGroup of dbGroups) {
+                    if (!dbGroup || !dbGroup.groupId || !dbGroup.groupName) continue;
+                    const gid = normalizeUserKey(dbGroup.groupId);
+                    if (!gid) continue;
+                    knownGroupIds.add(gid);
+                    // DB group name wins over runtime memory
+                    knownGroupNamesById.set(gid, dbGroup.groupName);
+                    const nameKey = normalizeUserKey(dbGroup.groupName);
+                    if (nameKey && !knownGroupIdByName.has(nameKey)) knownGroupIdByName.set(nameKey, gid);
+                    const gtype = String(dbGroup.type || '').trim().toLowerCase();
+                    if (gtype === 'community' || gtype === 'group') knownGroupTypeById.set(gid, gtype);
+                    else if (hardcodedGroupKeySet.has(gid)) knownGroupTypeById.set(gid, 'community');
+                    // Track dynamic groups (group:xxx) the user actually belongs to
+                    if (gid.startsWith('group:')) {
+                        const normalizedMembers = (dbGroup.members || []).map(normalizeUserKey).filter(Boolean);
+                        if (normalizedMembers.length > 0 && normalizedMembers.includes(user)) {
+                            userDynamicGroupIds.push(gid);
+                        }
+                    }
+                }
+            } catch (_dbError) { }
+
             try {
                 // CALLING OPTIMIZED SERVICE
                 const rawMessages = typeof getLogsMessagesForUser === 'function'
@@ -460,7 +532,8 @@ function registerMessageController(app, deps = {}) {
                         since, // Optimization passed here
                         excludeSystem: true,
                         hardcodedGroupIds: Array.from(hardcodedGroupKeySet),
-                        hardcodedGroupMembers: resolveHardcodedGroupMembers()
+                        hardcodedGroupMembers: resolveHardcodedGroupMembers(),
+                        dynamicGroupIds: userDynamicGroupIds
                     })
                     : [];
 
@@ -550,12 +623,29 @@ function registerMessageController(app, deps = {}) {
 
                     // For group messages from DB logs, the body is stored as "SenderName: message text".
                     // Extract the sender name from the body prefix if not already set.
+                    // Use a broad condition: strip whenever the message is group-like (resolved group ID,
+                    // sender that looks like a group identifier, or sender matching a known/hardcoded group).
+                    const looksLikeGroupMessage = resolvedGroupId || sender.startsWith('group:') || hardcodedGroupKeySet.has(sender) || knownGroupIds.has(sender);
                     let resolvedBody = body;
-                    if (!groupSenderName && resolvedGroupId && body) {
+                    if (!groupSenderName && looksLikeGroupMessage && body) {
                         const senderPrefixMatch = body.match(/^([^:\n]{1,80})\s*:\s*([\s\S]+)$/);
                         if (senderPrefixMatch) {
                             groupSenderName = String(senderPrefixMatch[1] || '').trim();
                             resolvedBody = String(senderPrefixMatch[2] || '').trim() || body;
+                        }
+                    }
+                    // Safety net: if groupSenderName is already known and the body still starts
+                    // with "SenderName: ...", strip the redundant prefix to prevent duplication.
+                    if (groupSenderName && resolvedBody && resolvedBody !== body) {
+                        // Already stripped above – no further action needed.
+                    } else if (groupSenderName && looksLikeGroupMessage && body) {
+                        const escapedName = groupSenderName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        const prefixPattern = new RegExp(`^${escapedName}\\s*:\\s*`);
+                        if (prefixPattern.test(body)) {
+                            const stripped = body.replace(prefixPattern, '').trim();
+                            if (stripped) {
+                                resolvedBody = stripped;
+                            }
                         }
                     }
 

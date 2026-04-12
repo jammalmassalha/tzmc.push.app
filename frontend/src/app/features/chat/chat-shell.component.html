@@ -46,6 +46,12 @@
         <span>שלח הודעה על עידכון גרסה</span>
       </button>
     }
+    @if (store.canCurrentUserBackupGroupsToDb()) {
+      <button mat-menu-item role="menuitem" type="button" (click)="backupGroupsToDb()">
+        <mat-icon>backup</mat-icon>
+        <span>גיבוי קבוצות למסד נתונים</span>
+      </button>
+    }
     <button mat-menu-item type="button" (click)="openCreateGroupDialog()">
       <mat-icon>group_add</mat-icon>
       <span>קבוצה חדשה</span>
@@ -99,11 +105,30 @@
       @if (!filteredChats().length) {
         <div class="empty-chat-list">אין צ׳אטים פעילים. צור צ׳אט חדש כדי להתחיל.</div>
       } @else {
+        @if (pinnedChats().length) {
+          <div class="pinned-row">
+            @for (chat of pinnedChats(); track chat.id) {
+              <button
+                type="button"
+                class="pinned-chip"
+                [class.active]="store.activeChatId() === chat.id"
+                (click)="openChat(chat.id)">
+                <span class="pinned-chip-icon">
+                  <mat-icon>{{ getPinnedChatIcon(chat) }}</mat-icon>
+                  @if (chat.unread > 0) {
+                    <span class="pinned-chip-badge">{{ chat.unread > 9 ? '9+' : chat.unread }}</span>
+                  }
+                </span>
+                <span class="pinned-chip-label">{{ chat.title }}</span>
+              </button>
+            }
+          </div>
+        }
         <cdk-virtual-scroll-viewport class="contacts-viewport" [itemSize]="84" [minBufferPx]="336" [maxBufferPx]="840">
           <button
             type="button"
             class="chat-item"
-            *cdkVirtualFor="let chat of filteredChats(); trackBy: trackByChatId"
+            *cdkVirtualFor="let chat of unpinnedChats(); trackBy: trackByChatId"
             [class.active]="store.activeChatId() === chat.id"
             (click)="openChat(chat.id)">
             <div class="chat-item-main">
@@ -233,12 +258,23 @@
                       <button
                         mat-icon-button
                         type="button"
-                        class="conversation-title-edit-btn"
-                        (click)="startInlineGroupTitleEdit($event)"
-                        aria-label="ערוך שם קבוצה"
-                        title="ערוך שם קבוצה">
-                        <mat-icon>edit</mat-icon>
+                        class="conversation-title-actions-btn"
+                        [matMenuTriggerFor]="groupActionsMenu"
+                        (click)="$event.stopPropagation()"
+                        aria-label="פעולות קבוצה"
+                        title="פעולות קבוצה">
+                        <mat-icon>more_vert</mat-icon>
                       </button>
+                      <mat-menu #groupActionsMenu="matMenu" xPosition="before">
+                        <button mat-menu-item type="button" title="ערוך שם קבוצה" (click)="startInlineGroupTitleEdit($event)">
+                          <mat-icon>edit</mat-icon>
+                          <span>ערוך שם קבוצה</span>
+                        </button>
+                        <button mat-menu-item type="button" title="הוספת חבר לקבוצה" (click)="openGroupMemberAdd()">
+                          <mat-icon>person_add</mat-icon>
+                          <span>הוספת חבר לקבוצה</span>
+                        </button>
+                      </mat-menu>
                     }
                   </div>
                 }
@@ -659,11 +695,43 @@
                     <span>ניהול קריאות – {{ helpdeskDb.myRole.department }}</span>
                     <span class="helpdesk-role-badge">{{ helpdeskDb.myRole.role }}</span>
                   </div>
-                  @if (!helpdeskDb.editorTickets || !helpdeskDb.editorTickets.length) {
-                    <div class="shuttle-orders-empty">אין קריאות במחלקה זו.</div>
+
+                  <!-- Editor sub-tabs: חדש / בתהליך / סגור -->
+                  <div class="helpdesk-editor-sub-tabs" role="tablist" aria-label="סינון קריאות">
+                    <button
+                      type="button"
+                      role="tab"
+                      class="helpdesk-editor-sub-tab"
+                      [class.active]="helpdeskEditorSubTab() === 'new'"
+                      [attr.aria-selected]="helpdeskEditorSubTab() === 'new'"
+                      (click)="setHelpdeskEditorSubTab('new')">
+                      חדש ({{ helpdeskEditorFilteredTickets(helpdeskDb.editorTickets, 'new').length }})
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      class="helpdesk-editor-sub-tab"
+                      [class.active]="helpdeskEditorSubTab() === 'in_progress'"
+                      [attr.aria-selected]="helpdeskEditorSubTab() === 'in_progress'"
+                      (click)="setHelpdeskEditorSubTab('in_progress')">
+                      בתהליך ({{ helpdeskEditorFilteredTickets(helpdeskDb.editorTickets, 'in_progress').length }})
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      class="helpdesk-editor-sub-tab"
+                      [class.active]="helpdeskEditorSubTab() === 'closed'"
+                      [attr.aria-selected]="helpdeskEditorSubTab() === 'closed'"
+                      (click)="setHelpdeskEditorSubTab('closed')">
+                      סגור ({{ helpdeskEditorFilteredTickets(helpdeskDb.editorTickets, 'closed').length }})
+                    </button>
+                  </div>
+
+                  @if (helpdeskEditorFilteredTickets(helpdeskDb.editorTickets, helpdeskEditorSubTab()).length === 0) {
+                    <div class="shuttle-orders-empty">אין קריאות בקטגוריה זו.</div>
                   } @else {
                     <div class="shuttle-orders-cards">
-                      @for (ticket of helpdeskDb.editorTickets; track ticket.id) {
+                      @for (ticket of helpdeskEditorFilteredTickets(helpdeskDb.editorTickets, helpdeskEditorSubTab()); track ticket.id) {
                         <article class="shuttle-order-card helpdesk-ticket-card helpdesk-editor-card" [class.ongoing]="ticket.status === 'open' || ticket.status === 'in_progress'" [class.past]="ticket.status === 'resolved' || ticket.status === 'closed'" role="button" tabindex="0" (click)="openHelpdeskTicketDetail(ticket)" (keydown.enter)="openHelpdeskTicketDetail(ticket)">
                           <div class="shuttle-order-card-top">
                             <span class="shuttle-order-status" [class.ongoing]="ticket.status === 'open' || ticket.status === 'in_progress'" [class.past]="ticket.status === 'resolved' || ticket.status === 'closed'">#{{ ticket.id }} · {{ helpdeskStatusDisplayLabel(ticket.status) }}</span>
@@ -759,7 +827,23 @@
                   </a>
                 }
 
-                @if (shuttleOrderMessageCard(message); as shuttleCard) {
+                @if (isVersionUpdateMessage(message)) {
+                  <div class="version-update-card">
+                    <div class="version-update-card-icon">
+                      <mat-icon>system_update</mat-icon>
+                    </div>
+                    <div class="version-update-card-title">עדכון גרסה</div>
+                    <div class="version-update-card-body">{{ message.body }}</div>
+                    <button
+                      type="button"
+                      class="version-update-card-btn"
+                      [disabled]="store.syncing()"
+                      (click)="triggerAppReset()">
+                      <mat-icon>refresh</mat-icon>
+                      <span>עדכן ורענן את האפליקציה</span>
+                    </button>
+                  </div>
+                } @else if (shuttleOrderMessageCard(message); as shuttleCard) {
                   <div class="shuttle-message-card" [class.cancelled]="shuttleCard.cancelled">
                     <div class="shuttle-message-card-title">{{ shuttleCard.title }}</div>
                     <div class="shuttle-message-card-status">{{ shuttleCard.statusLabel }}</div>
@@ -1351,6 +1435,20 @@
     </div>
   }
 
+  @if (store.syncing()) {
+    <div class="sync-loader-backdrop" role="status" aria-live="polite" aria-busy="true">
+      <div class="sync-loader-card">
+        <mat-spinner diameter="54"></mat-spinner>
+        <div class="sync-loader-title">מסנכרן הודעות...</div>
+        <div class="sync-loader-progress">{{ store.syncProgressPercent() }}%</div>
+        <div class="sync-loader-bar-track">
+          <div class="sync-loader-bar-fill" [style.width.%]="store.syncProgressPercent()"></div>
+        </div>
+        <div class="sync-loader-subtitle">{{ store.syncProgressLabel() }}</div>
+      </div>
+    </div>
+  }
+
   @if (avatarPreview(); as avatar) {
     <div class="avatar-preview-backdrop" (click)="closeChatAvatar()">
       <div class="avatar-preview-dialog" (click)="$event.stopPropagation()">
@@ -1372,6 +1470,33 @@
             (error)="onPreviewAvatarLoaded()" />
         </div>
         <div class="avatar-preview-title">{{ avatar.title }}</div>
+      </div>
+    </div>
+  }
+
+  @if (imagePreviewUrl(); as previewUrl) {
+    <div class="image-preview-backdrop" (click)="closeFullImage()">
+      <div class="image-preview-dialog">
+        <div class="image-preview-toolbar" (click)="$event.stopPropagation()">
+          <button type="button" class="image-preview-action" (click)="openPreviewImageInNewTab()" aria-label="Open in new tab">
+            <mat-icon>open_in_new</mat-icon>
+          </button>
+          <button type="button" class="image-preview-action" (click)="closeFullImage()" aria-label="Close">
+            <mat-icon>close</mat-icon>
+          </button>
+        </div>
+        <div class="image-preview-media" [class.loaded]="imagePreviewLoaded()">
+          <div class="image-preview-skeleton" aria-hidden="true"></div>
+          <img
+            class="image-preview-image"
+            [src]="previewUrl"
+            alt="Image preview"
+            loading="eager"
+            decoding="async"
+            (click)="$event.stopPropagation()"
+            (load)="onImagePreviewLoaded()"
+            (error)="onImagePreviewLoaded()" />
+        </div>
       </div>
     </div>
   }

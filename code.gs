@@ -722,6 +722,7 @@ function doGet(e) {
         var values = range.getValues();
         var messages = [];
         var rowsToDelete = [];
+        var seenKeys = {};
 
         for (var i = 0; i < values.length; i++) {
           var row = values[i];
@@ -731,10 +732,21 @@ function doGet(e) {
             if (!recipient) continue;
             if (requestedUser && recipient !== requestedUser) continue;
 
+            var senderVal = String(row[1]).trim();
+            var contentVal = String(row[2]).trim();
+            // Deduplicate identical rows within the same batch
+            var dedupKey = recipient + '|' + senderVal.toLowerCase() + '|' + contentVal.replace(/\s+/g, ' ').trim().toLowerCase();
+            if (seenKeys[dedupKey]) {
+              // Mark for deletion but don't add to messages (duplicate)
+              rowsToDelete.push(i + 2);
+              continue;
+            }
+            seenKeys[dedupKey] = true;
+
             messages.push({
               recipient: recipient,
-              sender: String(row[1]).trim(),
-              content: String(row[2]).trim()
+              sender: senderVal,
+              content: contentVal
             });
             rowsToDelete.push(i + 2);
           }

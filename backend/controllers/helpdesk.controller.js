@@ -95,6 +95,21 @@ async function ensureHelpdeskTables(pool) {
             INDEX \`idx_role\` (\`role\`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
+
+    await pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`helpdesk_status_history\` (
+            \`id\` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            \`ticket_id\` INT UNSIGNED NOT NULL,
+            \`old_status\` VARCHAR(32) NULL DEFAULT NULL,
+            \`new_status\` VARCHAR(32) NOT NULL,
+            \`changed_by\` VARCHAR(64) NOT NULL,
+            \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (\`id\`),
+            INDEX \`idx_ticket\` (\`ticket_id\`),
+            CONSTRAINT \`fk_helpdesk_status_history_ticket\`
+                FOREIGN KEY (\`ticket_id\`) REFERENCES \`helpdesk_tickets\` (\`id\`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
 }
 
 function mapTicketRow(row) {
@@ -181,6 +196,11 @@ function registerHelpdeskController(app, deps = {}) {
                 [user, department, title, description, 'open']
             );
             const insertId = result.insertId;
+            // Record initial status in history
+            pool.execute(
+                'INSERT INTO `helpdesk_status_history` (`ticket_id`, `old_status`, `new_status`, `changed_by`) VALUES (?, NULL, ?, ?)',
+                [insertId, 'open', user]
+            ).catch((err) => console.error('[HELPDESK] Insert status history error:', err && err.message ? err.message : err));
             const [rows] = await pool.query(
                 'SELECT * FROM `helpdesk_tickets` WHERE `id` = ?',
                 [insertId]
@@ -415,7 +435,7 @@ function registerHelpdeskController(app, deps = {}) {
 
         try {
             const [ticketRows] = await pool.query(
-                'SELECT `id`, `creator_username`, `handler_username`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
+                'SELECT `id`, `creator_username`, `handler_username`, `department`, `status` FROM `helpdesk_tickets` WHERE `id` = ?',
                 [ticketId]
             );
             if (!ticketRows.length) {
@@ -432,15 +452,72 @@ function registerHelpdeskController(app, deps = {}) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה לשנות את הסטטוס' });
             }
 
+            const previousStatus = ticket.status;
             await pool.execute(
                 'UPDATE `helpdesk_tickets` SET `status` = ? WHERE `id` = ?',
                 [status, ticketId]
             );
+            // Record status change in history
+            pool.execute(
+                'INSERT INTO `helpdesk_status_history` (`ticket_id`, `old_status`, `new_status`, `changed_by`) VALUES (?, ?, ?, ?)',
+                [ticketId, previousStatus || null, status, user]
+            ).catch((err) => console.error('[HELPDESK] Insert status history error:', err && err.message ? err.message : err));
             return res.json({ result: 'success' });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to update status';
             console.error('[HELPDESK] Update status error:', message);
             return res.status(500).json({ result: 'error', message: 'שגיאה בעדכון הסטטוס' });
+        }
+    });
+
+    // GET /helpdesk/tickets/:id/history - Get status change history for a ticket
+    app.get(['/helpdesk/tickets/:id/history', '/notify/helpdesk/tickets/:id/history'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
+        const user = toTrimmedString(req.resolvedUser || '');
+        if (!user) {
+            return res.status(401).json({ result: 'error', message: 'Authentication required' });
+        }
+        const ticketId = toPositiveInteger(req.params && req.params.id, 0);
+        if (!ticketId) {
+            return res.status(400).json({ result: 'error', message: 'מזהה קריאה לא תקין' });
+        }
+
+        try {
+            // Verify the ticket exists and the user is authorized
+            const [ticketRows] = await pool.query(
+                'SELECT `id`, `creator_username`, `handler_username`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
+                [ticketId]
+            );
+            if (!ticketRows.length) {
+                return res.status(404).json({ result: 'error', message: 'קריאה לא נמצאה' });
+            }
+            const ticket = ticketRows[0];
+            const isDirectUser = ticket.creator_username === user || ticket.handler_username === user;
+            let isAuthorized = isDirectUser;
+            if (!isAuthorized) {
+                const editorRole = await getHelpdeskUserRole(pool, user);
+                isAuthorized = Boolean(editorRole && editorRole.department === ticket.department);
+            }
+            if (!isAuthorized) {
+                return res.status(403).json({ result: 'error', message: 'אין הרשאה לצפות בהיסטוריית הקריאה' });
+            }
+
+            const [historyRows] = await pool.query(
+                'SELECT `id`, `ticket_id`, `old_status`, `new_status`, `changed_by`, `created_at` FROM `helpdesk_status_history` WHERE `ticket_id` = ? ORDER BY `created_at` ASC',
+                [ticketId]
+            );
+            const history = historyRows.map((r) => ({
+                id: r.id,
+                ticketId: r.ticket_id,
+                oldStatus: r.old_status || null,
+                newStatus: r.new_status,
+                changedBy: r.changed_by,
+                createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at || '')
+            }));
+            return res.json({ result: 'success', history });
+        } catch (error) {
+            const message = error && error.message ? error.message : 'Failed to load history';
+            console.error('[HELPDESK] Load history error:', message);
+            return res.status(500).json({ result: 'error', message: 'שגיאה בטעינת ההיסטוריה' });
         }
     });
 

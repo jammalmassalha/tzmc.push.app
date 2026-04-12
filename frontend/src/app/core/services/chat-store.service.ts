@@ -32,23 +32,24 @@ import {
   ChatApiService,
   HrActionOption,
   HrStepOption,
-  RealtimeSocket,
   ShuttleUserOrderPayload,
   UserPushSubscriptionPayload
 } from './chat-api.service';
+import { RealtimeTransportService } from './realtime-transport.service';
+export type { RealtimeTransportMode } from './realtime-transport.service';
+import {
+  clearIdbForUser,
+  needsIdbMigration,
+  markIdbMigrationDone,
+  persistToIdb,
+  restoreFromIdb
+} from './chat-db.service';
 
 const CONTACTS_TTL_MS = 5 * 60 * 1000;
 const CONTACTS_ACCESS_SYNC_INTERVAL_MS = 60 * 1000;
 const GROUPS_TTL_MS = 2 * 60 * 1000;
-const POLL_INTERVAL_MS = 15000;
-const STREAM_RETRY_MS = 5000;
-const SOCKET_RETRY_MS = 3500;
-const SOCKET_FALLBACK_TO_SSE_DELAY_MS = 1800;
-const SOCKET_ACK_TIMEOUT_MS = 6000;
-const SOCKET_MAX_FAILURES_BEFORE_COOLDOWN = 3;
-const SOCKET_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
 const MAX_PERSISTED_MESSAGES = 2500;
-const GROUPS_DB_MIGRATION_KEY = 'tzmc-groups-db-migrated-v3';
+const GROUPS_DB_MIGRATION_KEY = 'tzmc-groups-db-migrated-v4';
 const PUSH_REGISTER_MIN_INTERVAL_MS = 30000;
 const PUSH_REGISTER_REFRESH_MS = 6 * 60 * 60 * 1000;
 const FOREGROUND_SYNC_MIN_INTERVAL_MS = 4000;
@@ -297,8 +298,6 @@ export interface HelpdeskConversationState {
   draft?: { department?: string };
 }
 
-export type RealtimeTransportMode = 'socket' | 'sse' | 'polling';
-
 @Injectable({ providedIn: 'root' })
 export class ChatStoreService {
   readonly currentUser = signal<string | null>(null);
@@ -309,6 +308,8 @@ export class ChatStoreService {
   readonly unreadByChat = signal<Record<string, number>>({});
   readonly loading = signal(false);
   readonly syncing = signal(false);
+  readonly syncProgressPercent = signal(0);
+  readonly syncProgressLabel = signal('');
   readonly uploading = signal(false);
   readonly pendingAttachment = signal<{ url: string; type: 'image' | 'file'; name: string; thumbUrl?: string | null } | null>(null);
   readonly networkOnline = signal(typeof navigator !== 'undefined' ? navigator.onLine : true);
@@ -321,13 +322,8 @@ export class ChatStoreService {
     const normalizedUser = this.normalizeUser(user);
     return HELPDESK_ALLOWED_USERS.some((allowed) => this.normalizeUser(allowed) === normalizedUser);
   });
-  readonly realtimeTransportMode = signal<RealtimeTransportMode>('polling');
-  readonly realtimeTransportLabel = computed(() => {
-    const mode = this.realtimeTransportMode();
-    if (mode === 'socket') return 'Socket';
-    if (mode === 'sse') return 'SSE';
-    return 'Polling';
-  });
+  readonly realtimeTransportMode = computed(() => this.transport.transportMode());
+  readonly realtimeTransportLabel = computed(() => this.transport.transportLabel());
   readonly typingUsersByChat = signal<Record<string, string[]>>({});
   readonly activeTypingLabel = computed<string | null>(() => {
     const activeChatId = this.activeChatId();
@@ -345,18 +341,7 @@ export class ChatStoreService {
   });
 
   private readonly messagesByChat = signal<Record<string, ChatMessage[]>>({});
-  private socket: RealtimeSocket | null = null;
-  private socketConnected = false;
-  private socketConnecting = false;
-  private stream: EventSource | null = null;
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
   private contactsAccessSyncTimer: ReturnType<typeof setInterval> | null = null;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private socketReconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private socketSseFallbackTimer: ReturnType<typeof setTimeout> | null = null;
-  private shuttingDownRealtime = false;
-  private socketConsecutiveFailures = 0;
-  private socketDisabledUntil = 0;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private typingStopTimer: ReturnType<typeof setTimeout> | null = null;
   private typingStateChatId: string | null = null;
@@ -405,6 +390,7 @@ export class ChatStoreService {
   private readonly pendingReadReceiptByChat = new Map<string, Set<string>>();
   private readonly readReceiptFlushTimerByChat = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly readReceiptFlushInFlightByChat = new Set<string>();
+  private readonly markSeenTimerByChat = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly deletedMessageIdTombstones = new Map<string, number>();
   private deletedIncomingFingerprints: DeletedIncomingMessageFingerprint[] = [];
   private pushRegisterInFlight = false;
@@ -488,8 +474,15 @@ export class ChatStoreService {
         continue;
       }
 
+      // Skip ghost group chats: chat IDs that look like group identifiers
+      // (e.g. "group:grp_xxx") but have no corresponding group entry in the store.
+      if (!group && chatId.startsWith('group:')) {
+        continue;
+      }
+
       const rawGroupName = group?.name ?? '';
-      const title = rawGroupName || contact?.displayName || (isShuttle ? SHUTTLE_CHAT_TITLE : chatId);
+      const title = rawGroupName
+        || (contact?.displayName || (isShuttle ? SHUTTLE_CHAT_TITLE : (group ? 'קבוצה' : chatId)));
       const subtitle = lastMessage ? this.getMessagePreview(lastMessage) : (group ? 'אין הודעות בקבוצה' : '');
       const lastTimestamp = lastMessage?.timestamp ?? 0;
       const unread = unreadMap[chatId] ?? 0;
@@ -554,7 +547,10 @@ export class ChatStoreService {
     this.syncHardcodedCommunityGroups(contacts, groups);
   });
 
-  constructor(private readonly api: ChatApiService) {
+  constructor(
+    private readonly api: ChatApiService,
+    private readonly transport: RealtimeTransportService
+  ) {
     this.rebuildCommunityGroupMaps(SEED_COMMUNITY_GROUPS);
     if (typeof window !== 'undefined') {
       window.addEventListener('online', this.handleOnline);
@@ -566,6 +562,19 @@ export class ChatStoreService {
       navigator.serviceWorker.addEventListener('message', this.handleServiceWorkerMessage);
     }
     this.clearHomeScreenBadgeOnAppOpen();
+
+    // Subscribe to transport events
+    this.transport.message$.subscribe((data) => {
+      this.handleIncomingPayload(data as string | IncomingServerMessage);
+    });
+    this.transport.connected$.subscribe(() => {
+      this.clearTypingIndicators();
+      this.syncForegroundState();
+    });
+    this.transport.pollTick$.subscribe(() => {
+      const user = this.currentUser();
+      if (user) void this.pullMessages(user);
+    });
   }
 
   isAuthenticated(): boolean {
@@ -609,7 +618,16 @@ export class ChatStoreService {
       for (const dbGroup of dbGroups) {
         const existing = groupsById.get(dbGroup.id);
         if (!existing || (dbGroup.updatedAt || 0) >= (existing.updatedAt || 0)) {
-          groupsById.set(dbGroup.id, dbGroup);
+          // Preserve a real cached name when the DB name is just the group ID.
+          if (
+            existing &&
+            !this.isGroupNameLikeId(existing.name, existing.id) &&
+            this.isGroupNameLikeId(dbGroup.name, dbGroup.id)
+          ) {
+            groupsById.set(dbGroup.id, { ...dbGroup, name: existing.name });
+          } else {
+            groupsById.set(dbGroup.id, dbGroup);
+          }
           changed = true;
         }
       }
@@ -643,7 +661,7 @@ export class ChatStoreService {
         return;
       }
       this.currentUser.set(user);
-      this.restoreState(user);
+      await this.restoreState(user);
       this.rescheduleShuttleRemindersForUser(user);
     } catch {
       this.currentUser.set(null);
@@ -830,7 +848,7 @@ export class ChatStoreService {
     this.activeChatId.set(null);
     this.lastError.set(null);
 
-    this.restoreState(user);
+    await this.restoreState(user);
     this.rescheduleShuttleRemindersForUser(user);
     try {
       await this.ensurePushRegistrationHealth(user, {
@@ -968,6 +986,10 @@ export class ChatStoreService {
     const isGroupChat = this.groups().some((group) => group.id === normalizedChatId);
     const isSystemChat = this.isSystemChat(normalizedChatId);
     if (isGroupChat || isSystemChat) {
+      // Groups/system chats don't send per-message read receipts, but we still
+      // need to persist SeenTime in the DB so the server knows the user read them.
+      // Debounce to avoid hammering the endpoint on every scroll event.
+      this.scheduleMarkChatSeen(normalizedChatId);
       return;
     }
 
@@ -1285,6 +1307,44 @@ export class ChatStoreService {
     return result.notifiedUsers;
   }
 
+  private createVersionUpdateMessage(payload: Record<string, unknown>): void {
+    const senderName = String(payload['sender'] ?? 'מערכת').trim();
+    const chatId = this.normalizeChatId(senderName);
+    if (!chatId) return;
+    const messageId = String(payload['messageId'] ?? this.generateId('ver')).trim();
+    const bodyText = String(
+      payload['body'] ??
+      payload['shortText'] ??
+      payload['text'] ??
+      'גרסה חדשה זמינה – לחצו על הכפתור לעדכון.'
+    ).trim();
+    const existingMessages = this.messagesByChat()[chatId] ?? [];
+    if (existingMessages.some((m) => m.messageId === messageId)) return;
+
+    const message: ChatMessage = {
+      id: this.generateId('rec'),
+      messageId,
+      chatId,
+      sender: chatId,
+      senderDisplayName: senderName,
+      recordType: 'version-update',
+      body: bodyText,
+      imageUrl: null,
+      direction: 'incoming',
+      timestamp: Date.now(),
+      deliveryStatus: 'delivered'
+    };
+
+    this.appendMessage(message);
+    if (this.activeChatId() !== chatId) {
+      this.unreadByChat.update((map) => ({
+        ...map,
+        [chatId]: (map[chatId] ?? 0) + 1
+      }));
+    }
+    this.schedulePersist();
+  }
+
   canCurrentUserBackupGroupsToDb(): boolean {
     const normalizedUser = this.normalizeUser(this.currentUser() ?? '');
     if (!normalizedUser) return false;
@@ -1315,6 +1375,18 @@ export class ChatStoreService {
     } catch (err) {
       console.warn('[SEEN] Failed to mark chat as seen:', chatId, err);
     }
+  }
+
+  private scheduleMarkChatSeen(chatId: string): void {
+    const existing = this.markSeenTimerByChat.get(chatId);
+    if (existing) {
+      clearTimeout(existing);
+    }
+    const timer = setTimeout(() => {
+      this.markSeenTimerByChat.delete(chatId);
+      void this.markChatSeen(chatId);
+    }, 900);
+    this.markSeenTimerByChat.set(chatId, timer);
   }
 
   getHrComposerActionsForActiveChat(): {
@@ -1744,38 +1816,83 @@ export class ChatStoreService {
       throw new Error('אין חיבור לרשת');
     }
 
-    // First, try sending pending outgoing items before cache reset.
-    await this.flushOutbox();
+    this.syncing.set(true);
+    this.syncProgressPercent.set(0);
+    this.syncProgressLabel.set('שולח הודעות ממתינות...');
 
-    const groupsSnapshotBeforeCacheClear = this.groups().map((group) => ({
-      ...group,
-      members: Array.isArray(group.members) ? [...group.members] : []
-    }));
+    try {
+      // Try sending pending outgoing items before full wipe.
+      await this.flushOutbox();
+      this.syncProgressPercent.set(10);
+      this.syncProgressLabel.set('מנקה מטמון מקומי...');
 
-    this.clearLocalChatCacheForUser(user, { keepOutbox: true });
-    this.resetRuntimeStateAfterCacheClear(user);
+      const groupsSnapshotBeforeCacheClear = this.groups().map((group) => ({
+        ...group,
+        members: Array.isArray(group.members) ? [...group.members] : []
+      }));
 
-    await this.refresh(true);
-    await this.pullMessages(user);
-    await this.recoverMissedMessagesFromLogs(user, {
-      force: true,
-      incrementUnread: false,
-      fallbackGroups: groupsSnapshotBeforeCacheClear,
-      limit: LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT
-    });
-    this.unreadByChat.set({});
-    this.resetReadReceiptTrackingState();
+      // Clear ALL local data – localStorage keys for this user.
+      this.clearLocalChatCacheForUser(user, { keepOutbox: false });
+      this.resetRuntimeStateAfterCacheClear(user);
 
-    await this.refreshShuttleAccessForCurrentUser(user, { force: true });
-    if (this.shuttleAccessAllowed()) {
-      await this.refreshShuttleOrdersFromRemote(user, { force: true, throwOnError: true });
+      try {
+        if ('caches' in window) {
+          const keys = await caches.keys();
+          await Promise.all(keys.map((key) => caches.delete(key)));
+        }
+      } catch { /* best-effort */ }
+      this.syncProgressPercent.set(20);
+      this.syncProgressLabel.set('טוען הגדרות קבוצות...');
+
+      // Reload fresh data from server DB.
+      await this.loadCommunityGroupConfigs();
+      this.syncProgressPercent.set(30);
+      this.syncProgressLabel.set('טוען קבוצות משתמש...');
+
+      await this.loadUserChatGroupsFromDb();
+      this.syncProgressPercent.set(40);
+      this.syncProgressLabel.set('מרענן נתונים...');
+
+      await this.refresh(true);
+      this.syncProgressPercent.set(50);
+      this.syncProgressLabel.set('מושך הודעות...');
+
+      await this.pullMessages(user);
+      this.syncProgressPercent.set(65);
+      this.syncProgressLabel.set('משחזר הודעות מהשרת...');
+
+      await this.recoverMissedMessagesFromLogs(user, {
+        force: true,
+        incrementUnread: false,
+        fallbackGroups: groupsSnapshotBeforeCacheClear,
+        limit: LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT
+      });
+      this.syncProgressPercent.set(80);
+      this.syncProgressLabel.set('מעדכן הגדרות נוספות...');
+
+      this.unreadByChat.set({});
+      this.resetReadReceiptTrackingState();
+
+      await this.refreshShuttleAccessForCurrentUser(user, { force: true });
+      if (this.shuttleAccessAllowed()) {
+        await this.refreshShuttleOrdersFromRemote(user, { force: true, throwOnError: true });
+      }
+      this.syncProgressPercent.set(90);
+
+      await this.refreshShuttleOperationsOrders({ force: true });
+      this.syncProgressPercent.set(95);
+      this.syncProgressLabel.set('מסיים...');
+
+      this.applyInitialChatSelection(user);
+      this.schedulePersist();
+      this.lastServerBadgeResetAt = 0;
+      this.clearDeviceAttention({ resetServerBadge: true, forceServerBadgeReset: true });
+      this.syncProgressPercent.set(100);
+    } finally {
+      this.syncing.set(false);
+      this.syncProgressPercent.set(0);
+      this.syncProgressLabel.set('');
     }
-    await this.refreshShuttleOperationsOrders({ force: true });
-
-    this.applyInitialChatSelection(user);
-    this.schedulePersist();
-    this.lastServerBadgeResetAt = 0;
-    this.clearDeviceAttention({ resetServerBadge: true, forceServerBadgeReset: true });
   }
 
   private shouldSkipLogsMessage(message: IncomingServerMessage): boolean {
@@ -1895,9 +2012,13 @@ export class ChatStoreService {
         ? Math.min(200000, Math.max(1, Math.floor(requestedLimit)))
         : 1000; // Default limit
 
-      // When forcing a full sync, fetch ALL messages (since=0).
-      // Otherwise use the timestamp optimization to only fetch messages newer than what we already have.
-      const lastKnownTs = force ? 0 : this.getLatestMessageTimestamp();
+      // Gap Analysis: always use the highest local timestamp to request only the
+      // missing window from the server.  When there are no local messages (first
+      // install or after a cache clear) getLatestMessageTimestamp() returns 0
+      // which causes the server to return all available messages.  The `force`
+      // flag still bypasses the cooldown timer and network-reachability guard
+      // but no longer forces a full re-download when local data is available.
+      const lastKnownTs = this.getLatestMessageTimestamp();
 
       const logsMessages: IncomingServerMessage[] = [];
       let offset = 0;
@@ -1978,6 +2099,16 @@ export class ChatStoreService {
         resolvedGroupId = this.normalizeChatId(normalizedSender);
       }
       if (!resolvedGroupId) {
+        // Even without a resolved group ID, attempt to strip sender prefix from
+        // the body if the message has a known groupSenderName. This prevents the
+        // sender name from appearing inside the message text.
+        const existingGroupSenderName = String(incoming.groupSenderName ?? '').trim();
+        if (existingGroupSenderName && incoming.body) {
+          return {
+            ...incoming,
+            body: this.stripGroupSenderPrefixFromBody(String(incoming.body), existingGroupSenderName)
+          };
+        }
         return incoming;
       }
 
@@ -2051,6 +2182,12 @@ export class ChatStoreService {
 
         const existing = existingById.get(groupId) ?? null;
         if (!existing) {
+          // Only create a new group if it exists in the DB-loaded fallbackGroups
+          // or has a real name (not just an ID). This prevents "ghost" groups
+          // from appearing when a message references an unknown group ID.
+          if (!fallbackGroup && this.isGroupNameLikeId(resolvedGroupName, groupId)) {
+            continue;
+          }
           changed = true;
           const members = Array.isArray(fallbackGroup?.members)
             ? Array.from(new Set(fallbackGroup!.members.map((member) => this.normalizeUser(member)).filter(Boolean)))
@@ -2069,9 +2206,7 @@ export class ChatStoreService {
         }
 
         const existingName = String(existing.name || '').trim();
-        const existingNameLooksLikeId = this.normalizeChatId(existingName) === groupId;
-        const resolvedNameLooksLikeId = this.normalizeChatId(resolvedGroupName) === groupId;
-        if (existingNameLooksLikeId && !resolvedNameLooksLikeId) {
+        if (this.isGroupNameLikeId(existingName, groupId) && !this.isGroupNameLikeId(resolvedGroupName, groupId)) {
           changed = true;
           const updatedGroup: ChatGroup = {
             ...existing,
@@ -5332,33 +5467,9 @@ export class ChatStoreService {
   private async emitSocketWithAck(
     eventName: string,
     payload: unknown,
-    timeoutMs = SOCKET_ACK_TIMEOUT_MS
+    timeoutMs = 6000
   ): Promise<Record<string, unknown> | null> {
-    if (!this.socket || !this.socketConnected) {
-      return null;
-    }
-
-    return new Promise<Record<string, unknown> | null>((resolve) => {
-      let settled = false;
-      const done = (value: Record<string, unknown> | null): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeoutId);
-        resolve(value);
-      };
-      const timeoutId = setTimeout(() => done(null), timeoutMs);
-      try {
-        this.socket?.emit(eventName, payload, (ackPayload: unknown) => {
-          if (ackPayload && typeof ackPayload === 'object') {
-            done(ackPayload as Record<string, unknown>);
-            return;
-          }
-          done(null);
-        });
-      } catch {
-        done(null);
-      }
-    });
+    return this.transport.emitWithAck(eventName, payload, timeoutMs);
   }
 
   private async sendReplyTransport(payload: ReplyPayload): Promise<void> {
@@ -5751,233 +5862,18 @@ export class ChatStoreService {
 
   private connectRealtime(user: string): void {
     this.stopRealtime();
-    if (!this.isNetworkReachable()) {
-      return;
-    }
-    void this.connectSocketPreferred(user);
-  }
-
-  private setRealtimeTransportMode(mode: RealtimeTransportMode): void {
-    if (this.realtimeTransportMode() === mode) {
-      return;
-    }
-    this.realtimeTransportMode.set(mode);
-  }
-
-  private resetSocketFailureState(): void {
-    this.socketConsecutiveFailures = 0;
-    this.socketDisabledUntil = 0;
-  }
-
-  private handleSocketConnectFailure(user: string): void {
-    if (this.currentUser() !== user) {
-      return;
-    }
-    this.socketConsecutiveFailures += 1;
-    this.startSseFallback(user);
-
-    if (this.socketConsecutiveFailures >= SOCKET_MAX_FAILURES_BEFORE_COOLDOWN) {
-      this.socketConsecutiveFailures = 0;
-      this.socketDisabledUntil = Date.now() + SOCKET_FAILURE_COOLDOWN_MS;
-    }
-
-    this.scheduleSocketReconnect(user);
-  }
-
-  private async connectSocketPreferred(user: string): Promise<void> {
-    this.shuttingDownRealtime = false;
-    if (this.socketDisabledUntil > Date.now()) {
-      this.startSseFallback(user);
-      this.scheduleSocketReconnect(user);
-      return;
-    }
-    if (!this.isNetworkReachable()) {
-      this.startSseFallback(user);
-      return;
-    }
-    if (this.socketConnecting) {
-      return;
-    }
-    this.socketConnecting = true;
-
-    if (this.socketSseFallbackTimer) {
-      clearTimeout(this.socketSseFallbackTimer);
-      this.socketSseFallbackTimer = null;
-    }
-
-    this.socketSseFallbackTimer = setTimeout(() => {
-      this.socketSseFallbackTimer = null;
-      if (!this.socketConnected && this.currentUser() === user) {
-        this.startSseFallback(user);
-      }
-    }, SOCKET_FALLBACK_TO_SSE_DELAY_MS);
-
-    try {
-      const socket = await this.api.createRealtimeSocket(user);
-      if (this.currentUser() !== user) {
-        socket.disconnect();
-        return;
-      }
-      this.shuttingDownRealtime = true;
-      this.stopSocketOnly();
-      this.shuttingDownRealtime = false;
-      this.socket = socket;
-
-      socket.on('connect', () => {
-        if (this.currentUser() !== user) return;
-        this.resetSocketFailureState();
-        this.socketConnected = true;
-        this.socketConnecting = false;
-        this.setRealtimeTransportMode('socket');
-        if (this.socketSseFallbackTimer) {
-          clearTimeout(this.socketSseFallbackTimer);
-          this.socketSseFallbackTimer = null;
-        }
-        this.stopStreamOnly();
-        this.clearTypingIndicators();
-      });
-
-      socket.on('chat:message', (incoming: unknown) => {
-        if (!incoming || typeof incoming !== 'object') return;
-        this.handleIncomingPayload(incoming as IncomingServerMessage);
-      });
-
-      socket.on('chat:connected', () => {
-        if (this.currentUser() !== user) return;
-        this.resetSocketFailureState();
-        this.socketConnected = true;
-        this.setRealtimeTransportMode('socket');
-        this.stopStreamOnly();
-      });
-
-      socket.on('disconnect', () => {
-        if (this.shuttingDownRealtime || this.currentUser() !== user) return;
-        this.shuttingDownRealtime = true;
-        this.stopSocketOnly();
-        this.shuttingDownRealtime = false;
-        this.socketConnected = false;
-        this.socketConnecting = false;
-        this.setRealtimeTransportMode('polling');
-        this.handleSocketConnectFailure(user);
-      });
-
-      socket.on('connect_error', () => {
-        if (this.shuttingDownRealtime || this.currentUser() !== user) return;
-        this.shuttingDownRealtime = true;
-        this.stopSocketOnly();
-        this.shuttingDownRealtime = false;
-        this.socketConnected = false;
-        this.socketConnecting = false;
-        this.setRealtimeTransportMode('polling');
-        this.handleSocketConnectFailure(user);
-      });
-
-      socket.connect();
-    } catch {
-      this.shuttingDownRealtime = true;
-      this.stopSocketOnly();
-      this.shuttingDownRealtime = false;
-      this.socketConnecting = false;
-      this.socketConnected = false;
-      this.setRealtimeTransportMode('polling');
-      this.handleSocketConnectFailure(user);
-    }
-  }
-
-  private startSseFallback(user: string): void {
-    if (this.socketConnected || !this.isNetworkReachable()) {
-      return;
-    }
-    if (this.stream) {
-      return;
-    }
-    try {
-      this.stream = this.api.createMessageStream(user);
-      this.setRealtimeTransportMode('sse');
-      this.stream.addEventListener('message', (event: MessageEvent<string>) => {
-        this.handleIncomingPayload(event.data);
-      });
-      this.stream.addEventListener('connected', () => {
-      });
-      this.stream.onerror = () => {
-        this.stopStreamOnly();
-        this.scheduleStreamReconnect(user);
-      };
-    } catch {
-      this.scheduleStreamReconnect(user);
-    }
-  }
-
-  private startPolling(user: string): void {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-    }
-
-    this.pollTimer = setInterval(() => {
-      void this.pullMessages(user);
-    }, POLL_INTERVAL_MS);
-
-    if (!this.socketConnected && !this.stream) {
-      this.setRealtimeTransportMode('polling');
-    }
-
-    void this.pullMessages(user);
-  }
-
-  private stopSocketOnly(): void {
-    this.socketConnected = false;
-    this.socketConnecting = false;
-    if (this.socket) {
-      this.socket.disconnect();
-      this.socket = null;
-    }
-    if (this.stream) {
-      this.setRealtimeTransportMode('sse');
-    } else {
-      this.setRealtimeTransportMode('polling');
-    }
-  }
-
-  private stopStreamOnly(): void {
-    if (this.stream) {
-      this.stream.close();
-      this.stream = null;
-    }
-    if (!this.socketConnected) {
-      this.setRealtimeTransportMode('polling');
-    }
+    this.transport.connect(user, () => this.isNetworkReachable());
   }
 
   private stopRealtime(): void {
-    this.shuttingDownRealtime = true;
     this.cancelTypingForActiveChat();
     this.clearTypingIndicators();
-    this.stopSocketOnly();
-    this.stopStreamOnly();
     this.stopHelpdeskPolling();
-
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
-    }
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    if (this.socketReconnectTimer) {
-      clearTimeout(this.socketReconnectTimer);
-      this.socketReconnectTimer = null;
-    }
-    if (this.socketSseFallbackTimer) {
-      clearTimeout(this.socketSseFallbackTimer);
-      this.socketSseFallbackTimer = null;
-    }
+    this.transport.disconnect();
     if (this.typingStopTimer) {
       clearTimeout(this.typingStopTimer);
       this.typingStopTimer = null;
     }
-    this.setRealtimeTransportMode('polling');
-    this.shuttingDownRealtime = false;
   }
 
   private startBackgroundContactsAccessSync(user: string): void {
@@ -6141,27 +6037,6 @@ export class ChatStoreService {
     }
   }
 
-  private scheduleStreamReconnect(user: string): void {
-    if (this.socketConnected || this.reconnectTimer) return;
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      if (this.currentUser() !== user) return;
-      this.startSseFallback(user);
-    }, STREAM_RETRY_MS);
-  }
-
-  private scheduleSocketReconnect(user: string): void {
-    if (this.socketReconnectTimer) return;
-    const waitMs = this.socketDisabledUntil > Date.now()
-      ? Math.max(SOCKET_RETRY_MS, this.socketDisabledUntil - Date.now())
-      : SOCKET_RETRY_MS;
-    this.socketReconnectTimer = setTimeout(() => {
-      this.socketReconnectTimer = null;
-      if (this.currentUser() !== user || !this.isNetworkReachable()) return;
-      void this.connectSocketPreferred(user);
-    }, waitMs);
-  }
-
   private async pullMessages(user: string): Promise<void> {
     if (this.pullInFlight || !this.isNetworkReachable()) return;
     if (this.currentUser() !== user) return;
@@ -6298,9 +6173,10 @@ export class ChatStoreService {
       if (!sender) continue;
       const currentUser = this.normalizeUser(this.currentUser() ?? '');
       const incomingToUser = this.normalizeChatId(String(incoming.toUser ?? incoming.recipient ?? '').trim());
-      const isOutgoingFromCurrentUser = Boolean(currentUser && sender === currentUser);
-
       const isGroup = Boolean(incoming.groupId);
+      const isOutgoingFromCurrentUser = Boolean(currentUser && sender === currentUser) ||
+        Boolean(currentUser && isGroup && this.isGroupSenderCurrentUser(incoming.groupSenderName, currentUser));
+
       const chatId = isGroup
         ? this.normalizeChatId(incoming.groupId ?? '')
         : (
@@ -6406,13 +6282,17 @@ export class ChatStoreService {
       });
       const forwardedFrom = incoming.forwardedFrom ? this.normalizeUser(incoming.forwardedFrom) : '';
       const forwardedFromName = String(incoming.forwardedFromName || '').trim();
+      // Safety net: strip redundant sender prefix from body for group messages
+      const finalBody = isGroup
+        ? this.stripGroupSenderPrefixFromBody(incomingBody, incoming.groupSenderName)
+        : incomingBody;
       const record: ChatMessage = {
         id: this.generateId('rec'),
         messageId,
         chatId,
         sender,
-        senderDisplayName: incoming.groupSenderName || this.getDisplayName(sender),
-        body: incomingBody,
+        senderDisplayName: this.resolveGroupSenderDisplayName(incoming.groupSenderName, sender),
+        body: finalBody,
         imageUrl: incomingImageUrl,
         fileUrl: incomingFileUrl,
         direction: isOutgoingFromCurrentUser ? 'outgoing' : 'incoming',
@@ -6609,9 +6489,10 @@ export class ChatStoreService {
     if (!sender) return false;
     const currentUser = this.normalizeUser(this.currentUser() ?? '');
     const incomingToUser = this.normalizeChatId(String(incoming.toUser ?? incoming.recipient ?? '').trim());
-    const isOutgoingFromCurrentUser = Boolean(currentUser && sender === currentUser);
-
     const isGroup = Boolean(incoming.groupId);
+    const isOutgoingFromCurrentUser = Boolean(currentUser && sender === currentUser) ||
+      Boolean(currentUser && isGroup && this.isGroupSenderCurrentUser(incoming.groupSenderName, currentUser));
+
     const chatId = isGroup
       ? this.normalizeChatId(incoming.groupId ?? '')
       : (
@@ -6702,13 +6583,17 @@ export class ChatStoreService {
     });
     const forwardedFrom = incoming.forwardedFrom ? this.normalizeUser(incoming.forwardedFrom) : '';
     const forwardedFromName = String(incoming.forwardedFromName || '').trim();
+    // Safety net: strip redundant sender prefix from body for group messages
+    const finalBody = isGroup
+      ? this.stripGroupSenderPrefixFromBody(incomingBody, incoming.groupSenderName)
+      : incomingBody;
     const record: ChatMessage = {
       id: this.generateId('rec'),
       messageId,
       chatId,
       sender,
-      senderDisplayName: incoming.groupSenderName || this.getDisplayName(sender),
-      body: incomingBody,
+      senderDisplayName: this.resolveGroupSenderDisplayName(incoming.groupSenderName, sender),
+      body: finalBody,
       imageUrl: incomingImageUrl,
       fileUrl: incomingFileUrl,
       direction: isOutgoingFromCurrentUser ? 'outgoing' : 'incoming',
@@ -6839,6 +6724,9 @@ export class ChatStoreService {
       return -1;
     }
 
+    // Content IS part of the comparison to distinguish different messages from the
+    // same sender at similar timestamps. Only collapse true duplicates (same sender +
+    // same body + same image + close timestamp).
     return list.findIndex((message) => {
       if (!message || message.direction !== 'incoming' || message.deletedAt) {
         return false;
@@ -7964,6 +7852,81 @@ export class ChatStoreService {
     return normalized;
   }
 
+  /**
+   * Strip redundant "SenderName: " prefix from a group message body when the
+   * sender name is already known. This prevents the sender name from appearing
+   * both as the sender label above the bubble and inside the body text.
+   */
+  private stripGroupSenderPrefixFromBody(body: string, groupSenderName: string | null | undefined): string {
+    const trimmedBody = String(body || '').trim();
+    const senderName = String(groupSenderName ?? '').trim();
+    if (!senderName || !trimmedBody) return trimmedBody;
+    // Check if body starts with "SenderName:" (case-sensitive, with optional whitespace around colon)
+    const escapedName = senderName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const prefixPattern = new RegExp(`^${escapedName}\\s*:\\s*`);
+    if (prefixPattern.test(trimmedBody)) {
+      const stripped = trimmedBody.replace(prefixPattern, '').trim();
+      if (stripped) return stripped;
+    }
+    return trimmedBody;
+  }
+
+  /**
+   * Resolve the display name for a sender in a group message.
+   * The groupSenderName (extracted from body prefix or provided by backend) may be
+   * a phone number rather than a proper display name. In that case, look up the
+   * contact list to find a better name. Falls back to getDisplayName(sender).
+   */
+  private resolveGroupSenderDisplayName(
+    groupSenderName: string | null | undefined,
+    sender: string
+  ): string {
+    const raw = String(groupSenderName ?? '').trim();
+    if (raw) {
+      // If the extracted sender name looks like a phone number, try to resolve it.
+      // 7-15 digits covers Israeli local (10 digits) and international formats.
+      const digits = raw.replace(/[\s\-()]/g, '');
+      const looksLikePhone = /^\d{7,15}$/.test(digits);
+      if (looksLikePhone) {
+        const resolved = this.getDisplayName(raw);
+        // getDisplayName returns the normalized input when no match is found.
+        // If it found a real name (different from the normalized phone), use it.
+        if (resolved !== this.normalizeUser(raw)) {
+          return resolved;
+        }
+      } else {
+        // Not a phone number – use the provided name as-is.
+        return raw;
+      }
+    }
+    // Fallback: resolve the sender field itself (could be a groupId or phone).
+    return this.getDisplayName(sender);
+  }
+
+  /**
+   * Detect if the groupSenderName (extracted from message body prefix or backend)
+   * identifies the current user. Handles phone-number forms and display-name match.
+   */
+  private isGroupSenderCurrentUser(
+    groupSenderName: string | null | undefined,
+    currentUser: string
+  ): boolean {
+    if (!currentUser) return false;
+    const raw = String(groupSenderName ?? '').trim();
+    if (!raw) return false;
+    // Direct normalized match (phone number form)
+    if (this.normalizeUser(raw) === currentUser) return true;
+    // Digits-only match after stripping formatting (e.g. "054-679-9693")
+    const digits = raw.replace(/[\s\-()]/g, '');
+    if (/^\d{7,15}$/.test(digits) && this.normalizeUser(digits) === currentUser) return true;
+    // Display-name match: compare against the current user's resolved display name
+    const currentDisplayName = this.getDisplayName(currentUser);
+    if (currentDisplayName && currentDisplayName !== currentUser && raw === currentDisplayName) {
+      return true;
+    }
+    return false;
+  }
+
   private normalizeContacts(contacts: Contact[]): Contact[] {
     const seen = new Set<string>();
     return contacts
@@ -8038,6 +8001,11 @@ export class ChatStoreService {
     return this.normalizeUser(value);
   }
 
+  /** Returns true if the group display name is just the raw group ID (no real name). */
+  private isGroupNameLikeId(groupName: string, groupId: string): boolean {
+    return Boolean(groupName) && this.normalizeChatId(groupName) === this.normalizeChatId(groupId);
+  }
+
   private isSystemChat(chatId: string): boolean {
     const normalized = this.normalizeChatId(chatId);
     if (this.isShuttleChat(normalized) && !this.shuttleAccessAllowed()) {
@@ -8089,6 +8057,9 @@ export class ChatStoreService {
     localStorage.removeItem(this.shuttleOrdersKey(user));
     localStorage.removeItem(this.shuttleLanguageKey(user));
     localStorage.removeItem(this.shuttleReminderHistoryKey(user));
+    localStorage.removeItem(this.helpdeskStateKey(user));
+    // Also clear IndexedDB state for this user (fire-and-forget).
+    clearIdbForUser(user).catch(() => { /* best-effort */ });
   }
 
   private resetRuntimeStateAfterCacheClear(user: string): void {
@@ -8114,10 +8085,7 @@ export class ChatStoreService {
     this.resetReadReceiptTrackingState();
   }
 
-  private restoreState(user: string): void {
-    const raw = localStorage.getItem(this.stateKey(user));
-    if (!raw) return;
-
+  private async restoreState(user: string): Promise<void> {
     // One-time migration: clear cached groups so they are re-fetched from DB.
     const groupsMigrated = localStorage.getItem(GROUPS_DB_MIGRATION_KEY);
     const shouldClearGroups = !groupsMigrated;
@@ -8126,7 +8094,28 @@ export class ChatStoreService {
     }
 
     try {
-      const parsed = JSON.parse(raw) as Partial<PersistedChatState>;
+      // Try to load from IndexedDB first.
+      let parsed: Partial<PersistedChatState> | null = null;
+
+      const idbData = await restoreFromIdb(user);
+      if (idbData) {
+        parsed = idbData;
+      } else {
+        // Fallback: migrate from localStorage if available.
+        const raw = localStorage.getItem(this.stateKey(user));
+        if (raw) {
+          parsed = JSON.parse(raw) as Partial<PersistedChatState>;
+          // Remove old localStorage entry after successful parse.
+          localStorage.removeItem(this.stateKey(user));
+        }
+      }
+
+      if (needsIdbMigration()) {
+        markIdbMigrationDone();
+      }
+
+      if (!parsed) return;
+
       const contacts = this.normalizeContacts(Array.isArray(parsed.contacts) ? parsed.contacts : []);
       const groups = shouldClearGroups
         ? []
@@ -8149,8 +8138,14 @@ export class ChatStoreService {
           ...record,
           chatId,
           sender: this.normalizeUser(record.sender),
+          senderDisplayName: this.resolveGroupSenderDisplayName(
+            record.senderDisplayName,
+            record.sender ?? ''
+          ),
           messageId: String(record.messageId || this.generateId('msg')),
-          body: String(record.body ?? ''),
+          body: normalizedGroupId
+            ? this.stripGroupSenderPrefixFromBody(String(record.body ?? ''), record.senderDisplayName)
+            : String(record.body ?? ''),
           timestamp: Number(record.timestamp ?? Date.now()),
           direction: record.direction === 'incoming' ? 'incoming' : 'outgoing',
           deliveryStatus: record.deliveryStatus ?? 'sent',
@@ -8221,17 +8216,18 @@ export class ChatStoreService {
     if (!user) return;
 
     const flattened = Object.values(this.messagesByChat()).flat();
-    flattened.sort((a, b) => a.timestamp - b.timestamp);
-    const tail = flattened.slice(-MAX_PERSISTED_MESSAGES);
 
-    const payload: PersistedChatState = {
-      contacts: this.contacts(),
-      groups: this.groups(),
-      unreadByChat: this.unreadByChat(),
-      messages: tail
-    };
-
-    localStorage.setItem(this.stateKey(user), JSON.stringify(payload));
+    // Fire-and-forget async write to IndexedDB.
+    persistToIdb(
+      user,
+      this.contacts(),
+      this.groups(),
+      this.unreadByChat(),
+      flattened,
+      MAX_PERSISTED_MESSAGES
+    ).catch(() => {
+      // Best-effort: if IndexedDB write fails, silently ignore.
+    });
   }
 
   private loadOutbox(user: string): OutboxItem[] {
@@ -8520,6 +8516,10 @@ export class ChatStoreService {
       this.refreshPushRegistrationForCurrentUser(true);
       return;
     }
+    if (payloadType === 'version-update') {
+      this.createVersionUpdateMessage(payload);
+      return;
+    }
     const numericGroupUpdatedAt = Number(payload['groupUpdatedAt']);
     const numericReadAt = Number(payload['readAt']);
     const numericPayloadTimestamp = Number(payload['timestamp']);
@@ -8566,6 +8566,7 @@ export class ChatStoreService {
         : undefined,
       groupUpdatedAt: Number.isFinite(numericGroupUpdatedAt) ? numericGroupUpdatedAt : undefined,
       groupType: payload['groupType'] === 'community' ? 'community' : 'group',
+      groupSenderName: typeof payload['groupSenderName'] === 'string' ? payload['groupSenderName'] : undefined,
       timestamp: resolvedIncomingTimestamp
     };
 
@@ -8634,6 +8635,10 @@ export class ChatStoreService {
       incoming.groupId = groupId;
       incoming.groupName = String(payload['groupName'] ?? seed.groupName ?? '').trim() || groupId;
       incoming.groupType = payload['groupType'] === 'community' ? 'community' : (seed.groupType ?? 'group');
+      const rawGroupSenderName = String(payload['groupSenderName'] ?? seed.groupSenderName ?? '').trim();
+      if (rawGroupSenderName) {
+        incoming.groupSenderName = rawGroupSenderName;
+      }
     }
     return incoming;
   }

@@ -29,6 +29,8 @@ export interface MysqlLogsReadOptions {
   offset?: number;
   hardcodedGroupIds?: string[];
   hardcodedGroupMembers?: Record<string, string[]>;
+  /** Dynamic (non-hardcoded) group IDs the user belongs to, e.g. group:grp_xxx */
+  dynamicGroupIds?: string[];
   since?: number;
 }
 
@@ -84,6 +86,9 @@ function toPositiveInteger(value: unknown, fallbackValue: number): number {
 function normalizePhone(value: unknown): string {
   let text = toTrimmedString(value);
   if (!text) return '';
+  // Group identifiers (e.g. "group:grp_xxx") must never be treated as phone numbers.
+  // They contain hex digits that would be extracted into a meaningless number string.
+  if (text.includes(':')) return '';
   // Strip non-digit characters (dashes, spaces, parentheses, etc.) for consistent matching
   text = text.replace(/\D/g, '');
   if (!text) return '';
@@ -257,8 +262,10 @@ export class MysqlLogsService {
   private imageUrlColumnReady = false;
   private fileUrlColumnReady = false;
   private seenTimeColumnReady = false;
+  private dedupIndexReady = false;
   private communityGroupsTablesReady = false;
   private chatGroupsTablesReady = false;
+  private messageActivitiesTableReady = false;
 
   constructor(config: MysqlLogsConfig) {
     this.tableName = normalizeTableName(config.table);
@@ -328,12 +335,34 @@ export class MysqlLogsService {
     this.seenTimeColumnReady = true;
   }
 
+  private async ensureDedupIndex(): Promise<void> {
+    if (this.dedupIndexReady) return;
+    // Drop obsolete MsgID-based index from v1.57 if it exists.
+    try {
+      await this.pool.execute(`DROP INDEX \`idx_msgid_touser\` ON \`${this.tableName}\``);
+    } catch (_dropErr: unknown) {
+      // Index may not exist — ignore.
+    }
+    try {
+      await this.pool.execute(
+        `CREATE INDEX \`idx_dedup_composite\` ON \`${this.tableName}\` (\`From\`(50), \`ToUser\`(50), \`DateTime\`)`
+      );
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code;
+      const message = String((err as { message?: string }).message || '');
+      // ER_DUP_KEYNAME = index already exists — expected on subsequent restarts.
+      if (code !== 'ER_DUP_KEYNAME' && !message.includes('Duplicate key name')) {
+        console.warn('[MYSQL] ensureDedupIndex warning:', message);
+      }
+    }
+    this.dedupIndexReady = true;
+  }
+
   private buildCompositeKeyFromPayload(payload: MysqlLogInsertPayload): string {
     return [
       normalizeDateTimeKey(payload.dateTime),
       toTrimmedString(payload.recipient),
-      toTrimmedString(payload.sender) || 'System',
-      toTrimmedString(payload.message)
+      toTrimmedString(payload.sender) || 'System'
     ].join('|');
   }
 
@@ -341,13 +370,12 @@ export class MysqlLogsService {
     dateTime: unknown;
     toUser: unknown;
     fromUser: unknown;
-    messagePreview: unknown;
+    messagePreview?: unknown;
   }): string {
     return [
       normalizeDateTimeKey(row.dateTime),
       toTrimmedString(row.toUser),
-      toTrimmedString(row.fromUser) || 'System',
-      toTrimmedString(row.messagePreview)
+      toTrimmedString(row.fromUser) || 'System'
     ].join('|');
   }
 
@@ -365,6 +393,64 @@ export class MysqlLogsService {
 
     await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null]);
     return true;
+  }
+
+  /**
+   * Insert a log entry only if no row with the same [From, ToUser, DateTime]
+   * already exists. Uniqueness = [From, To, DateTime].
+   * Same content with a different DateTime is a NEW message.
+   * Returns true if a new row was inserted, false if it was a duplicate.
+   */
+  async insertLogIfNotDuplicate(payload: MysqlLogInsertPayload): Promise<boolean> {
+    await this.ensureDedupIndex();
+    const sender = toTrimmedString(payload.sender) || 'System';
+    const recipient = toTrimmedString(payload.recipient);
+    const message = toTrimmedString(payload.message);
+    const status = toTrimmedString(payload.status);
+    const details = toTrimmedString(payload.details);
+    const msgId = resolveLogMessageId(payload.msgId, details);
+    const recipientAuthJson = toTrimmedString(payload.recipientAuthJson);
+    const dateTime = normalizeDateTimeForStorage(payload.dateTime);
+    const imageUrl = toTrimmedString(payload.imageUrl);
+    const fileUrl = toTrimmedString(payload.fileUrl);
+
+    if (!recipient) {
+      // Cannot deduplicate without recipient — fall back to normal insert
+      await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null]);
+      return true;
+    }
+
+    const sql = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       FROM DUAL
+       WHERE NOT EXISTS (
+         SELECT 1 FROM \`${this.tableName}\`
+         WHERE \`From\` = ? AND \`ToUser\` = ? AND \`DateTime\` = ?
+         LIMIT 1
+       )`;
+    const [result] = await this.pool.execute(sql, [
+      dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null,
+      sender, recipient, dateTime
+    ]);
+    const affectedRows = (result as { affectedRows?: number }).affectedRows ?? 0;
+    return affectedRows > 0;
+  }
+
+  /**
+   * Check if a log entry with the same [From, ToUser, DateTime] already exists.
+   * Uniqueness = [From, To, DateTime] — content is NOT part of the key.
+   */
+  async hasDuplicateLog(sender: string, recipient: string, dateTime: unknown): Promise<boolean> {
+    await this.ensureDedupIndex();
+    const normalizedSender = toTrimmedString(sender) || 'System';
+    const normalizedRecipient = toTrimmedString(recipient);
+    const normalizedDateTime = normalizeDateTimeForStorage(dateTime);
+    if (!normalizedRecipient) return false;
+    const sql = `SELECT 1 FROM \`${this.tableName}\`
+       WHERE \`From\` = ? AND \`ToUser\` = ? AND \`DateTime\` = ?
+       LIMIT 1`;
+    const [rows] = await this.pool.query(sql, [normalizedSender, normalizedRecipient, normalizedDateTime]);
+    return Array.isArray(rows) && rows.length > 0;
   }
 
   async filterNewLogsByCompositeKey(payloads: MysqlLogInsertPayload[]): Promise<MysqlLogInsertPayload[]> {
@@ -393,12 +479,11 @@ export class MysqlLogsService {
       const orClauses: string[] = [];
       const params: Array<string | Date> = [];
       chunk.forEach((payload) => {
-        orClauses.push('(`DateTime` = ? AND `ToUser` = ? AND `From` = ? AND `Message Preview` = ?)');
+        orClauses.push('(`DateTime` = ? AND `ToUser` = ? AND `From` = ?)');
         params.push(
           normalizeDateTimeForStorage(payload.dateTime),
           toTrimmedString(payload.recipient),
-          toTrimmedString(payload.sender) || 'System',
-          toTrimmedString(payload.message)
+          toTrimmedString(payload.sender) || 'System'
         );
       });
       const [rows] = await this.pool.query<Array<RowDataPacket & {
@@ -508,6 +593,14 @@ export class MysqlLogsService {
       }
     }
 
+    // Dynamic (non-hardcoded) groups the requesting user belongs to.
+    // Messages whose sender or toUser matches a dynamic group ID are allowed through.
+    const dynamicGroupKeySet = new Set(
+      Array.isArray(options.dynamicGroupIds)
+        ? options.dynamicGroupIds.map((value) => normalizeGroupKey(value)).filter(Boolean)
+        : []
+    );
+
     const requiredMatches = offset + limit;
     const maxRawRowsToScan = Math.max(50000, Math.min(requiredMatches * 220, 5000000));
     let rawOffset = 0;
@@ -561,10 +654,13 @@ export class MysqlLogsService {
 
         // --- Preservation of your existing Sender/Recipient logic ---
         const senderRaw = toTrimmedString(row.fromUser);
+        const senderLower = senderRaw.toLowerCase();
         const sender = normalizePhone(senderRaw) || senderRaw;
         const senderPhone = normalizePhone(sender);
         const isOutgoingFromRequestedUser = Boolean(senderPhone && senderPhone === requestedUser);
         const isHardcodedGlobalGroupSender = hardcodedGroupKeySet.has(normalizeGroupKey(senderRaw));
+        // Dynamic group: sender or toUser is a "group:xxx" identifier
+        const isDynamicGroupSender = senderLower.startsWith('group:');
 
         const rawToUser = toTrimmedString(row.toUser);
         const recipients = new Set<string>([
@@ -575,6 +671,7 @@ export class MysqlLogsService {
         const toUserNormalizedPhone = normalizePhone(rawToUser);
         const resolvedToUser = toUserNormalizedPhone || rawToUser;
         const toUserLower = rawToUser.toLowerCase();
+        const isDynamicGroupToUser = toUserLower.startsWith('group:');
 
         const isGroupTargetRow = Boolean(
           rawToUser &&
@@ -594,6 +691,10 @@ export class MysqlLogsService {
             if (restrictedMembers && !restrictedMembers.has(requestedUser)) {
               continue;
             }
+          } else if (isDynamicGroupSender && dynamicGroupKeySet.has(senderLower)) {
+            // Sender is a dynamic group (e.g. "group:grp_xxx") the user belongs to — allow.
+          } else if (isDynamicGroupToUser && dynamicGroupKeySet.has(toUserLower)) {
+            // ToUser is a dynamic group the user belongs to — allow.
           } else if (isGroupTargetRow) {
             // ToUser is a group name (non-phone).
             const toGroupKey = normalizeGroupKey(rawToUser);
@@ -681,7 +782,9 @@ export class MysqlLogsService {
           details,
           type: resolvedActionType || undefined,
           deletedAt: resolvedActionType === 'delete-action' ? deletedAt : undefined,
-          groupId: toTrimmedString(detailsMap.groupId || detailsMap.group_id) || undefined,
+          groupId: toTrimmedString(detailsMap.groupId || detailsMap.group_id)
+            || (isDynamicGroupSender ? senderRaw : undefined)
+            || (isDynamicGroupToUser ? rawToUser : undefined),
           messageIds: toTrimmedString(detailsMap.messageIds || detailsMap.message_ids) || undefined,
           targetMessageId: toTrimmedString(detailsMap.targetMessageId || detailsMap.target_message_id || detailsMap.messageId || detailsMap.message_id) || undefined,
           emoji: toTrimmedString(detailsMap.emoji || detailsMap.reaction) || undefined,
@@ -1061,11 +1164,13 @@ export class MysqlLogsService {
     try {
       await conn.beginTransaction();
 
+      // Preserve existing real group name when the incoming name equals the GroupId.
+      // This prevents ID-like values (e.g. "group:grp_xyz") from overwriting real names.
       await conn.execute(
         `INSERT INTO \`ChatGroups\` (\`GroupId\`, \`GroupName\`, \`CreatedBy\`, \`Type\`, \`CreatedAt\`, \`UpdatedAt\`)
          VALUES (?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
-           \`GroupName\` = VALUES(\`GroupName\`),
+           \`GroupName\` = IF(VALUES(\`GroupName\`) != \`GroupId\`, VALUES(\`GroupName\`), \`GroupName\`),
            \`CreatedBy\` = COALESCE(VALUES(\`CreatedBy\`), \`CreatedBy\`),
            \`Type\` = VALUES(\`Type\`),
            \`UpdatedAt\` = VALUES(\`UpdatedAt\`)`,
@@ -1145,6 +1250,94 @@ export class MysqlLogsService {
       console.warn('[MYSQL] seedChatGroupsFromRuntime warning:', message);
     }
     return seeded;
+  }
+
+  // ─── MessageActivities audit table ──────────────────────────────────────────
+
+  async ensureMessageActivitiesTable(): Promise<void> {
+    if (this.messageActivitiesTableReady) return;
+    try {
+      await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`MessageActivities\` (
+          \`Id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          \`ActionType\` VARCHAR(50) NOT NULL,
+          \`MessageId\` VARCHAR(255) DEFAULT NULL,
+          \`Sender\` VARCHAR(100) NOT NULL,
+          \`Recipient\` VARCHAR(255) DEFAULT NULL,
+          \`GroupId\` VARCHAR(255) DEFAULT NULL,
+          \`Body\` TEXT DEFAULT NULL,
+          \`ImageUrl\` TEXT DEFAULT NULL,
+          \`FileUrl\` TEXT DEFAULT NULL,
+          \`Emoji\` VARCHAR(50) DEFAULT NULL,
+          \`TargetMessageId\` VARCHAR(255) DEFAULT NULL,
+          \`ActionTimestamp\` BIGINT NOT NULL,
+          \`CreatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (\`Id\`),
+          INDEX \`idx_ma_sender\` (\`Sender\`(50)),
+          INDEX \`idx_ma_action_type\` (\`ActionType\`),
+          INDEX \`idx_ma_message_id\` (\`MessageId\`(100)),
+          INDEX \`idx_ma_group_id\` (\`GroupId\`(100)),
+          INDEX \`idx_ma_created_at\` (\`CreatedAt\`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+      this.messageActivitiesTableReady = true;
+      console.log('[MYSQL] MessageActivities table ensured.');
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.warn('[MYSQL] ensureMessageActivitiesTable warning:', message);
+    }
+  }
+
+  async insertMessageActivity(activity: {
+    actionType: string;
+    messageId?: string;
+    sender: string;
+    recipient?: string;
+    groupId?: string;
+    body?: string;
+    imageUrl?: string;
+    fileUrl?: string;
+    emoji?: string;
+    targetMessageId?: string;
+    actionTimestamp?: number;
+  }): Promise<void> {
+    await this.ensureMessageActivitiesTable();
+    const actionType = toTrimmedString(activity.actionType) || 'unknown';
+    const messageId = toTrimmedString(activity.messageId) || null;
+    const sender = toTrimmedString(activity.sender) || 'unknown';
+    const recipient = toTrimmedString(activity.recipient) || null;
+    const groupId = toTrimmedString(activity.groupId) || null;
+    const body = activity.body != null ? String(activity.body) : null;
+    const imageUrl = toTrimmedString(activity.imageUrl) || null;
+    const fileUrl = toTrimmedString(activity.fileUrl) || null;
+    const emoji = toTrimmedString(activity.emoji) || null;
+    const targetMessageId = toTrimmedString(activity.targetMessageId) || null;
+    const actionTimestamp = Number(activity.actionTimestamp) || Date.now();
+    try {
+      await this.pool.execute(
+        `INSERT INTO \`MessageActivities\`
+           (\`ActionType\`, \`MessageId\`, \`Sender\`, \`Recipient\`, \`GroupId\`, \`Body\`, \`ImageUrl\`, \`FileUrl\`, \`Emoji\`, \`TargetMessageId\`, \`ActionTimestamp\`)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [actionType, messageId, sender, recipient, groupId, body, imageUrl, fileUrl, emoji, targetMessageId, actionTimestamp]
+      );
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.error('[MYSQL] insertMessageActivity error:', message);
+    }
+  }
+
+  async getAllMessageActivities(): Promise<Record<string, unknown>[]> {
+    await this.ensureMessageActivitiesTable();
+    try {
+      const [rows] = await this.pool.execute(
+        `SELECT * FROM \`MessageActivities\` ORDER BY \`Id\` ASC`
+      );
+      return rows as Record<string, unknown>[];
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.error('[MYSQL] getAllMessageActivities error:', message);
+      return [];
+    }
   }
 
 }

@@ -366,6 +366,12 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     );
   });
 
+  /** Pinned chats displayed as compact icon chips at the top */
+  readonly pinnedChats = computed(() => this.filteredChats().filter((c) => c.pinned));
+
+  /** Non-pinned chats for the main virtual-scroll list */
+  readonly unpinnedChats = computed(() => this.filteredChats().filter((c) => !c.pinned));
+
   readonly composerPlaceholder = computed(() => {
     const activeChat = this.store.activeChat();
     if (!activeChat) {
@@ -443,6 +449,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     this.store.getHelpdeskTicketsLoading()
   );
   readonly helpdeskDashboardTab = signal<'ongoing' | 'past' | 'assigned' | 'editor'>('ongoing');
+  readonly helpdeskEditorSubTab = signal<'new' | 'in_progress' | 'closed'>('new');
   readonly isSubmittingHelpdeskTicket = signal(false);
   readonly expandedShuttleOperationsDates = signal<Set<string>>(new Set<string>());
   readonly shuttleBreadcrumbs = computed<ShuttleBreadcrumbStep[] | null>(() =>
@@ -476,6 +483,8 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   readonly stickyMessageTimestamp = signal<number | null>(null);
   readonly isMessagesPanelAtBottom = signal(true);
   readonly avatarPreview = signal<AvatarPreview | null>(null);
+  readonly imagePreviewUrl = signal<string | null>(null);
+  readonly imagePreviewLoaded = signal(false);
   readonly reactionTargetMessageId = signal<string | null>(null);
   readonly messageActionTarget = signal<ChatMessage | null>(null);
   readonly editingMessageTarget = signal<ChatMessage | null>(null);
@@ -1003,6 +1012,16 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     }
   }
 
+  async backupGroupsToDb(): Promise<void> {
+    try {
+      const result = await this.store.backupAllGroupsToDb();
+      this.snackBar.open(`גיבוי הושלם: ${result.backedUp} מתוך ${result.total} קבוצות.`, 'סגור', { duration: 3500 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'גיבוי קבוצות נכשל';
+      this.snackBar.open(message, 'סגור', { duration: 3200 });
+    }
+  }
+
   async sendMessage(): Promise<void> {
     this.store.cancelTypingForActiveChat();
     if (this.isComposerHidden() && !this.editingMessageTarget()) {
@@ -1319,6 +1338,21 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     };
   }
 
+  isVersionUpdateMessage(message: ChatMessage): boolean {
+    return String(message.recordType || '').trim() === 'version-update';
+  }
+
+  async triggerAppReset(): Promise<void> {
+    try {
+      await this.store.forceSyncAllMessagesAndClearCache();
+      this.snackBar.open('האפליקציה עודכנה בהצלחה. טוען מחדש...', 'סגור', { duration: 2200 });
+      setTimeout(() => window.location.reload(), 1200);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'העדכון נכשל. נסה שוב.';
+      this.snackBar.open(message, 'סגור', { duration: 2800 });
+    }
+  }
+
   onMessagesPanelScroll(): void {
     this.tryLoadOlderMessagesOnScroll();
     this.updateStickyMessageDateFromViewport();
@@ -1327,6 +1361,20 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
 
   setHelpdeskDashboardTab(tab: 'ongoing' | 'past' | 'assigned' | 'editor'): void {
     this.helpdeskDashboardTab.set(tab);
+  }
+
+  setHelpdeskEditorSubTab(tab: 'new' | 'in_progress' | 'closed'): void {
+    this.helpdeskEditorSubTab.set(tab);
+  }
+
+  helpdeskEditorFilteredTickets(tickets: HelpdeskTicket[] | null, subTab: 'new' | 'in_progress' | 'closed'): HelpdeskTicket[] {
+    if (!tickets) return [];
+    switch (subTab) {
+      case 'new': return tickets.filter((t) => t.status === 'open');
+      case 'in_progress': return tickets.filter((t) => t.status === 'in_progress');
+      case 'closed': return tickets.filter((t) => t.status === 'resolved' || t.status === 'closed');
+      default: return tickets;
+    }
   }
 
   async refreshHelpdeskTickets(): Promise<void> {
@@ -1761,6 +1809,11 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     this.clearSelectedGroupMemberRemovals();
     this.failedGroupMemberAvatarUsers.set(new Set<string>());
     this.groupMembersPreview.set(this.buildGroupMembersPreview(group));
+  }
+
+  openGroupMemberAdd(): void {
+    this.openGroupMembers();
+    this.groupMemberAddOpen.set(true);
   }
 
   async addSelectedCommunityMembers(): Promise<void> {
@@ -2384,6 +2437,26 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     return source.charAt(0).toUpperCase();
   }
 
+  /** Map pinned chat titles to Material Design icon names for the compact pinned row. */
+  private static readonly PINNED_ICON_MAP: Record<string, string> = {
+    'דוברות': 'campaign',
+    'ציפי': 'support_agent',
+    'מוקד איחוד - קריאות': 'local_hospital',
+    'הסעות': 'directions_bus',
+    'בדיקה - דוברות': 'science',
+    'הזמנת הסעה': 'directions_bus',
+  };
+
+  getPinnedChatIcon(chat: ChatListItem): string {
+    const exact = ChatShellComponent.PINNED_ICON_MAP[chat.title];
+    if (exact) return exact;
+    // Fallback: match when the chat title starts with a known key (handles bilingual titles)
+    for (const [key, icon] of Object.entries(ChatShellComponent.PINNED_ICON_MAP)) {
+      if (chat.title.startsWith(key)) return icon;
+    }
+    return 'chat';
+  }
+
   chatAvatarThumb(chat: ChatListItem): string {
     const original = String(chat.avatarUrl || '').trim();
     if (!original) return '';
@@ -2445,6 +2518,22 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   openFullImage(url: string): void {
+    if (!url) return;
+    this.imagePreviewLoaded.set(false);
+    this.imagePreviewUrl.set(url);
+  }
+
+  closeFullImage(): void {
+    this.imagePreviewLoaded.set(false);
+    this.imagePreviewUrl.set(null);
+  }
+
+  onImagePreviewLoaded(): void {
+    this.imagePreviewLoaded.set(true);
+  }
+
+  openPreviewImageInNewTab(): void {
+    const url = this.imagePreviewUrl();
     if (!url) return;
     window.open(url, '_blank', 'noopener,noreferrer');
   }
