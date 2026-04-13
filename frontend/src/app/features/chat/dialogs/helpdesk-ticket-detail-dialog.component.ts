@@ -202,7 +202,7 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
   }
 
   isImageUrl(url: string): boolean {
-    return /\.(jpeg|jpg|png|gif|webp)(\?|$)/i.test(url);
+    return /\.(jpeg|jpg|png|gif|webp)(\?|#|$)/i.test(url);
   }
 
   get canSubmitNote(): boolean {

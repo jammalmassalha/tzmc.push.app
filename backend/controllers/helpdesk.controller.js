@@ -86,8 +86,11 @@ async function ensureHelpdeskTables(pool) {
     // Migration: add attachment_url column to existing helpdesk_notes tables
     try {
         await pool.execute(`ALTER TABLE \`helpdesk_notes\` ADD COLUMN \`attachment_url\` VARCHAR(512) NULL DEFAULT NULL AFTER \`note_text\``);
-    } catch (_) {
-        // Column already exists — ignore
+    } catch (err) {
+        // ER_DUP_FIELDNAME (1060) — column already exists, safe to ignore
+        if (!(err && err.errno === 1060)) {
+            console.error('[HELPDESK] Migration attachment_url column error:', err && err.message ? err.message : err);
+        }
     }
 
     await pool.execute(`
@@ -344,8 +347,8 @@ function registerHelpdeskController(app, deps = {}) {
             return res.status(400).json({ result: 'error', message: 'יש להזין טקסט הערה או לצרף קובץ' });
         }
 
-        // Validate attachment_url if provided: must be a relative /notify/uploads/ path
-        if (attachmentUrl && !/^\/notify\/uploads\/[^\s<>"']+$/.test(attachmentUrl)) {
+        // Validate attachment_url if provided: must be a relative /notify/uploads/ path with safe characters
+        if (attachmentUrl && !/^\/notify\/uploads\/[\w\-\.]+$/.test(attachmentUrl)) {
             return res.status(400).json({ result: 'error', message: 'כתובת קובץ לא תקינה' });
         }
 
