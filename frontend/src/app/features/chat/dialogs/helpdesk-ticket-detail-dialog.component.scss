@@ -232,6 +232,108 @@
   word-break: break-word;
 }
 
+/* Note attachment */
+.note-attachment {
+  margin-top: 6px;
+}
+
+.note-attachment-image {
+  max-width: 100%;
+  max-height: 240px;
+  border-radius: 8px;
+  object-fit: contain;
+  cursor: pointer;
+  display: block;
+}
+
+.note-attachment-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: #1976d2;
+  text-decoration: none;
+  padding: 4px 8px;
+  background: #e3f2fd;
+  border-radius: 6px;
+
+  mat-icon {
+    font-size: 16px;
+    width: 16px;
+    height: 16px;
+  }
+
+  &:hover {
+    text-decoration: underline;
+    background: #bbdefb;
+  }
+}
+
+/* Pending attachment preview */
+.pending-attachment {
+  position: relative;
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 4px;
+  margin-bottom: 8px;
+  padding: 6px;
+  background: #fafafa;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+}
+
+.pending-attachment-image {
+  max-width: 160px;
+  max-height: 120px;
+  border-radius: 6px;
+  object-fit: contain;
+}
+
+.pending-attachment-file {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: #555;
+  padding: 4px 6px;
+
+  mat-icon {
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+    color: #888;
+  }
+}
+
+.remove-attachment-btn {
+  position: absolute;
+  top: -8px;
+  inset-inline-end: -8px;
+  width: 24px !important;
+  height: 24px !important;
+  padding: 0 !important;
+  line-height: 24px !important;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 50%;
+
+  mat-icon {
+    font-size: 14px;
+    width: 14px;
+    height: 14px;
+  }
+}
+
+/* Upload progress */
+.upload-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #888;
+  padding: 4px 0;
+}
+
 /* Add note */
 .add-note-section {
   display: flex;
@@ -252,6 +354,8 @@
 .add-note-actions {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  gap: 4px;
 }
 
 /* Handler assignment */

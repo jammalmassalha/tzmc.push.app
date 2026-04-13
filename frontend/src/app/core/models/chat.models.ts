@@ -300,6 +300,7 @@ export interface HelpdeskNote {
   ticketId: number;
   authorUsername: string;
   noteText: string;
+  attachmentUrl?: string | null;
   createdAt: string;
 }
 

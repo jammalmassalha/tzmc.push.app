@@ -74,6 +74,7 @@ async function ensureHelpdeskTables(pool) {
             \`ticket_id\` INT UNSIGNED NOT NULL,
             \`author_username\` VARCHAR(64) NOT NULL,
             \`note_text\` TEXT NOT NULL,
+            \`attachment_url\` VARCHAR(512) NULL DEFAULT NULL,
             \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (\`id\`),
             INDEX \`idx_ticket\` (\`ticket_id\`),
@@ -81,6 +82,13 @@ async function ensureHelpdeskTables(pool) {
                 FOREIGN KEY (\`ticket_id\`) REFERENCES \`helpdesk_tickets\` (\`id\`) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
+
+    // Migration: add attachment_url column to existing helpdesk_notes tables
+    try {
+        await pool.execute(`ALTER TABLE \`helpdesk_notes\` ADD COLUMN \`attachment_url\` VARCHAR(512) NULL DEFAULT NULL AFTER \`note_text\``);
+    } catch (_) {
+        // Column already exists — ignore
+    }
 
     await pool.execute(`
         CREATE TABLE IF NOT EXISTS \`helpdesk_users\` (
@@ -331,8 +339,14 @@ function registerHelpdeskController(app, deps = {}) {
         }
         const body = req.body && typeof req.body === 'object' ? req.body : {};
         const noteText = toTrimmedString(body.note_text || '');
-        if (!noteText) {
-            return res.status(400).json({ result: 'error', message: 'יש להזין טקסט הערה' });
+        const attachmentUrl = toTrimmedString(body.attachment_url || '');
+        if (!noteText && !attachmentUrl) {
+            return res.status(400).json({ result: 'error', message: 'יש להזין טקסט הערה או לצרף קובץ' });
+        }
+
+        // Validate attachment_url if provided: must be a relative /notify/uploads/ path
+        if (attachmentUrl && !/^\/notify\/uploads\/[^\s<>"']+$/.test(attachmentUrl)) {
+            return res.status(400).json({ result: 'error', message: 'כתובת קובץ לא תקינה' });
         }
 
         try {
@@ -356,8 +370,8 @@ function registerHelpdeskController(app, deps = {}) {
             }
 
             const [result] = await pool.execute(
-                'INSERT INTO `helpdesk_notes` (`ticket_id`, `author_username`, `note_text`) VALUES (?, ?, ?)',
-                [ticketId, user, noteText]
+                'INSERT INTO `helpdesk_notes` (`ticket_id`, `author_username`, `note_text`, `attachment_url`) VALUES (?, ?, ?, ?)',
+                [ticketId, user, noteText, attachmentUrl || null]
             );
             return res.status(201).json({ result: 'success', noteId: result.insertId });
         } catch (error) {
@@ -399,7 +413,7 @@ function registerHelpdeskController(app, deps = {}) {
             }
 
             const [noteRows] = await pool.query(
-                'SELECT `id`, `ticket_id`, `author_username`, `note_text`, `created_at` FROM `helpdesk_notes` WHERE `ticket_id` = ? ORDER BY `created_at` ASC',
+                'SELECT `id`, `ticket_id`, `author_username`, `note_text`, `attachment_url`, `created_at` FROM `helpdesk_notes` WHERE `ticket_id` = ? ORDER BY `created_at` ASC',
                 [ticketId]
             );
             const notes = noteRows.map((r) => ({
@@ -407,6 +421,7 @@ function registerHelpdeskController(app, deps = {}) {
                 ticketId: r.ticket_id,
                 authorUsername: r.author_username,
                 noteText: r.note_text,
+                attachmentUrl: r.attachment_url || null,
                 createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at || '')
             }));
             return res.json({ result: 'success', notes });
