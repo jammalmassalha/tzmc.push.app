@@ -2116,6 +2116,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
                 groupMessageText: shortText,
                 groupSenderName: senderLabel
             } : {}),
+            ...(reply ? { messageText: reply } : {}),
             ...(fileUrl ? { fileUrl } : {}),
             ...messageMetadata
         };
