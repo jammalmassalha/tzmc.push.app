@@ -6,8 +6,9 @@
 .chat-root {
   --app-toolbar-height: 64px;
   --composer-height: 72px;
+  --safe-area-top: env(safe-area-inset-top, 0px);
   height: var(--app-height, 100dvh);
-  padding-top: calc(var(--app-toolbar-height) + var(--app-viewport-offset-top, 0px));
+  padding-top: calc(var(--app-toolbar-height) + var(--safe-area-top) + var(--app-viewport-offset-top, 0px));
   display: flex;
   flex-direction: column;
   background: #f3f4f8;
@@ -18,7 +19,8 @@
   position: fixed;
   top: var(--app-viewport-offset-top, 0px);
   inset-inline: 0;
-  height: var(--app-toolbar-height);
+  height: calc(var(--app-toolbar-height) + var(--safe-area-top));
+  padding-top: var(--safe-area-top);
   z-index: 20;
   background: #293b8f;
   color: #fff;
@@ -61,7 +63,7 @@ mat-chip:not(.offline) {
 }
 
 .chat-layout {
-  height: calc(var(--app-height, 100dvh) - var(--app-toolbar-height) - var(--app-viewport-offset-top, 0px));
+  height: calc(var(--app-height, 100dvh) - var(--app-toolbar-height) - var(--safe-area-top) - var(--app-viewport-offset-top, 0px));
   display: grid;
   grid-template-columns: minmax(320px, 360px) 1fr;
   gap: 14px;
@@ -3169,7 +3171,7 @@ mat-chip:not(.offline) {
 
   .chat-layout {
     grid-template-columns: 1fr;
-    height: calc(var(--app-height, 100dvh) - var(--app-toolbar-height) - var(--app-viewport-offset-top, 0px));
+    height: calc(var(--app-height, 100dvh) - var(--app-toolbar-height) - var(--safe-area-top) - var(--app-viewport-offset-top, 0px));
     padding: 8px;
     gap: 8px;
   }
