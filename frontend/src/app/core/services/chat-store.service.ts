@@ -6228,7 +6228,7 @@ export class ChatStoreService {
             senderDisplayName: sender,
             body: DELETED_MESSAGE_PLACEHOLDER,
             imageUrl: null,
-            fileUrl: incomingFileUrl,
+            fileUrl: null,
             direction: isOutgoingFromCurrentUser ? 'outgoing' : 'incoming',
             timestamp: incomingTimestamp,
             deliveryStatus: 'delivered',
