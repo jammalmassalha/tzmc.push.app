@@ -48,7 +48,10 @@ class NotificationService {
                 return;
             }
             if (typeof rawValue === 'string') {
-                compact[key] = this.trimPushTextValue(rawValue);
+                // Preserve messageText with a higher limit so the full message body
+                // survives payload compaction and can be used by the client.
+                const limit = key === 'messageText' ? 2000 : this.maxPushTextLength;
+                compact[key] = this.trimPushTextValue(rawValue, limit);
                 return;
             }
             if (Array.isArray(rawValue)) {
@@ -95,6 +98,13 @@ class NotificationService {
         payload = JSON.stringify(buildPayloadEnvelope(compactData));
         if (Buffer.byteLength(payload, 'utf8') <= this.maxPushPayloadBytes)
             return payload;
+        // If still too large, trim messageText but preserve more than notification fields
+        if (typeof compactData.messageText === 'string' && compactData.messageText.length > 500) {
+            compactData.messageText = this.trimPushTextValue(compactData.messageText, 500);
+        }
+        payload = JSON.stringify(buildPayloadEnvelope(compactData));
+        if (Buffer.byteLength(payload, 'utf8') <= this.maxPushPayloadBytes)
+            return payload;
         const emergencyData = {
             type: compactData.type,
             messageId: compactData.messageId,
@@ -104,6 +114,7 @@ class NotificationService {
             user: compactData.user,
             title: compactData.title,
             body: this.trimPushTextValue(compactData.body || compactData.groupMessageText || compactData.messageText || 'New Notification', 120),
+            messageText: this.trimPushTextValue(compactData.messageText || compactData.groupMessageText || compactData.body || '', 500),
             image: compactData.image,
             url: compactData.url,
             badge: compactData.badge,

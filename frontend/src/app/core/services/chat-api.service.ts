@@ -1558,14 +1558,18 @@ export class ChatApiService {
     return Array.isArray(body.notes) ? body.notes : [];
   }
 
-  async addHelpdeskNote(ticketId: number, noteText: string): Promise<number> {
+  async addHelpdeskNote(ticketId: number, noteText: string, attachmentUrl?: string | null): Promise<number> {
     const url = `${this.notifyBaseUrl}/helpdesk/tickets/${encodeURIComponent(String(ticketId))}/notes`;
+    const payload: { note_text: string; attachment_url?: string } = { note_text: noteText };
+    if (attachmentUrl) {
+      payload.attachment_url = attachmentUrl;
+    }
     const response = await this.fetchWithRetry(
       url,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ note_text: noteText }),
+        body: JSON.stringify(payload),
         cache: 'no-store'
       },
       { retries: 1, timeoutMs: 10000 }

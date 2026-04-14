@@ -5063,7 +5063,7 @@ export class ChatStoreService {
     return {
       ongoing,
       past,
-      assigned: this.helpdeskAssignedSignal(),
+      assigned: this.helpdeskAssignedSignal().filter((t) => t.status !== 'closed'),
       myRole: this.helpdeskMyRoleSignal(),
       editorTickets: this.helpdeskEditorTicketsSignal(),
       handlers: this.helpdeskHandlersSignal()
@@ -6636,6 +6636,16 @@ export class ChatStoreService {
       return true;
     }
     return !this.isAppInForeground();
+  }
+
+  private pickLongestStringValue(...candidates: unknown[]): string {
+    let best = '';
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim().length > best.length) {
+        best = candidate.trim();
+      }
+    }
+    return best;
   }
 
   private normalizeIncomingBodyValue(value: unknown): string {
@@ -8576,6 +8586,7 @@ export class ChatStoreService {
         this.incrementDeliveryTelemetry('pushImmediateMessageBuilt');
         if (this.applyIncomingMessage(immediateIncoming)) {
           this.incrementDeliveryTelemetry('pushMessageApplied');
+          this.schedulePushRecoveryPulls();
           const appliedMsgId = String(immediateIncoming.messageId ?? '').trim();
           if (appliedMsgId && Number.isFinite(numericPayloadReceivedAt) && numericPayloadReceivedAt > 0) {
             void this.api.reportMessageReceived(appliedMsgId, numericPayloadReceivedAt).catch(() => {});
@@ -8591,6 +8602,7 @@ export class ChatStoreService {
 
     if (this.applyIncomingMessage(incoming)) {
       this.incrementDeliveryTelemetry('pushMessageApplied');
+      this.schedulePushRecoveryPulls();
     } else {
       this.incrementDeliveryTelemetry('pushMessageNoop');
     }
@@ -8608,15 +8620,16 @@ export class ChatStoreService {
     }
 
     const bodyFromPayload = this.normalizeIncomingBodyValue(
-      payload['groupMessageText'] ??
-      payload['messageText'] ??
-      payload['longText'] ??
-      payload['shortText'] ??
-      payload['text'] ??
-      payload['message'] ??
-      payload['reply'] ??
-      payload['body'] ??
-      ''
+      this.pickLongestStringValue(
+        payload['messageText'],
+        payload['groupMessageText'],
+        payload['longText'],
+        payload['shortText'],
+        payload['text'],
+        payload['message'],
+        payload['reply'],
+        payload['body']
+      )
     );
     const imageUrl = this.normalizeIncomingImageValue(
       payload['image'] ??

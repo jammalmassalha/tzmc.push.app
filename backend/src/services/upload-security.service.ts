@@ -95,6 +95,19 @@ function validateWebpStructure(buffer: Buffer): boolean {
   return declaredSize === buffer.length;
 }
 
+function validateJpegStructure(buffer: Buffer): boolean {
+  // JPEG must start with SOI marker (0xFF 0xD8)
+  if (buffer.length < 4) return false;
+  if (buffer[0] !== 0xff || buffer[1] !== 0xd8) return false;
+  // Search for EOI marker (0xFF 0xD9) anywhere in the buffer.
+  // Many valid JPEGs from cameras/phones have trailing metadata or padding
+  // after the EOI, so we only require that an EOI marker exists somewhere
+  // after the SOI — not necessarily at the very end of the file.
+  const eoiMarker = Buffer.from([0xff, 0xd9]);
+  const eoiIndex = buffer.lastIndexOf(eoiMarker);
+  return eoiIndex > 2;
+}
+
 function validateBmpStructure(buffer: Buffer): boolean {
   if (buffer.length < 14) return false;
   if (!buffer.subarray(0, 2).equals(Buffer.from('BM'))) return false;
@@ -210,12 +223,7 @@ export class UploadSecurityService {
 
   detectImageFormat(buffer: Buffer): string {
     if (validatePngStructure(buffer)) return 'png';
-    if (
-      bufferStartsWith(buffer, Buffer.from([0xff, 0xd8])) &&
-      buffer.subarray(buffer.length - 2).equals(Buffer.from([0xff, 0xd9]))
-    ) {
-      return 'jpeg';
-    }
+    if (validateJpegStructure(buffer)) return 'jpeg';
     if (
       (bufferStartsWith(buffer, Buffer.from('GIF87a')) ||
         bufferStartsWith(buffer, Buffer.from('GIF89a'))) &&

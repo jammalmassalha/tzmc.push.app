@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { Component, inject, signal, OnInit } from '@angular/core';
+import { Component, inject, signal, OnInit, ViewChild, ElementRef } from '@angular/core';
 import { FormControl, FormsModule, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatChipsModule } from '@angular/material/chips';
@@ -59,6 +59,13 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
   readonly isSubmittingNote = signal(false);
   readonly noteError = signal<string | null>(null);
 
+  readonly pendingAttachmentUrl = signal<string | null>(null);
+  readonly pendingAttachmentName = signal<string | null>(null);
+  readonly isUploadingAttachment = signal(false);
+  readonly uploadError = signal<string | null>(null);
+
+  @ViewChild('noteFileInput') noteFileInputRef?: ElementRef<HTMLInputElement>;
+
   readonly statusHistory = signal<HelpdeskStatusHistoryEntry[]>([]);
   readonly isLoadingHistory = signal(true);
 
@@ -73,7 +80,7 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
 
   private changed = false;
 
-  readonly noteControl = new FormControl('', [Validators.required, Validators.minLength(2), Validators.maxLength(1000)]);
+  readonly noteControl = new FormControl('', [Validators.maxLength(1000)]);
 
   readonly allStatuses: HelpdeskStatus[] = ['open', 'in_progress', 'resolved', 'closed'];
 
@@ -133,28 +140,76 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
   }
 
   async submitNote(): Promise<void> {
-    if (this.noteControl.invalid || this.isSubmittingNote()) return;
+    if (this.isSubmittingNote()) return;
     const text = (this.noteControl.value ?? '').trim();
-    if (!text) return;
+    const attachmentUrl = this.pendingAttachmentUrl();
+    if (!text && !attachmentUrl) return;
+    if (text && text.length < 2 && !attachmentUrl) return;
 
     this.noteError.set(null);
     this.isSubmittingNote.set(true);
     try {
-      const noteId = await this.api.addHelpdeskNote(this.data.ticket.id, text);
+      const noteId = await this.api.addHelpdeskNote(this.data.ticket.id, text, attachmentUrl);
       const newNote: HelpdeskNote = {
         id: noteId,
         ticketId: this.data.ticket.id,
         authorUsername: this.data.currentUsername,
         noteText: text,
+        attachmentUrl: attachmentUrl || null,
         createdAt: new Date().toISOString()
       };
       this.notes.update((list) => [...list, newNote]);
       this.noteControl.reset();
+      this.clearPendingAttachment();
     } catch (error) {
       this.noteError.set(error instanceof Error ? error.message : 'שגיאה בשמירת ההערה');
     } finally {
       this.isSubmittingNote.set(false);
     }
+  }
+
+  triggerFileInput(): void {
+    this.noteFileInputRef?.nativeElement?.click();
+  }
+
+  async onNoteFileSelected(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    // Reset the input so the same file can be re-selected
+    input.value = '';
+
+    this.uploadError.set(null);
+    this.isUploadingAttachment.set(true);
+    try {
+      const result = await this.api.uploadFile(file);
+      if (!result.url) {
+        throw new Error('שגיאה בהעלאת הקובץ');
+      }
+      this.pendingAttachmentUrl.set(result.url);
+      this.pendingAttachmentName.set(file.name);
+    } catch (error) {
+      this.uploadError.set(error instanceof Error ? error.message : 'שגיאה בהעלאת הקובץ');
+    } finally {
+      this.isUploadingAttachment.set(false);
+    }
+  }
+
+  clearPendingAttachment(): void {
+    this.pendingAttachmentUrl.set(null);
+    this.pendingAttachmentName.set(null);
+    this.uploadError.set(null);
+  }
+
+  isImageUrl(url: string): boolean {
+    return /\.(jpeg|jpg|png|gif|webp)(\?|#|$)/i.test(url);
+  }
+
+  get canSubmitNote(): boolean {
+    const text = (this.noteControl.value ?? '').trim();
+    const hasAttachment = Boolean(this.pendingAttachmentUrl());
+    if (hasAttachment) return true;
+    return text.length >= 2;
   }
 
   async saveHandler(): Promise<void> {
