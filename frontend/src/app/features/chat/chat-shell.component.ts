@@ -369,9 +369,9 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   /** Pinned chats displayed as compact icon chips at the top */
   readonly pinnedChats = computed(() => this.filteredChats().filter((c) => c.pinned));
 
-  /** Non-pinned chats for the main virtual-scroll list.
-   *  Also includes pinned chats with unread messages so they appear in the regular list too. */
-  readonly unpinnedChats = computed(() => this.filteredChats().filter((c) => !c.pinned || c.unread > 0));
+  /** Chats for the main virtual-scroll list.
+   *  Includes non-pinned chats and pinned chats with unread messages (so they appear in the regular list too). */
+  readonly mainListChats = computed(() => this.filteredChats().filter((c) => !c.pinned || c.unread > 0));
 
   readonly composerPlaceholder = computed(() => {
     const activeChat = this.store.activeChat();

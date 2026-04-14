@@ -128,7 +128,7 @@
           <button
             type="button"
             class="chat-item"
-            *cdkVirtualFor="let chat of unpinnedChats(); trackBy: trackByChatId"
+            *cdkVirtualFor="let chat of mainListChats(); trackBy: trackByChatId"
             [class.active]="store.activeChatId() === chat.id"
             (click)="openChat(chat.id)">
             <div class="chat-item-main">
