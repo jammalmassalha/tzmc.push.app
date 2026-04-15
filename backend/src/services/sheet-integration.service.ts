@@ -87,9 +87,9 @@ export class SheetIntegrationService {
 
 export function createSheetIntegrationServiceFromEnv(env: NodeJS.ProcessEnv = process.env): SheetIntegrationService {
   const googleSheetUrl = toTrimmedString(env.GOOGLE_SHEET_URL)
-    || 'https://script.google.com/macros/s/AKfycbx8mOmuevYdT8MV1gOvaF6HsD8rfCYy-xlhioJEx6W672YniaSS6W0S1lDyNJkfFkFt1Q/exec';
+    || 'https://script.google.com/macros/s/AKfycbzRY5tW5HmxUn1_RjJ4gbrfCBtNNtWXGtQ4us0bZUJo5aYPF5NIQSffIxXYIN-5bzovvg/exec';
   const logsBackupSheetUrl = toTrimmedString(env.LOGS_BACKUP_SHEET_URL)
-    || 'https://script.google.com/macros/s/AKfycbx8mOmuevYdT8MV1gOvaF6HsD8rfCYy-xlhioJEx6W672YniaSS6W0S1lDyNJkfFkFt1Q/exec';
+    || 'https://script.google.com/macros/s/AKfycbzRY5tW5HmxUn1_RjJ4gbrfCBtNNtWXGtQ4us0bZUJo5aYPF5NIQSffIxXYIN-5bzovvg/exec';
   const shuttleUserOrdersUrl = toTrimmedString(env.SHUTTLE_USER_ORDERS_URL)
     || 'https://script.google.com/macros/s/AKfycbxbT0U2U5c0s4LAVPca8XsC8KwPIBIIgtKo1jfmHhUcE7yoF3SqaiC-Ki1vYSDj24ET/exec';
   const defaultToken = toTrimmedString(
