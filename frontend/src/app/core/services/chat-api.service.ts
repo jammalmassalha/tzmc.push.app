@@ -1595,6 +1595,16 @@ export class ChatApiService {
     return Array.isArray(body.history) ? body.history : [];
   }
 
+  async getHelpdeskLocations(): Promise<string[]> {
+    const url = `${this.notifyBaseUrl}/helpdesk/locations?_ts=${Date.now()}&ngsw-bypass=1`;
+    const response = await this.fetchWithRetry(url, { cache: 'no-store' }, { retries: 1, timeoutMs: 10000 });
+    const body = await response.json() as { result?: string; message?: string; locations?: string[] };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה בטעינת המיקומים'));
+    }
+    return Array.isArray(body.locations) ? body.locations : [];
+  }
+
   private isLikelyHtmlPayload(payloadText: string): boolean {
     return /<html[\s>]/i.test(payloadText) || /<body[\s>]/i.test(payloadText);
   }

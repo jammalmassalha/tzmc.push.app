@@ -57,6 +57,7 @@ async function ensureHelpdeskTables(pool) {
             \`department\` VARCHAR(64) NOT NULL,
             \`title\` VARCHAR(255) NOT NULL,
             \`description\` TEXT NOT NULL,
+            \`location\` VARCHAR(255) NULL DEFAULT NULL,
             \`status\` VARCHAR(32) NOT NULL DEFAULT 'open',
             \`handler_username\` VARCHAR(64) NULL DEFAULT NULL,
             \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -64,9 +65,30 @@ async function ensureHelpdeskTables(pool) {
             PRIMARY KEY (\`id\`),
             INDEX \`idx_creator\` (\`creator_username\`),
             INDEX \`idx_status\` (\`status\`),
-            INDEX \`idx_department\` (\`department\`)
+            INDEX \`idx_department\` (\`department\`),
+            INDEX \`idx_location\` (\`location\`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
+
+    // Migration: add location column to existing helpdesk_tickets tables
+    try {
+        await pool.execute(`ALTER TABLE \`helpdesk_tickets\` ADD COLUMN \`location\` VARCHAR(255) NULL DEFAULT NULL AFTER \`description\``);
+    } catch (err) {
+        // ER_DUP_FIELDNAME (1060) — column already exists, safe to ignore
+        if (!(err && err.errno === 1060)) {
+            console.error('[HELPDESK] Migration location column error:', err && err.message ? err.message : err);
+        }
+    }
+
+    // Migration: add location index
+    try {
+        await pool.execute(`ALTER TABLE \`helpdesk_tickets\` ADD INDEX \`idx_location\` (\`location\`)`);
+    } catch (err) {
+        // ER_DUP_KEYNAME (1061) — index already exists, safe to ignore
+        if (!(err && err.errno === 1061)) {
+            console.error('[HELPDESK] Migration location index error:', err && err.message ? err.message : err);
+        }
+    }
 
     await pool.execute(`
         CREATE TABLE IF NOT EXISTS \`helpdesk_notes\` (
@@ -130,6 +152,7 @@ function mapTicketRow(row) {
         department: row.department,
         title: row.title,
         description: row.description,
+        location: row.location || null,
         status: row.status,
         handlerUsername: row.handler_username || null,
         createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at || ''),
@@ -148,7 +171,7 @@ async function getHelpdeskUserRole(pool, username) {
 }
 
 function registerHelpdeskController(app, deps = {}) {
-    const { requireAuthorizedUser, env = {} } = deps;
+    const { requireAuthorizedUser, env = {}, buildGoogleSheetGetUrl, fetchWithRetry } = deps;
 
     const pool = createHelpdeskPool(env);
 
@@ -180,6 +203,32 @@ function registerHelpdeskController(app, deps = {}) {
         };
     }
 
+    // GET /helpdesk/locations - Fetch locations from Google Sheet (HelpDeskLocation sheet, column A)
+    app.get(['/helpdesk/locations', '/notify/helpdesk/locations'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
+        if (typeof buildGoogleSheetGetUrl !== 'function' || typeof fetchWithRetry !== 'function') {
+            console.error('[HELPDESK] Missing buildGoogleSheetGetUrl or fetchWithRetry dependency');
+            return res.status(500).json({ result: 'error', message: 'שגיאה בטעינת המיקומים' });
+        }
+        try {
+            const url = buildGoogleSheetGetUrl({ action: 'get_helpdesk_locations' });
+            const response = await fetchWithRetry(url, {}, { timeoutMs: 10000, retries: 1, backoffMs: 500 });
+            if (!response.ok) {
+                console.error('[HELPDESK] Failed to fetch locations from sheet, status:', response.status);
+                return res.status(502).json({ result: 'error', message: 'שגיאה בטעינת המיקומים מהגיליון' });
+            }
+            const payload = await response.json();
+            // Expect { result: 'success', locations: string[] }
+            const locations = Array.isArray(payload && payload.locations)
+                ? payload.locations.map(loc => toTrimmedString(loc)).filter(Boolean)
+                : [];
+            return res.json({ result: 'success', locations });
+        } catch (error) {
+            const message = error && error.message ? error.message : 'Failed to fetch locations';
+            console.error('[HELPDESK] Fetch locations error:', message);
+            return res.status(500).json({ result: 'error', message: 'שגיאה בטעינת המיקומים' });
+        }
+    });
+
     // POST /helpdesk/tickets - Create a new ticket
     app.post(['/helpdesk/tickets', '/notify/helpdesk/tickets'], requireUser, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
@@ -190,6 +239,7 @@ function registerHelpdeskController(app, deps = {}) {
         const department = toTrimmedString(body.department || '');
         const title = toTrimmedString(body.title || '');
         const description = toTrimmedString(body.description || '');
+        const location = toTrimmedString(body.location || '') || null;
 
         if (!VALID_DEPARTMENTS.includes(department)) {
             return res.status(400).json({ result: 'error', message: 'מחלקה לא תקינה' });
@@ -203,8 +253,8 @@ function registerHelpdeskController(app, deps = {}) {
 
         try {
             const [result] = await pool.execute(
-                'INSERT INTO `helpdesk_tickets` (`creator_username`, `department`, `title`, `description`, `status`) VALUES (?, ?, ?, ?, ?)',
-                [user, department, title, description, 'open']
+                'INSERT INTO `helpdesk_tickets` (`creator_username`, `department`, `title`, `description`, `location`, `status`) VALUES (?, ?, ?, ?, ?, ?)',
+                [user, department, title, description, location, 'open']
             );
             const insertId = result.insertId;
             // Record initial status in history

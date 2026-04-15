@@ -5115,14 +5115,15 @@ export class ChatStoreService {
     this.bumpHelpdeskPickerRevision();
   }
 
-  async submitHelpdeskTicket(department: string, title: string, description: string): Promise<HelpdeskTicket> {
+  async submitHelpdeskTicket(department: string, title: string, description: string, location?: string | null): Promise<HelpdeskTicket> {
     const user = this.currentUser();
     if (!user) throw new Error('יש להתחבר לפני פתיחת קריאה');
 
     const payload: HelpdeskTicketPayload = {
       department: department as 'מערכות מידע' | 'אחזקה',
       title,
-      description
+      description,
+      location: location || null
     };
 
     let ticket: HelpdeskTicket;
@@ -5137,7 +5138,8 @@ export class ChatStoreService {
     }
 
     const statusLabel = this.helpdeskStatusLabel(ticket.status);
-    const cardBody = `✅ הקריאה נפתחה בהצלחה\n[#${ticket.id}] ${ticket.title}\nמחלקה: ${ticket.department}\nסטטוס: ${statusLabel}`;
+    const locationLine = ticket.location ? `\nמיקום: ${ticket.location}` : '';
+    const cardBody = `✅ הקריאה נפתחה בהצלחה\n[#${ticket.id}] ${ticket.title}\nמחלקה: ${ticket.department}${locationLine}\nסטטוס: ${statusLabel}`;
     this.sendHelpdeskSystemMessage(cardBody, { recordType: 'helpdesk-ticket-success' });
 
     // Refresh tickets list

@@ -1414,7 +1414,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       }
       this.isSubmittingHelpdeskTicket.set(true);
       try {
-        await this.store.submitHelpdeskTicket(cleanDepartment, result.title, result.description);
+        await this.store.submitHelpdeskTicket(cleanDepartment, result.title, result.description, result.location);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'שגיאה בפתיחת הקריאה';
         this.snackBar.open(message, 'סגור', { duration: 3200 });

@@ -261,6 +261,7 @@ export interface HelpdeskTicketPayload {
   department: HelpdeskDepartment;
   title: string;
   description: string;
+  location?: string | null;
 }
 
 export interface HelpdeskTicket {
@@ -269,6 +270,7 @@ export interface HelpdeskTicket {
   department: string;
   title: string;
   description: string;
+  location?: string | null;
   status: HelpdeskStatus;
   handlerUsername?: string | null;
   createdAt: string;

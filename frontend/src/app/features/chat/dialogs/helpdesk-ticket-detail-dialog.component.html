@@ -26,6 +26,16 @@
         </div>
       </div>
 
+      @if (data.ticket.location) {
+        <div class="detail-row">
+          <mat-icon class="detail-icon">location_on</mat-icon>
+          <div class="detail-body">
+            <span class="detail-label">מיקום</span>
+            <span class="detail-value">{{ data.ticket.location }}</span>
+          </div>
+        </div>
+      }
+
       <div class="detail-row">
         <mat-icon class="detail-icon">description</mat-icon>
         <div class="detail-body">
