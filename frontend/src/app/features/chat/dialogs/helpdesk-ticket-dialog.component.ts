@@ -1,4 +1,4 @@
-import { Component, inject, signal, OnInit } from '@angular/core';
+import { Component, inject, signal, OnInit, ElementRef, ViewChild } from '@angular/core';
 import { FormBuilder, FormControl, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatAutocompleteModule } from '@angular/material/autocomplete';
 import { MatButtonModule } from '@angular/material/button';
@@ -17,6 +17,8 @@ export interface HelpdeskTicketDialogResult {
   title: string;
   description: string;
   location: string | null;
+  phone: string | null;
+  attachmentUrl: string | null;
 }
 
 @Component({
@@ -41,15 +43,21 @@ export class HelpdeskTicketDialogComponent implements OnInit {
   private readonly fb = inject(FormBuilder);
   private readonly api = inject(ChatApiService);
 
+  @ViewChild('fileInput') fileInput!: ElementRef<HTMLInputElement>;
+
   readonly form = this.fb.nonNullable.group({
     title: ['', [Validators.required, Validators.minLength(3), Validators.maxLength(200)]],
     description: ['', [Validators.required, Validators.minLength(5), Validators.maxLength(2000)]]
   });
 
   readonly locationControl = new FormControl<string>('', [Validators.required]);
+  readonly phoneControl = new FormControl<string>('');
   readonly allLocations = signal<string[]>([]);
   readonly filteredLocations = signal<string[]>([]);
   readonly isLoadingLocations = signal(true);
+  readonly selectedFile = signal<File | null>(null);
+  readonly uploadedUrl = signal<string | null>(null);
+  readonly isUploading = signal(false);
 
   ngOnInit(): void {
     this.loadLocations();
@@ -81,6 +89,44 @@ export class HelpdeskTicketDialogComponent implements OnInit {
     this.filteredLocations.set(filtered);
   }
 
+  triggerFileInput(): void {
+    this.fileInput.nativeElement.click();
+  }
+
+  async onFileSelected(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement;
+    if (!input.files?.length) return;
+
+    const file = input.files[0];
+    // Validate file size (max 10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      alert('הקובץ גדול מדי. גודל מקסימלי: 10MB');
+      return;
+    }
+
+    this.selectedFile.set(file);
+    this.isUploading.set(true);
+
+    try {
+      const url = await this.api.uploadHelpdeskAttachment(file);
+      this.uploadedUrl.set(url);
+    } catch (error) {
+      console.error('Failed to upload file:', error);
+      alert('שגיאה בהעלאת הקובץ');
+      this.selectedFile.set(null);
+    } finally {
+      this.isUploading.set(false);
+    }
+  }
+
+  removeFile(): void {
+    this.selectedFile.set(null);
+    this.uploadedUrl.set(null);
+    if (this.fileInput) {
+      this.fileInput.nativeElement.value = '';
+    }
+  }
+
   submit(): void {
     if (this.form.invalid || this.locationControl.invalid) {
       this.form.markAllAsTouched();
@@ -88,10 +134,13 @@ export class HelpdeskTicketDialogComponent implements OnInit {
       return;
     }
     const locationValue = (this.locationControl.value || '').trim();
+    const phoneValue = (this.phoneControl.value || '').trim();
     this.dialogRef.close({
       title: this.form.controls.title.value.trim(),
       description: this.form.controls.description.value.trim(),
-      location: locationValue || null
+      location: locationValue || null,
+      phone: phoneValue || null,
+      attachmentUrl: this.uploadedUrl()
     });
   }
 }

@@ -58,6 +58,8 @@ async function ensureHelpdeskTables(pool) {
             \`title\` VARCHAR(255) NOT NULL,
             \`description\` TEXT NOT NULL,
             \`location\` VARCHAR(255) NULL DEFAULT NULL,
+            \`phone\` VARCHAR(32) NULL DEFAULT NULL,
+            \`attachment_url\` VARCHAR(512) NULL DEFAULT NULL,
             \`status\` VARCHAR(32) NOT NULL DEFAULT 'open',
             \`handler_username\` VARCHAR(64) NULL DEFAULT NULL,
             \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -87,6 +89,26 @@ async function ensureHelpdeskTables(pool) {
         // ER_DUP_KEYNAME (1061) — index already exists, safe to ignore
         if (!(err && err.errno === 1061)) {
             console.error('[HELPDESK] Migration location index error:', err && err.message ? err.message : err);
+        }
+    }
+
+    // Migration: add phone column to existing helpdesk_tickets tables
+    try {
+        await pool.execute(`ALTER TABLE \`helpdesk_tickets\` ADD COLUMN \`phone\` VARCHAR(32) NULL DEFAULT NULL AFTER \`location\``);
+    } catch (err) {
+        // ER_DUP_FIELDNAME (1060) — column already exists, safe to ignore
+        if (!(err && err.errno === 1060)) {
+            console.error('[HELPDESK] Migration phone column error:', err && err.message ? err.message : err);
+        }
+    }
+
+    // Migration: add attachment_url column to existing helpdesk_tickets tables
+    try {
+        await pool.execute(`ALTER TABLE \`helpdesk_tickets\` ADD COLUMN \`attachment_url\` VARCHAR(512) NULL DEFAULT NULL AFTER \`phone\``);
+    } catch (err) {
+        // ER_DUP_FIELDNAME (1060) — column already exists, safe to ignore
+        if (!(err && err.errno === 1060)) {
+            console.error('[HELPDESK] Migration ticket attachment_url column error:', err && err.message ? err.message : err);
         }
     }
 
@@ -153,6 +175,8 @@ function mapTicketRow(row) {
         title: row.title,
         description: row.description,
         location: row.location || null,
+        phone: row.phone || null,
+        attachmentUrl: row.attachment_url || null,
         status: row.status,
         handlerUsername: row.handler_username || null,
         createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at || ''),
@@ -240,6 +264,8 @@ function registerHelpdeskController(app, deps = {}) {
         const title = toTrimmedString(body.title || '');
         const description = toTrimmedString(body.description || '');
         const location = toTrimmedString(body.location || '') || null;
+        const phone = toTrimmedString(body.phone || '') || null;
+        const attachmentUrl = toTrimmedString(body.attachmentUrl || '') || null;
 
         if (!VALID_DEPARTMENTS.includes(department)) {
             return res.status(400).json({ result: 'error', message: 'מחלקה לא תקינה' });
@@ -256,8 +282,8 @@ function registerHelpdeskController(app, deps = {}) {
 
         try {
             const [result] = await pool.execute(
-                'INSERT INTO `helpdesk_tickets` (`creator_username`, `department`, `title`, `description`, `location`, `status`) VALUES (?, ?, ?, ?, ?, ?)',
-                [user, department, title, description, location, 'open']
+                'INSERT INTO `helpdesk_tickets` (`creator_username`, `department`, `title`, `description`, `location`, `phone`, `attachment_url`, `status`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                [user, department, title, description, location, phone, attachmentUrl, 'open']
             );
             const insertId = result.insertId;
             // Record initial status in history

@@ -1605,6 +1605,28 @@ export class ChatApiService {
     return Array.isArray(body.locations) ? body.locations : [];
   }
 
+  async uploadHelpdeskAttachment(file: File): Promise<string> {
+    const formData = new FormData();
+    formData.append('file', file, file.name);
+
+    const response = await this.fetchWithRetry(
+      this.config.uploadUrl,
+      { method: 'POST', body: formData },
+      { retries: 2, timeoutMs: 30000 }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Upload failed with ${response.status}`);
+    }
+
+    const result = await response.json() as { url?: string; fileUrl?: string };
+    const url = result.url || result.fileUrl;
+    if (!url) {
+      throw new Error('No URL returned from upload');
+    }
+    return url;
+  }
+
   private isLikelyHtmlPayload(payloadText: string): boolean {
     return /<html[\s>]/i.test(payloadText) || /<body[\s>]/i.test(payloadText);
   }
