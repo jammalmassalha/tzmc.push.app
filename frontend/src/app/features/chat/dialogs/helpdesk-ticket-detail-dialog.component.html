@@ -66,6 +66,16 @@
         </div>
       </div>
 
+      @if (data.ticket.phone) {
+        <div class="detail-row">
+          <mat-icon class="detail-icon">phone</mat-icon>
+          <div class="detail-body">
+            <span class="detail-label">טלפון ליצירת קשר</span>
+            <span class="detail-value">{{ data.ticket.phone }}</span>
+          </div>
+        </div>
+      }
+
       <div class="detail-row">
         <mat-icon class="detail-icon">support_agent</mat-icon>
         <div class="detail-body">
@@ -73,6 +83,39 @@
           <span class="detail-value">{{ resolveDisplay(data.ticket.handlerUsername) }}</span>
         </div>
       </div>
+
+      @if (data.ticket.attachmentUrl) {
+        <div class="detail-row">
+          <mat-icon class="detail-icon">attach_file</mat-icon>
+          <div class="detail-body">
+            <span class="detail-label">קובץ מצורף</span>
+            <div class="ticket-attachment">
+              @if (isImageUrl(data.ticket.attachmentUrl)) {
+                <img
+                  [src]="data.ticket.attachmentUrl"
+                  class="ticket-attachment-image"
+                  alt="קובץ מצורף"
+                  loading="lazy"
+                  (click)="openImageModal(data.ticket.attachmentUrl)"
+                  role="button"
+                  tabindex="0"
+                  (keydown.enter)="openImageModal(data.ticket.attachmentUrl)"
+                />
+              } @else {
+                <a
+                  [href]="data.ticket.attachmentUrl"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="ticket-attachment-link"
+                  download>
+                  <mat-icon>download</mat-icon>
+                  <span>הורדת קובץ</span>
+                </a>
+              }
+            </div>
+          </div>
+        </div>
+      }
     </section>
 
     <!-- Status History section -->
@@ -328,3 +371,13 @@
     <button mat-stroked-button (click)="close()">סגור</button>
   </mat-dialog-actions>
 </div>
+
+<!-- Image modal overlay -->
+@if (imageModalUrl()) {
+  <div class="image-modal-overlay" (click)="closeImageModal()" role="dialog" aria-modal="true" aria-label="תצוגת תמונה">
+    <button class="image-modal-close" (click)="closeImageModal()" aria-label="סגור">
+      <mat-icon>close</mat-icon>
+    </button>
+    <img [src]="imageModalUrl()" class="image-modal-img" alt="תמונה מוגדלת" (click)="$event.stopPropagation()" />
+  </div>
+}
