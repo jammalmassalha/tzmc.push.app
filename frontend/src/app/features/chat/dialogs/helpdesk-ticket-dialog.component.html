@@ -29,6 +29,9 @@
       @if (isLoadingLocations()) {
         <mat-spinner matSuffix diameter="18"></mat-spinner>
       }
+      @if (locationControl.hasError('required') && locationControl.touched) {
+        <mat-error>יש לבחור מיקום.</mat-error>
+      }
     </mat-form-field>
 
     <mat-form-field appearance="outline" class="full-width">

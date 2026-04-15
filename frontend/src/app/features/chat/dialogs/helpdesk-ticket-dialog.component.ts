@@ -46,7 +46,7 @@ export class HelpdeskTicketDialogComponent implements OnInit {
     description: ['', [Validators.required, Validators.minLength(5), Validators.maxLength(2000)]]
   });
 
-  readonly locationControl = new FormControl<string>('');
+  readonly locationControl = new FormControl<string>('', [Validators.required]);
   readonly allLocations = signal<string[]>([]);
   readonly filteredLocations = signal<string[]>([]);
   readonly isLoadingLocations = signal(true);
@@ -82,8 +82,9 @@ export class HelpdeskTicketDialogComponent implements OnInit {
   }
 
   submit(): void {
-    if (this.form.invalid) {
+    if (this.form.invalid || this.locationControl.invalid) {
       this.form.markAllAsTouched();
+      this.locationControl.markAsTouched();
       return;
     }
     const locationValue = (this.locationControl.value || '').trim();

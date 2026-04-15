@@ -250,6 +250,9 @@ function registerHelpdeskController(app, deps = {}) {
         if (!description) {
             return res.status(400).json({ result: 'error', message: 'יש להזין תיאור לקריאה' });
         }
+        if (!location) {
+            return res.status(400).json({ result: 'error', message: 'יש לבחור מיקום' });
+        }
 
         try {
             const [result] = await pool.execute(
