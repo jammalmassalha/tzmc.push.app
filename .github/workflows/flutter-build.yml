@@ -67,6 +67,9 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
+      - name: Run code generation
+        run: dart run build_runner build --delete-conflicting-outputs
+
       - name: Build APK
         run: |
           flutter build apk --release --android-skip-build-dependency-validation
@@ -105,6 +108,9 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
+      - name: Run code generation
+        run: dart run build_runner build --delete-conflicting-outputs
+
       - name: Build Web
         run: |
           flutter build web --release --base-href /fluttertest/
@@ -137,6 +143,9 @@ jobs:
 
       - name: Get dependencies
         run: flutter pub get
+
+      - name: Run code generation
+        run: dart run build_runner build --delete-conflicting-outputs
 
       - name: Build iOS (no codesign)
         run: |

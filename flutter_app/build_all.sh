@@ -42,7 +42,11 @@ echo "1. Getting Flutter dependencies..."
 flutter pub get
 
 echo ""
-echo "2. Checking Flutter setup..."
+echo "2. Running code generation (Drift, JSON serializable, etc.)..."
+dart run build_runner build --delete-conflicting-outputs
+
+echo ""
+echo "3. Checking Flutter setup..."
 flutter doctor -v
 
 echo ""

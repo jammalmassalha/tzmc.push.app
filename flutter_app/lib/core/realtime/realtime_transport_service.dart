@@ -38,19 +38,19 @@ class RealtimeTransportService {
   /// Stream controller for incoming messages
   final _messageController = StreamController<IncomingServerMessage>.broadcast();
   Stream<IncomingServerMessage> get message$ => _messageController.stream;
-  @Deprecated('Use message$ instead')
+  @Deprecated('Use message\$ instead')
   Stream<IncomingServerMessage> get messageStream => message$;
 
   /// Stream controller for connection events
   final _connectedController = StreamController<bool>.broadcast();
   Stream<bool> get connected$ => _connectedController.stream;
-  @Deprecated('Use connected$ instead')
+  @Deprecated('Use connected\$ instead')
   Stream<bool> get connectedStream => connected$;
 
   /// Stream controller for poll ticks
   final _pollTickController = StreamController<void>.broadcast();
   Stream<void> get pollTick$ => _pollTickController.stream;
-  @Deprecated('Use pollTick$ instead')
+  @Deprecated('Use pollTick\$ instead')
   Stream<void> get pollTickStream => pollTick$;
 
   // Internal state
