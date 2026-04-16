@@ -766,6 +766,38 @@ function doGet(e) {
     }
 
     // ======================================================
+    // GET HELPDESK LOCATIONS (From Sheet: HelpDeskLocations)
+    // ======================================================
+    if (action === 'get_helpdesk_locations') {
+      var cache = CacheService.getScriptCache();
+      var cachedLocations = getCachedResponse(cache, 'helpdesk_locations');
+      if (cachedLocations) return cachedLocations;
+
+      var locationsSheet = spreadsheet.getSheetByName('HelpDeskLocations');
+      if (!locationsSheet) {
+        return createJSON({ result: 'success', locations: [] });
+      }
+
+      var lastRow = getLastDataRow(locationsSheet);
+      if (!lastRow || lastRow < 2) {
+        return createJSON({ result: 'success', locations: [] });
+      }
+
+      // Read column A (locations) starting from row 2 (skip header)
+      var data = getRangeValues(locationsSheet, 2, 1, lastRow - 1, 1);
+      var locations = [];
+
+      for (var i = 0; i < data.length; i++) {
+        var loc = String(data[i][0] || '').trim();
+        if (loc) {
+          locations.push(loc);
+        }
+      }
+
+      return cacheResponse(cache, 'helpdesk_locations', { result: 'success', locations: locations }, CACHE_TTL_SECONDS);
+    }
+
+    // ======================================================
     // 5. GET SUBSCRIPTIONS
     // ======================================================
     var sheet = spreadsheet.getSheetByName('Subscribe');

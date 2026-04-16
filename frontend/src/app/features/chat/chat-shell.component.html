@@ -128,7 +128,7 @@
           <button
             type="button"
             class="chat-item"
-            *cdkVirtualFor="let chat of unpinnedChats(); trackBy: trackByChatId"
+            *cdkVirtualFor="let chat of mainListChats(); trackBy: trackByChatId"
             [class.active]="store.activeChatId() === chat.id"
             (click)="openChat(chat.id)">
             <div class="chat-item-main">
@@ -619,6 +619,12 @@
                             <span class="label">מחלקה</span>
                             <span class="value">{{ ticket.department }}</span>
                           </div>
+                          @if (ticket.location) {
+                            <div class="shuttle-order-row">
+                              <span class="label">מיקום</span>
+                              <span class="value">{{ ticket.location }}</span>
+                            </div>
+                          }
                           <div class="shuttle-order-row">
                             <span class="label">תאריך</span>
                             <span class="value">{{ formatTime(parseHelpdeskTimestamp(ticket.createdAt)) }}</span>
@@ -648,6 +654,12 @@
                             <span class="label">מחלקה</span>
                             <span class="value">{{ ticket.department }}</span>
                           </div>
+                          @if (ticket.location) {
+                            <div class="shuttle-order-row">
+                              <span class="label">מיקום</span>
+                              <span class="value">{{ ticket.location }}</span>
+                            </div>
+                          }
                         </article>
                       }
                     </div>
@@ -674,6 +686,12 @@
                             <span class="label">מחלקה</span>
                             <span class="value">{{ ticket.department }}</span>
                           </div>
+                          @if (ticket.location) {
+                            <div class="shuttle-order-row">
+                              <span class="label">מיקום</span>
+                              <span class="value">{{ ticket.location }}</span>
+                            </div>
+                          }
                           <div class="shuttle-order-row">
                             <span class="label">פותח</span>
                             <span class="value">{{ resolveHelpdeskDisplayName(ticket.creatorUsername) }}</span>
@@ -748,6 +766,12 @@
                             <span class="label">מטפל</span>
                             <span class="value">{{ resolveHelpdeskDisplayName(ticket.handlerUsername) }}</span>
                           </div>
+                          @if (ticket.location) {
+                            <div class="shuttle-order-row">
+                              <span class="label">מיקום</span>
+                              <span class="value">{{ ticket.location }}</span>
+                            </div>
+                          }
                           <div class="shuttle-order-row">
                             <span class="label">תאריך</span>
                             <span class="value">{{ formatTime(parseHelpdeskTimestamp(ticket.createdAt)) }}</span>

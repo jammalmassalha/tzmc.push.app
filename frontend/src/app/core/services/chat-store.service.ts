@@ -88,7 +88,7 @@ const SHUTTLE_STATUS_ACTIVE_VALUE = 'פעיל активный';
 const SHUTTLE_STATUS_CANCEL_VALUE = 'ביטול נסיעה отмена поезд';
 const DOVRUT_SYSTEM_CREATOR = 'dovrut-system';
 const SHUTTLE_OPERATIONS_GROUP_MEMBERS = ['0546799693', '0550000001', '0506267410', '0505203520'] as const;
-const HELPDESK_ALLOWED_USERS = ['0546799693', '0550000001'] as const;
+const HELPDESK_ALLOWED_USERS = ['0546799693', '0550000001', '0505203520'] as const;
 const BADGE_RESET_ALL_ALLOWED_USERS = ['0546799693'] as const;
 const VERSION_UPDATE_BROADCAST_ALLOWED_USERS = ['0546799693'] as const;
 const BACKUP_GROUPS_ALLOWED_USERS = ['0546799693'] as const;
@@ -204,6 +204,7 @@ interface DeletedIncomingMessageFingerprint {
   imageUrl: string;
   timestamp: number;
   deletedAt: number;
+  registeredAt: number;
 }
 
 interface SendMessageOptions {
@@ -391,7 +392,7 @@ export class ChatStoreService {
   private readonly readReceiptFlushTimerByChat = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly readReceiptFlushInFlightByChat = new Set<string>();
   private readonly markSeenTimerByChat = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly deletedMessageIdTombstones = new Map<string, number>();
+  private readonly deletedMessageIdTombstones = new Map<string, { deletedAt: number; registeredAt: number }>();
   private deletedIncomingFingerprints: DeletedIncomingMessageFingerprint[] = [];
   private pushRegisterInFlight = false;
   private lastPushRegisterAttemptAt = 0;
@@ -5114,14 +5115,24 @@ export class ChatStoreService {
     this.bumpHelpdeskPickerRevision();
   }
 
-  async submitHelpdeskTicket(department: string, title: string, description: string): Promise<HelpdeskTicket> {
+  async submitHelpdeskTicket(
+    department: string,
+    title: string,
+    description: string,
+    location?: string | null,
+    phone?: string | null,
+    attachmentUrl?: string | null
+  ): Promise<HelpdeskTicket> {
     const user = this.currentUser();
     if (!user) throw new Error('יש להתחבר לפני פתיחת קריאה');
 
     const payload: HelpdeskTicketPayload = {
       department: department as 'מערכות מידע' | 'אחזקה',
       title,
-      description
+      description,
+      location: location || null,
+      phone: phone || null,
+      attachmentUrl: attachmentUrl || null
     };
 
     let ticket: HelpdeskTicket;
@@ -5136,7 +5147,9 @@ export class ChatStoreService {
     }
 
     const statusLabel = this.helpdeskStatusLabel(ticket.status);
-    const cardBody = `✅ הקריאה נפתחה בהצלחה\n[#${ticket.id}] ${ticket.title}\nמחלקה: ${ticket.department}\nסטטוס: ${statusLabel}`;
+    const locationLine = ticket.location ? `\nמיקום: ${ticket.location}` : '';
+    const phoneLine = ticket.phone ? `\nטלפון: ${ticket.phone}` : '';
+    const cardBody = `✅ הקריאה נפתחה בהצלחה\n[#${ticket.id}] ${ticket.title}\nמחלקה: ${ticket.department}${locationLine}${phoneLine}\nסטטוס: ${statusLabel}`;
     this.sendHelpdeskSystemMessage(cardBody, { recordType: 'helpdesk-ticket-success' });
 
     // Refresh tickets list
@@ -6215,6 +6228,40 @@ export class ChatStoreService {
             messagesChanged = true;
             appliedCount += 1;
           }
+        } else {
+          // Out-of-order delivery: tombstone arrived before base message in a full-sync batch.
+          // Add the message to the list in deleted state so it appears as a deleted placeholder.
+          const list = getMutableList(chatId);
+          const record: ChatMessage = {
+            id: this.generateId('rec'),
+            messageId,
+            chatId,
+            sender,
+            senderDisplayName: sender,
+            body: DELETED_MESSAGE_PLACEHOLDER,
+            imageUrl: null,
+            fileUrl: null,
+            direction: isOutgoingFromCurrentUser ? 'outgoing' : 'incoming',
+            timestamp: incomingTimestamp,
+            deliveryStatus: 'delivered',
+            groupId: normalizedGroupId || null,
+            groupName: incoming.groupName ?? null,
+            groupType: null,
+            editedAt: null,
+            deletedAt: deletedTombstone,
+            replyTo: null,
+            forwarded: false,
+            forwardedFrom: null,
+            forwardedFromName: null
+          };
+          if (!list.length || list[list.length - 1].timestamp <= record.timestamp) {
+            list.push(record);
+          } else {
+            const insertAt = this.findMessageInsertIndexByTimestamp(list, record.timestamp);
+            list.splice(insertAt, 0, record);
+          }
+          messagesChanged = true;
+          appliedCount += 1;
         }
         continue;
       }
@@ -7338,14 +7385,14 @@ export class ChatStoreService {
 
   private pruneDeletedMessageSuppressions(now = Date.now()): void {
     const minKeptTimestamp = now - DELETED_MESSAGE_SUPPRESSION_TTL_MS;
-    for (const [messageId, deletedAt] of this.deletedMessageIdTombstones.entries()) {
-      if (!messageId || !Number.isFinite(deletedAt) || deletedAt < minKeptTimestamp) {
+    for (const [messageId, entry] of this.deletedMessageIdTombstones.entries()) {
+      if (!messageId || !entry || !Number.isFinite(entry.registeredAt) || entry.registeredAt < minKeptTimestamp) {
         this.deletedMessageIdTombstones.delete(messageId);
       }
     }
 
     this.deletedIncomingFingerprints = this.deletedIncomingFingerprints
-      .filter((entry) => Number.isFinite(entry.deletedAt) && entry.deletedAt >= minKeptTimestamp)
+      .filter((entry) => Number.isFinite(entry.registeredAt) && entry.registeredAt >= minKeptTimestamp)
       .slice(-DELETED_MESSAGE_SUPPRESSION_MAX_ENTRIES);
   }
 
@@ -7356,8 +7403,8 @@ export class ChatStoreService {
     }
     const resolvedDeletedAt = Number.isFinite(deletedAt) && deletedAt > 0 ? deletedAt : Date.now();
     const existing = this.deletedMessageIdTombstones.get(normalizedId);
-    if (!existing || resolvedDeletedAt > existing) {
-      this.deletedMessageIdTombstones.set(normalizedId, resolvedDeletedAt);
+    if (!existing || resolvedDeletedAt > existing.deletedAt) {
+      this.deletedMessageIdTombstones.set(normalizedId, { deletedAt: resolvedDeletedAt, registeredAt: Date.now() });
     }
     this.pruneDeletedMessageSuppressions();
   }
@@ -7368,11 +7415,11 @@ export class ChatStoreService {
       return null;
     }
     this.pruneDeletedMessageSuppressions();
-    const deletedAt = this.deletedMessageIdTombstones.get(normalizedId);
-    if (!Number.isFinite(deletedAt || NaN) || Number(deletedAt) <= 0) {
+    const entry = this.deletedMessageIdTombstones.get(normalizedId);
+    if (!entry || !Number.isFinite(entry.deletedAt) || entry.deletedAt <= 0) {
       return null;
     }
-    return Number(deletedAt);
+    return entry.deletedAt;
   }
 
   private rememberDeletedIncomingFingerprint(message: ChatMessage, deletedAt: number): void {
@@ -7404,7 +7451,8 @@ export class ChatStoreService {
       body,
       imageUrl,
       timestamp,
-      deletedAt: resolvedDeletedAt
+      deletedAt: resolvedDeletedAt,
+      registeredAt: Date.now()
     };
 
     if (existingIndex >= 0) {

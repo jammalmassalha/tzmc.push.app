@@ -6110,7 +6110,9 @@ registerShuttleController(app, {
 
 registerHelpdeskController(app, {
     requireAuthorizedUser,
-    env: process.env
+    env: process.env,
+    buildGoogleSheetGetUrl,
+    fetchWithRetry
 });
 
 registerMessageController(app, {
