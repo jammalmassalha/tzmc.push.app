@@ -36,16 +36,22 @@ class RealtimeTransportService {
   RealtimeTransportMode get transportMode => _transportMode;
 
   /// Stream controller for incoming messages
-  final _messageController = StreamController<dynamic>.broadcast();
-  Stream<dynamic> get messageStream => _messageController.stream;
+  final _messageController = StreamController<IncomingServerMessage>.broadcast();
+  Stream<IncomingServerMessage> get message$ => _messageController.stream;
+  @Deprecated('Use message$ instead')
+  Stream<IncomingServerMessage> get messageStream => message$;
 
   /// Stream controller for connection events
-  final _connectedController = StreamController<void>.broadcast();
-  Stream<void> get connectedStream => _connectedController.stream;
+  final _connectedController = StreamController<bool>.broadcast();
+  Stream<bool> get connected$ => _connectedController.stream;
+  @Deprecated('Use connected$ instead')
+  Stream<bool> get connectedStream => connected$;
 
   /// Stream controller for poll ticks
   final _pollTickController = StreamController<void>.broadcast();
-  Stream<void> get pollTickStream => _pollTickController.stream;
+  Stream<void> get pollTick$ => _pollTickController.stream;
+  @Deprecated('Use pollTick$ instead')
+  Stream<void> get pollTickStream => pollTick$;
 
   // Internal state
   socket_io.Socket? _socket;
@@ -223,13 +229,18 @@ class RealtimeTransportService {
         _socketSseFallbackTimer?.cancel();
         _socketSseFallbackTimer = null;
         _stopSseOnly();
-        _connectedController.add(null);
+        _connectedController.add(true);
         _logger.d('Socket connected');
       });
 
       socket.on('chat:message', (incoming) {
         if (incoming == null) return;
-        _messageController.add(incoming);
+        try {
+          final msg = IncomingServerMessage.fromJson(incoming as Map<String, dynamic>);
+          _messageController.add(msg);
+        } catch (e) {
+          _logger.w('Failed to parse socket message: $e');
+        }
       });
 
       socket.on('chat:connected', (_) {
@@ -238,7 +249,7 @@ class RealtimeTransportService {
         _socketConnected = true;
         _setTransportMode(RealtimeTransportMode.socket);
         _stopSseOnly();
-        _connectedController.add(null);
+        _connectedController.add(true);
       });
 
       socket.onDisconnect((_) {
@@ -336,7 +347,7 @@ class RealtimeTransportService {
         return;
       }
 
-      _connectedController.add(null);
+      _connectedController.add(true);
 
       _sseSubscription = response.stream
           .transform(utf8.decoder)
@@ -347,9 +358,12 @@ class RealtimeTransportService {
             final data = line.substring(6);
             try {
               final parsed = jsonDecode(data);
-              _messageController.add(parsed);
+              if (parsed is Map<String, dynamic>) {
+                final msg = IncomingServerMessage.fromJson(parsed);
+                _messageController.add(msg);
+              }
             } catch (e) {
-              _messageController.add(data);
+              _logger.w('Failed to parse SSE message: $e');
             }
           }
         },

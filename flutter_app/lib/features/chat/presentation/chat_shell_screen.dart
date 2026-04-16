@@ -287,11 +287,6 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
 // ---------------------------------------------------------------------------
 // Settings Placeholder (still using placeholder for now)
 // ---------------------------------------------------------------------------
-        ],
-      ),
-    );
-  }
-}
 
 class _SettingsPlaceholder extends StatelessWidget {
   final String? user;
