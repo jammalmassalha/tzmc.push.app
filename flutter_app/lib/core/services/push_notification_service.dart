@@ -2,10 +2,10 @@
 ///
 /// Handles device token registration, notification display,
 /// and push recovery pull logic to handle truncated payloads.
+/// On web, push notifications are handled via the existing web-push system.
 library;
 
 import 'dart:async';
-import 'dart:io';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -15,6 +15,38 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/chat_api_service.dart';
 import '../services/chat_store_service.dart';
+
+// Platform detection helper
+bool get _isNativePlatform {
+  if (kIsWeb) return false;
+  // On native platforms, check if we're on mobile
+  return true;
+}
+
+// Platform-specific helpers (only used on native)
+String _getPlatformName() {
+  if (kIsWeb) return 'web';
+  // Use defaultTargetPlatform which works cross-platform
+  switch (defaultTargetPlatform) {
+    case TargetPlatform.iOS:
+      return 'ios';
+    case TargetPlatform.android:
+      return 'android';
+    case TargetPlatform.macOS:
+      return 'macos';
+    case TargetPlatform.windows:
+      return 'windows';
+    case TargetPlatform.linux:
+      return 'linux';
+    default:
+      return 'unknown';
+  }
+}
+
+bool _isIOSPlatform() {
+  if (kIsWeb) return false;
+  return defaultTargetPlatform == TargetPlatform.iOS;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -116,7 +148,7 @@ class PushNotificationService {
     try {
       String? token;
 
-      if (Platform.isIOS) {
+      if (_isIOSPlatform()) {
         // Get APNs token first on iOS
         final apnsToken = await _messaging!.getAPNSToken();
         if (apnsToken == null) {
@@ -142,7 +174,7 @@ class PushNotificationService {
     if (token == _deviceToken) return; // Already registered
 
     try {
-      final platform = Platform.isIOS ? 'ios' : 'android';
+      final platform = _getPlatformName();
       await _api.registerDeviceToken(token: token, platform: platform);
       _deviceToken = token;
       debugPrint('[PushNotificationService] Device token registered: ${token.substring(0, 20)}...');

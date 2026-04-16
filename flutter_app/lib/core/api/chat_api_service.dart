@@ -4,14 +4,13 @@
 /// messages, and other chat-related operations.
 library;
 
-import 'dart:io';
-
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../config/app_config.dart';
 import '../models/api_payloads.dart';
 import '../models/chat_models.dart';
 import '../models/helpdesk_models.dart';
+import '../utils/xfile.dart';
 import 'http_client.dart';
 
 /// Chat API service provider
@@ -473,8 +472,8 @@ class ChatApiService {
   // File Upload
   // ---------------------------------------------------------------------------
 
-  /// Upload file
-  Future<UploadResponse> uploadFile(File file, {File? thumbnail}) async {
+  /// Upload file (cross-platform)
+  Future<UploadResponse> uploadFile(XFile file, {XFile? thumbnail}) async {
     final response = await _client.uploadFile<Map<String, dynamic>>(
       ApiEndpoints.upload,
       file: file,
@@ -781,8 +780,8 @@ class ChatApiService {
     return locations?.map((e) => e.toString()).toList() ?? [];
   }
 
-  /// Upload helpdesk attachment
-  Future<String> uploadHelpdeskAttachment(File file) async {
+  /// Upload helpdesk attachment (cross-platform)
+  Future<String> uploadHelpdeskAttachment(XFile file) async {
     final response = await _client.uploadFile<Map<String, dynamic>>(
       ApiEndpoints.upload,
       file: file,
