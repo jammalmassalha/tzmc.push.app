@@ -24,6 +24,7 @@ part 'chat_database.g.dart';
 // ---------------------------------------------------------------------------
 
 /// Contacts table
+@DataClassName('ContactsData')
 class Contacts extends Table {
   TextColumn get username => text()();
   TextColumn get displayName => text()();
@@ -38,6 +39,7 @@ class Contacts extends Table {
 }
 
 /// Groups table
+@DataClassName('GroupsData')
 class Groups extends Table {
   TextColumn get id => text()();
   TextColumn get name => text()();
@@ -52,6 +54,7 @@ class Groups extends Table {
 }
 
 /// Messages table
+@DataClassName('MessagesData')
 class Messages extends Table {
   TextColumn get id => text()();
   TextColumn get messageId => text()();
@@ -83,6 +86,7 @@ class Messages extends Table {
 }
 
 /// Unread counts table
+@DataClassName('UnreadCountsData')
 class UnreadCounts extends Table {
   TextColumn get chatId => text()();
   IntColumn get count => integer()();
@@ -92,6 +96,7 @@ class UnreadCounts extends Table {
 }
 
 /// Outbox items table (pending messages to send)
+@DataClassName('OutboxItemsData')
 class OutboxItems extends Table {
   TextColumn get id => text()();
   TextColumn get kind => text()(); // 'direct', 'group', 'group-update'

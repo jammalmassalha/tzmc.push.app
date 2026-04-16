@@ -590,6 +590,30 @@ class IncomingServerMessage extends Equatable {
       };
 }
 
+// ---------------------------------------------------------------------------
+// Persisted Chat State
+// ---------------------------------------------------------------------------
+
+/// State model for persisting chat data to the database.
+///
+/// Used by ChatDatabase to persist and restore the full chat state.
+class PersistedChatState extends Equatable {
+  final List<Contact> contacts;
+  final List<ChatGroup> groups;
+  final Map<String, int> unreadByChat;
+  final List<ChatMessage> messages;
+
+  const PersistedChatState({
+    this.contacts = const [],
+    this.groups = const [],
+    this.unreadByChat = const {},
+    this.messages = const [],
+  });
+
+  @override
+  List<Object?> get props => [contacts, groups, unreadByChat, messages];
+}
+
 /// Extension for null-if-empty string handling
 extension StringNullIfEmpty on String {
   String? get nullIfEmpty => isEmpty ? null : this;

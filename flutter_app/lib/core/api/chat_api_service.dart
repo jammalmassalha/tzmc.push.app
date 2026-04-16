@@ -735,7 +735,7 @@ class ChatApiService {
   }
 
   /// Add helpdesk ticket note
-  Future<HelpdeskNote> addHelpdeskTicketNote(int ticketId, String noteText, {File? attachment}) async {
+  Future<HelpdeskNote> addHelpdeskTicketNote(int ticketId, String noteText, {XFile? attachment}) async {
     if (attachment != null) {
       final response = await _client.uploadFile<Map<String, dynamic>>(
         '${ApiEndpoints.helpdeskTickets}/$ticketId/notes',
