@@ -43,7 +43,7 @@ echo ""
 echo "=========================================="
 echo "Building for WEB (Browser)..."
 echo "=========================================="
-flutter build web --release --base-href /fluttertest/
+flutter build web --release 
 
 # Copy web build to output
 cp -r build/web "$OUTPUT_DIR/web"
