@@ -49,7 +49,8 @@ echo ""
 echo "=========================================="
 echo "Building for WEB (Browser)..."
 echo "=========================================="
-flutter build web --release --base-href /fluttertest/
+# Use MSYS_NO_PATHCONV to prevent Git Bash from converting /fluttertest/ to a Windows path
+MSYS_NO_PATHCONV=1 flutter build web --release --base-href "/fluttertest/"
 
 # Copy web build to output
 rm -rf "$OUTPUT_DIR/web"
