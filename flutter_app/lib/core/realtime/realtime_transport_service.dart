@@ -453,11 +453,6 @@ class RealtimeTransportService {
   }
 }
 
-/// API endpoints for realtime connections
-class ApiEndpoints {
-  static const String stream = '/stream';
-}
-
 /// Network connectivity helper
 class NetworkConnectivity {
   static Future<bool> isConnected() async {
