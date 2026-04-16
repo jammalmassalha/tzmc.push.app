@@ -1,10 +1,13 @@
 /// Message composer widget - text input for sending messages.
 ///
 /// Supports text input, image/file attachments, and editing mode.
+/// Works on both native and web platforms using XFile abstraction.
 library;
 
-import 'dart:io';
+import 'dart:io' if (dart.library.html) 'dart:html' show File;
+import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
@@ -12,6 +15,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../../core/api/chat_api_service.dart';
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
+import '../../../core/utils/xfile.dart' as xfile;
 import '../../../shared/theme/app_theme.dart';
 
 /// Message composer widget
@@ -39,8 +43,9 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
   final _textController = TextEditingController();
   final _focusNode = FocusNode();
   bool _isSending = false;
-  File? _selectedImage;
-  File? _selectedFile;
+  xfile.XFile? _selectedImage;
+  xfile.XFile? _selectedFile;
+  Uint8List? _selectedImageBytes; // For preview on all platforms
 
   @override
   void initState() {
@@ -90,12 +95,13 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
             // Attachment preview
             if (_selectedImage != null || _selectedFile != null)
               _AttachmentPreview(
-                image: _selectedImage,
-                file: _selectedFile,
+                imageBytes: _selectedImageBytes,
+                fileName: _selectedFile?.name,
                 onRemove: () {
                   setState(() {
                     _selectedImage = null;
                     _selectedFile = null;
+                    _selectedImageBytes = null;
                   });
                 },
               ),
@@ -206,6 +212,14 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
   }
 
   Future<void> _pickImage(ImageSource source) async {
+    // On web, camera is not supported
+    if (kIsWeb && source == ImageSource.camera) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('צילום לא נתמך בדפדפן')),
+      );
+      return;
+    }
+
     final picker = ImagePicker();
     final pickedFile = await picker.pickImage(
       source: source,
@@ -215,8 +229,19 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
     );
 
     if (pickedFile != null) {
+      // Read bytes for preview and cross-platform XFile
+      final bytes = await pickedFile.readAsBytes();
+      final mimeType = xfile.XFileUtils.mimeTypeFromExtension(
+        pickedFile.name.split('.').last,
+      );
+
       setState(() {
-        _selectedImage = File(pickedFile.path);
+        _selectedImage = xfile.XFile.fromBytes(
+          name: pickedFile.name,
+          bytes: bytes,
+          mimeType: mimeType,
+        );
+        _selectedImageBytes = bytes;
         _selectedFile = null;
       });
     }
@@ -245,13 +270,15 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
       // Upload image if selected
       if (_selectedImage != null) {
         final api = ref.read(chatApiServiceProvider);
-        imageUrl = await api.uploadImage(_selectedImage!);
+        final uploadResult = await api.uploadFile(_selectedImage!);
+        imageUrl = uploadResult.url;
       }
 
       // Upload file if selected
       if (_selectedFile != null) {
         final api = ref.read(chatApiServiceProvider);
-        fileUrl = await api.uploadFile(_selectedFile!);
+        final uploadResult = await api.uploadFile(_selectedFile!);
+        fileUrl = uploadResult.url;
       }
 
       final chatStore = ref.read(chatStoreProvider.notifier);
@@ -283,6 +310,7 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
       setState(() {
         _selectedImage = null;
         _selectedFile = null;
+        _selectedImageBytes = null;
       });
       widget.onMessageSent();
     } catch (e) {
@@ -298,15 +326,15 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
   }
 }
 
-/// Attachment preview widget
+/// Attachment preview widget (cross-platform)
 class _AttachmentPreview extends StatelessWidget {
-  final File? image;
-  final File? file;
+  final Uint8List? imageBytes;
+  final String? fileName;
   final VoidCallback onRemove;
 
   const _AttachmentPreview({
-    this.image,
-    this.file,
+    this.imageBytes,
+    this.fileName,
     required this.onRemove,
   });
 
@@ -316,13 +344,13 @@ class _AttachmentPreview extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 8),
       child: Row(
         children: [
-          if (image != null)
+          if (imageBytes != null)
             Stack(
               children: [
                 ClipRRect(
                   borderRadius: BorderRadius.circular(8),
-                  child: Image.file(
-                    image!,
+                  child: Image.memory(
+                    imageBytes!,
                     width: 80,
                     height: 80,
                     fit: BoxFit.cover,
@@ -349,7 +377,7 @@ class _AttachmentPreview extends StatelessWidget {
                 ),
               ],
             )
-          else if (file != null)
+          else if (fileName != null)
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
@@ -362,7 +390,7 @@ class _AttachmentPreview extends StatelessWidget {
                   const Icon(Icons.insert_drive_file, size: 24),
                   const SizedBox(width: 8),
                   Text(
-                    file!.path.split('/').last,
+                    fileName!,
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                   const SizedBox(width: 8),

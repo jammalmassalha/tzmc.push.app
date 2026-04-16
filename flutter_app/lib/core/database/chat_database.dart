@@ -2,19 +2,20 @@
 ///
 /// This replaces the IndexedDB persistence from the Angular frontend (Dexie.js).
 /// Stores contacts, groups, messages, and unread counts locally.
+/// Supports both native (mobile/desktop) and web platforms via conditional imports.
 library;
 
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:drift/drift.dart';
-import 'package:drift/native.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:path/path.dart' as p;
 
-import '../config/app_config.dart';
 import '../models/chat_models.dart';
+
+// Conditional imports for platform-specific database connection
+import 'connection/unsupported.dart'
+    if (dart.library.ffi) 'connection/native.dart'
+    if (dart.library.js_interop) 'connection/web.dart';
 
 part 'chat_database.g.dart';
 
@@ -110,7 +111,7 @@ class OutboxItems extends Table {
 
 @DriftDatabase(tables: [Contacts, Groups, Messages, UnreadCounts, OutboxItems])
 class ChatDatabase extends _$ChatDatabase {
-  ChatDatabase() : super(_openConnection());
+  ChatDatabase() : super(openConnection());
 
   @override
   int get schemaVersion => 1;
@@ -473,18 +474,6 @@ class ChatDatabase extends _$ChatDatabase {
       batch.deleteAll(outboxItems);
     });
   }
-}
-
-// ---------------------------------------------------------------------------
-// Database Connection
-// ---------------------------------------------------------------------------
-
-LazyDatabase _openConnection() {
-  return LazyDatabase(() async {
-    final dbFolder = await getApplicationDocumentsDirectory();
-    final file = File(p.join(dbFolder.path, '${AppConfig.dbName}.sqlite'));
-    return NativeDatabase.createInBackground(file);
-  });
 }
 
 // ---------------------------------------------------------------------------

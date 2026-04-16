@@ -4,14 +4,15 @@
 library;
 
 import 'dart:async';
-import 'dart:io';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:logger/logger.dart';
 
 import '../config/app_config.dart';
 import '../config/environment.dart';
+import '../utils/xfile.dart';
 
 final _logger = Logger(
   printer: PrettyPrinter(methodCount: 0, errorMethodCount: 5, lineLength: 80),
@@ -148,12 +149,14 @@ class HttpClient {
     );
   }
 
-  /// Upload file(s) with multipart form data
+  /// Upload file(s) with multipart form data (cross-platform).
+  ///
+  /// Uses [XFile] for cross-platform compatibility (works on web and native).
   Future<Response<T>> uploadFile<T>(
     String path, {
-    required File file,
+    required XFile file,
     String fieldName = 'file',
-    File? thumbnail,
+    XFile? thumbnail,
     String thumbnailFieldName = 'thumbnail',
     Map<String, dynamic>? additionalFields,
     RetryOptions? retryOptions,
@@ -161,15 +164,30 @@ class HttpClient {
   }) async {
     final formData = FormData();
 
+    // Read file bytes (works on both web and native)
+    final fileBytes = await file.readAsBytes();
     formData.files.add(MapEntry(
       fieldName,
-      await MultipartFile.fromFile(file.path, filename: file.path.split('/').last),
+      MultipartFile.fromBytes(
+        fileBytes,
+        filename: file.name,
+        contentType: file.mimeType != null
+            ? DioMediaType.parse(file.mimeType!)
+            : null,
+      ),
     ));
 
     if (thumbnail != null) {
+      final thumbBytes = await thumbnail.readAsBytes();
       formData.files.add(MapEntry(
         thumbnailFieldName,
-        await MultipartFile.fromFile(thumbnail.path, filename: thumbnail.path.split('/').last),
+        MultipartFile.fromBytes(
+          thumbBytes,
+          filename: thumbnail.name,
+          contentType: thumbnail.mimeType != null
+              ? DioMediaType.parse(thumbnail.mimeType!)
+              : null,
+        ),
       ));
     }
 
