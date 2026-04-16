@@ -40,6 +40,14 @@ class AppColors {
   static const Color chatBubbleIncoming = Colors.white;
   static const Color chatBackground = Color(0xFFE5DDD5);
   static const Color unreadBadge = Color(0xFF25D366);
+
+  // Group and community colors
+  static const Color groupColor = Color(0xFF00897B);
+  static const Color communityColor = Color(0xFF5C6BC0);
+
+  // Message bubble colors
+  static const Color outgoingBubble = Color(0xFFDCF8C6);
+  static const Color incomingBubble = Colors.white;
 }
 
 /// App theme configuration

@@ -8,8 +8,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/realtime/realtime_transport_service.dart';
+import '../../../core/services/chat_store_service.dart';
 import '../../auth/presentation/auth_state.dart';
+import '../../helpdesk/presentation/helpdesk_screen.dart';
+import '../../shuttle/presentation/shuttle_screen.dart';
 import '../../../shared/theme/app_theme.dart';
+import 'chat_list_screen.dart';
 
 /// Main tab enumeration
 enum MainTab { chats, groups, shuttle, helpdesk, settings }
@@ -29,14 +33,18 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
   @override
   void initState() {
     super.initState();
-    _initializeRealtime();
+    _initializeServices();
   }
 
-  void _initializeRealtime() {
+  void _initializeServices() {
     final user = ref.read(currentUserProvider);
     if (user != null) {
+      // Initialize realtime transport
       final transport = ref.read(realtimeTransportServiceProvider);
       transport.connect(user, isNetworkReachable: () => true);
+      
+      // Initialize chat store
+      ref.read(chatStoreProvider.notifier).initialize(user);
     }
   }
 
@@ -178,19 +186,19 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
   }
 
   Widget _buildChatsTab() {
-    return const _ChatListPlaceholder();
+    return const ChatListScreen();
   }
 
   Widget _buildGroupsTab() {
-    return const _GroupListPlaceholder();
+    return const GroupListScreen();
   }
 
   Widget _buildShuttleTab() {
-    return const _ShuttlePlaceholder();
+    return const ShuttleScreen();
   }
 
   Widget _buildHelpdeskTab() {
-    return const _HelpdeskPlaceholder();
+    return const HelpdeskScreen();
   }
 
   Widget _buildSettingsTab() {
@@ -277,139 +285,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
 }
 
 // ---------------------------------------------------------------------------
-// Placeholder Widgets
+// Settings Placeholder (still using placeholder for now)
 // ---------------------------------------------------------------------------
-
-class _ChatListPlaceholder extends StatelessWidget {
-  const _ChatListPlaceholder();
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.chat_bubble_outline,
-            size: 80,
-            color: Theme.of(context).colorScheme.primary.withAlpha((255 * 0.3).round()),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'רשימת צ\'אטים',
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.6).round()),
-                ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'בקרוב...',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.4).round()),
-                ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _GroupListPlaceholder extends StatelessWidget {
-  const _GroupListPlaceholder();
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.group_outlined,
-            size: 80,
-            color: Theme.of(context).colorScheme.primary.withAlpha((255 * 0.3).round()),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'רשימת קבוצות',
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.6).round()),
-                ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'בקרוב...',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.4).round()),
-                ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ShuttlePlaceholder extends StatelessWidget {
-  const _ShuttlePlaceholder();
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.directions_bus_outlined,
-            size: 80,
-            color: Theme.of(context).colorScheme.primary.withAlpha((255 * 0.3).round()),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'הזמנת הסעות',
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.6).round()),
-                ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'בקרוב...',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.4).round()),
-                ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _HelpdeskPlaceholder extends StatelessWidget {
-  const _HelpdeskPlaceholder();
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.support_agent_outlined,
-            size: 80,
-            color: Theme.of(context).colorScheme.primary.withAlpha((255 * 0.3).round()),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'מוקד תמיכה',
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.6).round()),
-                ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'בקרוב...',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.4).round()),
-                ),
-          ),
         ],
       ),
     );

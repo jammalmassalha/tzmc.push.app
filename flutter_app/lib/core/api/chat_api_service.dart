@@ -677,8 +677,8 @@ class ChatApiService {
     return HelpdeskDashboard.fromJson(response.data ?? {});
   }
 
-  /// Create helpdesk ticket
-  Future<HelpdeskTicket> createHelpdeskTicket(HelpdeskTicketPayload payload) async {
+  /// Create helpdesk ticket (internal with payload)
+  Future<HelpdeskTicket> _createHelpdeskTicketFromPayload(HelpdeskTicketPayload payload) async {
     final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.helpdeskTickets,
       data: payload.toJson(),
@@ -764,6 +764,93 @@ class ChatApiService {
 
       return HelpdeskNote.fromJson(response.data ?? {});
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Convenience Methods (for Flutter screens)
+  // ---------------------------------------------------------------------------
+
+  /// Get shuttle routes (wrapper for compatibility)
+  Future<List<Map<String, dynamic>>> getShuttleRoutes() async {
+    // This would need a backend endpoint - for now return empty
+    // The shuttle feature in this app uses a different flow
+    return [];
+  }
+
+  /// Get shuttle user bookings
+  Future<List<Map<String, dynamic>>> getShuttleUserBookings() async {
+    // This would need a backend endpoint - for now return empty
+    return [];
+  }
+
+  /// Book shuttle
+  Future<void> bookShuttle({
+    required String routeId,
+    required String date,
+    required int passengers,
+  }) async {
+    // Use existing submitShuttleOrder when implemented
+    throw UnimplementedError('Use submitShuttleOrder instead');
+  }
+
+  /// Cancel shuttle booking
+  Future<void> cancelShuttleBooking(String bookingId) async {
+    // This would need a backend endpoint
+    throw UnimplementedError('Backend endpoint needed');
+  }
+
+  /// Get helpdesk tickets (convenience wrapper)
+  Future<List<HelpdeskTicket>> getHelpdeskTickets() async {
+    final dashboard = await getHelpdeskDashboard();
+    return dashboard.tickets;
+  }
+
+  /// Create helpdesk ticket (convenience wrapper with named params)
+  Future<HelpdeskTicket> createHelpdeskTicket({
+    required String subject,
+    required String description,
+    required String category,
+    required String priority,
+  }) async {
+    final payload = HelpdeskTicketPayload(
+      subject: subject,
+      description: description,
+      category: category,
+      priority: priority,
+    );
+    return _createHelpdeskTicketFromPayload(payload);
+  }
+
+  /// Add helpdesk comment (wrapper)
+  Future<void> addHelpdeskComment(String ticketId, String comment) async {
+    await addHelpdeskTicketNote(int.parse(ticketId), comment);
+  }
+
+  /// Get ticket history (wrapper)
+  Future<List<HelpdeskStatusHistory>> getTicketHistory(String ticketId) async {
+    final entries = await getHelpdeskTicketHistory(int.parse(ticketId));
+    return entries.map((e) => HelpdeskStatusHistory(
+      id: e.id,
+      oldStatus: e.oldStatus,
+      newStatus: e.newStatus,
+      changedBy: e.changedBy,
+      createdAt: e.createdAt,
+    )).toList();
+  }
+
+  /// Register device token for push notifications
+  Future<void> registerDeviceToken({
+    required String token,
+    required String platform,
+  }) async {
+    // Use existing registerDeviceForPush
+    // Platform: 'ios' or 'android'
+    // For now, just log - backend needs mobile push endpoint
+  }
+
+  /// Unregister device token
+  Future<void> unregisterDeviceToken(String token) async {
+    // Backend needs endpoint for this
   }
 }
 

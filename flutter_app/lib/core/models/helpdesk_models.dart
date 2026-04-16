@@ -78,74 +78,161 @@ enum HelpdeskRole {
 
 /// Helpdesk ticket creation payload
 class HelpdeskTicketPayload extends Equatable {
-  final HelpdeskDepartment department;
-  final String title;
+  final String subject;
   final String description;
+  final String category;
+  final String priority;
+  final HelpdeskDepartment? department;
+  final String? title;
 
   const HelpdeskTicketPayload({
-    required this.department,
-    required this.title,
-    required this.description,
+    this.subject = '',
+    this.description = '',
+    this.category = 'general',
+    this.priority = 'normal',
+    this.department,
+    this.title,
   });
 
   @override
-  List<Object?> get props => [department, title, description];
+  List<Object?> get props => [subject, description, category, priority, department, title];
 
   Map<String, dynamic> toJson() => {
-        'department': department.label,
-        'title': title,
+        if (department != null) 'department': department!.label,
+        'title': title ?? subject,
+        'subject': subject,
         'description': description,
+        'category': category,
+        'priority': priority,
       };
+}
+
+/// Helpdesk comment model (for UI)
+class HelpdeskComment extends Equatable {
+  final String id;
+  final String author;
+  final String content;
+  final DateTime createdAt;
+
+  const HelpdeskComment({
+    required this.id,
+    required this.author,
+    required this.content,
+    required this.createdAt,
+  });
+
+  @override
+  List<Object?> get props => [id, author, content, createdAt];
+
+  factory HelpdeskComment.fromJson(Map<String, dynamic> json) {
+    return HelpdeskComment(
+      id: (json['id'] ?? '').toString(),
+      author: json['author'] as String? ?? json['authorUsername'] as String? ?? '',
+      content: json['content'] as String? ?? json['noteText'] as String? ?? '',
+      createdAt: json['createdAt'] is String 
+          ? DateTime.parse(json['createdAt'] as String)
+          : DateTime.now(),
+    );
+  }
+}
+
+/// Helpdesk status history (for UI)
+class HelpdeskStatusHistory extends Equatable {
+  final int id;
+  final String? oldStatus;
+  final String newStatus;
+  final String changedBy;
+  final DateTime createdAt;
+
+  const HelpdeskStatusHistory({
+    required this.id,
+    this.oldStatus,
+    required this.newStatus,
+    required this.changedBy,
+    required this.createdAt,
+  });
+
+  @override
+  List<Object?> get props => [id, oldStatus, newStatus, changedBy, createdAt];
+
+  factory HelpdeskStatusHistory.fromJson(Map<String, dynamic> json) {
+    return HelpdeskStatusHistory(
+      id: json['id'] as int? ?? 0,
+      oldStatus: json['old_status'] as String?,
+      newStatus: json['new_status'] as String? ?? '',
+      changedBy: json['changed_by'] as String? ?? '',
+      createdAt: json['created_at'] is String 
+          ? DateTime.parse(json['created_at'] as String)
+          : DateTime.now(),
+    );
+  }
 }
 
 /// Helpdesk ticket model
 class HelpdeskTicket extends Equatable {
-  final int id;
+  final String id;
   final String creatorUsername;
   final String department;
-  final String title;
+  final String subject;
   final String description;
-  final HelpdeskStatus status;
+  final String status;
+  final String priority;
   final String? handlerUsername;
   final DateTime createdAt;
   final DateTime updatedAt;
+  final List<HelpdeskComment> comments;
 
   const HelpdeskTicket({
     required this.id,
     required this.creatorUsername,
     required this.department,
-    required this.title,
+    required this.subject,
     required this.description,
     required this.status,
+    this.priority = 'normal',
     this.handlerUsername,
     required this.createdAt,
     required this.updatedAt,
+    this.comments = const [],
   });
+
+  // Alias for subject
+  String get title => subject;
 
   @override
   List<Object?> get props => [
         id,
         creatorUsername,
         department,
-        title,
+        subject,
         description,
         status,
+        priority,
         handlerUsername,
         createdAt,
         updatedAt,
+        comments,
       ];
 
   factory HelpdeskTicket.fromJson(Map<String, dynamic> json) {
+    final commentsJson = json['comments'] as List? ?? json['notes'] as List? ?? [];
+    
     return HelpdeskTicket(
-      id: json['id'] as int,
-      creatorUsername: json['creatorUsername'] as String? ?? '',
-      department: json['department'] as String? ?? '',
-      title: json['title'] as String? ?? '',
+      id: (json['id'] ?? '').toString(),
+      creatorUsername: json['creatorUsername'] as String? ?? json['creator'] as String? ?? '',
+      department: json['department'] as String? ?? json['category'] as String? ?? '',
+      subject: json['subject'] as String? ?? json['title'] as String? ?? '',
       description: json['description'] as String? ?? '',
-      status: HelpdeskStatus.fromString(json['status'] as String? ?? 'open'),
-      handlerUsername: json['handlerUsername'] as String?,
-      createdAt: DateTime.parse(json['createdAt'] as String),
-      updatedAt: DateTime.parse(json['updatedAt'] as String),
+      status: json['status'] as String? ?? 'open',
+      priority: json['priority'] as String? ?? 'normal',
+      handlerUsername: json['handlerUsername'] as String? ?? json['assignee'] as String?,
+      createdAt: json['createdAt'] is String 
+          ? DateTime.parse(json['createdAt'] as String)
+          : DateTime.now(),
+      updatedAt: json['updatedAt'] is String 
+          ? DateTime.parse(json['updatedAt'] as String)
+          : DateTime.now(),
+      comments: commentsJson.map((e) => HelpdeskComment.fromJson(e as Map<String, dynamic>)).toList(),
     );
   }
 }
@@ -213,6 +300,9 @@ class HelpdeskDashboard extends Equatable {
     this.handlers,
   });
 
+  /// Get all tickets combined
+  List<HelpdeskTicket> get tickets => [...ongoing, ...past, ...assigned];
+
   @override
   List<Object?> get props => [ongoing, past, assigned, myRole, editorTickets, handlers];
 
@@ -263,7 +353,7 @@ class HelpdeskNote extends Equatable {
   }
 }
 
-/// Helpdesk status history entry
+/// Helpdesk status history entry (API response)
 class HelpdeskStatusHistoryEntry extends Equatable {
   final int id;
   final int ticketId;
