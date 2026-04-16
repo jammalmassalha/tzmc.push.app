@@ -88,7 +88,7 @@ const SHUTTLE_STATUS_ACTIVE_VALUE = 'פעיל активный';
 const SHUTTLE_STATUS_CANCEL_VALUE = 'ביטול נסיעה отмена поезд';
 const DOVRUT_SYSTEM_CREATOR = 'dovrut-system';
 const SHUTTLE_OPERATIONS_GROUP_MEMBERS = ['0546799693', '0550000001', '0506267410', '0505203520'] as const;
-const HELPDESK_ALLOWED_USERS = ['0546799693', '0550000001'] as const;
+const HELPDESK_ALLOWED_USERS = ['0546799693', '0550000001', '0505203520'] as const;
 const BADGE_RESET_ALL_ALLOWED_USERS = ['0546799693'] as const;
 const VERSION_UPDATE_BROADCAST_ALLOWED_USERS = ['0546799693'] as const;
 const BACKUP_GROUPS_ALLOWED_USERS = ['0546799693'] as const;
@@ -5115,14 +5115,24 @@ export class ChatStoreService {
     this.bumpHelpdeskPickerRevision();
   }
 
-  async submitHelpdeskTicket(department: string, title: string, description: string): Promise<HelpdeskTicket> {
+  async submitHelpdeskTicket(
+    department: string,
+    title: string,
+    description: string,
+    location?: string | null,
+    phone?: string | null,
+    attachmentUrl?: string | null
+  ): Promise<HelpdeskTicket> {
     const user = this.currentUser();
     if (!user) throw new Error('יש להתחבר לפני פתיחת קריאה');
 
     const payload: HelpdeskTicketPayload = {
       department: department as 'מערכות מידע' | 'אחזקה',
       title,
-      description
+      description,
+      location: location || null,
+      phone: phone || null,
+      attachmentUrl: attachmentUrl || null
     };
 
     let ticket: HelpdeskTicket;
@@ -5137,7 +5147,9 @@ export class ChatStoreService {
     }
 
     const statusLabel = this.helpdeskStatusLabel(ticket.status);
-    const cardBody = `✅ הקריאה נפתחה בהצלחה\n[#${ticket.id}] ${ticket.title}\nמחלקה: ${ticket.department}\nסטטוס: ${statusLabel}`;
+    const locationLine = ticket.location ? `\nמיקום: ${ticket.location}` : '';
+    const phoneLine = ticket.phone ? `\nטלפון: ${ticket.phone}` : '';
+    const cardBody = `✅ הקריאה נפתחה בהצלחה\n[#${ticket.id}] ${ticket.title}\nמחלקה: ${ticket.department}${locationLine}${phoneLine}\nסטטוס: ${statusLabel}`;
     this.sendHelpdeskSystemMessage(cardBody, { recordType: 'helpdesk-ticket-success' });
 
     // Refresh tickets list

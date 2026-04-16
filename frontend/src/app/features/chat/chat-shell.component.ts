@@ -369,8 +369,9 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   /** Pinned chats displayed as compact icon chips at the top */
   readonly pinnedChats = computed(() => this.filteredChats().filter((c) => c.pinned));
 
-  /** Non-pinned chats for the main virtual-scroll list */
-  readonly unpinnedChats = computed(() => this.filteredChats().filter((c) => !c.pinned));
+  /** Chats for the main virtual-scroll list.
+   *  Includes non-pinned chats and pinned chats with unread messages (so they appear in the regular list too). */
+  readonly mainListChats = computed(() => this.filteredChats().filter((c) => !c.pinned || c.unread > 0));
 
   readonly composerPlaceholder = computed(() => {
     const activeChat = this.store.activeChat();
@@ -1413,7 +1414,14 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       }
       this.isSubmittingHelpdeskTicket.set(true);
       try {
-        await this.store.submitHelpdeskTicket(cleanDepartment, result.title, result.description);
+        await this.store.submitHelpdeskTicket(
+          cleanDepartment,
+          result.title,
+          result.description,
+          result.location,
+          result.phone,
+          result.attachmentUrl
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : 'שגיאה בפתיחת הקריאה';
         this.snackBar.open(message, 'סגור', { duration: 3200 });

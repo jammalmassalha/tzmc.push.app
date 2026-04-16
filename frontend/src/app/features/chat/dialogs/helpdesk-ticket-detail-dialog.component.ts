@@ -64,6 +64,8 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
   readonly isUploadingAttachment = signal(false);
   readonly uploadError = signal<string | null>(null);
 
+  readonly imageModalUrl = signal<string | null>(null);
+
   @ViewChild('noteFileInput') noteFileInputRef?: ElementRef<HTMLInputElement>;
 
   readonly statusHistory = signal<HelpdeskStatusHistoryEntry[]>([]);
@@ -203,6 +205,14 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
 
   isImageUrl(url: string): boolean {
     return /\.(jpeg|jpg|png|gif|webp)(\?|#|$)/i.test(url);
+  }
+
+  openImageModal(url: string): void {
+    this.imageModalUrl.set(url);
+  }
+
+  closeImageModal(): void {
+    this.imageModalUrl.set(null);
   }
 
   get canSubmitNote(): boolean {
