@@ -70,6 +70,9 @@ class HelpdeskNotifier extends StateNotifier<HelpdeskState> {
     required String description,
     required String category,
     required String priority,
+    String? location,
+    String? phone,
+    String? attachmentUrl,
   }) async {
     state = state.copyWith(isLoading: true, error: null);
 
@@ -79,6 +82,9 @@ class HelpdeskNotifier extends StateNotifier<HelpdeskState> {
         description: description,
         category: category,
         priority: priority,
+        location: location,
+        phone: phone,
+        attachmentUrl: attachmentUrl,
       );
       await loadTickets();
       return ticket;
@@ -88,6 +94,15 @@ class HelpdeskNotifier extends StateNotifier<HelpdeskState> {
         error: 'שגיאה ביצירת פנייה: ${e.toString()}',
       );
       rethrow;
+    }
+  }
+
+  /// Load helpdesk locations for dropdown
+  Future<List<String>> loadLocations() async {
+    try {
+      return await _api.getHelpdeskLocations();
+    } catch (e) {
+      return [];
     }
   }
 
@@ -201,8 +216,18 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
   void _showCreateTicketDialog(BuildContext context) {
     final subjectController = TextEditingController();
     final descriptionController = TextEditingController();
+    final locationController = TextEditingController();
+    final phoneController = TextEditingController();
     String selectedCategory = 'general';
     String selectedPriority = 'normal';
+    List<String> availableLocations = [];
+    bool isLoadingLocations = true;
+
+    // Load locations
+    ref.read(helpdeskProvider.notifier).loadLocations().then((locations) {
+      availableLocations = locations;
+      isLoadingLocations = false;
+    });
 
     showDialog(
       context: context,
@@ -219,7 +244,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
                   controller: subjectController,
                   textDirection: TextDirection.rtl,
                   decoration: const InputDecoration(
-                    labelText: 'נושא',
+                    labelText: 'נושא *',
                     border: OutlineInputBorder(),
                   ),
                 ),
@@ -231,8 +256,61 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
                   textDirection: TextDirection.rtl,
                   maxLines: 4,
                   decoration: const InputDecoration(
-                    labelText: 'תיאור הבעיה',
+                    labelText: 'תיאור הבעיה *',
                     border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Location (autocomplete)
+                Autocomplete<String>(
+                  optionsBuilder: (textEditingValue) {
+                    if (textEditingValue.text.isEmpty) {
+                      return availableLocations;
+                    }
+                    return availableLocations.where((loc) =>
+                        loc.toLowerCase().contains(textEditingValue.text.toLowerCase()));
+                  },
+                  onSelected: (value) {
+                    locationController.text = value;
+                  },
+                  fieldViewBuilder: (context, controller, focusNode, onEditingComplete) {
+                    return TextField(
+                      controller: controller,
+                      focusNode: focusNode,
+                      onEditingComplete: onEditingComplete,
+                      textDirection: TextDirection.rtl,
+                      decoration: InputDecoration(
+                        labelText: 'מיקום *',
+                        border: const OutlineInputBorder(),
+                        suffixIcon: isLoadingLocations
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: Padding(
+                                  padding: EdgeInsets.all(8.0),
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                ),
+                              )
+                            : null,
+                      ),
+                      onChanged: (value) {
+                        locationController.text = value;
+                      },
+                    );
+                  },
+                ),
+                const SizedBox(height: 16),
+
+                // Phone
+                TextField(
+                  controller: phoneController,
+                  textDirection: TextDirection.ltr,
+                  keyboardType: TextInputType.phone,
+                  decoration: const InputDecoration(
+                    labelText: 'טלפון ליצירת קשר',
+                    border: OutlineInputBorder(),
+                    hintText: '05X-XXXXXXX',
                   ),
                 ),
                 const SizedBox(height: 16),
@@ -289,6 +367,12 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
                   );
                   return;
                 }
+                if (locationController.text.trim().isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('יש להזין מיקום')),
+                  );
+                  return;
+                }
 
                 Navigator.of(context).pop();
                 try {
@@ -297,6 +381,12 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
                         description: descriptionController.text.trim(),
                         category: selectedCategory,
                         priority: selectedPriority,
+                        location: locationController.text.trim().isEmpty
+                            ? null
+                            : locationController.text.trim(),
+                        phone: phoneController.text.trim().isEmpty
+                            ? null
+                            : phoneController.text.trim(),
                       );
                   if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
@@ -430,6 +520,31 @@ class _TicketCard extends StatelessWidget {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
               ),
+              
+              // Location (if available)
+              if (ticket.location != null && ticket.location!.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Icon(
+                      Icons.location_on,
+                      size: 14,
+                      color: theme.colorScheme.onSurface.withAlpha((255 * 0.5).round()),
+                    ),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        ticket.location!,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurface.withAlpha((255 * 0.6).round()),
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
               const SizedBox(height: 12),
 
               // Meta info
@@ -657,11 +772,76 @@ class _TicketDetailScreenState extends ConsumerState<_TicketDetailScreen> {
                           ),
                         ],
                       ),
+                      // Location
+                      if (widget.ticket.location != null && widget.ticket.location!.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Icon(Icons.location_on, size: 16, color: theme.colorScheme.primary),
+                            const SizedBox(width: 4),
+                            Expanded(child: Text(widget.ticket.location!)),
+                          ],
+                        ),
+                      ],
+                      // Phone
+                      if (widget.ticket.phone != null && widget.ticket.phone!.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            Icon(Icons.phone, size: 16, color: theme.colorScheme.primary),
+                            const SizedBox(width: 4),
+                            Text(widget.ticket.phone!),
+                          ],
+                        ),
+                      ],
                     ],
                   ),
                 ),
               ),
               const SizedBox(height: 16),
+
+              // Attachment (if available)
+              if (widget.ticket.attachmentUrl != null && widget.ticket.attachmentUrl!.isNotEmpty)
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'קובץ מצורף',
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        InkWell(
+                          onTap: () {
+                            // Open attachment URL
+                            // Could use url_launcher package
+                          },
+                          child: Row(
+                            children: [
+                              Icon(Icons.attach_file, color: theme.colorScheme.primary),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'לחץ לצפייה בקובץ',
+                                  style: TextStyle(
+                                    color: theme.colorScheme.primary,
+                                    decoration: TextDecoration.underline,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              if (widget.ticket.attachmentUrl != null && widget.ticket.attachmentUrl!.isNotEmpty)
+                const SizedBox(height: 16),
 
               // Description
               Card(

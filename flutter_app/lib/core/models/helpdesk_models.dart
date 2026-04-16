@@ -84,6 +84,9 @@ class HelpdeskTicketPayload extends Equatable {
   final String priority;
   final HelpdeskDepartment? department;
   final String? title;
+  final String? location;
+  final String? phone;
+  final String? attachmentUrl;
 
   const HelpdeskTicketPayload({
     this.subject = '',
@@ -92,19 +95,28 @@ class HelpdeskTicketPayload extends Equatable {
     this.priority = 'normal',
     this.department,
     this.title,
+    this.location,
+    this.phone,
+    this.attachmentUrl,
   });
 
   @override
-  List<Object?> get props => [subject, description, category, priority, department, title];
+  List<Object?> get props => [subject, description, category, priority, department, title, location, phone, attachmentUrl];
 
-  Map<String, dynamic> toJson() => {
-        if (department != null) 'department': department!.label,
-        'title': title ?? subject,
-        'subject': subject,
-        'description': description,
-        'category': category,
-        'priority': priority,
-      };
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{
+      'title': title ?? subject,
+      'subject': subject,
+      'description': description,
+      'category': category,
+      'priority': priority,
+    };
+    if (department != null) json['department'] = department!.label;
+    if (location != null && location!.isNotEmpty) json['location'] = location;
+    if (phone != null && phone!.isNotEmpty) json['phone'] = phone;
+    if (attachmentUrl != null && attachmentUrl!.isNotEmpty) json['attachmentUrl'] = attachmentUrl;
+    return json;
+  }
 }
 
 /// Helpdesk comment model (for UI)
@@ -178,6 +190,9 @@ class HelpdeskTicket extends Equatable {
   final String status;
   final String priority;
   final String? handlerUsername;
+  final String? location;
+  final String? phone;
+  final String? attachmentUrl;
   final DateTime createdAt;
   final DateTime updatedAt;
   final List<HelpdeskComment> comments;
@@ -191,6 +206,9 @@ class HelpdeskTicket extends Equatable {
     required this.status,
     this.priority = 'normal',
     this.handlerUsername,
+    this.location,
+    this.phone,
+    this.attachmentUrl,
     required this.createdAt,
     required this.updatedAt,
     this.comments = const [],
@@ -209,6 +227,9 @@ class HelpdeskTicket extends Equatable {
         status,
         priority,
         handlerUsername,
+        location,
+        phone,
+        attachmentUrl,
         createdAt,
         updatedAt,
         comments,
@@ -226,6 +247,9 @@ class HelpdeskTicket extends Equatable {
       status: json['status'] as String? ?? 'open',
       priority: json['priority'] as String? ?? 'normal',
       handlerUsername: json['handlerUsername'] as String? ?? json['assignee'] as String?,
+      location: json['location'] as String?,
+      phone: json['phone'] as String?,
+      attachmentUrl: json['attachmentUrl'] as String?,
       createdAt: json['createdAt'] is String 
           ? DateTime.parse(json['createdAt'] as String)
           : DateTime.now(),

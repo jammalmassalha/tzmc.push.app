@@ -766,6 +766,41 @@ class ChatApiService {
     }
   }
 
+  /// Get helpdesk locations for dropdown
+  Future<List<String>> getHelpdeskLocations() async {
+    final response = await _client.get<Map<String, dynamic>>(
+      ApiEndpoints.helpdeskLocations,
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+
+    if (!response.isSuccessful) {
+      throw ApiException('Helpdesk locations request failed with ${response.statusCode}');
+    }
+
+    final locations = response.data?['locations'] as List?;
+    return locations?.map((e) => e.toString()).toList() ?? [];
+  }
+
+  /// Upload helpdesk attachment
+  Future<String> uploadHelpdeskAttachment(File file) async {
+    final response = await _client.uploadFile<Map<String, dynamic>>(
+      ApiEndpoints.upload,
+      file: file,
+      fieldName: 'file',
+      retryOptions: const RetryOptions(retries: 2, timeout: NetworkTimeouts.uploadTimeout),
+    );
+
+    if (!response.isSuccessful) {
+      throw ApiException('Helpdesk attachment upload failed with ${response.statusCode}');
+    }
+
+    final url = response.data?['url'] as String? ?? response.data?['fileUrl'] as String?;
+    if (url == null || url.isEmpty) {
+      throw ApiException('No URL returned from upload');
+    }
+    return url;
+  }
+
   // ---------------------------------------------------------------------------
   // Convenience Methods (for Flutter screens)
   // ---------------------------------------------------------------------------
@@ -811,12 +846,18 @@ class ChatApiService {
     required String description,
     required String category,
     required String priority,
+    String? location,
+    String? phone,
+    String? attachmentUrl,
   }) async {
     final payload = HelpdeskTicketPayload(
       subject: subject,
       description: description,
       category: category,
       priority: priority,
+      location: location,
+      phone: phone,
+      attachmentUrl: attachmentUrl,
     );
     return _createHelpdeskTicketFromPayload(payload);
   }
