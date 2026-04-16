@@ -1,5 +1,31 @@
 # Platform Configuration Notes
 
+## Building the App
+
+### Recommended: GitHub Actions
+
+The easiest way to build is using GitHub Actions:
+
+1. Go to **Actions** tab in GitHub
+2. Select **Flutter Build** workflow
+3. Click **Run workflow**
+4. Select platforms to build (Android, Web, iOS)
+5. Download artifacts from the completed workflow run
+
+Output goes to `dist/` folder:
+- `dist/android/` - APK and AAB files
+- `dist/web/` - Web build for deployment
+- `dist/ios/` - iOS app (requires code signing)
+
+### Local Build
+
+```bash
+cd flutter_app
+./build_all.sh
+```
+
+**Note:** Local builds may fail with SSL certificate errors on corporate networks. See troubleshooting below.
+
 ## Android Setup
 
 After initializing the Flutter project with `flutter create`, configure:
@@ -32,6 +58,16 @@ After initializing the Flutter project with `flutter create`, configure:
    - Enable Push Notifications capability
    - Enable Background Modes (Remote notifications)
 
+## Web Setup
+
+The web build is configured to serve from `/fluttertest` path:
+
+```bash
+flutter build web --release --base-href /fluttertest/
+```
+
+Deploy `dist/web/` contents to your server's `/fluttertest` directory.
+
 ## Environment Variables
 
 Create a `.env` file (not committed) with:
@@ -43,3 +79,31 @@ Or use dart-define at build time:
 ```bash
 flutter build apk --dart-define=API_BASE_URL=https://www.tzmc.co.il/notify
 ```
+
+## Troubleshooting SSL Certificate Issues
+
+If you see errors like:
+```
+PKIX path building failed: unable to find valid certification path
+```
+
+This is typically caused by corporate proxies intercepting HTTPS traffic.
+
+### Solutions:
+
+1. **Use GitHub Actions** (recommended) - builds run in a clean cloud environment
+
+2. **Update Java certificates:**
+   ```bash
+   # Import your corporate CA certificate
+   keytool -import -trustcacerts -file your-ca.cer -alias corporate_ca -keystore "%JAVA_HOME%\lib\security\cacerts"
+   ```
+
+3. **Clean and rebuild:**
+   ```bash
+   flutter clean
+   flutter pub get
+   flutter build apk --release
+   ```
+
+4. **Check proxy settings** - ensure Gradle can access Maven repositories

@@ -2,6 +2,15 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+        // Fallback mirrors for corporate networks with SSL issues
+        maven {
+            url = uri("https://maven.aliyun.com/repository/google")
+            isAllowInsecureProtocol = false
+        }
+        maven {
+            url = uri("https://maven.aliyun.com/repository/central")
+            isAllowInsecureProtocol = false
+        }
     }
 }
 
