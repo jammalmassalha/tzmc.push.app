@@ -4,7 +4,6 @@
 /// Works on both native and web platforms using XFile abstraction.
 library;
 
-import 'dart:io' if (dart.library.html) 'dart:html' show File;
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
