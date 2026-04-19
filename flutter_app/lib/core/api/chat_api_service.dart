@@ -996,3 +996,11 @@ class RateLimitException extends AuthException {
   @override
   String toString() => 'RateLimitException: $message (retry after: $retryAfterSeconds seconds)';
 }
+
+/// Exception for when direct login is disabled - redirect to SMS verification flow
+class LegacyLoginDisabledException extends AuthException {
+  LegacyLoginDisabledException() : super('יש להשתמש באימות SMS לכניסה');
+
+  @override
+  String toString() => 'LegacyLoginDisabledException: Direct login is disabled. Use SMS verification code flow.';
+}

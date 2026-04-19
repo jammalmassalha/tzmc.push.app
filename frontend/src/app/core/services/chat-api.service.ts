@@ -122,6 +122,7 @@ interface SessionResponse {
   verificationRequired?: boolean;
   codeSent?: boolean;
   expiresInSeconds?: number;
+  legacyLoginDisabled?: boolean;
 }
 
 interface ClientLogPayload {

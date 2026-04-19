@@ -435,6 +435,7 @@ class SessionResponse extends Equatable {
   final bool? verificationRequired;
   final bool? codeSent;
   final int? expiresInSeconds;
+  final bool? legacyLoginDisabled;
 
   const SessionResponse({
     required this.authenticated,
@@ -446,6 +447,7 @@ class SessionResponse extends Equatable {
     this.verificationRequired,
     this.codeSent,
     this.expiresInSeconds,
+    this.legacyLoginDisabled,
   });
 
   @override
@@ -459,6 +461,7 @@ class SessionResponse extends Equatable {
         verificationRequired,
         codeSent,
         expiresInSeconds,
+        legacyLoginDisabled,
       ];
 
   factory SessionResponse.fromJson(Map<String, dynamic> json) {
@@ -472,6 +475,7 @@ class SessionResponse extends Equatable {
       verificationRequired: json['verificationRequired'] as bool?,
       codeSent: json['codeSent'] as bool?,
       expiresInSeconds: json['expiresInSeconds'] as int?,
+      legacyLoginDisabled: json['legacyLoginDisabled'] as bool?,
     );
   }
 }
