@@ -533,10 +533,20 @@ class ChatApiService {
   // ---------------------------------------------------------------------------
 
   /// Get shuttle employees
-  Future<List<String>> getShuttleEmployees() async {
+  /// 
+  /// [user] is required for backend authorization when session cookies are not available.
+  Future<List<String>> getShuttleEmployees(String user) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) {
+      throw ApiException('User is required for shuttle employees request');
+    }
+    
     final response = await _client.get<Map<String, dynamic>>(
       ApiEndpoints.shuttleEmployees,
-      queryParameters: {'_ts': DateTime.now().millisecondsSinceEpoch.toString()},
+      queryParameters: {
+        'user': normalizedUser,
+        '_ts': DateTime.now().millisecondsSinceEpoch.toString(),
+      },
       retryOptions: const RetryOptions(retries: 2, timeout: Duration(seconds: 12)),
     );
 
@@ -549,10 +559,20 @@ class ChatApiService {
   }
 
   /// Get shuttle stations
-  Future<List<String>> getShuttleStations() async {
+  /// 
+  /// [user] is required for backend authorization when session cookies are not available.
+  Future<List<String>> getShuttleStations(String user) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) {
+      throw ApiException('User is required for shuttle stations request');
+    }
+    
     final response = await _client.get<Map<String, dynamic>>(
       ApiEndpoints.shuttleStations,
-      queryParameters: {'_ts': DateTime.now().millisecondsSinceEpoch.toString()},
+      queryParameters: {
+        'user': normalizedUser,
+        '_ts': DateTime.now().millisecondsSinceEpoch.toString(),
+      },
       retryOptions: const RetryOptions(retries: 2, timeout: Duration(seconds: 12)),
     );
 
@@ -624,9 +644,17 @@ class ChatApiService {
   // ---------------------------------------------------------------------------
 
   /// Get helpdesk user tickets (dashboard)
-  Future<HelpdeskDashboard> getHelpdeskDashboard() async {
+  /// 
+  /// [user] is required for backend authorization when session cookies are not available.
+  Future<HelpdeskDashboard> getHelpdeskDashboard(String user) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) {
+      throw ApiException('User is required for helpdesk dashboard request');
+    }
+    
     final response = await _client.get<Map<String, dynamic>>(
       ApiEndpoints.helpdeskUserTickets,
+      queryParameters: {'user': normalizedUser},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 15)),
     );
 
@@ -644,10 +672,17 @@ class ChatApiService {
   }
 
   /// Create helpdesk ticket (internal with payload)
-  Future<HelpdeskTicket> _createHelpdeskTicketFromPayload(HelpdeskTicketPayload payload) async {
+  /// 
+  /// [user] is required for backend authorization when session cookies are not available.
+  Future<HelpdeskTicket> _createHelpdeskTicketFromPayload(HelpdeskTicketPayload payload, String user) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) {
+      throw ApiException('User is required for helpdesk ticket creation');
+    }
+    
     final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.helpdeskTickets,
-      data: payload.toJson(),
+      data: {...payload.toJson(), 'user': normalizedUser},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
@@ -659,10 +694,17 @@ class ChatApiService {
   }
 
   /// Update helpdesk ticket status
-  Future<void> updateHelpdeskTicketStatus(int ticketId, HelpdeskStatus status) async {
+  /// 
+  /// [user] is required for backend authorization when session cookies are not available.
+  Future<void> updateHelpdeskTicketStatus(int ticketId, HelpdeskStatus status, String user) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) {
+      throw ApiException('User is required for helpdesk ticket status update');
+    }
+    
     final response = await _client.put(
       '${ApiEndpoints.helpdeskTickets}/$ticketId/status',
-      data: {'status': status.toApiValue()},
+      data: {'status': status.toApiValue(), 'user': normalizedUser},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
@@ -672,9 +714,17 @@ class ChatApiService {
   }
 
   /// Get helpdesk ticket history
-  Future<List<HelpdeskStatusHistoryEntry>> getHelpdeskTicketHistory(int ticketId) async {
+  /// 
+  /// [user] is required for backend authorization when session cookies are not available.
+  Future<List<HelpdeskStatusHistoryEntry>> getHelpdeskTicketHistory(int ticketId, String user) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) {
+      throw ApiException('User is required for helpdesk ticket history request');
+    }
+    
     final response = await _client.get<Map<String, dynamic>>(
       '${ApiEndpoints.helpdeskTickets}/$ticketId/history',
+      queryParameters: {'user': normalizedUser},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
@@ -687,9 +737,17 @@ class ChatApiService {
   }
 
   /// Get helpdesk ticket notes
-  Future<List<HelpdeskNote>> getHelpdeskTicketNotes(int ticketId) async {
+  /// 
+  /// [user] is required for backend authorization when session cookies are not available.
+  Future<List<HelpdeskNote>> getHelpdeskTicketNotes(int ticketId, String user) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) {
+      throw ApiException('User is required for helpdesk ticket notes request');
+    }
+    
     final response = await _client.get<Map<String, dynamic>>(
       '${ApiEndpoints.helpdeskTickets}/$ticketId/notes',
+      queryParameters: {'user': normalizedUser},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
@@ -702,13 +760,20 @@ class ChatApiService {
   }
 
   /// Add helpdesk ticket note
-  Future<HelpdeskNote> addHelpdeskTicketNote(int ticketId, String noteText, {XFile? attachment}) async {
+  /// 
+  /// [user] is required for backend authorization when session cookies are not available.
+  Future<HelpdeskNote> addHelpdeskTicketNote(int ticketId, String noteText, String user, {XFile? attachment}) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) {
+      throw ApiException('User is required for helpdesk note creation');
+    }
+    
     if (attachment != null) {
       final response = await _client.uploadFile<Map<String, dynamic>>(
         '${ApiEndpoints.helpdeskTickets}/$ticketId/notes',
         file: attachment,
         fieldName: 'attachment',
-        additionalFields: {'noteText': noteText},
+        additionalFields: {'noteText': noteText, 'user': normalizedUser},
         retryOptions: const RetryOptions(retries: 1, timeout: NetworkTimeouts.uploadTimeout),
       );
 
@@ -720,7 +785,7 @@ class ChatApiService {
     } else {
       final response = await _client.post<Map<String, dynamic>>(
         '${ApiEndpoints.helpdeskTickets}/$ticketId/notes',
-        data: {'noteText': noteText},
+        data: {'noteText': noteText, 'user': normalizedUser},
         retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
       );
 
@@ -733,9 +798,17 @@ class ChatApiService {
   }
 
   /// Get helpdesk locations for dropdown
-  Future<List<String>> getHelpdeskLocations() async {
+  /// 
+  /// [user] is required for backend authorization when session cookies are not available.
+  Future<List<String>> getHelpdeskLocations(String user) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) {
+      throw ApiException('User is required for helpdesk locations request');
+    }
+    
     final response = await _client.get<Map<String, dynamic>>(
       ApiEndpoints.helpdeskLocations,
+      queryParameters: {'user': normalizedUser},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
@@ -801,13 +874,18 @@ class ChatApiService {
   }
 
   /// Get helpdesk tickets (convenience wrapper)
-  Future<List<HelpdeskTicket>> getHelpdeskTickets() async {
-    final dashboard = await getHelpdeskDashboard();
+  /// 
+  /// [user] is required for backend authorization when session cookies are not available.
+  Future<List<HelpdeskTicket>> getHelpdeskTickets(String user) async {
+    final dashboard = await getHelpdeskDashboard(user);
     return dashboard.tickets;
   }
 
   /// Create helpdesk ticket (convenience wrapper with named params)
+  /// 
+  /// [user] is required for backend authorization when session cookies are not available.
   Future<HelpdeskTicket> createHelpdeskTicket({
+    required String user,
     required String subject,
     required String description,
     required String category,
@@ -825,17 +903,21 @@ class ChatApiService {
       phone: phone,
       attachmentUrl: attachmentUrl,
     );
-    return _createHelpdeskTicketFromPayload(payload);
+    return _createHelpdeskTicketFromPayload(payload, user);
   }
 
   /// Add helpdesk comment (wrapper)
-  Future<void> addHelpdeskComment(String ticketId, String comment) async {
-    await addHelpdeskTicketNote(int.parse(ticketId), comment);
+  /// 
+  /// [user] is required for backend authorization when session cookies are not available.
+  Future<void> addHelpdeskComment(String ticketId, String comment, String user) async {
+    await addHelpdeskTicketNote(int.parse(ticketId), comment, user);
   }
 
   /// Get ticket history (wrapper)
-  Future<List<HelpdeskStatusHistory>> getTicketHistory(String ticketId) async {
-    final entries = await getHelpdeskTicketHistory(int.parse(ticketId));
+  /// 
+  /// [user] is required for backend authorization when session cookies are not available.
+  Future<List<HelpdeskStatusHistory>> getTicketHistory(String ticketId, String user) async {
+    final entries = await getHelpdeskTicketHistory(int.parse(ticketId), user);
     return entries.map((e) => HelpdeskStatusHistory(
       id: e.id,
       oldStatus: e.oldStatus,

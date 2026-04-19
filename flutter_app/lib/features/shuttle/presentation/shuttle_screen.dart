@@ -71,13 +71,21 @@ class ShuttleNotifier extends Notifier<ShuttleState> {
   }
 
   Future<void> loadData() async {
+    if (_currentUser == null) {
+      state = state.copyWith(
+        isLoading: false,
+        error: 'יש להתחבר תחילה',
+      );
+      return;
+    }
+    
     state = state.copyWith(isLoading: true, error: null);
 
     try {
       // Load stations and user orders in parallel
       final results = await Future.wait([
-        _api.getShuttleStations(),
-        _currentUser != null ? _api.getShuttleUserOrders(_currentUser!) : Future.value(<ShuttleUserOrderPayload>[]),
+        _api.getShuttleStations(_currentUser!),
+        _api.getShuttleUserOrders(_currentUser!),
       ]);
       
       state = state.copyWith(

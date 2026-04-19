@@ -502,12 +502,12 @@ Transports: [polling, websocket]
 
 ### Get Employees
 ```
-GET /shuttle/employees
+GET /shuttle/employees?user={username}
 ```
 
 ### Get Stations
 ```
-GET /shuttle/stations
+GET /shuttle/stations?user={username}
 ```
 
 ### Submit Order
@@ -542,14 +542,15 @@ GET /shuttle/orders/operations?fromDate=2024-01-01&force=1
 
 ## Helpdesk
 
-### Get Dashboard
+### Get User Tickets (Dashboard)
 ```
-GET /helpdesk/dashboard
+GET /helpdesk/tickets/user?user={username}
 ```
 
 **Response:**
 ```json
 {
+  "result": "success",
   "ongoing": [...],
   "past": [...],
   "assigned": [...],

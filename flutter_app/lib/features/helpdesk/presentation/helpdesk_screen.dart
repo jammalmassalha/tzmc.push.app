@@ -12,6 +12,7 @@ import 'package:intl/intl.dart';
 import '../../../core/api/chat_api_service.dart';
 import '../../../core/models/helpdesk_models.dart';
 import '../../../shared/theme/app_theme.dart';
+import '../../auth/presentation/auth_state.dart';
 
 // ---------------------------------------------------------------------------
 // Helpdesk State
@@ -47,18 +48,28 @@ class HelpdeskState {
 
 class HelpdeskNotifier extends Notifier<HelpdeskState> {
   late final ChatApiService _api;
+  String? _currentUser;
 
   @override
   HelpdeskState build() {
     _api = ref.watch(chatApiServiceProvider);
+    _currentUser = ref.watch(currentUserProvider);
     return const HelpdeskState();
   }
 
   Future<void> loadTickets() async {
+    if (_currentUser == null) {
+      state = state.copyWith(
+        isLoading: false,
+        error: 'יש להתחבר תחילה',
+      );
+      return;
+    }
+    
     state = state.copyWith(isLoading: true, error: null);
 
     try {
-      final tickets = await _api.getHelpdeskTickets();
+      final tickets = await _api.getHelpdeskTickets(_currentUser!);
       state = state.copyWith(
         tickets: tickets,
         isLoading: false,
@@ -80,10 +91,15 @@ class HelpdeskNotifier extends Notifier<HelpdeskState> {
     String? phone,
     String? attachmentUrl,
   }) async {
+    if (_currentUser == null) {
+      throw Exception('יש להתחבר תחילה');
+    }
+    
     state = state.copyWith(isLoading: true, error: null);
 
     try {
       final ticket = await _api.createHelpdeskTicket(
+        user: _currentUser!,
         subject: subject,
         description: description,
         category: category,
@@ -105,16 +121,22 @@ class HelpdeskNotifier extends Notifier<HelpdeskState> {
 
   /// Load helpdesk locations for dropdown
   Future<List<String>> loadLocations() async {
+    if (_currentUser == null) return [];
+    
     try {
-      return await _api.getHelpdeskLocations();
+      return await _api.getHelpdeskLocations(_currentUser!);
     } catch (e) {
       return [];
     }
   }
 
   Future<void> addComment(String ticketId, String comment) async {
+    if (_currentUser == null) {
+      throw Exception('יש להתחבר תחילה');
+    }
+    
     try {
-      await _api.addHelpdeskComment(ticketId, comment);
+      await _api.addHelpdeskComment(ticketId, comment, _currentUser!);
       await loadTickets();
     } catch (e) {
       state = state.copyWith(
