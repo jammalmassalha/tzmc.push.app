@@ -80,7 +80,7 @@ class ApiEndpoints {
   // Helpdesk
   static const String helpdesk = '/helpdesk';
   static const String helpdeskTickets = '/helpdesk/tickets';
-  static const String helpdeskDashboard = '/helpdesk/dashboard';
+  static const String helpdeskUserTickets = '/helpdesk/tickets/user';
   static const String helpdeskMyRole = '/helpdesk/my-role';
   static const String helpdeskHandlers = '/helpdesk/handlers';
   static const String helpdeskLocations = '/helpdesk/locations';

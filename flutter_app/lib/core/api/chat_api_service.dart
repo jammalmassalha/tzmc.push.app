@@ -623,18 +623,24 @@ class ChatApiService {
   // Helpdesk
   // ---------------------------------------------------------------------------
 
-  /// Get helpdesk dashboard
+  /// Get helpdesk user tickets (dashboard)
   Future<HelpdeskDashboard> getHelpdeskDashboard() async {
     final response = await _client.get<Map<String, dynamic>>(
-      ApiEndpoints.helpdeskDashboard,
-      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+      ApiEndpoints.helpdeskUserTickets,
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 15)),
     );
 
     if (!response.isSuccessful) {
-      throw ApiException('Helpdesk dashboard request failed with ${response.statusCode}');
+      throw ApiException('Helpdesk tickets request failed with ${response.statusCode}');
     }
 
-    return HelpdeskDashboard.fromJson(response.data ?? {});
+    final data = response.data ?? {};
+    // Backend returns result, ongoing, past, assigned
+    if (data['result'] != 'success') {
+      throw ApiException(data['message']?.toString() ?? 'שגיאה בטעינת הקריאות');
+    }
+
+    return HelpdeskDashboard.fromJson(data);
   }
 
   /// Create helpdesk ticket (internal with payload)
