@@ -15,6 +15,18 @@ import '../../../shared/theme/app_theme.dart';
 import '../../auth/presentation/auth_state.dart';
 
 // ---------------------------------------------------------------------------
+// Shuttle Booking Flow Step
+// ---------------------------------------------------------------------------
+
+/// Represents the current step in the shuttle booking wizard
+enum ShuttleBookingStep {
+  menu,      // Initial menu - "הזמנה חדשה" button
+  date,      // Date selection
+  shift,     // Shift selection (morning/evening)
+  station,   // Station selection
+}
+
+// ---------------------------------------------------------------------------
 // Shuttle State
 // ---------------------------------------------------------------------------
 
@@ -24,12 +36,22 @@ class ShuttleState {
   final List<ShuttleUserOrderPayload> userOrders;
   final bool isLoading;
   final String? error;
+  
+  // Booking wizard state
+  final ShuttleBookingStep currentStep;
+  final DateTime? selectedDate;
+  final String? selectedShift;
+  final String? selectedStation;
 
   const ShuttleState({
     this.stations = const [],
     this.userOrders = const [],
     this.isLoading = false,
     this.error,
+    this.currentStep = ShuttleBookingStep.menu,
+    this.selectedDate,
+    this.selectedShift,
+    this.selectedStation,
   });
 
   ShuttleState copyWith({
@@ -37,12 +59,23 @@ class ShuttleState {
     List<ShuttleUserOrderPayload>? userOrders,
     bool? isLoading,
     String? error,
+    ShuttleBookingStep? currentStep,
+    DateTime? selectedDate,
+    String? selectedShift,
+    String? selectedStation,
+    bool clearDate = false,
+    bool clearShift = false,
+    bool clearStation = false,
   }) {
     return ShuttleState(
       stations: stations ?? this.stations,
       userOrders: userOrders ?? this.userOrders,
       isLoading: isLoading ?? this.isLoading,
       error: error,
+      currentStep: currentStep ?? this.currentStep,
+      selectedDate: clearDate ? null : (selectedDate ?? this.selectedDate),
+      selectedShift: clearShift ? null : (selectedShift ?? this.selectedShift),
+      selectedStation: clearStation ? null : (selectedStation ?? this.selectedStation),
     );
   }
   
@@ -53,6 +86,9 @@ class ShuttleState {
   /// Get past orders
   List<ShuttleUserOrderPayload> get pastOrders => 
     userOrders.where((o) => !o.isOngoing || o.isCancelled).toList();
+    
+  /// Check if we can go back from current step
+  bool get canGoBack => currentStep != ShuttleBookingStep.menu;
 }
 
 // ---------------------------------------------------------------------------
@@ -138,6 +174,8 @@ class ShuttleNotifier extends Notifier<ShuttleState> {
       await _api.submitShuttleOrder(payload, _currentUser!);
       await loadUserOrders();
       state = state.copyWith(isLoading: false);
+      // Reset wizard after successful submission
+      resetWizard();
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
@@ -145,6 +183,122 @@ class ShuttleNotifier extends Notifier<ShuttleState> {
       );
       rethrow;
     }
+  }
+  
+  // ---------------------------------------------------------------------------
+  // Wizard Navigation Methods
+  // ---------------------------------------------------------------------------
+  
+  /// Start a new order (move from menu to date selection)
+  void startNewOrder() {
+    state = state.copyWith(
+      currentStep: ShuttleBookingStep.date,
+      clearDate: true,
+      clearShift: true,
+      clearStation: true,
+    );
+  }
+  
+  /// Select a date and move to shift selection
+  void selectDate(DateTime date) {
+    state = state.copyWith(
+      selectedDate: date,
+      currentStep: ShuttleBookingStep.shift,
+      clearShift: true,
+      clearStation: true,
+    );
+  }
+  
+  /// Select a shift and move to station selection
+  void selectShift(String shift) {
+    state = state.copyWith(
+      selectedShift: shift,
+      currentStep: ShuttleBookingStep.station,
+      clearStation: true,
+    );
+  }
+  
+  /// Select a station and submit the order
+  Future<void> selectStationAndSubmit(String station) async {
+    final date = state.selectedDate;
+    final shift = state.selectedShift;
+    
+    if (date == null || shift == null) {
+      state = state.copyWith(error: 'אנא בחר תאריך ומשמרת');
+      return;
+    }
+    
+    state = state.copyWith(selectedStation: station);
+    
+    final dateFormatted = DateFormat('dd/MM/yyyy').format(date);
+    final dateAlt = DateFormat('yyyy-MM-dd').format(date);
+    
+    await submitOrder(
+      date: dateFormatted,
+      dateAlt: dateAlt,
+      shift: shift,
+      station: station,
+      status: 'הזמנה חדשה',
+    );
+  }
+  
+  /// Go back to previous step
+  void goBack() {
+    switch (state.currentStep) {
+      case ShuttleBookingStep.menu:
+        // Already at menu, do nothing
+        break;
+      case ShuttleBookingStep.date:
+        state = state.copyWith(
+          currentStep: ShuttleBookingStep.menu,
+          clearDate: true,
+        );
+        break;
+      case ShuttleBookingStep.shift:
+        state = state.copyWith(
+          currentStep: ShuttleBookingStep.date,
+          clearShift: true,
+        );
+        break;
+      case ShuttleBookingStep.station:
+        state = state.copyWith(
+          currentStep: ShuttleBookingStep.shift,
+          clearStation: true,
+        );
+        break;
+    }
+  }
+  
+  /// Reset wizard to initial state
+  void resetWizard() {
+    state = state.copyWith(
+      currentStep: ShuttleBookingStep.menu,
+      clearDate: true,
+      clearShift: true,
+      clearStation: true,
+    );
+  }
+  
+  /// Get available dates for shuttle booking (next 10 days)
+  List<DateTime> getAvailableDates() {
+    final now = DateTime.now();
+    final dates = <DateTime>[];
+    for (int i = 1; i <= 10; i++) {
+      final date = now.add(Duration(days: i));
+      // Skip Saturdays (weekend in Israel)
+      if (date.weekday != DateTime.saturday) {
+        dates.add(date);
+      }
+    }
+    return dates;
+  }
+  
+  /// Get shift options
+  List<Map<String, String>> getShiftOptions() {
+    return [
+      {'value': 'בוקר', 'label': '🌅 בוקר'},
+      {'value': 'ערב', 'label': '🌙 ערב'},
+    ];
   }
 }
 
@@ -229,27 +383,18 @@ class _ShuttleScreenState extends ConsumerState<ShuttleScreen> with SingleTicker
 }
 
 // ---------------------------------------------------------------------------
-// New Order Tab
+// New Order Tab (Wizard Flow)
 // ---------------------------------------------------------------------------
 
-class _NewOrderTab extends ConsumerStatefulWidget {
+class _NewOrderTab extends ConsumerWidget {
   final ShuttleState state;
 
   const _NewOrderTab({required this.state});
 
   @override
-  ConsumerState<_NewOrderTab> createState() => _NewOrderTabState();
-}
-
-class _NewOrderTabState extends ConsumerState<_NewOrderTab> {
-  DateTime _selectedDate = DateTime.now().add(const Duration(days: 1));
-  String? _selectedStation;
-  String _selectedShift = 'morning'; // morning, evening
-
-  @override
-  Widget build(BuildContext context) {
-    final state = widget.state;
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    final notifier = ref.read(shuttleProvider.notifier);
 
     if (state.isLoading && state.stations.isEmpty) {
       return const Center(child: CircularProgressIndicator());
@@ -271,10 +416,11 @@ class _NewOrderTabState extends ConsumerState<_NewOrderTab> {
               style: theme.textTheme.titleLarge?.copyWith(
                 color: theme.colorScheme.onSurface.withAlpha((255 * 0.6).round()),
               ),
+              textDirection: ui.TextDirection.rtl,
             ),
             const SizedBox(height: 16),
             ElevatedButton.icon(
-              onPressed: () => ref.read(shuttleProvider.notifier).loadData(),
+              onPressed: () => notifier.loadData(),
               icon: const Icon(Icons.refresh),
               label: const Text('רענן'),
             ),
@@ -285,169 +431,352 @@ class _NewOrderTabState extends ConsumerState<_NewOrderTab> {
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
-      child: Card(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'הזמנת הסעה חדשה',
-                style: theme.textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 24),
+      child: Column(
+        children: [
+          // Current step card
+          _buildCurrentStepCard(context, ref, state, notifier),
+          
+          // Loading indicator
+          if (state.isLoading)
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: CircularProgressIndicator(),
+            ),
+        ],
+      ),
+    );
+  }
 
-              // Date picker
-              _FormField(
-                label: 'תאריך',
-                child: InkWell(
-                  onTap: () async {
-                    final date = await showDatePicker(
-                      context: context,
-                      initialDate: _selectedDate,
-                      firstDate: DateTime.now(),
-                      lastDate: DateTime.now().add(const Duration(days: 30)),
-                    );
-                    if (date != null) {
-                      setState(() => _selectedDate = date);
-                    }
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-                    decoration: BoxDecoration(
-                      border: Border.all(color: theme.colorScheme.outline),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.calendar_today),
-                        const SizedBox(width: 8),
-                        Text(
-                          DateFormat.yMMMd('he').format(_selectedDate),
-                          style: theme.textTheme.bodyLarge,
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
+  Widget _buildCurrentStepCard(
+    BuildContext context,
+    WidgetRef ref,
+    ShuttleState state,
+    ShuttleNotifier notifier,
+  ) {
+    final theme = Theme.of(context);
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Step indicator (breadcrumbs)
+            _buildBreadcrumbs(context, state),
+            const SizedBox(height: 24),
+            
+            // Current step content
+            _buildStepContent(context, ref, state, notifier, theme),
+            
+            // Back button
+            if (state.canGoBack && !state.isLoading) ...[
               const SizedBox(height: 16),
-
-              // Shift selection
-              _FormField(
-                label: 'משמרת',
-                child: SegmentedButton<String>(
-                  segments: const [
-                    ButtonSegment(value: 'morning', label: Text('בוקר')),
-                    ButtonSegment(value: 'evening', label: Text('ערב')),
-                  ],
-                  selected: {_selectedShift},
-                  onSelectionChanged: (selection) {
-                    setState(() => _selectedShift = selection.first);
-                  },
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              // Station dropdown
-              _FormField(
-                label: 'תחנה',
-                child: DropdownButtonFormField<String>(
-                  value: _selectedStation,
-                  decoration: InputDecoration(
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-                  ),
-                  hint: const Text('בחר תחנה'),
-                  items: state.stations.map((station) {
-                    return DropdownMenuItem(
-                      value: station,
-                      child: Text(station),
-                    );
-                  }).toList(),
-                  onChanged: (value) {
-                    setState(() => _selectedStation = value);
-                  },
-                ),
-              ),
-              const SizedBox(height: 24),
-
-              // Submit button
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: _selectedStation != null && !state.isLoading
-                      ? () => _submitOrder(context)
-                      : null,
-                  icon: state.isLoading 
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.directions_bus),
-                  label: const Text('שלח הזמנה'),
-                ),
+              TextButton.icon(
+                onPressed: () => notifier.goBack(),
+                icon: const Icon(Icons.arrow_back),
+                label: const Text('חזרה'),
               ),
             ],
-          ),
+          ],
         ),
       ),
     );
   }
 
-  Future<void> _submitOrder(BuildContext context) async {
-    if (_selectedStation == null) return;
+  Widget _buildBreadcrumbs(BuildContext context, ShuttleState state) {
+    final theme = Theme.of(context);
+    final steps = [
+      ('menu', 'התחלה', state.currentStep == ShuttleBookingStep.menu),
+      ('date', 'תאריך', state.currentStep == ShuttleBookingStep.date),
+      ('shift', 'משמרת', state.currentStep == ShuttleBookingStep.shift),
+      ('station', 'תחנה', state.currentStep == ShuttleBookingStep.station),
+    ];
 
-    final dateFormatted = DateFormat('dd/MM/yyyy').format(_selectedDate);
-    final dateAlt = DateFormat('yyyy-MM-dd').format(_selectedDate);
-    
-    try {
-      await ref.read(shuttleProvider.notifier).submitOrder(
-        date: dateFormatted,
-        dateAlt: dateAlt,
-        shift: _selectedShift == 'morning' ? 'בוקר' : 'ערב',
-        station: _selectedStation!,
-        status: 'הזמנה חדשה',
-      );
-      
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('ההזמנה נשלחה בהצלחה!'),
-            backgroundColor: AppColors.success,
+    final currentIndex = ShuttleBookingStep.values.indexOf(state.currentStep);
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        for (int i = 0; i < steps.length; i++) ...[
+          if (i > 0)
+            Container(
+              width: 24,
+              height: 2,
+              color: i <= currentIndex 
+                  ? theme.colorScheme.primary 
+                  : theme.colorScheme.outline.withAlpha((255 * 0.3).round()),
+            ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: i <= currentIndex 
+                  ? theme.colorScheme.primary 
+                  : theme.colorScheme.surface,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: i <= currentIndex 
+                    ? theme.colorScheme.primary 
+                    : theme.colorScheme.outline,
+              ),
+            ),
+            child: Text(
+              steps[i].$2,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: i <= currentIndex 
+                    ? theme.colorScheme.onPrimary 
+                    : theme.colorScheme.onSurface,
+                fontWeight: steps[i].$3 ? FontWeight.bold : FontWeight.normal,
+              ),
+            ),
           ),
-        );
-      }
-    } catch (e) {
-      // Error is handled by state
+        ],
+      ],
+    );
+  }
+
+  Widget _buildStepContent(
+    BuildContext context,
+    WidgetRef ref,
+    ShuttleState state,
+    ShuttleNotifier notifier,
+    ThemeData theme,
+  ) {
+    switch (state.currentStep) {
+      case ShuttleBookingStep.menu:
+        return _buildMenuStep(context, notifier, theme);
+      case ShuttleBookingStep.date:
+        return _buildDateStep(context, notifier, theme);
+      case ShuttleBookingStep.shift:
+        return _buildShiftStep(context, state, notifier, theme);
+      case ShuttleBookingStep.station:
+        return _buildStationStep(context, ref, state, notifier, theme);
     }
   }
-}
 
-class _FormField extends StatelessWidget {
-  final String label;
-  final Widget child;
-
-  const _FormField({required this.label, required this.child});
-
-  @override
-  Widget build(BuildContext context) {
+  Widget _buildMenuStep(BuildContext context, ShuttleNotifier notifier, ThemeData theme) {
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        Icon(
+          Icons.directions_bus,
+          size: 64,
+          color: theme.colorScheme.primary,
+        ),
+        const SizedBox(height: 16),
         Text(
-          label,
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-            fontWeight: FontWeight.w500,
+          'מה תרצה לבצע?',
+          style: theme.textTheme.titleLarge?.copyWith(
+            fontWeight: FontWeight.bold,
           ),
+          textAlign: TextAlign.center,
+          textDirection: ui.TextDirection.rtl,
         ),
         const SizedBox(height: 8),
-        child,
+        Text(
+          'הזמנה חדשה בלחיצה אחת',
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurface.withAlpha((255 * 0.6).round()),
+          ),
+          textAlign: TextAlign.center,
+          textDirection: ui.TextDirection.rtl,
+        ),
+        const SizedBox(height: 24),
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton.icon(
+            onPressed: () => notifier.startNewOrder(),
+            icon: const Icon(Icons.add),
+            label: const Text('🚐 הזמנה חדשה'),
+            style: ElevatedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDateStep(BuildContext context, ShuttleNotifier notifier, ThemeData theme) {
+    final availableDates = notifier.getAvailableDates();
+    final hebrewDays = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
+    
+    return Column(
+      children: [
+        Text(
+          'בחר תאריך נסיעה',
+          style: theme.textTheme.titleLarge?.copyWith(
+            fontWeight: FontWeight.bold,
+          ),
+          textAlign: TextAlign.center,
+          textDirection: ui.TextDirection.rtl,
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'התאריכים זמינים ל-10 הימים הקרובים',
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurface.withAlpha((255 * 0.6).round()),
+          ),
+          textAlign: TextAlign.center,
+          textDirection: ui.TextDirection.rtl,
+        ),
+        const SizedBox(height: 16),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          alignment: WrapAlignment.center,
+          children: availableDates.map((date) {
+            final dayName = hebrewDays[(date.weekday % 7)];
+            final dateStr = DateFormat('dd/MM').format(date);
+            return OutlinedButton(
+              onPressed: () => notifier.selectDate(date),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'יום $dayName',
+                    style: theme.textTheme.bodySmall,
+                    textDirection: ui.TextDirection.rtl,
+                  ),
+                  Text(
+                    dateStr,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }).toList(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildShiftStep(BuildContext context, ShuttleState state, ShuttleNotifier notifier, ThemeData theme) {
+    final shiftOptions = notifier.getShiftOptions();
+    final selectedDate = state.selectedDate;
+    final hebrewDays = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
+    
+    String dateLabel = '';
+    if (selectedDate != null) {
+      final dayName = hebrewDays[(selectedDate.weekday % 7)];
+      dateLabel = 'יום $dayName ${DateFormat('dd/MM/yyyy').format(selectedDate)}';
+    }
+    
+    return Column(
+      children: [
+        Text(
+          'בחר משמרת',
+          style: theme.textTheme.titleLarge?.copyWith(
+            fontWeight: FontWeight.bold,
+          ),
+          textAlign: TextAlign.center,
+          textDirection: ui.TextDirection.rtl,
+        ),
+        const SizedBox(height: 8),
+        if (dateLabel.isNotEmpty)
+          Text(
+            dateLabel,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.primary,
+            ),
+            textAlign: TextAlign.center,
+            textDirection: ui.TextDirection.rtl,
+          ),
+        const SizedBox(height: 16),
+        Text(
+          'הסעה לעבודה',
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurface.withAlpha((255 * 0.6).round()),
+          ),
+          textAlign: TextAlign.center,
+          textDirection: ui.TextDirection.rtl,
+        ),
+        const SizedBox(height: 16),
+        Row(
+          children: shiftOptions.map((option) {
+            return Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: OutlinedButton(
+                  onPressed: () => notifier.selectShift(option['value']!),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 20),
+                  ),
+                  child: Text(
+                    option['label']!,
+                    style: theme.textTheme.titleMedium,
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildStationStep(
+    BuildContext context,
+    WidgetRef ref,
+    ShuttleState state,
+    ShuttleNotifier notifier,
+    ThemeData theme,
+  ) {
+    final stations = state.stations;
+    
+    return Column(
+      children: [
+        Text(
+          'בחר תחנה',
+          style: theme.textTheme.titleLarge?.copyWith(
+            fontWeight: FontWeight.bold,
+          ),
+          textAlign: TextAlign.center,
+          textDirection: ui.TextDirection.rtl,
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'לחץ על התחנה הרצויה',
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurface.withAlpha((255 * 0.6).round()),
+          ),
+          textAlign: TextAlign.center,
+          textDirection: ui.TextDirection.rtl,
+        ),
+        const SizedBox(height: 16),
+        DropdownButtonFormField<String>(
+          decoration: InputDecoration(
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+            labelText: 'בחר תחנה',
+          ),
+          hint: const Text('בחר תחנה מהרשימה'),
+          items: stations.map((station) {
+            return DropdownMenuItem(
+              value: station,
+              child: Text(station, textDirection: ui.TextDirection.rtl),
+            );
+          }).toList(),
+          onChanged: state.isLoading ? null : (value) async {
+            if (value != null) {
+              await notifier.selectStationAndSubmit(value);
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('ההזמנה נשלחה בהצלחה!'),
+                    backgroundColor: AppColors.success,
+                  ),
+                );
+              }
+            }
+          },
+        ),
       ],
     );
   }

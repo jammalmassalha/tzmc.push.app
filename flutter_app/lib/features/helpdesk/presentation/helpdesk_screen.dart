@@ -241,11 +241,93 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
   }
 
   void _showCreateTicketDialog(BuildContext context) {
+    // First show department selection dialog (matches Angular flow)
+    _showDepartmentSelectionDialog(context);
+  }
+
+  /// Show department selection dialog (first step of ticket creation)
+  void _showDepartmentSelectionDialog(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'בחר מחלקה',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                  textAlign: TextAlign.center,
+                  textDirection: ui.TextDirection.rtl,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'לאיזו מחלקה שייכת הבקשה?',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.6).round()),
+                  ),
+                  textAlign: TextAlign.center,
+                  textDirection: ui.TextDirection.rtl,
+                ),
+                const SizedBox(height: 24),
+                
+                // IT button
+                OutlinedButton.icon(
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    _showTicketFormDialog(context, HelpdeskDepartment.it);
+                  },
+                  icon: const Icon(Icons.computer),
+                  label: const Text('🖥️ מערכות מידע'),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                
+                // Maintenance button
+                OutlinedButton.icon(
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    _showTicketFormDialog(context, HelpdeskDepartment.maintenance);
+                  },
+                  icon: const Icon(Icons.build),
+                  label: const Text('🔧 אחזקה'),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                
+                // Back button
+                TextButton.icon(
+                  onPressed: () => Navigator.of(context).pop(),
+                  icon: const Icon(Icons.arrow_back),
+                  label: const Text('חזרה'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Show ticket creation form (second step, after department selection)
+  void _showTicketFormDialog(BuildContext context, HelpdeskDepartment selectedDepartment) {
     final subjectController = TextEditingController();
     final descriptionController = TextEditingController();
     final locationController = TextEditingController();
     final phoneController = TextEditingController();
-    HelpdeskDepartment selectedDepartment = HelpdeskDepartment.it;
     String selectedPriority = 'normal';
     List<String> availableLocations = [];
     bool isLoadingLocations = true;
@@ -260,7 +342,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setState) => AlertDialog(
-          title: const Text('פנייה חדשה', textDirection: ui.TextDirection.rtl),
+          title: Text('קריאה חדשה · ${selectedDepartment.label}', textDirection: ui.TextDirection.rtl),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -339,22 +421,6 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
                     border: OutlineInputBorder(),
                     hintText: '05X-XXXXXXX',
                   ),
-                ),
-                const SizedBox(height: 16),
-
-                // Department dropdown
-                DropdownButtonFormField<HelpdeskDepartment>(
-                  value: selectedDepartment,
-                  decoration: const InputDecoration(
-                    labelText: 'מחלקה',
-                    border: OutlineInputBorder(),
-                  ),
-                  items: HelpdeskDepartment.values.map((dept) => 
-                    DropdownMenuItem(value: dept, child: Text(dept.label)),
-                  ).toList(),
-                  onChanged: (value) {
-                    setState(() => selectedDepartment = value ?? HelpdeskDepartment.it);
-                  },
                 ),
                 const SizedBox(height: 16),
 
