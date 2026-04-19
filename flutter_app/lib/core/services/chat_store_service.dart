@@ -403,7 +403,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     try {
       // Send via API
-      await _api.sendDirectMessage(
+      await _api.sendDirectMessageWithParams(
         recipient: recipient,
         body: body,
         imageUrl: imageUrl,
