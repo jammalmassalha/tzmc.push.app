@@ -772,15 +772,8 @@ export class ChatStoreService {
     }).catch(() => undefined);
   }
 
-  async registerUser(rawValue: string): Promise<void> {
-    const normalized = this.normalizePhone(rawValue);
-    if (!normalized) {
-      throw new Error('מספר טלפון לא תקין');
-    }
-
-    const user = await this.api.createSession(this.normalizeUser(normalized));
-    await this.applyAuthenticatedSessionUser(user);
-  }
+  // NOTE: Direct login (registerUser) has been removed because it is disabled on the server.
+  // All login flows must use the SMS verification code flow via requestUserVerificationCode() and verifyUserVerificationCode().
 
   async requestUserVerificationCode(rawValue: string): Promise<string> {
     const normalized = this.normalizePhone(rawValue);

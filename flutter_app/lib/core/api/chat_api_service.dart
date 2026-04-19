@@ -58,47 +58,8 @@ class ChatApiService {
     }
   }
 
-  /// Create session (login)
-  Future<String> createSession(String user) async {
-    final normalized = user.trim().toLowerCase();
-    if (normalized.isEmpty) {
-      throw AuthException('מספר טלפון לא תקין');
-    }
-
-    final response = await _client.post<Map<String, dynamic>>(
-      ApiEndpoints.session,
-      data: {'user': normalized},
-      retryOptions: const RetryOptions(retries: 1, timeout: NetworkTimeouts.sessionTimeout),
-    );
-
-    if (!response.isSuccessful) {
-      final body = response.data;
-      final message = (body?['message'] ?? body?['error'] ?? '').toString().trim();
-
-      if (response.statusCode == 400) {
-        throw AuthException('מספר טלפון לא תקין');
-      } else if (response.statusCode == 403) {
-        throw AuthException('המשתמש אינו מורשה');
-      } else if (response.statusCode == 429) {
-        final retryAfter = body?['retryAfterSeconds'] as int?;
-        throw RateLimitException('יותר מדי ניסיונות. נסה שוב בעוד $retryAfter שניות', retryAfter);
-      } else if (message.isNotEmpty) {
-        throw AuthException(message);
-      }
-      throw AuthException('נכשל בהתחברות');
-    }
-
-    final body = SessionResponse.fromJson(response.data ?? {});
-    _client.setCsrfToken(body.csrfToken);
-
-    final sessionUser = body.user?.trim().toLowerCase();
-    if (!body.authenticated || (sessionUser?.isEmpty ?? true)) {
-      _client.clearCsrfToken();
-      throw AuthException('נכשל בהתחברות');
-    }
-
-    return sessionUser!;
-  }
+  // NOTE: Direct login (createSession) has been removed because it is disabled on the server.
+  // All login flows must use the SMS verification code flow via requestSessionCode() and verifySessionCode().
 
   /// Request SMS verification code
   Future<int> requestSessionCode(String user) async {
