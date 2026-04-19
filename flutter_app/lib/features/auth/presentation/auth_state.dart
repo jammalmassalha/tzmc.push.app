@@ -112,30 +112,13 @@ class AuthNotifier extends Notifier<AuthState> {
   }
 
   /// Login with phone number
+  /// 
+  /// Since direct login is disabled on the server, this method now
+  /// directly requests an SMS verification code.
   Future<void> login(String phoneNumber) async {
-    final previousState = state;
-    state = const AuthLoading();
-
-    try {
-      // Try direct login first (for allowed users without code)
-      final user = await _apiService.createSession(phoneNumber);
-      await _secureStorage.write(key: _userKey, value: user);
-      state = AuthAuthenticated(user: user);
-      _logger.i('Direct login successful for: $user');
-    } on AuthException catch (e) {
-      // Check if SMS verification is required
-      if (e.message.contains('אימות') || e.message.contains('verify')) {
-        await requestCode(phoneNumber);
-      } else {
-        state = AuthError(message: e.message, previousState: previousState);
-      }
-    } catch (e) {
-      state = AuthError(
-        message: 'שגיאה בהתחברות',
-        previousState: previousState,
-      );
-      _logger.e('Login error: $e');
-    }
+    // Direct login is disabled on the server.
+    // Always use the SMS verification code flow.
+    await requestCode(phoneNumber);
   }
 
   /// Request SMS verification code
