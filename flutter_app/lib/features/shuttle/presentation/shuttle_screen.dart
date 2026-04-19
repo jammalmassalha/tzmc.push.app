@@ -3,9 +3,9 @@
 /// Allows users to book shuttle rides and view their bookings.
 library;
 
-import 'dart:ui' show TextDirection;
+import 'dart:ui' as ui;
 
-import 'package:flutter/material.dart' hide TextDirection;
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
@@ -414,7 +414,7 @@ class _RouteCard extends ConsumerWidget {
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setState) => AlertDialog(
-          title: Text('הזמנת הסעה - ${route.name}', textDirection: TextDirection.rtl),
+          title: Text('הזמנת הסעה - ${route.name}', textDirection: ui.TextDirection.rtl),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -666,8 +666,8 @@ class _BookingCard extends ConsumerWidget {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('ביטול הזמנה', textDirection: TextDirection.rtl),
-        content: const Text('האם אתה בטוח שברצונך לבטל הזמנה זו?', textDirection: TextDirection.rtl),
+        title: const Text('ביטול הזמנה', textDirection: ui.TextDirection.rtl),
+        content: const Text('האם אתה בטוח שברצונך לבטל הזמנה זו?', textDirection: ui.TextDirection.rtl),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),

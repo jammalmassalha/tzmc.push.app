@@ -3,9 +3,9 @@
 /// Allows users to create and view support tickets.
 library;
 
-import 'dart:ui' show TextDirection;
+import 'dart:ui' as ui;
 
-import 'package:flutter/material.dart' hide TextDirection;
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
@@ -238,7 +238,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setState) => AlertDialog(
-          title: const Text('פנייה חדשה', textDirection: TextDirection.rtl),
+          title: const Text('פנייה חדשה', textDirection: ui.TextDirection.rtl),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -247,7 +247,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
                 // Subject
                 TextField(
                   controller: subjectController,
-                  textDirection: TextDirection.rtl,
+                  textDirection: ui.TextDirection.rtl,
                   decoration: const InputDecoration(
                     labelText: 'נושא *',
                     border: OutlineInputBorder(),
@@ -258,7 +258,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
                 // Description
                 TextField(
                   controller: descriptionController,
-                  textDirection: TextDirection.rtl,
+                  textDirection: ui.TextDirection.rtl,
                   maxLines: 4,
                   decoration: const InputDecoration(
                     labelText: 'תיאור הבעיה *',
@@ -284,7 +284,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
                       controller: controller,
                       focusNode: focusNode,
                       onEditingComplete: onEditingComplete,
-                      textDirection: TextDirection.rtl,
+                      textDirection: ui.TextDirection.rtl,
                       decoration: InputDecoration(
                         labelText: 'מיקום *',
                         border: const OutlineInputBorder(),
@@ -310,7 +310,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
                 // Phone
                 TextField(
                   controller: phoneController,
-                  textDirection: TextDirection.ltr,
+                  textDirection: ui.TextDirection.ltr,
                   keyboardType: TextInputType.phone,
                   decoration: const InputDecoration(
                     labelText: 'טלפון ליצירת קשר',
@@ -730,7 +730,7 @@ class _TicketDetailScreenState extends ConsumerState<_TicketDetailScreen> {
     final theme = Theme.of(context);
 
     return Directionality(
-      textDirection: TextDirection.rtl,
+      textDirection: ui.TextDirection.rtl,
       child: Scaffold(
         appBar: AppBar(
           leading: IconButton(
@@ -934,7 +934,7 @@ class _TicketDetailScreenState extends ConsumerState<_TicketDetailScreen> {
                         const SizedBox(height: 12),
                         TextField(
                           controller: _commentController,
-                          textDirection: TextDirection.rtl,
+                          textDirection: ui.TextDirection.rtl,
                           maxLines: 3,
                           decoration: const InputDecoration(
                             hintText: 'כתוב תגובה...',

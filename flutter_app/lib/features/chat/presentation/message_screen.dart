@@ -4,9 +4,9 @@
 /// replies, and edit/delete status.
 library;
 
-import 'dart:ui' show TextDirection;
+import 'dart:ui' as ui;
 
-import 'package:flutter/material.dart' hide TextDirection;
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
@@ -44,7 +44,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     final chatInfo = _getChatInfo(state);
 
     return Directionality(
-      textDirection: TextDirection.rtl,
+      textDirection: ui.TextDirection.rtl,
       child: Scaffold(
         appBar: AppBar(
           leading: IconButton(
@@ -311,8 +311,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('מחיקת הודעה', textDirection: TextDirection.rtl),
-        content: const Text('האם אתה בטוח שברצונך למחוק הודעה זו?', textDirection: TextDirection.rtl),
+        title: const Text('מחיקת הודעה', textDirection: ui.TextDirection.rtl),
+        content: const Text('האם אתה בטוח שברצונך למחוק הודעה זו?', textDirection: ui.TextDirection.rtl),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
