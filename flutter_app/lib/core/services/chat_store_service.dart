@@ -7,6 +7,7 @@ library;
 import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:state_notifier/state_notifier.dart';
 
 import '../api/chat_api_service.dart';
 import '../database/chat_database.dart' hide Contact;
