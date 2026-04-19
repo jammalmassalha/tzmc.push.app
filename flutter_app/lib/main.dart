@@ -5,7 +5,9 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl/date_symbol_data_local.dart';
 
 import 'core/config/environment.dart';
 import 'shared/theme/app_theme.dart';
@@ -13,8 +15,13 @@ import 'features/auth/presentation/auth_state.dart';
 import 'features/auth/presentation/login_screen.dart';
 import 'features/chat/presentation/chat_shell_screen.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize Hebrew (and default) date formatting symbols so DateFormat
+  // calls like DateFormat.yMd('he') don't throw LocaleDataException at build
+  // time (which would render screens as a blank/gray ErrorWidget).
+  await initializeDateFormatting('he', null);
 
   // Initialize environment
   Env.initialize(EnvironmentConfig.production);
@@ -54,6 +61,15 @@ class TzmcPushApp extends ConsumerWidget {
 
       // RTL support for Hebrew
       locale: const Locale('he', 'IL'),
+      supportedLocales: const [
+        Locale('he', 'IL'),
+        Locale('en', 'US'),
+      ],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
 
       // Theme
       theme: AppTheme.light,
