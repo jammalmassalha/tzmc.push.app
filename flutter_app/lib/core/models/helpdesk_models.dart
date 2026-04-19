@@ -80,7 +80,6 @@ enum HelpdeskRole {
 class HelpdeskTicketPayload extends Equatable {
   final String subject;
   final String description;
-  final String category;
   final String priority;
   final HelpdeskDepartment? department;
   final String? title;
@@ -91,7 +90,6 @@ class HelpdeskTicketPayload extends Equatable {
   const HelpdeskTicketPayload({
     this.subject = '',
     this.description = '',
-    this.category = 'general',
     this.priority = 'normal',
     this.department,
     this.title,
@@ -101,17 +99,17 @@ class HelpdeskTicketPayload extends Equatable {
   });
 
   @override
-  List<Object?> get props => [subject, description, category, priority, department, title, location, phone, attachmentUrl];
+  List<Object?> get props => [subject, description, priority, department, title, location, phone, attachmentUrl];
 
   Map<String, dynamic> toJson() {
     final json = <String, dynamic>{
       'title': title ?? subject,
       'subject': subject,
       'description': description,
-      'category': category,
+      // Backend expects 'department' with Hebrew values (מערכות מידע, אחזקה)
+      'department': department?.label ?? HelpdeskDepartment.it.label,
       'priority': priority,
     };
-    if (department != null) json['department'] = department!.label;
     if (location != null && location!.isNotEmpty) json['location'] = location;
     if (phone != null && phone!.isNotEmpty) json['phone'] = phone;
     if (attachmentUrl != null && attachmentUrl!.isNotEmpty) json['attachmentUrl'] = attachmentUrl;

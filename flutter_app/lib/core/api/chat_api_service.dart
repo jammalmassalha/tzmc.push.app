@@ -888,7 +888,7 @@ class ChatApiService {
     required String user,
     required String subject,
     required String description,
-    required String category,
+    required HelpdeskDepartment department,
     required String priority,
     String? location,
     String? phone,
@@ -897,7 +897,7 @@ class ChatApiService {
     final payload = HelpdeskTicketPayload(
       subject: subject,
       description: description,
-      category: category,
+      department: department,
       priority: priority,
       location: location,
       phone: phone,

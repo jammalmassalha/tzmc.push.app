@@ -85,7 +85,7 @@ class HelpdeskNotifier extends Notifier<HelpdeskState> {
   Future<HelpdeskTicket> createTicket({
     required String subject,
     required String description,
-    required String category,
+    required HelpdeskDepartment department,
     required String priority,
     String? location,
     String? phone,
@@ -102,7 +102,7 @@ class HelpdeskNotifier extends Notifier<HelpdeskState> {
         user: _currentUser!,
         subject: subject,
         description: description,
-        category: category,
+        department: department,
         priority: priority,
         location: location,
         phone: phone,
@@ -245,7 +245,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
     final descriptionController = TextEditingController();
     final locationController = TextEditingController();
     final phoneController = TextEditingController();
-    String selectedCategory = 'general';
+    HelpdeskDepartment selectedDepartment = HelpdeskDepartment.it;
     String selectedPriority = 'normal';
     List<String> availableLocations = [];
     bool isLoadingLocations = true;
@@ -342,21 +342,18 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
                 ),
                 const SizedBox(height: 16),
 
-                // Category dropdown
-                DropdownButtonFormField<String>(
-                  value: selectedCategory,
+                // Department dropdown
+                DropdownButtonFormField<HelpdeskDepartment>(
+                  value: selectedDepartment,
                   decoration: const InputDecoration(
-                    labelText: 'קטגוריה',
+                    labelText: 'מחלקה',
                     border: OutlineInputBorder(),
                   ),
-                  items: const [
-                    DropdownMenuItem(value: 'general', child: Text('כללי')),
-                    DropdownMenuItem(value: 'technical', child: Text('טכני')),
-                    DropdownMenuItem(value: 'billing', child: Text('חשבונות')),
-                    DropdownMenuItem(value: 'feature', child: Text('בקשת תכונה')),
-                  ],
+                  items: HelpdeskDepartment.values.map((dept) => 
+                    DropdownMenuItem(value: dept, child: Text(dept.label)),
+                  ).toList(),
                   onChanged: (value) {
-                    setState(() => selectedCategory = value ?? 'general');
+                    setState(() => selectedDepartment = value ?? HelpdeskDepartment.it);
                   },
                 ),
                 const SizedBox(height: 16),
@@ -406,7 +403,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
                   await ref.read(helpdeskProvider.notifier).createTicket(
                         subject: subjectController.text.trim(),
                         description: descriptionController.text.trim(),
-                        category: selectedCategory,
+                        department: selectedDepartment,
                         priority: selectedPriority,
                         location: locationController.text.trim().isEmpty
                             ? null
