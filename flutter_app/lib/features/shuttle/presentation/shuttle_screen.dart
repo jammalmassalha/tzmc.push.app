@@ -3,9 +3,12 @@
 /// Allows users to book shuttle rides and view their bookings.
 library;
 
-import 'package:flutter/material.dart';
+import 'dart:ui' show TextDirection;
+
+import 'package:flutter/material.dart' hide TextDirection;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
+import 'package:state_notifier/state_notifier.dart';
 
 import '../../../core/api/chat_api_service.dart';
 import '../../../core/models/models.dart';
