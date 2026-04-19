@@ -135,7 +135,7 @@ class ShuttleNotifier extends Notifier<ShuttleState> {
         status: status,
       );
       
-      await _api.submitShuttleOrder(payload);
+      await _api.submitShuttleOrder(payload, _currentUser!);
       await loadUserOrders();
       state = state.copyWith(isLoading: false);
     } catch (e) {

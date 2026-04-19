@@ -585,10 +585,18 @@ class ChatApiService {
   }
 
   /// Submit shuttle order
-  Future<void> submitShuttleOrder(ShuttleOrderSubmitPayload payload) async {
+  ///
+  /// [user] is required for backend authorization when session cookies are not available.
+  Future<void> submitShuttleOrder(ShuttleOrderSubmitPayload payload, String user) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) {
+      throw ApiException('User is required for shuttle order submission');
+    }
+
     final response = await _client.post<String>(
       ApiEndpoints.shuttleOrders,
       data: payload.toJson(),
+      queryParameters: {'user': normalizedUser},
       retryOptions: const RetryOptions(retries: 2, timeout: Duration(seconds: 12)),
     );
 
