@@ -20,8 +20,15 @@ class AppConfig {
   /// Database name for local persistence
   static const String dbName = 'tzmc_push_db';
 
-  /// System chat IDs (reserved names)
-  static const List<String> systemChatIds = ['ציפי', 'הזמנת הסעה', 'מוקד איחוד - קריאות'];
+  /// System chat IDs (reserved names - matches Angular frontend)
+  static const List<String> systemChatIds = [
+    'ציפי',
+    'הזמנת הסעה',
+    'מוקד איחוד - קריאות',
+    'הסעות',
+    'דוברות',
+    'בדיקה - דוברות',
+  ];
 }
 
 /// API endpoints configuration
