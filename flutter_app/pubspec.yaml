@@ -61,6 +61,18 @@ dependencies:
   flutter_svg: ^2.0.10
   shimmer: ^3.0.0
 
+# Pin transitive Flutter plugin Android modules to versions whose buildscript
+# uses the Kotlin Gradle plugin 2.1.0 (matching `android/settings.gradle.kts`).
+# Newer releases of `shared_preferences_android` (>=2.4.19) require the
+# Kotlin Gradle plugin 2.3.0, which forces Gradle to download new Kotlin
+# plugin artifacts from Maven Central. That download fails on networks where
+# the JDK truststore cannot validate the Maven Central TLS certificate
+# (PKIX path building / SSL handshake errors). Pinning to 2.4.2 keeps the
+# build on the already-resolved Kotlin 2.1.0 toolchain and avoids the
+# additional artifact downloads.
+dependency_overrides:
+  shared_preferences_android: 2.4.2
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
