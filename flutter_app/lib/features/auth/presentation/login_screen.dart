@@ -1,6 +1,8 @@
 /// Login screen with phone number input and SMS verification.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -20,6 +22,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _codeController = TextEditingController();
   final _phoneFocusNode = FocusNode();
   final _codeFocusNode = FocusNode();
+  
+  // Countdown timer for SMS resend cooldown (120 seconds)
+  static const int _resendCooldownSeconds = 120;
+  int _resendCountdown = 0;
+  Timer? _resendTimer;
 
   @override
   void dispose() {
@@ -27,7 +34,22 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     _codeController.dispose();
     _phoneFocusNode.dispose();
     _codeFocusNode.dispose();
+    _resendTimer?.cancel();
     super.dispose();
+  }
+  
+  void _startResendCooldown() {
+    _resendCountdown = _resendCooldownSeconds;
+    _resendTimer?.cancel();
+    _resendTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_resendCountdown > 0) {
+        setState(() {
+          _resendCountdown--;
+        });
+      } else {
+        timer.cancel();
+      }
+    });
   }
 
   @override
@@ -221,12 +243,28 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
                   // Resend code
                   TextButton(
-                    onPressed: isLoading
+                    onPressed: isLoading || _resendCountdown > 0
                         ? null
                         : () {
                             ref.read(authStateProvider.notifier).requestCode(authState.phoneNumber);
+                            _startResendCooldown();
                           },
-                    child: const Text('שלח קוד שוב'),
+                    child: _resendCountdown > 0
+                        ? Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const SizedBox(
+                                height: 16,
+                                width: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text('שלח קוד שוב ($_resendCountdown שניות)'),
+                            ],
+                          )
+                        : const Text('שלח קוד שוב'),
                   ),
                 ],
 
@@ -251,6 +289,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     }
 
     ref.read(authStateProvider.notifier).login(phone);
+    _startResendCooldown();
   }
 
   void _handleVerifyCode() {
