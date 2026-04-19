@@ -731,7 +731,8 @@ class _TicketDetailScreenState extends ConsumerState<_TicketDetailScreen> {
     setState(() => _loadingHistory = true);
     try {
       final api = ref.read(chatApiServiceProvider);
-      final history = await api.getTicketHistory(widget.ticket.id);
+      final user = ref.read(currentUserProvider) ?? '';
+      final history = await api.getTicketHistory(widget.ticket.id, user);
       setState(() {
         _history = history;
         _loadingHistory = false;
