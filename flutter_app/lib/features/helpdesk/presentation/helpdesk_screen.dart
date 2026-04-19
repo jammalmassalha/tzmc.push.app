@@ -8,7 +8,6 @@ import 'dart:ui' show TextDirection;
 import 'package:flutter/material.dart' hide TextDirection;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
-import 'package:state_notifier/state_notifier.dart';
 
 import '../../../core/api/chat_api_service.dart';
 import '../../../core/models/helpdesk_models.dart';
@@ -46,10 +45,14 @@ class HelpdeskState {
 // Helpdesk Notifier
 // ---------------------------------------------------------------------------
 
-class HelpdeskNotifier extends StateNotifier<HelpdeskState> {
-  final ChatApiService _api;
+class HelpdeskNotifier extends Notifier<HelpdeskState> {
+  late final ChatApiService _api;
 
-  HelpdeskNotifier(this._api) : super(const HelpdeskState());
+  @override
+  HelpdeskState build() {
+    _api = ref.watch(chatApiServiceProvider);
+    return const HelpdeskState();
+  }
 
   Future<void> loadTickets() async {
     state = state.copyWith(isLoading: true, error: null);
@@ -122,9 +125,8 @@ class HelpdeskNotifier extends StateNotifier<HelpdeskState> {
   }
 }
 
-final helpdeskProvider = StateNotifierProvider<HelpdeskNotifier, HelpdeskState>((ref) {
-  final api = ref.watch(chatApiServiceProvider);
-  return HelpdeskNotifier(api);
+final helpdeskProvider = NotifierProvider<HelpdeskNotifier, HelpdeskState>(() {
+  return HelpdeskNotifier();
 });
 
 // ---------------------------------------------------------------------------

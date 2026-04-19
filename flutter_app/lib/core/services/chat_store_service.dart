@@ -7,7 +7,6 @@ library;
 import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:state_notifier/state_notifier.dart';
 
 import '../api/chat_api_service.dart';
 import '../database/chat_database.dart' hide Contact;
@@ -141,10 +140,10 @@ class ChatState {
 // Chat Store Notifier
 // ---------------------------------------------------------------------------
 
-class ChatStoreNotifier extends StateNotifier<ChatState> {
-  final ChatApiService _api;
-  final ChatDatabase _db;
-  final RealtimeTransportService _transport;
+class ChatStoreNotifier extends Notifier<ChatState> {
+  late final ChatApiService _api;
+  late final ChatDatabase _db;
+  late final RealtimeTransportService _transport;
 
   StreamSubscription<IncomingServerMessage>? _messageSubscription;
   StreamSubscription<bool>? _connectionSubscription;
@@ -153,23 +152,29 @@ class ChatStoreNotifier extends StateNotifier<ChatState> {
   Timer? _persistTimer;
   int _lastGapAnalysisTime = 0;
 
-  ChatStoreNotifier(this._api, this._db, this._transport) : super(const ChatState()) {
+  @override
+  ChatState build() {
+    _api = ref.watch(chatApiServiceProvider);
+    _db = ref.watch(chatDatabaseProvider);
+    _transport = ref.watch(realtimeTransportServiceProvider);
+    
     _subscribeToTransport();
+    
+    // Clean up subscriptions when the notifier is disposed
+    ref.onDispose(() {
+      _messageSubscription?.cancel();
+      _connectionSubscription?.cancel();
+      _pollTickSubscription?.cancel();
+      _persistTimer?.cancel();
+    });
+    
+    return const ChatState();
   }
 
   void _subscribeToTransport() {
     _messageSubscription = _transport.message$.listen(_handleServerMessage);
     _connectionSubscription = _transport.connected$.listen(_handleConnectionChange);
     _pollTickSubscription = _transport.pollTick$.listen((_) => _handlePollTick());
-  }
-
-  @override
-  void dispose() {
-    _messageSubscription?.cancel();
-    _connectionSubscription?.cancel();
-    _pollTickSubscription?.cancel();
-    _persistTimer?.cancel();
-    super.dispose();
   }
 
   // ---------------------------------------------------------------------------
@@ -819,12 +824,8 @@ class ChatStoreNotifier extends StateNotifier<ChatState> {
 // Provider
 // ---------------------------------------------------------------------------
 
-final chatStoreProvider = StateNotifierProvider<ChatStoreNotifier, ChatState>((ref) {
-  final api = ref.watch(chatApiServiceProvider);
-  final db = ref.watch(chatDatabaseProvider);
-  final transport = ref.watch(realtimeTransportServiceProvider);
-
-  return ChatStoreNotifier(api, db, transport);
+final chatStoreProvider = NotifierProvider<ChatStoreNotifier, ChatState>(() {
+  return ChatStoreNotifier();
 });
 
 // ---------------------------------------------------------------------------

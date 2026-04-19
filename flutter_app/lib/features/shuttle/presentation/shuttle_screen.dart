@@ -8,7 +8,6 @@ import 'dart:ui' show TextDirection;
 import 'package:flutter/material.dart' hide TextDirection;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
-import 'package:state_notifier/state_notifier.dart';
 
 import '../../../core/api/chat_api_service.dart';
 import '../../../core/models/models.dart';
@@ -114,10 +113,14 @@ class ShuttleBooking {
 // Shuttle Notifier
 // ---------------------------------------------------------------------------
 
-class ShuttleNotifier extends StateNotifier<ShuttleState> {
-  final ChatApiService _api;
+class ShuttleNotifier extends Notifier<ShuttleState> {
+  late final ChatApiService _api;
 
-  ShuttleNotifier(this._api) : super(const ShuttleState());
+  @override
+  ShuttleState build() {
+    _api = ref.watch(chatApiServiceProvider);
+    return const ShuttleState();
+  }
 
   Future<void> loadRoutes() async {
     state = state.copyWith(isLoading: true, error: null);
@@ -184,9 +187,8 @@ class ShuttleNotifier extends StateNotifier<ShuttleState> {
   }
 }
 
-final shuttleProvider = StateNotifierProvider<ShuttleNotifier, ShuttleState>((ref) {
-  final api = ref.watch(chatApiServiceProvider);
-  return ShuttleNotifier(api);
+final shuttleProvider = NotifierProvider<ShuttleNotifier, ShuttleState>(() {
+  return ShuttleNotifier();
 });
 
 // ---------------------------------------------------------------------------
