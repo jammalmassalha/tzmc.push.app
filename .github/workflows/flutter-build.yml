@@ -113,7 +113,7 @@ jobs:
 
       - name: Build Web
         run: |
-          flutter build web --release --base-href /fluttertest/
+          flutter build web --release --base-href /fluttertest/ --pwa-strategy=none
           mkdir -p ../dist
           cp -r build/web ../dist/web
 

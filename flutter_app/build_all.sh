@@ -54,7 +54,8 @@ echo "=========================================="
 echo "Building for WEB (Browser)..."
 echo "=========================================="
 # Use MSYS_NO_PATHCONV to prevent Git Bash from converting /fluttertest/ to a Windows path
-MSYS_NO_PATHCONV=1 flutter build web --release --base-href "/fluttertest/"
+# Use --pwa-strategy=none to disable service worker caching for easier updates
+MSYS_NO_PATHCONV=1 flutter build web --release --base-href "/fluttertest/" --pwa-strategy=none
 
 # Copy web build to output
 rm -rf "$OUTPUT_DIR/web"

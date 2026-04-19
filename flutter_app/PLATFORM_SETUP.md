@@ -60,13 +60,22 @@ After initializing the Flutter project with `flutter create`, configure:
 
 ## Web Setup
 
-The web build is configured to serve from `/fluttertest` path:
+The web build is configured to serve from `/fluttertest` path.
+
+**Important:** Use `--pwa-strategy=none` to disable service worker caching. This ensures users always get the latest version when you deploy updates:
 
 ```bash
-flutter build web --release --base-href /fluttertest/
+flutter build web --release --base-href /fluttertest/ --pwa-strategy=none
 ```
 
 Deploy `dist/web/` contents to your server's `/fluttertest` directory.
+
+### Cache Busting
+
+The build is configured without a service worker to prevent aggressive caching. This means:
+- Users will always load the latest version after deployment
+- No need to manually clear browser cache
+- Faster iteration during development and updates
 
 ## Environment Variables
 
