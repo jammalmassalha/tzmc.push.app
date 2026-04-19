@@ -123,7 +123,13 @@ class AuthNotifier extends Notifier<AuthState> {
 
   /// Request SMS verification code
   Future<void> requestCode(String phoneNumber) async {
+    // Guard against rapid duplicate submissions while a request is in flight.
+    if (state is AuthLoading) {
+      return;
+    }
+
     final previousState = state;
+    state = const AuthLoading();
 
     try {
       final expiresIn = await _apiService.requestSessionCode(phoneNumber);
