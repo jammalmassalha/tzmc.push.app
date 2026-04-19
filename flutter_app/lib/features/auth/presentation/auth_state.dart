@@ -8,7 +8,6 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:logger/logger.dart';
-import 'package:state_notifier/state_notifier.dart';
 
 import '../../../core/api/chat_api_service.dart';
 
@@ -61,20 +60,22 @@ class AuthError extends AuthState {
 }
 
 /// Auth state provider
-final authStateProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
-  final apiService = ref.watch(chatApiServiceProvider);
-  return AuthNotifier(apiService);
+final authStateProvider = NotifierProvider<AuthNotifier, AuthState>(() {
+  return AuthNotifier();
 });
 
 /// Auth notifier for state management
-class AuthNotifier extends StateNotifier<AuthState> {
-  final ChatApiService _apiService;
+class AuthNotifier extends Notifier<AuthState> {
+  late final ChatApiService _apiService;
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
 
   static const _userKey = 'tzmc_current_user';
 
-  AuthNotifier(this._apiService) : super(const AuthLoading()) {
+  @override
+  AuthState build() {
+    _apiService = ref.watch(chatApiServiceProvider);
     _checkExistingSession();
+    return const AuthLoading();
   }
 
   /// Check for existing session on app start
