@@ -694,11 +694,24 @@ class ChatApiService {
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
+    final body = response.data ?? {};
+    
+    // Check for HTTP-level failure first
     if (!response.isSuccessful) {
-      throw ApiException('Helpdesk ticket creation failed with ${response.statusCode}');
+      // Extract error message from response body if available
+      final errorMessage = body['message'] as String? ?? 'שגיאה ביצירת הקריאה';
+      throw ApiException(errorMessage);
+    }
+    
+    // Check for application-level error (result != 'success')
+    if (body['result'] == 'error') {
+      final errorMessage = body['message'] as String? ?? 'שגיאה ביצירת הקריאה';
+      throw ApiException(errorMessage);
     }
 
-    return HelpdeskTicket.fromJson(response.data ?? {});
+    // Extract ticket from response (backend returns { result: 'success', ticket: {...} })
+    final ticketData = body['ticket'] as Map<String, dynamic>? ?? body;
+    return HelpdeskTicket.fromJson(ticketData);
   }
 
   /// Update helpdesk ticket status
@@ -710,14 +723,22 @@ class ChatApiService {
       throw ApiException('User is required for helpdesk ticket status update');
     }
     
-    final response = await _client.put(
+    final response = await _client.put<Map<String, dynamic>>(
       '${ApiEndpoints.helpdeskTickets}/$ticketId/status',
       data: {'status': status.toApiValue(), 'user': normalizedUser},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
+    final body = response.data ?? {};
+    
     if (!response.isSuccessful) {
-      throw ApiException('Helpdesk ticket status update failed with ${response.statusCode}');
+      final errorMessage = body['message'] as String? ?? 'שגיאה בעדכון סטטוס הקריאה';
+      throw ApiException(errorMessage);
+    }
+    
+    if (body['result'] == 'error') {
+      final errorMessage = body['message'] as String? ?? 'שגיאה בעדכון סטטוס הקריאה';
+      throw ApiException(errorMessage);
     }
   }
 
@@ -736,11 +757,19 @@ class ChatApiService {
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
+    final body = response.data ?? {};
+    
     if (!response.isSuccessful) {
-      throw ApiException('Helpdesk ticket history request failed with ${response.statusCode}');
+      final errorMessage = body['message'] as String? ?? 'שגיאה בטעינת היסטוריית הקריאה';
+      throw ApiException(errorMessage);
+    }
+    
+    if (body['result'] == 'error') {
+      final errorMessage = body['message'] as String? ?? 'שגיאה בטעינת היסטוריית הקריאה';
+      throw ApiException(errorMessage);
     }
 
-    final history = (response.data?['history'] as List?) ?? [];
+    final history = (body['history'] as List?) ?? [];
     return history.map((item) => HelpdeskStatusHistoryEntry.fromJson(item as Map<String, dynamic>)).toList();
   }
 
@@ -759,11 +788,19 @@ class ChatApiService {
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
+    final body = response.data ?? {};
+    
     if (!response.isSuccessful) {
-      throw ApiException('Helpdesk ticket notes request failed with ${response.statusCode}');
+      final errorMessage = body['message'] as String? ?? 'שגיאה בטעינת תגובות הקריאה';
+      throw ApiException(errorMessage);
+    }
+    
+    if (body['result'] == 'error') {
+      final errorMessage = body['message'] as String? ?? 'שגיאה בטעינת תגובות הקריאה';
+      throw ApiException(errorMessage);
     }
 
-    final notes = (response.data?['notes'] as List?) ?? [];
+    final notes = (body['notes'] as List?) ?? [];
     return notes.map((item) => HelpdeskNote.fromJson(item as Map<String, dynamic>)).toList();
   }
 
@@ -785,11 +822,20 @@ class ChatApiService {
         retryOptions: const RetryOptions(retries: 1, timeout: NetworkTimeouts.uploadTimeout),
       );
 
+      final body = response.data ?? {};
+      
       if (!response.isSuccessful) {
-        throw ApiException('Helpdesk note creation failed with ${response.statusCode}');
+        final errorMessage = body['message'] as String? ?? 'שגיאה בהוספת תגובה';
+        throw ApiException(errorMessage);
+      }
+      
+      if (body['result'] == 'error') {
+        final errorMessage = body['message'] as String? ?? 'שגיאה בהוספת תגובה';
+        throw ApiException(errorMessage);
       }
 
-      return HelpdeskNote.fromJson(response.data ?? {});
+      final noteData = body['note'] as Map<String, dynamic>? ?? body;
+      return HelpdeskNote.fromJson(noteData);
     } else {
       final response = await _client.post<Map<String, dynamic>>(
         '${ApiEndpoints.helpdeskTickets}/$ticketId/notes',
@@ -797,11 +843,20 @@ class ChatApiService {
         retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
       );
 
+      final body = response.data ?? {};
+      
       if (!response.isSuccessful) {
-        throw ApiException('Helpdesk note creation failed with ${response.statusCode}');
+        final errorMessage = body['message'] as String? ?? 'שגיאה בהוספת תגובה';
+        throw ApiException(errorMessage);
+      }
+      
+      if (body['result'] == 'error') {
+        final errorMessage = body['message'] as String? ?? 'שגיאה בהוספת תגובה';
+        throw ApiException(errorMessage);
       }
 
-      return HelpdeskNote.fromJson(response.data ?? {});
+      final noteData = body['note'] as Map<String, dynamic>? ?? body;
+      return HelpdeskNote.fromJson(noteData);
     }
   }
 
