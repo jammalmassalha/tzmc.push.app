@@ -892,6 +892,122 @@ class ChatApiService {
   Future<void> unregisterDeviceToken(String token) async {
     // Backend needs endpoint for this
   }
+
+  // ---------------------------------------------------------------------------
+  // Convenience Methods for ChatStoreService
+  // ---------------------------------------------------------------------------
+
+  /// Get messages since a timestamp (wrapper for getMessagesFromLogs)
+  Future<List<ChatMessage>> getMessagesSince(int timestamp) async {
+    // Get current user from session - for now, return empty list
+    // This needs the user context to work properly
+    // The ChatStoreService should call getMessagesFromLogs directly with user
+    return [];
+  }
+
+  /// Send direct message with named parameters (wrapper for sendDirectMessage)
+  Future<void> sendDirectMessageWithParams({
+    required String recipient,
+    required String body,
+    String? imageUrl,
+    String? fileUrl,
+    String? replyToMessageId,
+  }) async {
+    final messageId = '${DateTime.now().millisecondsSinceEpoch}-${DateTime.now().microsecond}';
+    final payload = ReplyPayload(
+      user: recipient,
+      senderName: 'me', // Will be set by server
+      reply: body,
+      imageUrl: imageUrl,
+      fileUrl: fileUrl,
+      originalSender: recipient,
+      messageId: messageId,
+      replyToMessageId: replyToMessageId,
+    );
+    await sendDirectMessage(payload);
+  }
+
+  /// Send group message (wrapper using ReplyPayload with group fields)
+  Future<void> sendGroupMessage({
+    required String groupId,
+    required List<String> recipients,
+    required String body,
+    String? imageUrl,
+    String? fileUrl,
+    String? replyToMessageId,
+  }) async {
+    final messageId = '${DateTime.now().millisecondsSinceEpoch}-${DateTime.now().microsecond}';
+    final payload = ReplyPayload(
+      user: recipients.first, // Primary recipient
+      senderName: 'me', // Will be set by server
+      reply: body,
+      imageUrl: imageUrl,
+      fileUrl: fileUrl,
+      originalSender: recipients.first,
+      messageId: messageId,
+      groupId: groupId,
+      groupMembers: recipients,
+      membersToNotify: recipients,
+      replyToMessageId: replyToMessageId,
+    );
+    await sendDirectMessage(payload);
+  }
+
+  /// Add reaction to a message
+  Future<void> addReaction(String messageId, String emoji) async {
+    final payload = ReactionPayload(
+      targetMessageId: messageId,
+      emoji: emoji,
+      reactor: 'me', // Will be set by server
+      reactorName: 'me', // Will be set by server
+    );
+    await sendReaction(payload);
+  }
+
+  /// Remove reaction from a message
+  Future<void> removeReaction(String messageId, String emoji) async {
+    // Removing a reaction uses the same endpoint with empty emoji or special action
+    final payload = ReactionPayload(
+      targetMessageId: messageId,
+      emoji: '', // Empty to remove
+      reactor: 'me',
+      reactorName: 'me',
+    );
+    await sendReaction(payload);
+  }
+
+  /// Edit a message
+  Future<void> editMessage(String messageId, String newBody) async {
+    final payload = EditMessagePayload(
+      sender: 'me', // Will be set by server
+      messageId: messageId,
+      body: newBody,
+      editedAt: DateTime.now().millisecondsSinceEpoch,
+    );
+    await editMessageForEveryone(payload);
+  }
+
+  /// Delete a message
+  Future<void> deleteMessage(String messageId) async {
+    final payload = DeleteMessagePayload(
+      sender: 'me', // Will be set by server
+      messageId: messageId,
+      deletedAt: DateTime.now().millisecondsSinceEpoch,
+    );
+    await deleteMessageForEveryone(payload);
+  }
+
+  /// Mark messages as read
+  Future<void> markMessagesAsRead(String chatId, List<String> messageIds) async {
+    // Need sender info from the messages
+    final payload = ReadReceiptPayload(
+      reader: 'me', // Will be set by server
+      sender: chatId, // The chat/sender we're marking as read
+      messageIds: messageIds,
+      readAt: DateTime.now().millisecondsSinceEpoch,
+    );
+    await sendReadReceipt(payload);
+  }
 }
 
 /// Base API exception

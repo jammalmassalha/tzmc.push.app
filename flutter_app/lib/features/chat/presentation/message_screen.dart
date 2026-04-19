@@ -4,7 +4,9 @@
 /// replies, and edit/delete status.
 library;
 
-import 'package:flutter/material.dart';
+import 'dart:ui' show TextDirection;
+
+import 'package:flutter/material.dart' hide TextDirection;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
