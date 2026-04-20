@@ -169,6 +169,10 @@ class PushNotificationService {
 
     final status = settings.authorizationStatus;
     if (_isAuthorized(status)) {
+      // User previously granted permission — clear any stale "open
+      // settings" nag flag so we'll prompt again if they later revoke
+      // and re-deny on a future install.
+      await _clearSettingsNagFlag();
       await _getAndRegisterToken();
       return;
     }
@@ -198,7 +202,10 @@ class PushNotificationService {
       return;
     }
 
-    if (status.isGranted || status.isLimited) return;
+    if (status.isGranted || status.isLimited) {
+      await _clearSettingsNagFlag();
+      return;
+    }
 
     if (status.isPermanentlyDenied) {
       if (!context.mounted) return;
@@ -261,8 +268,7 @@ class PushNotificationService {
 
   /// Show — at most once per install — a dialog inviting the user to
   /// re-enable notifications from the system Settings screen.
-  Future<void> _maybeShowOpenSettingsDialog(BuildContext context) async {
-    SharedPreferences prefs;
+  Future<void> _maybeShowOpenSettingsDialog(BuildContext context) async {    SharedPreferences prefs;
     try {
       prefs = await SharedPreferences.getInstance();
     } catch (e) {
@@ -538,6 +544,20 @@ class PushNotificationService {
       _deviceToken = null;
     } catch (e) {
       debugPrint('[PushNotificationService] Error unregistering token: $e');
+    }
+  }
+
+  /// Clear the "open settings" nag flag so users who later grant
+  /// permission can be re-prompted in a future session if they revoke
+  /// and re-deny.
+  Future<void> _clearSettingsNagFlag() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getBool(_kPushSettingsNagShownKey) == true) {
+        await prefs.remove(_kPushSettingsNagShownKey);
+      }
+    } catch (_) {
+      // best-effort
     }
   }
 

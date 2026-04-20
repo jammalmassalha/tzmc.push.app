@@ -83,6 +83,10 @@ jobs:
             mkdir -p android/app
             echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 -d > android/app/google-services.json
             echo "Decoded google-services.json ($(wc -c < android/app/google-services.json) bytes)"
+            # Sanity-check that the secret decoded to valid JSON so a
+            # malformed secret fails the build instead of producing a
+            # silently-broken APK with no FCM config.
+            python3 -m json.tool android/app/google-services.json > /dev/null
           fi
 
       - name: Run code generation
