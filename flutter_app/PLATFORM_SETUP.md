@@ -52,37 +52,34 @@ The Flutter app uses **Firebase Cloud Messaging (FCM)** on Android and APNs (via
 
 ### Android — `google-services.json`
 
-1. In the Firebase console add an Android app with package name matching `android/app/build.gradle` (`applicationId`).
+1. In the Firebase console add an Android app with package name matching `android/app/build.gradle.kts` (`applicationId = "co.il.tzmc.tzmc_push"`).
 2. Download `google-services.json` and place it at:
    ```
    flutter_app/android/app/google-services.json
    ```
-3. Make sure the Google services Gradle plugin is applied:
-   - `android/build.gradle` (project) — buildscript classpath:
-     ```
-     classpath 'com.google.gms:google-services:4.4.2'
-     ```
-   - `android/app/build.gradle` (app) — bottom of file:
-     ```
-     apply plugin: 'com.google.gms.google-services'
-     ```
-4. `AndroidManifest.xml` already needs `INTERNET`; on Android 13+ add `POST_NOTIFICATIONS` (the `permission_handler` package is already in `pubspec.yaml`).
+3. The Google services Gradle plugin is already declared in
+   `android/settings.gradle.kts` and conditionally applied in
+   `android/app/build.gradle.kts` (it is only applied when
+   `google-services.json` is present, so CI/sample builds without the
+   credential keep working — they just won't deliver push notifications).
+4. `AndroidManifest.xml` already declares `INTERNET`, `WAKE_LOCK`, and
+   `POST_NOTIFICATIONS` (Android 13+). The runtime permission prompt is
+   triggered by `FirebaseMessaging.requestPermission()` in
+   `PushNotificationService.initialize()`. The default FCM notification
+   channel meta-data (`com.google.firebase.messaging.default_notification_channel_id`)
+   is set to `chat_messages` to match the channel created by
+   `flutter_local_notifications`.
 
 ### iOS — `GoogleService-Info.plist`
 
 1. In the Firebase console add an iOS app with bundle id matching `ios/Runner.xcodeproj`.
 2. Download `GoogleService-Info.plist` and add it to `ios/Runner/` **inside Xcode** (so it is added to the Runner target).
 3. In Xcode → Runner target → **Signing & Capabilities**:
-   - Add **Push Notifications**
-   - Add **Background Modes** and tick **Remote notifications**
-4. The corresponding `Info.plist` entry (added automatically when you tick the box):
-   ```xml
-   <key>UIBackgroundModes</key>
-   <array>
-       <string>remote-notification</string>
-   </array>
-   ```
-5. Upload your APNs auth key (`.p8`) to Firebase under **Project settings → Cloud Messaging → Apple app configuration**.
+   - Add **Push Notifications** (this creates `Runner.entitlements` with the `aps-environment` key).
+   - Add **Background Modes** and tick **Remote notifications** — note that
+     the corresponding `Info.plist` entry is already committed in this repo
+     (see `ios/Runner/Info.plist` → `UIBackgroundModes`).
+4. Upload your APNs auth key (`.p8`) to Firebase under **Project settings → Cloud Messaging → Apple app configuration**.
 
 ### Wiring (already done in code)
 

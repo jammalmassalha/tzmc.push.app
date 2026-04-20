@@ -33,6 +33,12 @@ plugins {
     
     // Updated from 1.9.20 to 2.1.0
     id("org.jetbrains.kotlin.android") version "2.1.0" apply false
+
+    // Firebase Cloud Messaging (push notifications). The plugin is applied
+    // in `app/build.gradle.kts` and reads `app/google-services.json`, which
+    // each environment must drop in (it is intentionally not committed —
+    // see flutter_app/PLATFORM_SETUP.md).
+    id("com.google.gms.google-services") version "4.4.2" apply false
 }
 
 include(":app")
