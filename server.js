@@ -320,8 +320,32 @@ app.use(['/uploads', '/notify/uploads'], (req, res, next) => {
 
 app.use(bodyParser.json());
 // --- CORS CONFIGURATION ---
-app.use(cors({
-    origin: '*', 
+// When the browser sends credentialed requests (withCredentials/credentials:'include'),
+// the response must echo a specific origin – the wildcard '*' is not allowed. We
+// reflect the request origin if it is allowed by the host allowlist (which already
+// covers tzmc.co.il, www.tzmc.co.il, *.tzmc.co.il, localhost, etc.).
+const corsOptions = {
+    origin: (origin, callback) => {
+        if (!origin) {
+            // Same-origin / non-browser requests (curl, server-to-server) – allow.
+            return callback(null, true);
+        }
+        let originHost = '';
+        try {
+            originHost = new URL(origin).hostname;
+        } catch (_) {
+            originHost = '';
+        }
+        if (!originHost) {
+            return callback(null, false);
+        }
+        if (isAllowedHost(originHost)) {
+            // Reflect the exact origin so credentialed requests pass the preflight.
+            return callback(null, true);
+        }
+        return callback(null, false);
+    },
+    credentials: true,
     methods: ['GET', 'POST', 'OPTIONS'],
     allowedHeaders: [
         'Content-Type',
@@ -332,9 +356,10 @@ app.use(cors({
         'X-Requested-With',
         'X-CSRF-Token'
     ]
-}));
+};
+app.use(cors(corsOptions));
 
-app.options(/.*/, cors());
+app.options(/.*/, cors(corsOptions));
 
 // [FIX] INCREASE LIMIT TO 50MB (Default is only 100kb)
 app.use(bodyParser.json({ limit: '350mb' }));
