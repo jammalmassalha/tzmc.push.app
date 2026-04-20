@@ -6,29 +6,53 @@ library;
 import 'dart:async';
 
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:logger/logger.dart';
 
 import '../config/app_config.dart';
 import '../config/environment.dart';
 import '../utils/xfile.dart';
+import 'cookie_setup_stub.dart'
+    if (dart.library.io) 'cookie_setup_io.dart'
+    if (dart.library.html) 'cookie_setup_web.dart';
 
 final _logger = Logger(
   printer: PrettyPrinter(methodCount: 0, errorMethodCount: 5, lineLength: 80),
 );
 
-/// HTTP client provider
+/// HTTP client provider.
+///
+/// This provider must be overridden in `main()` with an instance returned
+/// from [HttpClient.create] so that platform-specific cookie persistence is
+/// configured before any request is sent. Using the default value will throw
+/// to make the misconfiguration obvious.
 final httpClientProvider = Provider<HttpClient>((ref) {
-  return HttpClient();
+  throw StateError(
+    'httpClientProvider must be overridden with HttpClient.create() in main()',
+  );
 });
 
 /// HTTP client with retry support and CSRF token handling
 class HttpClient {
   late final Dio _dio;
   String? _csrfToken;
+  Future<void> Function() _clearCookies = () async {};
 
-  HttpClient() {
+  HttpClient._();
+
+  /// Asynchronously create and fully initialize an [HttpClient].
+  ///
+  /// On native platforms this wires up a [PersistCookieJar] so the backend
+  /// session cookie survives app restarts. On the web it enables
+  /// `withCredentials` so the browser-managed cookie is sent on every
+  /// request.
+  static Future<HttpClient> create() async {
+    final client = HttpClient._();
+    await client._init();
+    return client;
+  }
+
+  Future<void> _init() async {
     _dio = Dio(
       BaseOptions(
         baseUrl: Env.current.baseUrl,
@@ -38,6 +62,11 @@ class HttpClient {
         validateStatus: (status) => true, // Handle all status codes manually
       ),
     );
+
+    // Configure cookie persistence (must happen before other interceptors so
+    // that cookies are attached to outgoing requests and captured from
+    // responses).
+    _clearCookies = await configureCookieJar(_dio);
 
     // Add logging interceptor in development
     if (Env.current.enableLogging) {
@@ -73,6 +102,15 @@ class HttpClient {
   /// Clear CSRF token
   void clearCsrfToken() {
     _csrfToken = null;
+  }
+
+  /// Clear any persisted session cookies (called on logout).
+  Future<void> clearCookies() async {
+    try {
+      await _clearCookies();
+    } catch (e) {
+      _logger.w('Failed to clear persisted cookies: $e');
+    }
   }
 
   /// Perform GET request with retry

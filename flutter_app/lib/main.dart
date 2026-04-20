@@ -9,6 +9,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
+import 'core/api/http_client.dart';
 import 'core/config/environment.dart';
 import 'shared/theme/app_theme.dart';
 import 'features/auth/presentation/auth_state.dart';
@@ -25,6 +26,13 @@ void main() async {
 
   // Initialize environment
   Env.initialize(EnvironmentConfig.production);
+
+  // Build the HTTP client up-front so that platform-specific cookie
+  // persistence (PersistCookieJar on native, withCredentials on web) is
+  // wired up before any request — including the initial session check —
+  // is sent. This is what keeps the user signed in across app restarts
+  // and browser refreshes.
+  final httpClient = await HttpClient.create();
 
   // Set system UI overlay style
   SystemChrome.setSystemUIOverlayStyle(
@@ -43,8 +51,11 @@ void main() async {
   ]);
 
   runApp(
-    const ProviderScope(
-      child: TzmcPushApp(),
+    ProviderScope(
+      overrides: [
+        httpClientProvider.overrideWithValue(httpClient),
+      ],
+      child: const TzmcPushApp(),
     ),
   );
 }

@@ -152,6 +152,7 @@ class ChatApiService {
       retryOptions: const RetryOptions(retries: 0, timeout: Duration(seconds: 8)),
     );
     _client.clearCsrfToken();
+    await _client.clearCookies();
   }
 
   // ---------------------------------------------------------------------------
