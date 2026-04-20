@@ -3,6 +3,7 @@
 /// Allows users to create and view support tickets.
 library;
 
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -18,24 +19,53 @@ import '../../auth/presentation/auth_state.dart';
 // Helpdesk State
 // ---------------------------------------------------------------------------
 
+/// Status values that count as "ongoing" tickets in the Angular workflow
+/// (chat-store.service.ts `ongoingStatuses`). Anything else is considered
+/// "past" so that no tickets are silently dropped from the UI.
+const Set<String> kHelpdeskOngoingStatuses = {'open', 'in_progress'};
+
 class HelpdeskState {
-  final List<HelpdeskTicket> tickets;
+  final List<HelpdeskTicket> ongoing;
+  final List<HelpdeskTicket> past;
+  final List<HelpdeskTicket> assigned;
+  final HelpdeskMyRole? myRole;
+  final List<HelpdeskTicket> editorTickets;
+  final List<HelpdeskManagedUser> handlers;
   final bool isLoading;
   final String? error;
 
   const HelpdeskState({
-    this.tickets = const [],
+    this.ongoing = const [],
+    this.past = const [],
+    this.assigned = const [],
+    this.myRole,
+    this.editorTickets = const [],
+    this.handlers = const [],
     this.isLoading = false,
     this.error,
   });
 
+  /// All tickets combined (kept for backwards-compatible callers).
+  List<HelpdeskTicket> get tickets => [...ongoing, ...past, ...assigned];
+
   HelpdeskState copyWith({
-    List<HelpdeskTicket>? tickets,
+    List<HelpdeskTicket>? ongoing,
+    List<HelpdeskTicket>? past,
+    List<HelpdeskTicket>? assigned,
+    HelpdeskMyRole? myRole,
+    bool clearMyRole = false,
+    List<HelpdeskTicket>? editorTickets,
+    List<HelpdeskManagedUser>? handlers,
     bool? isLoading,
     String? error,
   }) {
     return HelpdeskState(
-      tickets: tickets ?? this.tickets,
+      ongoing: ongoing ?? this.ongoing,
+      past: past ?? this.past,
+      assigned: assigned ?? this.assigned,
+      myRole: clearMyRole ? null : (myRole ?? this.myRole),
+      editorTickets: editorTickets ?? this.editorTickets,
+      handlers: handlers ?? this.handlers,
       isLoading: isLoading ?? this.isLoading,
       error: error,
     );
@@ -50,14 +80,45 @@ class HelpdeskNotifier extends Notifier<HelpdeskState> {
   late final ChatApiService _api;
   String? _currentUser;
 
+  /// Polling cadence for refreshing the helpdesk dashboard while this screen
+  /// is mounted. Mirrors `startHelpdeskPolling` in chat-store.service.ts;
+  /// Angular uses 20s (`HELPDESK_TICKETS_POLL_INTERVAL_MS`). We use 15s here
+  /// per the mobile spec — slightly snappier feedback when a handler closes a
+  /// ticket from the web client.
+  static const Duration _pollInterval = Duration(seconds: 15);
+
+  /// Short cache TTL to coalesce duplicate calls when the tab is re-entered.
+  /// Conceptually mirrors `HELPDESK_TICKETS_CACHE_TTL_MS` (60s in Angular),
+  /// but kept very short on mobile so manual refreshes / tab switches are not
+  /// silently ignored. The polling timer above is the long-running source of
+  /// freshness, so this only deduplicates rapid back-to-back calls.
+  static const Duration _cacheTtl = Duration(seconds: 2);
+
+  Timer? _pollTimer;
+  DateTime? _lastLoadAt;
+  Future<void>? _inflight;
+
   @override
   HelpdeskState build() {
     _api = ref.watch(chatApiServiceProvider);
     _currentUser = ref.watch(currentUserProvider);
+
+    _pollTimer?.cancel();
+    if (_currentUser != null) {
+      _pollTimer = Timer.periodic(_pollInterval, (_) {
+        // Force a refresh on the polling cadence, ignoring the cache TTL.
+        loadTickets(force: true);
+      });
+    }
+    ref.onDispose(() {
+      _pollTimer?.cancel();
+      _pollTimer = null;
+    });
+
     return const HelpdeskState();
   }
 
-  Future<void> loadTickets() async {
+  Future<void> loadTickets({bool force = false}) async {
     if (_currentUser == null) {
       state = state.copyWith(
         isLoading: false,
@@ -65,13 +126,41 @@ class HelpdeskNotifier extends Notifier<HelpdeskState> {
       );
       return;
     }
-    
-    state = state.copyWith(isLoading: true, error: null);
 
+    // Cache TTL: skip if we just loaded recently (mirrors Angular's
+    // HELPDESK_TICKETS_CACHE_TTL_MS guard around forceRefreshHelpdeskTickets).
+    final now = DateTime.now();
+    if (!force && _lastLoadAt != null && now.difference(_lastLoadAt!) < _cacheTtl) {
+      return;
+    }
+
+    // De-duplicate concurrent calls.
+    final inflight = _inflight;
+    if (inflight != null) {
+      return inflight;
+    }
+
+    final future = _doLoad();
+    _inflight = future;
     try {
-      final tickets = await _api.getHelpdeskTickets(_currentUser!);
-      state = state.copyWith(
-        tickets: tickets,
+      await future;
+    } finally {
+      _inflight = null;
+    }
+  }
+
+  Future<void> _doLoad() async {
+    state = state.copyWith(isLoading: true, error: null);
+    try {
+      final dashboard = await _api.getHelpdeskDashboard(_currentUser!);
+      _lastLoadAt = DateTime.now();
+      state = HelpdeskState(
+        ongoing: dashboard.ongoing,
+        past: dashboard.past,
+        assigned: dashboard.assigned,
+        myRole: dashboard.myRole,
+        editorTickets: dashboard.editorTickets ?? const [],
+        handlers: dashboard.handlers ?? const [],
         isLoading: false,
       );
     } catch (e) {
@@ -108,7 +197,7 @@ class HelpdeskNotifier extends Notifier<HelpdeskState> {
         phone: phone,
         attachmentUrl: attachmentUrl,
       );
-      await loadTickets();
+      await loadTickets(force: true);
       return ticket;
     } catch (e) {
       state = state.copyWith(
@@ -137,7 +226,7 @@ class HelpdeskNotifier extends Notifier<HelpdeskState> {
     
     try {
       await _api.addHelpdeskComment(ticketId, comment, _currentUser!);
-      await loadTickets();
+      await loadTickets(force: true);
     } catch (e) {
       state = state.copyWith(
         error: 'שגיאה בהוספת תגובה: ${e.toString()}',
@@ -170,9 +259,11 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
 
-    // Load tickets on init
+    // Force a fresh load on init so the Scaffold isn't stuck on the empty
+    // initial state (the polling timer in HelpdeskNotifier.build will then
+    // keep it refreshed while this screen is mounted).
     Future.microtask(() {
-      ref.read(helpdeskProvider.notifier).loadTickets();
+      ref.read(helpdeskProvider.notifier).loadTickets(force: true);
     });
   }
 
@@ -186,56 +277,79 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
   Widget build(BuildContext context) {
     final state = ref.watch(helpdeskProvider);
 
-    // Filter tickets by status
-    final openTickets = state.tickets.where((t) => t.status == 'open').toList();
-    final inProgressTickets = state.tickets.where((t) => t.status == 'in_progress').toList();
-    final closedTickets = state.tickets.where((t) => t.status == 'resolved' || t.status == 'closed').toList();
+    // Build the three tabs from the dashboard sections, matching Angular's
+    // getHelpdeskPickerData() in chat-store.service.ts. Anything whose status
+    // isn't in `kHelpdeskOngoingStatuses` lives in `past` (i.e. the "סגור"
+    // tab), so no tickets get silently dropped on unexpected status strings.
+    //
+    // For users who handle tickets (myRole != null), include their `assigned`
+    // tickets in the relevant tab without duplicating tickets they also own.
+    final ownedIds = {
+      for (final t in [...state.ongoing, ...state.past]) t.id,
+    };
+    final assignedExtras = state.assigned.where((t) => !ownedIds.contains(t.id));
 
-    return Scaffold(
-      body: Column(
-        children: [
-          // Tab bar
-          TabBar(
-            controller: _tabController,
-            tabs: [
-              Tab(text: 'פתוח (${openTickets.length})'),
-              Tab(text: 'בטיפול (${inProgressTickets.length})'),
-              Tab(text: 'סגור (${closedTickets.length})'),
-            ],
-          ),
+    final openTickets = [
+      ...state.ongoing.where((t) => t.status == 'open'),
+      ...assignedExtras.where((t) => t.status == 'open'),
+    ];
+    final inProgressTickets = [
+      ...state.ongoing.where((t) => t.status == 'in_progress'),
+      ...assignedExtras.where((t) => t.status == 'in_progress'),
+    ];
+    final closedTickets = [
+      ...state.past,
+      ...assignedExtras.where((t) => !kHelpdeskOngoingStatuses.contains(t.status)),
+    ];
 
-          // Error banner
-          if (state.error != null)
-            MaterialBanner(
-              content: Text(state.error!),
-              backgroundColor: Theme.of(context).colorScheme.errorContainer,
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    ref.read(helpdeskProvider.notifier).loadTickets();
-                  },
-                  child: const Text('נסה שוב'),
-                ),
-              ],
-            ),
-
-          // Tab content
-          Expanded(
-            child: TabBarView(
+    return Directionality(
+      textDirection: ui.TextDirection.rtl,
+      child: Scaffold(
+        body: Column(
+          children: [
+            // Tab bar
+            TabBar(
               controller: _tabController,
-              children: [
-                _TicketList(tickets: openTickets, emptyMessage: 'אין פניות פתוחות'),
-                _TicketList(tickets: inProgressTickets, emptyMessage: 'אין פניות בטיפול'),
-                _TicketList(tickets: closedTickets, emptyMessage: 'אין פניות סגורות'),
+              tabs: [
+                Tab(text: 'פתוח (${openTickets.length})'),
+                Tab(text: 'בטיפול (${inProgressTickets.length})'),
+                Tab(text: 'סגור (${closedTickets.length})'),
               ],
             ),
-          ),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _showCreateTicketDialog(context),
-        icon: const Icon(Icons.add),
-        label: const Text('פנייה חדשה'),
+
+            // Error banner
+            if (state.error != null)
+              MaterialBanner(
+                content: Text(state.error!),
+                backgroundColor: Theme.of(context).colorScheme.errorContainer,
+                actions: [
+                  TextButton(
+                    onPressed: () {
+                      ref.read(helpdeskProvider.notifier).loadTickets(force: true);
+                    },
+                    child: const Text('נסה שוב'),
+                  ),
+                ],
+              ),
+
+            // Tab content
+            Expanded(
+              child: TabBarView(
+                controller: _tabController,
+                children: [
+                  _TicketList(tickets: openTickets, emptyMessage: 'אין פניות פתוחות'),
+                  _TicketList(tickets: inProgressTickets, emptyMessage: 'אין פניות בטיפול'),
+                  _TicketList(tickets: closedTickets, emptyMessage: 'אין פניות סגורות'),
+                ],
+              ),
+            ),
+          ],
+        ),
+        floatingActionButton: FloatingActionButton.extended(
+          onPressed: () => _showCreateTicketDialog(context),
+          icon: const Icon(Icons.add),
+          label: const Text('פנייה חדשה'),
+        ),
       ),
     );
   }
@@ -519,44 +633,77 @@ class _TicketList extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(helpdeskProvider);
+    final theme = Theme.of(context);
 
     if (state.isLoading && tickets.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
+      return Material(
+        color: theme.colorScheme.surface,
+        child: const Center(child: CircularProgressIndicator()),
+      );
     }
 
     if (tickets.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.support_agent_outlined,
-              size: 80,
-              color: Theme.of(context).colorScheme.primary.withAlpha((255 * 0.3).round()),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              emptyMessage,
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.6).round()),
-                  ),
-            ),
-          ],
+      return Material(
+        color: theme.colorScheme.surface,
+        child: RefreshIndicator(
+          onRefresh: () async {
+            await ref.read(helpdeskProvider.notifier).loadTickets(force: true);
+          },
+          child: ListView(
+            // ListView (rather than Center) so RefreshIndicator's pull-to-refresh
+            // gesture is available even when the tab is empty.
+            physics: const AlwaysScrollableScrollPhysics(),
+            children: [
+              SizedBox(
+                height: MediaQuery.of(context).size.height * 0.6,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.support_agent_outlined,
+                      size: 80,
+                      color: theme.colorScheme.primary.withAlpha((255 * 0.6).round()),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      emptyMessage,
+                      textDirection: ui.TextDirection.rtl,
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        color: theme.colorScheme.onSurface.withAlpha((255 * 0.7).round()),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        ref.read(helpdeskProvider.notifier).loadTickets(force: true);
+                      },
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('רענן'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       );
     }
 
-    return RefreshIndicator(
-      onRefresh: () async {
-        await ref.read(helpdeskProvider.notifier).loadTickets();
-      },
-      child: ListView.builder(
-        padding: const EdgeInsets.all(16),
-        itemCount: tickets.length,
-        itemBuilder: (context, index) {
-          final ticket = tickets[index];
-          return _TicketCard(ticket: ticket);
+    return Material(
+      color: theme.colorScheme.surface,
+      child: RefreshIndicator(
+        onRefresh: () async {
+          await ref.read(helpdeskProvider.notifier).loadTickets(force: true);
         },
+        child: ListView.builder(
+          padding: const EdgeInsets.all(16),
+          itemCount: tickets.length,
+          itemBuilder: (context, index) {
+            final ticket = tickets[index];
+            return _TicketCard(ticket: ticket);
+          },
+        ),
       ),
     );
   }
@@ -576,6 +723,7 @@ class _TicketCard extends StatelessWidget {
     final theme = Theme.of(context);
 
     return Card(
+      color: theme.cardColor,
       margin: const EdgeInsets.only(bottom: 12),
       child: InkWell(
         onTap: () => _showTicketDetail(context),
@@ -689,7 +837,7 @@ class _StatusBadge extends StatelessWidget {
     switch (status) {
       case 'open':
         color = Colors.blue;
-        text = 'פתוח';
+        text = 'פתוחה';
         break;
       case 'in_progress':
         color = AppColors.warning;
@@ -697,11 +845,11 @@ class _StatusBadge extends StatelessWidget {
         break;
       case 'resolved':
         color = AppColors.success;
-        text = 'נפתר';
+        text = 'טופלה';
         break;
       case 'closed':
         color = Colors.grey;
-        text = 'סגור';
+        text = 'סגורה';
         break;
       default:
         color = Colors.grey;
