@@ -103,9 +103,14 @@ class TzmcPushApp extends ConsumerWidget {
       ],
 
       // Theme
+      // Match the Angular frontend, which is unconditionally light-themed
+      // (see frontend/src/styles.scss: body background #f3f5fb, text #202330,
+      // no prefers-color-scheme handling). Using ThemeMode.system caused the
+      // Android app to fall back to a sparsely-styled dark theme, which made
+      // the bottom navigation nearly unreadable on devices in dark mode.
       theme: AppTheme.light,
-      darkTheme: AppTheme.dark,
-      themeMode: ThemeMode.system,
+      darkTheme: AppTheme.light,
+      themeMode: ThemeMode.light,
 
       // Initial route handling based on auth state
       home: const AuthRouter(),
