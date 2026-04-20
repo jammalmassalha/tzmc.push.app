@@ -26,6 +26,25 @@ enum ShuttleBookingStep {
   station,   // Station selection
 }
 
+/// Status value sent to the server for a newly-active shuttle order, mirroring
+/// `SHUTTLE_STATUS_ACTIVE_VALUE` in `frontend/src/app/core/services/chat-store.service.ts`.
+const String shuttleStatusActiveValue = 'פעיל активный';
+
+/// Status value sent to the server when cancelling a shuttle order, mirroring
+/// `SHUTTLE_STATUS_CANCEL_VALUE` in the Angular store.
+const String shuttleStatusCancelValue = 'ביטול נסיעה отмена поезд';
+
+/// Time slots available as shuttle "shifts", mirroring `SHUTTLE_SHIFT_OPTIONS`
+/// in the Angular store. The submit value carries the leading apostrophe so
+/// the Google Sheet stores the value as text.
+const List<({String label, String submitValue})> shuttleShiftOptions = [
+  (label: '05:00', submitValue: "'05:00"),
+  (label: '06:00', submitValue: "'06:00"),
+  (label: '12:00', submitValue: "'12:00"),
+  (label: '14:00', submitValue: "'14:00"),
+  (label: '22:00', submitValue: "'22:00"),
+];
+
 // ---------------------------------------------------------------------------
 // Shuttle State
 // ---------------------------------------------------------------------------
@@ -184,6 +203,80 @@ class ShuttleNotifier extends Notifier<ShuttleState> {
       rethrow;
     }
   }
+
+  /// Cancel an existing shuttle order by re-submitting it with the cancel
+  /// status value, matching Angular's `cancelShuttleOrderById` flow.
+  Future<void> cancelOrder(ShuttleUserOrderPayload order) async {
+    if (_currentUser == null) {
+      throw Exception('לא מחובר');
+    }
+
+    final dateIso = _resolveOrderDateIso(order);
+    final shiftValue = _resolveOrderShiftSubmitValue(order);
+    final station = (order.station ?? '').trim();
+    if (dateIso.isEmpty || shiftValue.isEmpty || station.isEmpty) {
+      throw Exception('פרטי הזמנה חסרים, לא ניתן לבטל');
+    }
+
+    state = state.copyWith(isLoading: true, error: null);
+    try {
+      final payload = ShuttleOrderSubmitPayload(
+        employee: (order.employee?.trim().isNotEmpty ?? false)
+            ? order.employee!.trim()
+            : _currentUser!,
+        date: dateIso,
+        dateAlt: DateFormat('yyyy-MM-dd').format(DateTime.now()),
+        shift: shiftValue,
+        station: station,
+        status: shuttleStatusCancelValue,
+      );
+      await _api.submitShuttleOrder(payload, _currentUser!);
+      await loadUserOrders();
+      state = state.copyWith(isLoading: false);
+    } catch (e) {
+      state = state.copyWith(
+        isLoading: false,
+        error: 'שגיאה בביטול הזמנה: ${e.toString()}',
+      );
+      rethrow;
+    }
+  }
+
+  /// Resolve an order's date to an ISO `yyyy-MM-dd` string, accepting either
+  /// `dateIso` (preferred) or a `dd/MM/yyyy` date string.
+  String _resolveOrderDateIso(ShuttleUserOrderPayload order) {
+    final iso = (order.dateIso ?? '').trim();
+    if (iso.isNotEmpty) return iso;
+    final raw = (order.date ?? '').trim();
+    if (raw.isEmpty) return '';
+    // Already ISO (yyyy-MM-dd)
+    if (RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(raw)) return raw;
+    // dd/MM/yyyy or dd.MM.yyyy
+    final m = RegExp(r'^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$').firstMatch(raw);
+    if (m != null) {
+      final d = m.group(1)!.padLeft(2, '0');
+      final mo = m.group(2)!.padLeft(2, '0');
+      final y = m.group(3)!;
+      return '$y-$mo-$d';
+    }
+    return raw;
+  }
+
+  /// Resolve the submit-value for an order's shift (e.g. `"'05:00"` with the
+  /// leading apostrophe Angular uses to keep the Sheet column as text).
+  String _resolveOrderShiftSubmitValue(ShuttleUserOrderPayload order) {
+    final candidate = (order.shiftValue?.trim().isNotEmpty ?? false)
+        ? order.shiftValue!.trim()
+        : (order.shiftLabel ?? order.shift ?? '').trim();
+    if (candidate.isEmpty) return '';
+    if (candidate.startsWith("'")) return candidate;
+    final hhmm = RegExp(r'^(\d{1,2}):(\d{2})$').firstMatch(candidate);
+    if (hhmm != null) {
+      final h = hhmm.group(1)!.padLeft(2, '0');
+      return "'$h:${hhmm.group(2)}";
+    }
+    return candidate;
+  }
   
   // ---------------------------------------------------------------------------
   // Wizard Navigation Methods
@@ -221,24 +314,26 @@ class ShuttleNotifier extends Notifier<ShuttleState> {
   /// Select a station and submit the order
   Future<void> selectStationAndSubmit(String station) async {
     final date = state.selectedDate;
-    final shift = state.selectedShift;
-    
-    if (date == null || shift == null) {
+    final shiftSubmitValue = state.selectedShift;
+
+    if (date == null || shiftSubmitValue == null) {
       state = state.copyWith(error: 'אנא בחר תאריך ומשמרת');
       return;
     }
-    
+
     state = state.copyWith(selectedStation: station);
-    
-    final dateFormatted = DateFormat('dd/MM/yyyy').format(date);
-    final dateAlt = DateFormat('yyyy-MM-dd').format(date);
-    
+
+    // Mirror Angular's `submitShuttleOrder`: `date` is the picked day's ISO
+    // date and `dateAlt` is today's ISO date.
+    final dateIso = DateFormat('yyyy-MM-dd').format(date);
+    final dateAltIso = DateFormat('yyyy-MM-dd').format(DateTime.now());
+
     await submitOrder(
-      date: dateFormatted,
-      dateAlt: dateAlt,
-      shift: shift,
+      date: dateIso,
+      dateAlt: dateAltIso,
+      shift: shiftSubmitValue,
       station: station,
-      status: 'הזמנה חדשה',
+      status: shuttleStatusActiveValue,
     );
   }
   
@@ -279,26 +374,43 @@ class ShuttleNotifier extends Notifier<ShuttleState> {
     );
   }
   
-  /// Get available dates for shuttle booking (next 10 days)
+  /// Get available dates for shuttle booking (today + next 9 days), matching
+  /// Angular's `getShuttleDateChoices` (starts at today).
   List<DateTime> getAvailableDates() {
     final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
     final dates = <DateTime>[];
-    for (int i = 1; i <= 10; i++) {
-      final date = now.add(Duration(days: i));
-      // Skip Saturdays (weekend in Israel)
-      if (date.weekday != DateTime.saturday) {
-        dates.add(date);
-      }
+    for (int i = 0; i < 10; i++) {
+      dates.add(today.add(Duration(days: i)));
     }
     return dates;
   }
-  
-  /// Get shift options
-  List<Map<String, String>> getShiftOptions() {
-    return [
-      {'value': 'בוקר', 'label': '🌅 בוקר'},
-      {'value': 'ערב', 'label': '🌙 ערב'},
-    ];
+
+  /// Get shift (departure-time) options, matching Angular's
+  /// `getShuttleShiftOptionsForDate`. Same-day options whose time is less than
+  /// 60 minutes from now are returned as disabled.
+  List<({String label, String submitValue, bool disabled})>
+      getShiftOptionsForDate(DateTime? date) {
+    return shuttleShiftOptions.map((option) {
+      return (
+        label: option.label,
+        submitValue: option.submitValue,
+        disabled: _shouldDisableShiftForDate(date, option.label),
+      );
+    }).toList();
+  }
+
+  bool _shouldDisableShiftForDate(DateTime? date, String shiftLabel) {
+    if (date == null) return false;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final picked = DateTime(date.year, date.month, date.day);
+    if (picked != today) return false;
+    final m = RegExp(r'^(\d{1,2}):(\d{2})$').firstMatch(shiftLabel.trim());
+    if (m == null) return false;
+    final shiftMinutes = int.parse(m.group(1)!) * 60 + int.parse(m.group(2)!);
+    final minimumAllowedMinutes = now.hour * 60 + now.minute + 60;
+    return shiftMinutes <= minimumAllowedMinutes;
   }
 }
 
@@ -489,7 +601,7 @@ class _NewOrderTab extends ConsumerWidget {
     final steps = [
       ('menu', 'התחלה', state.currentStep == ShuttleBookingStep.menu),
       ('date', 'תאריך', state.currentStep == ShuttleBookingStep.date),
-      ('shift', 'משמרת', state.currentStep == ShuttleBookingStep.shift),
+      ('shift', 'שעה', state.currentStep == ShuttleBookingStep.shift),
       ('station', 'תחנה', state.currentStep == ShuttleBookingStep.station),
     ];
 
@@ -656,7 +768,7 @@ class _NewOrderTab extends ConsumerWidget {
   }
 
   Widget _buildShiftStep(BuildContext context, ShuttleState state, ShuttleNotifier notifier, ThemeData theme) {
-    final shiftOptions = notifier.getShiftOptions();
+    final shiftOptions = notifier.getShiftOptionsForDate(state.selectedDate);
     final selectedDate = state.selectedDate;
     final hebrewDays = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
     
@@ -665,11 +777,13 @@ class _NewOrderTab extends ConsumerWidget {
       final dayName = hebrewDays[(selectedDate.weekday % 7)];
       dateLabel = 'יום $dayName ${DateFormat('dd/MM/yyyy').format(selectedDate)}';
     }
-    
+
+    final hasAnyEnabled = shiftOptions.any((option) => !option.disabled);
+
     return Column(
       children: [
         Text(
-          'בחר משמרת',
+          'בחר שעת נסיעה',
           style: theme.textTheme.titleLarge?.copyWith(
             fontWeight: FontWeight.bold,
           ),
@@ -688,7 +802,7 @@ class _NewOrderTab extends ConsumerWidget {
           ),
         const SizedBox(height: 16),
         Text(
-          'הסעה לעבודה',
+          'בחר אחת משעות ההסעה הזמינות',
           style: theme.textTheme.bodyMedium?.copyWith(
             color: theme.colorScheme.onSurface.withAlpha((255 * 0.6).round()),
           ),
@@ -696,21 +810,33 @@ class _NewOrderTab extends ConsumerWidget {
           textDirection: ui.TextDirection.rtl,
         ),
         const SizedBox(height: 16),
-        Row(
+        if (!hasAnyEnabled)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(
+              'אין שעות זמינות בתאריך שנבחר. חזור ובחר תאריך אחר.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.error,
+              ),
+              textAlign: TextAlign.center,
+              textDirection: ui.TextDirection.rtl,
+            ),
+          ),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          alignment: WrapAlignment.center,
           children: shiftOptions.map((option) {
-            return Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                child: OutlinedButton(
-                  onPressed: () => notifier.selectShift(option['value']!),
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 20),
-                  ),
-                  child: Text(
-                    option['label']!,
-                    style: theme.textTheme.titleMedium,
-                  ),
-                ),
+            return OutlinedButton(
+              onPressed: option.disabled
+                  ? null
+                  : () => notifier.selectShift(option.submitValue),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+              ),
+              child: Text(
+                option.label,
+                style: theme.textTheme.titleMedium,
               ),
             );
           }).toList(),
@@ -881,16 +1007,17 @@ class _SectionHeader extends StatelessWidget {
   }
 }
 
-class _OrderCard extends StatelessWidget {
+class _OrderCard extends ConsumerWidget {
   final ShuttleUserOrderPayload order;
   final bool isPast;
 
   const _OrderCard({required this.order, required this.isPast});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    
+    final canCancel = !isPast && !order.isCancelled && order.isOngoing;
+
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       color: isPast 
@@ -901,47 +1028,61 @@ class _OrderCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Header with status
+            // Header with status and (for ongoing orders) a delete action.
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Row(
-                  children: [
-                    Icon(
-                      order.isCancelled 
-                          ? Icons.cancel 
-                          : isPast 
-                              ? Icons.check_circle 
-                              : Icons.schedule,
-                      size: 18,
-                      color: order.isCancelled 
-                          ? theme.colorScheme.error 
-                          : isPast 
-                              ? AppColors.success 
-                              : theme.colorScheme.primary,
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      order.isCancelled 
-                          ? 'בוטלה' 
-                          : (order.statusValue ?? order.status ?? 'לא ידוע'),
-                      style: TextStyle(
+                Expanded(
+                  child: Row(
+                    children: [
+                      Icon(
+                        order.isCancelled 
+                            ? Icons.cancel 
+                            : isPast 
+                                ? Icons.check_circle 
+                                : Icons.schedule,
+                        size: 18,
                         color: order.isCancelled 
                             ? theme.colorScheme.error 
                             : isPast 
                                 ? AppColors.success 
                                 : theme.colorScheme.primary,
-                        fontWeight: FontWeight.bold,
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          order.isCancelled 
+                              ? 'בוטלה' 
+                              : (order.statusValue ?? order.status ?? 'לא ידוע'),
+                          style: TextStyle(
+                            color: order.isCancelled 
+                                ? theme.colorScheme.error 
+                                : isPast 
+                                    ? AppColors.success 
+                                    : theme.colorScheme.primary,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (order.dayName != null && order.dayName!.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    child: Text(
+                      order.dayName!,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurface.withAlpha((255 * 0.6).round()),
                       ),
                     ),
-                  ],
-                ),
-                if (order.dayName != null)
-                  Text(
-                    order.dayName!,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurface.withAlpha((255 * 0.6).round()),
-                    ),
+                  ),
+                if (canCancel)
+                  IconButton(
+                    tooltip: 'מחק הזמנה',
+                    icon: Icon(Icons.delete_outline, color: theme.colorScheme.error),
+                    onPressed: () => _confirmAndCancel(context, ref),
                   ),
               ],
             ),
@@ -956,7 +1097,7 @@ class _OrderCard extends StatelessWidget {
             const SizedBox(height: 4),
             _OrderDetailRow(
               icon: Icons.access_time,
-              label: 'משמרת',
+              label: 'שעה',
               value: order.shiftLabel ?? order.shift ?? '—',
             ),
             const SizedBox(height: 4),
@@ -969,6 +1110,52 @@ class _OrderCard extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  Future<void> _confirmAndCancel(BuildContext context, WidgetRef ref) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final errorColor = Theme.of(context).colorScheme.error;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => Directionality(
+        textDirection: ui.TextDirection.rtl,
+        child: AlertDialog(
+          title: const Text('ביטול הזמנת הסעה'),
+          content: const Text('האם לבטל את ההזמנה? פעולה זו אינה הפיכה.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('חזרה'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(dialogContext).colorScheme.error,
+              ),
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('ביטול הזמנה'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      await ref.read(shuttleProvider.notifier).cancelOrder(order);
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('ההזמנה בוטלה בהצלחה ✅'),
+          backgroundColor: AppColors.success,
+        ),
+      );
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('שגיאה בביטול הזמנה: ${e.toString()}'),
+          backgroundColor: errorColor,
+        ),
+      );
+    }
   }
 }
 
