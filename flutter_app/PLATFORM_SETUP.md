@@ -57,11 +57,15 @@ The Flutter app uses **Firebase Cloud Messaging (FCM)** on Android and APNs (via
    ```
    flutter_app/android/app/google-services.json
    ```
-3. The Google services Gradle plugin is already declared in
-   `android/settings.gradle.kts` and conditionally applied in
+3. The Google services Gradle plugin is already loaded via a
+   `buildscript { classpath("com.google.gms:google-services:...") }` block
+   in `android/build.gradle.kts` and conditionally applied in
    `android/app/build.gradle.kts` (it is only applied when
    `google-services.json` is present, so CI/sample builds without the
    credential keep working — they just won't deliver push notifications).
+   The plugin is intentionally **not** declared in `settings.gradle.kts`'s
+   plugins{} block because Google does not publish a plugin marker for it
+   on the Gradle Plugin Portal.
 4. `AndroidManifest.xml` already declares `INTERNET`, `WAKE_LOCK`, and
    `POST_NOTIFICATIONS` (Android 13+). The runtime permission prompt is
    triggered by `FirebaseMessaging.requestPermission()` in
