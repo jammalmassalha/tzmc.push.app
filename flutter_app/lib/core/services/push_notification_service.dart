@@ -13,11 +13,18 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../features/chat/presentation/message_screen.dart';
 import '../api/chat_api_service.dart';
 import '../navigation/root_navigator.dart';
 import '../services/chat_store_service.dart';
+
+// SharedPreferences key used to remember that we've already nagged the user
+// to re-enable notifications from the system Settings screen, so we don't
+// show the "go to settings" dialog every time the app starts.
+const String _kPushSettingsNagShownKey = 'push_settings_nag_shown_v1';
 
 // Platform detection helper
 bool get _isNativePlatform {
@@ -67,7 +74,14 @@ class PushNotificationService {
 
   PushNotificationService(this._api, this._ref);
 
-  /// Initialize push notifications
+  /// Initialize push notifications.
+  ///
+  /// Sets up Firebase, the local notifications plugin, FCM listeners, and
+  /// the background-launch handler. **Does not** trigger the OS permission
+  /// prompt — call [ensurePermissionAndRegister] from the UI layer once a
+  /// [BuildContext] is available so we can show a Hebrew rationale dialog
+  /// before the system dialog appears (and a "open settings" fallback if
+  /// the user has previously denied the permission).
   Future<void> initialize() async {
     if (kIsWeb) {
       // Web uses the existing web-push system
@@ -83,11 +97,14 @@ class PushNotificationService {
       _localNotifications = FlutterLocalNotificationsPlugin();
       await _initializeLocalNotifications();
 
-      // Request permission
-      await _requestPermission();
-
-      // Get and register token
-      await _getAndRegisterToken();
+      // If the user has already granted (or provisionally granted)
+      // notification permission in a previous session, register the device
+      // token now without showing any dialog. The OS prompt is handled
+      // separately by [ensurePermissionAndRegister].
+      final settings = await _messaging!.getNotificationSettings();
+      if (_isAuthorized(settings.authorizationStatus)) {
+        await _getAndRegisterToken();
+      }
 
       // Listen for token refresh
       _tokenRefreshSubscription = _messaging!.onTokenRefresh.listen(_onTokenRefresh);
@@ -110,6 +127,156 @@ class PushNotificationService {
     }
   }
 
+  /// Ask the user — with a Hebrew rationale dialog — to allow push
+  /// notifications, then register the FCM device token on success.
+  ///
+  /// Behavior by current authorization status:
+  ///   * `authorized` / `provisional` → just (re)register the token.
+  ///   * `notDetermined` → show an in-app rationale dialog and, if the user
+  ///     accepts, trigger the OS permission prompt.
+  ///   * `denied` → show a one-time "open Settings" dialog (gated by a
+  ///     [SharedPreferences] flag so we don't nag on every launch).
+  ///
+  /// Safe to call multiple times; safe to call on web (no-op). The
+  /// [context] is used only to host dialogs and is captured before any
+  /// `await`, so callers should pass a context that belongs to a mounted
+  /// widget.
+  Future<void> ensurePermissionAndRegister(BuildContext context) async {
+    if (kIsWeb) return;
+    if (_messaging == null) return;
+
+    NotificationSettings settings;
+    try {
+      settings = await _messaging!.getNotificationSettings();
+    } catch (e) {
+      debugPrint('[PushNotificationService] getNotificationSettings error: $e');
+      return;
+    }
+
+    final status = settings.authorizationStatus;
+    if (_isAuthorized(status)) {
+      await _getAndRegisterToken();
+      return;
+    }
+
+    if (status == AuthorizationStatus.notDetermined) {
+      if (!context.mounted) return;
+      final accepted = await _showRationaleDialog(context);
+      if (accepted != true) return;
+      await _requestPermissionAndRegister();
+      return;
+    }
+
+    // status == denied (and on iOS this is the permanent state)
+    await _maybeShowOpenSettingsDialog(context);
+  }
+
+  /// Whether the given [AuthorizationStatus] means notifications are
+  /// effectively allowed (full grant or iOS provisional grant).
+  bool _isAuthorized(AuthorizationStatus status) {
+    return status == AuthorizationStatus.authorized ||
+        status == AuthorizationStatus.provisional;
+  }
+
+  /// Show the Hebrew RTL rationale dialog. Returns true if the user
+  /// accepted (and we should trigger the OS prompt), false otherwise.
+  Future<bool?> _showRationaleDialog(BuildContext context) {
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          title: const Text('הפעלת התראות'),
+          content: const Text(
+            'כדי לקבל הודעות צ\'אט, עדכוני קריאות שירות והסעות בזמן אמת, '
+            'יש לאפשר לאפליקציה לשלוח לך התראות.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('לא עכשיו'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('אפשר התראות'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Show — at most once per install — a dialog inviting the user to
+  /// re-enable notifications from the system Settings screen.
+  Future<void> _maybeShowOpenSettingsDialog(BuildContext context) async {
+    SharedPreferences prefs;
+    try {
+      prefs = await SharedPreferences.getInstance();
+    } catch (e) {
+      debugPrint('[PushNotificationService] SharedPreferences error: $e');
+      return;
+    }
+    if (prefs.getBool(_kPushSettingsNagShownKey) == true) return;
+    if (!context.mounted) return;
+
+    final openSettings = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          title: const Text('ההתראות מושבתות'),
+          content: const Text(
+            'התראות חסומות עבור האפליקציה, ולכן לא תקבל הודעות חדשות. '
+            'ניתן להפעיל אותן מחדש דרך הגדרות המערכת.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('לא עכשיו'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('פתח הגדרות'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    // Persist regardless of the choice — we don't want to nag on every
+    // launch even if the user dismissed without opening Settings.
+    await prefs.setBool(_kPushSettingsNagShownKey, true);
+
+    if (openSettings == true) {
+      try {
+        await openAppSettings();
+      } catch (e) {
+        debugPrint('[PushNotificationService] openAppSettings error: $e');
+      }
+    }
+  }
+
+  /// Trigger the OS permission prompt and, on success, register the FCM
+  /// device token with the backend.
+  Future<void> _requestPermissionAndRegister() async {
+    try {
+      final settings = await _messaging!.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+        provisional: false,
+      );
+      debugPrint(
+          '[PushNotificationService] Permission status: ${settings.authorizationStatus}');
+      if (_isAuthorized(settings.authorizationStatus)) {
+        await _getAndRegisterToken();
+      }
+    } catch (e) {
+      debugPrint('[PushNotificationService] requestPermission error: $e');
+    }
+  }
+
   Future<void> _initializeLocalNotifications() async {
     const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
     const iosSettings = DarwinInitializationSettings(
@@ -127,17 +294,6 @@ class PushNotificationService {
       settings: initSettings,
       onDidReceiveNotificationResponse: _onNotificationTapped,
     );
-  }
-
-  Future<void> _requestPermission() async {
-    final settings = await _messaging!.requestPermission(
-      alert: true,
-      badge: true,
-      sound: true,
-      provisional: false,
-    );
-
-    debugPrint('[PushNotificationService] Permission status: ${settings.authorizationStatus}');
   }
 
   Future<void> _getAndRegisterToken() async {

@@ -48,9 +48,19 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
       // backend can target this device. We don't await initialize() because
       // the UI should not block on the network; push registration runs once
       // the chat store has a chance to settle on its first frame.
-      ref.read(chatStoreProvider.notifier).initialize(user).then((_) {
+      ref.read(chatStoreProvider.notifier).initialize(user).then((_) async {
         // Fire-and-forget; service logs its own errors.
-        ref.read(pushNotificationServiceProvider).initialize();
+        await ref.read(pushNotificationServiceProvider).initialize();
+        // After init, ask the user to allow notifications. This shows a
+        // Hebrew rationale dialog before the OS prompt (or an "open
+        // settings" dialog if they've previously denied). Wait for the
+        // first frame so [context] is mounted and the dialog can render.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          ref
+              .read(pushNotificationServiceProvider)
+              .ensurePermissionAndRegister(context);
+        });
       });
     }
   }
