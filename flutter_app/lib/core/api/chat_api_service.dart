@@ -991,19 +991,106 @@ class ChatApiService {
     )).toList();
   }
 
-  /// Register device token for push notifications
+  /// Register an FCM (Android) / APNs (iOS) device push token with the
+  /// backend so it can be persisted to the Google Sheet and used by
+  /// `/notify` to deliver pushes to this device.
+  ///
+  /// The backend is the same endpoint used by the Angular web client
+  /// (`/register-device`). The `fcmToken` field carries the FCM/APNs
+  /// device token (no W3C `endpoint`/`keys` shape — the backend's
+  /// `normalizeSubscriptionRecord` accepts FCM-token records).
   Future<void> registerDeviceToken({
+    required String username,
     required String token,
     required String platform,
   }) async {
-    // Use existing registerDeviceForPush
-    // Platform: 'ios' or 'android'
-    // For now, just log - backend needs mobile push endpoint
+    final normalizedUser = username.trim().toLowerCase();
+    if (normalizedUser.isEmpty || token.isEmpty) return;
+
+    final normalizedPlatform = _normalizeRegisterDevicePlatform(platform);
+
+    final payload = <String, dynamic>{
+      'username': normalizedUser,
+      'fcmToken': token,
+      'token': token,
+      'deviceType': 'Mobile',
+      'platform': normalizedPlatform,
+      'action': 'subscribe',
+      // Keep an FCM-shaped subscription object too so the Google Sheet
+      // sees the same field names the Angular client uses.
+      'subscription': {
+        'fcmToken': token,
+        'token': token,
+        'platform': normalizedPlatform,
+        'type': 'fcm',
+      },
+      'subscriptionMobile': {
+        'fcmToken': token,
+        'token': token,
+        'platform': normalizedPlatform,
+        'type': 'fcm',
+      },
+    };
+
+    await _client.post(
+      ApiEndpoints.registerDevice,
+      data: payload,
+      retryOptions: const RetryOptions(retries: 2, timeout: Duration(seconds: 12)),
+    );
   }
 
-  /// Unregister device token
-  Future<void> unregisterDeviceToken(String token) async {
-    // Backend needs endpoint for this
+  /// Unregister an FCM/APNs device token (called on logout).
+  Future<void> unregisterDeviceToken({
+    required String username,
+    required String token,
+    required String platform,
+  }) async {
+    final normalizedUser = username.trim().toLowerCase();
+    if (normalizedUser.isEmpty || token.isEmpty) return;
+
+    final normalizedPlatform = _normalizeRegisterDevicePlatform(platform);
+
+    final payload = <String, dynamic>{
+      'username': normalizedUser,
+      'fcmToken': token,
+      'token': token,
+      'deviceType': 'Mobile',
+      'platform': normalizedPlatform,
+      'action': 'unsubscribe',
+      'subscription': {
+        'fcmToken': token,
+        'token': token,
+        'platform': normalizedPlatform,
+        'type': 'fcm',
+      },
+      'subscriptionMobile': {
+        'fcmToken': token,
+        'token': token,
+        'platform': normalizedPlatform,
+        'type': 'fcm',
+      },
+    };
+
+    await _client.post(
+      ApiEndpoints.registerDevice,
+      data: payload,
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 8)),
+    );
+  }
+
+  /// Normalize the Flutter platform name to the values the backend /
+  /// Angular client uses ('Android', 'iOS', 'Desktop').
+  String _normalizeRegisterDevicePlatform(String platform) {
+    switch (platform.toLowerCase()) {
+      case 'android':
+        return 'Android';
+      case 'ios':
+        return 'iOS';
+      case 'web':
+        return 'Desktop';
+      default:
+        return 'Desktop';
+    }
   }
 
   // ---------------------------------------------------------------------------

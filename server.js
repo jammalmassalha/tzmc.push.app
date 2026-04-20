@@ -1428,7 +1428,42 @@ function normalizeSubscriptionRecord(rawSubscription, usernameHint = '', subscri
     const keys = (rawSubscription.keys && typeof rawSubscription.keys === 'object') ? rawSubscription.keys : null;
     const p256dh = keys && typeof keys.p256dh === 'string' ? keys.p256dh.trim() : '';
     const auth = keys && typeof keys.auth === 'string' ? keys.auth.trim() : '';
-    if (!endpoint || !p256dh || !auth) return null;
+    // FCM/APNs token (Flutter mobile clients) — these don't have a W3C
+    // PushSubscription endpoint/keys, just a single device token.
+    const fcmToken = typeof rawSubscription.fcmToken === 'string' && rawSubscription.fcmToken.trim()
+        ? rawSubscription.fcmToken.trim()
+        : (typeof rawSubscription.token === 'string' && rawSubscription.token.trim()
+            ? rawSubscription.token.trim()
+            : '');
+
+    if (!endpoint || !p256dh || !auth) {
+        // Accept FCM-only records (Flutter Android/iOS clients). They
+        // are stored alongside web-push subscriptions but flagged with
+        // type='fcm' so the push delivery layer can route them via FCM
+        // instead of web-push.
+        if (!fcmToken) return null;
+        const usernameForFcm = normalizeUserKey(
+            rawSubscription.username || rawSubscription.user || usernameHint
+        );
+        const platformHint = String(
+            rawSubscription.platform ||
+            rawSubscription.deviceType ||
+            subscriptionTypeHint ||
+            ''
+        ).toLowerCase();
+        const fcmType = platformHint.includes('ios') ? 'apns' : 'fcm';
+        return {
+            // Use a synthetic endpoint so dedupeSubscriptionsByEndpoint
+            // keeps one record per token without colliding with
+            // real web-push endpoints.
+            endpoint: `fcm:${fcmToken}`,
+            fcmToken,
+            expirationTime: rawSubscription.expirationTime || null,
+            username: usernameForFcm || undefined,
+            type: fcmType,
+            platform: rawSubscription.platform || undefined
+        };
+    }
     const username = normalizeUserKey(
         rawSubscription.username || rawSubscription.user || usernameHint
     );

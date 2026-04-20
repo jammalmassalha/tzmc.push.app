@@ -67,6 +67,24 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
+      - name: Materialize google-services.json from secret
+        # The google-services.json file is intentionally not committed.
+        # It must be provided as the GOOGLE_SERVICES_JSON_BASE64 GitHub
+        # secret (base64 of the file). Without it, the APK has no
+        # Firebase config and FCM/push notifications silently fail at
+        # runtime — Firebase.initializeApp() throws, no permission
+        # prompt is shown, and no token is registered.
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+        run: |
+          if [ -z "${GOOGLE_SERVICES_JSON_BASE64:-}" ]; then
+            echo "::warning::GOOGLE_SERVICES_JSON_BASE64 secret is not set. The built APK will NOT support Firebase/FCM push notifications."
+          else
+            mkdir -p android/app
+            echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 -d > android/app/google-services.json
+            echo "Decoded google-services.json ($(wc -c < android/app/google-services.json) bytes)"
+          fi
+
       - name: Run code generation
         run: dart run build_runner build --delete-conflicting-outputs
 

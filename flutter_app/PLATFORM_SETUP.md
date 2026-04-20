@@ -57,6 +57,20 @@ The Flutter app uses **Firebase Cloud Messaging (FCM)** on Android and APNs (via
    ```
    flutter_app/android/app/google-services.json
    ```
+   For local builds the file lives on disk; for CI builds the
+   `Flutter Build` GitHub Actions workflow decodes it at build time
+   from the **`GOOGLE_SERVICES_JSON_BASE64`** repository secret. Create
+   the secret with:
+   ```bash
+   base64 -w 0 google-services.json | pbcopy   # macOS
+   base64 -w 0 google-services.json             # Linux (copy output)
+   ```
+   then in GitHub: **Settings → Secrets and variables → Actions → New
+   repository secret** → name `GOOGLE_SERVICES_JSON_BASE64`, value the
+   base64 string. Without this secret the workflow logs a
+   `::warning::` and the resulting APK silently has FCM disabled —
+   `Firebase.initializeApp()` throws, the permission prompt never
+   appears, and no token is registered with the backend.
 3. The Google services Gradle plugin is already loaded via a
    `buildscript { classpath("com.google.gms:google-services:...") }` block
    in `android/build.gradle.kts` and conditionally applied in
