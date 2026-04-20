@@ -44,6 +44,53 @@ After initializing the Flutter project with `flutter create`, configure:
    - Download `google-services.json` from Firebase Console
    - Place in `android/app/`
 
+## Push Notifications (Firebase)
+
+The Flutter app uses **Firebase Cloud Messaging (FCM)** on Android and APNs (via Firebase) on iOS for push notifications. Web continues to use the existing web-push system in the Angular frontend, so no Firebase config is needed for the web build.
+
+> **Credentials are not committed to this repository.** Each environment must drop in its own Firebase config files generated from the Firebase console (Project settings → Your apps).
+
+### Android — `google-services.json`
+
+1. In the Firebase console add an Android app with package name matching `android/app/build.gradle` (`applicationId`).
+2. Download `google-services.json` and place it at:
+   ```
+   flutter_app/android/app/google-services.json
+   ```
+3. Make sure the Google services Gradle plugin is applied:
+   - `android/build.gradle` (project) — buildscript classpath:
+     ```
+     classpath 'com.google.gms:google-services:4.4.2'
+     ```
+   - `android/app/build.gradle` (app) — bottom of file:
+     ```
+     apply plugin: 'com.google.gms.google-services'
+     ```
+4. `AndroidManifest.xml` already needs `INTERNET`; on Android 13+ add `POST_NOTIFICATIONS` (the `permission_handler` package is already in `pubspec.yaml`).
+
+### iOS — `GoogleService-Info.plist`
+
+1. In the Firebase console add an iOS app with bundle id matching `ios/Runner.xcodeproj`.
+2. Download `GoogleService-Info.plist` and add it to `ios/Runner/` **inside Xcode** (so it is added to the Runner target).
+3. In Xcode → Runner target → **Signing & Capabilities**:
+   - Add **Push Notifications**
+   - Add **Background Modes** and tick **Remote notifications**
+4. The corresponding `Info.plist` entry (added automatically when you tick the box):
+   ```xml
+   <key>UIBackgroundModes</key>
+   <array>
+       <string>remote-notification</string>
+   </array>
+   ```
+5. Upload your APNs auth key (`.p8`) to Firebase under **Project settings → Cloud Messaging → Apple app configuration**.
+
+### Wiring (already done in code)
+
+- `main.dart` calls `Firebase.initializeApp()` and registers `firebaseMessagingBackgroundHandler` via `FirebaseMessaging.onBackgroundMessage(...)` before `runApp`.
+- `chat_shell_screen.dart` initializes `pushNotificationServiceProvider` after the chat store is hydrated; this requests permission, fetches the FCM token and POSTs it to the backend (`/api/device-tokens`).
+- `auth_state.dart#logout` calls `unregisterToken()` so the backend stops targeting the device when a user signs out.
+- Tapping a notification routes to `MessageScreen` for the relevant `chatId`/`groupId` via the global `rootNavigatorKey`.
+
 ## iOS Setup
 
 1. **Info.plist**:

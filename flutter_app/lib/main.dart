@@ -3,6 +3,9 @@
 /// Main entry point for the application.
 library;
 
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -11,6 +14,8 @@ import 'package:intl/date_symbol_data_local.dart';
 
 import 'core/api/http_client.dart';
 import 'core/config/environment.dart';
+import 'core/navigation/root_navigator.dart';
+import 'core/services/push_notification_service.dart';
 import 'shared/theme/app_theme.dart';
 import 'features/auth/presentation/auth_state.dart';
 import 'features/auth/presentation/login_screen.dart';
@@ -26,6 +31,20 @@ void main() async {
 
   // Initialize environment
   Env.initialize(EnvironmentConfig.production);
+
+  // Initialize Firebase + register the background message handler before
+  // runApp(). The background handler must be a top-level function and must
+  // be registered after Firebase.initializeApp(). Web uses the existing
+  // web-push system, so skip there. We tolerate failures (e.g. missing
+  // google-services.json during development) so the app still launches.
+  if (!kIsWeb) {
+    try {
+      await Firebase.initializeApp();
+      FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+    } catch (e, st) {
+      debugPrint('[main] Firebase init skipped: $e\n$st');
+    }
+  }
 
   // Build the HTTP client up-front so that platform-specific cookie
   // persistence (PersistCookieJar on native, withCredentials on web) is
@@ -69,6 +88,7 @@ class TzmcPushApp extends ConsumerWidget {
     return MaterialApp(
       title: 'TZMC Push',
       debugShowCheckedModeBanner: false,
+      navigatorKey: rootNavigatorKey,
 
       // RTL support for Hebrew
       locale: const Locale('he', 'IL'),

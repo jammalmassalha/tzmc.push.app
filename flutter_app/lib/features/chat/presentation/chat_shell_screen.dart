@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/realtime/realtime_transport_service.dart';
 import '../../../core/services/chat_store_service.dart';
+import '../../../core/services/push_notification_service.dart';
 import '../../auth/presentation/auth_state.dart';
 import '../../helpdesk/presentation/helpdesk_screen.dart';
 import '../../shuttle/presentation/shuttle_screen.dart';
@@ -42,9 +43,15 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
       // Initialize realtime transport
       final transport = ref.read(realtimeTransportServiceProvider);
       transport.connect(user, isNetworkReachable: () => true);
-      
-      // Initialize chat store
-      ref.read(chatStoreProvider.notifier).initialize(user);
+
+      // Initialize chat store, then register the device push token so the
+      // backend can target this device. We don't await initialize() because
+      // the UI should not block on the network; push registration runs once
+      // the chat store has a chance to settle on its first frame.
+      ref.read(chatStoreProvider.notifier).initialize(user).then((_) {
+        // Fire-and-forget; service logs its own errors.
+        ref.read(pushNotificationServiceProvider).initialize();
+      });
     }
   }
 

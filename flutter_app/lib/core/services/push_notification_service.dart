@@ -10,10 +10,13 @@ import 'dart:async';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../features/chat/presentation/message_screen.dart';
 import '../api/chat_api_service.dart';
+import '../navigation/root_navigator.dart';
 import '../services/chat_store_service.dart';
 
 // Platform detection helper
@@ -190,40 +193,34 @@ class PushNotificationService {
     // Show local notification
     _showLocalNotification(message);
 
-    // Apply push payload to chat store
+    // Apply push payload to chat store (also schedules recovery pulls)
     _applyPushPayload(message);
-
-    // Schedule recovery pulls for truncated content
-    _schedulePushRecoveryPulls();
   }
 
   /// Handle message when app opened from notification
   void _onMessageOpenedApp(RemoteMessage message) {
     debugPrint('[PushNotificationService] Opened from notification: ${message.messageId}');
 
-    // Apply push payload
+    // Apply push payload (also schedules recovery pulls)
     _applyPushPayload(message);
-
-    // Schedule recovery pulls
-    _schedulePushRecoveryPulls();
 
     // Navigate to the relevant chat
     _navigateToChat(message);
   }
 
-  /// Handle local notification tap
+  /// Handle local notification tap (foreground notifications)
   void _onNotificationTapped(NotificationResponse response) {
     final payload = response.payload;
-    if (payload != null) {
-      // Parse payload and navigate
-      // Format: "chatId:messageId"
-      final parts = payload.split(':');
-      if (parts.length >= 2) {
-        final chatId = parts[0];
-        // TODO: Navigate to chat using a navigation service
-        debugPrint('[PushNotificationService] Navigate to chat: $chatId');
-      }
-    }
+    if (payload == null) return;
+
+    // Format: "chatId:messageId"
+    final parts = payload.split(':');
+    if (parts.isEmpty) return;
+    final chatId = parts[0];
+    if (chatId.isEmpty) return;
+
+    debugPrint('[PushNotificationService] Local notification tapped: $chatId');
+    _openChatScreen(chatId);
   }
 
   /// Show local notification for foreground messages
@@ -270,19 +267,25 @@ class PushNotificationService {
     final data = message.data;
     if (data.isEmpty) return;
 
-    // The push payload contains truncated message data
-    // The chat store will apply it and schedule recovery pulls
-    // to fetch the full message content
     debugPrint('[PushNotificationService] Push data: $data');
 
-    // TODO: Parse push payload and apply to chat store
-    // This requires access to the ChatStoreNotifier
+    try {
+      // Cast to Map<String, dynamic> — RemoteMessage.data is Map<String, String>
+      // on Android but typed as Map<String, dynamic> in firebase_messaging.
+      final dataMap = Map<String, dynamic>.from(data);
+      _ref.read(chatStoreProvider.notifier).applyIncomingFromPushPayload(dataMap);
+    } catch (e) {
+      debugPrint('[PushNotificationService] Error applying push payload: $e');
+    }
   }
 
   /// Schedule push recovery pulls to fetch full message content
+  ///
+  /// Kept as a fallback / safety net even though
+  /// [ChatStoreNotifier.applyIncomingFromPushPayload] already triggers
+  /// recovery pulls itself.
+  // ignore: unused_element
   void _schedulePushRecoveryPulls() {
-    // Schedule delayed pulls to recover truncated content
-    // This matches the Angular frontend behavior
     for (final delayMs in _pushRecoveryPullDelaysMs) {
       Future.delayed(Duration(milliseconds: delayMs), () {
         try {
@@ -297,15 +300,29 @@ class PushNotificationService {
   /// Navigate to the chat from a notification
   void _navigateToChat(RemoteMessage message) {
     final data = message.data;
-    final chatId = data['chatId'] ?? data['groupId'];
-    if (chatId == null) return;
+    final chatId = (data['chatId'] ?? data['groupId'] ?? data['sender'])?.toString();
+    if (chatId == null || chatId.isEmpty) return;
+    _openChatScreen(chatId);
+  }
 
-    // Set current chat in store
+  /// Set current chat in the store and push the [MessageScreen] route via the
+  /// global [rootNavigatorKey]. This works from background-tap callbacks
+  /// where there is no [BuildContext] in scope.
+  void _openChatScreen(String chatId) {
     try {
       _ref.read(chatStoreProvider.notifier).setCurrentChat(chatId);
     } catch (e) {
-      debugPrint('[PushNotificationService] Navigation error: $e');
+      debugPrint('[PushNotificationService] setCurrentChat error: $e');
     }
+
+    final navigator = rootNavigatorKey.currentState;
+    if (navigator == null) {
+      debugPrint('[PushNotificationService] Navigator not ready, skipping deep link');
+      return;
+    }
+    navigator.push(
+      MaterialPageRoute(builder: (_) => MessageScreen(chatId: chatId)),
+    );
   }
 
   /// Unregister device token (on logout)

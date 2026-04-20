@@ -10,6 +10,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:logger/logger.dart';
 
 import '../../../core/api/chat_api_service.dart';
+import '../../../core/services/push_notification_service.dart';
 
 final _logger = Logger(
   printer: PrettyPrinter(methodCount: 0, errorMethodCount: 5, lineLength: 80),
@@ -186,6 +187,14 @@ class AuthNotifier extends Notifier<AuthState> {
 
   /// Logout
   Future<void> logout() async {
+    // Unregister the push device token first so the server stops targeting
+    // this device for the user that is logging out.
+    try {
+      await ref.read(pushNotificationServiceProvider).unregisterToken();
+    } catch (e) {
+      _logger.w('Error unregistering push token: $e');
+    }
+
     try {
       await _apiService.clearSession();
     } catch (e) {

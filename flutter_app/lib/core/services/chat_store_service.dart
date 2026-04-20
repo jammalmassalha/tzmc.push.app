@@ -322,6 +322,88 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
   }
 
+  /// Apply an incoming message from an FCM push payload.
+  ///
+  /// The [data] map mirrors the `notificationExtraData` / `compactCustomData`
+  /// emitted by `backend/src/services/notification.service.ts` and
+  /// `server.js` (notificationExtraData around server.js:2136). The payload
+  /// may be truncated (groupMessageText is trimmed to 120 chars when the
+  /// payload exceeds maxPushPayloadBytes), so this method also schedules
+  /// recovery pulls to hydrate the full body shortly after.
+  void applyIncomingFromPushPayload(Map<String, dynamic> data) {
+    if (data.isEmpty) return;
+
+    String? _str(dynamic v) {
+      if (v == null) return null;
+      final s = v.toString().trim();
+      return s.isEmpty ? null : s;
+    }
+
+    int? _int(dynamic v) {
+      if (v == null) return null;
+      if (v is int) return v;
+      if (v is num) return v.toInt();
+      return int.tryParse(v.toString());
+    }
+
+    final messageId = _str(data['messageId']);
+    final sender = _str(data['sender']) ?? _str(data['fromUser']);
+    if (messageId == null || sender == null) return;
+
+    final groupId = _str(data['groupId']);
+    final isGroup = groupId != null;
+    final chatId = isGroup ? groupId : sender;
+
+    // Backend may include either the full body (messageText) or a truncated
+    // groupMessageText. Prefer the longer one — _hydrateExistingMessage will
+    // still keep the longer body if a fresher pull replaces it.
+    final messageText = _str(data['messageText']);
+    final groupMessageText = _str(data['groupMessageText']);
+    final body = (messageText != null && groupMessageText != null)
+        ? (messageText.length >= groupMessageText.length ? messageText : groupMessageText)
+        : (messageText ?? groupMessageText ?? _str(data['body']) ?? '');
+
+    final groupTypeRaw = _str(data['groupType']);
+    final groupType = groupTypeRaw == 'community'
+        ? GroupType.community
+        : (isGroup ? GroupType.group : null);
+
+    final senderDisplayName = _str(data['groupSenderName']) ?? getDisplayName(sender);
+    final timestamp = _int(data['timestamp']) ?? DateTime.now().millisecondsSinceEpoch;
+
+    final message = ChatMessage(
+      id: messageId,
+      messageId: messageId,
+      chatId: chatId,
+      sender: sender,
+      senderDisplayName: senderDisplayName,
+      body: body,
+      imageUrl: _str(data['image']) ?? _str(data['imageUrl']),
+      fileUrl: _str(data['fileUrl']),
+      direction: MessageDirection.incoming,
+      timestamp: timestamp,
+      deliveryStatus: DeliveryStatus.delivered,
+      groupId: groupId,
+      groupName: _str(data['groupName']),
+      groupType: groupType,
+    );
+
+    _applyIncomingMessage(message);
+
+    // Update unread count if not the currently open chat
+    if (chatId != state.currentChatId) {
+      final newUnread = Map<String, int>.from(state.unreadByChat);
+      newUnread[chatId] = (newUnread[chatId] ?? 0) + 1;
+      state = state.copyWith(unreadByChat: newUnread);
+    }
+
+    _schedulePersistence();
+
+    // Pull full message content shortly after, in case the push body was
+    // truncated to fit the FCM payload size limit.
+    schedulePushRecoveryPulls();
+  }
+
   /// Apply an incoming message to state
   void _applyIncomingMessage(ChatMessage message) {
     final chatId = message.chatId;
