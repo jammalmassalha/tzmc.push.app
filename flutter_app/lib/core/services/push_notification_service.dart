@@ -128,7 +128,7 @@ class PushNotificationService {
     );
 
     await _localNotifications!.initialize(
-      initSettings,
+      settings: initSettings,
       onDidReceiveNotificationResponse: _onNotificationTapped,
     );
   }
@@ -257,10 +257,10 @@ class PushNotificationService {
     final messageId = data['messageId'] ?? '';
 
     await _localNotifications!.show(
-      message.hashCode,
-      notification.title,
-      notification.body,
-      details,
+      id: message.hashCode,
+      title: notification.title,
+      body: notification.body,
+      notificationDetails: details,
       payload: '$chatId:$messageId',
     );
   }
