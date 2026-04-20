@@ -52,13 +52,6 @@ bool _isIOSPlatform() {
 }
 
 // ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/// Push recovery pull delays (matching Angular frontend)
-const List<int> _pushRecoveryPullDelaysMs = [1200, 3600];
-
-// ---------------------------------------------------------------------------
 // Push Notification Service
 // ---------------------------------------------------------------------------
 
@@ -276,24 +269,6 @@ class PushNotificationService {
       _ref.read(chatStoreProvider.notifier).applyIncomingFromPushPayload(dataMap);
     } catch (e) {
       debugPrint('[PushNotificationService] Error applying push payload: $e');
-    }
-  }
-
-  /// Schedule push recovery pulls to fetch full message content
-  ///
-  /// Kept as a fallback / safety net even though
-  /// [ChatStoreNotifier.applyIncomingFromPushPayload] already triggers
-  /// recovery pulls itself.
-  // ignore: unused_element
-  void _schedulePushRecoveryPulls() {
-    for (final delayMs in _pushRecoveryPullDelaysMs) {
-      Future.delayed(Duration(milliseconds: delayMs), () {
-        try {
-          _ref.read(chatStoreProvider.notifier).pullMessages();
-        } catch (e) {
-          debugPrint('[PushNotificationService] Recovery pull error: $e');
-        }
-      });
     }
   }
 
