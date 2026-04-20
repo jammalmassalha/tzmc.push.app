@@ -122,6 +122,7 @@ interface SessionResponse {
   verificationRequired?: boolean;
   codeSent?: boolean;
   expiresInSeconds?: number;
+  legacyLoginDisabled?: boolean;
 }
 
 interface ClientLogPayload {
@@ -227,50 +228,8 @@ export class ChatApiService {
     return body.authenticated && user ? user : null;
   }
 
-  async createSession(user: string): Promise<string> {
-    const normalized = String(user || '').trim().toLowerCase();
-    if (!normalized) {
-      throw new Error('מספר טלפון לא תקין');
-    }
-
-    const response = await this.fetchWithRetry(
-      `${this.notifyBaseUrl}/auth/session`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user: normalized })
-      },
-      { retries: 1, timeoutMs: 12000 }
-    );
-    if (!response.ok) {
-      let errorMessage = 'נכשל בהתחברות';
-      try {
-        const body = (await response.json()) as SessionResponse & { error?: string };
-        const backendMessage = String(body.message ?? body.error ?? '').trim();
-        if (response.status === 400) {
-          errorMessage = 'מספר טלפון לא תקין';
-        } else if (response.status === 403) {
-          errorMessage = 'המשתמש אינו מורשה';
-        } else if (response.status === 429 && body.retryAfterSeconds) {
-          errorMessage = `יותר מדי ניסיונות. נסה שוב בעוד ${body.retryAfterSeconds} שניות`;
-        } else if (backendMessage) {
-          errorMessage = backendMessage;
-        }
-      } catch {
-        // Keep fallback message.
-      }
-      throw new Error(errorMessage);
-    }
-
-    const body = (await response.json()) as SessionResponse;
-    this.csrfToken = String(body.csrfToken ?? '').trim() || null;
-    const sessionUser = String(body.user ?? '').trim().toLowerCase();
-    if (!body.authenticated || !sessionUser) {
-      this.csrfToken = null;
-      throw new Error('נכשל בהתחברות');
-    }
-    return sessionUser;
-  }
+  // NOTE: Direct login (createSession) has been removed because it is disabled on the server.
+  // All login flows must use the SMS verification code flow via requestSessionCode() and verifySessionCode().
 
   async requestSessionCode(user: string): Promise<{ expiresInSeconds: number }> {
     const normalized = String(user || '').trim().toLowerCase();

@@ -2,6 +2,7 @@ node_modules/
 npm-debug.log*
 *.log
 dist/
+!dist/README.md
 !backend/dist/
 !backend/dist/**
 coverage/

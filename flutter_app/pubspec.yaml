@@ -1,0 +1,104 @@
+name: tzmc_push
+description: TZMC Push Messaging App - Flutter mobile client
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  # Core
+  cupertino_icons: ^1.0.6
+  intl: 0.20.2
+
+  # State Management
+  riverpod: ^3.2.1
+  flutter_riverpod: ^3.3.1
+  hooks_riverpod: ^3.3.1
+  flutter_hooks: ^0.21.3+1
+
+  # Networking
+  dio: ^5.4.0
+  dio_cookie_manager: ^3.1.1
+  cookie_jar: ^4.0.8
+  retrofit: ^4.1.0
+  connectivity_plus: ^7.1.1
+
+  # Local Storage
+  drift: ^2.20.0
+  sqlite3_flutter_libs: ^0.6.0+eol
+  drift_flutter: ^0.3.0  # Cross-platform database support (includes web)
+  shared_preferences: ^2.2.2
+  flutter_secure_storage: ^10.0.0
+  path: ^1.8.3
+
+  # Realtime
+  socket_io_client: ^2.0.3+1
+  web_socket_channel: ^3.0.1
+
+  # Push Notifications
+  firebase_core: ^4.7.0
+  firebase_messaging: ^16.2.0
+  flutter_local_notifications: ^21.0.0
+
+  # Image Handling
+  image_picker: ^1.0.7
+  cached_network_image: ^3.3.1
+
+  # Utilities
+  json_annotation: ^4.8.1
+  freezed_annotation: ^3.1.0
+  equatable: ^2.0.5
+  collection: ^1.18.0
+  path_provider: ^2.1.2
+  logger: ^2.0.2+1
+  permission_handler: ^12.0.1
+
+  # UI
+  flutter_svg: ^2.0.10
+  shimmer: ^3.0.0
+
+# Pin transitive Flutter plugin Android modules to versions whose buildscript
+# uses the Kotlin Gradle plugin 2.1.0 (matching `android/settings.gradle.kts`).
+# Newer releases of `shared_preferences_android` (>=2.4.19) require the
+# Kotlin Gradle plugin 2.3.0, which forces Gradle to download new Kotlin
+# plugin artifacts from Maven Central. That download fails on networks where
+# the JDK truststore cannot validate the Maven Central TLS certificate
+# (PKIX path building / SSL handshake errors). Pinning to 2.4.2 keeps the
+# build on the already-resolved Kotlin 2.1.0 toolchain and avoids the
+# additional artifact downloads.
+dependency_overrides:
+  shared_preferences_android: 2.4.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  build_runner: ^2.4.11
+  json_serializable: ^6.7.1
+  retrofit_generator: ^10.2.5
+  drift_dev: ^2.15.0
+  freezed: ^3.2.5
+  mockito: ^5.4.4
+  mocktail: ^1.0.3
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/
+    - assets/icons/
+
+  fonts:
+    - family: Heebo
+      fonts:
+        - asset: assets/fonts/Heebo-Regular.ttf
+        - asset: assets/fonts/Heebo-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Heebo-Bold.ttf
+          weight: 700
