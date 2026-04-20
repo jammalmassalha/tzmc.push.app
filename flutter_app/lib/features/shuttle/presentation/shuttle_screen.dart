@@ -11,6 +11,7 @@ import 'package:intl/intl.dart';
 
 import '../../../core/api/chat_api_service.dart';
 import '../../../core/models/api_payloads.dart';
+import '../../../core/services/chat_store_service.dart';
 import '../../../shared/theme/app_theme.dart';
 import '../../auth/presentation/auth_state.dart';
 
@@ -117,6 +118,7 @@ class ShuttleState {
 class ShuttleNotifier extends Notifier<ShuttleState> {
   late final ChatApiService _api;
   String? _currentUser;
+  List<String>? _employeesCache;
 
   @override
   ShuttleState build() {
@@ -181,8 +183,9 @@ class ShuttleNotifier extends Notifier<ShuttleState> {
     state = state.copyWith(isLoading: true, error: null);
 
     try {
+      final employee = await _resolveEmployeeValue(_currentUser!);
       final payload = ShuttleOrderSubmitPayload(
-        employee: _currentUser!,
+        employee: employee,
         date: date,
         dateAlt: dateAlt,
         shift: shift,
@@ -220,10 +223,14 @@ class ShuttleNotifier extends Notifier<ShuttleState> {
 
     state = state.copyWith(isLoading: true, error: null);
     try {
+      final existingEmployee = (order.employee?.trim().isNotEmpty ?? false)
+          ? order.employee!.trim()
+          : '';
+      final employee = existingEmployee.isNotEmpty
+          ? existingEmployee
+          : await _resolveEmployeeValue(_currentUser!);
       final payload = ShuttleOrderSubmitPayload(
-        employee: (order.employee?.trim().isNotEmpty ?? false)
-            ? order.employee!.trim()
-            : _currentUser!,
+        employee: employee,
         date: dateIso,
         dateAlt: DateFormat('yyyy-MM-dd').format(DateTime.now()),
         shift: shiftValue,
@@ -277,7 +284,142 @@ class ShuttleNotifier extends Notifier<ShuttleState> {
     }
     return candidate;
   }
-  
+
+  // ---------------------------------------------------------------------------
+  // Employee value resolution (mirrors Angular's `resolveShuttleEmployeeValue`).
+  // The Google Sheet expects the "employee" column to contain the user's full
+  // name together with the phone number, not just the bare phone number.
+  // ---------------------------------------------------------------------------
+
+  /// Resolve the value submitted in the `employee` column. Tries to match the
+  /// authenticated user against the shuttle employees list (which already
+  /// stores `Full Name 05XXXXXXXX`), and falls back to combining the contact's
+  /// display name with the user's phone number.
+  Future<String> _resolveEmployeeValue(String user) async {
+    final normalizedUser = _normalizeUser(user);
+    final userPhone = _extractShuttlePhone(user);
+    final displayName = ref.read(chatStoreProvider.notifier).getDisplayName(user).trim();
+    final preferredFullName = _normalizeShuttleEmployeeName(displayName);
+
+    final employees = await _fetchShuttleEmployeesCached();
+    if (employees.isNotEmpty) {
+      final exact = employees.firstWhere(
+        (entry) => _normalizeUser(entry) == normalizedUser,
+        orElse: () => '',
+      );
+      if (exact.isNotEmpty) {
+        return _formatShuttleEmployeeLabel(
+          exact,
+          userPhone.isNotEmpty ? userPhone : normalizedUser,
+          preferredFullName,
+        );
+      }
+      if (userPhone.isNotEmpty) {
+        final byPhone = employees.firstWhere(
+          (entry) => _extractShuttlePhone(entry) == userPhone,
+          orElse: () => '',
+        );
+        if (byPhone.isNotEmpty) {
+          return _formatShuttleEmployeeLabel(byPhone, userPhone, preferredFullName);
+        }
+      }
+      if (displayName.isNotEmpty) {
+        final normalizedDisplayName = _normalizeUser(displayName);
+        final byName = employees.firstWhere(
+          (entry) => _normalizeUser(entry).contains(normalizedDisplayName),
+          orElse: () => '',
+        );
+        if (byName.isNotEmpty) {
+          return _formatShuttleEmployeeLabel(
+            byName,
+            userPhone.isNotEmpty ? userPhone : normalizedUser,
+            preferredFullName,
+          );
+        }
+      }
+    }
+
+    if (preferredFullName.isNotEmpty &&
+        userPhone.isNotEmpty &&
+        !preferredFullName.contains(userPhone)) {
+      return '$preferredFullName $userPhone';
+    }
+    if (preferredFullName.isNotEmpty) return preferredFullName;
+    return user;
+  }
+
+  Future<List<String>> _fetchShuttleEmployeesCached() async {
+    final cached = _employeesCache;
+    if (cached != null) return cached;
+    if (_currentUser == null || _currentUser!.isEmpty) return const [];
+    try {
+      final fetched = await _api.getShuttleEmployees(_currentUser!);
+      _employeesCache = fetched;
+      return fetched;
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  String _formatShuttleEmployeeLabel(
+    String value,
+    String fallbackPhone,
+    String preferredName,
+  ) {
+    final phoneFromValue = _extractShuttlePhone(value);
+    final normalizedPhone =
+        phoneFromValue.isNotEmpty ? phoneFromValue : _extractShuttlePhone(fallbackPhone);
+    final normalizedName = _normalizeShuttleEmployeeName(value);
+    final preferred = _normalizeShuttleEmployeeName(preferredName);
+    final bestName = _shuttleNameWordCount(normalizedName) >= 2
+        ? normalizedName
+        : (_shuttleNameWordCount(preferred) >= 2
+            ? preferred
+            : (normalizedName.isNotEmpty ? normalizedName : preferred));
+
+    if (bestName.isNotEmpty && normalizedPhone.isNotEmpty) {
+      return '$bestName $normalizedPhone';
+    }
+    if (bestName.isNotEmpty) return bestName;
+    if (normalizedPhone.isNotEmpty) return normalizedPhone;
+    return value.trim();
+  }
+
+  String _normalizeShuttleEmployeeName(String value) {
+    final source = value.trim();
+    if (source.isEmpty) return '';
+    return source
+        .replaceAll(RegExp(r'\([^)]*\)'), ' ')
+        .replaceAll(RegExp(r'\d+'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
+
+  int _shuttleNameWordCount(String value) {
+    final normalized = _normalizeShuttleEmployeeName(value);
+    if (normalized.isEmpty) return 0;
+    return normalized.split(RegExp(r'\s+')).where((s) => s.isNotEmpty).length;
+  }
+
+  String _extractShuttlePhone(String value) {
+    final digits = value.replaceAll(RegExp(r'\D'), '');
+    if (digits.isEmpty) return '';
+    final embedded = RegExp(r'05\d{8}').firstMatch(digits);
+    if (embedded != null) return embedded.group(0)!;
+    if (RegExp(r'^5\d{8}$').hasMatch(digits)) return '0$digits';
+    if (RegExp(r'^9725\d{8}$').hasMatch(digits)) return '0${digits.substring(3)}';
+    if (RegExp(r'^97205\d{8}$').hasMatch(digits)) return '0${digits.substring(4)}';
+    if (digits.length > 10) {
+      final tail = digits.substring(digits.length - 10);
+      if (RegExp(r'^05\d{8}$').hasMatch(tail)) return tail;
+    }
+    return '';
+  }
+
+  String _normalizeUser(String value) {
+    return value.trim().toLowerCase();
+  }
+
   // ---------------------------------------------------------------------------
   // Wizard Navigation Methods
   // ---------------------------------------------------------------------------
