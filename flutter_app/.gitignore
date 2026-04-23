@@ -29,10 +29,16 @@ migrate_working_dir/
 .flutter-plugins-dependencies
 .pub-cache/
 
-# Firebase / FCM client config — provided at build time by the
-# GOOGLE_SERVICES_JSON_BASE64 / GoogleService-Info.plist CI secrets.
-# Never commit raw credentials.
-android/app/google-services.json
+# Firebase / FCM client config.
+#
+# `android/app/google-services.json` IS committed for the `tzmc-notifications`
+# Firebase project — the contents are public client identifiers (Google
+# explicitly designs google-services.json/firebaseConfig to ship inside
+# clients; security is enforced server-side via Firebase Security Rules,
+# SHA fingerprints and the FCM service-account key on the backend).
+#
+# iOS GoogleService-Info.plist is still provided at build time via the
+# CI secret — drop it in locally only.
 ios/Runner/GoogleService-Info.plist
 .pub/
 /build/

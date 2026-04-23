@@ -16,6 +16,7 @@ import 'core/api/http_client.dart';
 import 'core/config/environment.dart';
 import 'core/navigation/root_navigator.dart';
 import 'core/services/push_notification_service.dart';
+import 'firebase_options.dart';
 import 'shared/theme/app_theme.dart';
 import 'features/auth/presentation/auth_state.dart';
 import 'features/auth/presentation/login_screen.dart';
@@ -34,16 +35,27 @@ void main() async {
 
   // Initialize Firebase + register the background message handler before
   // runApp(). The background handler must be a top-level function and must
-  // be registered after Firebase.initializeApp(). Web uses the existing
-  // web-push system, so skip there. We tolerate failures (e.g. missing
-  // google-services.json during development) so the app still launches.
-  if (!kIsWeb) {
-    try {
-      await Firebase.initializeApp();
+  // be registered after Firebase.initializeApp(). Firebase is now
+  // initialized on every platform (including web) so that FCM/push
+  // notifications work for the Flutter web build too. Pass explicit
+  // [DefaultFirebaseOptions] so we don't depend on FlutterFire CLI
+  // codegen at build time, and on web so we don't depend on a
+  // `firebase-config.js` script tag in `index.html`.
+  //
+  // We tolerate failures so the app still launches if Firebase is
+  // misconfigured (e.g. during early development).
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    if (!kIsWeb) {
+      // The native background isolate handler must be registered on
+      // mobile only — it is a no-op on web where the JS service worker
+      // (`web/firebase-messaging-sw.js`) handles background messages.
       FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
-    } catch (e, st) {
-      debugPrint('[main] Firebase init skipped: $e\n$st');
     }
+  } catch (e, st) {
+    debugPrint('[main] Firebase init skipped: $e\n$st');
   }
 
   // Build the HTTP client up-front so that platform-specific cookie

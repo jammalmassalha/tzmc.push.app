@@ -18,6 +18,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../features/auth/presentation/auth_state.dart';
 import '../../features/chat/presentation/message_screen.dart';
+import '../../firebase_options.dart';
 import '../api/chat_api_service.dart';
 import '../navigation/root_navigator.dart';
 import '../services/chat_store_service.dart';
@@ -84,19 +85,20 @@ class PushNotificationService {
   /// before the system dialog appears (and a "open settings" fallback if
   /// the user has previously denied the permission).
   Future<void> initialize() async {
-    if (kIsWeb) {
-      // Web uses the existing web-push system
-      return;
-    }
-
     try {
-      // Initialize Firebase
-      await Firebase.initializeApp();
+      // Firebase is initialized in main() with platform-specific
+      // [DefaultFirebaseOptions]. Re-calling initializeApp here is safe
+      // (it returns the existing app) but isn't required.
       _messaging = FirebaseMessaging.instance;
 
-      // Initialize local notifications for foreground display
-      _localNotifications = FlutterLocalNotificationsPlugin();
-      await _initializeLocalNotifications();
+      // Initialize local notifications for foreground display on native
+      // platforms only. The plugin has no web implementation; on web, the
+      // browser's own notification API handles foreground display via the
+      // `firebase-messaging-sw.js` service worker.
+      if (!kIsWeb) {
+        _localNotifications = FlutterLocalNotificationsPlugin();
+        await _initializeLocalNotifications();
+      }
 
       // If the user has already granted (or provisionally granted)
       // notification permission in a previous session, register the device
@@ -143,18 +145,18 @@ class PushNotificationService {
   /// `await`, so callers should pass a context that belongs to a mounted
   /// widget.
   Future<void> ensurePermissionAndRegister(BuildContext context) async {
-    if (kIsWeb) return;
-
     // Firebase failed to initialize (almost always because
-    // android/app/google-services.json is missing or misconfigured).
-    // We still want the user to see *some* permission prompt — fall back
-    // to permission_handler so the OS dialog appears, but skip the FCM
-    // token fetch (there is no Firebase app to fetch one from).
+    // android/app/google-services.json is missing or misconfigured, or on
+    // web because the Firebase JS SDK script tags / firebase_options
+    // values are wrong). We still want the user to see *some* permission
+    // prompt — fall back to permission_handler so the OS dialog appears
+    // (no-op on web), but skip the FCM token fetch.
     if (_messaging == null) {
       debugPrint(
           '[PushNotificationService] FirebaseMessaging not available — '
           'falling back to permission_handler. '
           'Check that android/app/google-services.json is present.');
+      if (kIsWeb) return;
       await _ensurePermissionViaPermissionHandler(context);
       return;
     }
@@ -367,7 +369,26 @@ class PushNotificationService {
         }
       }
 
-      token = await _messaging!.getToken();
+      if (kIsWeb) {
+        // The web FCM SDK requires the project's Web Push certificate
+        // (a.k.a. VAPID key). Without it `getToken` typically fails with
+        // `messaging/token-subscribe-failed`. The key is configured in
+        // [DefaultFirebaseOptions.webVapidKey] — log a clear hint when
+        // it's still empty so misconfiguration is easy to diagnose.
+        final vapidKey = DefaultFirebaseOptions.webVapidKey;
+        if (vapidKey.isEmpty) {
+          debugPrint(
+              '[PushNotificationService] No web VAPID key configured — '
+              'set DefaultFirebaseOptions.webVapidKey from Firebase '
+              'Console → Cloud Messaging → Web Push certificates.');
+          token = await _messaging!.getToken();
+        } else {
+          token = await _messaging!.getToken(vapidKey: vapidKey);
+        }
+      } else {
+        token = await _messaging!.getToken();
+      }
+
       if (token != null) {
         await _registerDeviceToken(token);
       }
@@ -446,6 +467,12 @@ class PushNotificationService {
   Future<void> _showLocalNotification(RemoteMessage message) async {
     final notification = message.notification;
     if (notification == null) return;
+
+    // The flutter_local_notifications plugin has no web implementation.
+    // On web the browser already shows a system notification when the
+    // service worker (`firebase-messaging-sw.js`) handles the push, so
+    // we don't need to do anything here.
+    if (kIsWeb || _localNotifications == null) return;
 
     const androidDetails = AndroidNotificationDetails(
       'chat_messages',
@@ -593,8 +620,12 @@ final pushNotificationServiceProvider = Provider<PushNotificationService>((ref) 
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   debugPrint('[PushNotificationService] Background message: ${message.messageId}');
   
-  // Initialize Firebase if needed
-  await Firebase.initializeApp();
+  // Initialize Firebase if needed (background isolate has its own
+  // FirebaseApp registry — pass explicit options so init succeeds even
+  // when google-services.json codegen isn't on the classpath).
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
   
   // We can't access providers here, so just log for now
   // The message will be processed when the app opens
