@@ -819,7 +819,7 @@ class ChatApiService {
         '${ApiEndpoints.helpdeskTickets}/$ticketId/notes',
         file: attachment,
         fieldName: 'attachment',
-        additionalFields: {'noteText': noteText, 'user': normalizedUser},
+        additionalFields: {'note_text': noteText, 'user': normalizedUser},
         retryOptions: const RetryOptions(retries: 1, timeout: NetworkTimeouts.uploadTimeout),
       );
 
@@ -840,7 +840,7 @@ class ChatApiService {
     } else {
       final response = await _client.post<Map<String, dynamic>>(
         '${ApiEndpoints.helpdeskTickets}/$ticketId/notes',
-        data: {'noteText': noteText, 'user': normalizedUser},
+        data: {'note_text': noteText, 'user': normalizedUser},
         retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
       );
 

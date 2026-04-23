@@ -607,7 +607,7 @@ Content-Type: application/json
 **Request:**
 ```json
 {
-  "noteText": "Note content"
+  "note_text": "Note content"
 }
 ```
 
