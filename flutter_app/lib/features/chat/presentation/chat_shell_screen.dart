@@ -4,6 +4,8 @@
 /// containing the chat list, message view, and navigation.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -39,30 +41,47 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
 
   void _initializeServices() {
     final user = ref.read(currentUserProvider);
-    if (user != null) {
-      // Initialize realtime transport
-      final transport = ref.read(realtimeTransportServiceProvider);
-      transport.connect(user, isNetworkReachable: () => true);
+    if (user == null) return;
 
-      // Initialize chat store, then register the device push token so the
-      // backend can target this device. We don't await initialize() because
-      // the UI should not block on the network; push registration runs once
-      // the chat store has a chance to settle on its first frame.
-      ref.read(chatStoreProvider.notifier).initialize(user).then((_) async {
-        // Fire-and-forget; service logs its own errors.
-        await ref.read(pushNotificationServiceProvider).initialize();
-        // After init, ask the user to allow notifications. This shows a
-        // Hebrew rationale dialog before the OS prompt (or an "open
-        // settings" dialog if they've previously denied). Wait for the
-        // first frame so [context] is mounted and the dialog can render.
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted) return;
-          ref
-              .read(pushNotificationServiceProvider)
-              .ensurePermissionAndRegister(context);
-        });
-      });
+    // Initialize realtime transport.
+    final transport = ref.read(realtimeTransportServiceProvider);
+    transport.connect(user, isNetworkReachable: () => true);
+
+    // Kick off chat store initialization but do not block push notification
+    // setup on it. ChatStoreNotifier.initialize() can throw (e.g. on web
+    // while drift/sqlite-wasm warms up, or when the message-recovery
+    // network call fails); previously the .then() chain was the only path
+    // that triggered the notification permission prompt, so a single
+    // chat-store hiccup would silently suppress the browser's permission
+    // dialog forever on the web build.
+    unawaited(
+      ref
+          .read(chatStoreProvider.notifier)
+          .initialize(user)
+          .catchError((Object e, StackTrace st) {
+        debugPrint('[ChatShellScreen] chatStore.initialize error: $e');
+      }),
+    );
+
+    // Initialize push notifications and request permission independently of
+    // chat store init. ensurePermissionAndRegister() shows a Hebrew
+    // rationale dialog before the OS / browser prompt, so wait one frame
+    // to make sure [context] is mounted.
+    unawaited(_initializePushNotifications());
+  }
+
+  Future<void> _initializePushNotifications() async {
+    try {
+      await ref.read(pushNotificationServiceProvider).initialize();
+    } catch (e) {
+      debugPrint('[ChatShellScreen] pushNotificationService.initialize error: $e');
     }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ref
+          .read(pushNotificationServiceProvider)
+          .ensurePermissionAndRegister(context);
+    });
   }
 
   @override
