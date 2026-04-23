@@ -99,6 +99,42 @@ The Flutter app uses **Firebase Cloud Messaging (FCM)** on Android and APNs (via
      (see `ios/Runner/Info.plist` → `UIBackgroundModes`).
 4. Upload your APNs auth key (`.p8`) to Firebase under **Project settings → Cloud Messaging → Apple app configuration**.
 
+### Backend — Firebase **service account** (required to actually deliver pushes)
+
+`google-services.json` and `GoogleService-Info.plist` only authenticate the
+*client* app. To actually **send** an FCM/APNs message the Node backend needs
+a Firebase **service account** with the `Firebase Cloud Messaging API` scope.
+
+1. In the Firebase console go to **Project settings → Service accounts →
+   Generate new private key** (this downloads a `…-firebase-adminsdk-…json`
+   file). Keep it secret — anyone with this file can send push notifications
+   on behalf of your project.
+2. Make it available to the server in **one** of the following ways
+   (`backend/services/fcm-sender.js` checks them in this order):
+   1. **`FIREBASE_SERVICE_ACCOUNT_BASE64`** — base64-encoded contents of the
+      JSON file. Easiest to set as a CI / hosting-provider secret:
+      ```bash
+      base64 -w 0 firebase-adminsdk.json    # Linux
+      base64 -i firebase-adminsdk.json      # macOS
+      ```
+      then export the value in `.env` (or your hosting provider's secret
+      manager) as `FIREBASE_SERVICE_ACCOUNT_BASE64=…`.
+   2. **`FIREBASE_SERVICE_ACCOUNT_JSON`** — raw JSON (single line) of the
+      service-account file. Useful when secrets are stored as plain JSON.
+   3. **`GOOGLE_APPLICATION_CREDENTIALS`** — filesystem path to the JSON
+      file. Falls back to the standard Firebase Admin SDK
+      `applicationDefault()` credential chain.
+3. Restart the Node server. On the first FCM push it logs `[FCM] Skipping
+   FCM delivery — Firebase Admin credentials are not configured` once if
+   none of the above is set, and continues to deliver web-push
+   notifications normally to web subscribers.
+
+> **Without this secret the Flutter app still gets the OS permission
+> prompt and still POSTs its FCM token to the Sheet — but the server has
+> no credentials to call FCM, so no message is ever delivered to the
+> phone.** This is the most common reason "I added google-services.json
+> but I still don't get notifications".
+
 ### Wiring (already done in code)
 
 - `main.dart` calls `Firebase.initializeApp()` and registers `firebaseMessagingBackgroundHandler` via `FirebaseMessaging.onBackgroundMessage(...)` before `runApp`.

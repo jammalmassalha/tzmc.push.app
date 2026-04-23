@@ -5,6 +5,7 @@ const vapidKeys = {
 const express = require('express');
 const http = require('http');
 const webpush = require('web-push');
+const { isFcmSubscription, sendFcmNotification } = require('./backend/services/fcm-sender');
 const bodyParser = require('body-parser');
 const multer = require('multer'); 
 const path = require('path');
@@ -1017,7 +1018,13 @@ function normalizeSubscriptionType(rawValue) {
     const normalized = String(rawValue || '').trim().toLowerCase();
     if (!normalized) return '';
     if (normalized === 'pc' || normalized === 'desktop' || normalized === 'web') return 'pc';
-    if (normalized === 'mobile' || normalized === 'ios' || normalized === 'android') return 'mobile';
+    if (
+        normalized === 'mobile' ||
+        normalized === 'ios' ||
+        normalized === 'android' ||
+        normalized === 'fcm' ||
+        normalized === 'apns'
+    ) return 'mobile';
     return '';
 }
 
@@ -3438,15 +3445,22 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
             });
 
             try {
-                await webpush.sendNotification(
-                    subscription,
-                    pushPayload,
-                    {
+                if (isFcmSubscription(subscription)) {
+                    await sendFcmNotification(subscription, pushPayload, {
                         TTL: AUTH_REFRESH_PUSH_TTL_SECONDS,
-                        headers: { Urgency: AUTH_REFRESH_PUSH_URGENCY },
                         timeout: 15000
-                    }
-                );
+                    });
+                } else {
+                    await webpush.sendNotification(
+                        subscription,
+                        pushPayload,
+                        {
+                            TTL: AUTH_REFRESH_PUSH_TTL_SECONDS,
+                            headers: { Urgency: AUTH_REFRESH_PUSH_URGENCY },
+                            timeout: 15000
+                        }
+                    );
+                }
                 return {
                     ok: true,
                     username: subscription.username || userKey || null,
@@ -4012,15 +4026,22 @@ async function runMobileReregisterPromptCampaign(jobContext = {}) {
                 });
 
                 try {
-                    await webpush.sendNotification(
-                        subscription,
-                        pushPayload,
-                        {
+                    if (isFcmSubscription(subscription)) {
+                        await sendFcmNotification(subscription, pushPayload, {
                             TTL: MOBILE_REREGISTER_PUSH_TTL_SECONDS,
-                            headers: { Urgency: MOBILE_REREGISTER_PUSH_URGENCY },
                             timeout: 15000
-                        }
-                    );
+                        });
+                    } else {
+                        await webpush.sendNotification(
+                            subscription,
+                            pushPayload,
+                            {
+                                TTL: MOBILE_REREGISTER_PUSH_TTL_SECONDS,
+                                headers: { Urgency: MOBILE_REREGISTER_PUSH_URGENCY },
+                                timeout: 15000
+                            }
+                        );
+                    }
                     return {
                         ok: true,
                         user: subscription.username,
@@ -5723,7 +5744,12 @@ const notificationService = new NotificationService(
         unknownUserFallbackMaxEndpoints: UNKNOWN_USER_FALLBACK_MAX_ENDPOINTS
     },
     {
-        sendNotification: (sub, payload, options) => webpush.sendNotification(sub, payload, options),
+        sendNotification: (sub, payload, options) => {
+            if (isFcmSubscription(sub)) {
+                return sendFcmNotification(sub, payload, options);
+            }
+            return webpush.sendNotification(sub, payload, options);
+        },
         normalizeUserKey,
         normalizeSubscriptionType,
         dedupeSubscriptionsByEndpoint,
