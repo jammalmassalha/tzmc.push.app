@@ -28,6 +28,12 @@ migrate_working_dir/
 .flutter-plugins
 .flutter-plugins-dependencies
 .pub-cache/
+
+# Firebase / FCM client config — provided at build time by the
+# GOOGLE_SERVICES_JSON_BASE64 / GoogleService-Info.plist CI secrets.
+# Never commit raw credentials.
+android/app/google-services.json
+ios/Runner/GoogleService-Info.plist
 .pub/
 /build/
 
