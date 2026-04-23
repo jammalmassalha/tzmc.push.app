@@ -145,19 +145,23 @@ class PushNotificationService {
   /// `await`, so callers should pass a context that belongs to a mounted
   /// widget.
   Future<void> ensurePermissionAndRegister(BuildContext context) async {
-    // Firebase failed to initialize (almost always because
-    // android/app/google-services.json is missing or misconfigured, or on
-    // web because the Firebase JS SDK script tags / firebase_options
-    // values are wrong). We still want the user to see *some* permission
-    // prompt — fall back to permission_handler so the OS dialog appears
-    // (no-op on web), but skip the FCM token fetch.
+    // On native platforms (Android/iOS) we rely on `permission_handler` to
+    // determine the *real* permission state and to trigger the system
+    // dialog. firebase_messaging's `getNotificationSettings()` is
+    // unreliable on Android — it reports `denied` even when the runtime
+    // permission has never been requested, which would otherwise cause us
+    // to skip the OS prompt entirely and jump straight to the
+    // "open Settings" rationale (the exact bug users hit on Android 13+).
+    if (!kIsWeb) {
+      await _ensurePermissionViaPermissionHandler(context);
+      return;
+    }
+
+    // Web path — Firebase Messaging is required for browser push.
     if (_messaging == null) {
       debugPrint(
-          '[PushNotificationService] FirebaseMessaging not available — '
-          'falling back to permission_handler. '
-          'Check that android/app/google-services.json is present.');
-      if (kIsWeb) return;
-      await _ensurePermissionViaPermissionHandler(context);
+          '[PushNotificationService] FirebaseMessaging not available on web — '
+          'check Firebase JS SDK config / firebase_options.');
       return;
     }
 
@@ -187,14 +191,22 @@ class PushNotificationService {
       return;
     }
 
-    // status == denied (and on iOS this is the permanent state)
+    // status == denied
     await _maybeShowOpenSettingsDialog(context);
   }
 
-  /// Fallback path used when [_messaging] is null (Firebase failed to
-  /// initialize). Asks the OS for `Permission.notification` directly via
-  /// `permission_handler`, gated by the Hebrew rationale dialog and the
-  /// same one-time "open settings" nag for permanently denied state.
+  /// Native (Android/iOS) permission flow.
+  ///
+  /// `permission_handler` correctly distinguishes `denied` (never asked, or
+  /// asked once and dismissed) from `permanentlyDenied` (the user picked
+  /// "Don't allow" twice on Android 13+ or toggled it off in Settings on
+  /// iOS), which `firebase_messaging.getNotificationSettings()` does not.
+  /// We use it to gate when we show the OS dialog vs. the "open Settings"
+  /// rationale.
+  ///
+  /// On grant, we still call `FirebaseMessaging.requestPermission()` so the
+  /// FCM authorization status is in sync, and then fetch & register the
+  /// device token with the backend.
   Future<void> _ensurePermissionViaPermissionHandler(BuildContext context) async {
     PermissionStatus status;
     try {
@@ -206,6 +218,11 @@ class PushNotificationService {
 
     if (status.isGranted || status.isLimited) {
       await _clearSettingsNagFlag();
+      // Already granted in a previous session — make sure the FCM token
+      // is registered with the backend.
+      if (_messaging != null) {
+        await _getAndRegisterToken();
+      }
       return;
     }
 
@@ -215,20 +232,33 @@ class PushNotificationService {
       return;
     }
 
-    // denied or restricted → show rationale, then OS prompt.
+    // denied or restricted → show in-app rationale, then trigger OS prompt.
     if (!context.mounted) return;
     final accepted = await _showRationaleDialog(context);
     if (accepted != true) return;
 
+    PermissionStatus result;
     try {
-      final result = await Permission.notification.request();
+      result = await Permission.notification.request();
       debugPrint(
           '[PushNotificationService] permission_handler result: $result');
-      if (result.isPermanentlyDenied && context.mounted) {
-        await _maybeShowOpenSettingsDialog(context);
-      }
     } catch (e) {
       debugPrint('[PushNotificationService] permission_handler request error: $e');
+      return;
+    }
+
+    if (result.isGranted || result.isLimited) {
+      await _clearSettingsNagFlag();
+      // Sync FCM authorization status (iOS uses its own UNUserNotificationCenter
+      // bookkeeping) and fetch the FCM token.
+      if (_messaging != null) {
+        await _requestPermissionAndRegister();
+      }
+      return;
+    }
+
+    if (result.isPermanentlyDenied && context.mounted) {
+      await _maybeShowOpenSettingsDialog(context);
     }
   }
 
