@@ -71,6 +71,12 @@ class PushNotificationService {
   FirebaseMessaging? _messaging;
   FlutterLocalNotificationsPlugin? _localNotifications;
   String? _deviceToken;
+  String? _registeredForUser;
+  // Token fetched from FCM but deferred because [currentUserProvider] was
+  // null at the time. Replayed by [registerPendingTokenForUser] once auth
+  // completes, so Android devices that init push before auth still get
+  // their token registered with the backend.
+  String? _pendingToken;
   StreamSubscription? _tokenRefreshSubscription;
   StreamSubscription? _messageSubscription;
 
@@ -432,28 +438,62 @@ class PushNotificationService {
   }
 
   Future<void> _registerDeviceToken(String token) async {
-    if (token == _deviceToken) return; // Already registered
-
     final username = _ref.read(currentUserProvider);
     if (username == null || username.trim().isEmpty) {
       debugPrint(
           '[PushNotificationService] No current user — deferring token registration');
+      // Remember the token so we can replay registration once auth
+      // completes — without this an Android device whose push init
+      // raced ahead of auth would never register its FCM token, and the
+      // backend would never deliver pushes to it.
+      _pendingToken = token;
+      return;
+    }
+
+    final normalizedUser = username.trim().toLowerCase();
+    // Skip only if the same token is already registered for the same user.
+    // Re-register on user switch (logout → re-login as a different
+    // account) so the backend routes pushes to the right user.
+    if (token == _deviceToken && normalizedUser == _registeredForUser) {
       return;
     }
 
     try {
       final platform = _getPlatformName();
       await _api.registerDeviceToken(
-        username: username,
+        username: normalizedUser,
         token: token,
         platform: platform,
       );
       _deviceToken = token;
+      _registeredForUser = normalizedUser;
+      _pendingToken = null;
       debugPrint('[PushNotificationService] Device token registered for '
-          '$username: ${token.substring(0, 20)}...');
+          '$normalizedUser: ${token.substring(0, 20)}...');
     } catch (e) {
       debugPrint('[PushNotificationService] Error registering token: $e');
     }
+  }
+
+  /// Replay a deferred token registration once the current user is known.
+  ///
+  /// Called from the chat shell after authentication succeeds so that any
+  /// FCM token fetched before the user provider was populated is still
+  /// posted to the backend. Safe to call multiple times — does nothing
+  /// when there is no pending token or when it's already been registered
+  /// for this user.
+  Future<void> registerPendingTokenForUser() async {
+    final pending = _pendingToken;
+    if (pending == null) {
+      // No deferred token: try fetching a fresh one in case FCM was ready
+      // but we never got around to calling getToken (e.g. permission
+      // granted in a previous session).
+      if (_messaging != null && _deviceToken == null) {
+        await _getAndRegisterToken();
+      }
+      return;
+    }
+    await _registerDeviceToken(pending);
   }
 
   /// Handle foreground message

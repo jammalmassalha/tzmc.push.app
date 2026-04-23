@@ -78,9 +78,11 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      ref
-          .read(pushNotificationServiceProvider)
-          .ensurePermissionAndRegister(context);
+      final push = ref.read(pushNotificationServiceProvider);
+      push.ensurePermissionAndRegister(context);
+      // Replay any FCM token that was fetched before the auth user was
+      // available (race on Android during cold-start / re-login).
+      unawaited(push.registerPendingTokenForUser());
     });
   }
 

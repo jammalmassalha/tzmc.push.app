@@ -151,6 +151,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   Timer? _persistTimer;
   int _lastGapAnalysisTime = 0;
+  String? _currentUser;
+
+  /// Username of the currently authenticated user, normalized to lowercase.
+  /// Used to dedupe own-message echoes coming back from the server (which
+  /// would otherwise show a duplicate "incoming from me" bubble).
+  String? get currentUser => _currentUser;
 
   @override
   ChatState build() {
@@ -183,6 +189,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   /// Initialize chat store - restore from database and pull fresh data
   Future<void> initialize(String currentUser) async {
+    // Always remember the current user, even if we've already initialized,
+    // so own-message echoes can be tagged as outgoing (avoids the
+    // "see my message twice" bug).
+    _currentUser = currentUser.trim().toLowerCase();
+
     if (state.isInitialized) return;
 
     state = state.copyWith(isLoading: true);
@@ -470,7 +481,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       id: messageId,
       messageId: messageId,
       chatId: recipient,
-      sender: 'me', // Will be replaced with actual user
+      sender: _currentUser ?? 'me',
       body: body,
       imageUrl: imageUrl,
       fileUrl: fileUrl,
@@ -484,13 +495,16 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _applyIncomingMessage(message);
 
     try {
-      // Send via API
+      // Send via API — pass our messageId so the socket/SSE echo from the
+      // server dedupes against this optimistic bubble instead of producing
+      // a second "incoming from me" copy.
       await _api.sendDirectMessageWithParams(
         recipient: recipient,
         body: body,
         imageUrl: imageUrl,
         fileUrl: fileUrl,
         replyToMessageId: replyTo?.messageId,
+        messageId: messageId,
       );
 
       // Update status to sent
@@ -521,7 +535,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       id: messageId,
       messageId: messageId,
       chatId: groupId,
-      sender: 'me',
+      sender: _currentUser ?? 'me',
       body: body,
       imageUrl: imageUrl,
       fileUrl: fileUrl,
@@ -538,7 +552,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _applyIncomingMessage(message);
 
     try {
-      // Send via API
+      // Send via API — pass our messageId so the socket/SSE echo dedupes
+      // against this optimistic bubble (otherwise the sender sees the
+      // message twice: once as outgoing, once as incoming).
       await _api.sendGroupMessage(
         groupId: groupId,
         recipients: group.members,
@@ -546,6 +562,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         imageUrl: imageUrl,
         fileUrl: fileUrl,
         replyToMessageId: replyTo?.messageId,
+        messageId: messageId,
       );
 
       // Update status to sent
@@ -714,6 +731,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final isGroup = msg.groupId != null;
     final chatId = isGroup ? msg.groupId! : msg.sender!;
 
+    // If the echo is for a message *we* just sent, tag it as outgoing so
+    // the chat bubble doesn't render as "incoming from me" (the duplicate
+    // bug). The optimistic bubble was inserted with the same messageId, so
+    // _applyIncomingMessage will hydrate it in place rather than appending
+    // a second row.
+    final me = _currentUser;
+    final senderLower = msg.sender!.trim().toLowerCase();
+    final isFromMe = me != null && senderLower == me;
+    final direction =
+        isFromMe ? MessageDirection.outgoing : MessageDirection.incoming;
+
     return ChatMessage(
       id: msg.messageId!,
       messageId: msg.messageId!,
@@ -723,9 +751,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       body: msg.body ?? '',
       imageUrl: msg.imageUrl,
       fileUrl: msg.fileUrl,
-      direction: MessageDirection.incoming,
+      direction: direction,
       timestamp: msg.timestamp ?? DateTime.now().millisecondsSinceEpoch,
-      deliveryStatus: DeliveryStatus.delivered,
+      deliveryStatus:
+          isFromMe ? DeliveryStatus.sent : DeliveryStatus.delivered,
       groupId: msg.groupId,
       groupName: msg.groupName,
       groupType: msg.groupType == 'community' ? GroupType.community : GroupType.group,

@@ -1067,14 +1067,20 @@ class ChatApiService {
   }
 
   /// Send direct message with named parameters (wrapper for sendDirectMessage)
+  ///
+  /// [messageId] should be the same id used for the optimistic local insertion
+  /// so that the socket/SSE echo from the server dedupes against the local
+  /// bubble instead of producing a duplicate "incoming from me" message.
   Future<void> sendDirectMessageWithParams({
     required String recipient,
     required String body,
     String? imageUrl,
     String? fileUrl,
     String? replyToMessageId,
+    String? messageId,
   }) async {
-    final messageId = '${DateTime.now().millisecondsSinceEpoch}-${DateTime.now().microsecond}';
+    final id = messageId ??
+        '${DateTime.now().millisecondsSinceEpoch}-${DateTime.now().microsecond}';
     final payload = ReplyPayload(
       user: recipient,
       senderName: 'me', // Will be set by server
@@ -1082,13 +1088,17 @@ class ChatApiService {
       imageUrl: imageUrl,
       fileUrl: fileUrl,
       originalSender: recipient,
-      messageId: messageId,
+      messageId: id,
       replyToMessageId: replyToMessageId,
     );
     await sendDirectMessage(payload);
   }
 
   /// Send group message (wrapper using ReplyPayload with group fields)
+  ///
+  /// [messageId] should be the same id used for the optimistic local insertion
+  /// so that the socket/SSE echo from the server dedupes against the local
+  /// bubble instead of producing a duplicate "incoming from me" message.
   Future<void> sendGroupMessage({
     required String groupId,
     required List<String> recipients,
@@ -1096,8 +1106,10 @@ class ChatApiService {
     String? imageUrl,
     String? fileUrl,
     String? replyToMessageId,
+    String? messageId,
   }) async {
-    final messageId = '${DateTime.now().millisecondsSinceEpoch}-${DateTime.now().microsecond}';
+    final id = messageId ??
+        '${DateTime.now().millisecondsSinceEpoch}-${DateTime.now().microsecond}';
     final payload = ReplyPayload(
       user: recipients.first, // Primary recipient
       senderName: 'me', // Will be set by server
@@ -1105,7 +1117,7 @@ class ChatApiService {
       imageUrl: imageUrl,
       fileUrl: fileUrl,
       originalSender: recipients.first,
-      messageId: messageId,
+      messageId: id,
       groupId: groupId,
       groupMembers: recipients,
       membersToNotify: recipients,

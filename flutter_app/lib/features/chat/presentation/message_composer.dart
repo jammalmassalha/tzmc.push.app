@@ -4,6 +4,7 @@
 /// Works on both native and web platforms using XFile abstraction.
 library;
 
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
@@ -260,67 +261,101 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
       return;
     }
 
-    setState(() => _isSending = true);
+    final hasAttachment = _selectedImage != null || _selectedFile != null;
+    final editingMessage = widget.editingMessage;
+    final replyTo = widget.replyTo;
+    final isGroup = widget.isGroup;
+    final chatId = widget.chatId;
 
-    try {
-      String? imageUrl;
-      String? fileUrl;
+    // Snapshot attachments before we clear them so the in-flight upload can
+    // complete even though the composer UI is reset immediately.
+    final pendingImage = _selectedImage;
+    final pendingFile = _selectedFile;
 
-      // Upload image if selected
-      if (_selectedImage != null) {
-        final api = ref.read(chatApiServiceProvider);
-        final uploadResult = await api.uploadFile(_selectedImage!);
-        imageUrl = uploadResult.url;
+    // Optimistic UX: clear the input and selected attachments now so the
+    // user can immediately type/send the next message. The chat store
+    // already inserts the outgoing bubble synchronously; the actual API
+    // call (and any uploads) run in the background. We only show a loader
+    // when there's an attachment that needs uploading first — text-only
+    // sends never block the UI.
+    _textController.clear();
+    setState(() {
+      _selectedImage = null;
+      _selectedFile = null;
+      _selectedImageBytes = null;
+      if (hasAttachment) {
+        _isSending = true;
       }
+    });
+    widget.onMessageSent();
 
-      // Upload file if selected
-      if (_selectedFile != null) {
-        final api = ref.read(chatApiServiceProvider);
-        final uploadResult = await api.uploadFile(_selectedFile!);
-        fileUrl = uploadResult.url;
-      }
+    final messenger = ScaffoldMessenger.of(context);
+    final errorColor = Theme.of(context).colorScheme.error;
 
-      final chatStore = ref.read(chatStoreProvider.notifier);
+    Future<void> doSend() async {
+      try {
+        String? imageUrl;
+        String? fileUrl;
 
-      if (widget.editingMessage != null) {
-        // Edit existing message
-        await chatStore.editMessage(widget.editingMessage!.messageId, text);
-      } else if (widget.isGroup) {
-        // Send group message
-        await chatStore.sendGroupMessage(
-          groupId: widget.chatId,
-          body: text,
-          imageUrl: imageUrl,
-          fileUrl: fileUrl,
-          replyTo: widget.replyTo,
+        // Upload image if selected
+        if (pendingImage != null) {
+          final api = ref.read(chatApiServiceProvider);
+          final uploadResult = await api.uploadFile(pendingImage);
+          imageUrl = uploadResult.url;
+        }
+
+        // Upload file if selected
+        if (pendingFile != null) {
+          final api = ref.read(chatApiServiceProvider);
+          final uploadResult = await api.uploadFile(pendingFile);
+          fileUrl = uploadResult.url;
+        }
+
+        final chatStore = ref.read(chatStoreProvider.notifier);
+
+        if (editingMessage != null) {
+          // Edit existing message
+          await chatStore.editMessage(editingMessage.messageId, text);
+        } else if (isGroup) {
+          // Send group message
+          await chatStore.sendGroupMessage(
+            groupId: chatId,
+            body: text,
+            imageUrl: imageUrl,
+            fileUrl: fileUrl,
+            replyTo: replyTo,
+          );
+        } else {
+          // Send direct message
+          await chatStore.sendDirectMessage(
+            recipient: chatId,
+            body: text,
+            imageUrl: imageUrl,
+            fileUrl: fileUrl,
+            replyTo: replyTo,
+          );
+        }
+      } catch (e) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text('שגיאה בשליחה: ${e.toString()}'),
+            backgroundColor: errorColor,
+          ),
         );
-      } else {
-        // Send direct message
-        await chatStore.sendDirectMessage(
-          recipient: widget.chatId,
-          body: text,
-          imageUrl: imageUrl,
-          fileUrl: fileUrl,
-          replyTo: widget.replyTo,
-        );
+      } finally {
+        if (mounted && hasAttachment) {
+          setState(() => _isSending = false);
+        }
       }
+    }
 
-      _textController.clear();
-      setState(() {
-        _selectedImage = null;
-        _selectedFile = null;
-        _selectedImageBytes = null;
-      });
-      widget.onMessageSent();
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('שגיאה בשליחה: ${e.toString()}'),
-          backgroundColor: Theme.of(context).colorScheme.error,
-        ),
-      );
-    } finally {
-      setState(() => _isSending = false);
+    // Fire-and-forget for text-only sends so the composer stays interactive
+    // (no loader on the send button). For attachment uploads we still await
+    // so the loader is shown until the upload finishes.
+    if (hasAttachment) {
+      await doSend();
+    } else {
+      unawaited(doSend());
     }
   }
 }
