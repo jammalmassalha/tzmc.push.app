@@ -16,6 +16,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../features/auth/presentation/auth_state.dart';
 import '../../features/chat/presentation/message_screen.dart';
 import '../api/chat_api_service.dart';
 import '../navigation/root_navigator.dart';
@@ -143,7 +144,20 @@ class PushNotificationService {
   /// widget.
   Future<void> ensurePermissionAndRegister(BuildContext context) async {
     if (kIsWeb) return;
-    if (_messaging == null) return;
+
+    // Firebase failed to initialize (almost always because
+    // android/app/google-services.json is missing or misconfigured).
+    // We still want the user to see *some* permission prompt — fall back
+    // to permission_handler so the OS dialog appears, but skip the FCM
+    // token fetch (there is no Firebase app to fetch one from).
+    if (_messaging == null) {
+      debugPrint(
+          '[PushNotificationService] FirebaseMessaging not available — '
+          'falling back to permission_handler. '
+          'Check that android/app/google-services.json is present.');
+      await _ensurePermissionViaPermissionHandler(context);
+      return;
+    }
 
     NotificationSettings settings;
     try {
@@ -155,6 +169,10 @@ class PushNotificationService {
 
     final status = settings.authorizationStatus;
     if (_isAuthorized(status)) {
+      // User previously granted permission — clear any stale "open
+      // settings" nag flag so we'll prompt again if they later revoke
+      // and re-deny on a future install.
+      await _clearSettingsNagFlag();
       await _getAndRegisterToken();
       return;
     }
@@ -169,6 +187,47 @@ class PushNotificationService {
 
     // status == denied (and on iOS this is the permanent state)
     await _maybeShowOpenSettingsDialog(context);
+  }
+
+  /// Fallback path used when [_messaging] is null (Firebase failed to
+  /// initialize). Asks the OS for `Permission.notification` directly via
+  /// `permission_handler`, gated by the Hebrew rationale dialog and the
+  /// same one-time "open settings" nag for permanently denied state.
+  Future<void> _ensurePermissionViaPermissionHandler(BuildContext context) async {
+    PermissionStatus status;
+    try {
+      status = await Permission.notification.status;
+    } catch (e) {
+      debugPrint('[PushNotificationService] permission_handler status error: $e');
+      return;
+    }
+
+    if (status.isGranted || status.isLimited) {
+      await _clearSettingsNagFlag();
+      return;
+    }
+
+    if (status.isPermanentlyDenied) {
+      if (!context.mounted) return;
+      await _maybeShowOpenSettingsDialog(context);
+      return;
+    }
+
+    // denied or restricted → show rationale, then OS prompt.
+    if (!context.mounted) return;
+    final accepted = await _showRationaleDialog(context);
+    if (accepted != true) return;
+
+    try {
+      final result = await Permission.notification.request();
+      debugPrint(
+          '[PushNotificationService] permission_handler result: $result');
+      if (result.isPermanentlyDenied && context.mounted) {
+        await _maybeShowOpenSettingsDialog(context);
+      }
+    } catch (e) {
+      debugPrint('[PushNotificationService] permission_handler request error: $e');
+    }
   }
 
   /// Whether the given [AuthorizationStatus] means notifications are
@@ -209,8 +268,7 @@ class PushNotificationService {
 
   /// Show — at most once per install — a dialog inviting the user to
   /// re-enable notifications from the system Settings screen.
-  Future<void> _maybeShowOpenSettingsDialog(BuildContext context) async {
-    SharedPreferences prefs;
+  Future<void> _maybeShowOpenSettingsDialog(BuildContext context) async {    SharedPreferences prefs;
     try {
       prefs = await SharedPreferences.getInstance();
     } catch (e) {
@@ -325,11 +383,23 @@ class PushNotificationService {
   Future<void> _registerDeviceToken(String token) async {
     if (token == _deviceToken) return; // Already registered
 
+    final username = _ref.read(currentUserProvider);
+    if (username == null || username.trim().isEmpty) {
+      debugPrint(
+          '[PushNotificationService] No current user — deferring token registration');
+      return;
+    }
+
     try {
       final platform = _getPlatformName();
-      await _api.registerDeviceToken(token: token, platform: platform);
+      await _api.registerDeviceToken(
+        username: username,
+        token: token,
+        platform: platform,
+      );
       _deviceToken = token;
-      debugPrint('[PushNotificationService] Device token registered: ${token.substring(0, 20)}...');
+      debugPrint('[PushNotificationService] Device token registered for '
+          '$username: ${token.substring(0, 20)}...');
     } catch (e) {
       debugPrint('[PushNotificationService] Error registering token: $e');
     }
@@ -458,13 +528,36 @@ class PushNotificationService {
 
   /// Unregister device token (on logout)
   Future<void> unregisterToken() async {
-    if (_deviceToken != null) {
-      try {
-        await _api.unregisterDeviceToken(_deviceToken!);
-        _deviceToken = null;
-      } catch (e) {
-        debugPrint('[PushNotificationService] Error unregistering token: $e');
+    final token = _deviceToken;
+    if (token == null) return;
+    final username = _ref.read(currentUserProvider);
+    if (username == null || username.trim().isEmpty) {
+      _deviceToken = null;
+      return;
+    }
+    try {
+      await _api.unregisterDeviceToken(
+        username: username,
+        token: token,
+        platform: _getPlatformName(),
+      );
+      _deviceToken = null;
+    } catch (e) {
+      debugPrint('[PushNotificationService] Error unregistering token: $e');
+    }
+  }
+
+  /// Clear the "open settings" nag flag so users who later grant
+  /// permission can be re-prompted in a future session if they revoke
+  /// and re-deny.
+  Future<void> _clearSettingsNagFlag() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getBool(_kPushSettingsNagShownKey) == true) {
+        await prefs.remove(_kPushSettingsNagShownKey);
       }
+    } catch (_) {
+      // best-effort
     }
   }
 
