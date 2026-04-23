@@ -83,5 +83,6 @@ class DefaultFirebaseOptions {
   /// using the project default sender, but on most browsers that fails
   /// with `messaging/token-subscribe-failed`. Fill this in once the key
   /// has been generated.
-  static const String webVapidKey = '';
+  static const String webVapidKey =
+      'BBpulzeMd9-R0MAR0DmT7jQ4i-uC912kFK7lFvl93R4PLe-nag4fq8bBm7e56AO4k3kbL6ly6aXMuxC8HhumHDM';
 }
