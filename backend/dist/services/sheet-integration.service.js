@@ -76,7 +76,7 @@ class SheetIntegrationService {
 exports.SheetIntegrationService = SheetIntegrationService;
 function createSheetIntegrationServiceFromEnv(env = process.env) {
     const googleSheetUrl = toTrimmedString(env.GOOGLE_SHEET_URL)
-        || 'https://script.google.com/macros/s/AKfycbzRY5tW5HmxUn1_RjJ4gbrfCBtNNtWXGtQ4us0bZUJo5aYPF5NIQSffIxXYIN-5bzovvg/exec';
+        || 'https://script.google.com/macros/s/AKfycbw57CSvSZWUe6--_xnGGBewRV0hzyVRwComwkpULR76I3aEHDFOlw8p-kT3yO-UU5enOw/exec';
     const logsBackupSheetUrl = toTrimmedString(env.LOGS_BACKUP_SHEET_URL)
         || 'https://script.google.com/macros/s/AKfycbzRY5tW5HmxUn1_RjJ4gbrfCBtNNtWXGtQ4us0bZUJo5aYPF5NIQSffIxXYIN-5bzovvg/exec';
     const shuttleUserOrdersUrl = toTrimmedString(env.SHUTTLE_USER_ORDERS_URL)
