@@ -5,7 +5,6 @@ const vapidKeys = {
 const express = require('express');
 const http = require('http');
 const webpush = require('web-push');
-const { isFcmSubscription, sendFcmNotification } = require('./backend/services/fcm-sender');
 const bodyParser = require('body-parser');
 const multer = require('multer'); 
 const path = require('path');
@@ -16,6 +15,9 @@ const { Server: SocketIOServer } = require('socket.io');
 const { Worker } = require('node:worker_threads');
 const { createAuthorizedUserMiddleware } = require('./backend/middleware/authorized-user.middleware');
 const { registerAuthController } = require('./backend/controllers/auth.controller');
+const fcmSender = require('./backend/services/fcm-sender');
+const { createFlutterPushService } = require('./backend/services/flutter-push-service');
+const { registerFlutterPushRoutes } = require('./backend/routes/flutter-push.routes');
 const { registerMessageController } = require('./backend/controllers/message.controller');
 const { registerShuttleController } = require('./backend/controllers/shuttle.controller');
 const { registerHelpdeskController } = require('./backend/controllers/helpdesk.controller');
@@ -1018,13 +1020,7 @@ function normalizeSubscriptionType(rawValue) {
     const normalized = String(rawValue || '').trim().toLowerCase();
     if (!normalized) return '';
     if (normalized === 'pc' || normalized === 'desktop' || normalized === 'web') return 'pc';
-    if (
-        normalized === 'mobile' ||
-        normalized === 'ios' ||
-        normalized === 'android' ||
-        normalized === 'fcm' ||
-        normalized === 'apns'
-    ) return 'mobile';
+    if (normalized === 'mobile' || normalized === 'ios' || normalized === 'android') return 'mobile';
     return '';
 }
 
@@ -1435,42 +1431,7 @@ function normalizeSubscriptionRecord(rawSubscription, usernameHint = '', subscri
     const keys = (rawSubscription.keys && typeof rawSubscription.keys === 'object') ? rawSubscription.keys : null;
     const p256dh = keys && typeof keys.p256dh === 'string' ? keys.p256dh.trim() : '';
     const auth = keys && typeof keys.auth === 'string' ? keys.auth.trim() : '';
-    // FCM/APNs token (Flutter mobile clients) — these don't have a W3C
-    // PushSubscription endpoint/keys, just a single device token.
-    const fcmToken = typeof rawSubscription.fcmToken === 'string' && rawSubscription.fcmToken.trim()
-        ? rawSubscription.fcmToken.trim()
-        : (typeof rawSubscription.token === 'string' && rawSubscription.token.trim()
-            ? rawSubscription.token.trim()
-            : '');
-
-    if (!endpoint || !p256dh || !auth) {
-        // Accept FCM-only records (Flutter Android/iOS clients). They
-        // are stored alongside web-push subscriptions but flagged with
-        // type='fcm' so the push delivery layer can route them via FCM
-        // instead of web-push.
-        if (!fcmToken) return null;
-        const usernameForFcm = normalizeUserKey(
-            rawSubscription.username || rawSubscription.user || usernameHint
-        );
-        const platformHint = String(
-            rawSubscription.platform ||
-            rawSubscription.deviceType ||
-            subscriptionTypeHint ||
-            ''
-        ).toLowerCase();
-        const fcmType = platformHint.includes('ios') ? 'apns' : 'fcm';
-        return {
-            // Use a synthetic endpoint so dedupeSubscriptionsByEndpoint
-            // keeps one record per token without colliding with
-            // real web-push endpoints.
-            endpoint: `fcm:${fcmToken}`,
-            fcmToken,
-            expirationTime: rawSubscription.expirationTime || null,
-            username: usernameForFcm || undefined,
-            type: fcmType,
-            platform: rawSubscription.platform || undefined
-        };
-    }
+    if (!endpoint || !p256dh || !auth) return null;
     const username = normalizeUserKey(
         rawSubscription.username || rawSubscription.user || usernameHint
     );
@@ -3445,22 +3406,15 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
             });
 
             try {
-                if (isFcmSubscription(subscription)) {
-                    await sendFcmNotification(subscription, pushPayload, {
+                await webpush.sendNotification(
+                    subscription,
+                    pushPayload,
+                    {
                         TTL: AUTH_REFRESH_PUSH_TTL_SECONDS,
+                        headers: { Urgency: AUTH_REFRESH_PUSH_URGENCY },
                         timeout: 15000
-                    });
-                } else {
-                    await webpush.sendNotification(
-                        subscription,
-                        pushPayload,
-                        {
-                            TTL: AUTH_REFRESH_PUSH_TTL_SECONDS,
-                            headers: { Urgency: AUTH_REFRESH_PUSH_URGENCY },
-                            timeout: 15000
-                        }
-                    );
-                }
+                    }
+                );
                 return {
                     ok: true,
                     username: subscription.username || userKey || null,
@@ -4026,22 +3980,15 @@ async function runMobileReregisterPromptCampaign(jobContext = {}) {
                 });
 
                 try {
-                    if (isFcmSubscription(subscription)) {
-                        await sendFcmNotification(subscription, pushPayload, {
+                    await webpush.sendNotification(
+                        subscription,
+                        pushPayload,
+                        {
                             TTL: MOBILE_REREGISTER_PUSH_TTL_SECONDS,
+                            headers: { Urgency: MOBILE_REREGISTER_PUSH_URGENCY },
                             timeout: 15000
-                        });
-                    } else {
-                        await webpush.sendNotification(
-                            subscription,
-                            pushPayload,
-                            {
-                                TTL: MOBILE_REREGISTER_PUSH_TTL_SECONDS,
-                                headers: { Urgency: MOBILE_REREGISTER_PUSH_URGENCY },
-                                timeout: 15000
-                            }
-                        );
-                    }
+                        }
+                    );
                     return {
                         ok: true,
                         user: subscription.username,
@@ -5744,12 +5691,7 @@ const notificationService = new NotificationService(
         unknownUserFallbackMaxEndpoints: UNKNOWN_USER_FALLBACK_MAX_ENDPOINTS
     },
     {
-        sendNotification: (sub, payload, options) => {
-            if (isFcmSubscription(sub)) {
-                return sendFcmNotification(sub, payload, options);
-            }
-            return webpush.sendNotification(sub, payload, options);
-        },
+        sendNotification: (sub, payload, options) => webpush.sendNotification(sub, payload, options),
         normalizeUserKey,
         normalizeSubscriptionType,
         dedupeSubscriptionsByEndpoint,
@@ -5778,8 +5720,44 @@ function buildCompactPushCustomData(rawData, messageType) { return notificationS
 function buildPushPayloadString(payloadData, options) { return notificationService.buildPushPayloadString(payloadData, options); }
 function isLikelyPhoneUserKey(userKey) { return notificationService.isLikelyPhoneUserKey(userKey); }
 function limitSubscriptionsPerUser(subscriptions, maxPerUser) { return notificationService.limitSubscriptionsPerUser(subscriptions, maxPerUser); }
+
+// ── Flutter / FCM delivery (parallel, additive path) ────────────────────────
+// The Angular frontend keeps using the web-push pipeline above unchanged.
+// The Flutter mobile app registers FCM tokens via /flutter/register-fcm and
+// receives the same notification payloads through Firebase Admin. Failures in
+// this path are logged and never propagated to the web-push result.
+const flutterPushService = createFlutterPushService({
+    stateDir,
+    notificationService,
+    fcmSender,
+    normalizeUserKey
+});
+flutterPushService.loadFromDisk().catch((err) =>
+    console.warn('[FLUTTER-FCM] Initial load failed:', err && err.message ? err.message : err)
+);
+
+registerFlutterPushRoutes(app, { flutterPushService, requireAuthorizedUser });
+
 async function sendPushNotificationToUser(targetUser, message, senderuser, options) {
-    return notificationService.sendPushNotificationToUser(targetUser, message, senderuser, options);
+    const result = await notificationService.sendPushNotificationToUser(targetUser, message, senderuser, options);
+    // Fire-and-forget fan-out to Flutter FCM tokens. Wrapped in try/catch so
+    // any FCM error (incl. missing FIREBASE_SERVICE_ACCOUNT_BASE64) never
+    // affects the web-push result returned to the caller.
+    try {
+        const fanOut = flutterPushService.dispatchToUsers(targetUser, message, senderuser, options);
+        if (fanOut && typeof fanOut.then === 'function') {
+            fanOut.catch((err) => console.warn(
+                '[FLUTTER-FCM] Fan-out rejected:',
+                err && err.message ? err.message : err
+            ));
+        }
+    } catch (err) {
+        console.warn(
+            '[FLUTTER-FCM] Fan-out threw synchronously:',
+            err && err.message ? err.message : err
+        );
+    }
+    return result;
 }
 // --- ROUTES ---
 
