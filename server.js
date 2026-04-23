@@ -5736,7 +5736,12 @@ flutterPushService.loadFromDisk().catch((err) =>
     console.warn('[FLUTTER-FCM] Initial load failed:', err && err.message ? err.message : err)
 );
 
-registerFlutterPushRoutes(app, { flutterPushService, requireAuthorizedUser });
+registerFlutterPushRoutes(app, {
+    flutterPushService,
+    requireAuthorizedUser,
+    googleSheetUrl: GOOGLE_SHEET_URL,
+    fetchWithRetry
+});
 
 async function sendPushNotificationToUser(targetUser, message, senderuser, options) {
     const result = await notificationService.sendPushNotificationToUser(targetUser, message, senderuser, options);
