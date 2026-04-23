@@ -647,32 +647,46 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   // ---------------------------------------------------------------------------
 
   void _handleServerMessage(IncomingServerMessage message) {
-    final type = message.type;
+    // Backend emits regular chat messages over socket.io / SSE without an
+    // explicit `type` field (see server `addToQueue` → notifyRealtimeClients).
+    // Action payloads use the suffixed names `delete-action`, `edit-action`,
+    // `read-receipt`. The Angular client matches the same convention by
+    // treating any non-action type as a regular text message
+    // (frontend chat-store.service.ts → `isIncomingActionType`).
+    // Mirror that behavior here so messages from the Angular frontend are
+    // actually applied to the Flutter chat store instead of being silently
+    // dropped by an over-strict switch.
+    final type = (message.type ?? '').trim().toLowerCase();
 
     switch (type) {
-      case 'message':
-        _handleIncomingTextMessage(message);
-        break;
       case 'typing':
         _handleTypingIndicator(message);
         break;
       case 'read':
+      case 'read-receipt':
         _handleReadReceipt(message);
         break;
       case 'reaction':
         _handleReaction(message);
         break;
       case 'edit':
+      case 'edit-action':
         _handleEdit(message);
         break;
       case 'delete':
+      case 'delete-action':
         _handleDelete(message);
         break;
       case 'group-update':
         _handleGroupUpdate(message);
         break;
+      case '':
+      case 'message':
       default:
-        // Unknown message type
+        // Treat anything else (including the common no-type payload from the
+        // backend) as a regular incoming text message so 1:1 and group
+        // messages from the Angular frontend reach the Flutter user.
+        _handleIncomingTextMessage(message);
         break;
     }
   }
