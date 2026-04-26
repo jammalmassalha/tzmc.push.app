@@ -27,10 +27,12 @@ class ChatListScreen extends ConsumerWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
-              Icons.chat_bubble_outline,
-              size: 80,
+            Image.asset(
+              'assets/images/logo.png',
+              width: 96,
+              height: 96,
               color: Theme.of(context).colorScheme.primary.withAlpha((255 * 0.3).round()),
+              colorBlendMode: BlendMode.modulate,
             ),
             const SizedBox(height: 16),
             Text(

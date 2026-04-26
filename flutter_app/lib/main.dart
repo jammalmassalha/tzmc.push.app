@@ -160,7 +160,7 @@ class SplashScreen extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // App logo placeholder
+            // App logo
             Container(
               width: 120,
               height: 120,
@@ -168,10 +168,12 @@ class SplashScreen extends StatelessWidget {
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(24),
               ),
-              child: const Icon(
-                Icons.chat_bubble_rounded,
-                size: 60,
-                color: Color(0xFF1976D2),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Image.asset(
+                  'assets/images/logo.png',
+                  fit: BoxFit.contain,
+                ),
               ),
             ),
             const SizedBox(height: 32),
