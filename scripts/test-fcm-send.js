@@ -38,6 +38,54 @@
 const fs = require('fs');
 const path = require('path');
 
+// firebase-admin >= 13 calls the global WHATWG `fetch`/`Headers` while
+// requesting an OAuth2 access token. Those globals only exist on Node 18+.
+// On older Node versions the call fails with `Headers is not defined` and the
+// FCM send aborts before it ever leaves the machine. Polyfill from `undici`
+// (or `node-fetch`) when available so this tester also works on the server's
+// older Node runtime.
+(function ensureFetchGlobals() {
+    if (typeof globalThis.fetch === 'function' &&
+        typeof globalThis.Headers === 'function') {
+        return;
+    }
+    const candidates = ['undici', 'node-fetch'];
+    for (const name of candidates) {
+        try {
+            // eslint-disable-next-line global-require, import/no-dynamic-require
+            const mod = require(name);
+            const pick = (k) => mod[k] || (mod.default && mod.default[k]);
+            const fetchFn = mod.fetch || mod.default || pick('fetch');
+            const HeadersCtor = mod.Headers || pick('Headers');
+            const RequestCtor = mod.Request || pick('Request');
+            const ResponseCtor = mod.Response || pick('Response');
+            const FormDataCtor = mod.FormData || pick('FormData');
+            if (typeof fetchFn === 'function' && typeof HeadersCtor === 'function') {
+                if (!globalThis.fetch) globalThis.fetch = fetchFn;
+                if (!globalThis.Headers) globalThis.Headers = HeadersCtor;
+                if (!globalThis.Request && RequestCtor) globalThis.Request = RequestCtor;
+                if (!globalThis.Response && ResponseCtor) globalThis.Response = ResponseCtor;
+                if (!globalThis.FormData && FormDataCtor) globalThis.FormData = FormDataCtor;
+                console.log(`[info] Polyfilled global fetch/Headers via ${name}.`);
+                return;
+            }
+        } catch (_) {
+            // try next candidate
+        }
+    }
+    const major = Number((process.versions.node || '0').split('.')[0]);
+    if (major < 18) {
+        console.warn(
+            `[warn] Node ${process.versions.node} does not provide a global \`fetch\`/\`Headers\`, ` +
+            'and neither `undici` nor `node-fetch` are installed.\n' +
+            '       firebase-admin >= 13 requires Node 18+. Either upgrade Node ' +
+            '(recommended; the production server.js needs this too) or run:\n' +
+            '         npm install undici\n' +
+            '       in this project so the polyfill kicks in.'
+        );
+    }
+})();
+
 const DEFAULT_CRED_FILENAME =
     'tzmc-notifications-firebase-adminsdk-fbsvc-bb92594301.json';
 
@@ -179,6 +227,7 @@ async function main() {
     }
 
     console.log('--- FCM Test Send ----------------------------------------');
+    console.log(`Node version    : ${process.version}`);
     console.log(`Credential file : ${credPath}`);
     console.log(`Project ID      : ${serviceAccount.project_id}`);
     console.log(`Client email    : ${serviceAccount.client_email}`);
