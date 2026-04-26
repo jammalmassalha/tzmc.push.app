@@ -205,10 +205,12 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
-            Icons.chat_bubble_outline,
-            size: 64,
+          Image.asset(
+            'assets/images/logo.png',
+            width: 80,
+            height: 80,
             color: Theme.of(context).colorScheme.primary.withAlpha((255 * 0.3).round()),
+            colorBlendMode: BlendMode.modulate,
           ),
           const SizedBox(height: 16),
           Text(
