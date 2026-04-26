@@ -42,6 +42,12 @@ class ChatState {
   final bool isLoading;
   final bool isInitialized;
 
+  /// Full-sync progress fields (mirrors Angular store.syncing /
+  /// store.syncProgressPercent / store.syncProgressLabel).
+  final bool isSyncing;
+  final int syncProgressPercent;
+  final String syncProgressLabel;
+
   const ChatState({
     this.contacts = const {},
     this.groups = const {},
@@ -50,6 +56,9 @@ class ChatState {
     this.currentChatId,
     this.isLoading = false,
     this.isInitialized = false,
+    this.isSyncing = false,
+    this.syncProgressPercent = 0,
+    this.syncProgressLabel = '',
   });
 
   ChatState copyWith({
@@ -61,6 +70,9 @@ class ChatState {
     bool? isLoading,
     bool? isInitialized,
     bool clearCurrentChat = false,
+    bool? isSyncing,
+    int? syncProgressPercent,
+    String? syncProgressLabel,
   }) {
     return ChatState(
       contacts: contacts ?? this.contacts,
@@ -70,6 +82,9 @@ class ChatState {
       currentChatId: clearCurrentChat ? null : (currentChatId ?? this.currentChatId),
       isLoading: isLoading ?? this.isLoading,
       isInitialized: isInitialized ?? this.isInitialized,
+      isSyncing: isSyncing ?? this.isSyncing,
+      syncProgressPercent: syncProgressPercent ?? this.syncProgressPercent,
+      syncProgressLabel: syncProgressLabel ?? this.syncProgressLabel,
     );
   }
 
@@ -469,6 +484,84 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       Future.delayed(Duration(milliseconds: delayMs), () {
         pullMessages();
       });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Full sync (mirrors Angular ChatStoreService.forceSyncAllMessagesAndClearCache)
+  // ---------------------------------------------------------------------------
+
+  /// Wipe the local cache completely, then pull a fresh copy of all data
+  /// from the server. Mirrors Angular's `forceSyncAllMessagesAndClearCache`.
+  ///
+  /// Progress is exposed via [state.isSyncing], [state.syncProgressPercent],
+  /// and [state.syncProgressLabel] so the UI can show a progress overlay.
+  ///
+  /// Throws on unrecoverable errors (e.g. not authenticated, no network).
+  Future<void> forceSyncAllMessagesAndClearCache() async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty) {
+      throw Exception('יש להתחבר לפני סנכרון מלא');
+    }
+
+    state = state.copyWith(
+      isSyncing: true,
+      syncProgressPercent: 0,
+      syncProgressLabel: 'מנקה מטמון מקומי...',
+    );
+
+    try {
+      // 1. Wipe the local Drift database.
+      await _db.clearAll();
+      state = state.copyWith(
+        messagesByChat: const {},
+        unreadByChat: const {},
+        syncProgressPercent: 20,
+        syncProgressLabel: 'טוען אנשי קשר...',
+      );
+
+      // 2. Re-pull contacts.
+      await _pullContacts();
+      state = state.copyWith(
+        syncProgressPercent: 40,
+        syncProgressLabel: 'טוען קבוצות...',
+      );
+
+      // 3. Re-pull groups.
+      await _pullGroups();
+      state = state.copyWith(
+        syncProgressPercent: 60,
+        syncProgressLabel: 'מושך הודעות...',
+      );
+
+      // 4. Pull messages (full pull — no since filter).
+      await pullMessages();
+      state = state.copyWith(
+        syncProgressPercent: 80,
+        syncProgressLabel: 'משחזר הודעות שהוחמצו...',
+      );
+
+      // 5. Gap-analysis recovery pull (force = true bypasses cooldown).
+      await recoverMissedMessages(force: true);
+      state = state.copyWith(
+        syncProgressPercent: 95,
+        syncProgressLabel: 'מסיים...',
+      );
+
+      // 6. Reset unread counters.
+      state = state.copyWith(unreadByChat: const {});
+
+      _schedulePersistence();
+      state = state.copyWith(
+        syncProgressPercent: 100,
+        isInitialized: true,
+      );
+    } finally {
+      state = state.copyWith(
+        isSyncing: false,
+        syncProgressPercent: 0,
+        syncProgressLabel: '',
+      );
     }
   }
 
