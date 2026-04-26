@@ -276,14 +276,9 @@ function buildFcmMessage(token, parsedPayload, subscription) {
     message.android = {
         priority: 'high',
         ttl: 7 * 24 * 60 * 60 * 1000,
-        collapseKey: messageId
+        collapseKey: messageId,
+        ...(notification ? { notification: { channelId: 'chat_messages', tag: messageId } } : {})
     };
-    if (notification) {
-        message.android.notification = {
-            channelId: 'chat_messages',
-            tag: messageId
-        };
-    }
 
     if (isApnsSubscription(subscription)) {
         const badgeCount = Number(data.badgeCount);
