@@ -17,6 +17,9 @@ import '../../helpdesk/presentation/helpdesk_screen.dart';
 import '../../shuttle/presentation/shuttle_screen.dart';
 import '../../../shared/theme/app_theme.dart';
 import 'chat_list_screen.dart';
+import 'create_group_dialog.dart';
+import 'message_screen.dart';
+import 'new_chat_dialog.dart';
 
 /// Main tab enumeration
 enum MainTab { chats, groups, shuttle, helpdesk, settings }
@@ -282,10 +285,82 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
   }
 
   void _handleNewChat() {
-    // TODO: Implement new chat dialog
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('צ\'אט חדש - בקרוב')),
+    // Bottom sheet that mirrors the Angular FAB menu: choose between starting
+    // a new direct chat (NewChatDialog) or creating a group (CreateGroupDialog).
+    final isGroupTab = _currentTab == MainTab.groups;
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (sheetContext) {
+        return Directionality(
+          textDirection: TextDirection.rtl,
+          child: SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (!isGroupTab)
+                  ListTile(
+                    leading: const Icon(Icons.chat_bubble_outline),
+                    title: const Text('צ\'אט חדש'),
+                    onTap: () {
+                      Navigator.of(sheetContext).pop();
+                      _openNewChatDialog();
+                    },
+                  ),
+                ListTile(
+                  leading: const Icon(Icons.group_add_outlined),
+                  title: const Text('קבוצה חדשה'),
+                  onTap: () {
+                    Navigator.of(sheetContext).pop();
+                    _openCreateGroupDialog();
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
+  }
+
+  Future<void> _openNewChatDialog() async {
+    final username = await showNewChatDialog(context);
+    if (username == null || !mounted) return;
+    final notifier = ref.read(chatStoreProvider.notifier);
+    final chatId = notifier.startDirectChat(username);
+    if (chatId.isEmpty || !mounted) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => MessageScreen(chatId: chatId),
+      ),
+    );
+  }
+
+  Future<void> _openCreateGroupDialog() async {
+    final result = await showCreateGroupDialog(context);
+    if (result == null || !mounted) return;
+    final notifier = ref.read(chatStoreProvider.notifier);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final group = await notifier.createGroup(
+        name: result.name,
+        members: result.members,
+        type: result.type,
+      );
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text('הקבוצה נוצרה')),
+      );
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => MessageScreen(chatId: group.id),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+      );
+    }
   }
 
   void _handleRefresh() {

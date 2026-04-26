@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/chat_api_service.dart';
 import '../database/chat_database.dart' hide Contact;
+import '../models/api_payloads.dart';
 import '../models/chat_models.dart';
 import '../realtime/realtime_transport_service.dart';
 
@@ -276,6 +277,143 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   }
 
   ChatGroup? getGroup(String id) => state.groups[id];
+
+  // ---------------------------------------------------------------------------
+  // New chat / group creation (mirrors Angular ChatStoreService.startDirectChat
+  // and createGroup so the Flutter "open new chat" / "create group" flows
+  // behave identically to the Angular front-end).
+  // ---------------------------------------------------------------------------
+
+  /// Ensure a Contact exists for [username] (creating a placeholder if needed)
+  /// so it shows up in the chat list right after the user picks it from the
+  /// new-chat dialog. Equivalent to Angular `startDirectChat`. Returns the
+  /// canonical chat id (case-preserving) the caller should navigate to.
+  String startDirectChat(String username) {
+    final normalized = username.trim().toLowerCase();
+    if (normalized.isEmpty) return '';
+
+    // Case-insensitive lookup — server-side contact keys are not normalized,
+    // so we may have e.g. "Username" stored while the picker hands us
+    // "username". Don't overwrite a real contact with a placeholder.
+    final existing = state.contacts.entries.firstWhere(
+      (e) => e.key.trim().toLowerCase() == normalized,
+      orElse: () => MapEntry('', const Contact(username: '', displayName: '')),
+    );
+
+    String chatId;
+    if (existing.key.isEmpty) {
+      final placeholder = Contact(
+        username: normalized,
+        displayName: normalized,
+      );
+      final newContacts = Map<String, Contact>.from(state.contacts);
+      newContacts[normalized] = placeholder;
+      state = state.copyWith(contacts: newContacts);
+      chatId = normalized;
+    } else {
+      chatId = existing.key;
+    }
+
+    setCurrentChat(chatId);
+    return chatId;
+  }
+
+  /// Create a new group with the current user as the sole admin and notify
+  /// the other members via the existing `/group-update` endpoint. Mirrors
+  /// Angular `ChatStoreService.createGroup`.
+  ///
+  /// Throws if the user is not authenticated, the name is empty, or fewer
+  /// than two distinct members were selected (Angular enforces the same).
+  Future<ChatGroup> createGroup({
+    required String name,
+    required List<String> members,
+    GroupType type = GroupType.group,
+  }) async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty) {
+      throw Exception('יש להתחבר לפני יצירת קבוצה');
+    }
+
+    final groupName = name.trim();
+    if (groupName.isEmpty) {
+      throw Exception('יש להזין שם לקבוצה');
+    }
+
+    final normalizedMembers = <String>{
+      ...members.map((m) => m.trim().toLowerCase()).where((m) => m.isNotEmpty),
+      user,
+    }.toList();
+
+    if (normalizedMembers.length < 2) {
+      throw Exception('יש לבחור לפחות שני משתתפים');
+    }
+
+    final groupId =
+        'group:${DateTime.now().millisecondsSinceEpoch}-${DateTime.now().microsecond}';
+    final group = ChatGroup(
+      id: groupId,
+      name: groupName,
+      members: normalizedMembers,
+      admins: [user],
+      createdBy: user,
+      updatedAt: DateTime.now().millisecondsSinceEpoch,
+      type: type,
+    );
+
+    // Optimistically insert into state and persist locally.
+    final newGroups = Map<String, ChatGroup>.from(state.groups);
+    newGroups[group.id] = group;
+    state = state.copyWith(groups: newGroups);
+    setCurrentChat(group.id);
+    await _db.upsertGroup(group);
+    _schedulePersistence();
+
+    final membersToNotify = group.members.where((m) => m != user).toList();
+    if (membersToNotify.isEmpty) return group;
+
+    // Notify the server (and other members). Failures are not fatal — the
+    // group still exists locally and Angular's chat-store also tolerates a
+    // failed `sendGroupUpdate` by queueing it.
+    try {
+      await _api.sendGroupUpdate(GroupUpdatePayload(
+        groupId: group.id,
+        groupName: group.name,
+        groupMembers: group.members,
+        groupCreatedBy: group.createdBy,
+        groupAdmins: group.admins,
+        actorUser: user,
+        groupUpdatedAt: group.updatedAt,
+        groupType: group.type,
+        membersToNotify: membersToNotify,
+      ));
+    } catch (e) {
+      // Silent — the group is already present locally and will be re-synced
+      // on the next /group-update push or recoverMissedMessages cycle.
+    }
+
+    return group;
+  }
+
+  /// Whether the current user is allowed to send messages to [chatId]. Always
+  /// true for direct messages and regular groups; for community groups only
+  /// admins (and the group creator) may post — mirroring Angular
+  /// `canUserSendToCommunityGroup` / `canSendToActiveChat`.
+  bool canSendToChat(String? chatId) {
+    if (chatId == null || chatId.isEmpty) return false;
+    final group = state.groups[chatId];
+    if (group == null) return true; // direct chat
+    if (group.type != GroupType.community) return true;
+
+    final me = _currentUser;
+    if (me == null || me.isEmpty) return false;
+
+    final admins = (group.admins ?? const <String>[])
+        .map((a) => a.trim().toLowerCase())
+        .where((a) => a.isNotEmpty)
+        .toList();
+    if (admins.contains(me)) return true;
+    return group.createdBy.trim().toLowerCase() == me;
+  }
 
   // ---------------------------------------------------------------------------
   // Messages

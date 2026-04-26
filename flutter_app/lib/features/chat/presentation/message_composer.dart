@@ -77,6 +77,54 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
 
   @override
   Widget build(BuildContext context) {
+    // Mirror Angular's canSendToActiveChat: in community groups only admins
+    // (or the creator) may send. Replace the composer with a banner so the
+    // user understands why typing/attaching is disabled. Watch the store so
+    // the banner clears immediately when the user is promoted to admin.
+    ref.watch(chatStoreProvider);
+    final notifier = ref.read(chatStoreProvider.notifier);
+    final canSend = notifier.canSendToChat(widget.chatId);
+    if (!canSend) {
+      return SafeArea(
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            border: Border(
+              top: BorderSide(
+                color: Theme.of(context).dividerColor,
+                width: 0.5,
+              ),
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.lock_outline,
+                  size: 18,
+                  color: Theme.of(context)
+                      .colorScheme
+                      .onSurface
+                      .withAlpha((255 * 0.6).round())),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'רק מנהל יכול לשלוח בקבוצת קהילה',
+                  textDirection: TextDirection.rtl,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withAlpha((255 * 0.7).round()),
+                      ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     return SafeArea(
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),

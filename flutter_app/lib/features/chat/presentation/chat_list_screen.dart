@@ -19,21 +19,9 @@ class ChatListScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final chatItems = ref.watch(chatListItemsProvider);
-    final state = ref.watch(chatStoreProvider);
 
-    if (state.isLoading && !state.isInitialized) {
-      return const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text('טוען שיחות...'),
-          ],
-        ),
-      );
-    }
-
+    // Match the Angular behavior: render the (possibly empty) list immediately
+    // and let the background sync populate it. No full-screen loader on entry.
     if (chatItems.isEmpty) {
       return Center(
         child: Column(
@@ -258,19 +246,8 @@ class GroupListScreen extends ConsumerWidget {
     final state = ref.watch(chatStoreProvider);
     final groups = state.groups.values.toList();
 
-    if (state.isLoading && !state.isInitialized) {
-      return const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text('טוען קבוצות...'),
-          ],
-        ),
-      );
-    }
-
+    // Match the Angular behavior: render the (possibly empty) list immediately
+    // and let the background sync populate it. No full-screen loader on entry.
     if (groups.isEmpty) {
       return Center(
         child: Column(
