@@ -432,14 +432,22 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // if any layer along the way regenerates the messageId, the echo would
     // show up as a second "me" bubble next to the original outgoing one.
     // Match against an optimistic outgoing message with the same body posted
-    // within the last 30s and treat the echo as a hydration of it.
+    // within the last 30s and treat the echo as a hydration of it. We scan
+    // newest-first (chatMessages is sorted descending by timestamp) and bail
+    // out as soon as we leave the window so the cost stays bounded on long
+    // chats.
     if (existingIndex < 0 && message.direction == MessageDirection.incoming) {
       final fingerprint = message.body.trim();
       final ts = message.timestamp;
-      existingIndex = chatMessages.indexWhere((m) =>
-          m.direction == MessageDirection.outgoing &&
-          m.body.trim() == fingerprint &&
-          (m.timestamp - ts).abs() < 30000);
+      for (var i = 0; i < chatMessages.length; i++) {
+        final m = chatMessages[i];
+        if ((m.timestamp - ts).abs() >= 30000) break;
+        if (m.direction == MessageDirection.outgoing &&
+            m.body.trim() == fingerprint) {
+          existingIndex = i;
+          break;
+        }
+      }
     }
 
     if (existingIndex >= 0) {
@@ -764,11 +772,20 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final senderLower = msg.sender!.trim().toLowerCase();
     final body = msg.body ?? '';
     final ts = msg.timestamp ?? DateTime.now().millisecondsSinceEpoch;
-    final hasOptimisticEcho = (state.messagesByChat[chatId] ?? const <ChatMessage>[])
-        .any((m) =>
-            m.direction == MessageDirection.outgoing &&
-            (m.messageId == msg.messageId ||
-                (m.body.trim() == body.trim() && (m.timestamp - ts).abs() < 30000)));
+    // Scan only recent outgoing messages (chatMessages are sorted newest-first
+    // by _applyIncomingMessage), bailing out as soon as we step outside the
+    // 30s dedup window so the lookup stays O(k) instead of O(n) on long chats.
+    final existing = state.messagesByChat[chatId] ?? const <ChatMessage>[];
+    bool hasOptimisticEcho = false;
+    final trimmedBody = body.trim();
+    for (final m in existing) {
+      if ((m.timestamp - ts).abs() >= 30000) break;
+      if (m.direction != MessageDirection.outgoing) continue;
+      if (m.messageId == msg.messageId || m.body.trim() == trimmedBody) {
+        hasOptimisticEcho = true;
+        break;
+      }
+    }
     final isFromMe =
         (me != null && senderLower == me) || hasOptimisticEcho;
     final direction =
