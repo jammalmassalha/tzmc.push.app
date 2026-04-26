@@ -422,7 +422,25 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final chatMessages = List<ChatMessage>.from(newMessagesByChat[chatId] ?? []);
 
     // Check for existing message (by messageId)
-    final existingIndex = chatMessages.indexWhere((m) => m.messageId == message.messageId);
+    var existingIndex = chatMessages.indexWhere((m) => m.messageId == message.messageId);
+
+    // Fallback dedup for own-message echoes whose messageId is not preserved
+    // by the server. For group messages the backend rewrites
+    // `pollingMessage.sender = groupId` (server.js:2138), so the echo arrives
+    // with sender == groupId rather than the current user — the
+    // `_buildChatMessageFromServer` heuristic then tags it as `incoming` and,
+    // if any layer along the way regenerates the messageId, the echo would
+    // show up as a second "me" bubble next to the original outgoing one.
+    // Match against an optimistic outgoing message with the same body posted
+    // within the last 30s and treat the echo as a hydration of it.
+    if (existingIndex < 0 && message.direction == MessageDirection.incoming) {
+      final fingerprint = message.body.trim();
+      final ts = message.timestamp;
+      existingIndex = chatMessages.indexWhere((m) =>
+          m.direction == MessageDirection.outgoing &&
+          m.body.trim() == fingerprint &&
+          (m.timestamp - ts).abs() < 30000);
+    }
 
     if (existingIndex >= 0) {
       // Hydrate existing message (keep longer body)
@@ -736,9 +754,23 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // bug). The optimistic bubble was inserted with the same messageId, so
     // _applyIncomingMessage will hydrate it in place rather than appending
     // a second row.
+    //
+    // For 1:1 messages msg.sender == currentUser, so the direct match works.
+    // For group messages the backend rewrites pollingMessage.sender to the
+    // groupId (server.js:2138), so a sender-based check fails. Fall back to
+    // matching against an existing optimistic outgoing message in the same
+    // chat by body+timestamp window.
     final me = _currentUser;
     final senderLower = msg.sender!.trim().toLowerCase();
-    final isFromMe = me != null && senderLower == me;
+    final body = msg.body ?? '';
+    final ts = msg.timestamp ?? DateTime.now().millisecondsSinceEpoch;
+    final hasOptimisticEcho = (state.messagesByChat[chatId] ?? const <ChatMessage>[])
+        .any((m) =>
+            m.direction == MessageDirection.outgoing &&
+            (m.messageId == msg.messageId ||
+                (m.body.trim() == body.trim() && (m.timestamp - ts).abs() < 30000)));
+    final isFromMe =
+        (me != null && senderLower == me) || hasOptimisticEcho;
     final direction =
         isFromMe ? MessageDirection.outgoing : MessageDirection.incoming;
 
@@ -748,11 +780,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       chatId: chatId,
       sender: msg.sender!,
       senderDisplayName: msg.groupSenderName ?? getDisplayName(msg.sender!),
-      body: msg.body ?? '',
+      body: body,
       imageUrl: msg.imageUrl,
       fileUrl: msg.fileUrl,
       direction: direction,
-      timestamp: msg.timestamp ?? DateTime.now().millisecondsSinceEpoch,
+      timestamp: ts,
       deliveryStatus:
           isFromMe ? DeliveryStatus.sent : DeliveryStatus.delivered,
       groupId: msg.groupId,
