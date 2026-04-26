@@ -743,6 +743,38 @@ class ChatApiService {
     }
   }
 
+  /// Assign a handler to a helpdesk ticket (Editor/Admin only)
+  ///
+  /// Pass [handlerUsername] as null to unassign the current handler.
+  /// [user] is required for backend authorization when session cookies are not available.
+  Future<void> assignHelpdeskHandler(int ticketId, String? handlerUsername, String user) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) {
+      throw ApiException('User is required for helpdesk handler assignment');
+    }
+
+    final response = await _client.put<Map<String, dynamic>>(
+      '${ApiEndpoints.helpdeskTickets}/$ticketId/handler',
+      data: {
+        'handler_username': handlerUsername,
+        'user': normalizedUser,
+      },
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+
+    final body = response.data ?? {};
+
+    if (!response.isSuccessful) {
+      final errorMessage = body['message'] as String? ?? 'שגיאה בשיוך מטפל';
+      throw ApiException(errorMessage);
+    }
+
+    if (body['result'] == 'error') {
+      final errorMessage = body['message'] as String? ?? 'שגיאה בשיוך מטפל';
+      throw ApiException(errorMessage);
+    }
+  }
+
   /// Get helpdesk ticket history
   /// 
   /// [user] is required for backend authorization when session cookies are not available.

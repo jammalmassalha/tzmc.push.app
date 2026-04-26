@@ -12,7 +12,7 @@ import 'package:intl/intl.dart';
 
 import '../../../core/api/chat_api_service.dart';
 import '../../../core/models/helpdesk_models.dart';
-import '../../../shared/theme/app_theme.dart';
+import '../../../core/services/chat_store_service.dart';
 import '../../auth/presentation/auth_state.dart';
 
 // ---------------------------------------------------------------------------
@@ -234,11 +234,84 @@ class HelpdeskNotifier extends Notifier<HelpdeskState> {
       rethrow;
     }
   }
+
+  /// Assign (or unassign) a handler to a ticket. Editor/Admin only.
+  Future<void> assignHandler(int ticketId, String? handlerUsername) async {
+    if (_currentUser == null) throw Exception('יש להתחבר תחילה');
+    await _api.assignHelpdeskHandler(ticketId, handlerUsername, _currentUser!);
+    await loadTickets(force: true);
+  }
+
+  /// Update the status of a ticket.
+  Future<void> updateTicketStatus(int ticketId, String status) async {
+    if (_currentUser == null) throw Exception('יש להתחבר תחילה');
+    final helpdeskStatus = HelpdeskStatus.fromString(status);
+    await _api.updateHelpdeskTicketStatus(ticketId, helpdeskStatus, _currentUser!);
+    await loadTickets(force: true);
+  }
+
+  String get currentUser => _currentUser ?? '';
 }
 
 final helpdeskProvider = NotifierProvider<HelpdeskNotifier, HelpdeskState>(() {
   return HelpdeskNotifier();
 });
+
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+String _statusLabel(String status) {
+  switch (status) {
+    case 'open':
+      return 'פתוחה';
+    case 'in_progress':
+      return 'בטיפול';
+    case 'resolved':
+      return 'טופלה';
+    case 'closed':
+      return 'סגורה';
+    default:
+      return status;
+  }
+}
+
+Color _statusColor(String status) {
+  switch (status) {
+    case 'open':
+      return const Color(0xFF2E7D32); // green.shade800
+    case 'in_progress':
+      return const Color(0xFFE65100); // deepOrange.shade900
+    case 'resolved':
+      return const Color(0xFF1565C0); // blue.shade900
+    case 'closed':
+      return const Color(0xFF757575); // grey.shade600
+    default:
+      return const Color(0xFF757575);
+  }
+}
+
+String _totalDurationLabel(List<HelpdeskStatusHistoryEntry> history) {
+  if (history.isEmpty) return '';
+  final openTime = history.first.createdAt;
+  HelpdeskStatusHistoryEntry? closedEntry;
+  for (final h in history.reversed) {
+    if (h.newStatus == 'closed' || h.newStatus == 'resolved') {
+      closedEntry = h;
+      break;
+    }
+  }
+  final endTime = closedEntry?.createdAt ?? DateTime.now();
+  final diff = endTime.difference(openTime);
+  if (diff.isNegative) return '';
+  final days = diff.inDays;
+  final hours = diff.inHours % 24;
+  final mins = diff.inMinutes % 60;
+  if (days > 0) return '$days ימים, $hours שעות, $mins דקות';
+  if (hours > 0) return '$hours שעות, $mins דקות';
+  return '$mins דקות';
+}
 
 // ---------------------------------------------------------------------------
 // Helpdesk Screen
@@ -251,17 +324,14 @@ class HelpdeskScreen extends ConsumerStatefulWidget {
   ConsumerState<HelpdeskScreen> createState() => _HelpdeskScreenState();
 }
 
-class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTickerProviderStateMixin {
+class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
+    with SingleTickerProviderStateMixin {
   late TabController _tabController;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
-
-    // Force a fresh load on init so the Scaffold isn't stuck on the empty
-    // initial state (the polling timer in HelpdeskNotifier.build will then
-    // keep it refreshed while this screen is mounted).
     Future.microtask(() {
       ref.read(helpdeskProvider.notifier).loadTickets(force: true);
     });
@@ -276,28 +346,17 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(helpdeskProvider);
+    final theme = Theme.of(context);
 
-    // Build the three tabs from the dashboard sections, matching Angular's
-    // getHelpdeskPickerData() in chat-store.service.ts. Anything whose status
-    // isn't in `kHelpdeskOngoingStatuses` lives in `past` (i.e. the "סגור"
-    // tab), so no tickets get silently dropped on unexpected status strings.
-    //
-    // For users who handle tickets (myRole != null), include their `assigned`
-    // tickets in the relevant tab without duplicating tickets they also own.
-    final ownedIds = {
-      for (final t in [...state.ongoing, ...state.past]) t.id,
-    };
-    final assignedExtras = state.assigned.where((t) => !ownedIds.contains(t.id));
+    final ownedIds = {for (final t in [...state.ongoing, ...state.past]) t.id};
+    final assignedExtras =
+        state.assigned.where((t) => !ownedIds.contains(t.id)).toList();
 
     final openTickets = [
-      ...state.ongoing.where((t) => t.status == 'open'),
-      ...assignedExtras.where((t) => t.status == 'open'),
+      ...state.ongoing,
+      ...assignedExtras.where((t) => kHelpdeskOngoingStatuses.contains(t.status)),
     ];
-    final inProgressTickets = [
-      ...state.ongoing.where((t) => t.status == 'in_progress'),
-      ...assignedExtras.where((t) => t.status == 'in_progress'),
-    ];
-    final closedTickets = [
+    final pastTickets = [
       ...state.past,
       ...assignedExtras.where((t) => !kHelpdeskOngoingStatuses.contains(t.status)),
     ];
@@ -307,46 +366,72 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
       child: Scaffold(
         body: Column(
           children: [
-            // Tab bar
+            // Top row: title + refresh
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'מוקד איחוד - הקריאות שלי',
+                    style: theme.textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.bold),
+                  ),
+                  Row(children: [
+                    if (state.isLoading)
+                      const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2)),
+                    IconButton(
+                      icon: const Icon(Icons.refresh),
+                      tooltip: 'רענן',
+                      onPressed: () =>
+                          ref.read(helpdeskProvider.notifier).loadTickets(force: true),
+                    ),
+                  ]),
+                ],
+              ),
+            ),
+
+            // Tab bar: ניהול | טופלו | פתוחות
             TabBar(
               controller: _tabController,
               tabs: [
-                Tab(text: 'פתוח (${openTickets.length})'),
-                Tab(text: 'בטיפול (${inProgressTickets.length})'),
-                Tab(text: 'סגור (${closedTickets.length})'),
+                const Tab(text: 'ניהול'),
+                Tab(text: 'טופלו (${pastTickets.length})'),
+                Tab(text: 'פתוחות (${openTickets.length})'),
               ],
             ),
 
-            // Error banner
             if (state.error != null)
               MaterialBanner(
                 content: Text(state.error!),
-                backgroundColor: Theme.of(context).colorScheme.errorContainer,
+                backgroundColor: theme.colorScheme.errorContainer,
                 actions: [
                   TextButton(
-                    onPressed: () {
-                      ref.read(helpdeskProvider.notifier).loadTickets(force: true);
-                    },
+                    onPressed: () =>
+                        ref.read(helpdeskProvider.notifier).loadTickets(force: true),
                     child: const Text('נסה שוב'),
                   ),
                 ],
               ),
 
-            // Tab content
             Expanded(
               child: TabBarView(
                 controller: _tabController,
                 children: [
+                  _ManagementTab(
+                      myRole: state.myRole, editorTickets: state.editorTickets),
+                  _TicketList(tickets: pastTickets, emptyMessage: 'אין פניות שטופלו'),
                   _TicketList(tickets: openTickets, emptyMessage: 'אין פניות פתוחות'),
-                  _TicketList(tickets: inProgressTickets, emptyMessage: 'אין פניות בטיפול'),
-                  _TicketList(tickets: closedTickets, emptyMessage: 'אין פניות סגורות'),
                 ],
               ),
             ),
           ],
         ),
         floatingActionButton: FloatingActionButton.extended(
-          onPressed: () => _showCreateTicketDialog(context),
+          onPressed: () => _showDepartmentSelectionDialog(context),
           icon: const Icon(Icons.add),
           label: const Text('פנייה חדשה'),
         ),
@@ -354,265 +439,334 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen> with SingleTick
     );
   }
 
-  void _showCreateTicketDialog(BuildContext context) {
-    // First show department selection dialog (matches Angular flow)
-    _showDepartmentSelectionDialog(context);
-  }
-
-  /// Show department selection dialog (first step of ticket creation)
-  void _showDepartmentSelectionDialog(BuildContext context) {
+  void _showDepartmentSelectionDialog(BuildContext ctx) {
     showModalBottomSheet(
-      context: context,
+      context: ctx,
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (context) {
-        return SafeArea(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (_) => SafeArea(
+        child: Directionality(
+          textDirection: ui.TextDirection.rtl,
           child: Padding(
             padding: const EdgeInsets.all(20),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(
-                  'בחר מחלקה',
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-                  textAlign: TextAlign.center,
-                  textDirection: ui.TextDirection.rtl,
-                ),
+                Text('בחר מחלקה',
+                    style: Theme.of(ctx)
+                        .textTheme
+                        .titleLarge
+                        ?.copyWith(fontWeight: FontWeight.bold),
+                    textAlign: TextAlign.center),
                 const SizedBox(height: 8),
-                Text(
-                  'לאיזו מחלקה שייכת הבקשה?',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.6).round()),
-                  ),
-                  textAlign: TextAlign.center,
-                  textDirection: ui.TextDirection.rtl,
-                ),
+                Text('לאיזו מחלקה שייכת הבקשה?',
+                    style: Theme.of(ctx).textTheme.bodyMedium?.copyWith(
+                          color: Theme.of(ctx)
+                              .colorScheme
+                              .onSurface
+                              .withAlpha((255 * 0.6).round()),
+                        ),
+                    textAlign: TextAlign.center),
                 const SizedBox(height: 24),
-                
-                // IT button
                 OutlinedButton.icon(
                   onPressed: () {
-                    Navigator.of(context).pop();
-                    _showTicketFormDialog(context, HelpdeskDepartment.it);
+                    Navigator.of(ctx).pop();
+                    _showTicketFormDialog(ctx, HelpdeskDepartment.it);
                   },
                   icon: const Icon(Icons.computer),
-                  label: const Text('🖥️ מערכות מידע'),
+                  label: const Text('מערכות מידע'),
                   style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                  ),
+                      padding: const EdgeInsets.symmetric(vertical: 16)),
                 ),
                 const SizedBox(height: 12),
-                
-                // Maintenance button
                 OutlinedButton.icon(
                   onPressed: () {
-                    Navigator.of(context).pop();
-                    _showTicketFormDialog(context, HelpdeskDepartment.maintenance);
+                    Navigator.of(ctx).pop();
+                    _showTicketFormDialog(ctx, HelpdeskDepartment.maintenance);
                   },
                   icon: const Icon(Icons.build),
-                  label: const Text('🔧 אחזקה'),
+                  label: const Text('אחזקה'),
                   style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                  ),
+                      padding: const EdgeInsets.symmetric(vertical: 16)),
                 ),
                 const SizedBox(height: 16),
-                
-                // Back button
                 TextButton.icon(
-                  onPressed: () => Navigator.of(context).pop(),
+                  onPressed: () => Navigator.of(ctx).pop(),
                   icon: const Icon(Icons.arrow_back),
                   label: const Text('חזרה'),
                 ),
               ],
             ),
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 
-  /// Show ticket creation form (second step, after department selection)
-  void _showTicketFormDialog(BuildContext context, HelpdeskDepartment selectedDepartment) {
-    final subjectController = TextEditingController();
-    final descriptionController = TextEditingController();
-    final locationController = TextEditingController();
-    final phoneController = TextEditingController();
-    String selectedPriority = 'normal';
-    List<String> availableLocations = [];
-    bool isLoadingLocations = true;
+  void _showTicketFormDialog(BuildContext ctx, HelpdeskDepartment dept) {
+    final subjectCtrl = TextEditingController();
+    final descCtrl = TextEditingController();
+    final locationCtrl = TextEditingController();
+    final phoneCtrl = TextEditingController();
+    String priority = 'normal';
+    List<String> locations = [];
+    bool loadingLoc = true;
 
-    // Load locations
-    ref.read(helpdeskProvider.notifier).loadLocations().then((locations) {
-      availableLocations = locations;
-      isLoadingLocations = false;
+    ref.read(helpdeskProvider.notifier).loadLocations().then((locs) {
+      locations = locs;
+      loadingLoc = false;
     });
 
     showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
-          title: Text('קריאה חדשה · ${selectedDepartment.label}', textDirection: ui.TextDirection.rtl),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Subject
-                TextField(
-                  controller: subjectController,
-                  textDirection: ui.TextDirection.rtl,
-                  decoration: const InputDecoration(
-                    labelText: 'נושא *',
-                    border: OutlineInputBorder(),
+      context: ctx,
+      builder: (_) => StatefulBuilder(
+        builder: (context, setSt) => Directionality(
+          textDirection: ui.TextDirection.rtl,
+          child: AlertDialog(
+            title: Text('קריאה חדשה - ${dept.label}'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    controller: subjectCtrl,
+                    textDirection: ui.TextDirection.rtl,
+                    decoration: const InputDecoration(
+                        labelText: 'כותרת הקריאה *',
+                        border: OutlineInputBorder()),
                   ),
-                ),
-                const SizedBox(height: 16),
-
-                // Description
-                TextField(
-                  controller: descriptionController,
-                  textDirection: ui.TextDirection.rtl,
-                  maxLines: 4,
-                  decoration: const InputDecoration(
-                    labelText: 'תיאור הבעיה *',
-                    border: OutlineInputBorder(),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: descCtrl,
+                    textDirection: ui.TextDirection.rtl,
+                    maxLines: 4,
+                    decoration: const InputDecoration(
+                        labelText: 'תיאור הבעיה',
+                        border: OutlineInputBorder()),
                   ),
-                ),
-                const SizedBox(height: 16),
-
-                // Location (autocomplete)
-                Autocomplete<String>(
-                  optionsBuilder: (textEditingValue) {
-                    if (textEditingValue.text.isEmpty) {
-                      return availableLocations;
-                    }
-                    return availableLocations.where((loc) =>
-                        loc.toLowerCase().contains(textEditingValue.text.toLowerCase()));
-                  },
-                  onSelected: (value) {
-                    locationController.text = value;
-                  },
-                  fieldViewBuilder: (context, controller, focusNode, onEditingComplete) {
-                    return TextField(
-                      controller: controller,
-                      focusNode: focusNode,
-                      onEditingComplete: onEditingComplete,
+                  const SizedBox(height: 16),
+                  Autocomplete<String>(
+                    optionsBuilder: (tv) => tv.text.isEmpty
+                        ? locations
+                        : locations.where((l) =>
+                            l.toLowerCase().contains(tv.text.toLowerCase())),
+                    onSelected: (v) => locationCtrl.text = v,
+                    fieldViewBuilder: (context, ctrl, fn, oec) => TextField(
+                      controller: ctrl,
+                      focusNode: fn,
+                      onEditingComplete: oec,
                       textDirection: ui.TextDirection.rtl,
                       decoration: InputDecoration(
                         labelText: 'מיקום *',
                         border: const OutlineInputBorder(),
-                        suffixIcon: isLoadingLocations
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: Padding(
-                                  padding: EdgeInsets.all(8.0),
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                ),
+                        suffixIcon: loadingLoc
+                            ? const Padding(
+                                padding: EdgeInsets.all(8),
+                                child: SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2)),
                               )
                             : null,
                       ),
-                      onChanged: (value) {
-                        locationController.text = value;
-                      },
-                    );
-                  },
-                ),
-                const SizedBox(height: 16),
-
-                // Phone
-                TextField(
-                  controller: phoneController,
-                  textDirection: ui.TextDirection.ltr,
-                  keyboardType: TextInputType.phone,
-                  decoration: const InputDecoration(
-                    labelText: 'טלפון ליצירת קשר',
-                    border: OutlineInputBorder(),
-                    hintText: '05X-XXXXXXX',
+                      onChanged: (v) => locationCtrl.text = v,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 16),
-
-                // Priority dropdown
-                DropdownButtonFormField<String>(
-                  value: selectedPriority,
-                  decoration: const InputDecoration(
-                    labelText: 'דחיפות',
-                    border: OutlineInputBorder(),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: phoneCtrl,
+                    textDirection: ui.TextDirection.ltr,
+                    keyboardType: TextInputType.phone,
+                    decoration: const InputDecoration(
+                        labelText: 'טלפון ליצירת קשר',
+                        border: OutlineInputBorder(),
+                        hintText: '05X-XXXXXXX'),
                   ),
-                  items: const [
-                    DropdownMenuItem(value: 'low', child: Text('נמוכה')),
-                    DropdownMenuItem(value: 'normal', child: Text('רגילה')),
-                    DropdownMenuItem(value: 'high', child: Text('גבוהה')),
-                    DropdownMenuItem(value: 'urgent', child: Text('דחופה')),
-                  ],
-                  onChanged: (value) {
-                    setState(() => selectedPriority = value ?? 'normal');
-                  },
-                ),
-              ],
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<String>(
+                    value: priority,
+                    decoration: const InputDecoration(
+                        labelText: 'דחיפות', border: OutlineInputBorder()),
+                    items: const [
+                      DropdownMenuItem(value: 'low', child: Text('נמוכה')),
+                      DropdownMenuItem(value: 'normal', child: Text('רגילה')),
+                      DropdownMenuItem(value: 'high', child: Text('גבוהה')),
+                      DropdownMenuItem(value: 'urgent', child: Text('דחופה')),
+                    ],
+                    onChanged: (v) => setSt(() => priority = v ?? 'normal'),
+                  ),
+                ],
+              ),
             ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('ביטול'),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                if (subjectController.text.trim().isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('יש להזין נושא')),
-                  );
-                  return;
-                }
-                if (locationController.text.trim().isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('יש להזין מיקום')),
-                  );
-                  return;
-                }
-
-                Navigator.of(context).pop();
-                try {
-                  await ref.read(helpdeskProvider.notifier).createTicket(
-                        subject: subjectController.text.trim(),
-                        description: descriptionController.text.trim(),
-                        department: selectedDepartment,
-                        priority: selectedPriority,
-                        location: locationController.text.trim().isEmpty
-                            ? null
-                            : locationController.text.trim(),
-                        phone: phoneController.text.trim().isEmpty
-                            ? null
-                            : phoneController.text.trim(),
-                      );
-                  if (context.mounted) {
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('ביטול')),
+              ElevatedButton(
+                onPressed: () async {
+                  if (subjectCtrl.text.trim().isEmpty) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('הפנייה נוצרה בהצלחה')),
-                    );
+                        const SnackBar(content: Text('יש להזין כותרת')));
+                    return;
                   }
-                } catch (e) {
-                  if (context.mounted) {
+                  if (locationCtrl.text.trim().isEmpty) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
+                        const SnackBar(content: Text('יש להזין מיקום')));
+                    return;
+                  }
+                  Navigator.of(context).pop();
+                  try {
+                    await ref.read(helpdeskProvider.notifier).createTicket(
+                          subject: subjectCtrl.text.trim(),
+                          description: descCtrl.text.trim(),
+                          department: dept,
+                          priority: priority,
+                          location: locationCtrl.text.trim().isEmpty
+                              ? null
+                              : locationCtrl.text.trim(),
+                          phone: phoneCtrl.text.trim().isEmpty
+                              ? null
+                              : phoneCtrl.text.trim(),
+                        );
+                    if (ctx.mounted) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(
+                          const SnackBar(content: Text('הפנייה נוצרה בהצלחה')));
+                    }
+                  } catch (e) {
+                    if (ctx.mounted) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
                         content: Text('שגיאה: ${e.toString()}'),
-                        backgroundColor: Theme.of(context).colorScheme.error,
-                      ),
-                    );
+                        backgroundColor: Theme.of(ctx).colorScheme.error,
+                      ));
+                    }
                   }
-                }
-              },
-              child: const Text('שלח'),
-            ),
-          ],
+                },
+                child: const Text('שלח קריאה'),
+              ),
+            ],
+          ),
         ),
       ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Management Tab (ניהול) - for editors / admins
+// ---------------------------------------------------------------------------
+
+class _ManagementTab extends ConsumerStatefulWidget {
+  final HelpdeskMyRole? myRole;
+  final List<HelpdeskTicket> editorTickets;
+
+  const _ManagementTab({required this.myRole, required this.editorTickets});
+
+  @override
+  ConsumerState<_ManagementTab> createState() => _ManagementTabState();
+}
+
+class _ManagementTabState extends ConsumerState<_ManagementTab>
+    with SingleTickerProviderStateMixin {
+  late TabController _subTabController;
+
+  @override
+  void initState() {
+    super.initState();
+    _subTabController = TabController(length: 3, vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _subTabController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final role = widget.myRole;
+
+    if (role == null) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.manage_accounts_outlined,
+                size: 80, color: theme.colorScheme.primary.withAlpha(100)),
+            const SizedBox(height: 16),
+            Text('ניהול קריאות',
+                style: theme.textTheme.titleLarge?.copyWith(
+                    color: theme.colorScheme.onSurface.withAlpha(178))),
+            const SizedBox(height: 8),
+            Text('תפריט זה זמין למנהלים בלבד',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurface.withAlpha(128))),
+          ],
+        ),
+      );
+    }
+
+    final newTickets =
+        widget.editorTickets.where((t) => t.status == 'open').toList();
+    final inProgressTickets =
+        widget.editorTickets.where((t) => t.status == 'in_progress').toList();
+    final closedTickets = widget.editorTickets
+        .where((t) => !kHelpdeskOngoingStatuses.contains(t.status))
+        .toList();
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(children: [
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.primary,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Text(
+                  role.role == HelpdeskRole.admin ? 'Admin' : 'Editor',
+                  style: const TextStyle(
+                      color: Colors.white, fontWeight: FontWeight.bold)),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text('ניהול קריאות - ${role.department}',
+                  style: theme.textTheme.titleSmall
+                      ?.copyWith(fontWeight: FontWeight.bold)),
+            ),
+          ]),
+        ),
+        TabBar(
+          controller: _subTabController,
+          tabs: [
+            Tab(text: 'חדש (${newTickets.length})'),
+            Tab(text: 'בתהליך (${inProgressTickets.length})'),
+            Tab(text: 'סגור (${closedTickets.length})'),
+          ],
+          labelColor: theme.colorScheme.primary,
+          indicatorColor: theme.colorScheme.primary,
+        ),
+        Expanded(
+          child: TabBarView(
+            controller: _subTabController,
+            children: [
+              _TicketList(tickets: newTickets, emptyMessage: 'אין קריאות חדשות'),
+              _TicketList(
+                  tickets: inProgressTickets,
+                  emptyMessage: 'אין קריאות בתהליך'),
+              _TicketList(
+                  tickets: closedTickets, emptyMessage: 'אין קריאות סגורות'),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
@@ -625,185 +779,100 @@ class _TicketList extends ConsumerWidget {
   final List<HelpdeskTicket> tickets;
   final String emptyMessage;
 
-  const _TicketList({
-    required this.tickets,
-    required this.emptyMessage,
-  });
+  const _TicketList({required this.tickets, required this.emptyMessage});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final state = ref.watch(helpdeskProvider);
     final theme = Theme.of(context);
+    final isLoading = ref.watch(helpdeskProvider).isLoading;
 
-    if (state.isLoading && tickets.isEmpty) {
-      return Material(
-        color: theme.colorScheme.surface,
-        child: const Center(child: CircularProgressIndicator()),
-      );
+    if (isLoading && tickets.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
     }
 
     if (tickets.isEmpty) {
-      return Material(
-        color: theme.colorScheme.surface,
-        child: RefreshIndicator(
-          onRefresh: () async {
-            await ref.read(helpdeskProvider.notifier).loadTickets(force: true);
-          },
-          child: ListView(
-            // ListView (rather than Center) so RefreshIndicator's pull-to-refresh
-            // gesture is available even when the tab is empty.
-            physics: const AlwaysScrollableScrollPhysics(),
-            children: [
-              SizedBox(
-                height: MediaQuery.of(context).size.height * 0.6,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      Icons.support_agent_outlined,
+      return RefreshIndicator(
+        onRefresh: () async =>
+            ref.read(helpdeskProvider.notifier).loadTickets(force: true),
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: [
+            SizedBox(
+              height: MediaQuery.of(context).size.height * 0.55,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.support_agent_outlined,
                       size: 80,
-                      color: theme.colorScheme.primary.withAlpha((255 * 0.6).round()),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      emptyMessage,
-                      textDirection: ui.TextDirection.rtl,
+                      color: theme.colorScheme.primary.withAlpha(100)),
+                  const SizedBox(height: 16),
+                  Text(emptyMessage,
                       textAlign: TextAlign.center,
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        color: theme.colorScheme.onSurface.withAlpha((255 * 0.7).round()),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    OutlinedButton.icon(
-                      onPressed: () {
-                        ref.read(helpdeskProvider.notifier).loadTickets(force: true);
-                      },
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('רענן'),
-                    ),
-                  ],
-                ),
+                      style: theme.textTheme.titleMedium?.copyWith(
+                          color: theme.colorScheme.onSurface.withAlpha(178))),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: () =>
+                        ref.read(helpdeskProvider.notifier).loadTickets(force: true),
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('רענן'),
+                  ),
+                ],
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       );
     }
 
-    return Material(
-      color: theme.colorScheme.surface,
-      child: RefreshIndicator(
-        onRefresh: () async {
-          await ref.read(helpdeskProvider.notifier).loadTickets(force: true);
-        },
-        child: ListView.builder(
-          padding: const EdgeInsets.all(16),
-          itemCount: tickets.length,
-          itemBuilder: (context, index) {
-            final ticket = tickets[index];
-            return _TicketCard(ticket: ticket);
-          },
-        ),
+    return RefreshIndicator(
+      onRefresh: () async =>
+          ref.read(helpdeskProvider.notifier).loadTickets(force: true),
+      child: ListView.builder(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        itemCount: tickets.length,
+        itemBuilder: (context, i) => _TicketCard(ticket: tickets[i]),
       ),
     );
   }
 }
 
 // ---------------------------------------------------------------------------
-// Ticket Card
+// Ticket Card - matches Angular layout
 // ---------------------------------------------------------------------------
 
-class _TicketCard extends StatelessWidget {
+class _TicketCard extends ConsumerWidget {
   final HelpdeskTicket ticket;
 
   const _TicketCard({required this.ticket});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    final timeStr = DateFormat('HH:mm').format(ticket.createdAt);
 
     return Card(
-      color: theme.cardColor,
-      margin: const EdgeInsets.only(bottom: 12),
+      margin: const EdgeInsets.only(bottom: 10),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       child: InkWell(
-        onTap: () => _showTicketDetail(context),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(10),
+        onTap: () => _openDetail(context, ref),
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(12),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Subject and priority
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      ticket.subject,
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                  _PriorityBadge(priority: ticket.priority),
-                ],
+              // Status badge (right-aligned in RTL)
+              Align(
+                alignment: Alignment.topLeft,
+                child: _StatusChip(status: ticket.status),
               ),
-              const SizedBox(height: 8),
-
-              // Description preview
-              Text(
-                ticket.description,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.colorScheme.onSurface.withAlpha((255 * 0.7).round()),
-                ),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-              
-              // Location (if available)
-              if (ticket.location != null && ticket.location!.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Icon(
-                      Icons.location_on,
-                      size: 14,
-                      color: theme.colorScheme.onSurface.withAlpha((255 * 0.5).round()),
-                    ),
-                    const SizedBox(width: 4),
-                    Expanded(
-                      child: Text(
-                        ticket.location!,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurface.withAlpha((255 * 0.6).round()),
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-              const SizedBox(height: 12),
-
-              // Meta info
-              Row(
-                children: [
-                  _StatusBadge(status: ticket.status),
-                  const Spacer(),
-                  Icon(
-                    Icons.access_time,
-                    size: 14,
-                    color: theme.colorScheme.onSurface.withAlpha((255 * 0.5).round()),
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    DateFormat.yMd('he').add_Hm().format(ticket.createdAt),
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurface.withAlpha((255 * 0.5).round()),
-                    ),
-                  ),
-                ],
-              ),
+              const SizedBox(height: 6),
+              _MetaRow(label: 'כותרת', value: ticket.subject, bold: true),
+              _MetaRow(label: 'מחלקה', value: ticket.department),
+              if (ticket.location != null && ticket.location!.isNotEmpty)
+                _MetaRow(label: 'מיקום', value: ticket.location!),
+              _MetaRow(label: 'תאריך', value: timeStr),
             ],
           ),
         ),
@@ -811,417 +880,615 @@ class _TicketCard extends StatelessWidget {
     );
   }
 
-  void _showTicketDetail(BuildContext context) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (context) => _TicketDetailScreen(ticket: ticket),
+  void _openDetail(BuildContext context, WidgetRef ref) {
+    final state = ref.read(helpdeskProvider);
+    final currentUser = ref.read(helpdeskProvider.notifier).currentUser;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (_) => _TicketDetailSheet(
+        ticket: ticket,
+        myRole: state.myRole,
+        handlers: state.handlers,
+        currentUser: currentUser,
       ),
     );
   }
 }
 
 // ---------------------------------------------------------------------------
-// Status Badge
+// Ticket card sub-widgets
 // ---------------------------------------------------------------------------
 
-class _StatusBadge extends StatelessWidget {
+class _StatusChip extends StatelessWidget {
   final String status;
 
-  const _StatusBadge({required this.status});
+  const _StatusChip({required this.status});
 
   @override
   Widget build(BuildContext context) {
-    Color color;
-    String text;
-
-    switch (status) {
-      case 'open':
-        color = Colors.blue;
-        text = 'פתוחה';
-        break;
-      case 'in_progress':
-        color = AppColors.warning;
-        text = 'בטיפול';
-        break;
-      case 'resolved':
-        color = AppColors.success;
-        text = 'טופלה';
-        break;
-      case 'closed':
-        color = Colors.grey;
-        text = 'סגורה';
-        break;
-      default:
-        color = Colors.grey;
-        text = status;
-    }
-
+    final color = _statusColor(status);
+    final label = _statusLabel(status);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
       decoration: BoxDecoration(
-        color: color.withAlpha((255 * 0.1).round()),
+        color: color.withAlpha(30),
         borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withAlpha(100)),
       ),
-      child: Text(
-        text,
-        style: TextStyle(
-          color: color,
-          fontSize: 12,
-          fontWeight: FontWeight.bold,
-        ),
+      child: Text(label,
+          style: TextStyle(
+              color: color, fontSize: 12, fontWeight: FontWeight.bold)),
+    );
+  }
+}
+
+class _MetaRow extends StatelessWidget {
+  final String label;
+  final String value;
+  final bool bold;
+
+  const _MetaRow({required this.label, required this.value, this.bold = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final labelStyle = theme.textTheme.bodySmall
+        ?.copyWith(color: theme.colorScheme.onSurface.withAlpha(128));
+    final valueStyle = bold
+        ? theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.bold)
+        : theme.textTheme.bodyMedium;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          Expanded(
+              child: Text(value,
+                  style: valueStyle, overflow: TextOverflow.ellipsis)),
+          const SizedBox(width: 8),
+          SizedBox(
+              width: 50,
+              child:
+                  Text(label, style: labelStyle, textAlign: TextAlign.end)),
+        ],
       ),
     );
   }
 }
 
 // ---------------------------------------------------------------------------
-// Priority Badge
+// Ticket Detail Bottom Sheet
 // ---------------------------------------------------------------------------
 
-class _PriorityBadge extends StatelessWidget {
-  final String priority;
-
-  const _PriorityBadge({required this.priority});
-
-  @override
-  Widget build(BuildContext context) {
-    Color color;
-    IconData icon;
-
-    switch (priority) {
-      case 'low':
-        color = Colors.green;
-        icon = Icons.arrow_downward;
-        break;
-      case 'normal':
-        color = Colors.blue;
-        icon = Icons.remove;
-        break;
-      case 'high':
-        color = Colors.orange;
-        icon = Icons.arrow_upward;
-        break;
-      case 'urgent':
-        color = Colors.red;
-        icon = Icons.priority_high;
-        break;
-      default:
-        color = Colors.grey;
-        icon = Icons.help_outline;
-    }
-
-    return Icon(icon, size: 20, color: color);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Ticket Detail Screen
-// ---------------------------------------------------------------------------
-
-class _TicketDetailScreen extends ConsumerStatefulWidget {
+class _TicketDetailSheet extends ConsumerStatefulWidget {
   final HelpdeskTicket ticket;
+  final HelpdeskMyRole? myRole;
+  final List<HelpdeskManagedUser> handlers;
+  final String currentUser;
 
-  const _TicketDetailScreen({required this.ticket});
+  const _TicketDetailSheet({
+    required this.ticket,
+    required this.myRole,
+    required this.handlers,
+    required this.currentUser,
+  });
 
   @override
-  ConsumerState<_TicketDetailScreen> createState() => _TicketDetailScreenState();
+  ConsumerState<_TicketDetailSheet> createState() => _TicketDetailSheetState();
 }
 
-class _TicketDetailScreenState extends ConsumerState<_TicketDetailScreen> {
-  final _commentController = TextEditingController();
-  List<HelpdeskStatusHistory>? _history;
-  bool _loadingHistory = false;
+class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
+  List<HelpdeskStatusHistoryEntry>? _history;
+  List<HelpdeskNote>? _notes;
+  bool _loadingHistory = true;
+  bool _loadingNotes = true;
+
+  String? _selectedHandler;
+  String _selectedStatus = '';
+  bool _savingHandler = false;
+  bool _savingStatus = false;
+  String? _handlerError;
+  String? _statusError;
+
+  final _noteCtrl = TextEditingController();
+  bool _submittingNote = false;
+  String? _noteError;
+
+  HelpdeskTicket get _ticket => widget.ticket;
+  String get _currentUser => widget.currentUser;
+
+  bool get _canManageHandler =>
+      widget.myRole != null &&
+      widget.myRole!.department == _ticket.department;
+
+  bool get _canChangeStatus {
+    if (_ticket.creatorUsername == _currentUser) return true;
+    if (_ticket.handlerUsername == _currentUser) return true;
+    if (widget.myRole != null &&
+        widget.myRole!.department == _ticket.department) return true;
+    return false;
+  }
 
   @override
   void initState() {
     super.initState();
-    _loadHistory();
-  }
-
-  Future<void> _loadHistory() async {
-    setState(() => _loadingHistory = true);
-    try {
-      final api = ref.read(chatApiServiceProvider);
-      final user = ref.read(currentUserProvider) ?? '';
-      final history = await api.getTicketHistory(widget.ticket.id, user);
-      setState(() {
-        _history = history;
-        _loadingHistory = false;
-      });
-    } catch (e) {
-      setState(() => _loadingHistory = false);
-    }
+    _selectedHandler = _ticket.handlerUsername;
+    _selectedStatus = _ticket.status;
+    _loadData();
   }
 
   @override
   void dispose() {
-    _commentController.dispose();
+    _noteCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadData() async {
+    final api = ref.read(chatApiServiceProvider);
+    final ticketId = int.tryParse(_ticket.id) ?? 0;
+    await Future.wait([_loadHistory(api, ticketId), _loadNotes(api, ticketId)]);
+  }
+
+  Future<void> _loadHistory(ChatApiService api, int ticketId) async {
+    try {
+      final h = await api.getHelpdeskTicketHistory(ticketId, _currentUser);
+      if (mounted) setState(() { _history = h; _loadingHistory = false; });
+    } catch (_) {
+      if (mounted) setState(() { _history = []; _loadingHistory = false; });
+    }
+  }
+
+  Future<void> _loadNotes(ChatApiService api, int ticketId) async {
+    try {
+      final n = await api.getHelpdeskTicketNotes(ticketId, _currentUser);
+      if (mounted) setState(() { _notes = n; _loadingNotes = false; });
+    } catch (_) {
+      if (mounted) setState(() { _notes = []; _loadingNotes = false; });
+    }
+  }
+
+  Future<void> _saveHandler() async {
+    setState(() { _savingHandler = true; _handlerError = null; });
+    try {
+      await ref
+          .read(helpdeskProvider.notifier)
+          .assignHandler(int.parse(_ticket.id), _selectedHandler);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('המטפל עודכן בהצלחה')));
+      }
+    } catch (e) {
+      if (mounted) setState(() => _handlerError = e.toString());
+    } finally {
+      if (mounted) setState(() => _savingHandler = false);
+    }
+  }
+
+  Future<void> _saveStatus() async {
+    setState(() { _savingStatus = true; _statusError = null; });
+    try {
+      await ref
+          .read(helpdeskProvider.notifier)
+          .updateTicketStatus(int.parse(_ticket.id), _selectedStatus);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('הסטטוס עודכן בהצלחה')));
+        final api = ref.read(chatApiServiceProvider);
+        await _loadHistory(api, int.parse(_ticket.id));
+      }
+    } catch (e) {
+      if (mounted) setState(() => _statusError = e.toString());
+    } finally {
+      if (mounted) setState(() => _savingStatus = false);
+    }
+  }
+
+  Future<void> _submitNote() async {
+    final text = _noteCtrl.text.trim();
+    if (text.length < 2) return;
+    setState(() { _submittingNote = true; _noteError = null; });
+    try {
+      final api = ref.read(chatApiServiceProvider);
+      final note = await api.addHelpdeskTicketNote(
+          int.parse(_ticket.id), text, _currentUser);
+      _noteCtrl.clear();
+      if (mounted) setState(() => _notes = [...?_notes, note]);
+    } catch (e) {
+      if (mounted) setState(() => _noteError = e.toString());
+    } finally {
+      if (mounted) setState(() => _submittingNote = false);
+    }
+  }
+
+  String _resolveDisplay(String? username) {
+    if (username == null || username.isEmpty) return '—';
+    final contacts = ref.read(chatStoreProvider).contacts;
+    return contacts[username]?.displayName ?? username;
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final durationLabel =
+        _history != null ? _totalDurationLabel(_history!) : '';
 
     return Directionality(
       textDirection: ui.TextDirection.rtl,
-      child: Scaffold(
-        appBar: AppBar(
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_forward),
-            onPressed: () => Navigator.of(context).pop(),
-          ),
-          title: Text('פנייה #${widget.ticket.id}'),
-        ),
-        body: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Subject and status
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              widget.ticket.subject,
-                              style: theme.textTheme.titleLarge?.copyWith(
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                          _StatusBadge(status: widget.ticket.status),
-                        ],
+      child: DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.92,
+        minChildSize: 0.5,
+        maxChildSize: 0.97,
+        builder: (context, scrollController) => Column(
+          children: [
+            Container(
+              width: 40,
+              height: 4,
+              margin: const EdgeInsets.only(top: 10, bottom: 4),
+              decoration: BoxDecoration(
+                  color: Colors.grey.shade400,
+                  borderRadius: BorderRadius.circular(2)),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(children: [
+                Text('#${_ticket.id}',
+                    style: theme.textTheme.titleSmall?.copyWith(
+                        color: theme.colorScheme.onSurface.withAlpha(128))),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(_ticket.subject,
+                      style: theme.textTheme.titleLarge
+                          ?.copyWith(fontWeight: FontWeight.bold),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis),
+                ),
+                const SizedBox(width: 8),
+                _StatusChip(status: _selectedStatus),
+              ]),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: ListView(
+                controller: scrollController,
+                padding: const EdgeInsets.all(16),
+                children: [
+                  _DetailRow(icon: Icons.apartment, label: 'מחלקה', value: _ticket.department),
+                  if (_ticket.location != null && _ticket.location!.isNotEmpty)
+                    _DetailRow(
+                        icon: Icons.location_on,
+                        label: 'מיקום',
+                        value: _ticket.location!),
+                  if (_ticket.description.isNotEmpty)
+                    _DetailRow(
+                        icon: Icons.description,
+                        label: 'תיאור',
+                        value: _ticket.description),
+                  _DetailRow(
+                      icon: Icons.schedule,
+                      label: 'נפתחה',
+                      value: DateFormat('HH:mm, d.M.yyyy').format(_ticket.createdAt)),
+                  _DetailRow(
+                      icon: Icons.person,
+                      label: 'נפתח על-ידי',
+                      value: _resolveDisplay(_ticket.creatorUsername)),
+                  if (_ticket.phone != null && _ticket.phone!.isNotEmpty)
+                    _DetailRow(
+                        icon: Icons.phone,
+                        label: 'טלפון',
+                        value: _ticket.phone!),
+                  _DetailRow(
+                      icon: Icons.support_agent,
+                      label: 'מטפל',
+                      value: _resolveDisplay(_ticket.handlerUsername)),
+
+                  const SizedBox(height: 16),
+                  const Divider(),
+                  const SizedBox(height: 8),
+
+                  // Status history header
+                  Row(children: [
+                    const Icon(Icons.history, size: 20),
+                    const SizedBox(width: 6),
+                    Text('היסטוריית סטטוס',
+                        style: theme.textTheme.titleSmall
+                            ?.copyWith(fontWeight: FontWeight.bold)),
+                    const Spacer(),
+                    if (durationLabel.isNotEmpty)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                            color: Colors.blue.shade50,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.blue.shade200)),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(Icons.timer, size: 14, color: Colors.blue.shade700),
+                          const SizedBox(width: 4),
+                          Text(durationLabel,
+                              style: TextStyle(
+                                  color: Colors.blue.shade700, fontSize: 12)),
+                        ]),
                       ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          _PriorityBadge(priority: widget.ticket.priority),
-                          const SizedBox(width: 8),
-                          Text(_priorityText(widget.ticket.priority)),
-                          const Spacer(),
-                          Text(
-                            DateFormat.yMd('he').add_Hm().format(widget.ticket.createdAt),
-                            style: theme.textTheme.bodySmall,
-                          ),
-                        ],
-                      ),
-                      // Location
-                      if (widget.ticket.location != null && widget.ticket.location!.isNotEmpty) ...[
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            Icon(Icons.location_on, size: 16, color: theme.colorScheme.primary),
-                            const SizedBox(width: 4),
-                            Expanded(child: Text(widget.ticket.location!)),
-                          ],
-                        ),
-                      ],
-                      // Phone
-                      if (widget.ticket.phone != null && widget.ticket.phone!.isNotEmpty) ...[
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            Icon(Icons.phone, size: 16, color: theme.colorScheme.primary),
-                            const SizedBox(width: 4),
-                            Text(widget.ticket.phone!),
-                          ],
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
+                  ]),
+                  const SizedBox(height: 8),
+                  if (_loadingHistory)
+                    const Center(child: CircularProgressIndicator())
+                  else if (_history == null || _history!.isEmpty)
+                    Text('אין היסטוריית שינויי סטטוס.',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurface.withAlpha(128)))
+                  else
+                    ..._history!.map((h) => _HistoryEntry(entry: h)),
 
-              // Attachment (if available)
-              if (widget.ticket.attachmentUrl != null && widget.ticket.attachmentUrl!.isNotEmpty)
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'קובץ מצורף',
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        InkWell(
-                          onTap: () {
-                            // Open attachment URL
-                            // Could use url_launcher package
-                          },
-                          child: Row(
-                            children: [
-                              Icon(Icons.attach_file, color: theme.colorScheme.primary),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  'לחץ לצפייה בקובץ',
-                                  style: TextStyle(
-                                    color: theme.colorScheme.primary,
-                                    decoration: TextDecoration.underline,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              if (widget.ticket.attachmentUrl != null && widget.ticket.attachmentUrl!.isNotEmpty)
-                const SizedBox(height: 16),
-
-              // Description
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'תיאור',
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(widget.ticket.description),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              // Status history
-              if (_loadingHistory)
-                const Center(child: CircularProgressIndicator())
-              else if (_history != null && _history!.isNotEmpty) ...[
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'היסטוריית סטטוס',
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        ..._history!.map((h) => _buildHistoryItem(context, h)),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-              ],
-
-              // Comments
-              if (widget.ticket.comments.isNotEmpty) ...[
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'תגובות',
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        ...widget.ticket.comments.map((c) => _buildComment(context, c)),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-              ],
-
-              // Add comment
-              if (widget.ticket.status != 'closed')
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'הוסף תגובה',
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        TextField(
-                          controller: _commentController,
-                          textDirection: ui.TextDirection.rtl,
-                          maxLines: 3,
+                  // Handler assignment (editor only)
+                  if (_canManageHandler) ...[
+                    const SizedBox(height: 16),
+                    const Divider(),
+                    const SizedBox(height: 8),
+                    Row(children: [
+                      const Icon(Icons.manage_accounts, size: 20),
+                      const SizedBox(width: 6),
+                      Text('שיוך מטפל',
+                          style: theme.textTheme.titleSmall
+                              ?.copyWith(fontWeight: FontWeight.bold)),
+                    ]),
+                    const SizedBox(height: 8),
+                    Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Expanded(
+                        child: DropdownButtonFormField<String?>(
+                          value: _selectedHandler,
                           decoration: const InputDecoration(
-                            hintText: 'כתוב תגובה...',
-                            border: OutlineInputBorder(),
-                          ),
+                              labelText: 'בחר מטפל',
+                              border: OutlineInputBorder()),
+                          items: [
+                            const DropdownMenuItem<String?>(
+                                value: null, child: Text('— ללא מטפל —')),
+                            ...widget.handlers.map((h) =>
+                                DropdownMenuItem<String?>(
+                                    value: h.username,
+                                    child: Text(_resolveDisplay(h.username)))),
+                          ],
+                          onChanged: (v) =>
+                              setState(() => _selectedHandler = v),
                         ),
-                        const SizedBox(height: 12),
-                        SizedBox(
-                          width: double.infinity,
-                          child: ElevatedButton(
-                            onPressed: _addComment,
-                            child: const Text('שלח'),
-                          ),
+                      ),
+                      const SizedBox(width: 8),
+                      ElevatedButton.icon(
+                        onPressed: _savingHandler ? null : _saveHandler,
+                        icon: _savingHandler
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2))
+                            : const Icon(Icons.save),
+                        label: const Text('שמור'),
+                      ),
+                    ]),
+                    if (_handlerError != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(_handlerError!,
+                            style: TextStyle(
+                                color: theme.colorScheme.error, fontSize: 12)),
+                      ),
+                  ],
+
+                  // Status change
+                  if (_canChangeStatus) ...[
+                    const SizedBox(height: 16),
+                    const Divider(),
+                    const SizedBox(height: 8),
+                    Row(children: [
+                      const Icon(Icons.update, size: 20),
+                      const SizedBox(width: 6),
+                      Text('עדכון סטטוס',
+                          style: theme.textTheme.titleSmall
+                              ?.copyWith(fontWeight: FontWeight.bold)),
+                    ]),
+                    const SizedBox(height: 8),
+                    Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          value: _selectedStatus,
+                          decoration: const InputDecoration(
+                              labelText: 'סטטוס',
+                              border: OutlineInputBorder()),
+                          items: ['open', 'in_progress', 'resolved', 'closed']
+                              .map((s) => DropdownMenuItem(
+                                  value: s, child: Text(_statusLabel(s))))
+                              .toList(),
+                          onChanged: (v) => setState(
+                              () => _selectedStatus = v ?? _selectedStatus),
                         ),
-                      ],
+                      ),
+                      const SizedBox(width: 8),
+                      ElevatedButton.icon(
+                        onPressed: _savingStatus ? null : _saveStatus,
+                        icon: _savingStatus
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2))
+                            : const Icon(Icons.save),
+                        label: const Text('שמור'),
+                      ),
+                    ]),
+                    if (_statusError != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(_statusError!,
+                            style: TextStyle(
+                                color: theme.colorScheme.error, fontSize: 12)),
+                      ),
+                  ],
+
+                  // Notes section
+                  const SizedBox(height: 16),
+                  const Divider(),
+                  const SizedBox(height: 8),
+                  Row(children: [
+                    const Icon(Icons.chat_bubble_outline, size: 20),
+                    const SizedBox(width: 6),
+                    Text('הערות',
+                        style: theme.textTheme.titleSmall
+                            ?.copyWith(fontWeight: FontWeight.bold)),
+                  ]),
+                  const SizedBox(height: 8),
+                  if (_loadingNotes)
+                    const Center(child: CircularProgressIndicator())
+                  else if (_notes == null || _notes!.isEmpty)
+                    Text('אין הערות עדיין.',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurface.withAlpha(128)))
+                  else
+                    ..._notes!.map((n) => _NoteItem(
+                        note: n,
+                        isOwn: n.authorUsername == _currentUser,
+                        resolveDisplay: _resolveDisplay)),
+
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _noteCtrl,
+                    textDirection: ui.TextDirection.rtl,
+                    maxLines: 3,
+                    decoration: const InputDecoration(
+                        labelText: 'הערה חדשה',
+                        hintText: 'כתוב הערה...',
+                        border: OutlineInputBorder()),
+                  ),
+                  if (_noteError != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(_noteError!,
+                          style: TextStyle(
+                              color: theme.colorScheme.error, fontSize: 12)),
+                    ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: _submittingNote ? null : _submitNote,
+                      icon: _submittingNote
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.send),
+                      label: const Text('שלח הערה'),
                     ),
                   ),
-                ),
-            ],
-          ),
+
+                  const SizedBox(height: 16),
+                  OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: const Text('סגור')),
+                  const SizedBox(height: 24),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
+}
 
-  Widget _buildHistoryItem(BuildContext context, HelpdeskStatusHistory history) {
+// ---------------------------------------------------------------------------
+// Detail sub-widgets
+// ---------------------------------------------------------------------------
+
+class _DetailRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+
+  const _DetailRow(
+      {required this.icon, required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 8,
-            height: 8,
-            decoration: BoxDecoration(
-              color: AppColors.primary,
-              shape: BoxShape.circle,
-            ),
+          Icon(icon, size: 20, color: theme.colorScheme.primary),
+          const SizedBox(width: 10),
+          SizedBox(
+            width: 90,
+            child: Text(label,
+                style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurface.withAlpha(150))),
           ),
+          Expanded(child: Text(value, style: theme.textTheme.bodyMedium)),
+        ],
+      ),
+    );
+  }
+}
+
+class _HistoryEntry extends StatelessWidget {
+  final HelpdeskStatusHistoryEntry entry;
+
+  const _HistoryEntry({required this.entry});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final timeStr =
+        DateFormat('H:mm, d.M.yyyy').format(entry.createdAt);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Column(children: [
+            Container(
+              width: 10,
+              height: 10,
+              margin: const EdgeInsets.only(top: 4),
+              decoration: BoxDecoration(
+                  color: theme.colorScheme.primary,
+                  shape: BoxShape.circle),
+            ),
+          ]),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  history.oldStatus != null
-                      ? '${_statusText(history.oldStatus!)} → ${_statusText(history.newStatus)}'
-                      : 'נוצרה כ-${_statusText(history.newStatus)}',
-                  style: const TextStyle(fontWeight: FontWeight.bold),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(entry.changedBy,
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(fontWeight: FontWeight.bold)),
+                    Text(timeStr,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                            color:
+                                theme.colorScheme.onSurface.withAlpha(128))),
+                  ],
                 ),
-                Text(
-                  '${history.changedBy} • ${DateFormat.yMd('he').add_Hm().format(history.createdAt)}',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
+                const SizedBox(height: 4),
+                Row(children: [
+                  if (entry.oldStatus != null) ...[
+                    _MiniStatusChip(status: entry.oldStatus!),
+                    const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 4),
+                      child: Icon(Icons.arrow_back, size: 14),
+                    ),
+                  ],
+                  _MiniStatusChip(status: entry.newStatus),
+                ]),
               ],
             ),
           ),
@@ -1229,89 +1496,88 @@ class _TicketDetailScreenState extends ConsumerState<_TicketDetailScreen> {
       ),
     );
   }
+}
 
-  Widget _buildComment(BuildContext context, HelpdeskComment comment) {
+class _MiniStatusChip extends StatelessWidget {
+  final String status;
+
+  const _MiniStatusChip({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _statusColor(status);
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        color: color.withAlpha(25),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withAlpha(80)),
+      ),
+      child: Text(_statusLabel(status),
+          style: TextStyle(
+              color: color, fontSize: 11, fontWeight: FontWeight.bold)),
+    );
+  }
+}
+
+class _NoteItem extends StatelessWidget {
+  final HelpdeskNote note;
+  final bool isOwn;
+  final String Function(String?) resolveDisplay;
+
+  const _NoteItem(
+      {required this.note,
+      required this.isOwn,
+      required this.resolveDisplay});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final timeStr = DateFormat('HH:mm, d.M.yyyy').format(note.createdAt);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: isOwn
+            ? theme.colorScheme.primaryContainer.withAlpha(80)
+            : theme.colorScheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(8),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                comment.author,
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              ),
-              const Spacer(),
-              Text(
-                DateFormat.yMd('he').add_Hm().format(comment.createdAt),
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
+              Text(resolveDisplay(note.authorUsername),
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 13)),
+              Text(timeStr,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurface.withAlpha(128))),
             ],
           ),
-          const SizedBox(height: 8),
-          Text(comment.content),
+          if (note.noteText.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(note.noteText, style: theme.textTheme.bodyMedium),
+          ],
+          if (note.attachmentUrl != null &&
+              note.attachmentUrl!.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Row(children: [
+              Icon(Icons.attach_file,
+                  size: 14, color: theme.colorScheme.primary),
+              const SizedBox(width: 4),
+              Text('קובץ מצורף',
+                  style: TextStyle(
+                      color: theme.colorScheme.primary,
+                      fontSize: 12,
+                      decoration: TextDecoration.underline)),
+            ]),
+          ],
         ],
       ),
     );
-  }
-
-  Future<void> _addComment() async {
-    final text = _commentController.text.trim();
-    if (text.isEmpty) return;
-
-    try {
-      await ref.read(helpdeskProvider.notifier).addComment(widget.ticket.id, text);
-      _commentController.clear();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('התגובה נוספה')),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('שגיאה: ${e.toString()}'),
-            backgroundColor: Theme.of(context).colorScheme.error,
-          ),
-        );
-      }
-    }
-  }
-
-  String _statusText(String status) {
-    switch (status) {
-      case 'open':
-        return 'פתוח';
-      case 'in_progress':
-        return 'בטיפול';
-      case 'resolved':
-        return 'נפתר';
-      case 'closed':
-        return 'סגור';
-      default:
-        return status;
-    }
-  }
-
-  String _priorityText(String priority) {
-    switch (priority) {
-      case 'low':
-        return 'נמוכה';
-      case 'normal':
-        return 'רגילה';
-      case 'high':
-        return 'גבוהה';
-      case 'urgent':
-        return 'דחופה';
-      default:
-        return priority;
-    }
   }
 }
