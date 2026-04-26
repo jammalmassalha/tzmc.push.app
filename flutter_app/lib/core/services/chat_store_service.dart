@@ -442,15 +442,23 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   /// Pull messages since a timestamp
   Future<void> pullMessages({int? since}) async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty) return;
+
     try {
       final latestTimestamp = since ?? await _db.getLatestMessageTimestamp();
-      final messages = await _api.getMessagesSince(latestTimestamp);
-      
+      final messages = await _api.getMessagesFromLogs(
+        user: user,
+        since: latestTimestamp,
+      );
+
       if (messages.isEmpty) return;
 
-      // Process and store messages
+      // Route each message through the same handler used by realtime transport
+      // so that action payloads (read-receipt, delete-action, etc.) are handled
+      // correctly and regular messages are applied to the chat store.
       for (final message in messages) {
-        _applyIncomingMessage(message);
+        _handleServerMessage(message);
       }
 
       _schedulePersistence();
