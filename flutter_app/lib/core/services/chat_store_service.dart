@@ -707,7 +707,23 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     final groupId = _str(data['groupId']);
     final isGroup = groupId != null;
-    final chatId = isGroup ? groupId : sender;
+
+    // For self-echo push notifications (skipNotification: true), the server
+    // sends sender=currentUser and toUser/recipient=the other party. Using
+    // sender as chatId would create a spurious "self-chat". Mirror the same
+    // fix applied to _buildChatMessageFromServer.
+    final meNorm = _currentUser?.trim().toLowerCase() ?? '';
+    final senderNorm = sender.trim().toLowerCase();
+    final isSelfEcho = meNorm.isNotEmpty && senderNorm == meNorm;
+    String chatId;
+    if (isGroup) {
+      chatId = groupId;
+    } else if (isSelfEcho) {
+      final toUser = (_str(data['toUser']) ?? _str(data['recipient']) ?? '').trim().toLowerCase();
+      chatId = toUser.isNotEmpty ? toUser : senderNorm;
+    } else {
+      chatId = senderNorm;
+    }
 
     // Backend may include either the full body (messageText) or a truncated
     // groupMessageText. Prefer the longer one — _hydrateExistingMessage will
@@ -735,9 +751,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       body: body,
       imageUrl: _str(data['image']) ?? _str(data['imageUrl']),
       fileUrl: _str(data['fileUrl']),
-      direction: MessageDirection.incoming,
+      direction: isSelfEcho ? MessageDirection.outgoing : MessageDirection.incoming,
       timestamp: timestamp,
-      deliveryStatus: DeliveryStatus.delivered,
+      deliveryStatus: isSelfEcho ? DeliveryStatus.sent : DeliveryStatus.delivered,
       groupId: groupId,
       groupName: _str(data['groupName']),
       groupType: groupType,
@@ -1146,7 +1162,23 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     if (msg.messageId == null || msg.sender == null) return null;
 
     final isGroup = msg.groupId != null;
-    final chatId = isGroup ? msg.groupId! : msg.sender!;
+    final me = _currentUser;
+    final senderNorm = msg.sender!.trim().toLowerCase();
+    final isFromMe = me != null && senderNorm == me.trim().toLowerCase();
+
+    // For 1:1 outgoing messages the server returns sender=currentUser and
+    // toUser/recipient=the other party. Using sender as chatId would create a
+    // spurious "self-chat". Mirror Angular's logic (chat-store.service.ts:6539):
+    // when the message is from the current user, use toUser/recipient as chatId.
+    String chatId;
+    if (isGroup) {
+      chatId = msg.groupId!;
+    } else if (isFromMe) {
+      final toUser = (msg.toUser ?? msg.recipient ?? '').trim().toLowerCase();
+      chatId = toUser.isNotEmpty ? toUser : senderNorm;
+    } else {
+      chatId = senderNorm;
+    }
 
     // If the echo is for a message *we* just sent, tag it as outgoing so
     // the chat bubble doesn't render as "incoming from me" (the duplicate
@@ -1159,8 +1191,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // groupId (server.js:2138), so a sender-based check fails. Fall back to
     // matching against an existing optimistic outgoing message in the same
     // chat by body+timestamp window.
-    final me = _currentUser;
-    final senderLower = msg.sender!.trim().toLowerCase();
     final body = msg.body ?? '';
     final ts = msg.timestamp ?? DateTime.now().millisecondsSinceEpoch;
     // Scan only recent outgoing messages (chatMessages are sorted newest-first
@@ -1177,10 +1207,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         break;
       }
     }
-    final isFromMe =
-        (me != null && senderLower == me) || hasOptimisticEcho;
+    final isOutgoing = isFromMe || hasOptimisticEcho;
     final direction =
-        isFromMe ? MessageDirection.outgoing : MessageDirection.incoming;
+        isOutgoing ? MessageDirection.outgoing : MessageDirection.incoming;
 
     return ChatMessage(
       id: msg.messageId!,
@@ -1194,7 +1223,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       direction: direction,
       timestamp: ts,
       deliveryStatus:
-          isFromMe ? DeliveryStatus.sent : DeliveryStatus.delivered,
+          isOutgoing ? DeliveryStatus.sent : DeliveryStatus.delivered,
       groupId: msg.groupId,
       groupName: msg.groupName,
       groupType: msg.groupType == 'community' ? GroupType.community : GroupType.group,
