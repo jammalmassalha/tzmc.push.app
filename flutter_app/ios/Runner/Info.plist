@@ -75,5 +75,8 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<!-- Required by geolocator for share-location feature -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>האפליקציה משתמשת במיקום כדי לאפשר לך לשתף את מיקומך בצ׳אט.</string>
 </dict>
 </plist>

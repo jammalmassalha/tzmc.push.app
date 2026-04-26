@@ -1,6 +1,6 @@
 /// Message composer widget - text input for sending messages.
 ///
-/// Supports text input, image/file attachments, and editing mode.
+/// Supports text input, image/file attachments, editing mode, and location sharing.
 /// Works on both native and web platforms using XFile abstraction.
 library;
 
@@ -10,6 +10,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../../core/api/chat_api_service.dart';
@@ -253,6 +254,14 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
                 _pickFile();
               },
             ),
+            ListTile(
+              leading: const Icon(Icons.location_on),
+              title: const Text('שתף מיקום'),
+              onTap: () {
+                Navigator.of(context).pop();
+                _shareLocation();
+              },
+            ),
           ],
         ),
       ),
@@ -301,6 +310,68 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('בחירת קובץ - בקרוב')),
     );
+  }
+
+  /// Mirrors Angular's [shareLocation]: gets the device's GPS position and
+  /// sends `📍 https://www.google.com/maps?q=<lat>,<lon>` as a text message.
+  Future<void> _shareLocation() async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      // Check/request permission
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text('לא ניתן לקבל מיקום. אנא אשר הרשאות.'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+        return;
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 15),
+        ),
+      );
+
+      final lat = position.latitude.toStringAsFixed(6);
+      final lon = position.longitude.toStringAsFixed(6);
+      final mapLink = 'https://www.google.com/maps?q=$lat,$lon';
+      final body = '📍 $mapLink';
+
+      final chatStore = ref.read(chatStoreProvider.notifier);
+      if (widget.isGroup) {
+        await chatStore.sendGroupMessage(
+          groupId: widget.chatId,
+          body: body,
+        );
+      } else {
+        await chatStore.sendDirectMessage(
+          recipient: widget.chatId,
+          body: body,
+        );
+      }
+      widget.onMessageSent();
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('המיקום נשלח.'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('לא ניתן לקבל מיקום. אנא אשר הרשאות.'),
+          duration: Duration(seconds: 3),
+        ),
+      );
+    }
   }
 
   Future<void> _handleSend() async {
