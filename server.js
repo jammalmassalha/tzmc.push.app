@@ -3406,15 +3406,22 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
             });
 
             try {
-                await webpush.sendNotification(
-                    subscription,
-                    pushPayload,
-                    {
+                const sendCall = fcmSender.isFcmSubscription(subscription)
+                    ? fcmSender.sendFcmNotification(subscription, pushPayload, {
                         TTL: AUTH_REFRESH_PUSH_TTL_SECONDS,
                         headers: { Urgency: AUTH_REFRESH_PUSH_URGENCY },
                         timeout: 15000
-                    }
-                );
+                    })
+                    : webpush.sendNotification(
+                        subscription,
+                        pushPayload,
+                        {
+                            TTL: AUTH_REFRESH_PUSH_TTL_SECONDS,
+                            headers: { Urgency: AUTH_REFRESH_PUSH_URGENCY },
+                            timeout: 15000
+                        }
+                    );
+                await sendCall;
                 return {
                     ok: true,
                     username: subscription.username || userKey || null,
@@ -3980,15 +3987,22 @@ async function runMobileReregisterPromptCampaign(jobContext = {}) {
                 });
 
                 try {
-                    await webpush.sendNotification(
-                        subscription,
-                        pushPayload,
-                        {
+                    const sendCall = fcmSender.isFcmSubscription(subscription)
+                        ? fcmSender.sendFcmNotification(subscription, pushPayload, {
                             TTL: MOBILE_REREGISTER_PUSH_TTL_SECONDS,
                             headers: { Urgency: MOBILE_REREGISTER_PUSH_URGENCY },
                             timeout: 15000
-                        }
-                    );
+                        })
+                        : webpush.sendNotification(
+                            subscription,
+                            pushPayload,
+                            {
+                                TTL: MOBILE_REREGISTER_PUSH_TTL_SECONDS,
+                                headers: { Urgency: MOBILE_REREGISTER_PUSH_URGENCY },
+                                timeout: 15000
+                            }
+                        );
+                    await sendCall;
                     return {
                         ok: true,
                         user: subscription.username,
@@ -5645,7 +5659,11 @@ app.post(['/verify-status', '/notify/verify-status'], async (req, res) => {
                 }
             });
 
-            await webpush.sendNotification(subscription, notificationPayload);
+            if (fcmSender.isFcmSubscription(subscription)) {
+                await fcmSender.sendFcmNotification(subscription, notificationPayload);
+            } else {
+                await webpush.sendNotification(subscription, notificationPayload);
+            }
             
             return res.json({ status: 'blocked', message: 'Notification sent' });
         } else {
@@ -5691,7 +5709,18 @@ const notificationService = new NotificationService(
         unknownUserFallbackMaxEndpoints: UNKNOWN_USER_FALLBACK_MAX_ENDPOINTS
     },
     {
-        sendNotification: (sub, payload, options) => webpush.sendNotification(sub, payload, options),
+        sendNotification: (sub, payload, options) => {
+            // Mobile devices register an FCM/APNs token (endpoint starts
+            // with `fcm:` / `apns:` or carries an `fcmToken` field). Those
+            // are NOT W3C web-push subscriptions and webpush.sendNotification
+            // would fail with a "no endpoint" / "Bad request" error and the
+            // notification would silently never reach the phone. Route them
+            // through Firebase Admin SDK instead.
+            if (fcmSender.isFcmSubscription(sub)) {
+                return fcmSender.sendFcmNotification(sub, payload, options);
+            }
+            return webpush.sendNotification(sub, payload, options);
+        },
         normalizeUserKey,
         normalizeSubscriptionType,
         dedupeSubscriptionsByEndpoint,
@@ -6675,4 +6704,14 @@ startSubscriptionAuthRefreshScheduler();
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
+    if (fcmSender.isFcmSenderConfigured()) {
+        console.log('[FCM] Firebase Admin credentials detected — mobile (Android/iOS) push delivery is enabled.');
+    } else {
+        console.warn(
+            '[FCM] ⚠️  FIREBASE_SERVICE_ACCOUNT_BASE64 is NOT set. Mobile push notifications ' +
+            '(Android/iOS) WILL NOT be delivered. Set FIREBASE_SERVICE_ACCOUNT_BASE64 (or ' +
+            'FIREBASE_SERVICE_ACCOUNT_JSON / GOOGLE_APPLICATION_CREDENTIALS) to a Firebase ' +
+            'service-account JSON. See flutter_app/PLATFORM_SETUP.md §"Backend — Firebase service account".'
+        );
+    }
 });
