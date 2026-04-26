@@ -98,6 +98,38 @@ function ensureSubscribeOtpHeader(sheet) {
   }
 }
 
+// Columns L (12) and M (13) on the Subscribe sheet record Flutter app
+// connections: L = Flutter Mobile (Android/iOS), M = Flutter Web (PWA/browser).
+// The cell stores the most recently registered FCM token so the row can be
+// audited per device.
+var FLUTTER_MOBILE_COL = 12; // L
+var FLUTTER_WEB_COL = 13;    // M
+
+function ensureFlutterColumnsHeader(sheet) {
+  if (!sheet) return;
+  var mobileHeader = String(sheet.getRange(1, FLUTTER_MOBILE_COL).getValue() || '').trim();
+  if (!mobileHeader) {
+    sheet.getRange(1, FLUTTER_MOBILE_COL).setValue('Flutter Mobile');
+  }
+  var webHeader = String(sheet.getRange(1, FLUTTER_WEB_COL).getValue() || '').trim();
+  if (!webHeader) {
+    sheet.getRange(1, FLUTTER_WEB_COL).setValue('Flutter Web');
+  }
+}
+
+// Returns 12 (L) for mobile / android / ios / unknown, 13 (M) for web/pwa/browser.
+// Honors an explicit `targetColumn` ('L' or 'M') if the caller provided one.
+function resolveFlutterColumn(data) {
+  var explicit = String((data && (data.targetColumn || data.column)) || '').trim().toUpperCase();
+  if (explicit === 'L') return FLUTTER_MOBILE_COL;
+  if (explicit === 'M') return FLUTTER_WEB_COL;
+  var kind = String((data && (data.flutterPlatform || data.platform || data.deviceType)) || '')
+    .trim()
+    .toLowerCase();
+  if (kind === 'web' || kind === 'pwa' || kind === 'browser') return FLUTTER_WEB_COL;
+  return FLUTTER_MOBILE_COL;
+}
+
 function safeParseSubscriptionJson(rawValue) {
   var text = String(rawValue || '').trim();
   if (!text) return null;
@@ -1192,7 +1224,69 @@ function doPost(e) {
     }
 
     // ======================================================
-    // 6. [REVISED] PWA SUBSCRIPTION (To Sheet: Subscribe)
+    // 6. FLUTTER APP CONNECTION (column L = mobile, M = web)
+    // ======================================================
+    // Triggered by the backend `/flutter/register-fcm` and
+    // `/flutter/unregister-fcm` routes which POST a payload tagged with
+    //   { source: 'flutter', flutterPlatform: 'mobile'|'web',
+    //     targetColumn: 'L'|'M', action: 'subscribe'|'unsubscribe',
+    //     username, fcmToken }
+    // The matching Subscribe row is created if missing; the cell in column
+    // L or M is set to the FCM token on subscribe and cleared on unsubscribe.
+    if (data && (data.source === 'flutter' || data.client === 'flutter')) {
+      var flutterSheet = spreadsheet.getSheetByName('Subscribe');
+      if (!flutterSheet) {
+        flutterSheet = spreadsheet.insertSheet('Subscribe');
+        flutterSheet.appendRow(['DateTime', 'RegistrationUser', 'Push Type', 'Auth JSON', 'Auth JSON PC']);
+      }
+      ensureFlutterColumnsHeader(flutterSheet);
+
+      var flutterUser = normalizePhone(data.username || data.user || '');
+      if (!flutterUser) {
+        return createJSON({ result: 'error', message: 'Flutter sync: missing username' });
+      }
+
+      var flutterColumn = resolveFlutterColumn(data);
+      var flutterAction = String((data.action || 'subscribe')).toLowerCase();
+      var flutterToken = String(data.fcmToken || data.token || '').trim();
+      var flutterTimestamp = new Date();
+      var flutterRow = findUserRow(flutterSheet, flutterUser);
+
+      if (!flutterRow) {
+        // Create a minimal row so we can record the Flutter cell. Mirrors
+        // the row layout used by the OTP/PWA flows above (A=DateTime,
+        // B=user with leading-zero quote, K reserved for OTP, L/M for Flutter).
+        var newRow = new Array(Math.max(flutterColumn, 11));
+        for (var fci = 0; fci < newRow.length; fci++) newRow[fci] = '';
+        newRow[0] = flutterTimestamp;          // A
+        newRow[1] = "'" + flutterUser;         // B
+        newRow[flutterColumn - 1] = (flutterAction === 'unsubscribe') ? '' : (flutterToken || '1');
+        flutterSheet.appendRow(newRow);
+        return createJSON({
+          result: 'success',
+          action: 'created',
+          source: 'flutter',
+          column: flutterColumn === FLUTTER_WEB_COL ? 'M' : 'L'
+        });
+      }
+
+      if (flutterAction === 'unsubscribe') {
+        flutterSheet.getRange(flutterRow, flutterColumn).setValue('');
+      } else {
+        flutterSheet.getRange(flutterRow, flutterColumn).setValue(flutterToken || '1');
+      }
+      flutterSheet.getRange(flutterRow, 1).setValue(flutterTimestamp); // refresh DateTime
+
+      return createJSON({
+        result: 'success',
+        action: flutterAction === 'unsubscribe' ? 'cleared' : 'updated',
+        source: 'flutter',
+        column: flutterColumn === FLUTTER_WEB_COL ? 'M' : 'L'
+      });
+    }
+
+    // ======================================================
+    // 7. [REVISED] PWA SUBSCRIPTION (To Sheet: Subscribe)
     // ======================================================
     // Requested Columns: DateTime | RegistrationUser | Push Type | Auth JSON | Auth JSON PC
     var SHEET_NAME = 'Subscribe';

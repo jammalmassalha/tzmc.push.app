@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/chat_api_service.dart';
 import '../database/chat_database.dart' hide Contact;
+import '../models/api_payloads.dart';
 import '../models/chat_models.dart';
 import '../realtime/realtime_transport_service.dart';
 
@@ -151,6 +152,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   Timer? _persistTimer;
   int _lastGapAnalysisTime = 0;
+  String? _currentUser;
+
+  /// Username of the currently authenticated user, normalized to lowercase.
+  /// Used to dedupe own-message echoes coming back from the server (which
+  /// would otherwise show a duplicate "incoming from me" bubble).
+  String? get currentUser => _currentUser;
 
   @override
   ChatState build() {
@@ -183,6 +190,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   /// Initialize chat store - restore from database and pull fresh data
   Future<void> initialize(String currentUser) async {
+    // Always remember the current user, even if we've already initialized,
+    // so own-message echoes can be tagged as outgoing (avoids the
+    // "see my message twice" bug).
+    _currentUser = currentUser.trim().toLowerCase();
+
     if (state.isInitialized) return;
 
     state = state.copyWith(isLoading: true);
@@ -265,6 +277,143 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   }
 
   ChatGroup? getGroup(String id) => state.groups[id];
+
+  // ---------------------------------------------------------------------------
+  // New chat / group creation (mirrors Angular ChatStoreService.startDirectChat
+  // and createGroup so the Flutter "open new chat" / "create group" flows
+  // behave identically to the Angular front-end).
+  // ---------------------------------------------------------------------------
+
+  /// Ensure a Contact exists for [username] (creating a placeholder if needed)
+  /// so it shows up in the chat list right after the user picks it from the
+  /// new-chat dialog. Equivalent to Angular `startDirectChat`. Returns the
+  /// canonical chat id (case-preserving) the caller should navigate to.
+  String startDirectChat(String username) {
+    final normalized = username.trim().toLowerCase();
+    if (normalized.isEmpty) return '';
+
+    // Case-insensitive lookup — server-side contact keys are not normalized,
+    // so we may have e.g. "Username" stored while the picker hands us
+    // "username". Don't overwrite a real contact with a placeholder.
+    final existing = state.contacts.entries.firstWhere(
+      (e) => e.key.trim().toLowerCase() == normalized,
+      orElse: () => MapEntry('', const Contact(username: '', displayName: '')),
+    );
+
+    String chatId;
+    if (existing.key.isEmpty) {
+      final placeholder = Contact(
+        username: normalized,
+        displayName: normalized,
+      );
+      final newContacts = Map<String, Contact>.from(state.contacts);
+      newContacts[normalized] = placeholder;
+      state = state.copyWith(contacts: newContacts);
+      chatId = normalized;
+    } else {
+      chatId = existing.key;
+    }
+
+    setCurrentChat(chatId);
+    return chatId;
+  }
+
+  /// Create a new group with the current user as the sole admin and notify
+  /// the other members via the existing `/group-update` endpoint. Mirrors
+  /// Angular `ChatStoreService.createGroup`.
+  ///
+  /// Throws if the user is not authenticated, the name is empty, or fewer
+  /// than two distinct members were selected (Angular enforces the same).
+  Future<ChatGroup> createGroup({
+    required String name,
+    required List<String> members,
+    GroupType type = GroupType.group,
+  }) async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty) {
+      throw Exception('יש להתחבר לפני יצירת קבוצה');
+    }
+
+    final groupName = name.trim();
+    if (groupName.isEmpty) {
+      throw Exception('יש להזין שם לקבוצה');
+    }
+
+    final normalizedMembers = <String>{
+      ...members.map((m) => m.trim().toLowerCase()).where((m) => m.isNotEmpty),
+      user,
+    }.toList();
+
+    if (normalizedMembers.length < 2) {
+      throw Exception('יש לבחור לפחות שני משתתפים');
+    }
+
+    final groupId =
+        'group:${DateTime.now().millisecondsSinceEpoch}-${DateTime.now().microsecond}';
+    final group = ChatGroup(
+      id: groupId,
+      name: groupName,
+      members: normalizedMembers,
+      admins: [user],
+      createdBy: user,
+      updatedAt: DateTime.now().millisecondsSinceEpoch,
+      type: type,
+    );
+
+    // Optimistically insert into state and persist locally.
+    final newGroups = Map<String, ChatGroup>.from(state.groups);
+    newGroups[group.id] = group;
+    state = state.copyWith(groups: newGroups);
+    setCurrentChat(group.id);
+    await _db.upsertGroup(group);
+    _schedulePersistence();
+
+    final membersToNotify = group.members.where((m) => m != user).toList();
+    if (membersToNotify.isEmpty) return group;
+
+    // Notify the server (and other members). Failures are not fatal — the
+    // group still exists locally and Angular's chat-store also tolerates a
+    // failed `sendGroupUpdate` by queueing it.
+    try {
+      await _api.sendGroupUpdate(GroupUpdatePayload(
+        groupId: group.id,
+        groupName: group.name,
+        groupMembers: group.members,
+        groupCreatedBy: group.createdBy,
+        groupAdmins: group.admins,
+        actorUser: user,
+        groupUpdatedAt: group.updatedAt,
+        groupType: group.type,
+        membersToNotify: membersToNotify,
+      ));
+    } catch (e) {
+      // Silent — the group is already present locally and will be re-synced
+      // on the next /group-update push or recoverMissedMessages cycle.
+    }
+
+    return group;
+  }
+
+  /// Whether the current user is allowed to send messages to [chatId]. Always
+  /// true for direct messages and regular groups; for community groups only
+  /// admins (and the group creator) may post — mirroring Angular
+  /// `canUserSendToCommunityGroup` / `canSendToActiveChat`.
+  bool canSendToChat(String? chatId) {
+    if (chatId == null || chatId.isEmpty) return false;
+    final group = state.groups[chatId];
+    if (group == null) return true; // direct chat
+    if (group.type != GroupType.community) return true;
+
+    final me = _currentUser;
+    if (me == null || me.isEmpty) return false;
+
+    final admins = (group.admins ?? const <String>[])
+        .map((a) => a.trim().toLowerCase())
+        .where((a) => a.isNotEmpty)
+        .toList();
+    if (admins.contains(me)) return true;
+    return group.createdBy.trim().toLowerCase() == me;
+  }
 
   // ---------------------------------------------------------------------------
   // Messages
@@ -411,7 +560,33 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final chatMessages = List<ChatMessage>.from(newMessagesByChat[chatId] ?? []);
 
     // Check for existing message (by messageId)
-    final existingIndex = chatMessages.indexWhere((m) => m.messageId == message.messageId);
+    var existingIndex = chatMessages.indexWhere((m) => m.messageId == message.messageId);
+
+    // Fallback dedup for own-message echoes whose messageId is not preserved
+    // by the server. For group messages the backend rewrites
+    // `pollingMessage.sender = groupId` (server.js:2138), so the echo arrives
+    // with sender == groupId rather than the current user — the
+    // `_buildChatMessageFromServer` heuristic then tags it as `incoming` and,
+    // if any layer along the way regenerates the messageId, the echo would
+    // show up as a second "me" bubble next to the original outgoing one.
+    // Match against an optimistic outgoing message with the same body posted
+    // within the last 30s and treat the echo as a hydration of it. We scan
+    // newest-first (chatMessages is sorted descending by timestamp) and bail
+    // out as soon as we leave the window so the cost stays bounded on long
+    // chats.
+    if (existingIndex < 0 && message.direction == MessageDirection.incoming) {
+      final fingerprint = message.body.trim();
+      final ts = message.timestamp;
+      for (var i = 0; i < chatMessages.length; i++) {
+        final m = chatMessages[i];
+        if ((m.timestamp - ts).abs() >= 30000) break;
+        if (m.direction == MessageDirection.outgoing &&
+            m.body.trim() == fingerprint) {
+          existingIndex = i;
+          break;
+        }
+      }
+    }
 
     if (existingIndex >= 0) {
       // Hydrate existing message (keep longer body)
@@ -470,7 +645,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       id: messageId,
       messageId: messageId,
       chatId: recipient,
-      sender: 'me', // Will be replaced with actual user
+      sender: _currentUser ?? 'me',
       body: body,
       imageUrl: imageUrl,
       fileUrl: fileUrl,
@@ -484,13 +659,18 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _applyIncomingMessage(message);
 
     try {
-      // Send via API
+      // Send via API — pass our messageId so the socket/SSE echo from the
+      // server dedupes against this optimistic bubble instead of producing
+      // a second "incoming from me" copy.
       await _api.sendDirectMessageWithParams(
+        sender: _currentUser ?? '',
+        senderName: getDisplayName(_currentUser ?? ''),
         recipient: recipient,
         body: body,
         imageUrl: imageUrl,
         fileUrl: fileUrl,
         replyToMessageId: replyTo?.messageId,
+        messageId: messageId,
       );
 
       // Update status to sent
@@ -521,7 +701,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       id: messageId,
       messageId: messageId,
       chatId: groupId,
-      sender: 'me',
+      sender: _currentUser ?? 'me',
       body: body,
       imageUrl: imageUrl,
       fileUrl: fileUrl,
@@ -538,14 +718,31 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _applyIncomingMessage(message);
 
     try {
-      // Send via API
+      // Send via API — pass our messageId so the socket/SSE echo dedupes
+      // against this optimistic bubble (otherwise the sender sees the
+      // message twice: once as outgoing, once as incoming).
+      // Compute notify list excluding self so the backend doesn't echo a
+      // group push back to the sender.
+      final me = (_currentUser ?? '').trim().toLowerCase();
+      final notify = group.members
+          .where((m) => m.trim().toLowerCase() != me)
+          .toList();
       await _api.sendGroupMessage(
+        sender: _currentUser ?? '',
+        senderName: getDisplayName(_currentUser ?? ''),
         groupId: groupId,
+        groupName: group.name,
         recipients: group.members,
+        membersToNotify: notify,
+        groupCreatedBy: group.createdBy,
+        groupAdmins: group.admins,
+        groupUpdatedAt: group.updatedAt,
+        groupType: group.type,
         body: body,
         imageUrl: imageUrl,
         fileUrl: fileUrl,
         replyToMessageId: replyTo?.messageId,
+        messageId: messageId,
       );
 
       // Update status to sent
@@ -647,32 +844,46 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   // ---------------------------------------------------------------------------
 
   void _handleServerMessage(IncomingServerMessage message) {
-    final type = message.type;
+    // Backend emits regular chat messages over socket.io / SSE without an
+    // explicit `type` field (see server `addToQueue` → notifyRealtimeClients).
+    // Action payloads use the suffixed names `delete-action`, `edit-action`,
+    // `read-receipt`. The Angular client matches the same convention by
+    // treating any non-action type as a regular text message
+    // (frontend chat-store.service.ts → `isIncomingActionType`).
+    // Mirror that behavior here so messages from the Angular frontend are
+    // actually applied to the Flutter chat store instead of being silently
+    // dropped by an over-strict switch.
+    final type = (message.type ?? '').trim().toLowerCase();
 
     switch (type) {
-      case 'message':
-        _handleIncomingTextMessage(message);
-        break;
       case 'typing':
         _handleTypingIndicator(message);
         break;
       case 'read':
+      case 'read-receipt':
         _handleReadReceipt(message);
         break;
       case 'reaction':
         _handleReaction(message);
         break;
       case 'edit':
+      case 'edit-action':
         _handleEdit(message);
         break;
       case 'delete':
+      case 'delete-action':
         _handleDelete(message);
         break;
       case 'group-update':
         _handleGroupUpdate(message);
         break;
+      case '':
+      case 'message':
       default:
-        // Unknown message type
+        // Treat anything else (including the common no-type payload from the
+        // backend) as a regular incoming text message so 1:1 and group
+        // messages from the Angular frontend reach the Flutter user.
+        _handleIncomingTextMessage(message);
         break;
     }
   }
@@ -700,18 +911,53 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final isGroup = msg.groupId != null;
     final chatId = isGroup ? msg.groupId! : msg.sender!;
 
+    // If the echo is for a message *we* just sent, tag it as outgoing so
+    // the chat bubble doesn't render as "incoming from me" (the duplicate
+    // bug). The optimistic bubble was inserted with the same messageId, so
+    // _applyIncomingMessage will hydrate it in place rather than appending
+    // a second row.
+    //
+    // For 1:1 messages msg.sender == currentUser, so the direct match works.
+    // For group messages the backend rewrites pollingMessage.sender to the
+    // groupId (server.js:2138), so a sender-based check fails. Fall back to
+    // matching against an existing optimistic outgoing message in the same
+    // chat by body+timestamp window.
+    final me = _currentUser;
+    final senderLower = msg.sender!.trim().toLowerCase();
+    final body = msg.body ?? '';
+    final ts = msg.timestamp ?? DateTime.now().millisecondsSinceEpoch;
+    // Scan only recent outgoing messages (chatMessages are sorted newest-first
+    // by _applyIncomingMessage), bailing out as soon as we step outside the
+    // 30s dedup window so the lookup stays O(k) instead of O(n) on long chats.
+    final existing = state.messagesByChat[chatId] ?? const <ChatMessage>[];
+    bool hasOptimisticEcho = false;
+    final trimmedBody = body.trim();
+    for (final m in existing) {
+      if ((m.timestamp - ts).abs() >= 30000) break;
+      if (m.direction != MessageDirection.outgoing) continue;
+      if (m.messageId == msg.messageId || m.body.trim() == trimmedBody) {
+        hasOptimisticEcho = true;
+        break;
+      }
+    }
+    final isFromMe =
+        (me != null && senderLower == me) || hasOptimisticEcho;
+    final direction =
+        isFromMe ? MessageDirection.outgoing : MessageDirection.incoming;
+
     return ChatMessage(
       id: msg.messageId!,
       messageId: msg.messageId!,
       chatId: chatId,
       sender: msg.sender!,
       senderDisplayName: msg.groupSenderName ?? getDisplayName(msg.sender!),
-      body: msg.body ?? '',
+      body: body,
       imageUrl: msg.imageUrl,
       fileUrl: msg.fileUrl,
-      direction: MessageDirection.incoming,
-      timestamp: msg.timestamp ?? DateTime.now().millisecondsSinceEpoch,
-      deliveryStatus: DeliveryStatus.delivered,
+      direction: direction,
+      timestamp: ts,
+      deliveryStatus:
+          isFromMe ? DeliveryStatus.sent : DeliveryStatus.delivered,
       groupId: msg.groupId,
       groupName: msg.groupName,
       groupType: msg.groupType == 'community' ? GroupType.community : GroupType.group,

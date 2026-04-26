@@ -5,6 +5,21 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// Firebase Cloud Messaging — apply the google-services plugin only when the
+// `google-services.json` config has been provided. The file is intentionally
+// not committed (see flutter_app/PLATFORM_SETUP.md); applying the plugin
+// without it would fail CI / sample builds. When the file is dropped in,
+// FCM token generation and notification delivery are enabled automatically.
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+} else {
+    logger.warn(
+        "[tzmc_push] google-services.json not found in android/app/. " +
+        "Push notifications will be disabled in this build. " +
+        "See flutter_app/PLATFORM_SETUP.md for setup instructions."
+    )
+}
+
 android {
     namespace = "co.il.tzmc.tzmc_push"
     compileSdk = flutter.compileSdkVersion

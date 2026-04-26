@@ -52,37 +52,88 @@ The Flutter app uses **Firebase Cloud Messaging (FCM)** on Android and APNs (via
 
 ### Android — `google-services.json`
 
-1. In the Firebase console add an Android app with package name matching `android/app/build.gradle` (`applicationId`).
+1. In the Firebase console add an Android app with package name matching `android/app/build.gradle.kts` (`applicationId = "co.il.tzmc.tzmc_push"`).
 2. Download `google-services.json` and place it at:
    ```
    flutter_app/android/app/google-services.json
    ```
-3. Make sure the Google services Gradle plugin is applied:
-   - `android/build.gradle` (project) — buildscript classpath:
-     ```
-     classpath 'com.google.gms:google-services:4.4.2'
-     ```
-   - `android/app/build.gradle` (app) — bottom of file:
-     ```
-     apply plugin: 'com.google.gms.google-services'
-     ```
-4. `AndroidManifest.xml` already needs `INTERNET`; on Android 13+ add `POST_NOTIFICATIONS` (the `permission_handler` package is already in `pubspec.yaml`).
+   For local builds the file lives on disk; for CI builds the
+   `Flutter Build` GitHub Actions workflow decodes it at build time
+   from the **`GOOGLE_SERVICES_JSON_BASE64`** repository secret. Create
+   the secret with:
+   ```bash
+   base64 -w 0 google-services.json | pbcopy   # macOS
+   base64 -w 0 google-services.json             # Linux (copy output)
+   ```
+   then in GitHub: **Settings → Secrets and variables → Actions → New
+   repository secret** → name `GOOGLE_SERVICES_JSON_BASE64`, value the
+   base64 string. Without this secret the workflow logs a
+   `::warning::` and the resulting APK silently has FCM disabled —
+   `Firebase.initializeApp()` throws, the permission prompt never
+   appears, and no token is registered with the backend.
+3. The Google services Gradle plugin is already loaded via a
+   `buildscript { classpath("com.google.gms:google-services:...") }` block
+   in `android/build.gradle.kts` and conditionally applied in
+   `android/app/build.gradle.kts` (it is only applied when
+   `google-services.json` is present, so CI/sample builds without the
+   credential keep working — they just won't deliver push notifications).
+   The plugin is intentionally **not** declared in `settings.gradle.kts`'s
+   plugins{} block because Google does not publish a plugin marker for it
+   on the Gradle Plugin Portal.
+4. `AndroidManifest.xml` already declares `INTERNET`, `WAKE_LOCK`, and
+   `POST_NOTIFICATIONS` (Android 13+). The runtime permission prompt is
+   triggered by `FirebaseMessaging.requestPermission()` in
+   `PushNotificationService.initialize()`. The default FCM notification
+   channel meta-data (`com.google.firebase.messaging.default_notification_channel_id`)
+   is set to `chat_messages` to match the channel created by
+   `flutter_local_notifications`.
 
 ### iOS — `GoogleService-Info.plist`
 
 1. In the Firebase console add an iOS app with bundle id matching `ios/Runner.xcodeproj`.
 2. Download `GoogleService-Info.plist` and add it to `ios/Runner/` **inside Xcode** (so it is added to the Runner target).
 3. In Xcode → Runner target → **Signing & Capabilities**:
-   - Add **Push Notifications**
-   - Add **Background Modes** and tick **Remote notifications**
-4. The corresponding `Info.plist` entry (added automatically when you tick the box):
-   ```xml
-   <key>UIBackgroundModes</key>
-   <array>
-       <string>remote-notification</string>
-   </array>
-   ```
-5. Upload your APNs auth key (`.p8`) to Firebase under **Project settings → Cloud Messaging → Apple app configuration**.
+   - Add **Push Notifications** (this creates `Runner.entitlements` with the `aps-environment` key).
+   - Add **Background Modes** and tick **Remote notifications** — note that
+     the corresponding `Info.plist` entry is already committed in this repo
+     (see `ios/Runner/Info.plist` → `UIBackgroundModes`).
+4. Upload your APNs auth key (`.p8`) to Firebase under **Project settings → Cloud Messaging → Apple app configuration**.
+
+### Backend — Firebase **service account** (required to actually deliver pushes)
+
+`google-services.json` and `GoogleService-Info.plist` only authenticate the
+*client* app. To actually **send** an FCM/APNs message the Node backend needs
+a Firebase **service account** with the `Firebase Cloud Messaging API` scope.
+
+1. In the Firebase console go to **Project settings → Service accounts →
+   Generate new private key** (this downloads a `…-firebase-adminsdk-…json`
+   file). Keep it secret — anyone with this file can send push notifications
+   on behalf of your project.
+2. Make it available to the server in **one** of the following ways
+   (`backend/services/fcm-sender.js` checks them in this order):
+   1. **`FIREBASE_SERVICE_ACCOUNT_BASE64`** — base64-encoded contents of the
+      JSON file. Easiest to set as a CI / hosting-provider secret:
+      ```bash
+      base64 -w 0 firebase-adminsdk.json    # Linux
+      base64 -i firebase-adminsdk.json      # macOS
+      ```
+      then export the value in `.env` (or your hosting provider's secret
+      manager) as `FIREBASE_SERVICE_ACCOUNT_BASE64=…`.
+   2. **`FIREBASE_SERVICE_ACCOUNT_JSON`** — raw JSON (single line) of the
+      service-account file. Useful when secrets are stored as plain JSON.
+   3. **`GOOGLE_APPLICATION_CREDENTIALS`** — filesystem path to the JSON
+      file. Falls back to the standard Firebase Admin SDK
+      `applicationDefault()` credential chain.
+3. Restart the Node server. On the first FCM push it logs `[FCM] Skipping
+   FCM delivery — Firebase Admin credentials are not configured` once if
+   none of the above is set, and continues to deliver web-push
+   notifications normally to web subscribers.
+
+> **Without this secret the Flutter app still gets the OS permission
+> prompt and still POSTs its FCM token to the Sheet — but the server has
+> no credentials to call FCM, so no message is ever delivered to the
+> phone.** This is the most common reason "I added google-services.json
+> but I still don't get notifications".
 
 ### Wiring (already done in code)
 

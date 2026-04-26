@@ -66,6 +66,12 @@ class ApiEndpoints {
 
   // Device & Push
   static const String registerDevice = '/register-device';
+  // Flutter-only FCM token registration endpoints. The Angular frontend
+  // continues to use `/register-device` for web-push subscriptions; the
+  // mobile app uses these dedicated routes so the two pipelines stay
+  // independent on the server.
+  static const String registerFlutterFcm = '/flutter/register-fcm';
+  static const String unregisterFlutterFcm = '/flutter/unregister-fcm';
   static const String resetBadge = '/reset-badge';
   static const String subscriptions = '/subscriptions';
 

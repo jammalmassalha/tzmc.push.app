@@ -36,6 +36,28 @@
 
   <title>tzmc_push</title>
   <link rel="manifest" href="manifest.json">
+
+  <!--
+    Firebase JS SDK (compat) — required so the FCM web SDK used by
+    `package:firebase_messaging` can register the
+    `firebase-messaging-sw.js` service worker for background push
+    delivery. The version here MUST match the one imported by
+    `web/firebase-messaging-sw.js`. Public client identifiers are NOT
+    secrets — Google designs them to ship inside clients.
+  -->
+  <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-messaging-compat.js"></script>
+  <script>
+    firebase.initializeApp({
+      apiKey: 'AIzaSyByLOP_-v5oK-iiSEJ8ydXRpRko22-tRro',
+      authDomain: 'tzmc-notifications.firebaseapp.com',
+      projectId: 'tzmc-notifications',
+      storageBucket: 'tzmc-notifications.firebasestorage.app',
+      messagingSenderId: '917008922776',
+      appId: '1:917008922776:web:f02334911e7180bcf0f8ed',
+      measurementId: 'G-8FLBFBWH6Y'
+    });
+  </script>
 </head>
 <body>
   <!--

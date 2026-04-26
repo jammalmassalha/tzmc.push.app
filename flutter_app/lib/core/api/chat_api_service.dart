@@ -819,7 +819,7 @@ class ChatApiService {
         '${ApiEndpoints.helpdeskTickets}/$ticketId/notes',
         file: attachment,
         fieldName: 'attachment',
-        additionalFields: {'noteText': noteText, 'user': normalizedUser},
+        additionalFields: {'note_text': noteText, 'user': normalizedUser},
         retryOptions: const RetryOptions(retries: 1, timeout: NetworkTimeouts.uploadTimeout),
       );
 
@@ -840,7 +840,7 @@ class ChatApiService {
     } else {
       final response = await _client.post<Map<String, dynamic>>(
         '${ApiEndpoints.helpdeskTickets}/$ticketId/notes',
-        data: {'noteText': noteText, 'user': normalizedUser},
+        data: {'note_text': noteText, 'user': normalizedUser},
         retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
       );
 
@@ -991,19 +991,67 @@ class ChatApiService {
     )).toList();
   }
 
-  /// Register device token for push notifications
+  /// Register an FCM (Android) / APNs (iOS) device push token with the
+  /// backend so the server can deliver pushes to this device via Firebase
+  /// Admin.
+  ///
+  /// Uses the Flutter-only endpoint `/flutter/register-fcm`. The Angular
+  /// frontend continues to use `/register-device` for web-push subscriptions
+  /// — the two pipelines are independent on the server.
   Future<void> registerDeviceToken({
+    required String username,
     required String token,
     required String platform,
   }) async {
-    // Use existing registerDeviceForPush
-    // Platform: 'ios' or 'android'
-    // For now, just log - backend needs mobile push endpoint
+    final normalizedUser = username.trim().toLowerCase();
+    if (normalizedUser.isEmpty || token.isEmpty) return;
+
+    final payload = <String, dynamic>{
+      'username': normalizedUser,
+      'fcmToken': token,
+      'platform': _normalizeRegisterDevicePlatform(platform),
+    };
+
+    await _client.post(
+      ApiEndpoints.registerFlutterFcm,
+      data: payload,
+      retryOptions: const RetryOptions(retries: 2, timeout: Duration(seconds: 12)),
+    );
   }
 
-  /// Unregister device token
-  Future<void> unregisterDeviceToken(String token) async {
-    // Backend needs endpoint for this
+  /// Unregister an FCM/APNs device token (called on logout).
+  Future<void> unregisterDeviceToken({
+    required String username,
+    required String token,
+    required String platform,
+  }) async {
+    final normalizedUser = username.trim().toLowerCase();
+    if (normalizedUser.isEmpty || token.isEmpty) return;
+
+    final payload = <String, dynamic>{
+      'username': normalizedUser,
+      'fcmToken': token,
+      'platform': _normalizeRegisterDevicePlatform(platform),
+    };
+
+    await _client.post(
+      ApiEndpoints.unregisterFlutterFcm,
+      data: payload,
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 8)),
+    );
+  }
+
+  /// Normalize the Flutter platform name to the values the backend
+  /// expects ('android', 'ios').
+  String _normalizeRegisterDevicePlatform(String platform) {
+    switch (platform.toLowerCase()) {
+      case 'android':
+        return 'android';
+      case 'ios':
+        return 'ios';
+      default:
+        return platform.toLowerCase();
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1019,48 +1067,88 @@ class ChatApiService {
   }
 
   /// Send direct message with named parameters (wrapper for sendDirectMessage)
+  ///
+  /// [sender] is the currently signed-in user — it MUST match the session
+  /// cookie or the backend's `requireAuthorizedUser` middleware returns 403.
+  /// [recipient] is the other party in the 1:1 conversation and is sent as
+  /// `originalSender` (matching the Angular client's payload shape).
+  ///
+  /// [messageId] should be the same id used for the optimistic local insertion
+  /// so that the socket/SSE echo from the server dedupes against the local
+  /// bubble instead of producing a duplicate "incoming from me" message.
   Future<void> sendDirectMessageWithParams({
+    required String sender,
+    required String senderName,
     required String recipient,
     required String body,
     String? imageUrl,
     String? fileUrl,
     String? replyToMessageId,
+    String? messageId,
   }) async {
-    final messageId = '${DateTime.now().millisecondsSinceEpoch}-${DateTime.now().microsecond}';
+    final id = messageId ??
+        '${DateTime.now().millisecondsSinceEpoch}-${DateTime.now().microsecond}';
     final payload = ReplyPayload(
-      user: recipient,
-      senderName: 'me', // Will be set by server
+      user: sender,
+      senderName: senderName,
       reply: body,
       imageUrl: imageUrl,
       fileUrl: fileUrl,
       originalSender: recipient,
-      messageId: messageId,
+      messageId: id,
       replyToMessageId: replyToMessageId,
     );
     await sendDirectMessage(payload);
   }
 
   /// Send group message (wrapper using ReplyPayload with group fields)
+  ///
+  /// [sender] is the currently signed-in user (matches session). [recipients]
+  /// is the full group member list; the caller should also pass
+  /// [membersToNotify] excluding [sender] so the server doesn't fan out a
+  /// notification back to the author.
+  ///
+  /// [messageId] should be the same id used for the optimistic local insertion
+  /// so that the socket/SSE echo dedupes against the local bubble.
   Future<void> sendGroupMessage({
+    required String sender,
+    required String senderName,
     required String groupId,
+    required String groupName,
     required List<String> recipients,
+    required List<String> membersToNotify,
     required String body,
+    String? groupCreatedBy,
+    List<String>? groupAdmins,
+    int? groupUpdatedAt,
+    GroupType? groupType,
     String? imageUrl,
     String? fileUrl,
     String? replyToMessageId,
+    String? messageId,
   }) async {
-    final messageId = '${DateTime.now().millisecondsSinceEpoch}-${DateTime.now().microsecond}';
+    final id = messageId ??
+        '${DateTime.now().millisecondsSinceEpoch}-${DateTime.now().microsecond}';
+    final originalSender = membersToNotify.isNotEmpty
+        ? membersToNotify.first
+        : (recipients.isNotEmpty ? recipients.first : groupId);
     final payload = ReplyPayload(
-      user: recipients.first, // Primary recipient
-      senderName: 'me', // Will be set by server
+      user: sender,
+      senderName: senderName,
       reply: body,
       imageUrl: imageUrl,
       fileUrl: fileUrl,
-      originalSender: recipients.first,
-      messageId: messageId,
+      originalSender: originalSender,
+      messageId: id,
       groupId: groupId,
+      groupName: groupName,
       groupMembers: recipients,
-      membersToNotify: recipients,
+      groupCreatedBy: groupCreatedBy,
+      groupAdmins: groupAdmins,
+      groupUpdatedAt: groupUpdatedAt,
+      groupType: groupType,
+      groupSenderName: senderName,
+      membersToNotify: membersToNotify,
       replyToMessageId: replyToMessageId,
     );
     await sendDirectMessage(payload);

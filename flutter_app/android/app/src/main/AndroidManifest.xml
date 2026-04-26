@@ -1,4 +1,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Push notifications (FCM) and chat networking -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Required to display notifications on Android 13+ (API 33+).
+         Runtime request is performed via firebase_messaging's
+         requestPermission() in PushNotificationService. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Allows FCM to wake the device to deliver high-priority messages -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+
     <application
         android:label="tzmc_push"
         android:name="${applicationName}"
@@ -30,6 +39,14 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!-- FCM default notification channel — must match the channel ID used
+             by flutter_local_notifications in PushNotificationService
+             (`chat_messages`). Without this, Android O+ shows background
+             notifications on the misc/"other" channel. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="chat_messages" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

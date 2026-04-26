@@ -15,6 +15,9 @@ const { Server: SocketIOServer } = require('socket.io');
 const { Worker } = require('node:worker_threads');
 const { createAuthorizedUserMiddleware } = require('./backend/middleware/authorized-user.middleware');
 const { registerAuthController } = require('./backend/controllers/auth.controller');
+const fcmSender = require('./backend/services/fcm-sender');
+const { createFlutterPushService } = require('./backend/services/flutter-push-service');
+const { registerFlutterPushRoutes } = require('./backend/routes/flutter-push.routes');
 const { registerMessageController } = require('./backend/controllers/message.controller');
 const { registerShuttleController } = require('./backend/controllers/shuttle.controller');
 const { registerHelpdeskController } = require('./backend/controllers/helpdesk.controller');
@@ -3403,15 +3406,22 @@ async function runSubscriptionAuthRefreshJob(jobContext = {}) {
             });
 
             try {
-                await webpush.sendNotification(
-                    subscription,
-                    pushPayload,
-                    {
+                const sendCall = fcmSender.isFcmSubscription(subscription)
+                    ? fcmSender.sendFcmNotification(subscription, pushPayload, {
                         TTL: AUTH_REFRESH_PUSH_TTL_SECONDS,
                         headers: { Urgency: AUTH_REFRESH_PUSH_URGENCY },
                         timeout: 15000
-                    }
-                );
+                    })
+                    : webpush.sendNotification(
+                        subscription,
+                        pushPayload,
+                        {
+                            TTL: AUTH_REFRESH_PUSH_TTL_SECONDS,
+                            headers: { Urgency: AUTH_REFRESH_PUSH_URGENCY },
+                            timeout: 15000
+                        }
+                    );
+                await sendCall;
                 return {
                     ok: true,
                     username: subscription.username || userKey || null,
@@ -3977,15 +3987,22 @@ async function runMobileReregisterPromptCampaign(jobContext = {}) {
                 });
 
                 try {
-                    await webpush.sendNotification(
-                        subscription,
-                        pushPayload,
-                        {
+                    const sendCall = fcmSender.isFcmSubscription(subscription)
+                        ? fcmSender.sendFcmNotification(subscription, pushPayload, {
                             TTL: MOBILE_REREGISTER_PUSH_TTL_SECONDS,
                             headers: { Urgency: MOBILE_REREGISTER_PUSH_URGENCY },
                             timeout: 15000
-                        }
-                    );
+                        })
+                        : webpush.sendNotification(
+                            subscription,
+                            pushPayload,
+                            {
+                                TTL: MOBILE_REREGISTER_PUSH_TTL_SECONDS,
+                                headers: { Urgency: MOBILE_REREGISTER_PUSH_URGENCY },
+                                timeout: 15000
+                            }
+                        );
+                    await sendCall;
                     return {
                         ok: true,
                         user: subscription.username,
@@ -5200,6 +5217,44 @@ app.get(['/delivery-telemetry/status', '/notify/delivery-telemetry/status'], (re
     });
 });
 
+// ── FCM diagnostics ────────────────────────────────────────────────────────
+// Lets operators verify that the Firebase service-account credential is
+// loaded, parseable, and accepted by Google. NEVER returns the private key.
+// Pass `?probe=1` to actually request an OAuth access token from Google
+// (slower but proves end-to-end that the key works).
+app.get(['/fcm-status', '/notify/fcm-status'], async (req, res) => {
+    if (!isSchedulerOpsRequestAuthorized(req)) {
+        return res.status(403).json({ error: 'Forbidden' });
+    }
+    try {
+        const probe = String((req.query && req.query.probe) || '').trim() === '1' ||
+            String((req.query && req.query.probe) || '').trim().toLowerCase() === 'true';
+        const diag = await fcmSender.getDiagnostics({ probe });
+        let flutterStats = null;
+        try {
+            flutterStats = flutterPushService && typeof flutterPushService.getStats === 'function'
+                ? flutterPushService.getStats()
+                : null;
+        } catch (statsError) {
+            flutterStats = { error: statsError && statsError.message ? statsError.message : String(statsError) };
+        }
+        const ok = diag.configured && diag.firebaseAdmin.initialized &&
+            (!probe || (diag.accessTokenProbe && diag.accessTokenProbe.ok));
+        return res.json({
+            ok,
+            checkedAt: new Date().toISOString(),
+            fcm: diag,
+            flutterTokens: flutterStats
+        });
+    } catch (error) {
+        console.error('[FCM-STATUS] Failed to build diagnostics:', error);
+        return res.status(500).json({
+            ok: false,
+            error: error && error.message ? error.message : String(error)
+        });
+    }
+});
+
 app.post(['/logs/import-sheet-to-db', '/notify/logs/import-sheet-to-db'], async (req, res) => {
     if (!isSchedulerOpsRequestAuthorized(req)) {
         return res.status(403).json({ error: 'Forbidden' });
@@ -5642,7 +5697,11 @@ app.post(['/verify-status', '/notify/verify-status'], async (req, res) => {
                 }
             });
 
-            await webpush.sendNotification(subscription, notificationPayload);
+            if (fcmSender.isFcmSubscription(subscription)) {
+                await fcmSender.sendFcmNotification(subscription, notificationPayload);
+            } else {
+                await webpush.sendNotification(subscription, notificationPayload);
+            }
             
             return res.json({ status: 'blocked', message: 'Notification sent' });
         } else {
@@ -5688,7 +5747,18 @@ const notificationService = new NotificationService(
         unknownUserFallbackMaxEndpoints: UNKNOWN_USER_FALLBACK_MAX_ENDPOINTS
     },
     {
-        sendNotification: (sub, payload, options) => webpush.sendNotification(sub, payload, options),
+        sendNotification: (sub, payload, options) => {
+            // Mobile devices register an FCM/APNs token (endpoint starts
+            // with `fcm:` / `apns:` or carries an `fcmToken` field). Those
+            // are NOT W3C web-push subscriptions and webpush.sendNotification
+            // would fail with a "no endpoint" / "Bad request" error and the
+            // notification would silently never reach the phone. Route them
+            // through Firebase Admin SDK instead.
+            if (fcmSender.isFcmSubscription(sub)) {
+                return fcmSender.sendFcmNotification(sub, payload, options);
+            }
+            return webpush.sendNotification(sub, payload, options);
+        },
         normalizeUserKey,
         normalizeSubscriptionType,
         dedupeSubscriptionsByEndpoint,
@@ -5717,8 +5787,49 @@ function buildCompactPushCustomData(rawData, messageType) { return notificationS
 function buildPushPayloadString(payloadData, options) { return notificationService.buildPushPayloadString(payloadData, options); }
 function isLikelyPhoneUserKey(userKey) { return notificationService.isLikelyPhoneUserKey(userKey); }
 function limitSubscriptionsPerUser(subscriptions, maxPerUser) { return notificationService.limitSubscriptionsPerUser(subscriptions, maxPerUser); }
+
+// ── Flutter / FCM delivery (parallel, additive path) ────────────────────────
+// The Angular frontend keeps using the web-push pipeline above unchanged.
+// The Flutter mobile app registers FCM tokens via /flutter/register-fcm and
+// receives the same notification payloads through Firebase Admin. Failures in
+// this path are logged and never propagated to the web-push result.
+const flutterPushService = createFlutterPushService({
+    stateDir,
+    notificationService,
+    fcmSender,
+    normalizeUserKey
+});
+flutterPushService.loadFromDisk().catch((err) =>
+    console.warn('[FLUTTER-FCM] Initial load failed:', err && err.message ? err.message : err)
+);
+
+registerFlutterPushRoutes(app, {
+    flutterPushService,
+    requireAuthorizedUser,
+    googleSheetUrl: GOOGLE_SHEET_URL,
+    fetchWithRetry
+});
+
 async function sendPushNotificationToUser(targetUser, message, senderuser, options) {
-    return notificationService.sendPushNotificationToUser(targetUser, message, senderuser, options);
+    const result = await notificationService.sendPushNotificationToUser(targetUser, message, senderuser, options);
+    // Fire-and-forget fan-out to Flutter FCM tokens. Wrapped in try/catch so
+    // any FCM error (incl. missing FIREBASE_SERVICE_ACCOUNT_BASE64) never
+    // affects the web-push result returned to the caller.
+    try {
+        const fanOut = flutterPushService.dispatchToUsers(targetUser, message, senderuser, options);
+        if (fanOut && typeof fanOut.then === 'function') {
+            fanOut.catch((err) => console.warn(
+                '[FLUTTER-FCM] Fan-out rejected:',
+                err && err.message ? err.message : err
+            ));
+        }
+    } catch (err) {
+        console.warn(
+            '[FLUTTER-FCM] Fan-out threw synchronously:',
+            err && err.message ? err.message : err
+        );
+    }
+    return result;
 }
 // --- ROUTES ---
 
@@ -6631,4 +6742,16 @@ startSubscriptionAuthRefreshScheduler();
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
+    if (fcmSender.isFcmSenderConfigured()) {
+        console.log('[FCM] Firebase Admin credentials detected — mobile (Android/iOS) push delivery is enabled.');
+    } else {
+        console.warn(
+            '[FCM] ⚠️  No Firebase Admin credentials available. Mobile push notifications ' +
+            '(Android/iOS) WILL NOT be delivered. Set FIREBASE_SERVICE_ACCOUNT_BASE64 (or ' +
+            'FIREBASE_SERVICE_ACCOUNT_JSON / FIREBASE_CREDENTIAL_FILE / GOOGLE_APPLICATION_CREDENTIALS) ' +
+            'to a Firebase service-account JSON, or place ' +
+            'tzmc-notifications-firebase-adminsdk-fbsvc-bb92594301.json next to server.js. ' +
+            'See flutter_app/PLATFORM_SETUP.md §"Backend — Firebase service account".'
+        );
+    }
 });
