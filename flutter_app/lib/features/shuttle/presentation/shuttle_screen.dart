@@ -3,6 +3,7 @@
 /// Allows users to book shuttle rides and view their bookings.
 library;
 
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -571,23 +572,33 @@ class ShuttleScreen extends ConsumerStatefulWidget {
   ConsumerState<ShuttleScreen> createState() => _ShuttleScreenState();
 }
 
-class _ShuttleScreenState extends ConsumerState<ShuttleScreen> with SingleTickerProviderStateMixin {
-  late TabController _tabController;
+class _ShuttleScreenState extends ConsumerState<ShuttleScreen>
+    with SingleTickerProviderStateMixin {
+  late TabController _ordersTabController;
+  Timer? _refreshTimer;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
-    
+    _ordersTabController = TabController(length: 2, vsync: this);
+
     // Load data on init
     Future.microtask(() {
       ref.read(shuttleProvider.notifier).loadData();
+    });
+
+    // Real-time refresh for orders every 30 seconds
+    _refreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) {
+        ref.read(shuttleProvider.notifier).loadUserOrders();
+      }
     });
   }
 
   @override
   void dispose() {
-    _tabController.dispose();
+    _ordersTabController.dispose();
+    _refreshTimer?.cancel();
     super.dispose();
   }
 
@@ -597,15 +608,6 @@ class _ShuttleScreenState extends ConsumerState<ShuttleScreen> with SingleTicker
 
     return Column(
       children: [
-        // Tab bar
-        TabBar(
-          controller: _tabController,
-          tabs: const [
-            Tab(text: 'הזמנה חדשה'),
-            Tab(text: 'ההזמנות שלי'),
-          ],
-        ),
-
         // Error banner
         if (state.error != null)
           MaterialBanner(
@@ -621,13 +623,41 @@ class _ShuttleScreenState extends ConsumerState<ShuttleScreen> with SingleTicker
             ],
           ),
 
-        // Tab content
-        Expanded(
-          child: TabBarView(
-            controller: _tabController,
+        // Top 30%: new order wizard (no loader shown on entry)
+        Flexible(
+          flex: 3,
+          child: _NewOrderSection(state: state),
+        ),
+
+        const Divider(height: 1, thickness: 1),
+
+        // Bottom 70%: orders split into two tabs
+        Flexible(
+          flex: 7,
+          child: Column(
             children: [
-              _NewOrderTab(state: state),
-              _OrdersTab(state: state),
+              TabBar(
+                controller: _ordersTabController,
+                tabs: const [
+                  Tab(text: 'הזמנות פעילות'),
+                  Tab(text: 'הזמנות קודמות'),
+                ],
+              ),
+              Expanded(
+                child: TabBarView(
+                  controller: _ordersTabController,
+                  children: [
+                    _OngoingOrdersList(
+                      orders: state.ongoingOrders,
+                      isLoading: state.isLoading && state.userOrders.isEmpty,
+                    ),
+                    _PastOrdersList(
+                      orders: state.pastOrders,
+                      isLoading: state.isLoading && state.userOrders.isEmpty,
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
@@ -637,60 +667,28 @@ class _ShuttleScreenState extends ConsumerState<ShuttleScreen> with SingleTicker
 }
 
 // ---------------------------------------------------------------------------
-// New Order Tab (Wizard Flow)
+// New Order Section (top 30%)
 // ---------------------------------------------------------------------------
 
-class _NewOrderTab extends ConsumerWidget {
+class _NewOrderSection extends ConsumerWidget {
   final ShuttleState state;
 
-  const _NewOrderTab({required this.state});
+  const _NewOrderSection({required this.state});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
     final notifier = ref.read(shuttleProvider.notifier);
 
-    if (state.isLoading && state.stations.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    if (state.stations.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.directions_bus_outlined,
-              size: 80,
-              color: theme.colorScheme.primary.withAlpha((255 * 0.3).round()),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'אין תחנות זמינות',
-              style: theme.textTheme.titleLarge?.copyWith(
-                color: theme.colorScheme.onSurface.withAlpha((255 * 0.6).round()),
-              ),
-              textDirection: ui.TextDirection.rtl,
-            ),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              onPressed: () => notifier.loadData(),
-              icon: const Icon(Icons.refresh),
-              label: const Text('רענן'),
-            ),
-          ],
-        ),
-      );
-    }
-
+    // Always show the wizard — no blocking spinner on entry.
+    // The station step handles an empty list gracefully.
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
         children: [
           // Current step card
           _buildCurrentStepCard(context, ref, state, notifier),
-          
-          // Loading indicator
+
+          // Loading indicator while submitting / cancelling
           if (state.isLoading)
             const Padding(
               padding: EdgeInsets.all(16),
@@ -1051,39 +1049,38 @@ class _NewOrderTab extends ConsumerWidget {
 }
 
 // ---------------------------------------------------------------------------
-// Orders Tab
+// Orders Lists (bottom 70%)
 // ---------------------------------------------------------------------------
 
-class _OrdersTab extends ConsumerWidget {
-  final ShuttleState state;
+class _OngoingOrdersList extends ConsumerWidget {
+  final List<ShuttleUserOrderPayload> orders;
+  final bool isLoading;
 
-  const _OrdersTab({required this.state});
+  const _OngoingOrdersList({required this.orders, required this.isLoading});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    if (state.isLoading && state.userOrders.isEmpty) {
+    if (isLoading) {
       return const Center(child: CircularProgressIndicator());
     }
 
-    final ongoingOrders = state.ongoingOrders;
-    final pastOrders = state.pastOrders;
-
-    if (ongoingOrders.isEmpty && pastOrders.isEmpty) {
+    if (orders.isEmpty) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(
               Icons.directions_bus_outlined,
-              size: 80,
+              size: 60,
               color: Theme.of(context).colorScheme.primary.withAlpha((255 * 0.3).round()),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
             Text(
-              'אין הזמנות',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+              'אין הזמנות פעילות',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
                 color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.6).round()),
               ),
+              textDirection: ui.TextDirection.rtl,
             ),
           ],
         ),
@@ -1092,58 +1089,58 @@ class _OrdersTab extends ConsumerWidget {
 
     return RefreshIndicator(
       onRefresh: () => ref.read(shuttleProvider.notifier).loadUserOrders(),
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          if (ongoingOrders.isNotEmpty) ...[
-            _SectionHeader(title: 'הזמנות פעילות', count: ongoingOrders.length),
-            ...ongoingOrders.map((order) => _OrderCard(order: order, isPast: false)),
-            const SizedBox(height: 16),
-          ],
-          if (pastOrders.isNotEmpty) ...[
-            _SectionHeader(title: 'הזמנות קודמות', count: pastOrders.length),
-            ...pastOrders.map((order) => _OrderCard(order: order, isPast: true)),
-          ],
-        ],
+      child: ListView.builder(
+        padding: const EdgeInsets.all(12),
+        itemCount: orders.length,
+        itemBuilder: (context, index) =>
+            _OrderCard(order: orders[index], isPast: false),
       ),
     );
   }
 }
 
-class _SectionHeader extends StatelessWidget {
-  final String title;
-  final int count;
+class _PastOrdersList extends ConsumerWidget {
+  final List<ShuttleUserOrderPayload> orders;
+  final bool isLoading;
 
-  const _SectionHeader({required this.title, required this.count});
+  const _PastOrdersList({required this.orders, required this.isLoading});
 
   @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        children: [
-          Text(
-            title,
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.bold,
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (orders.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.history,
+              size: 60,
+              color: Theme.of(context).colorScheme.primary.withAlpha((255 * 0.3).round()),
             ),
-          ),
-          const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.primaryContainer,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Text(
-              '$count',
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.onPrimaryContainer,
-                fontWeight: FontWeight.bold,
+            const SizedBox(height: 12),
+            Text(
+              'אין הזמנות קודמות',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.6).round()),
               ),
+              textDirection: ui.TextDirection.rtl,
             ),
-          ),
-        ],
+          ],
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: () => ref.read(shuttleProvider.notifier).loadUserOrders(),
+      child: ListView.builder(
+        padding: const EdgeInsets.all(12),
+        itemCount: orders.length,
+        itemBuilder: (context, index) =>
+            _OrderCard(order: orders[index], isPast: true),
       ),
     );
   }
