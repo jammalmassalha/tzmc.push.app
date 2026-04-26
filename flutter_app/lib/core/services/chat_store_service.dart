@@ -5,6 +5,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -495,9 +496,113 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       return int.tryParse(v.toString());
     }
 
+    // Helper: FCM coerces all data values to strings on Android; arrays are
+    // JSON-encoded strings like '["id1","id2"]'. Decode them back to a list.
+    List<String>? _strList(dynamic v) {
+      if (v == null) return null;
+      if (v is List) return v.map((e) => e.toString()).toList();
+      final s = v.toString().trim();
+      if (s.isEmpty) return null;
+      try {
+        final decoded = jsonDecode(s);
+        if (decoded is List) {
+          return decoded.map((e) => e.toString()).toList();
+        }
+        return [s];
+      } catch (_) {
+        return [s];
+      }
+    }
+
+    final type = (_str(data['type']) ?? '').toLowerCase();
+
+    // ── Action / housekeeping payloads ────────────────────────────────────
+    // These should never create a new ChatMessage or increment the unread
+    // counter. Delegate to the same action handlers used by socket/SSE so the
+    // UI reflects the action (e.g. marking messages as read, hiding deleted).
+
+    switch (type) {
+      case 'read-receipt':
+      case 'read':
+        {
+          final ids = _strList(data['messageIds']);
+          if (ids == null || ids.isEmpty) return;
+          final msg = IncomingServerMessage(
+            type: type,
+            messageIds: ids,
+            readAt: _int(data['readAt']),
+            sender: _str(data['sender']),
+          );
+          _handleReadReceipt(msg);
+          return;
+        }
+
+      case 'delete-action':
+      case 'delete':
+        {
+          // The server sends `messageId` (the deleted message's ID).
+          // `_handleDelete` expects `targetMessageId`.
+          final targetId = _str(data['messageId']) ?? _str(data['targetMessageId']);
+          if (targetId == null) return;
+          final msg = IncomingServerMessage(
+            type: type,
+            targetMessageId: targetId,
+            deletedAt: _int(data['deletedAt']) ?? _int(data['timestamp']),
+            sender: _str(data['sender']),
+          );
+          _handleDelete(msg);
+          return;
+        }
+
+      case 'edit-action':
+      case 'edit':
+        {
+          final targetId = _str(data['messageId']) ?? _str(data['targetMessageId']);
+          if (targetId == null) return;
+          final msg = IncomingServerMessage(
+            type: type,
+            targetMessageId: targetId,
+            body: _str(data['body']),
+            editedAt: _int(data['editedAt']) ?? _int(data['timestamp']),
+            sender: _str(data['sender']),
+          );
+          _handleEdit(msg);
+          return;
+        }
+
+      case 'group-update':
+        {
+          final groupId = _str(data['groupId']);
+          if (groupId == null) return;
+          final msg = IncomingServerMessage(
+            type: type,
+            groupId: groupId,
+            groupName: _str(data['groupName']),
+            groupMembers: _strList(data['groupMembers']),
+            groupCreatedBy: _str(data['groupCreatedBy']),
+            groupAdmins: _strList(data['groupAdmins']),
+            groupUpdatedAt: _int(data['groupUpdatedAt']),
+            groupType: _str(data['groupType']),
+            sender: _str(data['sender']),
+          );
+          _handleGroupUpdate(msg);
+          return;
+        }
+
+      case 'typing':
+        return; // Typing indicators from push are not actionable.
+    }
+
+    // ── Regular chat message ───────────────────────────────────────────────
     final messageId = _str(data['messageId']);
     final sender = _str(data['sender']) ?? _str(data['fromUser']);
     if (messageId == null || sender == null) return;
+
+    // Self-echo: the server sends a copy to the sender's other devices with
+    // skipNotification: true so the outgoing bubble is confirmed delivered.
+    // Apply the message but do NOT increment the unread counter.
+    final skipNotification = data['skipNotification'] == true ||
+        data['skipNotification'] == 'true';
 
     final groupId = _str(data['groupId']);
     final isGroup = groupId != null;
@@ -539,8 +644,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     _applyIncomingMessage(message);
 
-    // Update unread count if not the currently open chat
-    if (chatId != state.currentChatId) {
+    // Update unread count if not the currently open chat.
+    // Skip for self-echo messages (sender's own devices) to avoid
+    // incrementing the badge for messages the user just sent.
+    if (!skipNotification && chatId != state.currentChatId) {
       final newUnread = Map<String, int>.from(state.unreadByChat);
       newUnread[chatId] = (newUnread[chatId] ?? 0) + 1;
       state = state.copyWith(unreadByChat: newUnread);
@@ -550,7 +657,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     // Pull full message content shortly after, in case the push body was
     // truncated to fit the FCM payload size limit.
-    schedulePushRecoveryPulls();
+    if (!skipNotification) schedulePushRecoveryPulls();
   }
 
   /// Apply an incoming message to state
@@ -1065,9 +1172,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   }
 
   void _handleEdit(IncomingServerMessage msg) {
-    if (msg.targetMessageId == null) return;
+    // Server sends `messageId` for the target on both socket/SSE and push.
+    // Fall back to msg.messageId when targetMessageId is absent.
+    final targetId = msg.targetMessageId ?? msg.messageId;
+    if (targetId == null) return;
 
-    final targetId = msg.targetMessageId!;
     final newBody = msg.body;
     final editedAt = msg.editedAt;
 
@@ -1089,9 +1198,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   }
 
   void _handleDelete(IncomingServerMessage msg) {
-    if (msg.targetMessageId == null) return;
+    // Server sends `messageId` for the target on both socket/SSE and push.
+    // Fall back to msg.messageId when targetMessageId is absent.
+    final targetId = msg.targetMessageId ?? msg.messageId;
+    if (targetId == null) return;
 
-    final targetId = msg.targetMessageId!;
     final deletedAt = msg.deletedAt ?? DateTime.now().millisecondsSinceEpoch;
 
     final newMessagesByChat = <String, List<ChatMessage>>{};

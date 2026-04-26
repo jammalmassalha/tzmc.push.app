@@ -267,19 +267,23 @@ function buildFcmMessage(token, parsedPayload, subscription) {
         }
     }
 
-    // Android-specific tuning: high priority + the chat_messages channel
-    // declared in the Flutter AndroidManifest so the system POSTs the
-    // notification correctly. tag = messageId for replace-on-update behaviour.
+    // Android-specific tuning: high priority + the chat_messages channel.
+    // Only include `android.notification` when there is a visible notification
+    // to display; omitting it for data-only messages avoids OEM-specific
+    // quirks where `android.notification.channelId` alone can trigger a
+    // phantom notification on certain Android builds.
     const messageId = typeof data.messageId === 'string' ? data.messageId : undefined;
     message.android = {
         priority: 'high',
         ttl: 7 * 24 * 60 * 60 * 1000,
-        collapseKey: messageId,
-        notification: {
+        collapseKey: messageId
+    };
+    if (notification) {
+        message.android.notification = {
             channelId: 'chat_messages',
             tag: messageId
-        }
-    };
+        };
+    }
 
     if (isApnsSubscription(subscription)) {
         const badgeCount = Number(data.badgeCount);
