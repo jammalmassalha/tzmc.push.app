@@ -629,6 +629,27 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   // Send Messages
   // ---------------------------------------------------------------------------
 
+  /// Deliver a [ReplyPayload] via socket.io when connected, falling back to
+  /// HTTP POST otherwise.
+  ///
+  /// The socket.io connection is already authenticated via its handshake
+  /// query (`user=<phone>`), so the server identifies the sender without
+  /// inspecting session cookies or the `body.user` field.  When the socket
+  /// is unavailable (not connected, or ack times out) we fall back to the
+  /// regular HTTP path which uses the session cookie + `body.user`.
+  Future<void> _sendReply(ReplyPayload payload) async {
+    // Try socket first.
+    final socketResult = await _transport.emitWithAck(
+      'chat:reply',
+      payload.toJson(),
+    );
+    if (socketResult != null && socketResult['status'] == 'success') {
+      return; // Delivered via socket.io.
+    }
+    // Socket not available, timed out, or returned an error — fall back to HTTP.
+    await _api.sendDirectMessage(payload);
+  }
+
   /// Send a direct message
   Future<void> sendDirectMessage({
     required String recipient,
@@ -639,13 +660,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   }) async {
     final messageId = _generateMessageId();
     final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final sender = _currentUser ?? '';
 
     // Create optimistic message
     final message = ChatMessage(
       id: messageId,
       messageId: messageId,
       chatId: recipient,
-      sender: _currentUser ?? 'me',
+      sender: sender.isNotEmpty ? sender : 'me',
       body: body,
       imageUrl: imageUrl,
       fileUrl: fileUrl,
@@ -659,19 +681,20 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _applyIncomingMessage(message);
 
     try {
-      // Send via API — pass our messageId so the socket/SSE echo from the
-      // server dedupes against this optimistic bubble instead of producing
-      // a second "incoming from me" copy.
-      await _api.sendDirectMessageWithParams(
-        sender: _currentUser ?? '',
-        senderName: getDisplayName(_currentUser ?? ''),
-        recipient: recipient,
-        body: body,
+      // Build the payload once and reuse it for both socket and HTTP paths.
+      // messageId is shared so the server echo dedupes against the optimistic
+      // bubble instead of producing a second "incoming from me" copy.
+      final payload = ReplyPayload(
+        user: sender,
+        senderName: getDisplayName(sender),
+        reply: body,
         imageUrl: imageUrl,
         fileUrl: fileUrl,
-        replyToMessageId: replyTo?.messageId,
+        originalSender: recipient,
         messageId: messageId,
+        replyToMessageId: replyTo?.messageId,
       );
+      await _sendReply(payload);
 
       // Update status to sent
       _updateMessageStatus(messageId, DeliveryStatus.sent);
@@ -695,13 +718,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     final messageId = _generateMessageId();
     final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final sender = _currentUser ?? '';
 
     // Create optimistic message
     final message = ChatMessage(
       id: messageId,
       messageId: messageId,
       chatId: groupId,
-      sender: _currentUser ?? 'me',
+      sender: sender.isNotEmpty ? sender : 'me',
       body: body,
       imageUrl: imageUrl,
       fileUrl: fileUrl,
@@ -718,32 +742,37 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _applyIncomingMessage(message);
 
     try {
-      // Send via API — pass our messageId so the socket/SSE echo dedupes
-      // against this optimistic bubble (otherwise the sender sees the
-      // message twice: once as outgoing, once as incoming).
       // Compute notify list excluding self so the backend doesn't echo a
       // group push back to the sender.
-      final me = (_currentUser ?? '').trim().toLowerCase();
+      final me = sender.trim().toLowerCase();
       final notify = group.members
           .where((m) => m.trim().toLowerCase() != me)
           .toList();
-      await _api.sendGroupMessage(
-        sender: _currentUser ?? '',
-        senderName: getDisplayName(_currentUser ?? ''),
+
+      final originalSender = notify.isNotEmpty
+          ? notify.first
+          : (group.members.isNotEmpty ? group.members.first : groupId);
+
+      final payload = ReplyPayload(
+        user: sender,
+        senderName: getDisplayName(sender),
+        reply: body,
+        imageUrl: imageUrl,
+        fileUrl: fileUrl,
+        originalSender: originalSender,
+        messageId: messageId,
         groupId: groupId,
         groupName: group.name,
-        recipients: group.members,
-        membersToNotify: notify,
+        groupMembers: group.members,
         groupCreatedBy: group.createdBy,
         groupAdmins: group.admins,
         groupUpdatedAt: group.updatedAt,
         groupType: group.type,
-        body: body,
-        imageUrl: imageUrl,
-        fileUrl: fileUrl,
+        groupSenderName: getDisplayName(sender),
+        membersToNotify: notify,
         replyToMessageId: replyTo?.messageId,
-        messageId: messageId,
       );
+      await _sendReply(payload);
 
       // Update status to sent
       _updateMessageStatus(messageId, DeliveryStatus.sent);
