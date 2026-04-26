@@ -1,6 +1,6 @@
 {
-    "name": "tzmc_push",
-    "short_name": "tzmc_push",
+    "name": "מרכז רפואי צפון",
+    "short_name": "מרכז רפואי צפון",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

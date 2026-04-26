@@ -98,7 +98,7 @@ class TzmcPushApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return MaterialApp(
-      title: 'TZMC Push',
+      title: 'מרכז רפואי צפון',
       debugShowCheckedModeBanner: false,
       navigatorKey: rootNavigatorKey,
 
