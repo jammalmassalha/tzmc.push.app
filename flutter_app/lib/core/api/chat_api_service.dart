@@ -1068,10 +1068,17 @@ class ChatApiService {
 
   /// Send direct message with named parameters (wrapper for sendDirectMessage)
   ///
+  /// [sender] is the currently signed-in user — it MUST match the session
+  /// cookie or the backend's `requireAuthorizedUser` middleware returns 403.
+  /// [recipient] is the other party in the 1:1 conversation and is sent as
+  /// `originalSender` (matching the Angular client's payload shape).
+  ///
   /// [messageId] should be the same id used for the optimistic local insertion
   /// so that the socket/SSE echo from the server dedupes against the local
   /// bubble instead of producing a duplicate "incoming from me" message.
   Future<void> sendDirectMessageWithParams({
+    required String sender,
+    required String senderName,
     required String recipient,
     required String body,
     String? imageUrl,
@@ -1082,8 +1089,8 @@ class ChatApiService {
     final id = messageId ??
         '${DateTime.now().millisecondsSinceEpoch}-${DateTime.now().microsecond}';
     final payload = ReplyPayload(
-      user: recipient,
-      senderName: 'me', // Will be set by server
+      user: sender,
+      senderName: senderName,
       reply: body,
       imageUrl: imageUrl,
       fileUrl: fileUrl,
@@ -1096,13 +1103,25 @@ class ChatApiService {
 
   /// Send group message (wrapper using ReplyPayload with group fields)
   ///
+  /// [sender] is the currently signed-in user (matches session). [recipients]
+  /// is the full group member list; the caller should also pass
+  /// [membersToNotify] excluding [sender] so the server doesn't fan out a
+  /// notification back to the author.
+  ///
   /// [messageId] should be the same id used for the optimistic local insertion
-  /// so that the socket/SSE echo from the server dedupes against the local
-  /// bubble instead of producing a duplicate "incoming from me" message.
+  /// so that the socket/SSE echo dedupes against the local bubble.
   Future<void> sendGroupMessage({
+    required String sender,
+    required String senderName,
     required String groupId,
+    required String groupName,
     required List<String> recipients,
+    required List<String> membersToNotify,
     required String body,
+    String? groupCreatedBy,
+    List<String>? groupAdmins,
+    int? groupUpdatedAt,
+    GroupType? groupType,
     String? imageUrl,
     String? fileUrl,
     String? replyToMessageId,
@@ -1110,17 +1129,26 @@ class ChatApiService {
   }) async {
     final id = messageId ??
         '${DateTime.now().millisecondsSinceEpoch}-${DateTime.now().microsecond}';
+    final originalSender = membersToNotify.isNotEmpty
+        ? membersToNotify.first
+        : (recipients.isNotEmpty ? recipients.first : groupId);
     final payload = ReplyPayload(
-      user: recipients.first, // Primary recipient
-      senderName: 'me', // Will be set by server
+      user: sender,
+      senderName: senderName,
       reply: body,
       imageUrl: imageUrl,
       fileUrl: fileUrl,
-      originalSender: recipients.first,
+      originalSender: originalSender,
       messageId: id,
       groupId: groupId,
+      groupName: groupName,
       groupMembers: recipients,
-      membersToNotify: recipients,
+      groupCreatedBy: groupCreatedBy,
+      groupAdmins: groupAdmins,
+      groupUpdatedAt: groupUpdatedAt,
+      groupType: groupType,
+      groupSenderName: senderName,
+      membersToNotify: membersToNotify,
       replyToMessageId: replyToMessageId,
     );
     await sendDirectMessage(payload);

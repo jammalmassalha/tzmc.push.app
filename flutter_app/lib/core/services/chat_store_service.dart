@@ -663,6 +663,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // server dedupes against this optimistic bubble instead of producing
       // a second "incoming from me" copy.
       await _api.sendDirectMessageWithParams(
+        sender: _currentUser ?? '',
+        senderName: getDisplayName(_currentUser ?? ''),
         recipient: recipient,
         body: body,
         imageUrl: imageUrl,
@@ -719,9 +721,23 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // Send via API — pass our messageId so the socket/SSE echo dedupes
       // against this optimistic bubble (otherwise the sender sees the
       // message twice: once as outgoing, once as incoming).
+      // Compute notify list excluding self so the backend doesn't echo a
+      // group push back to the sender.
+      final me = (_currentUser ?? '').trim().toLowerCase();
+      final notify = group.members
+          .where((m) => m.trim().toLowerCase() != me)
+          .toList();
       await _api.sendGroupMessage(
+        sender: _currentUser ?? '',
+        senderName: getDisplayName(_currentUser ?? ''),
         groupId: groupId,
+        groupName: group.name,
         recipients: group.members,
+        membersToNotify: notify,
+        groupCreatedBy: group.createdBy,
+        groupAdmins: group.admins,
+        groupUpdatedAt: group.updatedAt,
+        groupType: group.type,
         body: body,
         imageUrl: imageUrl,
         fileUrl: fileUrl,
