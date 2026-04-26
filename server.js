@@ -5217,6 +5217,44 @@ app.get(['/delivery-telemetry/status', '/notify/delivery-telemetry/status'], (re
     });
 });
 
+// ── FCM diagnostics ────────────────────────────────────────────────────────
+// Lets operators verify that the Firebase service-account credential is
+// loaded, parseable, and accepted by Google. NEVER returns the private key.
+// Pass `?probe=1` to actually request an OAuth access token from Google
+// (slower but proves end-to-end that the key works).
+app.get(['/fcm-status', '/notify/fcm-status'], async (req, res) => {
+    if (!isSchedulerOpsRequestAuthorized(req)) {
+        return res.status(403).json({ error: 'Forbidden' });
+    }
+    try {
+        const probe = String((req.query && req.query.probe) || '').trim() === '1' ||
+            String((req.query && req.query.probe) || '').trim().toLowerCase() === 'true';
+        const diag = await fcmSender.getDiagnostics({ probe });
+        let flutterStats = null;
+        try {
+            flutterStats = flutterPushService && typeof flutterPushService.getStats === 'function'
+                ? flutterPushService.getStats()
+                : null;
+        } catch (statsError) {
+            flutterStats = { error: statsError && statsError.message ? statsError.message : String(statsError) };
+        }
+        const ok = diag.configured && diag.firebaseAdmin.initialized &&
+            (!probe || (diag.accessTokenProbe && diag.accessTokenProbe.ok));
+        return res.json({
+            ok,
+            checkedAt: new Date().toISOString(),
+            fcm: diag,
+            flutterTokens: flutterStats
+        });
+    } catch (error) {
+        console.error('[FCM-STATUS] Failed to build diagnostics:', error);
+        return res.status(500).json({
+            ok: false,
+            error: error && error.message ? error.message : String(error)
+        });
+    }
+});
+
 app.post(['/logs/import-sheet-to-db', '/notify/logs/import-sheet-to-db'], async (req, res) => {
     if (!isSchedulerOpsRequestAuthorized(req)) {
         return res.status(403).json({ error: 'Forbidden' });

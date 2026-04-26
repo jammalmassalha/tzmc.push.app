@@ -311,9 +311,108 @@ async function sendFcmNotification(subscription, payloadString, _options) {
     }
 }
 
+// ─── Diagnostics ────────────────────────────────────────────────────────────
+// Used by the /fcm-status admin route so operators can verify that the
+// service-account credential they provisioned is parseable, that
+// firebase-admin can initialize with it, and that Google's token endpoint
+// accepts it. NEVER includes the private key in the response.
+async function getDiagnostics({ probe = false } = {}) {
+    const envSource = String(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64 || '').trim()
+        ? 'FIREBASE_SERVICE_ACCOUNT_BASE64'
+        : String(process.env.FIREBASE_SERVICE_ACCOUNT_JSON || '').trim()
+            ? 'FIREBASE_SERVICE_ACCOUNT_JSON'
+            : String(process.env.GOOGLE_APPLICATION_CREDENTIALS || '').trim()
+                ? 'GOOGLE_APPLICATION_CREDENTIALS'
+                : null;
+
+    const result = {
+        configured: Boolean(envSource),
+        envSource,
+        serviceAccount: null,
+        firebaseAdmin: { installed: false, initialized: false, error: null },
+        accessTokenProbe: probe ? { ok: false, error: null, tokenPreview: null } : null
+    };
+
+    if (!envSource) {
+        result.firebaseAdmin.error =
+            'No Firebase Admin credentials configured. Set ' +
+            'FIREBASE_SERVICE_ACCOUNT_BASE64 (preferred) to a base64-encoded ' +
+            'service-account JSON.';
+        return result;
+    }
+
+    let parsed = null;
+    try {
+        parsed = loadServiceAccount();
+    } catch (error) {
+        result.firebaseAdmin.error = error.message;
+        return result;
+    }
+    if (parsed && typeof parsed === 'object') {
+        result.serviceAccount = {
+            type: parsed.type || null,
+            project_id: parsed.project_id || null,
+            client_email: parsed.client_email || null,
+            private_key_id: parsed.private_key_id || null,
+            client_id: parsed.client_id || null,
+            // Only expose whether the private key looks well-formed — never
+            // the key itself.
+            private_key_present: typeof parsed.private_key === 'string' &&
+                parsed.private_key.includes('BEGIN PRIVATE KEY')
+        };
+    }
+
+    try {
+        // eslint-disable-next-line global-require
+        require('firebase-admin');
+        result.firebaseAdmin.installed = true;
+    } catch (error) {
+        result.firebaseAdmin.error = `firebase-admin not installed: ${error.message}`;
+        return result;
+    }
+
+    let admin;
+    try {
+        admin = ensureAdminInitialized();
+        result.firebaseAdmin.initialized = true;
+    } catch (error) {
+        result.firebaseAdmin.error = error.message;
+        return result;
+    }
+
+    if (probe) {
+        // Ask Google for an OAuth access token using the service-account
+        // credential. If the key is wrong / revoked / clock-skewed Google
+        // returns invalid_grant and we surface that here.
+        try {
+            const credential = admin.app().options && admin.app().options.credential;
+            if (!credential || typeof credential.getAccessToken !== 'function') {
+                throw new Error('Firebase Admin app has no credential.getAccessToken()');
+            }
+            const tokenResult = await credential.getAccessToken();
+            const accessToken = tokenResult && tokenResult.access_token;
+            result.accessTokenProbe.ok = Boolean(accessToken);
+            if (accessToken) {
+                // Only expose the first 12 chars so operators can verify a
+                // token came back without leaking it into logs.
+                result.accessTokenProbe.tokenPreview = `${String(accessToken).slice(0, 12)}…`;
+                result.accessTokenProbe.expiresInSeconds = tokenResult.expires_in || null;
+            } else {
+                result.accessTokenProbe.error = 'No access_token returned by credential.getAccessToken()';
+            }
+        } catch (error) {
+            result.accessTokenProbe.ok = false;
+            result.accessTokenProbe.error = error && error.message ? error.message : String(error);
+        }
+    }
+
+    return result;
+}
+
 module.exports = {
     isFcmSubscription,
     isFcmSenderConfigured,
     sendFcmNotification,
-    extractToken
+    extractToken,
+    getDiagnostics
 };
