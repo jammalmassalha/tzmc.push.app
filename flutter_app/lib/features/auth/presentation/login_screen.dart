@@ -92,18 +92,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
                 // Logo
                 Center(
-                  child: Container(
-                    width: 100,
-                    height: 100,
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.primary,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: const Icon(
-                      Icons.chat_bubble_rounded,
-                      size: 50,
-                      color: Colors.white,
-                    ),
+                  child: Image.asset(
+                    'assets/images/logo.png',
+                    width: 120,
+                    height: 120,
                   ),
                 ),
 
@@ -111,7 +103,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
                 // Title
                 Text(
-                  'TZMC Push',
+                  'מרכז רפואי צפון',
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.displaySmall?.copyWith(
                         fontWeight: FontWeight.bold,
