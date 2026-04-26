@@ -6746,10 +6746,12 @@ httpServer.listen(PORT, () => {
         console.log('[FCM] Firebase Admin credentials detected — mobile (Android/iOS) push delivery is enabled.');
     } else {
         console.warn(
-            '[FCM] ⚠️  FIREBASE_SERVICE_ACCOUNT_BASE64 is NOT set. Mobile push notifications ' +
+            '[FCM] ⚠️  No Firebase Admin credentials available. Mobile push notifications ' +
             '(Android/iOS) WILL NOT be delivered. Set FIREBASE_SERVICE_ACCOUNT_BASE64 (or ' +
-            'FIREBASE_SERVICE_ACCOUNT_JSON / GOOGLE_APPLICATION_CREDENTIALS) to a Firebase ' +
-            'service-account JSON. See flutter_app/PLATFORM_SETUP.md §"Backend — Firebase service account".'
+            'FIREBASE_SERVICE_ACCOUNT_JSON / FIREBASE_CREDENTIAL_FILE / GOOGLE_APPLICATION_CREDENTIALS) ' +
+            'to a Firebase service-account JSON, or place ' +
+            'tzmc-notifications-firebase-adminsdk-fbsvc-bb92594301.json next to server.js. ' +
+            'See flutter_app/PLATFORM_SETUP.md §"Backend — Firebase service account".'
         );
     }
 });

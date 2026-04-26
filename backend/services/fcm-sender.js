@@ -11,17 +11,60 @@
 //
 // Server credentials (separate from the client-side `google-services.json`)
 // are loaded lazily from one of:
-//   - FIREBASE_SERVICE_ACCOUNT_BASE64  (preferred — easy to set as a secret)
-//   - FIREBASE_SERVICE_ACCOUNT_JSON    (raw JSON string)
+//   - FIREBASE_SERVICE_ACCOUNT_BASE64  (preferred for secrets — env var)
+//   - FIREBASE_SERVICE_ACCOUNT_JSON    (raw JSON string in env)
+//   - FIREBASE_CREDENTIAL_FILE         (path to a service-account JSON file)
 //   - GOOGLE_APPLICATION_CREDENTIALS   (filesystem path; admin SDK default)
+//   - <repo-root>/tzmc-notifications-firebase-adminsdk-fbsvc-bb92594301.json
+//     (default file-based fallback, matches scripts/test-fcm-send.js so the
+//     production server picks up the same credential the diagnostic script
+//     uses without requiring any env-var configuration)
 // If none of these are present, isFcmSenderConfigured() returns false and
 // sendFcmNotification() throws a 503-shaped error so the caller logs the
 // failure but keeps the (still-valid) subscription record around.
 // ─────────────────────────────────────────────────────────────────────────────
 
+const fs = require('fs');
+const path = require('path');
+
 let cachedAdmin = null;
 let cachedApp = null;
 let initWarned = false;
+
+// Default credential filename, kept in sync with scripts/test-fcm-send.js.
+// The file is expected to live next to server.js (project root).
+const DEFAULT_CRED_FILENAME =
+    'tzmc-notifications-firebase-adminsdk-fbsvc-bb92594301.json';
+const DEFAULT_CRED_PATH = path.resolve(__dirname, '..', '..', DEFAULT_CRED_FILENAME);
+
+function readJsonFile(filePath, envLabel) {
+    let text;
+    try {
+        text = fs.readFileSync(filePath, 'utf8');
+    } catch (error) {
+        throw new Error(
+            `${envLabel} points to ${filePath} but the file cannot be read: ${error.message}`
+        );
+    }
+    try {
+        return JSON.parse(text);
+    } catch (error) {
+        throw new Error(
+            `${envLabel} points to ${filePath} but it is not valid JSON: ${error.message}`
+        );
+    }
+}
+
+function resolveCredentialFilePath() {
+    const explicit = String(process.env.FIREBASE_CREDENTIAL_FILE || '').trim();
+    if (explicit) {
+        return { path: path.resolve(explicit), source: 'FIREBASE_CREDENTIAL_FILE' };
+    }
+    if (fs.existsSync(DEFAULT_CRED_PATH)) {
+        return { path: DEFAULT_CRED_PATH, source: 'DEFAULT_CRED_FILE' };
+    }
+    return null;
+}
 
 function loadServiceAccount() {
     const base64 = String(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64 || '').trim();
@@ -44,6 +87,10 @@ function loadServiceAccount() {
                 `FIREBASE_SERVICE_ACCOUNT_JSON is set but not valid JSON: ${error.message}`
             );
         }
+    }
+    const fileResolution = resolveCredentialFilePath();
+    if (fileResolution) {
+        return readJsonFile(fileResolution.path, fileResolution.source);
     }
     return null;
 }
@@ -79,8 +126,9 @@ function ensureAdminInitialized() {
         throw new Error(
             'Firebase Admin credentials are not configured. Set ' +
             'FIREBASE_SERVICE_ACCOUNT_BASE64, FIREBASE_SERVICE_ACCOUNT_JSON, ' +
-            'or GOOGLE_APPLICATION_CREDENTIALS so the server can deliver ' +
-            'FCM/APNs notifications.'
+            'FIREBASE_CREDENTIAL_FILE, or GOOGLE_APPLICATION_CREDENTIALS — ' +
+            `or place ${DEFAULT_CRED_FILENAME} next to server.js — so the ` +
+            'server can deliver FCM/APNs notifications.'
         );
     }
 
@@ -90,11 +138,14 @@ function ensureAdminInitialized() {
 }
 
 function isFcmSenderConfigured() {
-    return Boolean(
+    if (
         String(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64 || '').trim() ||
         String(process.env.FIREBASE_SERVICE_ACCOUNT_JSON || '').trim() ||
         String(process.env.GOOGLE_APPLICATION_CREDENTIALS || '').trim()
-    );
+    ) {
+        return true;
+    }
+    return Boolean(resolveCredentialFilePath());
 }
 
 function isFcmSubscription(subscription) {
@@ -267,11 +318,13 @@ async function sendFcmNotification(subscription, payloadString, _options) {
             initWarned = true;
             console.warn(
                 '[FCM] Skipping FCM delivery — Firebase Admin credentials are ' +
-                'not configured. Set FIREBASE_SERVICE_ACCOUNT_BASE64 to deliver ' +
+                'not configured. Set FIREBASE_SERVICE_ACCOUNT_BASE64 (or ' +
+                'FIREBASE_CREDENTIAL_FILE) — or place ' +
+                `${DEFAULT_CRED_FILENAME} next to server.js — to deliver ` +
                 'mobile push notifications. (This warning is shown once.)'
             );
         }
-        const error = new Error('FCM sender not configured (FIREBASE_SERVICE_ACCOUNT_BASE64 missing)');
+        const error = new Error('FCM sender not configured (no Firebase Admin credentials available)');
         // Do NOT mark as 410 — the token may still be valid; we just can't
         // deliver right now. 503 means "service unavailable", so the
         // subscription is kept and a future request can succeed.
@@ -317,17 +370,26 @@ async function sendFcmNotification(subscription, payloadString, _options) {
 // firebase-admin can initialize with it, and that Google's token endpoint
 // accepts it. NEVER includes the private key in the response.
 async function getDiagnostics({ probe = false } = {}) {
-    const envSource = String(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64 || '').trim()
-        ? 'FIREBASE_SERVICE_ACCOUNT_BASE64'
-        : String(process.env.FIREBASE_SERVICE_ACCOUNT_JSON || '').trim()
-            ? 'FIREBASE_SERVICE_ACCOUNT_JSON'
-            : String(process.env.GOOGLE_APPLICATION_CREDENTIALS || '').trim()
-                ? 'GOOGLE_APPLICATION_CREDENTIALS'
-                : null;
+    let envSource = null;
+    let credentialFilePath = null;
+    if (String(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64 || '').trim()) {
+        envSource = 'FIREBASE_SERVICE_ACCOUNT_BASE64';
+    } else if (String(process.env.FIREBASE_SERVICE_ACCOUNT_JSON || '').trim()) {
+        envSource = 'FIREBASE_SERVICE_ACCOUNT_JSON';
+    } else if (String(process.env.GOOGLE_APPLICATION_CREDENTIALS || '').trim()) {
+        envSource = 'GOOGLE_APPLICATION_CREDENTIALS';
+    } else {
+        const fileResolution = resolveCredentialFilePath();
+        if (fileResolution) {
+            envSource = fileResolution.source;
+            credentialFilePath = fileResolution.path;
+        }
+    }
 
     const result = {
         configured: Boolean(envSource),
         envSource,
+        credentialFilePath,
         serviceAccount: null,
         firebaseAdmin: { installed: false, initialized: false, error: null },
         accessTokenProbe: probe ? { ok: false, error: null, tokenPreview: null } : null
@@ -337,7 +399,8 @@ async function getDiagnostics({ probe = false } = {}) {
         result.firebaseAdmin.error =
             'No Firebase Admin credentials configured. Set ' +
             'FIREBASE_SERVICE_ACCOUNT_BASE64 (preferred) to a base64-encoded ' +
-            'service-account JSON.';
+            `service-account JSON, or place ${DEFAULT_CRED_FILENAME} next to ` +
+            'server.js.';
         return result;
     }
 
