@@ -167,13 +167,13 @@ class HelpdeskStatusHistory extends Equatable {
 
   factory HelpdeskStatusHistory.fromJson(Map<String, dynamic> json) {
     return HelpdeskStatusHistory(
-      id: json['id'] as int? ?? 0,
-      oldStatus: json['old_status'] as String?,
-      newStatus: json['new_status'] as String? ?? '',
-      changedBy: json['changed_by'] as String? ?? '',
-      createdAt: json['created_at'] is String 
-          ? DateTime.parse(json['created_at'] as String)
-          : DateTime.now(),
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      oldStatus: (json['oldStatus'] ?? json['old_status']) as String?,
+      newStatus: (json['newStatus'] ?? json['new_status']) as String? ?? '',
+      changedBy: (json['changedBy'] ?? json['changed_by']) as String? ?? '',
+      createdAt: DateTime.tryParse(
+              (json['createdAt'] ?? json['created_at']) as String? ?? '') ??
+          DateTime.now(),
     );
   }
 }
@@ -365,12 +365,12 @@ class HelpdeskNote extends Equatable {
 
   factory HelpdeskNote.fromJson(Map<String, dynamic> json) {
     return HelpdeskNote(
-      id: json['id'] as int,
-      ticketId: json['ticketId'] as int,
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      ticketId: (json['ticketId'] as num?)?.toInt() ?? 0,
       authorUsername: json['authorUsername'] as String? ?? '',
       noteText: json['noteText'] as String? ?? '',
       attachmentUrl: json['attachmentUrl'] as String?,
-      createdAt: DateTime.parse(json['createdAt'] as String),
+      createdAt: DateTime.tryParse(json['createdAt'] as String? ?? '') ?? DateTime.now(),
     );
   }
 }
@@ -398,12 +398,14 @@ class HelpdeskStatusHistoryEntry extends Equatable {
 
   factory HelpdeskStatusHistoryEntry.fromJson(Map<String, dynamic> json) {
     return HelpdeskStatusHistoryEntry(
-      id: json['id'] as int,
-      ticketId: json['ticketId'] as int,
-      oldStatus: json['old_status'] as String?,
-      newStatus: json['new_status'] as String? ?? '',
-      changedBy: json['changed_by'] as String? ?? '',
-      createdAt: DateTime.parse(json['created_at'] as String),
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      ticketId: (json['ticketId'] as num?)?.toInt() ?? 0,
+      oldStatus: (json['oldStatus'] ?? json['old_status']) as String?,
+      newStatus: (json['newStatus'] ?? json['new_status']) as String? ?? '',
+      changedBy: (json['changedBy'] ?? json['changed_by']) as String? ?? '',
+      createdAt: DateTime.tryParse(
+              (json['createdAt'] ?? json['created_at']) as String? ?? '') ??
+          DateTime.now(),
     );
   }
 }

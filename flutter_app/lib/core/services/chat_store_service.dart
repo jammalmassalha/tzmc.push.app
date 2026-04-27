@@ -5,6 +5,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -41,6 +42,12 @@ class ChatState {
   final bool isLoading;
   final bool isInitialized;
 
+  /// Full-sync progress fields (mirrors Angular store.syncing /
+  /// store.syncProgressPercent / store.syncProgressLabel).
+  final bool isSyncing;
+  final int syncProgressPercent;
+  final String syncProgressLabel;
+
   const ChatState({
     this.contacts = const {},
     this.groups = const {},
@@ -49,6 +56,9 @@ class ChatState {
     this.currentChatId,
     this.isLoading = false,
     this.isInitialized = false,
+    this.isSyncing = false,
+    this.syncProgressPercent = 0,
+    this.syncProgressLabel = '',
   });
 
   ChatState copyWith({
@@ -60,6 +70,9 @@ class ChatState {
     bool? isLoading,
     bool? isInitialized,
     bool clearCurrentChat = false,
+    bool? isSyncing,
+    int? syncProgressPercent,
+    String? syncProgressLabel,
   }) {
     return ChatState(
       contacts: contacts ?? this.contacts,
@@ -69,6 +82,9 @@ class ChatState {
       currentChatId: clearCurrentChat ? null : (currentChatId ?? this.currentChatId),
       isLoading: isLoading ?? this.isLoading,
       isInitialized: isInitialized ?? this.isInitialized,
+      isSyncing: isSyncing ?? this.isSyncing,
+      syncProgressPercent: syncProgressPercent ?? this.syncProgressPercent,
+      syncProgressLabel: syncProgressLabel ?? this.syncProgressLabel,
     );
   }
 
@@ -426,15 +442,23 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   /// Pull messages since a timestamp
   Future<void> pullMessages({int? since}) async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty) return;
+
     try {
       final latestTimestamp = since ?? await _db.getLatestMessageTimestamp();
-      final messages = await _api.getMessagesSince(latestTimestamp);
-      
+      final messages = await _api.getMessagesFromLogs(
+        user: user,
+        since: latestTimestamp,
+      );
+
       if (messages.isEmpty) return;
 
-      // Process and store messages
+      // Route each message through the same handler used by realtime transport
+      // so that action payloads (read-receipt, delete-action, etc.) are handled
+      // correctly and regular messages are applied to the chat store.
       for (final message in messages) {
-        _applyIncomingMessage(message);
+        _handleServerMessage(message);
       }
 
       _schedulePersistence();
@@ -471,6 +495,93 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Full sync (mirrors Angular ChatStoreService.forceSyncAllMessagesAndClearCache)
+  // ---------------------------------------------------------------------------
+
+  /// Wipe the local cache completely, then pull a fresh copy of all data
+  /// from the server. Mirrors Angular's `forceSyncAllMessagesAndClearCache`.
+  ///
+  /// Progress is exposed via [state.isSyncing], [state.syncProgressPercent],
+  /// and [state.syncProgressLabel] so the UI can show a progress overlay.
+  ///
+  /// Throws on unrecoverable errors (e.g. not authenticated, no network).
+  Future<void> forceSyncAllMessagesAndClearCache() async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty) {
+      throw Exception('יש להתחבר לפני סנכרון מלא');
+    }
+
+    state = state.copyWith(
+      isSyncing: true,
+      syncProgressPercent: 0,
+      syncProgressLabel: 'מנקה מטמון מקומי...',
+    );
+
+    try {
+      // 1. Wipe the local Drift database (best-effort; may fail on Flutter web
+      //    where the Drift SQLite WASM runtime requires sqlite3.wasm / drift_worker.js
+      //    in the web/ folder. If missing, the batch-delete throws a non-Exception
+      //    Dart Error. We catch it and continue – the in-memory state is cleared
+      //    below and the server pull re-populates everything fresh.)
+      try {
+        await _db.clearAll();
+      } catch (_) {
+        // DB clear failed (e.g. sqlite3.wasm not available on web).
+        // The in-memory state is still cleared in the copyWith below.
+      }
+      state = state.copyWith(
+        messagesByChat: const {},
+        unreadByChat: const {},
+        syncProgressPercent: 20,
+        syncProgressLabel: 'טוען אנשי קשר...',
+      );
+
+      // 2. Re-pull contacts.
+      await _pullContacts();
+      state = state.copyWith(
+        syncProgressPercent: 40,
+        syncProgressLabel: 'טוען קבוצות...',
+      );
+
+      // 3. Re-pull groups.
+      await _pullGroups();
+      state = state.copyWith(
+        syncProgressPercent: 60,
+        syncProgressLabel: 'מושך הודעות...',
+      );
+
+      // 4. Pull messages (full pull — no since filter).
+      await pullMessages();
+      state = state.copyWith(
+        syncProgressPercent: 80,
+        syncProgressLabel: 'משחזר הודעות שהוחמצו...',
+      );
+
+      // 5. Gap-analysis recovery pull (force = true bypasses cooldown).
+      await recoverMissedMessages(force: true);
+      state = state.copyWith(
+        syncProgressPercent: 95,
+        syncProgressLabel: 'מסיים...',
+      );
+
+      // 6. Reset unread counters.
+      state = state.copyWith(unreadByChat: const {});
+
+      _schedulePersistence();
+      state = state.copyWith(
+        syncProgressPercent: 100,
+        isInitialized: true,
+      );
+    } finally {
+      state = state.copyWith(
+        isSyncing: false,
+        syncProgressPercent: 0,
+        syncProgressLabel: '',
+      );
+    }
+  }
+
   /// Apply an incoming message from an FCM push payload.
   ///
   /// The [data] map mirrors the `notificationExtraData` / `compactCustomData`
@@ -495,13 +606,133 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       return int.tryParse(v.toString());
     }
 
+    // Helper: FCM coerces all data values to strings on Android; arrays are
+    // JSON-encoded strings like '["id1","id2"]'. Decode them back to a list.
+    List<String>? _strList(dynamic v) {
+      if (v == null) return null;
+      if (v is List) return v.map((e) => e.toString()).toList();
+      final s = v.toString().trim();
+      if (s.isEmpty) return null;
+      try {
+        final decoded = jsonDecode(s);
+        if (decoded is List) {
+          return decoded.map((e) => e.toString()).toList();
+        }
+        return [s];
+      } catch (_) {
+        return [s];
+      }
+    }
+
+    final type = (_str(data['type']) ?? '').toLowerCase();
+
+    // ── Action / housekeeping payloads ────────────────────────────────────
+    // These should never create a new ChatMessage or increment the unread
+    // counter. Delegate to the same action handlers used by socket/SSE so the
+    // UI reflects the action (e.g. marking messages as read, hiding deleted).
+
+    switch (type) {
+      case 'read-receipt':
+      case 'read':
+        {
+          final ids = _strList(data['messageIds']);
+          if (ids == null || ids.isEmpty) return;
+          final msg = IncomingServerMessage(
+            type: type,
+            messageIds: ids,
+            readAt: _int(data['readAt']),
+            sender: _str(data['sender']),
+          );
+          _handleReadReceipt(msg);
+          return;
+        }
+
+      case 'delete-action':
+      case 'delete':
+        {
+          // The server sends `messageId` (the deleted message's ID).
+          // `_handleDelete` expects `targetMessageId`.
+          final targetId = _str(data['messageId']) ?? _str(data['targetMessageId']);
+          if (targetId == null) return;
+          final msg = IncomingServerMessage(
+            type: type,
+            targetMessageId: targetId,
+            deletedAt: _int(data['deletedAt']) ?? _int(data['timestamp']),
+            sender: _str(data['sender']),
+          );
+          _handleDelete(msg);
+          return;
+        }
+
+      case 'edit-action':
+      case 'edit':
+        {
+          final targetId = _str(data['messageId']) ?? _str(data['targetMessageId']);
+          if (targetId == null) return;
+          final msg = IncomingServerMessage(
+            type: type,
+            targetMessageId: targetId,
+            body: _str(data['body']),
+            editedAt: _int(data['editedAt']) ?? _int(data['timestamp']),
+            sender: _str(data['sender']),
+          );
+          _handleEdit(msg);
+          return;
+        }
+
+      case 'group-update':
+        {
+          final groupId = _str(data['groupId']);
+          if (groupId == null) return;
+          final msg = IncomingServerMessage(
+            type: type,
+            groupId: groupId,
+            groupName: _str(data['groupName']),
+            groupMembers: _strList(data['groupMembers']),
+            groupCreatedBy: _str(data['groupCreatedBy']),
+            groupAdmins: _strList(data['groupAdmins']),
+            groupUpdatedAt: _int(data['groupUpdatedAt']),
+            groupType: _str(data['groupType']),
+            sender: _str(data['sender']),
+          );
+          _handleGroupUpdate(msg);
+          return;
+        }
+
+      case 'typing':
+        return; // Typing indicators from push are not actionable.
+    }
+
+    // ── Regular chat message ───────────────────────────────────────────────
     final messageId = _str(data['messageId']);
     final sender = _str(data['sender']) ?? _str(data['fromUser']);
     if (messageId == null || sender == null) return;
 
+    // Self-echo: the server sends a copy to the sender's other devices with
+    // skipNotification: true so the outgoing bubble is confirmed delivered.
+    // Apply the message but do NOT increment the unread counter.
+    final skipNotification = data['skipNotification'] == true ||
+        data['skipNotification'] == 'true';
+
     final groupId = _str(data['groupId']);
     final isGroup = groupId != null;
-    final chatId = isGroup ? groupId : sender;
+
+    // For self-echo push notifications (skipNotification: true), the server
+    // sends sender=currentUser and toUser/recipient=the other party. Using
+    // sender as chatId would create a spurious "self-chat". Mirror the same
+    // fix applied to _buildChatMessageFromServer.
+    final meNorm = _currentUser?.trim().toLowerCase() ?? '';
+    final senderNorm = sender.trim().toLowerCase();
+    final isSelfEcho = meNorm.isNotEmpty && senderNorm == meNorm;
+    String chatId;
+    if (isGroup) {
+      chatId = groupId;
+    } else if (isSelfEcho) {
+      final toUser = (_str(data['toUser']) ?? _str(data['recipient']) ?? '').trim().toLowerCase();
+      chatId = toUser.isNotEmpty ? toUser : senderNorm;
+    } else {
+      chatId = senderNorm;
+    }
 
     // Backend may include either the full body (messageText) or a truncated
     // groupMessageText. Prefer the longer one — _hydrateExistingMessage will
@@ -529,9 +760,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       body: body,
       imageUrl: _str(data['image']) ?? _str(data['imageUrl']),
       fileUrl: _str(data['fileUrl']),
-      direction: MessageDirection.incoming,
+      direction: isSelfEcho ? MessageDirection.outgoing : MessageDirection.incoming,
       timestamp: timestamp,
-      deliveryStatus: DeliveryStatus.delivered,
+      deliveryStatus: isSelfEcho ? DeliveryStatus.sent : DeliveryStatus.delivered,
       groupId: groupId,
       groupName: _str(data['groupName']),
       groupType: groupType,
@@ -539,8 +770,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     _applyIncomingMessage(message);
 
-    // Update unread count if not the currently open chat
-    if (chatId != state.currentChatId) {
+    // Update unread count if not the currently open chat.
+    // Skip for self-echo messages (sender's own devices) to avoid
+    // incrementing the badge for messages the user just sent.
+    if (!skipNotification && chatId != state.currentChatId) {
       final newUnread = Map<String, int>.from(state.unreadByChat);
       newUnread[chatId] = (newUnread[chatId] ?? 0) + 1;
       state = state.copyWith(unreadByChat: newUnread);
@@ -550,7 +783,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     // Pull full message content shortly after, in case the push body was
     // truncated to fit the FCM payload size limit.
-    schedulePushRecoveryPulls();
+    if (!skipNotification) schedulePushRecoveryPulls();
   }
 
   /// Apply an incoming message to state
@@ -629,6 +862,27 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   // Send Messages
   // ---------------------------------------------------------------------------
 
+  /// Deliver a [ReplyPayload] via socket.io when connected, falling back to
+  /// HTTP POST otherwise.
+  ///
+  /// The socket.io connection is already authenticated via its handshake
+  /// query (`user=<phone>`), so the server identifies the sender without
+  /// inspecting session cookies or the `body.user` field.  When the socket
+  /// is unavailable (not connected, or ack times out) we fall back to the
+  /// regular HTTP path which uses the session cookie + `body.user`.
+  Future<void> _sendReply(ReplyPayload payload) async {
+    // Try socket first.
+    final socketResult = await _transport.emitWithAck(
+      'chat:reply',
+      payload.toJson(),
+    );
+    if (socketResult != null && socketResult['status'] == 'success') {
+      return; // Delivered via socket.io.
+    }
+    // Socket not available, timed out, or returned an error — fall back to HTTP.
+    await _api.sendDirectMessage(payload);
+  }
+
   /// Send a direct message
   Future<void> sendDirectMessage({
     required String recipient,
@@ -639,13 +893,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   }) async {
     final messageId = _generateMessageId();
     final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final sender = _currentUser ?? '';
 
     // Create optimistic message
     final message = ChatMessage(
       id: messageId,
       messageId: messageId,
       chatId: recipient,
-      sender: _currentUser ?? 'me',
+      sender: sender.isNotEmpty ? sender : 'me',
       body: body,
       imageUrl: imageUrl,
       fileUrl: fileUrl,
@@ -659,19 +914,20 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _applyIncomingMessage(message);
 
     try {
-      // Send via API — pass our messageId so the socket/SSE echo from the
-      // server dedupes against this optimistic bubble instead of producing
-      // a second "incoming from me" copy.
-      await _api.sendDirectMessageWithParams(
-        sender: _currentUser ?? '',
-        senderName: getDisplayName(_currentUser ?? ''),
-        recipient: recipient,
-        body: body,
+      // Build the payload once and reuse it for both socket and HTTP paths.
+      // messageId is shared so the server echo dedupes against the optimistic
+      // bubble instead of producing a second "incoming from me" copy.
+      final payload = ReplyPayload(
+        user: sender,
+        senderName: getDisplayName(sender),
+        reply: body,
         imageUrl: imageUrl,
         fileUrl: fileUrl,
-        replyToMessageId: replyTo?.messageId,
+        originalSender: recipient,
         messageId: messageId,
+        replyToMessageId: replyTo?.messageId,
       );
+      await _sendReply(payload);
 
       // Update status to sent
       _updateMessageStatus(messageId, DeliveryStatus.sent);
@@ -695,13 +951,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     final messageId = _generateMessageId();
     final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final sender = _currentUser ?? '';
 
     // Create optimistic message
     final message = ChatMessage(
       id: messageId,
       messageId: messageId,
       chatId: groupId,
-      sender: _currentUser ?? 'me',
+      sender: sender.isNotEmpty ? sender : 'me',
       body: body,
       imageUrl: imageUrl,
       fileUrl: fileUrl,
@@ -718,32 +975,37 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _applyIncomingMessage(message);
 
     try {
-      // Send via API — pass our messageId so the socket/SSE echo dedupes
-      // against this optimistic bubble (otherwise the sender sees the
-      // message twice: once as outgoing, once as incoming).
       // Compute notify list excluding self so the backend doesn't echo a
       // group push back to the sender.
-      final me = (_currentUser ?? '').trim().toLowerCase();
+      final me = sender.trim().toLowerCase();
       final notify = group.members
           .where((m) => m.trim().toLowerCase() != me)
           .toList();
-      await _api.sendGroupMessage(
-        sender: _currentUser ?? '',
-        senderName: getDisplayName(_currentUser ?? ''),
+
+      final originalSender = notify.isNotEmpty
+          ? notify.first
+          : (group.members.isNotEmpty ? group.members.first : groupId);
+
+      final payload = ReplyPayload(
+        user: sender,
+        senderName: getDisplayName(sender),
+        reply: body,
+        imageUrl: imageUrl,
+        fileUrl: fileUrl,
+        originalSender: originalSender,
+        messageId: messageId,
         groupId: groupId,
         groupName: group.name,
-        recipients: group.members,
-        membersToNotify: notify,
+        groupMembers: group.members,
         groupCreatedBy: group.createdBy,
         groupAdmins: group.admins,
         groupUpdatedAt: group.updatedAt,
         groupType: group.type,
-        body: body,
-        imageUrl: imageUrl,
-        fileUrl: fileUrl,
+        groupSenderName: getDisplayName(sender),
+        membersToNotify: notify,
         replyToMessageId: replyTo?.messageId,
-        messageId: messageId,
       );
+      await _sendReply(payload);
 
       // Update status to sent
       _updateMessageStatus(messageId, DeliveryStatus.sent);
@@ -909,7 +1171,23 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     if (msg.messageId == null || msg.sender == null) return null;
 
     final isGroup = msg.groupId != null;
-    final chatId = isGroup ? msg.groupId! : msg.sender!;
+    final me = _currentUser;
+    final senderNorm = msg.sender!.trim().toLowerCase();
+    final isFromMe = me != null && senderNorm == me.trim().toLowerCase();
+
+    // For 1:1 outgoing messages the server returns sender=currentUser and
+    // toUser/recipient=the other party. Using sender as chatId would create a
+    // spurious "self-chat". Mirror Angular's logic (chat-store.service.ts:6539):
+    // when the message is from the current user, use toUser/recipient as chatId.
+    String chatId;
+    if (isGroup) {
+      chatId = msg.groupId!;
+    } else if (isFromMe) {
+      final toUser = (msg.toUser ?? msg.recipient ?? '').trim().toLowerCase();
+      chatId = toUser.isNotEmpty ? toUser : senderNorm;
+    } else {
+      chatId = senderNorm;
+    }
 
     // If the echo is for a message *we* just sent, tag it as outgoing so
     // the chat bubble doesn't render as "incoming from me" (the duplicate
@@ -922,8 +1200,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // groupId (server.js:2138), so a sender-based check fails. Fall back to
     // matching against an existing optimistic outgoing message in the same
     // chat by body+timestamp window.
-    final me = _currentUser;
-    final senderLower = msg.sender!.trim().toLowerCase();
     final body = msg.body ?? '';
     final ts = msg.timestamp ?? DateTime.now().millisecondsSinceEpoch;
     // Scan only recent outgoing messages (chatMessages are sorted newest-first
@@ -940,10 +1216,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         break;
       }
     }
-    final isFromMe =
-        (me != null && senderLower == me) || hasOptimisticEcho;
+    final isOutgoing = isFromMe || hasOptimisticEcho;
     final direction =
-        isFromMe ? MessageDirection.outgoing : MessageDirection.incoming;
+        isOutgoing ? MessageDirection.outgoing : MessageDirection.incoming;
 
     return ChatMessage(
       id: msg.messageId!,
@@ -957,7 +1232,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       direction: direction,
       timestamp: ts,
       deliveryStatus:
-          isFromMe ? DeliveryStatus.sent : DeliveryStatus.delivered,
+          isOutgoing ? DeliveryStatus.sent : DeliveryStatus.delivered,
       groupId: msg.groupId,
       groupName: msg.groupName,
       groupType: msg.groupType == 'community' ? GroupType.community : GroupType.group,
@@ -1036,9 +1311,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   }
 
   void _handleEdit(IncomingServerMessage msg) {
-    if (msg.targetMessageId == null) return;
+    // Server sends `messageId` for the target on both socket/SSE and push.
+    // Fall back to msg.messageId when targetMessageId is absent.
+    final targetId = msg.targetMessageId ?? msg.messageId;
+    if (targetId == null) return;
 
-    final targetId = msg.targetMessageId!;
     final newBody = msg.body;
     final editedAt = msg.editedAt;
 
@@ -1060,9 +1337,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   }
 
   void _handleDelete(IncomingServerMessage msg) {
-    if (msg.targetMessageId == null) return;
+    // Server sends `messageId` for the target on both socket/SSE and push.
+    // Fall back to msg.messageId when targetMessageId is absent.
+    final targetId = msg.targetMessageId ?? msg.messageId;
+    if (targetId == null) return;
 
-    final targetId = msg.targetMessageId!;
     final deletedAt = msg.deletedAt ?? DateTime.now().millisecondsSinceEpoch;
 
     final newMessagesByChat = <String, List<ChatMessage>>{};

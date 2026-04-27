@@ -3,6 +3,7 @@
 /// Allows users to book shuttle rides and view their bookings.
 library;
 
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -12,12 +13,27 @@ import 'package:intl/intl.dart';
 import '../../../core/api/chat_api_service.dart';
 import '../../../core/models/api_payloads.dart';
 import '../../../core/services/chat_store_service.dart';
+import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
 import '../../auth/presentation/auth_state.dart';
 
 // ---------------------------------------------------------------------------
-// Shuttle Booking Flow Step
+// Shuttle Language + Booking Flow Step
 // ---------------------------------------------------------------------------
+
+/// UI display language for the shuttle feature, mirroring Angular's
+/// `ShuttleLanguage = 'he' | 'ru'`.
+enum ShuttleLanguage { he, ru }
+
+/// Hebrew day names (Sun-Sat), mirroring `SHUTTLE_DAY_NAMES_BY_LANGUAGE.he`.
+const List<String> _kDayNamesHe = [
+  'ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'
+];
+
+/// Russian day names (Sun-Sat), mirroring `SHUTTLE_DAY_NAMES_BY_LANGUAGE.ru`.
+const List<String> _kDayNamesRu = [
+  'Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'
+];
 
 /// Represents the current step in the shuttle booking wizard
 enum ShuttleBookingStep {
@@ -56,6 +72,9 @@ class ShuttleState {
   final List<ShuttleUserOrderPayload> userOrders;
   final bool isLoading;
   final String? error;
+
+  // UI language (he / ru)
+  final ShuttleLanguage language;
   
   // Booking wizard state
   final ShuttleBookingStep currentStep;
@@ -68,6 +87,7 @@ class ShuttleState {
     this.userOrders = const [],
     this.isLoading = false,
     this.error,
+    this.language = ShuttleLanguage.he,
     this.currentStep = ShuttleBookingStep.menu,
     this.selectedDate,
     this.selectedShift,
@@ -79,6 +99,7 @@ class ShuttleState {
     List<ShuttleUserOrderPayload>? userOrders,
     bool? isLoading,
     String? error,
+    ShuttleLanguage? language,
     ShuttleBookingStep? currentStep,
     DateTime? selectedDate,
     String? selectedShift,
@@ -92,6 +113,7 @@ class ShuttleState {
       userOrders: userOrders ?? this.userOrders,
       isLoading: isLoading ?? this.isLoading,
       error: error,
+      language: language ?? this.language,
       currentStep: currentStep ?? this.currentStep,
       selectedDate: clearDate ? null : (selectedDate ?? this.selectedDate),
       selectedShift: clearShift ? null : (selectedShift ?? this.selectedShift),
@@ -554,6 +576,26 @@ class ShuttleNotifier extends Notifier<ShuttleState> {
     final minimumAllowedMinutes = now.hour * 60 + now.minute + 60;
     return shiftMinutes <= minimumAllowedMinutes;
   }
+
+  // ---------------------------------------------------------------------------
+  // Language helpers (mirrors Angular's shuttleText / setShuttleLanguage)
+  // ---------------------------------------------------------------------------
+
+  /// Toggle between Hebrew and Russian UI language.
+  void setLanguage(ShuttleLanguage lang) {
+    state = state.copyWith(language: lang);
+  }
+
+  /// Return [he] or [ru] depending on the current UI language.
+  String text(String he, String ru) =>
+      state.language == ShuttleLanguage.ru ? ru : he;
+
+  /// Return the day-name for [date] in the current UI language.
+  String dayName(DateTime date) {
+    final names =
+        state.language == ShuttleLanguage.ru ? _kDayNamesRu : _kDayNamesHe;
+    return names[date.weekday % 7];
+  }
 }
 
 final shuttleProvider = NotifierProvider<ShuttleNotifier, ShuttleState>(() {
@@ -571,222 +613,390 @@ class ShuttleScreen extends ConsumerStatefulWidget {
   ConsumerState<ShuttleScreen> createState() => _ShuttleScreenState();
 }
 
-class _ShuttleScreenState extends ConsumerState<ShuttleScreen> with SingleTickerProviderStateMixin {
+class _ShuttleScreenState extends ConsumerState<ShuttleScreen>
+    with SingleTickerProviderStateMixin {
   late TabController _tabController;
+  Timer? _refreshTimer;
 
   @override
   void initState() {
     super.initState();
+    // Tab 0 = פעילות (ongoing), Tab 1 = עבר (past) — matches Angular order
     _tabController = TabController(length: 2, vsync: this);
-    
-    // Load data on init
+
     Future.microtask(() {
       ref.read(shuttleProvider.notifier).loadData();
+    });
+
+    _refreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) ref.read(shuttleProvider.notifier).loadUserOrders();
     });
   }
 
   @override
   void dispose() {
     _tabController.dispose();
+    _refreshTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> _openNewOrderWizard() async {
+    final notifier = ref.read(shuttleProvider.notifier);
+    notifier.startNewOrder();
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => const _BookingSheet(),
+    );
+    // If the user dismissed the sheet without finishing, reset the wizard.
+    if (mounted) {
+      final s = ref.read(shuttleProvider);
+      if (s.currentStep != ShuttleBookingStep.menu) {
+        ref.read(shuttleProvider.notifier).resetWizard();
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(shuttleProvider);
+    final notifier = ref.read(shuttleProvider.notifier);
+    final theme = Theme.of(context);
+    final now = DateTime.now();
+    final dateHeader = DateFormat('dd.MM.yyyy').format(now);
 
     return Column(
       children: [
-        // Tab bar
-        TabBar(
-          controller: _tabController,
-          tabs: const [
-            Tab(text: 'הזמנה חדשה'),
-            Tab(text: 'ההזמנות שלי'),
-          ],
-        ),
-
-        // Error banner
+        // ── Error banner ──────────────────────────────────────────────────
         if (state.error != null)
           MaterialBanner(
             content: Text(state.error!),
-            backgroundColor: Theme.of(context).colorScheme.errorContainer,
+            backgroundColor: theme.colorScheme.errorContainer,
             actions: [
               TextButton(
-                onPressed: () {
-                  ref.read(shuttleProvider.notifier).loadData();
-                },
-                child: const Text('נסה שוב'),
+                onPressed: () => notifier.loadData(),
+                child: Text(notifier.text('נסה שוב', 'Повторить')),
               ),
             ],
           ),
 
-        // Tab content
+        // ── Header row: title | refresh | language toggle ─────────────────
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: Row(
+            children: [
+              // Language toggle: RU / עב
+              _LangToggle(
+                language: state.language,
+                onChanged: notifier.setLanguage,
+              ),
+              const SizedBox(width: 6),
+              // Refresh button
+              IconButton(
+                onPressed: () => notifier.loadData(),
+                icon: state.isLoading
+                    ? SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: theme.colorScheme.primary,
+                        ),
+                      )
+                    : const Icon(Icons.refresh),
+                tooltip: notifier.text('רענן', 'Обновить'),
+              ),
+              const Spacer(),
+              Text(
+                notifier.text('ההזמנות שלי', 'Мои заказы'),
+                style: theme.textTheme.titleSmall
+                    ?.copyWith(fontWeight: FontWeight.bold),
+                textDirection: ui.TextDirection.rtl,
+              ),
+            ],
+          ),
+        ),
+
+        // ── Today's date ──────────────────────────────────────────────────
+        Text(
+          dateHeader,
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurface.withAlpha(153),
+          ),
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 4),
+
+        // ── Tabs: פעילות (N) | עבר (N) ───────────────────────────────────
+        TabBar(
+          controller: _tabController,
+          tabs: [
+            Tab(
+              text:
+                  '${notifier.text('פעילות', 'Активные')} (${state.ongoingOrders.length})',
+            ),
+            Tab(
+              text:
+                  '${notifier.text('עבר', 'Прошедшие')} (${state.pastOrders.length})',
+            ),
+          ],
+          labelColor: theme.colorScheme.primary,
+          indicatorColor: theme.colorScheme.primary,
+        ),
+
+        // ── Orders list ───────────────────────────────────────────────────
         Expanded(
           child: TabBarView(
             controller: _tabController,
             children: [
-              _NewOrderTab(state: state),
-              _OrdersTab(state: state),
+              _OrderList(
+                orders: state.ongoingOrders,
+                isPast: false,
+                isLoading: state.isLoading && state.userOrders.isEmpty,
+                emptyMessage:
+                    notifier.text('אין הזמנות פעילות', 'Нет активных заказов'),
+              ),
+              _OrderList(
+                orders: state.pastOrders,
+                isPast: true,
+                isLoading: state.isLoading && state.userOrders.isEmpty,
+                emptyMessage:
+                    notifier.text('אין הזמנות קודמות', 'Нет прошедших заказов'),
+              ),
             ],
           ),
         ),
+
+        // ── Bottom CTA: "הזמנה חדשה" ─────────────────────────────────────
+        _BottomCta(onNewOrder: _openNewOrderWizard),
       ],
     );
   }
 }
 
 // ---------------------------------------------------------------------------
-// New Order Tab (Wizard Flow)
+// Language toggle widget (RU / עב)
 // ---------------------------------------------------------------------------
 
-class _NewOrderTab extends ConsumerWidget {
-  final ShuttleState state;
+class _LangToggle extends StatelessWidget {
+  final ShuttleLanguage language;
+  final void Function(ShuttleLanguage) onChanged;
 
-  const _NewOrderTab({required this.state});
+  const _LangToggle({required this.language, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    Widget btn(String label, ShuttleLanguage value) {
+      final selected = language == value;
+      return GestureDetector(
+        onTap: selected ? null : () => onChanged(value),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: selected
+                ? theme.colorScheme.primary
+                : theme.colorScheme.surface,
+            borderRadius: value == ShuttleLanguage.ru
+                ? const BorderRadius.only(
+                    topLeft: Radius.circular(20),
+                    bottomLeft: Radius.circular(20))
+                : const BorderRadius.only(
+                    topRight: Radius.circular(20),
+                    bottomRight: Radius.circular(20)),
+            border: Border.all(
+              color: selected
+                  ? theme.colorScheme.primary
+                  : theme.colorScheme.outline,
+            ),
+          ),
+          child: Text(
+            label,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: selected
+                  ? theme.colorScheme.onPrimary
+                  : theme.colorScheme.onSurface,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [btn('עב', ShuttleLanguage.he), btn('RU', ShuttleLanguage.ru)],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Bottom CTA card ("הזמנה חדשה")
+// ---------------------------------------------------------------------------
+
+class _BottomCta extends ConsumerWidget {
+  final VoidCallback onNewOrder;
+
+  const _BottomCta({required this.onNewOrder});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final notifier = ref.read(shuttleProvider.notifier);
 
-    if (state.isLoading && state.stations.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    if (state.stations.isEmpty) {
-      return Center(
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        border: Border(
+          top: BorderSide(
+            color: theme.colorScheme.outlineVariant,
+          ),
+        ),
+      ),
+      child: Directionality(
+        textDirection: ui.TextDirection.rtl,
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.directions_bus_outlined,
-              size: 80,
-              color: theme.colorScheme.primary.withAlpha((255 * 0.3).round()),
-            ),
-            const SizedBox(height: 16),
             Text(
-              'אין תחנות זמינות',
-              style: theme.textTheme.titleLarge?.copyWith(
-                color: theme.colorScheme.onSurface.withAlpha((255 * 0.6).round()),
-              ),
-              textDirection: ui.TextDirection.rtl,
+              notifier.text('מה תרצה לבצע?', 'Что хотите сделать?'),
+              style: theme.textTheme.titleSmall
+                  ?.copyWith(fontWeight: FontWeight.bold),
             ),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              onPressed: () => notifier.loadData(),
-              icon: const Icon(Icons.refresh),
-              label: const Text('רענן'),
+            Text(
+              notifier.text(
+                'הזמנה חדשה בלחיצה אחת',
+                'Новый заказ в одно нажатие',
+              ),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurface.withAlpha(153),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                onPressed: onNewOrder,
+                child: Text(notifier.text('הזמנה חדשה', 'Новый заказ')),
+              ),
             ),
           ],
         ),
-      );
-    }
-
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        children: [
-          // Current step card
-          _buildCurrentStepCard(context, ref, state, notifier),
-          
-          // Loading indicator
-          if (state.isLoading)
-            const Padding(
-              padding: EdgeInsets.all(16),
-              child: CircularProgressIndicator(),
-            ),
-        ],
       ),
     );
   }
+}
 
-  Widget _buildCurrentStepCard(
-    BuildContext context,
-    WidgetRef ref,
-    ShuttleState state,
-    ShuttleNotifier notifier,
-  ) {
+// ---------------------------------------------------------------------------
+// Booking Wizard Bottom Sheet
+// ---------------------------------------------------------------------------
+
+class _BookingSheet extends ConsumerWidget {
+  const _BookingSheet();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(shuttleProvider);
+    final notifier = ref.read(shuttleProvider.notifier);
+
+    // Auto-close when submission completes (step returns to menu)
+    ref.listen<ShuttleState>(shuttleProvider, (_, next) {
+      if (next.currentStep == ShuttleBookingStep.menu && !next.isLoading) {
+        if (context.mounted) Navigator.of(context).pop();
+      }
+    });
+
     final theme = Theme.of(context);
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // Step indicator (breadcrumbs)
-            _buildBreadcrumbs(context, state),
-            const SizedBox(height: 24),
-            
-            // Current step content
-            _buildStepContent(context, ref, state, notifier, theme),
-            
-            // Back button
-            if (state.canGoBack && !state.isLoading) ...[
-              const SizedBox(height: 16),
-              TextButton.icon(
-                onPressed: () => notifier.goBack(),
-                icon: const Icon(Icons.arrow_back),
-                label: const Text('חזרה'),
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.7,
+      minChildSize: 0.4,
+      maxChildSize: 0.95,
+      builder: (_, scrollController) {
+        return Directionality(
+          textDirection: ui.TextDirection.rtl,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Drag handle
+              Container(
+                margin: const EdgeInsets.symmetric(vertical: 8),
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.outlineVariant,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              // Step title + back button
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  children: [
+                    if (state.canGoBack)
+                      IconButton(
+                        onPressed: notifier.goBack,
+                        icon: const Icon(Icons.arrow_back_ios_new, size: 20),
+                        tooltip: notifier.text('חזרה', 'Назад'),
+                      ),
+                    Expanded(
+                      child: Text(
+                        _stepTitle(state, notifier),
+                        style: theme.textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.bold),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                    if (state.canGoBack) const SizedBox(width: 40),
+                  ],
+                ),
+              ),
+              const Divider(),
+              // Step content
+              Expanded(
+                child: SingleChildScrollView(
+                  controller: scrollController,
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _buildStepContent(context, ref, state, notifier, theme),
+                      if (state.isLoading)
+                        const Padding(
+                          padding: EdgeInsets.all(24),
+                          child: Center(child: CircularProgressIndicator()),
+                        ),
+                    ],
+                  ),
+                ),
               ),
             ],
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 
-  Widget _buildBreadcrumbs(BuildContext context, ShuttleState state) {
-    final theme = Theme.of(context);
-    final steps = [
-      ('menu', 'התחלה', state.currentStep == ShuttleBookingStep.menu),
-      ('date', 'תאריך', state.currentStep == ShuttleBookingStep.date),
-      ('shift', 'שעה', state.currentStep == ShuttleBookingStep.shift),
-      ('station', 'תחנה', state.currentStep == ShuttleBookingStep.station),
-    ];
-
-    final currentIndex = ShuttleBookingStep.values.indexOf(state.currentStep);
-
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        for (int i = 0; i < steps.length; i++) ...[
-          if (i > 0)
-            Container(
-              width: 24,
-              height: 2,
-              color: i <= currentIndex 
-                  ? theme.colorScheme.primary 
-                  : theme.colorScheme.outline.withAlpha((255 * 0.3).round()),
-            ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: i <= currentIndex 
-                  ? theme.colorScheme.primary 
-                  : theme.colorScheme.surface,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: i <= currentIndex 
-                    ? theme.colorScheme.primary 
-                    : theme.colorScheme.outline,
-              ),
-            ),
-            child: Text(
-              steps[i].$2,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: i <= currentIndex 
-                    ? theme.colorScheme.onPrimary 
-                    : theme.colorScheme.onSurface,
-                fontWeight: steps[i].$3 ? FontWeight.bold : FontWeight.normal,
-              ),
-            ),
-          ),
-        ],
-      ],
-    );
+  String _stepTitle(ShuttleState state, ShuttleNotifier notifier) {
+    switch (state.currentStep) {
+      case ShuttleBookingStep.menu:
+        return notifier.text('הזמנה חדשה', 'Новый заказ');
+      case ShuttleBookingStep.date:
+        return notifier.text('בחר תאריך נסיעה', 'Выберите дату поездки');
+      case ShuttleBookingStep.shift:
+        return notifier.text('בחר שעת נסיעה', 'Выберите смену');
+      case ShuttleBookingStep.station:
+        return notifier.text('בחר תחנה', 'Выберите станцию');
+    }
   }
 
   Widget _buildStepContent(
@@ -798,9 +1008,13 @@ class _NewOrderTab extends ConsumerWidget {
   ) {
     switch (state.currentStep) {
       case ShuttleBookingStep.menu:
-        return _buildMenuStep(context, notifier, theme);
+        // Should not normally be visible (sheet auto-closes), but show a
+        // fallback CTA in case of a race condition.
+        return Center(
+          child: Text(notifier.text('מעבד...', 'Обработка...')),
+        );
       case ShuttleBookingStep.date:
-        return _buildDateStep(context, notifier, theme);
+        return _buildDateStep(context, notifier, state, theme);
       case ShuttleBookingStep.shift:
         return _buildShiftStep(context, state, notifier, theme);
       case ShuttleBookingStep.station:
@@ -808,70 +1022,25 @@ class _NewOrderTab extends ConsumerWidget {
     }
   }
 
-  Widget _buildMenuStep(BuildContext context, ShuttleNotifier notifier, ThemeData theme) {
-    return Column(
-      children: [
-        Icon(
-          Icons.directions_bus,
-          size: 64,
-          color: theme.colorScheme.primary,
-        ),
-        const SizedBox(height: 16),
-        Text(
-          'מה תרצה לבצע?',
-          style: theme.textTheme.titleLarge?.copyWith(
-            fontWeight: FontWeight.bold,
-          ),
-          textAlign: TextAlign.center,
-          textDirection: ui.TextDirection.rtl,
-        ),
-        const SizedBox(height: 8),
-        Text(
-          'הזמנה חדשה בלחיצה אחת',
-          style: theme.textTheme.bodyMedium?.copyWith(
-            color: theme.colorScheme.onSurface.withAlpha((255 * 0.6).round()),
-          ),
-          textAlign: TextAlign.center,
-          textDirection: ui.TextDirection.rtl,
-        ),
-        const SizedBox(height: 24),
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton.icon(
-            onPressed: () => notifier.startNewOrder(),
-            icon: const Icon(Icons.add),
-            label: const Text('🚐 הזמנה חדשה'),
-            style: ElevatedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(vertical: 16),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildDateStep(BuildContext context, ShuttleNotifier notifier, ThemeData theme) {
+  Widget _buildDateStep(
+    BuildContext context,
+    ShuttleNotifier notifier,
+    ShuttleState state,
+    ThemeData theme,
+  ) {
     final availableDates = notifier.getAvailableDates();
-    final hebrewDays = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
-    
+
     return Column(
       children: [
         Text(
-          'בחר תאריך נסיעה',
-          style: theme.textTheme.titleLarge?.copyWith(
-            fontWeight: FontWeight.bold,
+          notifier.text(
+            'התאריכים זמינים ל-10 הימים הקרובים',
+            'Доступны даты на ближайшие 10 дней',
           ),
-          textAlign: TextAlign.center,
-          textDirection: ui.TextDirection.rtl,
-        ),
-        const SizedBox(height: 8),
-        Text(
-          'התאריכים זמינים ל-10 הימים הקרובים',
           style: theme.textTheme.bodyMedium?.copyWith(
-            color: theme.colorScheme.onSurface.withAlpha((255 * 0.6).round()),
+            color: theme.colorScheme.onSurface.withAlpha(153),
           ),
           textAlign: TextAlign.center,
-          textDirection: ui.TextDirection.rtl,
         ),
         const SizedBox(height: 16),
         Wrap(
@@ -879,26 +1048,27 @@ class _NewOrderTab extends ConsumerWidget {
           runSpacing: 8,
           alignment: WrapAlignment.center,
           children: availableDates.map((date) {
-            final dayName = hebrewDays[(date.weekday % 7)];
+            final name = notifier.dayName(date);
+            final prefix = state.language == ShuttleLanguage.he ? 'יום ' : '';
             final dateStr = DateFormat('dd/MM').format(date);
             return OutlinedButton(
               onPressed: () => notifier.selectDate(date),
               style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    'יום $dayName',
+                    '$prefix$name',
                     style: theme.textTheme.bodySmall,
                     textDirection: ui.TextDirection.rtl,
                   ),
                   Text(
                     dateStr,
-                    style: theme.textTheme.bodyLarge?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
+                    style: theme.textTheme.bodyLarge
+                        ?.copyWith(fontWeight: FontWeight.bold),
                   ),
                 ],
               ),
@@ -909,44 +1079,40 @@ class _NewOrderTab extends ConsumerWidget {
     );
   }
 
-  Widget _buildShiftStep(BuildContext context, ShuttleState state, ShuttleNotifier notifier, ThemeData theme) {
+  Widget _buildShiftStep(
+    BuildContext context,
+    ShuttleState state,
+    ShuttleNotifier notifier,
+    ThemeData theme,
+  ) {
     final shiftOptions = notifier.getShiftOptionsForDate(state.selectedDate);
-    final selectedDate = state.selectedDate;
-    final hebrewDays = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
-    
     String dateLabel = '';
-    if (selectedDate != null) {
-      final dayName = hebrewDays[(selectedDate.weekday % 7)];
-      dateLabel = 'יום $dayName ${DateFormat('dd/MM/yyyy').format(selectedDate)}';
+    if (state.selectedDate != null) {
+      final name = notifier.dayName(state.selectedDate!);
+      final prefix = state.language == ShuttleLanguage.he ? 'יום ' : '';
+      dateLabel =
+          '$prefix$name ${DateFormat('dd/MM/yyyy').format(state.selectedDate!)}';
     }
-
-    final hasAnyEnabled = shiftOptions.any((option) => !option.disabled);
+    final hasAnyEnabled = shiftOptions.any((o) => !o.disabled);
 
     return Column(
       children: [
-        Text(
-          'בחר שעת נסיעה',
-          style: theme.textTheme.titleLarge?.copyWith(
-            fontWeight: FontWeight.bold,
-          ),
-          textAlign: TextAlign.center,
-          textDirection: ui.TextDirection.rtl,
-        ),
-        const SizedBox(height: 8),
         if (dateLabel.isNotEmpty)
           Text(
             dateLabel,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.primary,
-            ),
+            style: theme.textTheme.bodyMedium
+                ?.copyWith(color: theme.colorScheme.primary),
             textAlign: TextAlign.center,
             textDirection: ui.TextDirection.rtl,
           ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 8),
         Text(
-          'בחר אחת משעות ההסעה הזמינות',
+          notifier.text(
+            'בחר אחת משעות ההסעה הזמינות',
+            'Выберите одно из доступных времён трансфера',
+          ),
           style: theme.textTheme.bodyMedium?.copyWith(
-            color: theme.colorScheme.onSurface.withAlpha((255 * 0.6).round()),
+            color: theme.colorScheme.onSurface.withAlpha(153),
           ),
           textAlign: TextAlign.center,
           textDirection: ui.TextDirection.rtl,
@@ -956,10 +1122,12 @@ class _NewOrderTab extends ConsumerWidget {
           Padding(
             padding: const EdgeInsets.only(bottom: 12),
             child: Text(
-              'אין שעות זמינות בתאריך שנבחר. חזור ובחר תאריך אחר.',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.error,
+              notifier.text(
+                'אין שעות זמינות בתאריך שנבחר. חזור ובחר תאריך אחר.',
+                'Нет доступных времён в выбранную дату. Выберите другую дату.',
               ),
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.error),
               textAlign: TextAlign.center,
               textDirection: ui.TextDirection.rtl,
             ),
@@ -974,12 +1142,11 @@ class _NewOrderTab extends ConsumerWidget {
                   ? null
                   : () => notifier.selectShift(option.submitValue),
               style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
               ),
-              child: Text(
-                option.label,
-                style: theme.textTheme.titleMedium,
-              ),
+              child: Text(option.label,
+                  style: theme.textTheme.titleMedium),
             );
           }).toList(),
         ),
@@ -994,23 +1161,15 @@ class _NewOrderTab extends ConsumerWidget {
     ShuttleNotifier notifier,
     ThemeData theme,
   ) {
-    final stations = state.stations;
-    
     return Column(
       children: [
         Text(
-          'בחר תחנה',
-          style: theme.textTheme.titleLarge?.copyWith(
-            fontWeight: FontWeight.bold,
+          notifier.text(
+            'לחץ על הרשימה ובחר תחנה',
+            'Выберите станцию из списка',
           ),
-          textAlign: TextAlign.center,
-          textDirection: ui.TextDirection.rtl,
-        ),
-        const SizedBox(height: 8),
-        Text(
-          'לחץ על התחנה הרצויה',
           style: theme.textTheme.bodyMedium?.copyWith(
-            color: theme.colorScheme.onSurface.withAlpha((255 * 0.6).round()),
+            color: theme.colorScheme.onSurface.withAlpha(153),
           ),
           textAlign: TextAlign.center,
           textDirection: ui.TextDirection.rtl,
@@ -1021,29 +1180,36 @@ class _NewOrderTab extends ConsumerWidget {
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
             ),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-            labelText: 'בחר תחנה',
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+            labelText: notifier.text('בחר תחנה', 'Выберите станцию'),
           ),
-          hint: const Text('בחר תחנה מהרשימה'),
-          items: stations.map((station) {
+          hint: Text(
+              notifier.text('בחר תחנה מהרשימה', 'Выберите станцию из списка')),
+          items: state.stations.map((station) {
             return DropdownMenuItem(
               value: station,
-              child: Text(station, textDirection: ui.TextDirection.rtl),
+              child:
+                  Text(station, textDirection: ui.TextDirection.rtl),
             );
           }).toList(),
-          onChanged: state.isLoading ? null : (value) async {
-            if (value != null) {
-              await notifier.selectStationAndSubmit(value);
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('ההזמנה נשלחה בהצלחה!'),
-                    backgroundColor: AppColors.success,
-                  ),
-                );
-              }
-            }
-          },
+          onChanged: state.isLoading
+              ? null
+              : (value) async {
+                  if (value != null) {
+                    await notifier.selectStationAndSubmit(value);
+                    if (context.mounted) {
+                      showTopToast(
+                        context,
+                        notifier.text(
+                          'ההזמנה נשלחה בהצלחה! ✅',
+                          'Заказ успешно отправлен! ✅',
+                        ),
+                        backgroundColor: AppColors.success,
+                      );
+                    }
+                  }
+                },
         ),
       ],
     );
@@ -1051,39 +1217,46 @@ class _NewOrderTab extends ConsumerWidget {
 }
 
 // ---------------------------------------------------------------------------
-// Orders Tab
+// Combined order list widget
 // ---------------------------------------------------------------------------
 
-class _OrdersTab extends ConsumerWidget {
-  final ShuttleState state;
+class _OrderList extends ConsumerWidget {
+  final List<ShuttleUserOrderPayload> orders;
+  final bool isPast;
+  final bool isLoading;
+  final String emptyMessage;
 
-  const _OrdersTab({required this.state});
+  const _OrderList({
+    required this.orders,
+    required this.isPast,
+    required this.isLoading,
+    required this.emptyMessage,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    if (state.isLoading && state.userOrders.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
-    }
+    if (isLoading) return const Center(child: CircularProgressIndicator());
 
-    final ongoingOrders = state.ongoingOrders;
-    final pastOrders = state.pastOrders;
-
-    if (ongoingOrders.isEmpty && pastOrders.isEmpty) {
+    if (orders.isEmpty) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(
-              Icons.directions_bus_outlined,
-              size: 80,
-              color: Theme.of(context).colorScheme.primary.withAlpha((255 * 0.3).round()),
+              isPast ? Icons.history : Icons.directions_bus_outlined,
+              size: 60,
+              color: Theme.of(context).colorScheme.primary.withAlpha(76),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
             Text(
-              'אין הזמנות',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.6).round()),
-              ),
+              emptyMessage,
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withAlpha(153),
+                  ),
+              textDirection: ui.TextDirection.rtl,
             ),
           ],
         ),
@@ -1092,58 +1265,11 @@ class _OrdersTab extends ConsumerWidget {
 
     return RefreshIndicator(
       onRefresh: () => ref.read(shuttleProvider.notifier).loadUserOrders(),
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          if (ongoingOrders.isNotEmpty) ...[
-            _SectionHeader(title: 'הזמנות פעילות', count: ongoingOrders.length),
-            ...ongoingOrders.map((order) => _OrderCard(order: order, isPast: false)),
-            const SizedBox(height: 16),
-          ],
-          if (pastOrders.isNotEmpty) ...[
-            _SectionHeader(title: 'הזמנות קודמות', count: pastOrders.length),
-            ...pastOrders.map((order) => _OrderCard(order: order, isPast: true)),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _SectionHeader extends StatelessWidget {
-  final String title;
-  final int count;
-
-  const _SectionHeader({required this.title, required this.count});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        children: [
-          Text(
-            title,
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.primaryContainer,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Text(
-              '$count',
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.onPrimaryContainer,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ],
+      child: ListView.builder(
+        padding: const EdgeInsets.all(12),
+        itemCount: orders.length,
+        itemBuilder: (context, index) =>
+            _OrderCard(order: orders[index], isPast: isPast),
       ),
     );
   }
@@ -1255,7 +1381,7 @@ class _OrderCard extends ConsumerWidget {
   }
 
   Future<void> _confirmAndCancel(BuildContext context, WidgetRef ref) async {
-    final messenger = ScaffoldMessenger.of(context);
+    final overlay = Overlay.of(context, rootOverlay: true);
     final errorColor = Theme.of(context).colorScheme.error;
     final confirmed = await showDialog<bool>(
       context: context,
@@ -1284,19 +1410,11 @@ class _OrderCard extends ConsumerWidget {
 
     try {
       await ref.read(shuttleProvider.notifier).cancelOrder(order);
-      messenger.showSnackBar(
-        const SnackBar(
-          content: Text('ההזמנה בוטלה בהצלחה ✅'),
-          backgroundColor: AppColors.success,
-        ),
-      );
+      showTopToastOnOverlay(overlay, 'ההזמנה בוטלה בהצלחה ✅',
+          backgroundColor: AppColors.success);
     } catch (e) {
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text('שגיאה בביטול הזמנה: ${e.toString()}'),
-          backgroundColor: errorColor,
-        ),
-      );
+      showTopToastOnOverlay(overlay, 'שגיאה בביטול הזמנה: ${e.toString()}',
+          backgroundColor: errorColor);
     }
   }
 }

@@ -374,7 +374,7 @@ class PushNotificationService {
   }
 
   Future<void> _initializeLocalNotifications() async {
-    const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const androidSettings = AndroidInitializationSettings('@drawable/ic_notification');
     const iosSettings = DarwinInitializationSettings(
       requestAlertPermission: false,
       requestBadgePermission: false,
@@ -533,10 +533,40 @@ class PushNotificationService {
     _openChatScreen(chatId);
   }
 
+  /// Returns true for FCM data payloads that should never produce a visible
+  /// notification — read-receipts, delete/edit actions, group-update events,
+  /// typing indicators, and self-echo messages (skipNotification: true).
+  ///
+  /// On Android the Firebase SDK coerces every value in `RemoteMessage.data`
+  /// to a [String], so booleans like `skipNotification: true` arrive as the
+  /// string `'true'`.  We check both to be safe.
+  static bool _isSilentPushData(Map<String, dynamic> data) {
+    final skip = data['skipNotification'];
+    if (skip == true || skip == 'true') return true;
+
+    const silentTypes = {
+      'read-receipt',
+      'read',
+      'delete-action',
+      'delete',
+      'edit-action',
+      'edit',
+      'group-update',
+      'typing',
+    };
+    final type = (data['type'] ?? '').toString().trim().toLowerCase();
+    return silentTypes.contains(type);
+  }
+
   /// Show local notification for foreground messages
   Future<void> _showLocalNotification(RemoteMessage message) async {
     final notification = message.notification;
     if (notification == null) return;
+
+    // Suppress visual notifications for action / housekeeping payloads
+    // (read-receipts, delete/edit actions, self-echo, etc.) even if the
+    // server accidentally included a notification field.
+    if (_isSilentPushData(Map<String, dynamic>.from(message.data))) return;
 
     // The flutter_local_notifications plugin has no web implementation.
     // On web the browser already shows a system notification when the
@@ -551,6 +581,7 @@ class PushNotificationService {
       importance: Importance.high,
       priority: Priority.high,
       showWhen: true,
+      icon: '@drawable/ic_notification',
     );
 
     const iosDetails = DarwinNotificationDetails(

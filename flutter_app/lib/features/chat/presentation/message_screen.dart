@@ -4,15 +4,20 @@
 /// replies, and edit/delete status.
 library;
 
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import '../../../core/api/http_client.dart';
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
+import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
 import 'message_composer.dart';
 
@@ -201,10 +206,12 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
-            Icons.chat_bubble_outline,
-            size: 64,
+          Image.asset(
+            'assets/images/logo.png',
+            width: 80,
+            height: 80,
             color: Theme.of(context).colorScheme.primary.withAlpha((255 * 0.3).round()),
+            colorBlendMode: BlendMode.modulate,
           ),
           const SizedBox(height: 16),
           Text(
@@ -282,15 +289,11 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   }
 
   void _showChatInfo() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('פרטי שיחה - בקרוב')),
-    );
+    showTopToast(context, 'פרטי שיחה - בקרוב');
   }
 
   void _showSearch() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('חיפוש בשיחה - בקרוב')),
-    );
+    showTopToast(context, 'חיפוש בשיחה - בקרוב');
   }
 
   void _handleReaction(ChatMessage message, String emoji) {
@@ -333,9 +336,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
 
   void _handleCopy(ChatMessage message) {
     Clipboard.setData(ClipboardData(text: message.body));
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('ההודעה הועתקה'), duration: Duration(seconds: 1)),
-    );
+    showTopToast(context, 'ההודעה הועתקה', duration: const Duration(seconds: 1));
   }
 
   void _scrollToBottom() {
@@ -386,7 +387,7 @@ class _MessageBubble extends StatelessWidget {
           mainAxisAlignment: isOutgoing ? MainAxisAlignment.start : MainAxisAlignment.end,
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            if (isOutgoing) const SizedBox(width: 48),
+            if (isOutgoing) const SizedBox(width: 8),
             Flexible(
               child: Container(
                 constraints: BoxConstraints(
@@ -452,16 +453,19 @@ class _MessageBubble extends StatelessWidget {
                     if (message.imageUrl != null && !isDeleted)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: Image.network(
-                            message.imageUrl!,
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => Container(
+                        child: GestureDetector(
+                          onTap: () async {
+                            final uri = Uri.tryParse(message.imageUrl!);
+                            if (uri != null && await canLaunchUrl(uri)) {
+                              await launchUrl(uri, mode: LaunchMode.externalApplication);
+                            }
+                          },
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: _AuthenticatedNetworkImage(
+                              url: message.imageUrl!,
                               width: 200,
                               height: 150,
-                              color: Colors.grey[300],
-                              child: const Icon(Icons.broken_image, size: 48),
                             ),
                           ),
                         ),
@@ -471,14 +475,7 @@ class _MessageBubble extends StatelessWidget {
                     if (message.fileUrl != null && !isDeleted)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.attach_file, size: 20),
-                            const SizedBox(width: 8),
-                            const Text('קובץ מצורף'),
-                          ],
-                        ),
+                        child: _FileAttachmentButton(url: message.fileUrl!),
                       ),
 
                     // Message body
@@ -491,10 +488,7 @@ class _MessageBubble extends StatelessWidget {
                         ),
                       )
                     else
-                      Text(
-                        message.body,
-                        style: theme.textTheme.bodyMedium,
-                      ),
+                      _MessageBody(body: message.body, theme: theme),
 
                     const SizedBox(height: 4),
 
@@ -534,7 +528,7 @@ class _MessageBubble extends StatelessWidget {
                 ),
               ),
             ),
-            if (!isOutgoing) const SizedBox(width: 48),
+            if (!isOutgoing) const SizedBox(width: 8),
           ],
         ),
       ),
@@ -866,6 +860,264 @@ class _EditPreview extends StatelessWidget {
             onPressed: onCancel,
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Renders a message body. Google Maps links (📍 ...) are shown as a
+/// tappable location button; plain text is displayed as-is.
+class _MessageBody extends StatelessWidget {
+  final String body;
+  final ThemeData theme;
+
+  const _MessageBody({required this.body, required this.theme});
+
+  static final _mapsRegex = RegExp(
+    r'https?://(www\.)?(maps\.google\.com|google\.com/maps|maps\.app\.goo\.gl)[^\s]*',
+    caseSensitive: false,
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    final match = _mapsRegex.firstMatch(body);
+    if (match == null) {
+      return Text(body, style: theme.textTheme.bodyMedium);
+    }
+
+    final mapUrl = match.group(0)!;
+    // Text before the URL (e.g. "📍 ")
+    final prefix = body.substring(0, match.start).trimRight();
+    // Text after the URL
+    final suffix = body.substring(match.end).trimLeft();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (prefix.isNotEmpty)
+          Text(prefix, style: theme.textTheme.bodyMedium),
+        _LocationButton(url: mapUrl),
+        if (suffix.isNotEmpty)
+          Text(suffix, style: theme.textTheme.bodyMedium),
+      ],
+    );
+  }
+}
+
+/// A tappable button that opens a Google Maps URL.
+class _LocationButton extends StatelessWidget {
+  final String url;
+
+  const _LocationButton({required this.url});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: () async {
+        final uri = Uri.tryParse(url);
+        if (uri != null && await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+      },
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: AppColors.primary.withAlpha((255 * 0.1).round()),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: AppColors.primary.withAlpha((255 * 0.3).round()),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.location_on, color: AppColors.primary, size: 20),
+            const SizedBox(width: 6),
+            Text(
+              'המיקום שלי',
+              style: TextStyle(
+                color: AppColors.primary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A tappable file attachment button. Detects PDF files and shows an
+/// appropriate icon. Tapping opens the file URL in an external application.
+class _FileAttachmentButton extends StatelessWidget {
+  final String url;
+
+  const _FileAttachmentButton({required this.url});
+
+  bool get _isPdf => url.toLowerCase().contains('.pdf');
+
+  String get _fileName {
+    try {
+      final path = Uri.parse(url).pathSegments.last;
+      return Uri.decodeComponent(path);
+    } catch (_) {
+      return 'קובץ מצורף';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final icon = _isPdf ? Icons.picture_as_pdf : Icons.attach_file;
+    final iconColor = _isPdf ? Colors.red.shade700 : AppColors.primary;
+
+    return InkWell(
+      onTap: () async {
+        final uri = Uri.tryParse(url);
+        if (uri != null && await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+      },
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: iconColor.withAlpha((255 * 0.1).round()),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: iconColor.withAlpha((255 * 0.3).round())),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: iconColor, size: 20),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                _fileName,
+                style: TextStyle(
+                  color: iconColor,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Fetches an image from an authenticated endpoint (session cookies) using
+/// the app's [HttpClient] (Dio) and renders it via [Image.memory].
+///
+/// This is needed because [Image.network] on Android/iOS does not send the
+/// session cookie, causing the server's `/uploads` auth guard to reject the
+/// request with a 401.
+class _AuthenticatedNetworkImage extends ConsumerStatefulWidget {
+  final String url;
+  final double? width;
+  final double? height;
+
+  const _AuthenticatedNetworkImage({
+    required this.url,
+    this.width,
+    this.height,
+  });
+
+  @override
+  ConsumerState<_AuthenticatedNetworkImage> createState() =>
+      _AuthenticatedNetworkImageState();
+}
+
+class _AuthenticatedNetworkImageState
+    extends ConsumerState<_AuthenticatedNetworkImage> {
+  Uint8List? _bytes;
+  bool _loading = true;
+  bool _error = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(_AuthenticatedNetworkImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url) {
+      setState(() {
+        _bytes = null;
+        _loading = true;
+        _error = false;
+      });
+      _load();
+    }
+  }
+
+  Future<void> _load() async {
+    try {
+      final client = ref.read(httpClientProvider);
+      final response = await client.get<List<int>>(
+        widget.url,
+        options: Options(responseType: ResponseType.bytes),
+      );
+      if (!mounted) return;
+      if (response.statusCode == 200 && response.data != null) {
+        setState(() {
+          _bytes = Uint8List.fromList(response.data!);
+          _loading = false;
+        });
+      } else {
+        setState(() {
+          _loading = false;
+          _error = true;
+        });
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = true;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final w = widget.width ?? 200;
+    final h = widget.height ?? 150;
+
+    if (_loading) {
+      return Container(
+        width: w,
+        height: h,
+        color: Colors.grey[200],
+        child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+      );
+    }
+    if (_error || _bytes == null) {
+      return Container(
+        width: w,
+        height: h,
+        color: Colors.grey[300],
+        child: const Icon(Icons.broken_image, size: 48),
+      );
+    }
+    return Image.memory(
+      _bytes!,
+      width: w,
+      height: h,
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) => Container(
+        width: w,
+        height: h,
+        color: Colors.grey[300],
+        child: const Icon(Icons.broken_image, size: 48),
       ),
     );
   }

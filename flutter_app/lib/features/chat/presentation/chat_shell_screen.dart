@@ -15,6 +15,7 @@ import '../../../core/services/push_notification_service.dart';
 import '../../auth/presentation/auth_state.dart';
 import '../../helpdesk/presentation/helpdesk_screen.dart';
 import '../../shuttle/presentation/shuttle_screen.dart';
+import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
 import 'chat_list_screen.dart';
 import 'create_group_dialog.dart';
@@ -97,131 +98,208 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final user = ref.watch(currentUserProvider);
+    final chatState = ref.watch(chatStoreProvider);
 
     return Directionality(
       textDirection: TextDirection.rtl,
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text(_getTabTitle(_currentTab)),
-          actions: [
-            // Connection status indicator
-            Consumer(
-              builder: (context, ref, _) {
-                final transport = ref.watch(realtimeTransportServiceProvider);
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  child: Tooltip(
-                    message: transport.transportLabel,
-                    child: Icon(
-                      _getConnectionIcon(transport.transportMode),
-                      size: 20,
-                      color: _getConnectionColor(transport.transportMode),
-                    ),
-                  ),
-                );
-              },
-            ),
-            // Settings menu
-            PopupMenuButton<String>(
-              icon: const Icon(Icons.more_vert),
-              onSelected: (value) {
-                switch (value) {
-                  case 'logout':
-                    _handleLogout();
-                    break;
-                  case 'refresh':
-                    _handleRefresh();
-                    break;
-                }
-              },
-              itemBuilder: (context) => [
-                PopupMenuItem(
-                  value: 'refresh',
-                  child: Row(
-                    children: [
-                      const Icon(Icons.refresh, size: 20),
-                      const SizedBox(width: 12),
-                      const Text('רענון'),
-                    ],
-                  ),
+      child: Stack(
+        children: [
+          Scaffold(
+            appBar: AppBar(
+              title: Text(_getTabTitle(_currentTab)),
+              actions: [
+                // Connection status indicator
+                Consumer(
+                  builder: (context, ref, _) {
+                    final transport = ref.watch(realtimeTransportServiceProvider);
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      child: Tooltip(
+                        message: transport.transportLabel,
+                        child: Icon(
+                          _getConnectionIcon(transport.transportMode),
+                          size: 20,
+                          color: _getConnectionColor(transport.transportMode),
+                        ),
+                      ),
+                    );
+                  },
                 ),
-                const PopupMenuDivider(),
-                PopupMenuItem(
-                  value: 'logout',
-                  child: Row(
-                    children: [
-                      Icon(Icons.logout, size: 20, color: Theme.of(context).colorScheme.error),
-                      const SizedBox(width: 12),
-                      Text('התנתקות', style: TextStyle(color: Theme.of(context).colorScheme.error)),
-                    ],
-                  ),
+                // Settings menu
+                PopupMenuButton<String>(
+                  icon: const Icon(Icons.more_vert),
+                  onSelected: (value) {
+                    switch (value) {
+                      case 'logout':
+                        _handleLogout();
+                        break;
+                      case 'refresh':
+                        _handleRefresh();
+                        break;
+                      case 'fullsync':
+                        _handleFullSync();
+                        break;
+                    }
+                  },
+                  itemBuilder: (context) => [
+                    PopupMenuItem(
+                      value: 'refresh',
+                      child: Row(
+                        children: [
+                          const Icon(Icons.refresh, size: 20),
+                          const SizedBox(width: 12),
+                          const Text('רענון'),
+                        ],
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'fullsync',
+                      child: Row(
+                        children: [
+                          const Icon(Icons.sync, size: 20),
+                          const SizedBox(width: 12),
+                          const Text('סנכרון הודעות'),
+                        ],
+                      ),
+                    ),
+                    const PopupMenuDivider(),
+                    PopupMenuItem(
+                      value: 'logout',
+                      child: Row(
+                        children: [
+                          Icon(Icons.logout, size: 20, color: Theme.of(context).colorScheme.error),
+                          const SizedBox(width: 12),
+                          Text('התנתקות', style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
-          ],
-        ),
-        body: PageView(
-          controller: _pageController,
-          onPageChanged: (index) {
-            setState(() {
-              _currentTab = MainTab.values[index];
-            });
-          },
-          children: [
-            _buildChatsTab(),
-            _buildGroupsTab(),
-            _buildShuttleTab(),
-            _buildHelpdeskTab(),
-            _buildSettingsTab(),
-          ],
-        ),
-        bottomNavigationBar: BottomNavigationBar(
-          currentIndex: _currentTab.index,
-          onTap: (index) {
-            setState(() {
-              _currentTab = MainTab.values[index];
-            });
-            _pageController.animateToPage(
-              index,
-              duration: const Duration(milliseconds: 300),
-              curve: Curves.easeInOut,
-            );
-          },
-          items: const [
-            BottomNavigationBarItem(
-              icon: Icon(Icons.chat_bubble_outline),
-              activeIcon: Icon(Icons.chat_bubble),
-              label: 'צ\'אטים',
+            body: PageView(
+              controller: _pageController,
+              onPageChanged: (index) {
+                setState(() {
+                  _currentTab = MainTab.values[index];
+                });
+              },
+              children: [
+                _buildChatsTab(),
+                _buildGroupsTab(),
+                _buildShuttleTab(),
+                _buildHelpdeskTab(),
+                _buildSettingsTab(),
+              ],
             ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.group_outlined),
-              activeIcon: Icon(Icons.group),
-              label: 'קבוצות',
+            bottomNavigationBar: BottomNavigationBar(
+              currentIndex: _currentTab.index,
+              onTap: (index) {
+                setState(() {
+                  _currentTab = MainTab.values[index];
+                });
+                _pageController.animateToPage(
+                  index,
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeInOut,
+                );
+              },
+              items: const [
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.chat_bubble_outline),
+                  activeIcon: Icon(Icons.chat_bubble),
+                  label: 'צ\'אטים',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.group_outlined),
+                  activeIcon: Icon(Icons.group),
+                  label: 'קבוצות',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.directions_bus_outlined),
+                  activeIcon: Icon(Icons.directions_bus),
+                  label: 'הסעות',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.support_agent_outlined),
+                  activeIcon: Icon(Icons.support_agent),
+                  label: 'מוקד איחוד',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.settings_outlined),
+                  activeIcon: Icon(Icons.settings),
+                  label: 'הגדרות',
+                ),
+              ],
             ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.directions_bus_outlined),
-              activeIcon: Icon(Icons.directions_bus),
-              label: 'הסעות',
+            floatingActionButton: _currentTab == MainTab.chats || _currentTab == MainTab.groups
+                ? FloatingActionButton(
+                    onPressed: _handleNewChat,
+                    child: const Icon(Icons.add),
+                  )
+                : null,
+          ),
+
+          // Full-sync progress overlay — mirrors Angular's sync-loader-backdrop.
+          if (chatState.isSyncing)
+            Positioned.fill(
+              child: ColoredBox(
+                color: Colors.black.withAlpha((255 * 0.55).round()),
+                child: Center(
+                  child: Card(
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 32,
+                        vertical: 28,
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const CircularProgressIndicator(),
+                          const SizedBox(height: 16),
+                          const Text(
+                            'מסנכרן הודעות...',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            '${chatState.syncProgressPercent}%',
+                            style: const TextStyle(fontSize: 14),
+                          ),
+                          const SizedBox(height: 8),
+                          SizedBox(
+                            width: 220,
+                            child: LinearProgressIndicator(
+                              value: chatState.syncProgressPercent / 100,
+                              minHeight: 6,
+                              borderRadius: BorderRadius.circular(3),
+                            ),
+                          ),
+                          if (chatState.syncProgressLabel.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              chatState.syncProgressLabel,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.support_agent_outlined),
-              activeIcon: Icon(Icons.support_agent),
-              label: 'תמיכה',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.settings_outlined),
-              activeIcon: Icon(Icons.settings),
-              label: 'הגדרות',
-            ),
-          ],
-        ),
-        floatingActionButton: _currentTab == MainTab.chats || _currentTab == MainTab.groups
-            ? FloatingActionButton(
-                onPressed: _handleNewChat,
-                child: const Icon(Icons.add),
-              )
-            : null,
+        ],
       ),
     );
   }
@@ -339,7 +417,6 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
     final result = await showCreateGroupDialog(context);
     if (result == null || !mounted) return;
     final notifier = ref.read(chatStoreProvider.notifier);
-    final messenger = ScaffoldMessenger.of(context);
     try {
       final group = await notifier.createGroup(
         name: result.name,
@@ -347,9 +424,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
         type: result.type,
       );
       if (!mounted) return;
-      messenger.showSnackBar(
-        const SnackBar(content: Text('הקבוצה נוצרה')),
-      );
+      showTopToast(context, 'הקבוצה נוצרה');
       Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => MessageScreen(chatId: group.id),
@@ -357,9 +432,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      messenger.showSnackBar(
-        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
-      );
+      showTopToast(context, e.toString().replaceFirst('Exception: ', ''));
     }
   }
 
@@ -369,6 +442,24 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
       final transport = ref.read(realtimeTransportServiceProvider);
       transport.disconnect();
       transport.connect(user, isNetworkReachable: () => true);
+    }
+  }
+
+  Future<void> _handleFullSync() async {
+    try {
+      await ref.read(chatStoreProvider.notifier).forceSyncAllMessagesAndClearCache();
+      if (!mounted) return;
+      showTopToast(context, 'סנכרון מלא הושלם.', duration: const Duration(seconds: 2));
+    } catch (e) {
+      if (!mounted) return;
+      String message;
+      if (e is Exception) {
+        message = e.toString().replaceFirst('Exception: ', '');
+      } else {
+        final raw = e.toString().trim();
+        message = raw.isNotEmpty ? raw : 'הסנכרון נכשל. נסה שוב.';
+      }
+      showTopToast(context, message, duration: const Duration(seconds: 3));
     }
   }
 

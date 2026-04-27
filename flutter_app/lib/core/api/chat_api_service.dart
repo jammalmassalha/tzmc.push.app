@@ -180,6 +180,20 @@ class ChatApiService {
     final seen = <String>{};
 
     return users
+        .where((item) {
+          // Mirror Angular: when the row has a fullName/full_name field that is
+          // empty, filter it out (these are header/dummy rows from the sheet
+          // that contain only a phone number and no real display name).
+          final json = item as Map<String, dynamic>;
+          final hasFullNameField =
+              json.containsKey('fullName') || json.containsKey('full_name');
+          if (hasFullNameField) {
+            final fullName =
+                (json['fullName'] ?? json['full_name'] ?? '').toString().trim();
+            if (fullName.isEmpty) return false;
+          }
+          return true;
+        })
         .map((item) => Contact.fromJson(item as Map<String, dynamic>))
         .where((contact) {
           final key = contact.username.toLowerCase();
@@ -739,6 +753,38 @@ class ChatApiService {
     
     if (body['result'] == 'error') {
       final errorMessage = body['message'] as String? ?? 'שגיאה בעדכון סטטוס הקריאה';
+      throw ApiException(errorMessage);
+    }
+  }
+
+  /// Assign a handler to a helpdesk ticket (Editor/Admin only)
+  ///
+  /// Pass [handlerUsername] as null to unassign the current handler.
+  /// [user] is required for backend authorization when session cookies are not available.
+  Future<void> assignHelpdeskHandler(int ticketId, String? handlerUsername, String user) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) {
+      throw ApiException('User is required for helpdesk handler assignment');
+    }
+
+    final response = await _client.put<Map<String, dynamic>>(
+      '${ApiEndpoints.helpdeskTickets}/$ticketId/handler',
+      data: {
+        'handler_username': handlerUsername,
+        'user': normalizedUser,
+      },
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+
+    final body = response.data ?? {};
+
+    if (!response.isSuccessful) {
+      final errorMessage = body['message'] as String? ?? 'שגיאה בשיוך מטפל';
+      throw ApiException(errorMessage);
+    }
+
+    if (body['result'] == 'error') {
+      final errorMessage = body['message'] as String? ?? 'שגיאה בשיוך מטפל';
       throw ApiException(errorMessage);
     }
   }
