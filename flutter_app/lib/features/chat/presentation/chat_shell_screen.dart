@@ -452,9 +452,13 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
       showTopToast(context, 'סנכרון מלא הושלם.', duration: const Duration(seconds: 2));
     } catch (e) {
       if (!mounted) return;
-      final message = e is Exception
-          ? e.toString().replaceFirst('Exception: ', '')
-          : 'הסנכרון נכשל. נסה שוב.';
+      String message;
+      if (e is Exception) {
+        message = e.toString().replaceFirst('Exception: ', '');
+      } else {
+        final raw = e.toString().trim();
+        message = raw.isNotEmpty ? raw : 'הסנכרון נכשל. נסה שוב.';
+      }
       showTopToast(context, message, duration: const Duration(seconds: 3));
     }
   }

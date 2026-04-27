@@ -519,8 +519,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     );
 
     try {
-      // 1. Wipe the local Drift database.
-      await _db.clearAll();
+      // 1. Wipe the local Drift database (best-effort; may fail on Flutter web
+      //    where the Drift SQLite WASM runtime requires sqlite3.wasm / drift_worker.js
+      //    in the web/ folder. If missing, the batch-delete throws a non-Exception
+      //    Dart Error. We catch it and continue – the in-memory state is cleared
+      //    below and the server pull re-populates everything fresh.)
+      try {
+        await _db.clearAll();
+      } catch (_) {
+        // DB clear failed (e.g. sqlite3.wasm not available on web).
+        // The in-memory state is still cleared in the copyWith below.
+      }
       state = state.copyWith(
         messagesByChat: const {},
         unreadByChat: const {},
