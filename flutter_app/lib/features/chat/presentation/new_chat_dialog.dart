@@ -57,6 +57,8 @@ class _NewChatDialogState extends ConsumerState<_NewChatDialog> {
 
     final contacts = state.contacts.values.where((c) {
       if (me != null && c.username.trim().toLowerCase() == me) return false;
+      // Exclude inactive users (status == 0), matching Angular behaviour
+      if (c.status == 0) return false;
       if (_query.isEmpty) return true;
       final info = (c.info ?? '').toLowerCase();
       final phone = (c.phone ?? '').toLowerCase();
@@ -134,28 +136,48 @@ class _NewChatDialogState extends ConsumerState<_NewChatDialog> {
   }
 }
 
-class _ContactTile extends StatelessWidget {
+class _ContactTile extends StatefulWidget {
   final Contact contact;
   final VoidCallback onTap;
 
   const _ContactTile({required this.contact, required this.onTap});
 
   @override
+  State<_ContactTile> createState() => _ContactTileState();
+}
+
+class _ContactTileState extends State<_ContactTile> {
+  bool _avatarError = false;
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final contact = widget.contact;
     final initial =
         contact.displayName.isNotEmpty ? contact.displayName[0].toUpperCase() : '?';
+
+    Widget avatar;
+    if (!_avatarError && contact.upic != null && contact.upic!.isNotEmpty) {
+      avatar = CircleAvatar(
+        backgroundImage: NetworkImage(contact.upic!),
+        onBackgroundImageError: (_, __) {
+          if (mounted) setState(() => _avatarError = true);
+        },
+        backgroundColor: AppColors.primary,
+        child: null,
+      );
+    } else {
+      avatar = CircleAvatar(
+        backgroundColor: AppColors.primary,
+        child: Text(initial,
+            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+      );
+    }
+
     return ListTile(
-      onTap: onTap,
-      leading: contact.upic != null && contact.upic!.isNotEmpty
-          ? CircleAvatar(backgroundImage: NetworkImage(contact.upic!))
-          : CircleAvatar(
-              backgroundColor: AppColors.primary,
-              child: Text(initial,
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-            ),
-      title: Text(contact.displayName,
-          style: theme.textTheme.bodyLarge),
+      onTap: widget.onTap,
+      leading: avatar,
+      title: Text(contact.displayName, style: theme.textTheme.bodyLarge),
       subtitle: contact.info != null && contact.info!.isNotEmpty
           ? Text(contact.info!,
               style: theme.textTheme.bodySmall,

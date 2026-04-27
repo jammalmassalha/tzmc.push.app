@@ -180,6 +180,20 @@ class ChatApiService {
     final seen = <String>{};
 
     return users
+        .where((item) {
+          // Mirror Angular: when the row has a fullName/full_name field that is
+          // empty, filter it out (these are header/dummy rows from the sheet
+          // that contain only a phone number and no real display name).
+          final json = item as Map<String, dynamic>;
+          final hasFullNameField =
+              json.containsKey('fullName') || json.containsKey('full_name');
+          if (hasFullNameField) {
+            final fullName =
+                (json['fullName'] ?? json['full_name'] ?? '').toString().trim();
+            if (fullName.isEmpty) return false;
+          }
+          return true;
+        })
         .map((item) => Contact.fromJson(item as Map<String, dynamic>))
         .where((contact) {
           final key = contact.username.toLowerCase();
