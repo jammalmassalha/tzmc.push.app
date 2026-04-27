@@ -551,8 +551,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         syncProgressLabel: 'מושך הודעות...',
       );
 
-      // 4. Pull messages (full pull — no since filter).
-      await pullMessages();
+      // 4. Pull messages (full pull — always since:0 so the stale DB timestamp is
+      //    never used, which is especially important on Flutter web where the DB
+      //    clear above may have silently failed and still holds the old high-water
+      //    timestamp).
+      await pullMessages(since: 0);
       state = state.copyWith(
         syncProgressPercent: 80,
         syncProgressLabel: 'משחזר הודעות שהוחמצו...',
