@@ -567,11 +567,15 @@ function registerHelpdeskController(app, deps = {}) {
                 'UPDATE `helpdesk_tickets` SET `status` = ? WHERE `id` = ?',
                 [status, ticketId]
             );
-            // Record status change in history
-            pool.execute(
-                'INSERT INTO `helpdesk_status_history` (`ticket_id`, `old_status`, `new_status`, `changed_by`) VALUES (?, ?, ?, ?)',
-                [ticketId, previousStatus || null, status, user]
-            ).catch((err) => console.error('[HELPDESK] Insert status history error:', err && err.message ? err.message : err));
+            // Record status change in history (awaited so the entry is visible when client refreshes)
+            try {
+                await pool.execute(
+                    'INSERT INTO `helpdesk_status_history` (`ticket_id`, `old_status`, `new_status`, `changed_by`) VALUES (?, ?, ?, ?)',
+                    [ticketId, previousStatus || null, status, user]
+                );
+            } catch (histErr) {
+                console.error('[HELPDESK] Insert status history error:', histErr && histErr.message ? histErr.message : histErr);
+            }
             return res.json({ result: 'success' });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to update status';
