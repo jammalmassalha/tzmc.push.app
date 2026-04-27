@@ -392,7 +392,7 @@ class _MessageBubble extends StatelessWidget {
           mainAxisAlignment: isOutgoing ? MainAxisAlignment.start : MainAxisAlignment.end,
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            if (isOutgoing) const SizedBox(width: 48),
+            if (isOutgoing) const SizedBox(width: 8),
             Flexible(
               child: Container(
                 constraints: BoxConstraints(
@@ -458,12 +458,20 @@ class _MessageBubble extends StatelessWidget {
                     if (message.imageUrl != null && !isDeleted)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: _AuthenticatedNetworkImage(
-                            url: message.imageUrl!,
-                            width: 200,
-                            height: 150,
+                        child: GestureDetector(
+                          onTap: () async {
+                            final uri = Uri.tryParse(message.imageUrl!);
+                            if (uri != null && await canLaunchUrl(uri)) {
+                              await launchUrl(uri, mode: LaunchMode.externalApplication);
+                            }
+                          },
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: _AuthenticatedNetworkImage(
+                              url: message.imageUrl!,
+                              width: 200,
+                              height: 150,
+                            ),
                           ),
                         ),
                       ),
@@ -472,14 +480,7 @@ class _MessageBubble extends StatelessWidget {
                     if (message.fileUrl != null && !isDeleted)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.attach_file, size: 20),
-                            const SizedBox(width: 8),
-                            const Text('קובץ מצורף'),
-                          ],
-                        ),
+                        child: _FileAttachmentButton(url: message.fileUrl!),
                       ),
 
                     // Message body
@@ -532,7 +533,7 @@ class _MessageBubble extends StatelessWidget {
                 ),
               ),
             ),
-            if (!isOutgoing) const SizedBox(width: 48),
+            if (!isOutgoing) const SizedBox(width: 8),
           ],
         ),
       ),
@@ -944,6 +945,69 @@ class _LocationButton extends StatelessWidget {
               style: TextStyle(
                 color: AppColors.primary,
                 fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A tappable file attachment button. Detects PDF files and shows an
+/// appropriate icon. Tapping opens the file URL in an external application.
+class _FileAttachmentButton extends StatelessWidget {
+  final String url;
+
+  const _FileAttachmentButton({required this.url});
+
+  bool get _isPdf => url.toLowerCase().contains('.pdf');
+
+  String get _fileName {
+    try {
+      final path = Uri.parse(url).pathSegments.last;
+      return Uri.decodeComponent(path);
+    } catch (_) {
+      return 'קובץ מצורף';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final icon = _isPdf ? Icons.picture_as_pdf : Icons.attach_file;
+    final iconColor = _isPdf ? Colors.red.shade700 : AppColors.primary;
+
+    return InkWell(
+      onTap: () async {
+        final uri = Uri.tryParse(url);
+        if (uri != null && await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+      },
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: iconColor.withAlpha((255 * 0.1).round()),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: iconColor.withAlpha((255 * 0.3).round())),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: iconColor, size: 20),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                _fileName,
+                style: TextStyle(
+                  color: iconColor,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
           ],
