@@ -1110,6 +1110,15 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
     return contacts[username]?.displayName ?? username;
   }
 
+  /// Returns the phone number stored in the contacts store for [username],
+  /// or null if unavailable. Mirrors Angular `resolveContact().phone`.
+  String? _resolveContactPhone(String? username) {
+    if (username == null || username.isEmpty) return null;
+    final contacts = ref.read(chatStoreProvider).contacts;
+    final phone = contacts[username]?.phone;
+    return (phone != null && phone.isNotEmpty) ? phone : null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -1176,6 +1185,11 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                       icon: Icons.person,
                       label: 'נפתח על-ידי',
                       value: _resolveDisplay(_ticket.creatorUsername)),
+                  if (_resolveContactPhone(_ticket.creatorUsername) != null)
+                    _DetailRow(
+                        icon: Icons.phone,
+                        label: 'טלפון (איש קשר)',
+                        value: _resolveContactPhone(_ticket.creatorUsername)!),
                   if (_ticket.phone != null && _ticket.phone!.isNotEmpty)
                     _DetailRow(
                         icon: Icons.phone,

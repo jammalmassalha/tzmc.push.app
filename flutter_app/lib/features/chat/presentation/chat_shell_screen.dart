@@ -222,7 +222,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
                 BottomNavigationBarItem(
                   icon: Icon(Icons.support_agent_outlined),
                   activeIcon: Icon(Icons.support_agent),
-                  label: 'תמיכה',
+                  label: 'מוקד',
                 ),
                 BottomNavigationBarItem(
                   icon: Icon(Icons.settings_outlined),
