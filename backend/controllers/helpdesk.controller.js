@@ -356,8 +356,10 @@ function registerHelpdeskController(app, deps = {}) {
         }
     });
 
-    // PUT /helpdesk/tickets/:id/handler - Editor/Admin assigns a handler to a ticket
-    app.put(['/helpdesk/tickets/:id/handler', '/notify/helpdesk/tickets/:id/handler'], requireUser, helpdeskRateLimit(20, 60 * 1000), async (req, res) => {
+    // PUT/POST /helpdesk/tickets/:id/handler - Editor/Admin assigns a handler to a ticket
+    // POST is accepted alongside PUT so that browser clients behind reverse proxies that
+    // strip PUT from CORS preflight Allow-Methods responses can still reach this endpoint.
+    async function assignHandlerHandler(req, res) {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
@@ -407,7 +409,9 @@ function registerHelpdeskController(app, deps = {}) {
             console.error('[HELPDESK] Assign handler error:', message);
             return res.status(500).json({ result: 'error', message: 'שגיאה בשיוך מטפל' });
         }
-    });
+    }
+    app.put(['/helpdesk/tickets/:id/handler', '/notify/helpdesk/tickets/:id/handler'], requireUser, helpdeskRateLimit(20, 60 * 1000), assignHandlerHandler);
+    app.post(['/helpdesk/tickets/:id/handler', '/notify/helpdesk/tickets/:id/handler'], requireUser, helpdeskRateLimit(20, 60 * 1000), assignHandlerHandler);
 
     // POST /helpdesk/tickets/:id/notes - Add a note to a ticket
     app.post(['/helpdesk/tickets/:id/notes', '/notify/helpdesk/tickets/:id/notes'], requireUser, helpdeskRateLimit(20, 60 * 1000), async (req, res) => {
