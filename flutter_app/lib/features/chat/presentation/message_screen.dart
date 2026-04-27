@@ -59,21 +59,52 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
               Navigator.of(context).pop();
             },
           ),
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          title: Row(
             children: [
-              Text(
-                chatInfo.title,
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-              ),
-              if (chatInfo.subtitle != null)
-                Text(
-                  chatInfo.subtitle!,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.white.withAlpha((255 * 0.7).round()),
-                  ),
+              GestureDetector(
+                onTap: chatInfo.avatarUrl != null
+                    ? () => _showAvatarPreview(context, chatInfo.title, chatInfo.avatarUrl!)
+                    : null,
+                child: CircleAvatar(
+                  radius: 20,
+                  backgroundColor: Colors.white24,
+                  backgroundImage: chatInfo.avatarUrl != null
+                      ? NetworkImage(chatInfo.avatarUrl!)
+                      : null,
+                  child: chatInfo.avatarUrl == null
+                      ? Text(
+                          chatInfo.title.isNotEmpty ? chatInfo.title[0].toUpperCase() : '?',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        )
+                      : null,
                 ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      chatInfo.title,
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if (chatInfo.subtitle != null)
+                      Text(
+                        chatInfo.subtitle!,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.white.withAlpha((255 * 0.7).round()),
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                  ],
+                ),
+              ),
             ],
           ),
           actions: [
@@ -183,13 +214,14 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     );
   }
 
-  ({String title, String? subtitle, bool isGroup}) _getChatInfo(ChatState state) {
+  ({String title, String? subtitle, bool isGroup, String? avatarUrl}) _getChatInfo(ChatState state) {
     final group = state.groups[widget.chatId];
     if (group != null) {
       return (
         title: group.name,
         subtitle: '${group.members.length} חברים',
         isGroup: true,
+        avatarUrl: null,
       );
     }
 
@@ -198,6 +230,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       title: contact?.displayName ?? widget.chatId,
       subtitle: contact?.info,
       isGroup: false,
+      avatarUrl: (contact?.upic?.trim().isNotEmpty ?? false) ? contact!.upic : null,
     );
   }
 
@@ -289,7 +322,58 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   }
 
   void _showChatInfo() {
-    showTopToast(context, 'פרטי שיחה - בקרוב');
+    final state = ref.read(chatStoreProvider);
+    final chatInfo = _getChatInfo(state);
+    if (chatInfo.avatarUrl != null) {
+      _showAvatarPreview(context, chatInfo.title, chatInfo.avatarUrl!);
+    } else {
+      showTopToast(context, 'פרטי שיחה - בקרוב');
+    }
+  }
+
+  void _showAvatarPreview(BuildContext context, String title, String avatarUrl) {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Align(
+              alignment: Alignment.topLeft,
+              child: IconButton(
+                icon: const Icon(Icons.close, color: Colors.white),
+                onPressed: () => Navigator.of(ctx).pop(),
+              ),
+            ),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Image.network(
+                avatarUrl,
+                fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) => const Icon(
+                  Icons.broken_image,
+                  color: Colors.white54,
+                  size: 80,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              title,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _showSearch() {
