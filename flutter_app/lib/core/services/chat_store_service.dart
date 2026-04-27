@@ -1078,6 +1078,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     newUnread[chatId] = 0;
     state = state.copyWith(unreadByChat: newUnread);
 
+    // Persist the cleared count immediately so it survives app restart /
+    // full sync without requiring the full state snapshot.
+    try {
+      await _db.clearUnreadCount(chatId);
+    } catch (_) {
+      // Non-fatal – the in-memory count is already correct.
+    }
+
     try {
       await _api.markMessagesAsRead(chatId, messageIds);
     } catch (e) {
