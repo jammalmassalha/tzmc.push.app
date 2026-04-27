@@ -1,0 +1,19 @@
+{
+  "name": "tzmc-push-app",
+  "version": "1.0.0",
+  "description": "Push notification app",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "generate-keys": "node scripts/generate-vapid-keys.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "web-push": "^3.6.7"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}

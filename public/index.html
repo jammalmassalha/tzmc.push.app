@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TZMC Push App</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: #f0f2f5;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1rem;
+      }
+
+      .card {
+        background: #fff;
+        border-radius: 12px;
+        box-shadow: 0 4px 24px rgba(0, 0, 0, 0.1);
+        padding: 2rem;
+        max-width: 480px;
+        width: 100%;
+      }
+
+      h1 {
+        font-size: 1.5rem;
+        margin-bottom: 0.5rem;
+        color: #1a1a2e;
+      }
+
+      p.subtitle {
+        color: #666;
+        margin-bottom: 1.5rem;
+        font-size: 0.9rem;
+      }
+
+      .status {
+        padding: 0.75rem 1rem;
+        border-radius: 8px;
+        margin-bottom: 1.5rem;
+        font-size: 0.9rem;
+        background: #e9f5ff;
+        color: #0069c0;
+        border: 1px solid #b3d8ff;
+      }
+
+      .status.success {
+        background: #e6f9ee;
+        color: #1a7f37;
+        border-color: #a3d9b1;
+      }
+
+      .status.error {
+        background: #fff0f0;
+        color: #cc0000;
+        border-color: #ffb3b3;
+      }
+
+      .btn-group {
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        margin-bottom: 2rem;
+      }
+
+      button {
+        flex: 1;
+        padding: 0.7rem 1rem;
+        border: none;
+        border-radius: 8px;
+        font-size: 0.9rem;
+        cursor: pointer;
+        font-weight: 600;
+        transition: opacity 0.2s;
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      #btn-subscribe {
+        background: #0069c0;
+        color: #fff;
+      }
+
+      #btn-unsubscribe {
+        background: #e53935;
+        color: #fff;
+      }
+
+      .divider {
+        border: none;
+        border-top: 1px solid #eee;
+        margin: 1.5rem 0;
+      }
+
+      h2 {
+        font-size: 1rem;
+        color: #333;
+        margin-bottom: 1rem;
+      }
+
+      .form-group {
+        margin-bottom: 1rem;
+      }
+
+      label {
+        display: block;
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #444;
+        margin-bottom: 0.3rem;
+      }
+
+      input[type='text'],
+      input[type='url'] {
+        width: 100%;
+        padding: 0.6rem 0.75rem;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        font-size: 0.9rem;
+        outline: none;
+        transition: border-color 0.2s;
+      }
+
+      input[type='text']:focus,
+      input[type='url']:focus {
+        border-color: #0069c0;
+      }
+
+      #btn-notify {
+        width: 100%;
+        background: #4caf50;
+        color: #fff;
+        padding: 0.75rem;
+        font-size: 1rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>🔔 TZMC Push App</h1>
+      <p class="subtitle">Subscribe to receive push notifications in your browser.</p>
+
+      <div id="status" class="status">Checking notification support…</div>
+
+      <div class="btn-group">
+        <button id="btn-subscribe" disabled>Subscribe</button>
+        <button id="btn-unsubscribe" disabled>Unsubscribe</button>
+      </div>
+
+      <hr class="divider" />
+
+      <h2>Send a Notification</h2>
+
+      <div class="form-group">
+        <label for="notif-title">Title *</label>
+        <input type="text" id="notif-title" placeholder="Notification title" />
+      </div>
+
+      <div class="form-group">
+        <label for="notif-body">Message *</label>
+        <input type="text" id="notif-body" placeholder="Notification message" />
+      </div>
+
+      <div class="form-group">
+        <label for="notif-url">Link (optional)</label>
+        <input type="url" id="notif-url" placeholder="https://example.com" />
+      </div>
+
+      <button id="btn-notify">Send Notification to All Subscribers</button>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
