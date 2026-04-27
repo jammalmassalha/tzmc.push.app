@@ -568,7 +568,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // 6. Reset unread counters.
       state = state.copyWith(unreadByChat: const {});
 
-      _schedulePersistence();
+      // Persist to disk immediately (do not defer via _schedulePersistence so
+      // that data survives an app close that happens right after the sync).
+      await persistNow();
       state = state.copyWith(
         syncProgressPercent: 100,
         isInitialized: true,
@@ -1401,17 +1403,22 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   }
 
   Future<void> _persistState() async {
-    final allMessages = <ChatMessage>[];
-    for (final messages in state.messagesByChat.values) {
-      allMessages.addAll(messages);
-    }
+    try {
+      final allMessages = <ChatMessage>[];
+      for (final messages in state.messagesByChat.values) {
+        allMessages.addAll(messages);
+      }
 
-    await _db.persistState(PersistedChatState(
-      contacts: state.contacts.values.toList(),
-      groups: state.groups.values.toList(),
-      unreadByChat: state.unreadByChat,
-      messages: allMessages,
-    ));
+      await _db.persistState(PersistedChatState(
+        contacts: state.contacts.values.toList(),
+        groups: state.groups.values.toList(),
+        unreadByChat: state.unreadByChat,
+        messages: allMessages,
+      ));
+    } catch (_) {
+      // Persistence failure is non-fatal – data remains available in memory
+      // for the current session and will be retried on the next trigger.
+    }
   }
 
   /// Force immediate persistence
