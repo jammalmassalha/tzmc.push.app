@@ -14,6 +14,7 @@ import '../../../core/api/chat_api_service.dart';
 import '../../../core/models/helpdesk_models.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../auth/presentation/auth_state.dart';
+import '../../../core/utils/toast_utils.dart';
 
 // ---------------------------------------------------------------------------
 // Helpdesk State
@@ -609,13 +610,11 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
               ElevatedButton(
                 onPressed: () async {
                   if (subjectCtrl.text.trim().isEmpty) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('יש להזין כותרת')));
+                    showTopToast(context, 'יש להזין כותרת');
                     return;
                   }
                   if (locationCtrl.text.trim().isEmpty) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('יש להזין מיקום')));
+                    showTopToast(context, 'יש להזין מיקום');
                     return;
                   }
                   Navigator.of(context).pop();
@@ -633,15 +632,15 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                               : phoneCtrl.text.trim(),
                         );
                     if (ctx.mounted) {
-                      ScaffoldMessenger.of(ctx).showSnackBar(
-                          const SnackBar(content: Text('הפנייה נוצרה בהצלחה')));
+                      showTopToast(ctx, 'הפנייה נוצרה בהצלחה');
                     }
                   } catch (e) {
                     if (ctx.mounted) {
-                      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
-                        content: Text('שגיאה: ${e.toString()}'),
+                      showTopToast(
+                        ctx,
+                        'שגיאה: ${e.toString()}',
                         backgroundColor: Theme.of(ctx).colorScheme.error,
-                      ));
+                      );
                     }
                   }
                 },
@@ -1058,8 +1057,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
           .read(helpdeskProvider.notifier)
           .assignHandler(int.parse(_ticket.id), _selectedHandler);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('המטפל עודכן בהצלחה')));
+        showTopToast(context, 'המטפל עודכן בהצלחה');
       }
     } catch (e) {
       if (mounted) setState(() => _handlerError = e.toString());
@@ -1075,8 +1073,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
           .read(helpdeskProvider.notifier)
           .updateTicketStatus(int.parse(_ticket.id), _selectedStatus);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('הסטטוס עודכן בהצלחה')));
+        showTopToast(context, 'הסטטוס עודכן בהצלחה');
         final api = ref.read(chatApiServiceProvider);
         await _loadHistory(api, int.parse(_ticket.id));
       }

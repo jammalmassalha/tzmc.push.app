@@ -17,6 +17,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../core/api/http_client.dart';
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
+import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
 import 'message_composer.dart';
 
@@ -288,15 +289,11 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   }
 
   void _showChatInfo() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('פרטי שיחה - בקרוב')),
-    );
+    showTopToast(context, 'פרטי שיחה - בקרוב');
   }
 
   void _showSearch() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('חיפוש בשיחה - בקרוב')),
-    );
+    showTopToast(context, 'חיפוש בשיחה - בקרוב');
   }
 
   void _handleReaction(ChatMessage message, String emoji) {
@@ -339,9 +336,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
 
   void _handleCopy(ChatMessage message) {
     Clipboard.setData(ClipboardData(text: message.body));
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('ההודעה הועתקה'), duration: Duration(seconds: 1)),
-    );
+    showTopToast(context, 'ההודעה הועתקה', duration: const Duration(seconds: 1));
   }
 
   void _scrollToBottom() {

@@ -13,6 +13,7 @@ import 'package:intl/intl.dart';
 import '../../../core/api/chat_api_service.dart';
 import '../../../core/models/api_payloads.dart';
 import '../../../core/services/chat_store_service.dart';
+import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
 import '../../auth/presentation/auth_state.dart';
 
@@ -1198,14 +1199,13 @@ class _BookingSheet extends ConsumerWidget {
                   if (value != null) {
                     await notifier.selectStationAndSubmit(value);
                     if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(notifier.text(
-                            'ההזמנה נשלחה בהצלחה! ✅',
-                            'Заказ успешно отправлен! ✅',
-                          )),
-                          backgroundColor: AppColors.success,
+                      showTopToast(
+                        context,
+                        notifier.text(
+                          'ההזמנה נשלחה בהצלחה! ✅',
+                          'Заказ успешно отправлен! ✅',
                         ),
+                        backgroundColor: AppColors.success,
                       );
                     }
                   }
@@ -1381,7 +1381,7 @@ class _OrderCard extends ConsumerWidget {
   }
 
   Future<void> _confirmAndCancel(BuildContext context, WidgetRef ref) async {
-    final messenger = ScaffoldMessenger.of(context);
+    final overlay = Overlay.of(context, rootOverlay: true);
     final errorColor = Theme.of(context).colorScheme.error;
     final confirmed = await showDialog<bool>(
       context: context,
@@ -1410,19 +1410,11 @@ class _OrderCard extends ConsumerWidget {
 
     try {
       await ref.read(shuttleProvider.notifier).cancelOrder(order);
-      messenger.showSnackBar(
-        const SnackBar(
-          content: Text('ההזמנה בוטלה בהצלחה ✅'),
-          backgroundColor: AppColors.success,
-        ),
-      );
+      showTopToastOnOverlay(overlay, 'ההזמנה בוטלה בהצלחה ✅',
+          backgroundColor: AppColors.success);
     } catch (e) {
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text('שגיאה בביטול הזמנה: ${e.toString()}'),
-          backgroundColor: errorColor,
-        ),
-      );
+      showTopToastOnOverlay(overlay, 'שגיאה בביטול הזמנה: ${e.toString()}',
+          backgroundColor: errorColor);
     }
   }
 }

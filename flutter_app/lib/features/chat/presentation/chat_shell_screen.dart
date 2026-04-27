@@ -15,6 +15,7 @@ import '../../../core/services/push_notification_service.dart';
 import '../../auth/presentation/auth_state.dart';
 import '../../helpdesk/presentation/helpdesk_screen.dart';
 import '../../shuttle/presentation/shuttle_screen.dart';
+import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
 import 'chat_list_screen.dart';
 import 'create_group_dialog.dart';
@@ -416,7 +417,6 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
     final result = await showCreateGroupDialog(context);
     if (result == null || !mounted) return;
     final notifier = ref.read(chatStoreProvider.notifier);
-    final messenger = ScaffoldMessenger.of(context);
     try {
       final group = await notifier.createGroup(
         name: result.name,
@@ -424,9 +424,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
         type: result.type,
       );
       if (!mounted) return;
-      messenger.showSnackBar(
-        const SnackBar(content: Text('הקבוצה נוצרה')),
-      );
+      showTopToast(context, 'הקבוצה נוצרה');
       Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => MessageScreen(chatId: group.id),
@@ -434,9 +432,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      messenger.showSnackBar(
-        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
-      );
+      showTopToast(context, e.toString().replaceFirst('Exception: ', ''));
     }
   }
 
@@ -450,27 +446,16 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
   }
 
   Future<void> _handleFullSync() async {
-    final messenger = ScaffoldMessenger.of(context);
     try {
       await ref.read(chatStoreProvider.notifier).forceSyncAllMessagesAndClearCache();
       if (!mounted) return;
-      messenger.showSnackBar(
-        const SnackBar(
-          content: Text('סנכרון מלא הושלם.'),
-          duration: Duration(seconds: 2),
-        ),
-      );
+      showTopToast(context, 'סנכרון מלא הושלם.', duration: const Duration(seconds: 2));
     } catch (e) {
       if (!mounted) return;
       final message = e is Exception
           ? e.toString().replaceFirst('Exception: ', '')
           : 'הסנכרון נכשל. נסה שוב.';
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(message),
-          duration: const Duration(seconds: 3),
-        ),
-      );
+      showTopToast(context, message, duration: const Duration(seconds: 3));
     }
   }
 

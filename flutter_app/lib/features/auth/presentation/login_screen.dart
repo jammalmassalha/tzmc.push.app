@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/utils/toast_utils.dart';
 import 'auth_state.dart';
 
 /// Login screen widget
@@ -62,18 +63,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     // Show error snackbar
     if (error != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(error, textDirection: TextDirection.rtl),
-            backgroundColor: Theme.of(context).colorScheme.error,
-            action: SnackBarAction(
-              label: 'סגור',
-              textColor: Colors.white,
-              onPressed: () {
-                ref.read(authStateProvider.notifier).clearError();
-              },
-            ),
-          ),
+        showTopToast(
+          context,
+          error,
+          backgroundColor: Theme.of(context).colorScheme.error,
         );
         ref.read(authStateProvider.notifier).clearError();
       });
@@ -272,11 +265,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   void _handleLogin() {
     final phone = _phoneController.text.trim();
     if (phone.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('יש להזין מספר טלפון', textDirection: TextDirection.rtl),
-        ),
-      );
+      showTopToast(context, 'יש להזין מספר טלפון');
       return;
     }
 
@@ -287,11 +276,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   void _handleVerifyCode() {
     final code = _codeController.text.trim();
     if (code.length != 6) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('יש להזין קוד בן 6 ספרות', textDirection: TextDirection.rtl),
-        ),
-      );
+      showTopToast(context, 'יש להזין קוד בן 6 ספרות');
       return;
     }
 

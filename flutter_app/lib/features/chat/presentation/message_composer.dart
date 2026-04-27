@@ -16,6 +16,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../../core/api/chat_api_service.dart';
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
+import '../../../core/utils/toast_utils.dart';
 import '../../../core/utils/xfile.dart' as xfile;
 import '../../../shared/theme/app_theme.dart';
 
@@ -271,9 +272,7 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
   Future<void> _pickImage(ImageSource source) async {
     // On web, camera is not supported
     if (kIsWeb && source == ImageSource.camera) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('צילום לא נתמך בדפדפן')),
-      );
+      showTopToast(context, 'צילום לא נתמך בדפדפן');
       return;
     }
 
@@ -307,15 +306,13 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
   Future<void> _pickFile() async {
     // For now, show a placeholder message
     // File picking requires additional setup (file_picker package)
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('בחירת קובץ - בקרוב')),
-    );
+    showTopToast(context, 'בחירת קובץ - בקרוב');
   }
 
   /// Mirrors Angular's [shareLocation]: gets the device's GPS position and
   /// sends `📍 https://www.google.com/maps?q=<lat>,<lon>` as a text message.
   Future<void> _shareLocation() async {
-    final messenger = ScaffoldMessenger.of(context);
+    final overlay = Overlay.of(context, rootOverlay: true);
     try {
       // Check/request permission
       var permission = await Geolocator.checkPermission();
@@ -324,11 +321,10 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
       }
       if (permission == LocationPermission.denied ||
           permission == LocationPermission.deniedForever) {
-        messenger.showSnackBar(
-          const SnackBar(
-            content: Text('לא ניתן לקבל מיקום. אנא אשר הרשאות.'),
-            duration: Duration(seconds: 3),
-          ),
+        showTopToastOnOverlay(
+          overlay,
+          'לא ניתן לקבל מיקום. אנא אשר הרשאות.',
+          duration: const Duration(seconds: 3),
         );
         return;
       }
@@ -358,18 +354,13 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
         );
       }
       widget.onMessageSent();
-      messenger.showSnackBar(
-        const SnackBar(
-          content: Text('המיקום נשלח.'),
-          duration: Duration(seconds: 2),
-        ),
-      );
+      showTopToastOnOverlay(overlay, 'המיקום נשלח.',
+          duration: const Duration(seconds: 2));
     } catch (_) {
-      messenger.showSnackBar(
-        const SnackBar(
-          content: Text('לא ניתן לקבל מיקום. אנא אשר הרשאות.'),
-          duration: Duration(seconds: 3),
-        ),
+      showTopToastOnOverlay(
+        overlay,
+        'לא ניתן לקבל מיקום. אנא אשר הרשאות.',
+        duration: const Duration(seconds: 3),
       );
     }
   }
@@ -408,7 +399,7 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
     });
     widget.onMessageSent();
 
-    final messenger = ScaffoldMessenger.of(context);
+    final overlay = Overlay.of(context, rootOverlay: true);
     final errorColor = Theme.of(context).colorScheme.error;
 
     Future<void> doSend() async {
@@ -455,11 +446,10 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
           );
         }
       } catch (e) {
-        messenger.showSnackBar(
-          SnackBar(
-            content: Text('שגיאה בשליחה: ${e.toString()}'),
-            backgroundColor: errorColor,
-          ),
+        showTopToastOnOverlay(
+          overlay,
+          'שגיאה בשליחה: ${e.toString()}',
+          backgroundColor: errorColor,
         );
       } finally {
         if (mounted && hasAttachment) {
