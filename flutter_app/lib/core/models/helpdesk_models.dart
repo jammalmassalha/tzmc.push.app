@@ -365,12 +365,12 @@ class HelpdeskNote extends Equatable {
 
   factory HelpdeskNote.fromJson(Map<String, dynamic> json) {
     return HelpdeskNote(
-      id: json['id'] as int,
-      ticketId: json['ticketId'] as int,
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      ticketId: (json['ticketId'] as num?)?.toInt() ?? 0,
       authorUsername: json['authorUsername'] as String? ?? '',
       noteText: json['noteText'] as String? ?? '',
       attachmentUrl: json['attachmentUrl'] as String?,
-      createdAt: DateTime.parse(json['createdAt'] as String),
+      createdAt: DateTime.tryParse(json['createdAt'] as String? ?? '') ?? DateTime.now(),
     );
   }
 }
@@ -398,12 +398,12 @@ class HelpdeskStatusHistoryEntry extends Equatable {
 
   factory HelpdeskStatusHistoryEntry.fromJson(Map<String, dynamic> json) {
     return HelpdeskStatusHistoryEntry(
-      id: json['id'] as int,
-      ticketId: json['ticketId'] as int,
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      ticketId: (json['ticketId'] as num?)?.toInt() ?? 0,
       oldStatus: json['old_status'] as String?,
       newStatus: json['new_status'] as String? ?? '',
       changedBy: json['changed_by'] as String? ?? '',
-      createdAt: DateTime.parse(json['created_at'] as String),
+      createdAt: DateTime.tryParse(json['created_at'] as String? ?? '') ?? DateTime.now(),
     );
   }
 }

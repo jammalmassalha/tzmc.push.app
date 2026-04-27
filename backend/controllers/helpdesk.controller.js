@@ -455,7 +455,20 @@ function registerHelpdeskController(app, deps = {}) {
                 'INSERT INTO `helpdesk_notes` (`ticket_id`, `author_username`, `note_text`, `attachment_url`) VALUES (?, ?, ?, ?)',
                 [ticketId, user, noteText, attachmentUrl || null]
             );
-            return res.status(201).json({ result: 'success', noteId: result.insertId });
+            const noteId = result.insertId;
+            const [[noteRow]] = await pool.query(
+                'SELECT `id`, `ticket_id`, `author_username`, `note_text`, `attachment_url`, `created_at` FROM `helpdesk_notes` WHERE `id` = ?',
+                [noteId]
+            );
+            const note = noteRow ? {
+                id: noteRow.id,
+                ticketId: noteRow.ticket_id,
+                authorUsername: noteRow.author_username,
+                noteText: noteRow.note_text,
+                attachmentUrl: noteRow.attachment_url || null,
+                createdAt: noteRow.created_at instanceof Date ? noteRow.created_at.toISOString() : String(noteRow.created_at || '')
+            } : { id: noteId, ticketId, authorUsername: user, noteText, attachmentUrl: attachmentUrl || null, createdAt: new Date().toISOString() };
+            return res.status(201).json({ result: 'success', noteId, note });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to add note';
             console.error('[HELPDESK] Add note error:', message);
