@@ -1,0 +1,52 @@
+<h2 mat-dialog-title>מדריך התקנת האפליקציה</h2>
+
+<mat-dialog-content class="install-guide-content">
+  <p class="install-guide-intro">
+    אפשר להתקין את האפליקציה ישירות למסך הבית ולעבוד כמו אפליקציה רגילה.
+  </p>
+
+  <div class="platform-switch" role="tablist" aria-label="בחירת פלטפורמה">
+    <button
+      type="button"
+      class="platform-chip"
+      [class.active]="selectedPlatform() === 'android'"
+      [attr.aria-selected]="selectedPlatform() === 'android'"
+      (click)="selectPlatform('android')">
+      <mat-icon>android</mat-icon>
+      <span>Android</span>
+    </button>
+    <button
+      type="button"
+      class="platform-chip"
+      [class.active]="selectedPlatform() === 'ios'"
+      [attr.aria-selected]="selectedPlatform() === 'ios'"
+      (click)="selectPlatform('ios')">
+      <mat-icon>phone_iphone</mat-icon>
+      <span>iPhone</span>
+    </button>
+  </div>
+
+  @if (selectedPlatform() === 'android') {
+    <ol class="install-steps">
+      <li>פתח/י את האתר בדפדפן Chrome.</li>
+      <li>לחץ/י על כפתור התפריט (⋮).</li>
+      <li>בחר/י "Install app" או "הוספה למסך הבית".</li>
+      <li>אשר/י את ההתקנה ולחץ/י Add / Install.</li>
+    </ol>
+  } @else {
+    <ol class="install-steps">
+      <li>פתח/י את האתר בדפדפן Safari.</li>
+      <li>לחץ/י על כפתור השיתוף (Share).</li>
+      <li>גלול/י ובחר/י "Add to Home Screen".</li>
+      <li>לחץ/י Add והאפליקציה תופיע במסך הבית.</li>
+    </ol>
+  }
+
+  <p class="install-guide-note">
+    טיפ: אם מופיע כאן כפתור "התקן אפליקציה", אפשר להשתמש בו להתקנה מהירה.
+  </p>
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-flat-button color="primary" type="button" (click)="close()">סגור</button>
+</mat-dialog-actions>

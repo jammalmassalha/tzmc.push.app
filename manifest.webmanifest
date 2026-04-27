@@ -1,0 +1,24 @@
+{
+  "name": "מרכז רפואי צפון | Medical Center",
+  "short_name": "מרכז רפואי צפון",
+  "start_url": "/subscribes/index.html",
+  "scope": "/subscribes/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#293B8F",
+  "description": "Secure staff messaging app for TZMC with real-time alerts, group chats, and operational updates.",
+  "icons": [
+    {
+      "src": "/subscribes/assets/icon-128.png",
+      "sizes": "128x128",
+      "type": "image/png"
+    },
+    {
+      "src": "/subscribes/assets/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1,0 +1,101 @@
+<h2 mat-dialog-title>קריאה חדשה · {{ data.department }}</h2>
+
+<mat-dialog-content>
+  <div class="helpdesk-dialog-grid">
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>כותרת הקריאה</mat-label>
+      <input matInput [formControl]="form.controls.title" placeholder="לדוגמה: מדפסת לא עובדת" autocomplete="off" />
+      @if (form.controls.title.hasError('required') && form.controls.title.touched) {
+        <mat-error>יש להזין כותרת.</mat-error>
+      }
+      @if (form.controls.title.hasError('minlength') && form.controls.title.touched) {
+        <mat-error>הכותרת חייבת להכיל לפחות 3 תווים.</mat-error>
+      }
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>מיקום</mat-label>
+      <input
+        matInput
+        [formControl]="locationControl"
+        [matAutocomplete]="locationAuto"
+        placeholder="חפש מיקום..."
+        autocomplete="off" />
+      <mat-autocomplete #locationAuto="matAutocomplete">
+        @for (loc of filteredLocations(); track loc) {
+          <mat-option [value]="loc">{{ loc }}</mat-option>
+        }
+      </mat-autocomplete>
+      @if (isLoadingLocations()) {
+        <mat-spinner matSuffix diameter="18"></mat-spinner>
+      }
+      @if (locationControl.hasError('required') && locationControl.touched) {
+        <mat-error>יש לבחור מיקום.</mat-error>
+      }
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>טלפון ליצירת קשר</mat-label>
+      <input
+        matInput
+        [formControl]="phoneControl"
+        placeholder="לדוגמה: 050-1234567"
+        autocomplete="tel"
+        type="tel" />
+      <mat-icon matSuffix>phone</mat-icon>
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>תיאור הבעיה</mat-label>
+      <textarea
+        matInput
+        [formControl]="form.controls.description"
+        placeholder="תאר בפירוט את הבעיה..."
+        rows="5"
+        cdkTextareaAutosize
+        cdkAutosizeMinRows="4"
+        cdkAutosizeMaxRows="10">
+      </textarea>
+      @if (form.controls.description.hasError('required') && form.controls.description.touched) {
+        <mat-error>יש להזין תיאור.</mat-error>
+      }
+      @if (form.controls.description.hasError('minlength') && form.controls.description.touched) {
+        <mat-error>התיאור חייב להכיל לפחות 5 תווים.</mat-error>
+      }
+    </mat-form-field>
+
+    <div class="file-upload-section">
+      <input
+        #fileInput
+        type="file"
+        accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt"
+        (change)="onFileSelected($event)"
+        hidden />
+      
+      @if (!selectedFile()) {
+        <button mat-stroked-button type="button" (click)="triggerFileInput()" class="upload-btn">
+          <mat-icon>attach_file</mat-icon>
+          צרף קובץ או תמונה
+        </button>
+      } @else {
+        <div class="selected-file">
+          @if (isUploading()) {
+            <mat-spinner diameter="20"></mat-spinner>
+            <span>מעלה...</span>
+          } @else {
+            <mat-icon>insert_drive_file</mat-icon>
+            <span class="file-name">{{ selectedFile()?.name }}</span>
+            <button mat-icon-button type="button" (click)="removeFile()" class="remove-btn">
+              <mat-icon>close</mat-icon>
+            </button>
+          }
+        </div>
+      }
+    </div>
+  </div>
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-stroked-button mat-dialog-close>ביטול</button>
+  <button mat-flat-button color="primary" (click)="submit()" [disabled]="isUploading()">שלח קריאה</button>
+</mat-dialog-actions>

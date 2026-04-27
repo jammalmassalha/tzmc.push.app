@@ -1,0 +1,38 @@
+{
+  "name": "workspace",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "build:backend": "tsc -p backend/tsconfig.json",
+    "import:logs:sheet-to-db": "node scripts/import-logs-from-sheet-to-db.js",
+    "start": "node server.js",
+    "test": "echo \"No root tests configured\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jmassalha/tzmc.push.app.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/jmassalha/tzmc.push.app/issues"
+  },
+  "homepage": "https://github.com/jmassalha/tzmc.push.app#readme",
+  "dependencies": {
+    "body-parser": "^2.2.2",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "firebase-admin": "^13.8.0",
+    "multer": "^2.1.1",
+    "mysql2": "^3.20.0",
+    "redis": "^5.11.0",
+    "socket.io": "^4.8.3",
+    "web-push": "^3.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "typescript": "^5.9.3"
+  }
+}

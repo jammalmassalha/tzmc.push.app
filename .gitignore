@@ -1,0 +1,18 @@
+node_modules/
+npm-debug.log*
+*.log
+dist/
+!dist/README.md
+!backend/dist/
+!backend/dist/**
+coverage/
+.env
+
+# Firebase Admin / service-account credentials. NEVER commit these — they grant
+# full FCM send rights for the project. Provide them to the server via the
+# FIREBASE_SERVICE_ACCOUNT_BASE64 env var (preferred) or by mounting the file
+# at a path referenced by GOOGLE_APPLICATION_CREDENTIALS.
+*firebase-adminsdk*.json
+*service-account*.json
+google-services-account*.json
+secrets/

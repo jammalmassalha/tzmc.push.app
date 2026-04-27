@@ -1,0 +1,12 @@
+@if (startupLoaderVisible()) {
+  <section class="startup-loader" aria-live="polite" aria-busy="true">
+    <div class="startup-loader__content">
+      <div class="startup-loader__circle" role="status" aria-label="טוען את האפליקציה">
+        <span class="startup-loader__counter">{{ startupLoaderPercent() }}%</span>
+      </div>
+      <p class="startup-loader__text">{{ startupLoaderText() }}</p>
+    </div>
+  </section>
+}
+
+<router-outlet />

@@ -1,0 +1,242 @@
+name: Flutter Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'flutter_app/**'
+      - '.github/workflows/flutter-build.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'flutter_app/**'
+      - '.github/workflows/flutter-build.yml'
+  workflow_dispatch:
+    inputs:
+      build_android:
+        description: 'Build Android APK'
+        required: false
+        default: true
+        type: boolean
+      build_web:
+        description: 'Build Web'
+        required: false
+        default: true
+        type: boolean
+      build_ios:
+        description: 'Build iOS (requires macOS runner)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: flutter-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.24.0'
+  JAVA_VERSION: '17'
+
+jobs:
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_android }}
+    defaults:
+      run:
+        working-directory: flutter_app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Materialize google-services.json from secret
+        # The google-services.json file is intentionally not committed.
+        # It must be provided as the GOOGLE_SERVICES_JSON_BASE64 GitHub
+        # secret (base64 of the file). Without it, the APK has no
+        # Firebase config and FCM/push notifications silently fail at
+        # runtime — Firebase.initializeApp() throws, no permission
+        # prompt is shown, and no token is registered.
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+        run: |
+          if [ -z "${GOOGLE_SERVICES_JSON_BASE64:-}" ]; then
+            echo "::warning::GOOGLE_SERVICES_JSON_BASE64 secret is not set. The built APK will NOT support Firebase/FCM push notifications."
+          else
+            mkdir -p android/app
+            echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 -d > android/app/google-services.json
+            echo "Decoded google-services.json ($(wc -c < android/app/google-services.json) bytes)"
+            # Sanity-check that the secret decoded to valid JSON so a
+            # malformed secret fails the build instead of producing a
+            # silently-broken APK with no FCM config.
+            python3 -m json.tool android/app/google-services.json > /dev/null
+          fi
+
+      - name: Run code generation
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Build APK
+        run: |
+          flutter build apk --release --android-skip-build-dependency-validation
+          mkdir -p ../dist/android
+          cp build/app/outputs/flutter-apk/app-release.apk ../dist/android/tzmc-push-release.apk
+
+      - name: Build App Bundle
+        run: |
+          flutter build appbundle --release --android-skip-build-dependency-validation
+          cp build/app/outputs/bundle/release/app-release.aab ../dist/android/tzmc-push-release.aab
+
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build
+          path: dist/android/
+          retention-days: 30
+
+  build-web:
+    name: Build Web
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_web }}
+    defaults:
+      run:
+        working-directory: flutter_app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Run code generation
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Build Web
+        run: |
+          flutter build web --release --base-href /fluttertest/ --pwa-strategy=none
+          mkdir -p ../dist
+          cp -r build/web ../dist/web
+
+      - name: Upload Web artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: dist/web/
+          retention-days: 30
+
+  build-ios:
+    name: Build iOS
+    runs-on: macos-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_ios }}
+    defaults:
+      run:
+        working-directory: flutter_app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Run code generation
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Build iOS (no codesign)
+        run: |
+          flutter build ios --release --no-codesign
+          mkdir -p ../dist/ios
+          cd build/ios/iphoneos
+          zip -r ../../../dist/ios/Runner.app.zip Runner.app
+
+      - name: Upload iOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build
+          path: dist/ios/
+          retention-days: 30
+
+  combine-artifacts:
+    name: Combine All Builds
+    runs-on: ubuntu-latest
+    needs: [build-android, build-web]
+    if: always() && (needs.build-android.result == 'success' || needs.build-web.result == 'success')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create dist directory
+        run: mkdir -p dist
+
+      - name: Download Android artifacts
+        if: needs.build-android.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: android-build
+          path: dist/android
+
+      - name: Download Web artifacts
+        if: needs.build-web.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: web-build
+          path: dist/web
+
+      - name: Create build info
+        run: |
+          cat > dist/BUILD_INFO.md << EOF
+          # TZMC Push App - Flutter Build
+          
+          **Build Date:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          **Commit:** ${{ github.sha }}
+          **Branch:** ${{ github.ref_name }}
+          **Flutter Version:** ${{ env.FLUTTER_VERSION }}
+          
+          ## Contents
+          
+          - \`android/tzmc-push-release.apk\` - Android APK for direct installation
+          - \`android/tzmc-push-release.aab\` - Android App Bundle for Play Store
+          - \`web/\` - Web build (deploy to /fluttertest on server)
+          
+          ## Deployment Instructions
+          
+          ### Web
+          Copy the contents of \`web/\` folder to your server's \`/fluttertest\` directory.
+          
+          ### Android
+          - APK: Install directly on Android devices
+          - AAB: Upload to Google Play Console
+          EOF
+
+      - name: Upload combined artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-all-platforms
+          path: dist/
+          retention-days: 60

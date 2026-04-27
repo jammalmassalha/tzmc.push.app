@@ -1,0 +1,58 @@
+.helpdesk-dialog-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 8px;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.file-upload-section {
+  margin-top: 4px;
+
+  .upload-btn {
+    width: 100%;
+    height: 48px;
+    border-style: dashed;
+    color: var(--mat-sys-on-surface-variant);
+
+    mat-icon {
+      margin-left: 8px;
+    }
+  }
+
+  .selected-file {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--mat-sys-surface-variant);
+    border-radius: 8px;
+
+    mat-icon {
+      color: var(--mat-sys-primary);
+    }
+
+    .file-name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 14px;
+    }
+
+    .remove-btn {
+      width: 32px;
+      height: 32px;
+      line-height: 32px;
+
+      mat-icon {
+        font-size: 18px;
+        width: 18px;
+        height: 18px;
+      }
+    }
+  }
+}

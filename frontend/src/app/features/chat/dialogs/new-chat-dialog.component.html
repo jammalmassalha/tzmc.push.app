@@ -1,0 +1,59 @@
+<h2 mat-dialog-title>צ'אט חדש</h2>
+
+<mat-dialog-content class="new-chat-content">
+  <div class="new-chat-panel">
+    <label class="new-chat-search-shell">
+      <mat-icon class="new-chat-search-icon">search</mat-icon>
+      <input
+        class="new-chat-search-input"
+        type="text"
+        [formControl]="searchControl"
+        placeholder="חיפוש איש קשר"
+        aria-label="חיפוש איש קשר"
+        autocomplete="off" />
+      @if (searchControl.value.length > 0) {
+        <button
+          type="button"
+          class="new-chat-search-clear"
+          (click)="searchControl.setValue(''); $event.preventDefault(); $event.stopPropagation()"
+          aria-label="נקה חיפוש אנשי קשר">
+          <mat-icon>close</mat-icon>
+        </button>
+      }
+    </label>
+
+    @if (!filteredContacts().length) {
+      <div class="empty-state">לא נמצאו אנשי קשר.</div>
+    } @else {
+      <div class="contacts-list">
+        @for (contact of filteredContacts(); track contact.username) {
+          <button type="button" class="contact-row" (click)="startChat(contact.username)">
+            <span class="contact-avatar" [class.has-image]="!!avatarUrl(contact.username, contact.upic)">
+              @if (avatarUrl(contact.username, contact.upic); as userAvatar) {
+                <img
+                  class="contact-avatar-image"
+                  [src]="userAvatar"
+                  [alt]="contact.displayName"
+                  loading="lazy"
+                  (error)="markAvatarLoadError(contact.username)" />
+              } @else {
+                <span class="contact-avatar-fallback">{{ avatarFallback(contact.displayName, contact.username) }}</span>
+              }
+            </span>
+            <div class="contact-row-main">
+              <span class="name">{{ contact.displayName }}</span>
+              <span class="meta">{{ contact.username }}</span>
+              @if (contact.info) {
+                <span class="info">{{ contact.info }}</span>
+              }
+            </div>
+          </button>
+        }
+      </div>
+    }
+  </div>
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-stroked-button mat-dialog-close>סגור</button>
+</mat-dialog-actions>

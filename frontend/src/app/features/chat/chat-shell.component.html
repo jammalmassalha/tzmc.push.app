@@ -1,0 +1,1749 @@
+<div class="chat-root flex h-full flex-col overflow-hidden">
+  <mat-toolbar class="app-toolbar px-2 md:px-4">
+    <div class="brand gap-2">
+      <mat-icon>forum</mat-icon>
+      <span>מרכז רפואי צפון</span>
+    </div>
+
+    <span class="spacer"></span>
+
+    <mat-chip-set>
+      <mat-chip [class.offline]="!store.networkOnline()">
+        {{ store.networkOnline() ? 'מקוון' : 'לא מחובר' }}
+      </mat-chip>
+      <mat-chip
+        class="connection-mode-chip"
+        [class.conn-socket]="store.realtimeTransportMode() === 'socket'"
+        [class.conn-sse]="store.realtimeTransportMode() === 'sse'"
+        [class.conn-polling]="store.realtimeTransportMode() === 'polling'">
+        {{ store.realtimeTransportLabel() }}
+      </mat-chip>
+    </mat-chip-set>
+
+    <button mat-icon-button type="button" [matMenuTriggerFor]="mainMenu" aria-label="תפריט">
+      <mat-icon>more_vert</mat-icon>
+    </button>
+  </mat-toolbar>
+
+  <mat-menu #mainMenu="matMenu">
+    <button mat-menu-item type="button" (click)="refresh()">
+      <mat-icon>refresh</mat-icon>
+      <span>רענון</span>
+    </button>
+    <button mat-menu-item type="button" (click)="flushOutbox()">
+      <mat-icon>sync</mat-icon>
+      <span>סנכרון הודעות</span>
+    </button>
+    @if (store.canCurrentUserResetAllBadges()) {
+      <button mat-menu-item type="button" (click)="resetAllBadges()">
+        <mat-icon>notifications_off</mat-icon>
+        <span>איפוס כל המונים</span>
+      </button>
+    }
+    @if (store.canCurrentUserBroadcastVersionUpdate()) {
+      <button mat-menu-item type="button" (click)="broadcastVersionUpdate()">
+        <mat-icon>system_update</mat-icon>
+        <span>שלח הודעה על עידכון גרסה</span>
+      </button>
+    }
+    @if (store.canCurrentUserBackupGroupsToDb()) {
+      <button mat-menu-item role="menuitem" type="button" (click)="backupGroupsToDb()">
+        <mat-icon>backup</mat-icon>
+        <span>גיבוי קבוצות למסד נתונים</span>
+      </button>
+    }
+    <button mat-menu-item type="button" (click)="openCreateGroupDialog()">
+      <mat-icon>group_add</mat-icon>
+      <span>קבוצה חדשה</span>
+    </button>
+    <button mat-menu-item type="button" (click)="openInformationSecurityPolicy()">
+      <mat-icon>security</mat-icon>
+      <span>מדיניות אבטחת מידע וסייבר</span>
+    </button>
+    <button mat-menu-item type="button" [disabled]="isLoggingOut()" (click)="logout()">
+      <mat-icon>logout</mat-icon>
+      <span>התנתקות</span>
+    </button>
+  </mat-menu>
+
+  <div class="chat-layout p-2 md:p-3">
+    <aside class="contacts-pane" [class.hidden-mobile]="isMobile() && !showContactsPane()">
+      <div class="contacts-toolbar p-2 md:p-3">
+        <label class="search-shell">
+          <mat-icon class="search-icon">search</mat-icon>
+          <input
+            class="search-input"
+            type="text"
+            [formControl]="searchControl"
+            (focus)="handleTextInputFocus()"
+            placeholder="חיפוש או פתיחת צ׳אט חדש"
+            aria-label="חיפוש צ׳אטים"
+            autocomplete="off" />
+          @if (searchControl.value.length > 0) {
+            <button
+              type="button"
+              class="search-clear-btn"
+              (click)="clearChatSearch(); $event.preventDefault(); $event.stopPropagation()"
+              aria-label="נקה חיפוש">
+              <mat-icon>close</mat-icon>
+            </button>
+          }
+        </label>
+
+        <div class="contacts-actions gap-2">
+          <button mat-stroked-button type="button" (click)="openNewChatDialog()">
+            <mat-icon>chat</mat-icon>
+            <span>צ'אט חדש</span>
+          </button>
+          <button mat-stroked-button type="button" (click)="openCreateGroupDialog()">
+            <mat-icon>groups</mat-icon>
+            <span>קבוצה</span>
+          </button>
+        </div>
+      </div>
+
+      @if (!filteredChats().length) {
+        <div class="empty-chat-list">אין צ׳אטים פעילים. צור צ׳אט חדש כדי להתחיל.</div>
+      } @else {
+        @if (pinnedChats().length) {
+          <div class="pinned-row">
+            @for (chat of pinnedChats(); track chat.id) {
+              <button
+                type="button"
+                class="pinned-chip"
+                [class.active]="store.activeChatId() === chat.id"
+                (click)="openChat(chat.id)">
+                <span class="pinned-chip-icon">
+                  <mat-icon>{{ getPinnedChatIcon(chat) }}</mat-icon>
+                  @if (chat.unread > 0) {
+                    <span class="pinned-chip-badge">{{ chat.unread > 9 ? '9+' : chat.unread }}</span>
+                  }
+                </span>
+                <span class="pinned-chip-label">{{ chat.title }}</span>
+              </button>
+            }
+          </div>
+        }
+        <cdk-virtual-scroll-viewport class="contacts-viewport" [itemSize]="84" [minBufferPx]="336" [maxBufferPx]="840">
+          <button
+            type="button"
+            class="chat-item"
+            *cdkVirtualFor="let chat of mainListChats(); trackBy: trackByChatId"
+            [class.active]="store.activeChatId() === chat.id"
+            (click)="openChat(chat.id)">
+            <div class="chat-item-main">
+              <span
+                class="chat-avatar-wrap"
+                [class.clickable]="!!chat.avatarUrl"
+                [class.with-image]="!!chat.avatarUrl"
+                [class.loaded]="isAvatarLoaded(chatAvatarThumb(chat))"
+                (click)="openChatAvatar($event, chat)"
+                [attr.aria-label]="chat.avatarUrl ? 'Open profile image' : null">
+                @if (chat.avatarUrl) {
+                  <span class="chat-avatar-skeleton" aria-hidden="true"></span>
+                  <img
+                    class="chat-avatar"
+                    [src]="chatAvatarThumb(chat)"
+                    [alt]="chat.title"
+                    loading="lazy"
+                    decoding="async"
+                    (load)="markAvatarLoaded(chatAvatarThumb(chat))"
+                    (error)="markAvatarLoaded(chatAvatarThumb(chat))" />
+                } @else {
+                  <span class="chat-avatar-fallback">{{ chatAvatarFallback(chat) }}</span>
+                }
+              </span>
+
+              <div class="chat-text">
+                <span class="chat-title">{{ chat.title }}</span>
+                @if (chat.info) {
+                  <span class="chat-info">{{ chat.info }}</span>
+                }
+                <span class="chat-subtitle">{{ chat.subtitle || 'אין הודעות עדיין' }}</span>
+              </div>
+            </div>
+
+            <div class="chat-meta">
+              @if (chat.lastTimestamp) {
+                <span class="chat-time">{{ formatChatListTime(chat.lastTimestamp) }}</span>
+              }
+              @if (chat.unread > 0) {
+                <span class="chat-unread">{{ chat.unread > 99 ? '99+' : chat.unread }}</span>
+              }
+            </div>
+          </button>
+        </cdk-virtual-scroll-viewport>
+      }
+    </aside>
+
+    <section
+      class="conversation-pane min-w-0"
+      [class.hidden-mobile]="isMobile() && showContactsPane()"
+      [class.shuttle-room-active]="isShuttleRoomActive()"
+      [class.helpdesk-room-active]="isHelpdeskRoomActive()"
+      (touchstart)="onConversationTouchStart($event)"
+      (touchmove)="onConversationTouchMove($event)"
+      (touchend)="onConversationTouchEnd($event)"
+      (touchcancel)="onConversationTouchCancel()">
+      @if (store.activeChat(); as activeChat) {
+        <header class="conversation-header">
+          @if (isMobile()) {
+            <button
+              mat-icon-button
+              type="button"
+              class="back-button-rtl"
+              (click)="backToList()"
+              aria-label="חזרה">
+              <mat-icon>arrow_forward</mat-icon>
+            </button>
+          }
+
+          <div
+            class="conversation-title"
+            [class.clickable]="canShowGroupMembers()"
+            (click)="canShowGroupMembers() && openGroupMembers()"
+            [attr.role]="canShowGroupMembers() ? 'button' : null"
+            [attr.tabindex]="canShowGroupMembers() ? '0' : null"
+            (keydown.enter)="canShowGroupMembers() && openGroupMembers()"
+            (keydown.space)="canShowGroupMembers() && openGroupMembers(); $event.preventDefault()">
+            <div class="conversation-title-main">
+              @if (chatAvatarThumb(activeChat); as headerAvatar) {
+                <button
+                  type="button"
+                  class="conversation-title-avatar clickable"
+                  (click)="openChatAvatar($event, activeChat)"
+                  aria-label="הצג תמונת פרופיל"
+                  title="הצג תמונת פרופיל">
+                  <img
+                    class="conversation-title-avatar-image"
+                    [src]="headerAvatar"
+                    [alt]="activeChat.title"
+                    loading="lazy" />
+                </button>
+              } @else {
+                <span class="conversation-title-avatar">
+                  <span class="conversation-title-avatar-fallback">{{ chatAvatarFallback(activeChat) }}</span>
+                </span>
+              }
+
+              <div class="conversation-title-meta">
+                @if (isInlineGroupTitleEditing()) {
+                  <div class="conversation-title-inline-edit" (click)="$event.stopPropagation()">
+                    <input
+                      class="conversation-title-inline-input"
+                      type="text"
+                      [value]="inlineGroupTitleEditValue()"
+                      (input)="onInlineGroupTitleInput($event)"
+                      (keydown.enter)="saveInlineGroupTitleEdit($event)"
+                      (keydown.escape)="cancelInlineGroupTitleEdit($event)"
+                      (focus)="handleTextInputFocus()"
+                      placeholder="שם קבוצה"
+                      autocomplete="off" />
+                    <div class="conversation-title-inline-actions">
+                      <button mat-stroked-button type="button" (click)="cancelInlineGroupTitleEdit($event)">ביטול</button>
+                      <button
+                        mat-flat-button
+                        color="primary"
+                        type="button"
+                        [disabled]="!canSaveInlineGroupTitle()"
+                        (click)="saveInlineGroupTitleEdit($event)">
+                        שמור
+                      </button>
+                    </div>
+                  </div>
+                } @else {
+                  <div class="conversation-title-line">
+                    <h2>{{ activeChat.title }}</h2>
+                    @if (activeChat.isGroup && canEditActiveGroupTitle()) {
+                      <button
+                        mat-icon-button
+                        type="button"
+                        class="conversation-title-actions-btn"
+                        [matMenuTriggerFor]="groupActionsMenu"
+                        (click)="$event.stopPropagation()"
+                        aria-label="פעולות קבוצה"
+                        title="פעולות קבוצה">
+                        <mat-icon>more_vert</mat-icon>
+                      </button>
+                      <mat-menu #groupActionsMenu="matMenu" xPosition="before">
+                        <button mat-menu-item type="button" title="ערוך שם קבוצה" (click)="startInlineGroupTitleEdit($event)">
+                          <mat-icon>edit</mat-icon>
+                          <span>ערוך שם קבוצה</span>
+                        </button>
+                        <button mat-menu-item type="button" title="הוספת חבר לקבוצה" (click)="openGroupMemberAdd()">
+                          <mat-icon>person_add</mat-icon>
+                          <span>הוספת חבר לקבוצה</span>
+                        </button>
+                      </mat-menu>
+                    }
+                  </div>
+                }
+                <small>{{ conversationSubtitle(activeChat) }}</small>
+              </div>
+            </div>
+          </div>
+
+          @if (canCallActiveChat()) {
+            <button
+              mat-icon-button
+              type="button"
+              class="conversation-call-btn"
+              (click)="startCallToActiveChat()"
+              aria-label="חייג">
+              <mat-icon>call</mat-icon>
+            </button>
+          }
+        </header>
+
+        <div
+          #messagesPanel
+          class="messages-panel"
+          [class.shuttle-no-scroll]="isShuttleRoomActive() || isHelpdeskRoomActive()"
+          (scroll)="onMessagesPanelScroll()">
+          @if (stickyMessageDateLabel(); as stickyDateLabel) {
+            <div class="messages-sticky-date">
+              <span>{{ stickyDateLabel }}</span>
+            </div>
+          }
+
+          @if (shuttleOrdersDashboard(); as shuttleDashboard) {
+            <section class="shuttle-orders-dashboard">
+              <div class="shuttle-orders-toolbar">
+                <div class="shuttle-orders-title">{{ shuttleText('ordersTitle') }}</div>
+                <div class="shuttle-orders-toolbar-actions">
+                  <div class="shuttle-orders-language-switch" role="group" [attr.aria-label]="shuttleText('languageLabel')">
+                    <button
+                      type="button"
+                      class="shuttle-orders-language-btn"
+                      [class.active]="isShuttleLanguage('he')"
+                      [attr.aria-pressed]="isShuttleLanguage('he')"
+                      (click)="setShuttleLanguage('he')">
+                      עב
+                    </button>
+                    <button
+                      type="button"
+                      class="shuttle-orders-language-btn"
+                      [class.active]="isShuttleLanguage('ru')"
+                      [attr.aria-pressed]="isShuttleLanguage('ru')"
+                      (click)="setShuttleLanguage('ru')">
+                      RU
+                    </button>
+                  </div>
+                <button
+                  type="button"
+                  class="shuttle-orders-refresh-btn"
+                  [disabled]="isLoadingShuttleOrders()"
+                  (click)="refreshShuttleOrders()">
+                  @if (isLoadingShuttleOrders()) {
+                    <mat-spinner diameter="14"></mat-spinner>
+                  } @else {
+                    <mat-icon>refresh</mat-icon>
+                  }
+                  <span>{{ shuttleText('refresh') }}</span>
+                </button>
+              </div>
+              </div>
+              @if (isLoadingShuttleOrders()) {
+                <div class="shuttle-orders-hint" aria-live="polite">{{ shuttleText('loading') }}</div>
+              }
+
+              <div class="shuttle-orders-tabs" role="tablist" [attr.aria-label]="shuttleText('ordersTablistAria')">
+                <button
+                  type="button"
+                  role="tab"
+                  class="shuttle-orders-tab-btn ongoing"
+                  [class.active]="shuttleDashboardTab() === 'ongoing'"
+                  [attr.aria-selected]="shuttleDashboardTab() === 'ongoing'"
+                  (click)="setShuttleDashboardTab('ongoing')">
+                  {{ shuttleText('ongoingTab') }} ({{ shuttleDashboard.ongoing.length }})
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  class="shuttle-orders-tab-btn past"
+                  [class.active]="shuttleDashboardTab() === 'past'"
+                  [attr.aria-selected]="shuttleDashboardTab() === 'past'"
+                  (click)="setShuttleDashboardTab('past')">
+                  {{ shuttleText('pastTab') }} ({{ shuttleDashboard.past.length }})
+                </button>
+              </div>
+
+              <div class="shuttle-orders-tab-panel" role="tabpanel">
+                @if (shuttleDashboardTab() === 'ongoing') {
+                  @if (!shuttleDashboard.ongoing.length) {
+                    <div class="shuttle-orders-empty">{{ shuttleText('ongoingEmpty') }}</div>
+                  } @else {
+                    <div class="shuttle-orders-cards">
+                      @for (order of shuttleDashboard.ongoing; track order.id) {
+                        <article class="shuttle-order-card ongoing">
+                          <div class="shuttle-order-card-top">
+                            <span class="shuttle-order-status ongoing">{{ shuttleText('activeStatus') }}</span>
+                            <button
+                              type="button"
+                              class="shuttle-order-delete-btn"
+                              [disabled]="isCancellingShuttleOrder(order.id)"
+                              (click)="cancelShuttleOrder(order.id)">
+                              @if (isCancellingShuttleOrder(order.id)) {
+                                <mat-spinner diameter="14"></mat-spinner>
+                              } @else {
+                                <mat-icon>delete</mat-icon>
+                              }
+                              <span>{{ shuttleText('deleteOrder') }}</span>
+                            </button>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">{{ shuttleText('dateLabel') }}</span>
+                            <span class="value">{{ shuttleOrderDayDateLabel(order.dayName, order.date) }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">{{ shuttleText('shiftLabel') }}</span>
+                            <span class="value">{{ order.shiftLabel }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">{{ shuttleText('stationLabel') }}</span>
+                            <span class="value">{{ order.station }}</span>
+                          </div>
+                        </article>
+                      }
+                    </div>
+                  }
+                } @else {
+                  @if (!shuttleDashboard.past.length) {
+                    <div class="shuttle-orders-empty">{{ shuttleText('pastEmpty') }}</div>
+                  } @else {
+                    <div class="shuttle-orders-cards">
+                      @for (order of shuttleDashboard.past; track order.id) {
+                        <article class="shuttle-order-card past">
+                          <div class="shuttle-order-card-top">
+                            <span class="shuttle-order-status past">
+                              {{ shuttlePastStatusLabel(order) }}
+                            </span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">{{ shuttleText('dateLabel') }}</span>
+                            <span class="value">{{ shuttleOrderDayDateLabel(order.dayName, order.date) }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">{{ shuttleText('shiftLabel') }}</span>
+                            <span class="value">{{ order.shiftLabel }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">{{ shuttleText('stationLabel') }}</span>
+                            <span class="value">{{ order.station }}</span>
+                          </div>
+                        </article>
+                      }
+                    </div>
+                  }
+                }
+              </div>
+            </section>
+          }
+
+          @if (shuttleOperationsDateGroups(); as shuttleOpsGroups) {
+            <section class="shuttle-orders-dashboard shuttle-ops-dashboard">
+              <div class="shuttle-orders-toolbar">
+                <div class="shuttle-orders-title">הסעות · הזמנות פעילות</div>
+                <div class="shuttle-orders-toolbar-actions">
+                  <button
+                    type="button"
+                    class="shuttle-orders-refresh-btn"
+                    [disabled]="isLoadingShuttleOperationsOrders()"
+                    (click)="refreshShuttleOperationsOrders()">
+                    @if (isLoadingShuttleOperationsOrders()) {
+                      <mat-spinner diameter="14"></mat-spinner>
+                    } @else {
+                      <mat-icon>refresh</mat-icon>
+                    }
+                    <span>{{ shuttleText('refresh') }}</span>
+                  </button>
+                </div>
+              </div>
+
+              @if (isLoadingShuttleOperationsOrders()) {
+                <div class="shuttle-orders-hint" aria-live="polite">{{ shuttleText('loading') }}</div>
+              }
+              @if (shuttleOperationsManualSyncFailedAt(); as manualSyncFailedAt) {
+                <div
+                  class="shuttle-ops-sync-failed"
+                  aria-live="polite"
+                  [attr.title]="shuttleOperationsManualSyncFailedMessage()">
+                  <mat-icon>error_outline</mat-icon>
+                  <span>סנכרון ידני נכשל ב־{{ formatTime(manualSyncFailedAt) }}</span>
+                </div>
+              }
+
+              @if (!shuttleOpsGroups.length) {
+                <div class="shuttle-orders-empty">אין הזמנות פעילות כרגע.</div>
+              } @else {
+                <mat-accordion class="shuttle-ops-accordion" multi>
+                  @for (group of shuttleOpsGroups; track group.date) {
+                    <mat-expansion-panel
+                      class="shuttle-ops-panel"
+                      [expanded]="isShuttleOperationsDateExpanded(group.date)"
+                      (opened)="setShuttleOperationsDateExpanded(group.date, true)"
+                      (closed)="setShuttleOperationsDateExpanded(group.date, false)">
+                      <mat-expansion-panel-header>
+                        <mat-panel-title>
+                          {{ shuttleOrderDayDateLabel(group.dayName, group.date) }}
+                        </mat-panel-title>
+                        <mat-panel-description>
+                          <span class="shuttle-ops-count-badge">{{ group.orderCount }}</span>
+                        </mat-panel-description>
+                      </mat-expansion-panel-header>
+
+                      <div class="shuttle-orders-cards shuttle-ops-cards">
+                        @for (order of group.orders; track order.compositeId) {
+                          <article class="shuttle-order-card" [class.ongoing]="order.canCancel" [class.past]="!order.canCancel">
+                            <div class="shuttle-order-card-top">
+                              <span class="shuttle-order-status ongoing">{{ order.sourceDisplayName }}</span>
+                              @if (canCancelShuttleOperationsOrder() && order.canCancel) {
+                                <button
+                                  type="button"
+                                  class="shuttle-order-delete-btn"
+                                  [disabled]="isCancellingShuttleOrder(order.compositeId)"
+                                  (click)="cancelShuttleOperationsOrder(order.compositeId)">
+                                  @if (isCancellingShuttleOrder(order.compositeId)) {
+                                    <mat-spinner diameter="14"></mat-spinner>
+                                  } @else {
+                                    <mat-icon>delete</mat-icon>
+                                  }
+                                  <span>{{ shuttleText('deleteOrder') }}</span>
+                                </button>
+                              }
+                            </div>
+                            <div class="shuttle-order-row">
+                              <span class="label">{{ shuttleText('shiftLabel') }}</span>
+                              <span class="value">{{ order.shiftLabel }}</span>
+                            </div>
+                            <div class="shuttle-order-row">
+                              <span class="label">{{ shuttleText('stationLabel') }}</span>
+                              <span class="value">{{ order.station }}</span>
+                            </div>
+                            <div class="shuttle-order-row">
+                              <span class="label">סטטוס</span>
+                              <span class="value">{{ order.statusLabel || (order.canCancel ? shuttleText('activeStatus') : shuttleText('pastStatusCancelled')) }}</span>
+                            </div>
+                          </article>
+                        }
+                      </div>
+                    </mat-expansion-panel>
+                  }
+                </mat-accordion>
+              }
+            </section>
+          }
+
+          @if (helpdeskDashboard(); as helpdeskDb) {
+            <section class="shuttle-orders-dashboard helpdesk-dashboard">
+              <div class="shuttle-orders-toolbar">
+                <div class="shuttle-orders-title">🎫 מוקד איחוד - הקריאות שלי</div>
+                <div class="shuttle-orders-toolbar-actions">
+                  <button
+                    type="button"
+                    class="shuttle-orders-refresh-btn"
+                    [disabled]="isLoadingHelpdeskTickets()"
+                    (click)="refreshHelpdeskTickets()">
+                    @if (isLoadingHelpdeskTickets()) {
+                      <mat-spinner diameter="14"></mat-spinner>
+                    } @else {
+                      <mat-icon>refresh</mat-icon>
+                    }
+                    <span>רענן</span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="shuttle-orders-tabs" role="tablist" aria-label="קריאות">
+                <button
+                  type="button"
+                  role="tab"
+                  class="shuttle-orders-tab-btn ongoing"
+                  [class.active]="helpdeskDashboardTab() === 'ongoing'"
+                  [attr.aria-selected]="helpdeskDashboardTab() === 'ongoing'"
+                  (click)="setHelpdeskDashboardTab('ongoing')">
+                  פתוחות ({{ helpdeskDb.ongoing.length }})
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  class="shuttle-orders-tab-btn past"
+                  [class.active]="helpdeskDashboardTab() === 'past'"
+                  [attr.aria-selected]="helpdeskDashboardTab() === 'past'"
+                  (click)="setHelpdeskDashboardTab('past')">
+                  טופלו ({{ helpdeskDb.past.length }})
+                </button>
+                @if (helpdeskDb.assigned.length > 0) {
+                  <button
+                    type="button"
+                    role="tab"
+                    class="shuttle-orders-tab-btn assigned"
+                    [class.active]="helpdeskDashboardTab() === 'assigned'"
+                    [attr.aria-selected]="helpdeskDashboardTab() === 'assigned'"
+                    (click)="setHelpdeskDashboardTab('assigned')">
+                    לביצוע ({{ helpdeskDb.assigned.length }})
+                  </button>
+                }
+                @if (helpdeskDb.myRole) {
+                  <button
+                    type="button"
+                    role="tab"
+                    class="shuttle-orders-tab-btn editor"
+                    [class.active]="helpdeskDashboardTab() === 'editor'"
+                    [attr.aria-selected]="helpdeskDashboardTab() === 'editor'"
+                    (click)="setHelpdeskDashboardTab('editor')">
+                    <mat-icon class="tab-icon">manage_accounts</mat-icon>
+                    ניהול
+                  </button>
+                }
+              </div>
+
+              <div class="shuttle-orders-tab-panel" role="tabpanel">
+
+                <!-- My open tickets -->
+                @if (helpdeskDashboardTab() === 'ongoing') {
+                  @if (!helpdeskDb.ongoing.length) {
+                    <div class="shuttle-orders-empty">אין קריאות פתוחות כרגע.</div>
+                  } @else {
+                    <div class="shuttle-orders-cards">
+                      @for (ticket of helpdeskDb.ongoing; track ticket.id) {
+                        <article class="shuttle-order-card ongoing helpdesk-ticket-card" role="button" tabindex="0" (click)="openHelpdeskTicketDetail(ticket)" (keydown.enter)="openHelpdeskTicketDetail(ticket)">
+                          <div class="shuttle-order-card-top">
+                            <span class="shuttle-order-status ongoing">#{{ ticket.id }} · {{ helpdeskStatusDisplayLabel(ticket.status) }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">כותרת</span>
+                            <span class="value">{{ ticket.title }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">מחלקה</span>
+                            <span class="value">{{ ticket.department }}</span>
+                          </div>
+                          @if (ticket.location) {
+                            <div class="shuttle-order-row">
+                              <span class="label">מיקום</span>
+                              <span class="value">{{ ticket.location }}</span>
+                            </div>
+                          }
+                          <div class="shuttle-order-row">
+                            <span class="label">תאריך</span>
+                            <span class="value">{{ formatTime(parseHelpdeskTimestamp(ticket.createdAt)) }}</span>
+                          </div>
+                        </article>
+                      }
+                    </div>
+                  }
+                }
+
+                <!-- My past tickets -->
+                @else if (helpdeskDashboardTab() === 'past') {
+                  @if (!helpdeskDb.past.length) {
+                    <div class="shuttle-orders-empty">אין קריאות שטופלו.</div>
+                  } @else {
+                    <div class="shuttle-orders-cards">
+                      @for (ticket of helpdeskDb.past; track ticket.id) {
+                        <article class="shuttle-order-card past helpdesk-ticket-card" role="button" tabindex="0" (click)="openHelpdeskTicketDetail(ticket)" (keydown.enter)="openHelpdeskTicketDetail(ticket)">
+                          <div class="shuttle-order-card-top">
+                            <span class="shuttle-order-status past">#{{ ticket.id }} · {{ helpdeskStatusDisplayLabel(ticket.status) }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">כותרת</span>
+                            <span class="value">{{ ticket.title }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">מחלקה</span>
+                            <span class="value">{{ ticket.department }}</span>
+                          </div>
+                          @if (ticket.location) {
+                            <div class="shuttle-order-row">
+                              <span class="label">מיקום</span>
+                              <span class="value">{{ ticket.location }}</span>
+                            </div>
+                          }
+                        </article>
+                      }
+                    </div>
+                  }
+                }
+
+                <!-- Assigned to me (לביצוע) -->
+                @else if (helpdeskDashboardTab() === 'assigned') {
+                  @if (!helpdeskDb.assigned.length) {
+                    <div class="shuttle-orders-empty">אין קריאות לביצוע כרגע.</div>
+                  } @else {
+                    <div class="shuttle-orders-cards">
+                      @for (ticket of helpdeskDb.assigned; track ticket.id) {
+                        <article class="shuttle-order-card ongoing helpdesk-ticket-card helpdesk-assigned-card" role="button" tabindex="0" (click)="openHelpdeskTicketDetail(ticket)" (keydown.enter)="openHelpdeskTicketDetail(ticket)">
+                          <div class="shuttle-order-card-top">
+                            <span class="shuttle-order-status ongoing">#{{ ticket.id }} · {{ helpdeskStatusDisplayLabel(ticket.status) }}</span>
+                            <span class="helpdesk-assigned-badge">לביצוע שלי</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">כותרת</span>
+                            <span class="value">{{ ticket.title }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">מחלקה</span>
+                            <span class="value">{{ ticket.department }}</span>
+                          </div>
+                          @if (ticket.location) {
+                            <div class="shuttle-order-row">
+                              <span class="label">מיקום</span>
+                              <span class="value">{{ ticket.location }}</span>
+                            </div>
+                          }
+                          <div class="shuttle-order-row">
+                            <span class="label">פותח</span>
+                            <span class="value">{{ resolveHelpdeskDisplayName(ticket.creatorUsername) }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">תאריך</span>
+                            <span class="value">{{ formatTime(parseHelpdeskTimestamp(ticket.createdAt)) }}</span>
+                          </div>
+                        </article>
+                      }
+                    </div>
+                  }
+                }
+
+                <!-- Editor/Admin department management -->
+                @else if (helpdeskDashboardTab() === 'editor' && helpdeskDb.myRole) {
+                  <div class="helpdesk-editor-header">
+                    <mat-icon>manage_accounts</mat-icon>
+                    <span>ניהול קריאות – {{ helpdeskDb.myRole.department }}</span>
+                    <span class="helpdesk-role-badge">{{ helpdeskDb.myRole.role }}</span>
+                  </div>
+
+                  <!-- Editor sub-tabs: חדש / בתהליך / סגור -->
+                  <div class="helpdesk-editor-sub-tabs" role="tablist" aria-label="סינון קריאות">
+                    <button
+                      type="button"
+                      role="tab"
+                      class="helpdesk-editor-sub-tab"
+                      [class.active]="helpdeskEditorSubTab() === 'new'"
+                      [attr.aria-selected]="helpdeskEditorSubTab() === 'new'"
+                      (click)="setHelpdeskEditorSubTab('new')">
+                      חדש ({{ helpdeskEditorFilteredTickets(helpdeskDb.editorTickets, 'new').length }})
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      class="helpdesk-editor-sub-tab"
+                      [class.active]="helpdeskEditorSubTab() === 'in_progress'"
+                      [attr.aria-selected]="helpdeskEditorSubTab() === 'in_progress'"
+                      (click)="setHelpdeskEditorSubTab('in_progress')">
+                      בתהליך ({{ helpdeskEditorFilteredTickets(helpdeskDb.editorTickets, 'in_progress').length }})
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      class="helpdesk-editor-sub-tab"
+                      [class.active]="helpdeskEditorSubTab() === 'closed'"
+                      [attr.aria-selected]="helpdeskEditorSubTab() === 'closed'"
+                      (click)="setHelpdeskEditorSubTab('closed')">
+                      סגור ({{ helpdeskEditorFilteredTickets(helpdeskDb.editorTickets, 'closed').length }})
+                    </button>
+                  </div>
+
+                  @if (helpdeskEditorFilteredTickets(helpdeskDb.editorTickets, helpdeskEditorSubTab()).length === 0) {
+                    <div class="shuttle-orders-empty">אין קריאות בקטגוריה זו.</div>
+                  } @else {
+                    <div class="shuttle-orders-cards">
+                      @for (ticket of helpdeskEditorFilteredTickets(helpdeskDb.editorTickets, helpdeskEditorSubTab()); track ticket.id) {
+                        <article class="shuttle-order-card helpdesk-ticket-card helpdesk-editor-card" [class.ongoing]="ticket.status === 'open' || ticket.status === 'in_progress'" [class.past]="ticket.status === 'resolved' || ticket.status === 'closed'" role="button" tabindex="0" (click)="openHelpdeskTicketDetail(ticket)" (keydown.enter)="openHelpdeskTicketDetail(ticket)">
+                          <div class="shuttle-order-card-top">
+                            <span class="shuttle-order-status" [class.ongoing]="ticket.status === 'open' || ticket.status === 'in_progress'" [class.past]="ticket.status === 'resolved' || ticket.status === 'closed'">#{{ ticket.id }} · {{ helpdeskStatusDisplayLabel(ticket.status) }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">כותרת</span>
+                            <span class="value">{{ ticket.title }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">פותח</span>
+                            <span class="value">{{ resolveHelpdeskDisplayName(ticket.creatorUsername) }}</span>
+                          </div>
+                          <div class="shuttle-order-row">
+                            <span class="label">מטפל</span>
+                            <span class="value">{{ resolveHelpdeskDisplayName(ticket.handlerUsername) }}</span>
+                          </div>
+                          @if (ticket.location) {
+                            <div class="shuttle-order-row">
+                              <span class="label">מיקום</span>
+                              <span class="value">{{ ticket.location }}</span>
+                            </div>
+                          }
+                          <div class="shuttle-order-row">
+                            <span class="label">תאריך</span>
+                            <span class="value">{{ formatTime(parseHelpdeskTimestamp(ticket.createdAt)) }}</span>
+                          </div>
+                        </article>
+                      }
+                    </div>
+                  }
+                }
+
+              </div>
+            </section>
+          }
+
+          @for (message of visibleMessages(); track trackByMessageUpdate(index, message); let index = $index) {
+            @if (shouldShowMessageDateBadge(messageAbsoluteIndex(index), message.timestamp)) {
+              <div class="message-date-badge">
+                <span>{{ formatMessageDateBadge(message.timestamp) }}</span>
+              </div>
+            }
+            <article
+              class="message-row"
+              [class.outgoing]="message.direction === 'outgoing'"
+              [attr.data-message-index]="messageAbsoluteIndex(index)">
+              <div class="message-bubble" [class.deleted]="isMessageDeleted(message)" (contextmenu)="onMessageContextMenu($event, message)" (touchstart)="onTouchStart($event, message)" (touchend)="onTouchEnd()" (touchmove)="onTouchMove()">
+                @if (message.direction === 'incoming' && message.groupId) {
+                  <div class="message-sender">{{ message.senderDisplayName || message.sender }}</div>
+                }
+
+                @if (canOpenMessageActions(message)) {
+                  <div class="message-actions">
+                    <button
+                      type="button"
+                      class="message-action-btn"
+                      [class.pending]="isMessageActionPending(message)"
+                      [matMenuTriggerFor]="messageActionsMenu"
+                      [disabled]="isMessageActionPending(message)"
+                      (click)="setMessageActionTarget(message)"
+                      aria-label="פעולות הודעה">
+                      @if (isMessageActionPending(message)) {
+                        <mat-spinner class="message-action-spinner" diameter="16"></mat-spinner>
+                      } @else {
+                        <mat-icon>more_horiz</mat-icon>
+                      }
+                    </button>
+                  </div>
+                }
+
+                @if (isMessageForwarded(message)) {
+                  <div class="message-forwarded-label">
+                    <mat-icon>forward</mat-icon>
+                    <span>הועברה</span>
+                  </div>
+                }
+
+                @if (message.replyTo; as replyReference) {
+                  <div class="message-reply-quote">
+                    <span class="message-reply-author">{{ replyAuthorLabel(replyReference) }}</span>
+                    <span class="message-reply-preview">{{ replyPreviewLabel(replyReference) }}</span>
+                  </div>
+                }
+
+                @if (message.imageUrl) {
+                  <button
+                    type="button"
+                    class="message-image-btn"
+                    (click)="openFullImage(message.imageUrl)"
+                    aria-label="Open full image">
+                    <img class="message-image" [src]="message.imageUrl" alt="Attachment" loading="lazy" />
+                  </button>
+                }
+
+                @if (message.fileUrl) {
+                  <a [href]="message.fileUrl" target="_blank" rel="noopener" class="message-file-btn">
+                    <mat-icon>description</mat-icon>
+                    <span>הצג קובץ</span>
+                  </a>
+                }
+
+                @if (isVersionUpdateMessage(message)) {
+                  <div class="version-update-card">
+                    <div class="version-update-card-icon">
+                      <mat-icon>system_update</mat-icon>
+                    </div>
+                    <div class="version-update-card-title">עדכון גרסה</div>
+                    <div class="version-update-card-body">{{ message.body }}</div>
+                    <button
+                      type="button"
+                      class="version-update-card-btn"
+                      [disabled]="store.syncing()"
+                      (click)="triggerAppReset()">
+                      <mat-icon>refresh</mat-icon>
+                      <span>עדכן ורענן את האפליקציה</span>
+                    </button>
+                  </div>
+                } @else if (shuttleOrderMessageCard(message); as shuttleCard) {
+                  <div class="shuttle-message-card" [class.cancelled]="shuttleCard.cancelled">
+                    <div class="shuttle-message-card-title">{{ shuttleCard.title }}</div>
+                    <div class="shuttle-message-card-status">{{ shuttleCard.statusLabel }}</div>
+                    <div class="shuttle-message-card-row">
+                      <span class="label">{{ shuttleText('dateLabel') }}</span>
+                      <span class="value">{{ shuttleCard.dayDate }}</span>
+                    </div>
+                    <div class="shuttle-message-card-row">
+                      <span class="label">{{ shuttleText('shiftLabel') }}</span>
+                      <span class="value">{{ shuttleCard.shift }}</span>
+                    </div>
+                    <div class="shuttle-message-card-row">
+                      <span class="label">{{ shuttleText('stationLabel') }}</span>
+                      <span class="value">{{ shuttleCard.station }}</span>
+                    </div>
+                  </div>
+                } @else if (helpdeskTicketMessageCard(message); as helpdeskCard) {
+                  <div class="helpdesk-message-card" [class.error]="helpdeskCard.isError">
+                    <div class="helpdesk-message-card-title">{{ helpdeskCard.title }}</div>
+                    @if (!helpdeskCard.isError) {
+                      @if (helpdeskCard.id) {
+                        <div class="helpdesk-message-card-row">
+                          <span class="label">מזהה קריאה</span>
+                          <span class="value">#{{ helpdeskCard.id }}</span>
+                        </div>
+                      }
+                      @if (helpdeskCard.department) {
+                        <div class="helpdesk-message-card-row">
+                          <span class="label">מחלקה</span>
+                          <span class="value">{{ helpdeskCard.department }}</span>
+                        </div>
+                      }
+                      @if (helpdeskCard.statusLabel) {
+                        <div class="helpdesk-message-card-row">
+                          <span class="label">סטטוס</span>
+                          <span class="value">{{ helpdeskCard.statusLabel }}</span>
+                        </div>
+                      }
+                    }
+                  </div>
+                } @else if (message.body) {
+                  @if (hrInlineChoicePayload(message); as hrChoice) {
+                    <div class="message-content">
+                      <span class="message-text" [innerHTML]="formatMessageTextPart(hrChoice.prompt)"></span>
+                      <div class="hr-inline-choice-list" role="listbox" aria-label="רשימת אפשרויות">
+                        @for (option of hrChoice.options; track option.choiceNumber + '-' + $index) {
+                          <button
+                            type="button"
+                            class="hr-inline-choice-btn"
+                            [disabled]="isSubmittingHrListChoice() || isHrListChoiceLocked(hrChoice.sourceMessageId)"
+                            (click)="chooseHrListChoice(option.choiceNumber, option.label, hrChoice.sourceMessageId)"
+                            [attr.aria-label]="'בחר אפשרות ' + option.choiceNumber">
+                            <span class="hr-inline-choice-number">{{ option.choiceNumber }}</span>
+                            <span class="hr-inline-choice-label">{{ option.label }}</span>
+                          </button>
+                        }
+                      </div>
+                    </div>
+                  } @else {
+                    <div class="message-content">
+                      @for (part of getMessageRenderParts(message.messageId, message.body); track $index) {
+                        @if (part.kind === 'text') {
+                          <span class="message-text" [innerHTML]="formatMessageTextPart(part.text)"></span>
+                        } @else if (part.kind === 'phone') {
+                          <button
+                            type="button"
+                            class="message-phone"
+                            (click)="openPhoneActions(part)"
+                            aria-label="פעולות מספר טלפון">
+                            {{ part.display }}
+                          </button>
+                        } @else if (part.kind === 'image') {
+                          <button
+                            type="button"
+                            class="message-image-btn"
+                            (click)="openFullImage(part.url)"
+                            aria-label="Open full image">
+                            <img class="message-image" [src]="part.url" alt="Image" loading="lazy" />
+                          </button>
+                        } @else if (part.kind === 'file') {
+                          <a [href]="part.url" target="_blank" rel="noopener" class="message-file-btn">
+                            <mat-icon>description</mat-icon>
+                            <span>{{ part.label }}</span>
+                          </a>
+                        } @else {
+                          <a [href]="part.url" target="_blank" rel="noopener" class="message-link">
+                            {{ part.label }}
+                          </a>
+                        }
+                      }
+                    </div>
+                  }
+                }
+
+                <div class="message-meta">
+                  <span>{{ formatTime(message.timestamp) }}</span>
+                  @if (isMessageEdited(message)) {
+                    <span class="message-edited-label">נערך</span>
+                  }
+                  @if (isMessageActionSyncing(message)) {
+                    <span class="message-syncing-label">מסנכרן...</span>
+                  }
+                  @if (message.direction === 'outgoing') {
+                    <span
+                      class="message-status"
+                      [class.read]="isOutgoingStatusRead(message.deliveryStatus)"
+                      [class.failed]="message.deliveryStatus === 'failed'"
+                      [attr.aria-label]="outgoingStatusLabel(message.deliveryStatus)"
+                      [attr.title]="outgoingStatusLabel(message.deliveryStatus)">
+                      <mat-icon>{{ outgoingStatusIcon(message.deliveryStatus) }}</mat-icon>
+                    </span>
+                  }
+                </div>
+
+                @if (reactionBuckets(message).length) {
+                  <div class="message-reactions">
+                    @for (bucket of reactionBuckets(message); track bucket.emoji) {
+                      <span class="reaction-chip">
+                        {{ bucket.count > 1 ? bucket.emoji + ' ' + bucket.count : bucket.emoji }}
+                      </span>
+                    }
+                    <span class="reaction-total">{{ reactionTotal(message) }}</span>
+                    @if (canViewReactionDetails(message)) {
+                      <button
+                        type="button"
+                        class="reaction-details-btn"
+                        (click)="openReactionDetails(message)"
+                        aria-label="הצג רשימת מגיבים">
+                        <mat-icon>groups</mat-icon>
+                        <span>מגיבים</span>
+                      </button>
+                    }
+                  </div>
+                }
+
+                @if (canReactToMessage(message)) {
+                  <div class="message-react-action">
+                    <button
+                      type="button"
+                      class="message-react-btn"
+                      [matMenuTriggerFor]="reactionMenu"
+                      (click)="setReactionTarget(message)"
+                      aria-label="הוסף תגובה">
+                      <span>😊</span>
+                    </button>
+                  </div>
+                }
+              </div>
+            </article>
+          }
+        </div>
+
+        <button
+          type="button"
+          class="scroll-bottom-btn"
+          [class.visible]="showScrollToBottomButton()"
+          (click)="scrollToBottomFromButton()"
+          aria-label="גלול להודעה האחרונה">
+          <mat-icon>keyboard_arrow_down</mat-icon>
+        </button>
+
+        @if (store.activeTypingLabel(); as typingLabel) {
+          <div class="typing-indicator" aria-live="polite">{{ typingLabel }}</div>
+        }
+
+        @if (editingMessageTarget(); as editingMessage) {
+          <div class="composer-edit-banner">
+            <div class="composer-edit-text">
+              <span class="composer-edit-title">עריכת הודעה</span>
+              <span class="composer-edit-preview">{{ editingMessage.body }}</span>
+            </div>
+            <button
+              type="button"
+              class="composer-edit-cancel"
+              (click)="cancelEditingMessage()"
+              aria-label="בטל עריכה">
+              <mat-icon>close</mat-icon>
+            </button>
+          </div>
+        } @else if (replyingMessageTarget(); as replyingMessage) {
+          <div class="composer-reply-banner">
+            <div class="composer-reply-text">
+              <span class="composer-reply-title">{{ composerReplyTitle(replyingMessage) }}</span>
+              <span class="composer-reply-preview">{{ composerReplyPreview(replyingMessage) }}</span>
+            </div>
+            <button
+              type="button"
+              class="composer-reply-cancel"
+              (click)="cancelReplyingMessage()"
+              aria-label="בטל תגובה">
+              <mat-icon>close</mat-icon>
+            </button>
+          </div>
+        }
+
+        @if (shuttleQuickPicker(); as shuttlePicker) {
+          <section class="shuttle-picker-panel">
+            @if (shuttleBreadcrumbs(); as breadcrumbs) {
+              <nav class="shuttle-picker-breadcrumbs" [attr.aria-label]="shuttleText('pickerStepsAria')">
+                <mat-chip-set>
+                  @for (crumb of breadcrumbs; track crumb.key; let isLast = $last) {
+                    <mat-chip
+                      class="shuttle-picker-breadcrumb-chip"
+                      [class.active]="crumb.active"
+                      [class.completed]="crumb.completed"
+                      [highlighted]="crumb.active || crumb.completed">
+                      <span class="crumb-value">{{ crumb.value }}</span>
+                    </mat-chip>
+                    @if (!isLast) {
+                      <mat-icon class="shuttle-picker-breadcrumb-sep">arrow_back</mat-icon>
+                    }
+                  }
+                </mat-chip-set>
+              </nav>
+            }
+
+            <div class="shuttle-picker-header">
+              <div class="shuttle-picker-title">{{ shuttlePicker.title }}</div>
+              @if (shuttlePicker.helperText) {
+                <div class="shuttle-picker-helper">{{ shuttlePicker.helperText }}</div>
+              }
+            </div>
+
+            @if (shuttlePicker.mode === 'buttons') {
+              <div class="shuttle-picker-buttons">
+                @for (option of shuttlePicker.options; track option.value + '-' + $index) {
+                  <button
+                    mat-stroked-button
+                    type="button"
+                    class="shuttle-picker-option-btn"
+                    [disabled]="isSubmittingShuttlePicker() || !!option.disabled"
+                    (click)="chooseShuttlePickerOption(option.value)">
+                    {{ option.label }}
+                  </button>
+                }
+              </div>
+            } @else {
+              <div class="shuttle-picker-select">
+                @if (isShuttleStationPicker()) {
+                  <label class="search-shell shuttle-picker-search-shell">
+                    <mat-icon class="search-icon">search</mat-icon>
+                    <input
+                      class="search-input shuttle-picker-search-input"
+                      type="text"
+                      [formControl]="shuttlePickerSearchControl"
+                      (focus)="handleTextInputFocus()"
+                      [placeholder]="shuttleText('stationSearchPlaceholder')"
+                      [attr.aria-label]="shuttleText('stationSearchAria')"
+                      autocomplete="off" />
+                    @if (shuttlePickerSearchControl.value.length > 0) {
+                      <button
+                        type="button"
+                        class="search-clear-btn shuttle-picker-search-clear-btn"
+                        (click)="clearShuttlePickerSearch(); $event.preventDefault(); $event.stopPropagation()"
+                        [attr.aria-label]="shuttleText('clearStationSearchAria')">
+                        <mat-icon>close</mat-icon>
+                      </button>
+                    }
+                  </label>
+                  <div class="shuttle-picker-search-result">
+                    {{ shuttleSearchResultLabel(filteredShuttlePickerOptions().length) }}
+                  </div>
+                  @if (!filteredShuttlePickerOptions().length) {
+                    <div class="shuttle-picker-empty-results">{{ shuttleText('noSearchResults') }}</div>
+                  } @else {
+                    <div class="shuttle-station-list" role="listbox" [attr.aria-label]="shuttleText('stationListAria')">
+                      @for (option of filteredShuttlePickerOptions(); track option.value + '-' + $index) {
+                        <button
+                          type="button"
+                          class="chat-item shuttle-station-item"
+                          [disabled]="isSubmittingShuttlePicker()"
+                          (click)="chooseShuttlePickerOption(option.value)">
+                          <span class="chat-item-main">
+                            <span class="chat-avatar-wrap shuttle-station-avatar">
+                              <mat-icon>location_on</mat-icon>
+                            </span>
+                            <span class="chat-text">
+                              <span class="chat-title shuttle-station-title">{{ option.label }}</span>
+                              <span class="chat-subtitle">{{ shuttleText('stationSubtitle') }}</span>
+                            </span>
+                          </span>
+                        </button>
+                      }
+                    </div>
+                  }
+                } @else {
+                  <mat-form-field class="shuttle-picker-select-field" appearance="outline">
+                    <mat-label>{{ shuttleText('selectOption') }}</mat-label>
+                    <mat-select
+                      [formControl]="shuttlePickerControl"
+                      [disabled]="isSubmittingShuttlePicker() || !filteredShuttlePickerOptions().length">
+                      @for (option of filteredShuttlePickerOptions(); track option.value + '-' + $index) {
+                        <mat-option [value]="option.value" [disabled]="!!option.disabled">{{ option.label }}</mat-option>
+                      }
+                    </mat-select>
+                  </mat-form-field>
+                  @if (!filteredShuttlePickerOptions().length) {
+                    <div class="shuttle-picker-empty-results">{{ shuttleText('noSearchResults') }}</div>
+                  }
+
+                  <button
+                    mat-flat-button
+                    color="primary"
+                    type="button"
+                    class="shuttle-picker-confirm-btn"
+                    [disabled]="
+                      isSubmittingShuttlePicker() ||
+                      !filteredShuttlePickerOptions().length ||
+                      !shuttlePickerControl.value
+                    "
+                    (click)="submitShuttlePickerSelection()">
+                    {{ shuttleText('confirmSelection') }}
+                  </button>
+                }
+              </div>
+            }
+
+            @if (isSubmittingShuttleOrder()) {
+              <div class="shuttle-picker-processing-overlay" role="status" aria-live="polite" aria-busy="true">
+                <div class="shuttle-picker-processing-card">
+                  <mat-spinner diameter="38"></mat-spinner>
+                  <div class="shuttle-picker-processing-title">{{ shuttleText('processingOrderTitle') }}</div>
+                  <div class="shuttle-picker-processing-subtitle">{{ shuttleText('processingOrderSubtitle') }}</div>
+                </div>
+              </div>
+            }
+
+            @if (shuttlePicker.allowBack) {
+              <button
+                mat-button
+                type="button"
+                class="shuttle-picker-back-btn"
+                [disabled]="isSubmittingShuttlePicker()"
+                (click)="goBackFromShuttlePicker()">
+                <mat-icon>arrow_back</mat-icon>
+                <span>{{ shuttleText('backToMenu') }}</span>
+              </button>
+            }
+          </section>
+        }
+
+        @if (helpdeskQuickPicker(); as helpdeskPicker) {
+          <section class="shuttle-picker-panel helpdesk-picker-panel">
+            <div class="shuttle-picker-header">
+              <div class="shuttle-picker-title">{{ helpdeskPicker.title }}</div>
+              @if (helpdeskPicker.helperText) {
+                <div class="shuttle-picker-helper">{{ helpdeskPicker.helperText }}</div>
+              }
+            </div>
+
+            <div class="shuttle-picker-buttons">
+              @for (option of helpdeskPicker.options; track option.value + '-' + $index) {
+                <button
+                  mat-stroked-button
+                  type="button"
+                  class="shuttle-picker-option-btn"
+                  [disabled]="isSubmittingHelpdeskTicket()"
+                  (click)="chooseHelpdeskPickerOption(option.value)">
+                  {{ option.label }}
+                </button>
+              }
+            </div>
+
+            @if (isSubmittingHelpdeskTicket()) {
+              <div class="shuttle-picker-processing-overlay" role="status" aria-live="polite" aria-busy="true">
+                <div class="shuttle-picker-processing-card">
+                  <mat-spinner diameter="38"></mat-spinner>
+                  <div class="shuttle-picker-processing-title">שולח קריאה...</div>
+                  <div class="shuttle-picker-processing-subtitle">אנא המתן</div>
+                </div>
+              </div>
+            }
+
+            @if (helpdeskPicker.allowBack) {
+              <button
+                mat-button
+                type="button"
+                class="shuttle-picker-back-btn"
+                [disabled]="isSubmittingHelpdeskTicket()"
+                (click)="goBackHelpdeskPicker()">
+                <mat-icon>arrow_back</mat-icon>
+                <span>חזרה</span>
+              </button>
+            }
+          </section>
+        }
+
+        @if (showHrStartSessionButton() || showHrBackButton() || showHrEndSessionButton()) {
+          <div class="hr-composer-actions">
+            @if (showHrStartSessionButton()) {
+              <button
+                mat-stroked-button
+                type="button"
+                class="hr-composer-action-btn"
+                [disabled]="isSubmittingHrListChoice()"
+                (click)="startNewHrSession()">
+                התחל מחדש
+              </button>
+            }
+            @if (showHrBackButton()) {
+              <button
+                mat-stroked-button
+                type="button"
+                class="hr-composer-action-btn"
+                [disabled]="isSubmittingHrListChoice()"
+                (click)="goBackInHrFlow()">
+                חזרה
+              </button>
+            }
+            @if (showHrEndSessionButton()) {
+              <button
+                mat-stroked-button
+                type="button"
+                class="hr-composer-action-btn danger"
+                [disabled]="isSubmittingHrListChoice()"
+                (click)="endHrConversation()">
+                סיום שיחה
+              </button>
+            }
+          </div>
+        }
+        @if (store.uploading()) {
+          <div class="upload-progress-bar">
+            <div class="upload-progress-spinner"></div>
+            <span class="upload-progress-label">מעלה: {{ uploadingFileName() || 'קובץ' }}…</span>
+          </div>
+        }
+
+        @if (store.pendingAttachment(); as attachment) {
+          <div class="pending-attachment-preview">
+            <mat-icon class="pending-attachment-check">check_circle</mat-icon>
+            @if (attachment.type === 'image') {
+              <img class="pending-attachment-thumb" [src]="attachment.url" alt="Attachment preview" />
+            } @else {
+              <div class="pending-attachment-file">
+                <mat-icon>description</mat-icon>
+                <span class="pending-attachment-name">{{ attachment.name }}</span>
+              </div>
+            }
+            <button type="button" class="pending-attachment-remove" (click)="removePendingAttachment()" aria-label="Remove attachment">
+              <mat-icon>close</mat-icon>
+            </button>
+          </div>
+        }
+        <form
+          class="composer"
+          [class.shuttle-composer-hidden]="isComposerHidden()"
+          (submit)="handleComposerSubmit($event)"
+          novalidate>
+          <input
+            #fileInput
+            class="hidden-input"
+            type="file"
+            accept="image/*"
+            (change)="onFileSelected($event)" />
+          <input
+            #pdfInput
+            class="hidden-input"
+            type="file"
+            accept=".pdf,application/pdf"
+            (change)="onFileSelected($event)" />
+
+          <div class="composer-input-shell">
+            <textarea
+              #composerTextarea
+              class="composer-textarea"
+              rows="1"
+              [formControl]="messageControl"
+              [disabled]="isComposerHidden() || !isHrTextInputEnabled()"
+              (input)="onComposerInput()"
+              (focus)="handleTextInputFocus()"
+              [placeholder]="composerPlaceholder()"></textarea>
+            <button
+              type="button"
+              class="attach-btn"
+              [matMenuTriggerFor]="attachMenu"
+              [disabled]="isComposerHidden() || !isHrTextInputEnabled() || !store.activeChat() || !store.canSendToActiveChat() || store.uploading()"
+              aria-label="Attach">
+              <span class="attach-plus">+</span>
+            </button>
+
+            
+          </div>
+
+          
+
+          <button
+            type="submit"
+            class="send-btn"
+            [disabled]="!canSendMessage() || store.uploading()"
+            aria-label="Send message">
+            <mat-icon>send</mat-icon>
+          </button>
+
+          <mat-menu #attachMenu="matMenu">
+            <button mat-menu-item type="button" (click)="openImagePicker()">
+              <mat-icon>image</mat-icon>
+              <span>תמונה</span>
+            </button>
+            <button mat-menu-item type="button" (click)="openPdfPicker()">
+              <mat-icon>picture_as_pdf</mat-icon>
+              <span>קובץ PDF</span>
+            </button>
+            <button mat-menu-item type="button" (click)="shareLocation()">
+              <mat-icon>location_on</mat-icon>
+              <span>Share location</span>
+            </button>
+          </mat-menu>
+
+          <mat-menu #reactionMenu="matMenu">
+            @for (emoji of reactionEmojis; track emoji) {
+              <button mat-menu-item type="button" (click)="addReaction(emoji)">
+                <span class="reaction-menu-emoji">{{ emoji }}</span>
+              </button>
+            }
+          </mat-menu>
+
+          <mat-menu #messageActionsMenu="matMenu">
+            @if (messageActionTarget(); as targetMessage) {
+              <button
+                mat-menu-item
+                type="button"
+                [disabled]="!canReplyToMessage(targetMessage) || isMessageActionPending(targetMessage)"
+                (click)="startReplyToSelectedMessage()">
+                @if (isMessageActionPending(targetMessage)) {
+                  <mat-spinner class="message-action-menu-spinner" diameter="16"></mat-spinner>
+                } @else {
+                  <mat-icon>reply</mat-icon>
+                }
+                <span>השב</span>
+              </button>
+              <button
+                mat-menu-item
+                type="button"
+                [disabled]="!canForwardMessage(targetMessage) || isMessageActionPending(targetMessage)"
+                (click)="forwardSelectedMessage()">
+                @if (isMessageActionPending(targetMessage)) {
+                  <mat-spinner class="message-action-menu-spinner" diameter="16"></mat-spinner>
+                } @else {
+                  <mat-icon>forward</mat-icon>
+                }
+                <span>העבר</span>
+              </button>
+
+              @if (canManageOutgoingMessage(targetMessage)) {
+                <button
+                  mat-menu-item
+                  type="button"
+                  [disabled]="!canEditOutgoingMessage(targetMessage) || isMessageActionPending(targetMessage)"
+                  (click)="startEditingSelectedMessage()">
+                  @if (isMessageActionPending(targetMessage)) {
+                    <mat-spinner class="message-action-menu-spinner" diameter="16"></mat-spinner>
+                  } @else {
+                    <mat-icon>edit</mat-icon>
+                  }
+                  <span>ערוך</span>
+                </button>
+                <button
+                  mat-menu-item
+                  type="button"
+                  [disabled]="isMessageActionPending(targetMessage)"
+                  (click)="deleteSelectedMessageForEveryone()">
+                  @if (isMessageActionPending(targetMessage)) {
+                    <mat-spinner class="message-action-menu-spinner" diameter="16"></mat-spinner>
+                  } @else {
+                    <mat-icon>delete</mat-icon>
+                  }
+                  <span>מחק אצל כולם</span>
+                </button>
+              }
+            }
+          </mat-menu>
+        </form>
+      } @else {
+        <div class="empty-conversation">
+          <mat-icon>chat_bubble</mat-icon>
+          <p>בחר צ׳אט מהרשימה כדי להתחיל התכתבות.</p>
+        </div>
+      }
+    </section>
+  </div>
+
+  @if (isLoggingOut()) {
+    <div class="logout-loader-backdrop" role="status" aria-live="polite" aria-busy="true">
+      <div class="logout-loader-card">
+        <mat-spinner diameter="54"></mat-spinner>
+        <div class="logout-loader-title">מתנתק מהמערכת...</div>
+        <div class="logout-loader-subtitle">{{ logoutLoaderText() }}</div>
+      </div>
+    </div>
+  }
+
+  @if (store.syncing()) {
+    <div class="sync-loader-backdrop" role="status" aria-live="polite" aria-busy="true">
+      <div class="sync-loader-card">
+        <mat-spinner diameter="54"></mat-spinner>
+        <div class="sync-loader-title">מסנכרן הודעות...</div>
+        <div class="sync-loader-progress">{{ store.syncProgressPercent() }}%</div>
+        <div class="sync-loader-bar-track">
+          <div class="sync-loader-bar-fill" [style.width.%]="store.syncProgressPercent()"></div>
+        </div>
+        <div class="sync-loader-subtitle">{{ store.syncProgressLabel() }}</div>
+      </div>
+    </div>
+  }
+
+  @if (avatarPreview(); as avatar) {
+    <div class="avatar-preview-backdrop" (click)="closeChatAvatar()">
+      <div class="avatar-preview-dialog" (click)="$event.stopPropagation()">
+        <button type="button" class="avatar-preview-close" (click)="closeChatAvatar()" aria-label="Close">
+          <mat-icon>close</mat-icon>
+        </button>
+        <div class="avatar-preview-media" [class.loaded]="previewAvatarLoaded()">
+          <div class="avatar-preview-skeleton" aria-hidden="true"></div>
+          @if (avatar.lqipUrl) {
+            <img class="avatar-preview-lqip" [src]="avatar.lqipUrl" alt="" aria-hidden="true" decoding="async" />
+          }
+          <img
+            class="avatar-preview-image"
+            [src]="avatar.imageUrl"
+            [alt]="avatar.title"
+            loading="eager"
+            decoding="async"
+            (load)="onPreviewAvatarLoaded()"
+            (error)="onPreviewAvatarLoaded()" />
+        </div>
+        <div class="avatar-preview-title">{{ avatar.title }}</div>
+      </div>
+    </div>
+  }
+
+  @if (imagePreviewUrl(); as previewUrl) {
+    <div class="image-preview-backdrop" (click)="closeFullImage()">
+      <div class="image-preview-dialog">
+        <div class="image-preview-toolbar" (click)="$event.stopPropagation()">
+          <button type="button" class="image-preview-action" (click)="openPreviewImageInNewTab()" aria-label="Open in new tab">
+            <mat-icon>open_in_new</mat-icon>
+          </button>
+          <button type="button" class="image-preview-action" (click)="closeFullImage()" aria-label="Close">
+            <mat-icon>close</mat-icon>
+          </button>
+        </div>
+        <div class="image-preview-media" [class.loaded]="imagePreviewLoaded()">
+          <div class="image-preview-skeleton" aria-hidden="true"></div>
+          <img
+            class="image-preview-image"
+            [src]="previewUrl"
+            alt="Image preview"
+            loading="eager"
+            decoding="async"
+            (click)="$event.stopPropagation()"
+            (load)="onImagePreviewLoaded()"
+            (error)="onImagePreviewLoaded()" />
+        </div>
+      </div>
+    </div>
+  }
+
+  @if (reactionDetailsPreview(); as details) {
+    <div class="reaction-details-backdrop" (click)="closeReactionDetails()">
+      <div class="reaction-details-dialog" (click)="$event.stopPropagation()">
+        <button type="button" class="reaction-details-close" (click)="closeReactionDetails()" aria-label="Close">
+          <mat-icon>close</mat-icon>
+        </button>
+        <div class="reaction-details-title">{{ details.groupTitle }}</div>
+        <div class="reaction-details-meta">תגובות בקבוצה</div>
+
+        @if (!details.rows.length) {
+          <div class="reaction-details-empty">אין תגובות להצגה.</div>
+        } @else {
+          <div class="reaction-details-list">
+            @for (row of details.rows; track row.username + '-' + row.emoji + '-' + $index) {
+              <div class="reaction-details-item">
+                <div class="reaction-details-user-wrap">
+                  <div class="reaction-details-user">{{ row.displayName }}</div>
+                  @if (row.username) {
+                    <div class="reaction-details-username">{{ row.username }}</div>
+                  }
+                </div>
+                <div class="reaction-details-emoji">{{ row.emoji }}</div>
+              </div>
+            }
+          </div>
+        }
+      </div>
+    </div>
+  }
+
+  @if (phoneActionTarget(); as phoneTarget) {
+    <div class="phone-action-backdrop" (click)="closePhoneActions()">
+      <div class="phone-action-dialog" (click)="$event.stopPropagation()">
+        <button type="button" class="phone-action-close" (click)="closePhoneActions()" aria-label="Close">
+          <mat-icon>close</mat-icon>
+        </button>
+        <div class="phone-action-title">מספר טלפון</div>
+        <div class="phone-action-number">{{ phoneTarget.display }}</div>
+        <div class="phone-action-buttons">
+          <button type="button" class="phone-action-btn" (click)="copyPhoneTarget()">העתק מספר</button>
+          <button type="button" class="phone-action-btn primary" (click)="callPhoneTarget()">חייג עכשיו</button>
+        </div>
+      </div>
+    </div>
+  }
+
+  @if (groupMembersPreview(); as groupPreview) {
+    <div class="group-members-backdrop" (click)="closeGroupMembers()">
+      <div class="group-members-dialog" (click)="$event.stopPropagation()">
+        <button type="button" class="group-members-close" (click)="closeGroupMembers()" aria-label="Close">
+          <mat-icon>close</mat-icon>
+        </button>
+        <div class="group-members-title">{{ groupPreview.title }}</div>
+        <div class="group-members-meta">
+          {{ groupMembersMetaText(groupPreview) }}
+        </div>
+
+        @if (groupPreview.canEditTitle) {
+          <div class="group-title-edit-panel">
+            <label class="group-title-edit-label" for="group-title-edit-input">עריכת שם קבוצה</label>
+            <div class="group-title-edit-row">
+              <input
+                id="group-title-edit-input"
+                class="group-title-edit-input"
+                type="text"
+                [value]="groupTitleEditValue()"
+                (input)="onGroupTitleEditInput($event)"
+                (focus)="handleTextInputFocus()"
+                placeholder="שם קבוצה"
+                autocomplete="off" />
+              <div class="group-title-edit-actions">
+                <button mat-stroked-button type="button" (click)="resetGroupTitleEdit()">איפוס</button>
+                <button
+                  mat-flat-button
+                  color="primary"
+                  type="button"
+                  [disabled]="!canSaveGroupTitle()"
+                  (click)="saveGroupTitleEdit()">
+                  שמור שם
+                </button>
+              </div>
+            </div>
+          </div>
+        }
+
+        @if (groupPreview.canManageMembers) {
+          <div class="group-members-manage">
+            <button
+              mat-stroked-button
+              type="button"
+              class="group-members-add-btn"
+              (click)="toggleGroupMemberAddPanel()">
+              <mat-icon>person_add</mat-icon>
+              <span>{{ groupMemberAddOpen() ? 'סגור הוספה' : 'הוסף משתתף' }}</span>
+            </button>
+          </div>
+
+          @if (groupMemberAddOpen()) {
+            <div class="group-member-add-panel">
+              <label class="group-member-add-search-shell">
+                <mat-icon class="group-member-add-search-icon">search</mat-icon>
+                <input
+                  class="group-member-add-search-input"
+                  type="text"
+                  [value]="groupMemberAddSearchTerm()"
+                  (input)="onGroupMemberSearchInput($event)"
+                  (focus)="handleTextInputFocus()"
+                  placeholder="חיפוש איש קשר להוספה"
+                  aria-label="חיפוש איש קשר להוספה"
+                  autocomplete="off" />
+                @if (groupMemberAddSearchTerm().length > 0) {
+                  <button
+                    type="button"
+                    class="group-member-add-search-clear"
+                    (click)="clearGroupMemberSearch(); $event.preventDefault(); $event.stopPropagation()"
+                    aria-label="נקה חיפוש אנשי קשר">
+                    <mat-icon>close</mat-icon>
+                  </button>
+                }
+              </label>
+
+              @if (selectedGroupMemberAddCount() > 0) {
+                <div class="group-member-add-actions">
+                  <span class="group-member-add-actions-count">נבחרו {{ selectedGroupMemberAddCount() }} אנשי קשר</span>
+                  <div class="group-member-add-actions-buttons">
+                    <button mat-flat-button color="primary" type="button" (click)="addSelectedCommunityMembers()">
+                      הוסף נבחרים
+                    </button>
+                    <button mat-stroked-button type="button" (click)="clearSelectedGroupMemberAdds()">נקה בחירה</button>
+                  </div>
+                </div>
+              }
+
+              @if (!filteredGroupMemberAddCandidates().length) {
+                <div class="group-member-add-empty">אין אנשי קשר זמינים להוספה</div>
+              } @else {
+                <div class="group-member-add-list">
+                  @for (candidate of filteredGroupMemberAddCandidates(); track candidate.username) {
+                    <button
+                      type="button"
+                      class="group-member-add-item"
+                      [class.selected]="isGroupMemberAddSelected(candidate.username)"
+                      (click)="toggleGroupMemberAddSelection(candidate.username)">
+                      <div class="group-add-member-row">
+                        <span class="group-add-member-name">{{ candidate.displayName }}</span>
+                        <span class="group-add-member-username">{{ candidate.username }}</span>
+                      </div>
+                      <span class="group-member-select-indicator">
+                        <mat-icon>
+                          {{ isGroupMemberAddSelected(candidate.username) ? 'check_circle' : 'radio_button_unchecked' }}
+                        </mat-icon>
+                      </span>
+                    </button>
+                  }
+                </div>
+              }
+            </div>
+          }
+        }
+
+        @if (!groupPreview.members.length) {
+          <div class="group-members-empty">אין משתתפים להצגה.</div>
+        } @else {
+          @if (groupPreview.canManageMembers && selectedGroupMemberRemoveCount() > 0) {
+            <div class="group-member-remove-actions">
+              <span class="group-member-remove-actions-count">נבחרו {{ selectedGroupMemberRemoveCount() }} להסרה</span>
+              <div class="group-member-remove-actions-buttons">
+                <button mat-flat-button color="warn" type="button" (click)="removeSelectedCommunityMembers()">
+                  הסר נבחרים
+                </button>
+                <button mat-stroked-button type="button" (click)="clearSelectedGroupMemberRemovals()">נקה בחירה</button>
+              </div>
+            </div>
+          }
+
+          <div class="group-members-list">
+            @for (member of groupPreview.members; track member.username) {
+              <div class="group-member-item">
+                <div class="group-member-main">
+                  <span class="group-member-avatar" [class.has-image]="!!groupMemberAvatarUrl(member)">
+                    @if (groupMemberAvatarUrl(member); as userAvatar) {
+                      <img
+                        class="group-member-avatar-image"
+                        [src]="userAvatar"
+                        [alt]="member.displayName"
+                        loading="lazy"
+                        (error)="markGroupMemberAvatarLoadError(member.username)" />
+                    } @else {
+                      <span class="group-member-avatar-fallback">{{ groupMemberAvatarFallback(member) }}</span>
+                    }
+                  </span>
+                  <div class="group-member-text">
+                    <span class="group-member-name">{{ member.displayName }}</span>
+                    @if (member.info) {
+                      <span class="group-member-info">{{ member.info }}</span>
+                    }
+                    @if (member.isAdmin) {
+                      <span class="group-member-role">מנהל</span>
+                    }
+                  </div>
+                </div>
+                @if (canRemoveCommunityMember(groupPreview, member.username)) {
+                  <button
+                    type="button"
+                    class="group-member-remove-select"
+                    [class.selected]="isGroupMemberRemoveSelected(member.username)"
+                    (click)="toggleGroupMemberRemoveSelection(member.username)"
+                    aria-label="בחר משתתף להסרה">
+                    <mat-icon>
+                      {{ isGroupMemberRemoveSelected(member.username) ? 'check_circle' : 'radio_button_unchecked' }}
+                    </mat-icon>
+                  </button>
+                }
+              </div>
+            }
+          </div>
+        }
+      </div>
+    </div>
+  }
+</div>
