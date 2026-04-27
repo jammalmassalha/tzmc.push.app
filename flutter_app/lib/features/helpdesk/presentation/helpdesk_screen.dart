@@ -985,6 +985,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
   List<HelpdeskNote>? _notes;
   bool _loadingHistory = true;
   bool _loadingNotes = true;
+  String? _historyError;
 
   String? _selectedHandler;
   String _selectedStatus = '';
@@ -1035,9 +1036,9 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
   Future<void> _loadHistory(ChatApiService api, int ticketId) async {
     try {
       final h = await api.getHelpdeskTicketHistory(ticketId, _currentUser);
-      if (mounted) setState(() { _history = h; _loadingHistory = false; });
-    } catch (_) {
-      if (mounted) setState(() { _history = []; _loadingHistory = false; });
+      if (mounted) setState(() { _history = h; _loadingHistory = false; _historyError = null; });
+    } catch (e) {
+      if (mounted) setState(() { _history = []; _loadingHistory = false; _historyError = e.toString(); });
     }
   }
 
@@ -1074,6 +1075,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
           .updateTicketStatus(int.parse(_ticket.id), _selectedStatus);
       if (mounted) {
         showTopToast(context, 'הסטטוס עודכן בהצלחה');
+        setState(() { _loadingHistory = true; _historyError = null; });
         final api = ref.read(chatApiServiceProvider);
         await _loadHistory(api, int.parse(_ticket.id));
       }
@@ -1229,12 +1231,32 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                   const SizedBox(height: 8),
                   if (_loadingHistory)
                     const Center(child: CircularProgressIndicator())
+                  else if (_historyError != null)
+                    Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text('שגיאה בטעינת ההיסטוריה',
+                          style: theme.textTheme.bodySmall?.copyWith(color: Colors.red.shade700)),
+                      const SizedBox(height: 4),
+                      TextButton.icon(
+                        onPressed: () async {
+                          setState(() { _loadingHistory = true; _historyError = null; });
+                          final api = ref.read(chatApiServiceProvider);
+                          final ticketId = int.tryParse(_ticket.id) ?? 0;
+                          await _loadHistory(api, ticketId);
+                        },
+                        icon: const Icon(Icons.refresh, size: 16),
+                        label: const Text('נסה שוב'),
+                        style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 30)),
+                      ),
+                    ])
                   else if (_history == null || _history!.isEmpty)
                     Text('אין היסטוריית שינויי סטטוס.',
                         style: theme.textTheme.bodySmall?.copyWith(
                             color: theme.colorScheme.onSurface.withAlpha(128)))
                   else
-                    ..._history!.map((h) => _HistoryEntry(entry: h)),
+                    ..._history!.map((h) => _HistoryEntry(
+                          entry: h,
+                          displayName: _resolveDisplay(h.changedBy),
+                        )),
 
                   // Handler assignment (editor only)
                   if (_canManageHandler) ...[
@@ -1448,8 +1470,9 @@ class _DetailRow extends StatelessWidget {
 
 class _HistoryEntry extends StatelessWidget {
   final HelpdeskStatusHistoryEntry entry;
+  final String displayName;
 
-  const _HistoryEntry({required this.entry});
+  const _HistoryEntry({required this.entry, required this.displayName});
 
   @override
   Widget build(BuildContext context) {
@@ -1480,7 +1503,7 @@ class _HistoryEntry extends StatelessWidget {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(entry.changedBy,
+                    Text(displayName.isNotEmpty ? displayName : entry.changedBy,
                         style: theme.textTheme.bodySmall
                             ?.copyWith(fontWeight: FontWeight.bold)),
                     Text(timeStr,
@@ -1491,11 +1514,11 @@ class _HistoryEntry extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Row(children: [
-                  if (entry.oldStatus != null) ...[
+                  if (entry.oldStatus != null && entry.oldStatus!.isNotEmpty) ...[
                     _MiniStatusChip(status: entry.oldStatus!),
                     const Padding(
                       padding: EdgeInsets.symmetric(horizontal: 4),
-                      child: Icon(Icons.arrow_back, size: 14),
+                      child: Icon(Icons.arrow_forward, size: 14),
                     ),
                   ],
                   _MiniStatusChip(status: entry.newStatus),
