@@ -33,14 +33,29 @@ class ChatShellScreen extends ConsumerStatefulWidget {
   ConsumerState<ChatShellScreen> createState() => _ChatShellScreenState();
 }
 
-class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
+class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
+    with WidgetsBindingObserver {
   MainTab _currentTab = MainTab.chats;
   final _pageController = PageController();
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initializeServices();
+    // Clear the home-screen app icon badge on first launch / cold start.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(ref.read(pushNotificationServiceProvider).resetBadge());
+    });
+  }
+
+  /// Clear the app icon badge whenever the app returns to the foreground.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(ref.read(pushNotificationServiceProvider).resetBadge());
+    }
   }
 
   void _initializeServices() {
@@ -92,6 +107,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _pageController.dispose();
     super.dispose();
   }
