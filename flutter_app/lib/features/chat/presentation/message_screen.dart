@@ -456,8 +456,10 @@ class _MessageBubble extends StatelessWidget {
                         child: GestureDetector(
                           onTap: () async {
                             final uri = Uri.tryParse(message.imageUrl!);
-                            if (uri != null && await canLaunchUrl(uri)) {
-                              await launchUrl(uri, mode: LaunchMode.externalApplication);
+                            if (uri != null) {
+                              try {
+                                await launchUrl(uri, mode: LaunchMode.externalApplication);
+                              } catch (_) {}
                             }
                           },
                           child: ClipRRect(
@@ -916,8 +918,10 @@ class _LocationButton extends StatelessWidget {
     return InkWell(
       onTap: () async {
         final uri = Uri.tryParse(url);
-        if (uri != null && await canLaunchUrl(uri)) {
-          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        if (uri != null) {
+          try {
+            await launchUrl(uri, mode: LaunchMode.externalApplication);
+          } catch (_) {}
         }
       },
       borderRadius: BorderRadius.circular(8),
@@ -976,8 +980,10 @@ class _FileAttachmentButton extends StatelessWidget {
     return InkWell(
       onTap: () async {
         final uri = Uri.tryParse(url);
-        if (uri != null && await canLaunchUrl(uri)) {
-          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        if (uri != null) {
+          try {
+            await launchUrl(uri, mode: LaunchMode.externalApplication);
+          } catch (_) {}
         }
       },
       borderRadius: BorderRadius.circular(8),
