@@ -15,6 +15,7 @@ import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/api/http_client.dart';
+import '../../../core/config/environment.dart';
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../../core/utils/toast_utils.dart';
@@ -376,6 +377,48 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     );
   }
 
+  void _showFullScreenImage(BuildContext context, String imageUrl) {
+    final size = MediaQuery.of(context).size;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      barrierColor: Colors.black87,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: EdgeInsets.zero,
+        child: Stack(
+          children: [
+            // Tap outside the image to dismiss
+            GestureDetector(
+              onTap: () => Navigator.of(ctx).pop(),
+              child: const SizedBox.expand(),
+            ),
+            Center(
+              child: InteractiveViewer(
+                maxScale: 4,
+                child: _AuthenticatedNetworkImage(
+                  url: imageUrl,
+                  width: size.width,
+                  height: size.height * 0.85,
+                  fit: BoxFit.contain,
+                ),
+              ),
+            ),
+            Positioned(
+              top: MediaQuery.of(ctx).padding.top + 4,
+              right: 4,
+              child: IconButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                icon: const Icon(Icons.close, color: Colors.white, size: 28),
+                style: IconButton.styleFrom(backgroundColor: Colors.black38),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _showSearch() {
     showTopToast(context, 'חיפוש בשיחה - בקרוב');
   }
@@ -538,14 +581,8 @@ class _MessageBubble extends StatelessWidget {
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
                         child: GestureDetector(
-                          onTap: () async {
-                            final uri = Uri.tryParse(message.imageUrl!);
-                            if (uri != null) {
-                              try {
-                                await launchUrl(uri, mode: LaunchMode.externalApplication);
-                              } catch (_) {}
-                            }
-                          },
+                          onTap: () =>
+                              _showFullScreenImage(context, message.imageUrl!),
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(8),
                             child: _AuthenticatedNetworkImage(
@@ -1102,6 +1139,20 @@ class _FileAttachmentButton extends StatelessWidget {
   }
 }
 
+/// Converts a server-issued relative upload path to an absolute URL.
+///
+/// Upload paths are stored as absolute-path references such as
+/// `/notify/uploads/filename.jpg`. Passing them directly to Dio's [get]
+/// concatenates them with the configured `baseUrl`
+/// (`https://www.tzmc.co.il/notify`), producing a double-prefix URL
+/// (`…/notify/notify/uploads/…`) that the server never matches.
+/// Resolving against the origin instead gives the correct URL.
+String _resolveToAbsoluteUrl(String url) {
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  final origin = Uri.parse(Env.current.baseUrl).origin;
+  return origin + (url.startsWith('/') ? url : '/$url');
+}
+
 /// Fetches an image from an authenticated endpoint (session cookies) using
 /// the app's [HttpClient] (Dio) and renders it via [Image.memory].
 ///
@@ -1112,11 +1163,13 @@ class _AuthenticatedNetworkImage extends ConsumerStatefulWidget {
   final String url;
   final double? width;
   final double? height;
+  final BoxFit fit;
 
   const _AuthenticatedNetworkImage({
     required this.url,
     this.width,
     this.height,
+    this.fit = BoxFit.cover,
   });
 
   @override
@@ -1152,8 +1205,15 @@ class _AuthenticatedNetworkImageState
   Future<void> _load() async {
     try {
       final client = ref.read(httpClientProvider);
+      // Resolve to an absolute URL before passing to Dio. Upload paths are
+      // stored as absolute-path references like `/notify/uploads/…`. If passed
+      // as-is, Dio concatenates them with the configured baseUrl
+      // (`…/notify`) producing a double-prefix (`…/notify/notify/…`) that the
+      // server never matches. Passing a full https:// URL bypasses that
+      // concatenation entirely.
+      final url = _resolveToAbsoluteUrl(widget.url);
       final response = await client.get<List<int>>(
-        widget.url,
+        url,
         options: Options(responseType: ResponseType.bytes),
       );
       if (!mounted) return;
@@ -1202,7 +1262,7 @@ class _AuthenticatedNetworkImageState
       _bytes!,
       width: w,
       height: h,
-      fit: BoxFit.cover,
+      fit: widget.fit,
       errorBuilder: (_, __, ___) => Container(
         width: w,
         height: h,
