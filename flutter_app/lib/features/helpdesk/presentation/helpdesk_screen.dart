@@ -514,16 +514,24 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
     String priority = 'normal';
     List<String> locations = [];
     bool loadingLoc = true;
-
-    ref.read(helpdeskProvider.notifier).loadLocations().then((locs) {
-      locations = locs;
-      loadingLoc = false;
-    });
+    bool locFetchStarted = false;
 
     showDialog(
       context: ctx,
       builder: (_) => StatefulBuilder(
-        builder: (context, setSt) => Directionality(
+        builder: (context, setSt) {
+          if (!locFetchStarted) {
+            locFetchStarted = true;
+            ref.read(helpdeskProvider.notifier).loadLocations().then((locs) {
+              setSt(() {
+                locations = locs;
+                loadingLoc = false;
+              });
+            }).catchError((_) {
+              setSt(() => loadingLoc = false);
+            });
+          }
+          return Directionality(
           textDirection: ui.TextDirection.rtl,
           child: AlertDialog(
             title: Text('קריאה חדשה - ${dept.label}'),
@@ -648,7 +656,8 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
               ),
             ],
           ),
-        ),
+        );
+        },
       ),
     );
   }
