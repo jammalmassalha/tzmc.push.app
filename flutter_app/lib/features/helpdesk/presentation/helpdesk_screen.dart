@@ -510,7 +510,11 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
     final subjectCtrl = TextEditingController();
     final descCtrl = TextEditingController();
     final locationCtrl = TextEditingController();
-    final phoneCtrl = TextEditingController();
+    // Pre-fill with the current user's phone from the contacts store.
+    final currentUsername = ref.read(helpdeskProvider.notifier).currentUser;
+    final userPhone =
+        ref.read(chatStoreProvider).contacts[currentUsername]?.phone ?? '';
+    final phoneCtrl = TextEditingController(text: userPhone);
     String priority = 'normal';
     List<String> locations = [];
     bool loadingLoc = true;
@@ -558,6 +562,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                   ),
                   const SizedBox(height: 16),
                   Autocomplete<String>(
+                    key: ValueKey(loadingLoc),
                     optionsBuilder: (tv) => tv.text.isEmpty
                         ? locations
                         : locations.where((l) =>
