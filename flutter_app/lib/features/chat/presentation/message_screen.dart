@@ -23,16 +23,56 @@ import 'message_composer.dart';
 class MessageScreen extends ConsumerStatefulWidget {
   final String chatId;
 
-  const MessageScreen({super.key, required this.chatId});
+  /// Number of unread messages at the time the screen was opened.
+  /// When > 0 the list will be scrolled so the first unread message
+  /// is visible at the bottom of the viewport, allowing the user to
+  /// start reading from where they left off.
+  final int initialUnreadCount;
+
+  const MessageScreen({super.key, required this.chatId, this.initialUnreadCount = 0});
 
   @override
   ConsumerState<MessageScreen> createState() => _MessageScreenState();
 }
 
 class _MessageScreenState extends ConsumerState<MessageScreen> {
-  final _scrollController = ScrollController();
+  late final ScrollController _scrollController;
   MessageReference? _replyTo;
   ChatMessage? _editingMessage;
+
+  /// Key placed on the "unread messages" divider so we can scroll to it
+  /// precisely once the list has been laid out.
+  final _unreadDividerKey = GlobalKey();
+
+  /// Approximate height of one message item (bubble + padding). Used to
+  /// calculate an initial scroll offset when there are many unread messages,
+  /// because a lazy ListView won't have built the divider item yet.
+  static const double _estimatedItemHeight = 72.0;
+
+  @override
+  void initState() {
+    super.initState();
+    final unread = widget.initialUnreadCount;
+    // Start the scroll near the boundary so the divider is in the initial
+    // render window and `ensureVisible` can work on it.
+    final estimatedOffset = unread > 0 ? (unread * _estimatedItemHeight) : 0.0;
+    _scrollController = ScrollController(initialScrollOffset: estimatedOffset);
+
+    if (unread > 0) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToFirstUnread());
+    }
+  }
+
+  void _scrollToFirstUnread() {
+    final ctx = _unreadDividerKey.currentContext;
+    if (ctx == null) return;
+    Scrollable.ensureVisible(
+      ctx,
+      alignment: 1.0, // place the divider at the bottom of the viewport
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOut,
+    );
+  }
 
   @override
   void dispose() {
@@ -143,10 +183,24 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                       controller: _scrollController,
                       reverse: true,
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16),
-                      itemCount: messages.length,
+                      // +1 for the optional unread divider slot
+                      itemCount: messages.length + (widget.initialUnreadCount > 0 ? 1 : 0),
                       itemBuilder: (context, index) {
-                        final message = messages[index];
-                        final previousMessage = index < messages.length - 1 ? messages[index + 1] : null;
+                        // With reverse: true, index 0 = newest message (bottom).
+                        // The unread divider sits just below the first unread message,
+                        // i.e. at position `initialUnreadCount` in the reversed list
+                        // (between last-read and first-unread).
+                        final unread = widget.initialUnreadCount;
+                        if (unread > 0 && index == unread) {
+                          return _buildUnreadDivider(context);
+                        }
+
+                        // Shift the message index down by 1 after the divider slot.
+                        final msgIndex = (unread > 0 && index > unread) ? index - 1 : index;
+                        if (msgIndex >= messages.length) return const SizedBox.shrink();
+
+                        final message = messages[msgIndex];
+                        final previousMessage = msgIndex < messages.length - 1 ? messages[msgIndex + 1] : null;
                         final showDateHeader = _shouldShowDateHeader(message, previousMessage);
 
                         return Column(
@@ -271,6 +325,35 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     return currentDate.year != previousDate.year ||
         currentDate.month != previousDate.month ||
         currentDate.day != previousDate.day;
+  }
+
+  Widget _buildUnreadDivider(BuildContext context) {
+    return Padding(
+      key: _unreadDividerKey,
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        children: [
+          const Expanded(child: Divider()),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1976D2).withAlpha((255 * 0.15).round()),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              '${widget.initialUnreadCount} הודעות שלא נקראו',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFF1976D2),
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          const Expanded(child: Divider()),
+        ],
+      ),
+    );
   }
 
   Widget _buildDateHeader(BuildContext context, int timestamp) {

@@ -638,6 +638,7 @@ class PushNotificationService {
   /// global [rootNavigatorKey]. This works from background-tap callbacks
   /// where there is no [BuildContext] in scope.
   void _openChatScreen(String chatId) {
+    final unreadCount = _ref.read(chatStoreProvider).unreadByChat[chatId] ?? 0;
     try {
       _ref.read(chatStoreProvider.notifier).setCurrentChat(chatId);
     } catch (e) {
@@ -650,7 +651,7 @@ class PushNotificationService {
       return;
     }
     navigator.push(
-      MaterialPageRoute(builder: (_) => MessageScreen(chatId: chatId)),
+      MaterialPageRoute(builder: (_) => MessageScreen(chatId: chatId, initialUnreadCount: unreadCount)),
     );
   }
 

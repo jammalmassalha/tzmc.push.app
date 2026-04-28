@@ -72,10 +72,11 @@ class ChatListScreen extends ConsumerWidget {
   }
 
   void _openChat(BuildContext context, WidgetRef ref, ChatListItem item) {
+    final unreadCount = item.unread;
     ref.read(chatStoreProvider.notifier).setCurrentChat(item.id);
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (context) => MessageScreen(chatId: item.id),
+        builder: (context) => MessageScreen(chatId: item.id, initialUnreadCount: unreadCount),
       ),
     );
   }
@@ -310,10 +311,11 @@ class GroupListScreen extends ConsumerWidget {
   }
 
   void _openGroup(BuildContext context, WidgetRef ref, ChatGroup group) {
+    final unreadCount = ref.read(chatStoreProvider).unreadByChat[group.id] ?? 0;
     ref.read(chatStoreProvider.notifier).setCurrentChat(group.id);
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (context) => MessageScreen(chatId: group.id),
+        builder: (context) => MessageScreen(chatId: group.id, initialUnreadCount: unreadCount),
       ),
     );
   }
