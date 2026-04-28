@@ -599,6 +599,46 @@ class ShuttleUserOrderPayload extends Equatable {
         isOngoing,
       ];
 
+  ShuttleUserOrderPayload copyWith({
+    String? id,
+    String? sheetRow,
+    String? employee,
+    String? employeePhone,
+    String? date,
+    String? dateIso,
+    String? dayName,
+    String? shift,
+    String? shiftLabel,
+    String? shiftValue,
+    String? station,
+    String? status,
+    String? statusValue,
+    String? submittedAt,
+    String? cancelledAt,
+    bool? isCancelled,
+    bool? isOngoing,
+  }) {
+    return ShuttleUserOrderPayload(
+      id: id ?? this.id,
+      sheetRow: sheetRow ?? this.sheetRow,
+      employee: employee ?? this.employee,
+      employeePhone: employeePhone ?? this.employeePhone,
+      date: date ?? this.date,
+      dateIso: dateIso ?? this.dateIso,
+      dayName: dayName ?? this.dayName,
+      shift: shift ?? this.shift,
+      shiftLabel: shiftLabel ?? this.shiftLabel,
+      shiftValue: shiftValue ?? this.shiftValue,
+      station: station ?? this.station,
+      status: status ?? this.status,
+      statusValue: statusValue ?? this.statusValue,
+      submittedAt: submittedAt ?? this.submittedAt,
+      cancelledAt: cancelledAt ?? this.cancelledAt,
+      isCancelled: isCancelled ?? this.isCancelled,
+      isOngoing: isOngoing ?? this.isOngoing,
+    );
+  }
+
   factory ShuttleUserOrderPayload.fromJson(Map<String, dynamic> json) {
     return ShuttleUserOrderPayload(
       id: json['id']?.toString(),

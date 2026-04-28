@@ -648,7 +648,6 @@ class ChatApiService {
       ApiEndpoints.shuttleUserOrders,
       queryParameters: {
         'user': normalizedUser,
-        'force': '1',
         '_ts': DateTime.now().millisecondsSinceEpoch.toString(),
       },
       retryOptions: const RetryOptions(retries: 1, timeout: NetworkTimeouts.shuttleTimeout),

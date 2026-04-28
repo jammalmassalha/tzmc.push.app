@@ -157,8 +157,13 @@ class ShuttleNotifier extends Notifier<ShuttleState> {
       );
       return;
     }
-    
-    state = state.copyWith(isLoading: true, error: null);
+
+    // Stale-while-revalidate: if we already have data, refresh silently in the
+    // background without showing a full-screen loading indicator.
+    final hasData = state.stations.isNotEmpty || state.userOrders.isNotEmpty;
+    if (!hasData) {
+      state = state.copyWith(isLoading: true, error: null);
+    }
 
     try {
       // Load stations and user orders in parallel
@@ -216,10 +221,11 @@ class ShuttleNotifier extends Notifier<ShuttleState> {
       );
       
       await _api.submitShuttleOrder(payload, _currentUser!);
-      await loadUserOrders();
       state = state.copyWith(isLoading: false);
       // Reset wizard after successful submission
       resetWizard();
+      // Background sync — don't block the success flow on the Google-Sheets round-trip.
+      unawaited(loadUserOrders());
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
@@ -260,8 +266,23 @@ class ShuttleNotifier extends Notifier<ShuttleState> {
         status: shuttleStatusCancelValue,
       );
       await _api.submitShuttleOrder(payload, _currentUser!);
-      await loadUserOrders();
-      state = state.copyWith(isLoading: false);
+      // Optimistically mark the order as cancelled in local state so the UI
+      // updates immediately without waiting for the next Google-Sheets round-trip.
+      final optimistic = state.userOrders.map((o) {
+        final sameRow = o.sheetRow != null && o.sheetRow == order.sheetRow;
+        final sameId = o.id != null && o.id == order.id;
+        if (sameRow || sameId || o == order) {
+          return o.copyWith(
+            isCancelled: true,
+            isOngoing: false,
+            status: shuttleStatusCancelValue,
+          );
+        }
+        return o;
+      }).toList();
+      state = state.copyWith(userOrders: optimistic, isLoading: false);
+      // Background sync to pull the authoritative server state.
+      unawaited(loadUserOrders());
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
