@@ -293,11 +293,17 @@ function registerHelpdeskController(app, deps = {}) {
                 [user, department, title, description, location, phone, attachmentUrl, 'open']
             );
             const insertId = result.insertId;
-            // Record initial status in history
-            pool.execute(
-                'INSERT INTO `helpdesk_status_history` (`ticket_id`, `old_status`, `new_status`, `changed_by`) VALUES (?, NULL, ?, ?)',
-                [insertId, 'open', user]
-            ).catch((err) => console.error('[HELPDESK] Insert status history error:', err && err.message ? err.message : err));
+            // Record initial "open" status in history.  Awaited so the entry is
+            // guaranteed to exist before the response is sent, even if this is the
+            // only way the ticket gets a history entry (e.g. status is never changed).
+            try {
+                await pool.execute(
+                    'INSERT INTO `helpdesk_status_history` (`ticket_id`, `old_status`, `new_status`, `changed_by`) VALUES (?, NULL, ?, ?)',
+                    [insertId, 'open', user]
+                );
+            } catch (histErr) {
+                console.error('[HELPDESK] Insert status history error:', histErr && histErr.message ? histErr.message : histErr);
+            }
             const [rows] = await pool.query(
                 'SELECT * FROM `helpdesk_tickets` WHERE `id` = ?',
                 [insertId]
@@ -609,7 +615,7 @@ function registerHelpdeskController(app, deps = {}) {
         try {
             // Verify the ticket exists and the user is authorized
             const [ticketRows] = await pool.query(
-                'SELECT `id`, `creator_username`, `handler_username`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
+                'SELECT `id`, `creator_username`, `handler_username`, `department`, `status`, `created_at` FROM `helpdesk_tickets` WHERE `id` = ?',
                 [ticketId]
             );
             if (!ticketRows.length) {
@@ -630,7 +636,7 @@ function registerHelpdeskController(app, deps = {}) {
                 'SELECT `id`, `ticket_id`, `old_status`, `new_status`, `changed_by`, `created_at` FROM `helpdesk_status_history` WHERE `ticket_id` = ? ORDER BY `created_at` ASC',
                 [ticketId]
             );
-            const history = historyRows.map((r) => ({
+            let history = historyRows.map((r) => ({
                 id: r.id,
                 ticketId: r.ticket_id,
                 oldStatus: r.old_status || null,
@@ -638,6 +644,21 @@ function registerHelpdeskController(app, deps = {}) {
                 changedBy: r.changed_by,
                 createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at || '')
             }));
+            // If no history rows exist (e.g. ticket predates history tracking or insert failed),
+            // synthesize a creation entry so the timeline is never empty.
+            if (history.length === 0) {
+                const createdAt = ticket.created_at instanceof Date
+                    ? ticket.created_at.toISOString()
+                    : String(ticket.created_at || '');
+                history = [{
+                    id: 0,
+                    ticketId: ticketId,
+                    oldStatus: null,
+                    newStatus: 'open',
+                    changedBy: ticket.creator_username,
+                    createdAt
+                }];
+            }
             return res.json({ result: 'success', history });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to load history';
