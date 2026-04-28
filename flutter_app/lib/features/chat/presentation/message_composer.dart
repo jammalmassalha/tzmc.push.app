@@ -18,7 +18,6 @@ import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../../core/utils/toast_utils.dart';
 import '../../../core/utils/xfile.dart' as xfile;
-import '../../../shared/theme/app_theme.dart';
 
 /// Message composer widget
 class MessageComposer extends ConsumerStatefulWidget {
@@ -127,22 +126,20 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
       );
     }
 
+    // WhatsApp-style bar colours
+    const Color barBackground = Color(0xFFF0F2F5);
+    const Color fieldBackground = Colors.white;
+    const Color sendGreen = Color(0xFF25D366);
+    const Color iconColor = Color(0xFF8696A0);
+
     return SafeArea(
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surface,
-          border: Border(
-            top: BorderSide(
-              color: Theme.of(context).dividerColor,
-              width: 0.5,
-            ),
-          ),
-        ),
+        color: barBackground,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Attachment preview
+            // Attachment / image preview
             if (_selectedImage != null || _selectedFile != null)
               _AttachmentPreview(
                 imageBytes: _selectedImageBytes,
@@ -156,24 +153,17 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
                 },
               ),
 
-            // Input row
+            // ── WhatsApp-style input row ──────────────────────────────────
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                // Attachment button
-                IconButton(
-                  icon: const Icon(Icons.attach_file),
-                  onPressed: _showAttachmentOptions,
-                  tooltip: 'צרף קובץ',
-                ),
-
-                // Text input
+                // ── Rounded white text field ─────────────────────────────
                 Expanded(
                   child: Container(
-                    constraints: const BoxConstraints(maxHeight: 120),
+                    constraints: const BoxConstraints(maxHeight: 160),
                     decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                      borderRadius: BorderRadius.circular(24),
+                      color: fieldBackground,
+                      borderRadius: BorderRadius.circular(28),
                     ),
                     child: TextField(
                       controller: _textController,
@@ -182,12 +172,38 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
                       keyboardType: TextInputType.multiline,
                       textInputAction: TextInputAction.newline,
                       textDirection: TextDirection.rtl,
+                      style: const TextStyle(fontSize: 15),
                       decoration: InputDecoration(
                         hintText: 'הקלד הודעה...',
                         hintTextDirection: TextDirection.rtl,
+                        hintStyle: const TextStyle(
+                          color: Color(0xFF8696A0),
+                          fontSize: 15,
+                        ),
                         border: InputBorder.none,
+                        // Emoji/sticker icon on the right (start in RTL)
+                        suffixIcon: IconButton(
+                          icon: const Icon(
+                            Icons.emoji_emotions_outlined,
+                            color: iconColor,
+                            size: 24,
+                          ),
+                          onPressed: null, // placeholder
+                          splashRadius: 20,
+                        ),
+                        // Attachment icon on the left (end in RTL)
+                        prefixIcon: IconButton(
+                          icon: const Icon(
+                            Icons.attach_file,
+                            color: iconColor,
+                            size: 24,
+                          ),
+                          onPressed: _showAttachmentOptions,
+                          tooltip: 'צרף קובץ',
+                          splashRadius: 20,
+                        ),
                         contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16,
+                          horizontal: 4,
                           vertical: 10,
                         ),
                       ),
@@ -196,25 +212,46 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
                   ),
                 ),
 
-                const SizedBox(width: 8),
+                const SizedBox(width: 6),
 
-                // Send button
+                // ── Circular green send button ────────────────────────────
                 _isSending
-                    ? const Padding(
-                        padding: EdgeInsets.all(12),
-                        child: SizedBox(
-                          width: 24,
-                          height: 24,
-                          child: CircularProgressIndicator(strokeWidth: 2),
+                    ? Container(
+                        width: 48,
+                        height: 48,
+                        decoration: const BoxDecoration(
+                          color: sendGreen,
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Center(
+                          child: SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2.5,
+                              color: Colors.white,
+                            ),
+                          ),
                         ),
                       )
-                    : IconButton(
-                        icon: Icon(
-                          widget.editingMessage != null ? Icons.check : Icons.send,
-                          color: AppColors.primary,
+                    : Material(
+                        color: sendGreen,
+                        shape: const CircleBorder(),
+                        clipBehavior: Clip.antiAlias,
+                        child: InkWell(
+                          onTap: _handleSend,
+                          child: SizedBox(
+                            width: 48,
+                            height: 48,
+                            child: Icon(
+                              widget.editingMessage != null
+                                  ? Icons.check
+                                  : Icons.send,
+                              color: Colors.white,
+                              size: 22,
+                            ),
+                          ),
                         ),
-                        onPressed: _handleSend,
-                        tooltip: widget.editingMessage != null ? 'שמור' : 'שלח',
                       ),
               ],
             ),
