@@ -1002,10 +1002,12 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
   String get _currentUser => widget.currentUser;
 
   bool get _canManageHandler =>
+      _ticket.status != 'closed' &&
       widget.myRole != null &&
       widget.myRole!.department == _ticket.department;
 
   bool get _canChangeStatus {
+    if (_ticket.status == 'closed') return false;
     if (_ticket.creatorUsername == _currentUser) return true;
     if (_ticket.handlerUsername == _currentUser) return true;
     if (widget.myRole != null &&
