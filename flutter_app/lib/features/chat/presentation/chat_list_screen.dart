@@ -10,6 +10,7 @@ import 'package:intl/intl.dart';
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../../shared/theme/app_theme.dart';
+import '../../../shared/widgets/authenticated_image.dart';
 import 'message_screen.dart';
 
 /// Chat list widget
@@ -173,20 +174,10 @@ class _ChatListTile extends StatelessWidget {
   }
 
   Widget _buildAvatar(BuildContext context) {
-    final theme = Theme.of(context);
-
-    if (item.avatarUrl != null && item.avatarUrl!.isNotEmpty) {
-      return CircleAvatar(
-        radius: 28,
-        backgroundImage: NetworkImage(item.avatarUrl!),
-      );
-    }
-
-    // Default avatar with initials
     final initial = item.title.isNotEmpty ? item.title[0].toUpperCase() : '?';
     final backgroundColor = item.isGroup ? AppColors.groupColor : AppColors.primary;
 
-    return CircleAvatar(
+    final fallback = CircleAvatar(
       radius: 28,
       backgroundColor: backgroundColor,
       child: item.isGroup
@@ -200,6 +191,16 @@ class _ChatListTile extends StatelessWidget {
               ),
             ),
     );
+
+    if (item.avatarUrl != null && item.avatarUrl!.isNotEmpty) {
+      return AuthenticatedCircleAvatar(
+        url: item.avatarUrl,
+        radius: 28,
+        fallback: fallback,
+      );
+    }
+
+    return fallback;
   }
 
   Widget _buildUnreadBadge(BuildContext context) {

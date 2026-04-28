@@ -4,22 +4,19 @@
 /// replies, and edit/delete status.
 library;
 
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../../../core/api/http_client.dart';
-import '../../../core/config/environment.dart';
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
+import '../../../shared/widgets/authenticated_image.dart';
 import 'message_composer.dart';
 
 /// Message screen widget
@@ -66,22 +63,21 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                 onTap: chatInfo.avatarUrl != null
                     ? () => _showAvatarPreview(context, chatInfo.title, chatInfo.avatarUrl!)
                     : null,
-                child: CircleAvatar(
+                child: AuthenticatedCircleAvatar(
+                  url: chatInfo.avatarUrl,
                   radius: 20,
-                  backgroundColor: Colors.white24,
-                  backgroundImage: chatInfo.avatarUrl != null
-                      ? NetworkImage(chatInfo.avatarUrl!)
-                      : null,
-                  child: chatInfo.avatarUrl == null
-                      ? Text(
-                          chatInfo.title.isNotEmpty ? chatInfo.title[0].toUpperCase() : '?',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        )
-                      : null,
+                  fallback: CircleAvatar(
+                    radius: 20,
+                    backgroundColor: Colors.white24,
+                    child: Text(
+                      chatInfo.title.isNotEmpty ? chatInfo.title[0].toUpperCase() : '?',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
                 ),
               ),
               const SizedBox(width: 10),
@@ -351,14 +347,9 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
             ),
             ClipRRect(
               borderRadius: BorderRadius.circular(12),
-              child: Image.network(
-                avatarUrl,
+              child: AuthenticatedNetworkImage(
+                url: avatarUrl,
                 fit: BoxFit.contain,
-                errorBuilder: (_, __, ___) => const Icon(
-                  Icons.broken_image,
-                  color: Colors.white54,
-                  size: 80,
-                ),
               ),
             ),
             const SizedBox(height: 12),
@@ -458,7 +449,7 @@ void _showFullScreenImage(BuildContext context, String imageUrl) {
           Center(
             child: InteractiveViewer(
               maxScale: 4,
-              child: _AuthenticatedNetworkImage(
+              child: AuthenticatedNetworkImage(
                 url: imageUrl,
                 width: size.width,
                 height: size.height * 0.85,
@@ -589,7 +580,7 @@ class _MessageBubble extends StatelessWidget {
                               _showFullScreenImage(context, message.imageUrl!),
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(8),
-                            child: _AuthenticatedNetworkImage(
+                            child: AuthenticatedNetworkImage(
                               url: message.imageUrl!,
                               width: 200,
                               height: 150,
@@ -1138,140 +1129,6 @@ class _FileAttachmentButton extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-/// Converts a server-issued relative upload path to an absolute URL.
-///
-/// Upload paths are stored as absolute-path references such as
-/// `/notify/uploads/filename.jpg`. Passing them directly to Dio's [get]
-/// concatenates them with the configured `baseUrl`
-/// (`https://www.tzmc.co.il/notify`), producing a double-prefix URL
-/// (`…/notify/notify/uploads/…`) that the server never matches.
-/// Resolving against the origin instead gives the correct URL.
-String _resolveToAbsoluteUrl(String url) {
-  if (url.startsWith('http://') || url.startsWith('https://')) return url;
-  final origin = Uri.parse(Env.current.baseUrl).origin;
-  return origin + (url.startsWith('/') ? url : '/$url');
-}
-
-/// Fetches an image from an authenticated endpoint (session cookies) using
-/// the app's [HttpClient] (Dio) and renders it via [Image.memory].
-///
-/// This is needed because [Image.network] on Android/iOS does not send the
-/// session cookie, causing the server's `/uploads` auth guard to reject the
-/// request with a 401.
-class _AuthenticatedNetworkImage extends ConsumerStatefulWidget {
-  final String url;
-  final double? width;
-  final double? height;
-  final BoxFit fit;
-
-  const _AuthenticatedNetworkImage({
-    required this.url,
-    this.width,
-    this.height,
-    this.fit = BoxFit.cover,
-  });
-
-  @override
-  ConsumerState<_AuthenticatedNetworkImage> createState() =>
-      _AuthenticatedNetworkImageState();
-}
-
-class _AuthenticatedNetworkImageState
-    extends ConsumerState<_AuthenticatedNetworkImage> {
-  Uint8List? _bytes;
-  bool _loading = true;
-  bool _error = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  @override
-  void didUpdateWidget(_AuthenticatedNetworkImage oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.url != widget.url) {
-      setState(() {
-        _bytes = null;
-        _loading = true;
-        _error = false;
-      });
-      _load();
-    }
-  }
-
-  Future<void> _load() async {
-    try {
-      final client = ref.read(httpClientProvider);
-      // Resolve to an absolute URL before passing to Dio. Upload paths are
-      // stored as absolute-path references like `/notify/uploads/…`. If passed
-      // as-is, Dio concatenates them with the configured baseUrl
-      // (`…/notify`) producing a double-prefix (`…/notify/notify/…`) that the
-      // server never matches. Passing a full https:// URL bypasses that
-      // concatenation entirely.
-      final url = _resolveToAbsoluteUrl(widget.url);
-      final response = await client.get<List<int>>(
-        url,
-        options: Options(responseType: ResponseType.bytes),
-      );
-      if (!mounted) return;
-      if (response.statusCode == 200 && response.data != null) {
-        setState(() {
-          _bytes = Uint8List.fromList(response.data!);
-          _loading = false;
-        });
-      } else {
-        setState(() {
-          _loading = false;
-          _error = true;
-        });
-      }
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _error = true;
-      });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final w = widget.width ?? 200;
-    final h = widget.height ?? 150;
-
-    if (_loading) {
-      return Container(
-        width: w,
-        height: h,
-        color: Colors.grey[200],
-        child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-      );
-    }
-    if (_error || _bytes == null) {
-      return Container(
-        width: w,
-        height: h,
-        color: Colors.grey[300],
-        child: const Icon(Icons.broken_image, size: 48),
-      );
-    }
-    return Image.memory(
-      _bytes!,
-      width: w,
-      height: h,
-      fit: widget.fit,
-      errorBuilder: (_, __, ___) => Container(
-        width: w,
-        height: h,
-        color: Colors.grey[300],
-        child: const Icon(Icons.broken_image, size: 48),
       ),
     );
   }
