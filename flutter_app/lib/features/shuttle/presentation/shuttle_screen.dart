@@ -1276,14 +1276,23 @@ class _OrderList extends ConsumerWidget {
   }
 }
 
-class _OrderCard extends ConsumerWidget {
+class _OrderCard extends ConsumerStatefulWidget {
   final ShuttleUserOrderPayload order;
   final bool isPast;
 
   const _OrderCard({required this.order, required this.isPast});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_OrderCard> createState() => _OrderCardState();
+}
+
+class _OrderCardState extends ConsumerState<_OrderCard> {
+  bool _isCancelling = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final order = widget.order;
+    final isPast = widget.isPast;
     final theme = Theme.of(context);
     final canCancel = !isPast && !order.isCancelled && order.isOngoing;
 
@@ -1348,11 +1357,20 @@ class _OrderCard extends ConsumerWidget {
                     ),
                   ),
                 if (canCancel)
-                  IconButton(
-                    tooltip: 'מחק הזמנה',
-                    icon: Icon(Icons.delete_outline, color: theme.colorScheme.error),
-                    onPressed: () => _confirmAndCancel(context, ref),
-                  ),
+                  _isCancelling
+                      ? const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: Padding(
+                            padding: EdgeInsets.all(4),
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        )
+                      : IconButton(
+                          tooltip: 'מחק הזמנה',
+                          icon: Icon(Icons.delete_outline, color: theme.colorScheme.error),
+                          onPressed: () => _confirmAndCancel(context),
+                        ),
               ],
             ),
             const Divider(height: 16),
@@ -1381,7 +1399,7 @@ class _OrderCard extends ConsumerWidget {
     );
   }
 
-  Future<void> _confirmAndCancel(BuildContext context, WidgetRef ref) async {
+  Future<void> _confirmAndCancel(BuildContext context) async {
     final overlay = Overlay.of(context, rootOverlay: true);
     final errorColor = Theme.of(context).colorScheme.error;
     final confirmed = await showDialog<bool>(
@@ -1409,11 +1427,13 @@ class _OrderCard extends ConsumerWidget {
     );
     if (confirmed != true) return;
 
+    setState(() => _isCancelling = true);
     try {
-      await ref.read(shuttleProvider.notifier).cancelOrder(order);
+      await ref.read(shuttleProvider.notifier).cancelOrder(widget.order);
       showTopToastOnOverlay(overlay, 'ההזמנה בוטלה בהצלחה ✅',
           backgroundColor: AppColors.success);
     } catch (e) {
+      if (mounted) setState(() => _isCancelling = false);
       showTopToastOnOverlay(overlay, 'שגיאה בביטול הזמנה: ${e.toString()}',
           backgroundColor: errorColor);
     }
