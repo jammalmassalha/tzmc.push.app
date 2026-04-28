@@ -377,48 +377,6 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     );
   }
 
-  void _showFullScreenImage(BuildContext context, String imageUrl) {
-    final size = MediaQuery.of(context).size;
-    showDialog<void>(
-      context: context,
-      barrierDismissible: true,
-      barrierColor: Colors.black87,
-      builder: (ctx) => Dialog(
-        backgroundColor: Colors.transparent,
-        insetPadding: EdgeInsets.zero,
-        child: Stack(
-          children: [
-            // Tap outside the image to dismiss
-            GestureDetector(
-              onTap: () => Navigator.of(ctx).pop(),
-              child: const SizedBox.expand(),
-            ),
-            Center(
-              child: InteractiveViewer(
-                maxScale: 4,
-                child: _AuthenticatedNetworkImage(
-                  url: imageUrl,
-                  width: size.width,
-                  height: size.height * 0.85,
-                  fit: BoxFit.contain,
-                ),
-              ),
-            ),
-            Positioned(
-              top: MediaQuery.of(ctx).padding.top + 4,
-              right: 4,
-              child: IconButton(
-                onPressed: () => Navigator.of(ctx).pop(),
-                icon: const Icon(Icons.close, color: Colors.white, size: 28),
-                style: IconButton.styleFrom(backgroundColor: Colors.black38),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   void _showSearch() {
     showTopToast(context, 'חיפוש בשיחה - בקרוב');
   }
@@ -475,6 +433,52 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       );
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Full-screen image viewer (top-level so _MessageBubble can call it)
+// ---------------------------------------------------------------------------
+
+void _showFullScreenImage(BuildContext context, String imageUrl) {
+  final size = MediaQuery.of(context).size;
+  showDialog<void>(
+    context: context,
+    barrierDismissible: true,
+    barrierColor: Colors.black87,
+    builder: (ctx) => Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: EdgeInsets.zero,
+      child: Stack(
+        children: [
+          // Tap outside the image to dismiss
+          GestureDetector(
+            onTap: () => Navigator.of(ctx).pop(),
+            child: const SizedBox.expand(),
+          ),
+          Center(
+            child: InteractiveViewer(
+              maxScale: 4,
+              child: _AuthenticatedNetworkImage(
+                url: imageUrl,
+                width: size.width,
+                height: size.height * 0.85,
+                fit: BoxFit.contain,
+              ),
+            ),
+          ),
+          Positioned(
+            top: MediaQuery.of(ctx).padding.top + 4,
+            right: 4,
+            child: IconButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              icon: const Icon(Icons.close, color: Colors.white, size: 28),
+              style: IconButton.styleFrom(backgroundColor: Colors.black38),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 // ---------------------------------------------------------------------------
