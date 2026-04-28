@@ -684,17 +684,19 @@ class _ShuttleScreenState extends ConsumerState<ShuttleScreen>
             ],
           ),
 
-        // ── Header row: title | refresh | language toggle ─────────────────
+        // ── Header row: title (right) | refresh | language toggle (left) ──
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           child: Row(
             children: [
-              // Language toggle: RU / עב
-              _LangToggle(
-                language: state.language,
-                onChanged: notifier.setLanguage,
+              // Title on the right in RTL (first child = right side)
+              Text(
+                notifier.text('ההזמנות שלי', 'Мои заказы'),
+                style: theme.textTheme.titleSmall
+                    ?.copyWith(fontWeight: FontWeight.bold),
+                textDirection: ui.TextDirection.rtl,
               ),
-              const SizedBox(width: 6),
+              const Spacer(),
               // Refresh button
               IconButton(
                 onPressed: () => notifier.loadData(),
@@ -710,12 +712,11 @@ class _ShuttleScreenState extends ConsumerState<ShuttleScreen>
                     : const Icon(Icons.refresh),
                 tooltip: notifier.text('רענן', 'Обновить'),
               ),
-              const Spacer(),
-              Text(
-                notifier.text('ההזמנות שלי', 'Мои заказы'),
-                style: theme.textTheme.titleSmall
-                    ?.copyWith(fontWeight: FontWeight.bold),
-                textDirection: ui.TextDirection.rtl,
+              const SizedBox(width: 6),
+              // Language toggle on the left in RTL (last child = left side)
+              _LangToggle(
+                language: state.language,
+                onChanged: notifier.setLanguage,
               ),
             ],
           ),
