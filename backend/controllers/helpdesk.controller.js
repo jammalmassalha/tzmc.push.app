@@ -216,11 +216,18 @@ function registerHelpdeskController(app, deps = {}) {
         })
         : (_req, _res, next) => next();
 
-    // Per-user rate limiting middleware factory
+    // Per-user-per-endpoint rate limiting middleware factory.
+    // The key combines the user identity with the normalised route path so that
+    // each endpoint maintains its own independent quota.  Previously the key was
+    // user-only, which meant that GET poll-timer requests (30 req/min limit)
+    // accumulated timestamps that were then counted against the stricter PUT
+    // status-update endpoint (10 req/min limit), causing spurious 429 errors.
     function helpdeskRateLimit(maxAttempts, windowMs) {
         return function (req, res, next) {
             const user = toTrimmedString(req.resolvedUser || req.body && req.body.user || '');
-            if (!consumeHelpdeskRateLimit(user, maxAttempts, windowMs).allowed) {
+            const routeKey = toTrimmedString(req.route && req.route.path || req.path || '');
+            const limitKey = user ? `${user}:${routeKey}` : '';
+            if (!consumeHelpdeskRateLimit(limitKey, maxAttempts, windowMs).allowed) {
                 return res.status(429).json({ result: 'error', message: 'יותר מדי בקשות. נסה שוב בעוד דקה.' });
             }
             return next();

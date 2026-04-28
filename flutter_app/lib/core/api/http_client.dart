@@ -263,10 +263,11 @@ class HttpClient {
       try {
         final response = await request().timeout(options.timeout);
 
-        // Retry on 5xx or 429 errors if we have retries left
+        // Retry on 5xx errors if we have retries left; do NOT retry 429 (rate
+        // limit) – retrying would only consume more quota and worsen the backoff.
         if (!_isSuccessful(response.statusCode ?? 0) && attempt < retries) {
           final statusCode = response.statusCode ?? 0;
-          if (statusCode >= 500 || statusCode == 429) {
+          if (statusCode >= 500) {
             await Future.delayed(backoff * (1 << attempt));
             continue;
           }
