@@ -129,7 +129,7 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
     // WhatsApp-style bar colours
     const Color barBackground = Color(0xFFF0F2F5);
     const Color fieldBackground = Colors.white;
-    const Color sendGreen = Color(0xFF25D366);
+    const Color sendGreen = Color(0xFF1976D2);
     const Color iconColor = Color(0xFF8696A0);
 
     return SafeArea(
