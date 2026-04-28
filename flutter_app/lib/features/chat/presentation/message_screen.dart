@@ -15,6 +15,7 @@ import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/api/http_client.dart';
+import '../../../core/config/environment.dart';
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../../core/utils/toast_utils.dart';
@@ -53,27 +54,58 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       child: Scaffold(
         appBar: AppBar(
           leading: IconButton(
-            icon: const Icon(Icons.arrow_forward),
+            icon: const Icon(Icons.arrow_back),
             onPressed: () {
               ref.read(chatStoreProvider.notifier).setCurrentChat(null);
               Navigator.of(context).pop();
             },
           ),
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          title: Row(
             children: [
-              Text(
-                chatInfo.title,
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-              ),
-              if (chatInfo.subtitle != null)
-                Text(
-                  chatInfo.subtitle!,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.white.withAlpha((255 * 0.7).round()),
-                  ),
+              GestureDetector(
+                onTap: chatInfo.avatarUrl != null
+                    ? () => _showAvatarPreview(context, chatInfo.title, chatInfo.avatarUrl!)
+                    : null,
+                child: CircleAvatar(
+                  radius: 20,
+                  backgroundColor: Colors.white24,
+                  backgroundImage: chatInfo.avatarUrl != null
+                      ? NetworkImage(chatInfo.avatarUrl!)
+                      : null,
+                  child: chatInfo.avatarUrl == null
+                      ? Text(
+                          chatInfo.title.isNotEmpty ? chatInfo.title[0].toUpperCase() : '?',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        )
+                      : null,
                 ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      chatInfo.title,
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if (chatInfo.subtitle != null)
+                      Text(
+                        chatInfo.subtitle!,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.white.withAlpha((255 * 0.7).round()),
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                  ],
+                ),
+              ),
             ],
           ),
           actions: [
@@ -183,13 +215,14 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     );
   }
 
-  ({String title, String? subtitle, bool isGroup}) _getChatInfo(ChatState state) {
+  ({String title, String? subtitle, bool isGroup, String? avatarUrl}) _getChatInfo(ChatState state) {
     final group = state.groups[widget.chatId];
     if (group != null) {
       return (
         title: group.name,
         subtitle: '${group.members.length} חברים',
         isGroup: true,
+        avatarUrl: null,
       );
     }
 
@@ -198,6 +231,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       title: contact?.displayName ?? widget.chatId,
       subtitle: contact?.info,
       isGroup: false,
+      avatarUrl: (contact?.upic?.trim().isNotEmpty ?? false) ? contact!.upic : null,
     );
   }
 
@@ -289,7 +323,58 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   }
 
   void _showChatInfo() {
-    showTopToast(context, 'פרטי שיחה - בקרוב');
+    final state = ref.read(chatStoreProvider);
+    final chatInfo = _getChatInfo(state);
+    if (chatInfo.avatarUrl != null) {
+      _showAvatarPreview(context, chatInfo.title, chatInfo.avatarUrl!);
+    } else {
+      showTopToast(context, 'פרטי שיחה - בקרוב');
+    }
+  }
+
+  void _showAvatarPreview(BuildContext context, String title, String avatarUrl) {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Align(
+              alignment: Alignment.topLeft,
+              child: IconButton(
+                icon: const Icon(Icons.close, color: Colors.white),
+                onPressed: () => Navigator.of(ctx).pop(),
+              ),
+            ),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Image.network(
+                avatarUrl,
+                fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) => const Icon(
+                  Icons.broken_image,
+                  color: Colors.white54,
+                  size: 80,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              title,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _showSearch() {
@@ -348,6 +433,52 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       );
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Full-screen image viewer (top-level so _MessageBubble can call it)
+// ---------------------------------------------------------------------------
+
+void _showFullScreenImage(BuildContext context, String imageUrl) {
+  final size = MediaQuery.of(context).size;
+  showDialog<void>(
+    context: context,
+    barrierDismissible: true,
+    barrierColor: Colors.black87,
+    builder: (ctx) => Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: EdgeInsets.zero,
+      child: Stack(
+        children: [
+          // Tap outside the image to dismiss
+          GestureDetector(
+            onTap: () => Navigator.of(ctx).pop(),
+            child: const SizedBox.expand(),
+          ),
+          Center(
+            child: InteractiveViewer(
+              maxScale: 4,
+              child: _AuthenticatedNetworkImage(
+                url: imageUrl,
+                width: size.width,
+                height: size.height * 0.85,
+                fit: BoxFit.contain,
+              ),
+            ),
+          ),
+          Positioned(
+            top: MediaQuery.of(ctx).padding.top + 4,
+            right: 4,
+            child: IconButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              icon: const Icon(Icons.close, color: Colors.white, size: 28),
+              style: IconButton.styleFrom(backgroundColor: Colors.black38),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -454,12 +585,8 @@ class _MessageBubble extends StatelessWidget {
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
                         child: GestureDetector(
-                          onTap: () async {
-                            final uri = Uri.tryParse(message.imageUrl!);
-                            if (uri != null && await canLaunchUrl(uri)) {
-                              await launchUrl(uri, mode: LaunchMode.externalApplication);
-                            }
-                          },
+                          onTap: () =>
+                              _showFullScreenImage(context, message.imageUrl!),
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(8),
                             child: _AuthenticatedNetworkImage(
@@ -916,8 +1043,10 @@ class _LocationButton extends StatelessWidget {
     return InkWell(
       onTap: () async {
         final uri = Uri.tryParse(url);
-        if (uri != null && await canLaunchUrl(uri)) {
-          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        if (uri != null) {
+          try {
+            await launchUrl(uri, mode: LaunchMode.externalApplication);
+          } catch (_) {}
         }
       },
       borderRadius: BorderRadius.circular(8),
@@ -976,8 +1105,10 @@ class _FileAttachmentButton extends StatelessWidget {
     return InkWell(
       onTap: () async {
         final uri = Uri.tryParse(url);
-        if (uri != null && await canLaunchUrl(uri)) {
-          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        if (uri != null) {
+          try {
+            await launchUrl(uri, mode: LaunchMode.externalApplication);
+          } catch (_) {}
         }
       },
       borderRadius: BorderRadius.circular(8),
@@ -1012,6 +1143,20 @@ class _FileAttachmentButton extends StatelessWidget {
   }
 }
 
+/// Converts a server-issued relative upload path to an absolute URL.
+///
+/// Upload paths are stored as absolute-path references such as
+/// `/notify/uploads/filename.jpg`. Passing them directly to Dio's [get]
+/// concatenates them with the configured `baseUrl`
+/// (`https://www.tzmc.co.il/notify`), producing a double-prefix URL
+/// (`…/notify/notify/uploads/…`) that the server never matches.
+/// Resolving against the origin instead gives the correct URL.
+String _resolveToAbsoluteUrl(String url) {
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  final origin = Uri.parse(Env.current.baseUrl).origin;
+  return origin + (url.startsWith('/') ? url : '/$url');
+}
+
 /// Fetches an image from an authenticated endpoint (session cookies) using
 /// the app's [HttpClient] (Dio) and renders it via [Image.memory].
 ///
@@ -1022,11 +1167,13 @@ class _AuthenticatedNetworkImage extends ConsumerStatefulWidget {
   final String url;
   final double? width;
   final double? height;
+  final BoxFit fit;
 
   const _AuthenticatedNetworkImage({
     required this.url,
     this.width,
     this.height,
+    this.fit = BoxFit.cover,
   });
 
   @override
@@ -1062,8 +1209,15 @@ class _AuthenticatedNetworkImageState
   Future<void> _load() async {
     try {
       final client = ref.read(httpClientProvider);
+      // Resolve to an absolute URL before passing to Dio. Upload paths are
+      // stored as absolute-path references like `/notify/uploads/…`. If passed
+      // as-is, Dio concatenates them with the configured baseUrl
+      // (`…/notify`) producing a double-prefix (`…/notify/notify/…`) that the
+      // server never matches. Passing a full https:// URL bypasses that
+      // concatenation entirely.
+      final url = _resolveToAbsoluteUrl(widget.url);
       final response = await client.get<List<int>>(
-        widget.url,
+        url,
         options: Options(responseType: ResponseType.bytes),
       );
       if (!mounted) return;
@@ -1112,7 +1266,7 @@ class _AuthenticatedNetworkImageState
       _bytes!,
       width: w,
       height: h,
-      fit: BoxFit.cover,
+      fit: widget.fit,
       errorBuilder: (_, __, ___) => Container(
         width: w,
         height: h,

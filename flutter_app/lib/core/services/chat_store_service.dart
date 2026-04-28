@@ -551,8 +551,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         syncProgressLabel: 'מושך הודעות...',
       );
 
-      // 4. Pull messages (full pull — no since filter).
-      await pullMessages();
+      // 4. Pull messages (full pull — always since:0 so the stale DB timestamp is
+      //    never used, which is especially important on Flutter web where the DB
+      //    clear above may have silently failed and still holds the old high-water
+      //    timestamp).
+      await pullMessages(since: 0);
       state = state.copyWith(
         syncProgressPercent: 80,
         syncProgressLabel: 'משחזר הודעות שהוחמצו...',
@@ -568,7 +571,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // 6. Reset unread counters.
       state = state.copyWith(unreadByChat: const {});
 
-      _schedulePersistence();
+      // Persist to disk immediately (do not defer via _schedulePersistence so
+      // that data survives an app close that happens right after the sync).
+      await persistNow();
       state = state.copyWith(
         syncProgressPercent: 100,
         isInitialized: true,
@@ -1076,6 +1081,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     newUnread[chatId] = 0;
     state = state.copyWith(unreadByChat: newUnread);
 
+    // Persist the cleared count immediately so it survives app restart /
+    // full sync without requiring the full state snapshot.
+    try {
+      await _db.clearUnreadCount(chatId);
+    } catch (_) {
+      // Non-fatal – the in-memory count is already correct.
+    }
+
     try {
       await _api.markMessagesAsRead(chatId, messageIds);
     } catch (e) {
@@ -1216,7 +1229,28 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         break;
       }
     }
-    final isOutgoing = isFromMe || hasOptimisticEcho;
+
+    // Fallback for group messages fetched from the notification logs: the DB's
+    // `From` column stores the group ID instead of the actual sender's phone
+    // number (the server writes `senderForPush = isGroup ? groupId : user`).
+    // When sender == groupId we can't use a direct phone comparison, so we
+    // look at `groupSenderName` (extracted from the "SenderName: body" prefix
+    // by the logs endpoint) and match it against _currentUser's phone or their
+    // display name.
+    bool isFromMeFallback = false;
+    if (!isFromMe && isGroup) {
+      final groupIdNorm = msg.groupId!.trim().toLowerCase();
+      if (senderNorm == groupIdNorm) {
+        final gsn = (msg.groupSenderName ?? '').trim().toLowerCase();
+        final meNorm = (me ?? '').trim().toLowerCase();
+        if (meNorm.isNotEmpty && gsn.isNotEmpty) {
+          final myDisplayName = getDisplayName(meNorm).trim().toLowerCase();
+          isFromMeFallback = gsn == meNorm || gsn == myDisplayName;
+        }
+      }
+    }
+
+    final isOutgoing = isFromMe || isFromMeFallback || hasOptimisticEcho;
     final direction =
         isOutgoing ? MessageDirection.outgoing : MessageDirection.incoming;
 
@@ -1401,17 +1435,22 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   }
 
   Future<void> _persistState() async {
-    final allMessages = <ChatMessage>[];
-    for (final messages in state.messagesByChat.values) {
-      allMessages.addAll(messages);
-    }
+    try {
+      final allMessages = <ChatMessage>[];
+      for (final messages in state.messagesByChat.values) {
+        allMessages.addAll(messages);
+      }
 
-    await _db.persistState(PersistedChatState(
-      contacts: state.contacts.values.toList(),
-      groups: state.groups.values.toList(),
-      unreadByChat: state.unreadByChat,
-      messages: allMessages,
-    ));
+      await _db.persistState(PersistedChatState(
+        contacts: state.contacts.values.toList(),
+        groups: state.groups.values.toList(),
+        unreadByChat: state.unreadByChat,
+        messages: allMessages,
+      ));
+    } catch (_) {
+      // Persistence failure is non-fatal – data remains available in memory
+      // for the current session and will be retried on the next trigger.
+    }
   }
 
   /// Force immediate persistence

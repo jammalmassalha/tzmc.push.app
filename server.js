@@ -349,7 +349,7 @@ const corsOptions = {
         return callback(null, false);
     },
     credentials: true,
-    methods: ['GET', 'POST', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
         'Content-Type',
         'Authorization',
@@ -2145,6 +2145,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
                 groupSenderName: senderLabel
             } : {}),
             ...(reply ? { messageText: reply } : {}),
+            ...(imageUrl ? { imageUrl } : {}),
             ...(fileUrl ? { fileUrl } : {}),
             ...messageMetadata
         };

@@ -1518,7 +1518,7 @@ class _HistoryEntry extends StatelessWidget {
                     _MiniStatusChip(status: entry.oldStatus!),
                     const Padding(
                       padding: EdgeInsets.symmetric(horizontal: 4),
-                      child: Icon(Icons.arrow_back, size: 14),
+                      child: Icon(Icons.arrow_forward, size: 14),
                     ),
                     _MiniStatusChip(status: entry.newStatus),
                   ] else ...[

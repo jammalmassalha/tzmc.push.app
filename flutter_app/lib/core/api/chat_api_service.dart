@@ -767,7 +767,7 @@ class ChatApiService {
       throw ApiException('User is required for helpdesk handler assignment');
     }
 
-    final response = await _client.put<Map<String, dynamic>>(
+    final response = await _client.post<Map<String, dynamic>>(
       '${ApiEndpoints.helpdeskTickets}/$ticketId/handler',
       data: {
         'handler_username': handlerUsername,

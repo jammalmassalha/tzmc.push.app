@@ -178,7 +178,7 @@ class SplashScreen extends StatelessWidget {
             ),
             const SizedBox(height: 32),
             const Text(
-              'TZMC Push',
+              'מרכז רפואי צפון',
               style: TextStyle(
                 fontSize: 28,
                 fontWeight: FontWeight.bold,
