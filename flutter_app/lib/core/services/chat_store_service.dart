@@ -1229,7 +1229,28 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         break;
       }
     }
-    final isOutgoing = isFromMe || hasOptimisticEcho;
+
+    // Fallback for group messages fetched from the notification logs: the DB's
+    // `From` column stores the group ID instead of the actual sender's phone
+    // number (the server writes `senderForPush = isGroup ? groupId : user`).
+    // When sender == groupId we can't use a direct phone comparison, so we
+    // look at `groupSenderName` (extracted from the "SenderName: body" prefix
+    // by the logs endpoint) and match it against _currentUser's phone or their
+    // display name.
+    bool isFromMeFallback = false;
+    if (!isFromMe && isGroup) {
+      final groupIdNorm = msg.groupId!.trim().toLowerCase();
+      if (senderNorm == groupIdNorm) {
+        final gsn = (msg.groupSenderName ?? '').trim().toLowerCase();
+        final meNorm = (me ?? '').trim().toLowerCase();
+        if (meNorm.isNotEmpty && gsn.isNotEmpty) {
+          final myDisplayName = getDisplayName(meNorm).trim().toLowerCase();
+          isFromMeFallback = gsn == meNorm || gsn == myDisplayName;
+        }
+      }
+    }
+
+    final isOutgoing = isFromMe || isFromMeFallback || hasOptimisticEcho;
     final direction =
         isOutgoing ? MessageDirection.outgoing : MessageDirection.incoming;
 
