@@ -1,14 +1,21 @@
 /// Shared authenticated image widgets.
 ///
-/// [Image.network] and [NetworkImage] on Android/iOS do not send session
-/// cookies, causing the server's `/uploads` auth guard to reject requests
-/// with a 401. These widgets use the app's Dio [HttpClient] (which carries
-/// the session cookie) to fetch image bytes and render them via [Image.memory].
+/// On **mobile (Android/iOS)** [Image.network] / [NetworkImage] do not send
+/// session cookies, so those widgets use the app's Dio [HttpClient] to fetch
+/// bytes and render via [Image.memory].
+///
+/// On **web** the browser automatically attaches cookies to every request,
+/// including `<img>` tag loads. Using Dio (XHR) instead would trigger the
+/// browser's CORS policy when the Flutter app origin differs from the API
+/// origin (e.g. `https://tzmc.co.il` vs `https://www.tzmc.co.il`). So on
+/// web we simply delegate to [Image.network] / [NetworkImage] and let the
+/// browser handle cookie forwarding natively.
 library;
 
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -29,8 +36,10 @@ String resolveToAbsoluteUrl(String url) {
   return origin + (url.startsWith('/') ? url : '/$url');
 }
 
-/// Fetches an image from an authenticated endpoint (session cookies) using
-/// the app's [HttpClient] (Dio) and renders it via [Image.memory].
+/// Fetches an image from an authenticated endpoint and renders it.
+///
+/// On web, uses [Image.network] (browser handles cookies natively, avoids
+/// CORS issues from XHR). On mobile, uses Dio to include the session cookie.
 class AuthenticatedNetworkImage extends ConsumerStatefulWidget {
   final String url;
   final double? width;
@@ -59,23 +68,23 @@ class _AuthenticatedNetworkImageState
   @override
   void initState() {
     super.initState();
-    _load();
+    if (!kIsWeb) _loadViaDio();
   }
 
   @override
   void didUpdateWidget(AuthenticatedNetworkImage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.url != widget.url) {
+    if (!kIsWeb && oldWidget.url != widget.url) {
       setState(() {
         _bytes = null;
         _loading = true;
         _error = false;
       });
-      _load();
+      _loadViaDio();
     }
   }
 
-  Future<void> _load() async {
+  Future<void> _loadViaDio() async {
     try {
       final client = ref.read(httpClientProvider);
       final url = resolveToAbsoluteUrl(widget.url);
@@ -109,6 +118,24 @@ class _AuthenticatedNetworkImageState
     final w = widget.width ?? 200;
     final h = widget.height ?? 150;
 
+    // On web: delegate to Image.network — the browser sends cookies and
+    // renders the image without triggering CORS for simple img requests.
+    if (kIsWeb) {
+      return Image.network(
+        resolveToAbsoluteUrl(widget.url),
+        width: w,
+        height: h,
+        fit: widget.fit,
+        errorBuilder: (_, __, ___) => Container(
+          width: w,
+          height: h,
+          color: Colors.grey[300],
+          child: const Icon(Icons.broken_image, size: 48),
+        ),
+      );
+    }
+
+    // Mobile: render bytes fetched via Dio.
     if (_loading) {
       return Container(
         width: w,
@@ -140,9 +167,12 @@ class _AuthenticatedNetworkImageState
   }
 }
 
-/// A [CircleAvatar]-like widget that loads an image via the authenticated
-/// Dio client. Falls back to [fallback] when [url] is null/empty or the
-/// request fails.
+/// A [CircleAvatar]-like widget that loads an image via the appropriate
+/// strategy for the current platform. Falls back to [fallback] when [url]
+/// is null/empty or the request fails.
+///
+/// Web: uses [NetworkImage] (browser handles cookies, no CORS issues).
+/// Mobile: uses Dio to include the session cookie.
 class AuthenticatedCircleAvatar extends ConsumerStatefulWidget {
   final String? url;
   final double radius;
@@ -169,26 +199,26 @@ class _AuthenticatedCircleAvatarState
   @override
   void initState() {
     super.initState();
-    if (widget.url != null && widget.url!.isNotEmpty) {
-      _load(widget.url!);
+    if (!kIsWeb && widget.url != null && widget.url!.isNotEmpty) {
+      _loadViaDio(widget.url!);
     }
   }
 
   @override
   void didUpdateWidget(AuthenticatedCircleAvatar oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.url != widget.url) {
+    if (!kIsWeb && oldWidget.url != widget.url) {
       setState(() {
         _bytes = null;
         _error = false;
       });
       if (widget.url != null && widget.url!.isNotEmpty) {
-        _load(widget.url!);
+        _loadViaDio(widget.url!);
       }
     }
   }
 
-  Future<void> _load(String url) async {
+  Future<void> _loadViaDio(String url) async {
     setState(() => _loading = true);
     try {
       final client = ref.read(httpClientProvider);
@@ -230,6 +260,18 @@ class _AuthenticatedCircleAvatarState
       );
     }
 
+    // On web: use CircleAvatar with NetworkImage — browser sends cookies
+    // and avoids CORS issues from XHR.
+    if (kIsWeb) {
+      return CircleAvatar(
+        radius: widget.radius,
+        backgroundImage: NetworkImage(resolveToAbsoluteUrl(widget.url!)),
+        onBackgroundImageError: (_, __) {},
+        child: null,
+      );
+    }
+
+    // Mobile: render bytes fetched via Dio.
     return SizedBox(
       width: diameter,
       height: diameter,
