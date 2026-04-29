@@ -236,19 +236,33 @@ class _GroupInfoScreenState extends ConsumerState<GroupInfoScreen> {
               final isMe = member == me;
 
               return ListTile(
-                leading: avatarUrl != null
-                    ? AuthenticatedCircleAvatar(url: avatarUrl, radius: 22)
-                    : CircleAvatar(
-                        radius: 22,
-                        backgroundColor: AppColors.primary,
-                        child: Text(
+                leading: CircleAvatar(
+                  radius: 22,
+                  backgroundColor: AppColors.primary,
+                  child: avatarUrl != null
+                      ? AuthenticatedCircleAvatar(
+                          url: avatarUrl,
+                          radius: 22,
+                          fallback: CircleAvatar(
+                            radius: 22,
+                            backgroundColor: AppColors.primary,
+                            child: Text(
+                              _initial(displayName),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        )
+                      : Text(
                           _initial(displayName),
                           style: const TextStyle(
                             color: Colors.white,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
-                      ),
+                ),
                 title: Text(
                   isMe ? '$displayName (אתה)' : displayName,
                   style: const TextStyle(fontWeight: FontWeight.w500),
