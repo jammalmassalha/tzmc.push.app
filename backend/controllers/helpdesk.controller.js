@@ -195,7 +195,7 @@ async function getHelpdeskUserRole(pool, username) {
 }
 
 function registerHelpdeskController(app, deps = {}) {
-    const { requireAuthorizedUser, env = {}, buildGoogleSheetGetUrl, fetchWithRetry } = deps;
+    const { requireAuthorizedUser, env = {}, buildGoogleSheetGetUrl, fetchWithRetry, sendPushNotificationToUser } = deps;
 
     const pool = createHelpdeskPool(env);
 
@@ -394,7 +394,7 @@ function registerHelpdeskController(app, deps = {}) {
 
             // Verify ticket exists and belongs to editor's department
             const [ticketRows] = await pool.query(
-                'SELECT `id`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
+                'SELECT `id`, `title`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
                 [ticketId]
             );
             if (!ticketRows.length) {
@@ -416,6 +416,29 @@ function registerHelpdeskController(app, deps = {}) {
                 'UPDATE `helpdesk_tickets` SET `handler_username` = ? WHERE `id` = ?',
                 [handlerUsername || null, ticketId]
             );
+
+            // Fire-and-forget push notification to the newly assigned handler.
+            // Only sent when a handler is being assigned (not unassigned) and only
+            // when the handler is a different user from the assigning editor.
+            if (handlerUsername && handlerUsername !== user && typeof sendPushNotificationToUser === 'function') {
+                const ticketTitle = toTrimmedString(ticketRows[0].title || '');
+                const notificationData = {
+                    title: `קריאה חדשה שויכה אליך - #${ticketId}`,
+                    body: {
+                        shortText: ticketTitle || `קריאה #${ticketId}`,
+                        longText: ticketTitle || `קריאה #${ticketId}`
+                    },
+                    data: {
+                        type: 'helpdesk_assigned',
+                        ticketId: String(ticketId),
+                        ticketTitle: ticketTitle
+                    }
+                };
+                void sendPushNotificationToUser(handlerUsername, notificationData, user, {}).catch((err) => {
+                    console.warn('[HELPDESK] Push notification to handler failed:', err && err.message ? err.message : err);
+                });
+            }
+
             return res.json({ result: 'success' });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to assign handler';
