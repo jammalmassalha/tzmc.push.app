@@ -459,7 +459,7 @@ function registerHelpdeskController(app, deps = {}) {
                         ticketTitle: ticketTitle
                     }
                 };
-                void sendPushNotificationToUser(handlerUsername, notificationData, 'מוקד איחוד', {}).catch((err) => {
+                void sendPushNotificationToUser(handlerUsername, notificationData, user, {}).catch((err) => {
                     console.warn('[HELPDESK] Push notification to handler failed:', err && err.message ? err.message : err);
                 });
             }
