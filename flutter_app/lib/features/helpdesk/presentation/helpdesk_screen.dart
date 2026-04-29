@@ -4,15 +4,20 @@
 library;
 
 import 'dart:async';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart' as img_picker;
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/api/chat_api_service.dart';
 import '../../../core/models/helpdesk_models.dart';
 import '../../../core/services/chat_store_service.dart';
+import '../../../core/utils/xfile.dart' as xfile;
 import '../../auth/presentation/auth_state.dart';
 import '../../../core/utils/toast_utils.dart';
 
@@ -523,6 +528,93 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
     bool loadingLoc = true;
     bool locFetchStarted = false;
 
+    // Attachment state
+    xfile.XFile? attachedFile;
+    Uint8List? attachedFileBytes;
+    bool isUploadingAttachment = false;
+
+    Future<void> pickAttachment(StateSetter setSt) async {
+      // Show source picker for images; on web only gallery is available.
+      final picker = img_picker.ImagePicker();
+
+      if (kIsWeb) {
+        // Web: pick from gallery only.
+        final picked = await picker.pickImage(
+          source: img_picker.ImageSource.gallery,
+          imageQuality: 85,
+          maxWidth: 1920,
+          maxHeight: 1920,
+        );
+        if (picked != null) {
+          final bytes = await picked.readAsBytes();
+          final mimeType =
+              xfile.XFileUtils.mimeTypeFromExtension(picked.name.split('.').last);
+          setSt(() {
+            attachedFile =
+                xfile.XFile.fromBytes(name: picked.name, bytes: bytes, mimeType: mimeType);
+            attachedFileBytes = bytes;
+          });
+        }
+        return;
+      }
+
+      // Native: ask camera or gallery.
+      final source = await showModalBottomSheet<img_picker.ImageSource>(
+        context: ctx,
+        shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+        builder: (_) => SafeArea(
+          child: Directionality(
+            textDirection: ui.TextDirection.rtl,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.camera_alt),
+                    title: const Text('צלם תמונה'),
+                    onTap: () =>
+                        Navigator.of(ctx).pop(img_picker.ImageSource.camera),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.photo_library),
+                    title: const Text('בחר מהגלריה'),
+                    onTap: () =>
+                        Navigator.of(ctx).pop(img_picker.ImageSource.gallery),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.cancel_outlined),
+                    title: const Text('ביטול'),
+                    onTap: () => Navigator.of(ctx).pop(),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+
+      if (source == null) return;
+
+      final picked = await picker.pickImage(
+        source: source,
+        imageQuality: 85,
+        maxWidth: 1920,
+        maxHeight: 1920,
+      );
+      if (picked != null) {
+        final bytes = await picked.readAsBytes();
+        final mimeType =
+            xfile.XFileUtils.mimeTypeFromExtension(picked.name.split('.').last);
+        setSt(() {
+          attachedFile =
+              xfile.XFile.fromBytes(name: picked.name, bytes: bytes, mimeType: mimeType);
+          attachedFileBytes = bytes;
+        });
+      }
+    }
+
     showDialog(
       context: ctx,
       builder: (_) => StatefulBuilder(
@@ -616,6 +708,66 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                     ],
                     onChanged: (v) => setSt(() => priority = v ?? 'normal'),
                   ),
+                  const SizedBox(height: 16),
+                  // Attachment picker
+                  if (attachedFileBytes != null) ...[
+                    Stack(
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Image.memory(
+                            attachedFileBytes!,
+                            height: 120,
+                            width: double.infinity,
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                        Positioned(
+                          top: 4,
+                          left: 4,
+                          child: GestureDetector(
+                            onTap: () => setSt(() {
+                              attachedFile = null;
+                              attachedFileBytes = null;
+                            }),
+                            child: Container(
+                              decoration: const BoxDecoration(
+                                color: Colors.black54,
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(Icons.close,
+                                  color: Colors.white, size: 18),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                  ] else ...[
+                    OutlinedButton.icon(
+                      onPressed: isUploadingAttachment
+                          ? null
+                          : () => pickAttachment(setSt),
+                      icon: const Icon(Icons.attach_file),
+                      label: const Text('צרף תמונה / קובץ'),
+                      style: OutlinedButton.styleFrom(
+                          minimumSize:
+                              const Size(double.infinity, 44)),
+                    ),
+                  ],
+                  if (isUploadingAttachment)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 8),
+                      child: Row(children: [
+                        SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2)),
+                        SizedBox(width: 8),
+                        Text('מעלה קובץ...', style: TextStyle(fontSize: 12)),
+                      ]),
+                    ),
                 ],
               ),
             ),
@@ -624,42 +776,73 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                   onPressed: () => Navigator.of(context).pop(),
                   child: const Text('ביטול')),
               ElevatedButton(
-                onPressed: () async {
-                  if (subjectCtrl.text.trim().isEmpty) {
-                    showTopToast(context, 'יש להזין כותרת');
-                    return;
-                  }
-                  if (locationCtrl.text.trim().isEmpty) {
-                    showTopToast(context, 'יש להזין מיקום');
-                    return;
-                  }
-                  Navigator.of(context).pop();
-                  try {
-                    await ref.read(helpdeskProvider.notifier).createTicket(
-                          subject: subjectCtrl.text.trim(),
-                          description: descCtrl.text.trim(),
-                          department: dept,
-                          priority: priority,
-                          location: locationCtrl.text.trim().isEmpty
-                              ? null
-                              : locationCtrl.text.trim(),
-                          phone: phoneCtrl.text.trim().isEmpty
-                              ? null
-                              : phoneCtrl.text.trim(),
-                        );
-                    if (ctx.mounted) {
-                      showTopToast(ctx, 'הפנייה נוצרה בהצלחה');
-                    }
-                  } catch (e) {
-                    if (ctx.mounted) {
-                      showTopToast(
-                        ctx,
-                        'שגיאה: ${e.toString()}',
-                        backgroundColor: Theme.of(ctx).colorScheme.error,
-                      );
-                    }
-                  }
-                },
+                onPressed: isUploadingAttachment
+                    ? null
+                    : () async {
+                        if (subjectCtrl.text.trim().isEmpty) {
+                          showTopToast(context, 'יש להזין כותרת');
+                          return;
+                        }
+                        if (locationCtrl.text.trim().isEmpty) {
+                          showTopToast(context, 'יש להזין מיקום');
+                          return;
+                        }
+
+                        // Upload attachment if one was selected.
+                        String? attachmentUrl;
+                        final pendingFile = attachedFile;
+                        if (pendingFile != null) {
+                          setSt(() => isUploadingAttachment = true);
+                          try {
+                            final api = ref.read(chatApiServiceProvider);
+                            attachmentUrl =
+                                await api.uploadHelpdeskAttachment(pendingFile);
+                          } catch (e) {
+                            setSt(() => isUploadingAttachment = false);
+                            if (ctx.mounted) {
+                              showTopToast(
+                                ctx,
+                                'שגיאה בהעלאת הקובץ: ${e.toString()}',
+                                backgroundColor:
+                                    Theme.of(ctx).colorScheme.error,
+                              );
+                            }
+                            return;
+                          }
+                          setSt(() => isUploadingAttachment = false);
+                        }
+
+                        Navigator.of(context).pop();
+                        try {
+                          await ref
+                              .read(helpdeskProvider.notifier)
+                              .createTicket(
+                                subject: subjectCtrl.text.trim(),
+                                description: descCtrl.text.trim(),
+                                department: dept,
+                                priority: priority,
+                                location: locationCtrl.text.trim().isEmpty
+                                    ? null
+                                    : locationCtrl.text.trim(),
+                                phone: phoneCtrl.text.trim().isEmpty
+                                    ? null
+                                    : phoneCtrl.text.trim(),
+                                attachmentUrl: attachmentUrl,
+                              );
+                          if (ctx.mounted) {
+                            showTopToast(ctx, 'הפנייה נוצרה בהצלחה');
+                          }
+                        } catch (e) {
+                          if (ctx.mounted) {
+                            showTopToast(
+                              ctx,
+                              'שגיאה: ${e.toString()}',
+                              backgroundColor:
+                                  Theme.of(ctx).colorScheme.error,
+                            );
+                          }
+                        }
+                      },
                 child: const Text('שלח קריאה'),
               ),
             ],
@@ -1213,6 +1396,9 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                         icon: Icons.phone,
                         label: 'טלפון',
                         value: _ticket.phone!),
+                  if (_ticket.attachmentUrl != null &&
+                      _ticket.attachmentUrl!.isNotEmpty)
+                    _AttachmentRow(url: _ticket.attachmentUrl!),
                   _DetailRow(
                       icon: Icons.support_agent,
                       label: 'מטפל',
@@ -1636,6 +1822,116 @@ class _NoteItem extends StatelessWidget {
                       decoration: TextDecoration.underline)),
             ]),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Attachment row – displayed in ticket detail when a file was attached.
+// ---------------------------------------------------------------------------
+
+class _AttachmentRow extends StatelessWidget {
+  final String url;
+
+  const _AttachmentRow({required this.url});
+
+  static const _imageExtensions = {
+    'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'heif',
+  };
+
+  bool get _isImage {
+    final ext = url.split('?').first.split('.').last.toLowerCase();
+    return _imageExtensions.contains(ext);
+  }
+
+  Future<void> _open(BuildContext context) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('לא ניתן לפתוח את הקובץ')),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.attach_file, size: 20, color: theme.colorScheme.primary),
+          const SizedBox(width: 10),
+          SizedBox(
+            width: 90,
+            child: Text('קובץ מצורף',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSurface.withAlpha(150))),
+          ),
+          Expanded(
+            child: _isImage
+                ? GestureDetector(
+                    onTap: () => _open(context),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.network(
+                        url,
+                        height: 160,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                        loadingBuilder: (context, child, progress) {
+                          if (progress == null) return child;
+                          return SizedBox(
+                            height: 160,
+                            child: Center(
+                              child: CircularProgressIndicator(
+                                value: progress.expectedTotalBytes != null
+                                    ? progress.cumulativeBytesLoaded /
+                                        progress.expectedTotalBytes!
+                                    : null,
+                              ),
+                            ),
+                          );
+                        },
+                        errorBuilder: (_, __, ___) => GestureDetector(
+                          onTap: () => _open(context),
+                          child: Row(children: [
+                            Icon(Icons.broken_image,
+                                color: theme.colorScheme.primary),
+                            const SizedBox(width: 4),
+                            Text('פתח קובץ',
+                                style: TextStyle(
+                                    color: theme.colorScheme.primary,
+                                    decoration: TextDecoration.underline)),
+                          ]),
+                        ),
+                      ),
+                    ),
+                  )
+                : GestureDetector(
+                    onTap: () => _open(context),
+                    child: Row(children: [
+                      Icon(Icons.open_in_new,
+                          size: 16, color: theme.colorScheme.primary),
+                      const SizedBox(width: 4),
+                      Flexible(
+                        child: Text(
+                          url.split('/').last.split('?').first,
+                          style: TextStyle(
+                              color: theme.colorScheme.primary,
+                              decoration: TextDecoration.underline),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ]),
+                  ),
+          ),
         ],
       ),
     );
