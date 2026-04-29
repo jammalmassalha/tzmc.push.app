@@ -1369,6 +1369,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final user = _currentUser ?? '';
     final msg = _findMessageByMessageId(messageId);
     final group = msg?.groupId != null ? state.groups[msg!.groupId] : null;
+    final editedAt = DateTime.now().millisecondsSinceEpoch;
+    // Apply optimistically so the sender sees the edit immediately.
+    _applyEditToState(messageId, newBody, editedAt);
     await _api.editMessage(
       messageId,
       newBody,
@@ -1382,13 +1385,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       groupUpdatedAt: group?.updatedAt,
       groupType: group?.type,
     );
-    // Real-time update will apply the change
   }
 
   Future<void> deleteMessage(String messageId) async {
     final user = _currentUser ?? '';
     final msg = _findMessageByMessageId(messageId);
     final group = msg?.groupId != null ? state.groups[msg!.groupId] : null;
+    final deletedAt = DateTime.now().millisecondsSinceEpoch;
+    // Apply optimistically so the sender sees the deletion immediately.
+    _applyDeleteToState(messageId, deletedAt);
     await _api.deleteMessage(
       messageId,
       user,
@@ -1401,7 +1406,34 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       groupUpdatedAt: group?.updatedAt,
       groupType: group?.type,
     );
-    // Real-time update will apply the change
+  }
+
+  void _applyEditToState(String targetMessageId, String newBody, int editedAt) {
+    final newMessagesByChat = <String, List<ChatMessage>>{};
+    for (final entry in state.messagesByChat.entries) {
+      final chatMessages = entry.value.map((m) {
+        if (m.messageId == targetMessageId) {
+          return m.copyWith(body: newBody, editedAt: editedAt);
+        }
+        return m;
+      }).toList();
+      newMessagesByChat[entry.key] = chatMessages;
+    }
+    state = state.copyWith(messagesByChat: newMessagesByChat);
+  }
+
+  void _applyDeleteToState(String targetMessageId, int deletedAt) {
+    final newMessagesByChat = <String, List<ChatMessage>>{};
+    for (final entry in state.messagesByChat.entries) {
+      final chatMessages = entry.value.map((m) {
+        if (m.messageId == targetMessageId) {
+          return m.copyWith(deletedAt: deletedAt);
+        }
+        return m;
+      }).toList();
+      newMessagesByChat[entry.key] = chatMessages;
+    }
+    state = state.copyWith(messagesByChat: newMessagesByChat);
   }
 
   // ---------------------------------------------------------------------------
@@ -1663,19 +1695,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     if (newBody == null || editedAt == null) return;
 
-    final newMessagesByChat = <String, List<ChatMessage>>{};
-
-    for (final entry in state.messagesByChat.entries) {
-      final chatMessages = entry.value.map((m) {
-        if (m.messageId == targetId) {
-          return m.copyWith(body: newBody, editedAt: editedAt);
-        }
-        return m;
-      }).toList();
-      newMessagesByChat[entry.key] = chatMessages;
-    }
-
-    state = state.copyWith(messagesByChat: newMessagesByChat);
+    _applyEditToState(targetId, newBody, editedAt);
   }
 
   void _handleDelete(IncomingServerMessage msg) {
@@ -1686,19 +1706,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     final deletedAt = msg.deletedAt ?? DateTime.now().millisecondsSinceEpoch;
 
-    final newMessagesByChat = <String, List<ChatMessage>>{};
-
-    for (final entry in state.messagesByChat.entries) {
-      final chatMessages = entry.value.map((m) {
-        if (m.messageId == targetId) {
-          return m.copyWith(deletedAt: deletedAt);
-        }
-        return m;
-      }).toList();
-      newMessagesByChat[entry.key] = chatMessages;
-    }
-
-    state = state.copyWith(messagesByChat: newMessagesByChat);
+    _applyDeleteToState(targetId, deletedAt);
   }
 
   void _handleGroupUpdate(IncomingServerMessage msg) {
