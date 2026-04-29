@@ -566,6 +566,7 @@ class PushNotificationService {
       'edit',
       'group-update',
       'typing',
+      'reaction',
     };
     final type = (data['type'] ?? '').toString().trim().toLowerCase();
     return silentTypes.contains(type);

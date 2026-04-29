@@ -293,8 +293,13 @@ function createFlutterPushService(options = {}) {
             messageType
         );
 
+        // Build the payload with display-text fields first so that actual data
+        // fields from compactCustomData always win.  This is critical for
+        // edit-action: customData.body = the real edited text; if we spread
+        // compactCustomData first and then set `body` to the display fallback
+        // ('New Notification'), the edited text is overwritten and the Flutter
+        // client applies 'New Notification' as the new message body.
         const payloadData = {
-            ...compactCustomData,
             title,
             body,
             badge: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
@@ -302,15 +307,18 @@ function createFlutterPushService(options = {}) {
             requireInteraction: true,
             image: imageUrl,
             sender,
-            messageId: messageId || undefined
+            messageId: messageId || undefined,
+            ...compactCustomData
         };
 
         const includeNotification = !(
             payloadData.skipNotification === true ||
+            payloadData.skipNotification === 'true' ||
             messageType === 'read-receipt' ||
             messageType === 'group-update' ||
             messageType === 'delete-action' ||
-            messageType === 'edit-action'
+            messageType === 'edit-action' ||
+            messageType === 'reaction'
         );
 
         return notificationService.buildPushPayloadString(payloadData, { includeNotification });

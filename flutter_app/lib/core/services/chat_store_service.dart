@@ -929,6 +929,25 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
       case 'typing':
         return; // Typing indicators from push are not actionable.
+
+      case 'reaction':
+        {
+          // Reaction pushes must update the emoji on the target message, not
+          // create a new chat bubble. Route through the same handler used by
+          // socket/SSE so the UI reflects the change silently.
+          final targetId = _str(data['targetMessageId']) ?? _str(data['messageId']);
+          if (targetId == null) return;
+          final msg = IncomingServerMessage(
+            type: type,
+            targetMessageId: targetId,
+            emoji: _str(data['emoji']),
+            reactor: _str(data['reactor']) ?? _str(data['sender']),
+            reactorName: _str(data['reactorName']),
+            sender: _str(data['sender']),
+          );
+          _handleReaction(msg);
+          return;
+        }
     }
 
     // ── Regular chat message ───────────────────────────────────────────────
