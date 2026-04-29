@@ -410,6 +410,174 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     return group;
   }
 
+  /// Whether the current user is an admin of [groupId].
+  bool isGroupAdmin(String groupId) {
+    final me = _currentUser;
+    if (me == null || me.isEmpty) return false;
+    final group = state.groups[groupId];
+    if (group == null) return false;
+    final admins = (group.admins ?? const <String>[])
+        .map((a) => a.trim().toLowerCase())
+        .where((a) => a.isNotEmpty)
+        .toList();
+    return admins.contains(me) || group.createdBy.trim().toLowerCase() == me;
+  }
+
+  /// Rename a group. Only admins may rename. Notifies all members.
+  Future<void> renameGroup(String groupId, String newName) async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty) return;
+    final group = state.groups[groupId];
+    if (group == null) return;
+    final trimmedName = newName.trim();
+    if (trimmedName.isEmpty || trimmedName == group.name) return;
+
+    final updatedAt = DateTime.now().millisecondsSinceEpoch;
+    final updated = ChatGroup(
+      id: group.id,
+      name: trimmedName,
+      members: group.members,
+      admins: group.admins,
+      createdBy: group.createdBy,
+      updatedAt: updatedAt,
+      type: group.type,
+    );
+
+    final newGroups = Map<String, ChatGroup>.from(state.groups);
+    newGroups[groupId] = updated;
+    state = state.copyWith(groups: newGroups);
+    await _db.upsertGroup(updated);
+    _schedulePersistence();
+
+    final membersToNotify = group.members.where((m) => m != user).toList();
+    try {
+      await _api.sendGroupUpdate(GroupUpdatePayload(
+        groupId: updated.id,
+        groupName: updated.name,
+        groupMembers: updated.members,
+        groupCreatedBy: updated.createdBy,
+        groupAdmins: updated.admins,
+        actorUser: user,
+        groupUpdatedAt: updatedAt,
+        groupType: updated.type,
+        membersToNotify: membersToNotify,
+      ));
+    } catch (_) {}
+  }
+
+  /// Add new members to a group. Only admins may add. Notifies all members.
+  Future<void> addGroupMembers(String groupId, List<String> newMembers) async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty) return;
+    final group = state.groups[groupId];
+    if (group == null) return;
+
+    final toAdd = newMembers
+        .map((m) => m.trim().toLowerCase())
+        .where((m) => m.isNotEmpty && !group.members.contains(m))
+        .toList();
+    if (toAdd.isEmpty) return;
+
+    final updatedAt = DateTime.now().millisecondsSinceEpoch;
+    final updatedMembers = [...group.members, ...toAdd];
+    final updated = ChatGroup(
+      id: group.id,
+      name: group.name,
+      members: updatedMembers,
+      admins: group.admins,
+      createdBy: group.createdBy,
+      updatedAt: updatedAt,
+      type: group.type,
+    );
+
+    final newGroups = Map<String, ChatGroup>.from(state.groups);
+    newGroups[groupId] = updated;
+    state = state.copyWith(groups: newGroups);
+    await _db.upsertGroup(updated);
+    _schedulePersistence();
+
+    final membersToNotify = updatedMembers.where((m) => m != user).toList();
+    try {
+      await _api.sendGroupUpdate(GroupUpdatePayload(
+        groupId: updated.id,
+        groupName: updated.name,
+        groupMembers: updated.members,
+        groupCreatedBy: updated.createdBy,
+        groupAdmins: updated.admins,
+        actorUser: user,
+        groupUpdatedAt: updatedAt,
+        groupType: updated.type,
+        membersToNotify: membersToNotify,
+      ));
+    } catch (_) {}
+  }
+
+  /// Remove a member from a group. Only admins may remove others.
+  /// Members may remove themselves (leave).
+  Future<void> removeGroupMember(String groupId, String member) async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty) return;
+    final group = state.groups[groupId];
+    if (group == null) return;
+
+    final normalizedMember = member.trim().toLowerCase();
+    if (!group.members.contains(normalizedMember)) return;
+
+    final updatedAt = DateTime.now().millisecondsSinceEpoch;
+    final updatedMembers =
+        group.members.where((m) => m != normalizedMember).toList();
+    final updatedAdmins =
+        group.admins?.where((a) => a != normalizedMember).toList();
+
+    final updated = ChatGroup(
+      id: group.id,
+      name: group.name,
+      members: updatedMembers,
+      admins: updatedAdmins,
+      createdBy: group.createdBy,
+      updatedAt: updatedAt,
+      type: group.type,
+    );
+
+    final newGroups = Map<String, ChatGroup>.from(state.groups);
+    newGroups[groupId] = updated;
+    state = state.copyWith(groups: newGroups);
+    await _db.upsertGroup(updated);
+    _schedulePersistence();
+
+    // Notify remaining members and also the removed member so their client
+    // can drop the group from their list.
+    final membersToNotify = [
+      ...updatedMembers,
+      normalizedMember,
+    ].where((m) => m != user).toList();
+    try {
+      await _api.sendGroupUpdate(GroupUpdatePayload(
+        groupId: updated.id,
+        groupName: updated.name,
+        groupMembers: updated.members,
+        groupCreatedBy: updated.createdBy,
+        groupAdmins: updated.admins,
+        actorUser: user,
+        groupUpdatedAt: updatedAt,
+        groupType: updated.type,
+        membersToNotify: membersToNotify,
+      ));
+    } catch (_) {}
+  }
+
+  /// Leave a group (current user removes themselves and drops the group locally).
+  Future<void> leaveGroup(String groupId) async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty) return;
+    await removeGroupMember(groupId, user);
+    // After removeGroupMember the group still exists in state (without this
+    // user). Fully remove it so it no longer appears in the user's list.
+    final newGroups = Map<String, ChatGroup>.from(state.groups);
+    newGroups.remove(groupId);
+    state = state.copyWith(groups: newGroups);
+  }
+
   /// Whether the current user is allowed to send messages to [chatId]. Always
   /// true for direct messages and regular groups; for community groups only
   /// admins (and the group creator) may post — mirroring Angular

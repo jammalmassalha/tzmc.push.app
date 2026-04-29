@@ -17,6 +17,7 @@ import '../../../core/services/chat_store_service.dart';
 import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
 import '../../../shared/widgets/authenticated_image.dart';
+import 'group_info_screen.dart';
 import 'message_composer.dart';
 
 /// Message screen widget
@@ -40,6 +41,12 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   MessageReference? _replyTo;
   ChatMessage? _editingMessage;
 
+  // Search state
+  bool _searchActive = false;
+  String _searchQuery = '';
+  late final TextEditingController _searchController;
+  late final FocusNode _searchFocus;
+
   /// Key placed on the "unread messages" divider so we can scroll to it
   /// precisely once the list has been laid out.
   final _unreadDividerKey = GlobalKey();
@@ -57,6 +64,11 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     // render window and `ensureVisible` can work on it.
     final estimatedOffset = unread > 0 ? (unread * _estimatedItemHeight) : 0.0;
     _scrollController = ScrollController(initialScrollOffset: estimatedOffset);
+    _searchController = TextEditingController();
+    _searchFocus = FocusNode();
+    _searchController.addListener(() {
+      setState(() => _searchQuery = _searchController.text.trim().toLowerCase());
+    });
 
     if (unread > 0) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToFirstUnread());
@@ -77,152 +89,216 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   @override
   void dispose() {
     _scrollController.dispose();
+    _searchController.dispose();
+    _searchFocus.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(chatStoreProvider);
-    final messages = state.messagesByChat[widget.chatId] ?? [];
+    final allMessages = state.messagesByChat[widget.chatId] ?? [];
     final chatInfo = _getChatInfo(state);
+
+    // Filter messages when search is active
+    final messages = (_searchActive && _searchQuery.isNotEmpty)
+        ? allMessages
+            .where((m) =>
+                (m.body ?? '').toLowerCase().contains(_searchQuery))
+            .toList()
+        : allMessages;
 
     return Directionality(
       textDirection: ui.TextDirection.rtl,
       child: Scaffold(
-        appBar: AppBar(
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            onPressed: () {
-              ref.read(chatStoreProvider.notifier).setCurrentChat(null);
-              Navigator.of(context).pop();
-            },
-          ),
-          title: Row(
-            children: [
-              GestureDetector(
-                onTap: chatInfo.avatarUrl != null
-                    ? () => _showAvatarPreview(context, chatInfo.title, chatInfo.avatarUrl!)
-                    : null,
-                child: AuthenticatedCircleAvatar(
-                  url: chatInfo.avatarUrl,
-                  radius: 20,
-                  fallback: CircleAvatar(
-                    radius: 20,
-                    backgroundColor: Colors.white24,
-                    child: Text(
-                      chatInfo.title.isNotEmpty ? chatInfo.title[0].toUpperCase() : '?',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
+        appBar: _searchActive
+            ? AppBar(
+                leading: IconButton(
+                  icon: const Icon(Icons.arrow_back),
+                  onPressed: _closeSearch,
+                ),
+                title: TextField(
+                  controller: _searchController,
+                  focusNode: _searchFocus,
+                  textDirection: ui.TextDirection.rtl,
+                  style: const TextStyle(color: Colors.white),
+                  cursorColor: Colors.white,
+                  decoration: InputDecoration(
+                    hintText: 'חיפוש בשיחה...',
+                    hintStyle:
+                        TextStyle(color: Colors.white.withAlpha(178)),
+                    border: InputBorder.none,
                   ),
                 ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      chatInfo.title,
-                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                      overflow: TextOverflow.ellipsis,
+                actions: [
+                  if (_searchQuery.isNotEmpty)
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () {
+                        _searchController.clear();
+                        setState(() => _searchQuery = '');
+                      },
                     ),
-                    if (chatInfo.subtitle != null)
-                      Text(
-                        chatInfo.subtitle!,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.white.withAlpha((255 * 0.7).round()),
+                ],
+              )
+            : AppBar(
+                leading: IconButton(
+                  icon: const Icon(Icons.arrow_back),
+                  onPressed: () {
+                    ref.read(chatStoreProvider.notifier).setCurrentChat(null);
+                    Navigator.of(context).pop();
+                  },
+                ),
+                title: GestureDetector(
+                  onTap: chatInfo.isGroup
+                      ? () => _openGroupInfo()
+                      : (chatInfo.avatarUrl != null
+                          ? () => _showAvatarPreview(
+                              context, chatInfo.title, chatInfo.avatarUrl!)
+                          : null),
+                  child: Row(
+                    children: [
+                      AuthenticatedCircleAvatar(
+                        url: chatInfo.avatarUrl,
+                        radius: 20,
+                        fallback: CircleAvatar(
+                          radius: 20,
+                          backgroundColor: Colors.white24,
+                          child: Text(
+                            chatInfo.title.isNotEmpty
+                                ? chatInfo.title[0].toUpperCase()
+                                : '?',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
                         ),
-                        overflow: TextOverflow.ellipsis,
                       ),
-                  ],
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              chatInfo.title,
+                              style: const TextStyle(
+                                  fontSize: 16, fontWeight: FontWeight.bold),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            if (chatInfo.subtitle != null)
+                              Text(
+                                chatInfo.subtitle!,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color:
+                                      Colors.white.withAlpha((255 * 0.7).round()),
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
+                actions: [
+                  IconButton(
+                    icon: const Icon(Icons.search),
+                    tooltip: 'חיפוש',
+                    onPressed: _openSearch,
+                  ),
+                  PopupMenuButton<String>(
+                    icon: const Icon(Icons.more_vert),
+                    onSelected: _handleMenuAction,
+                    itemBuilder: (context) => [
+                      const PopupMenuItem(
+                        value: 'info',
+                        child: Row(
+                          children: [
+                            Icon(Icons.info_outline, size: 20),
+                            SizedBox(width: 12),
+                            Text('פרטים'),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
-            ],
-          ),
-          actions: [
-            PopupMenuButton<String>(
-              icon: const Icon(Icons.more_vert),
-              onSelected: _handleMenuAction,
-              itemBuilder: (context) => [
-                const PopupMenuItem(
-                  value: 'info',
-                  child: Row(
-                    children: [
-                      Icon(Icons.info_outline, size: 20),
-                      SizedBox(width: 12),
-                      Text('פרטים'),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'search',
-                  child: Row(
-                    children: [
-                      Icon(Icons.search, size: 20),
-                      SizedBox(width: 12),
-                      Text('חיפוש'),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
         body: Column(
           children: [
             // Messages list
             Expanded(
               child: messages.isEmpty
-                  ? _buildEmptyState(context)
+                  ? (_searchActive && _searchQuery.isNotEmpty
+                      ? _buildSearchEmpty(context)
+                      : _buildEmptyState(context))
                   : ListView.builder(
                       controller: _scrollController,
                       reverse: true,
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16),
-                      // +1 for the optional unread divider slot
-                      itemCount: messages.length + (widget.initialUnreadCount > 0 ? 1 : 0),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 16),
+                      // +1 for the optional unread divider slot (only when not searching)
+                      itemCount: messages.length +
+                          (!_searchActive && widget.initialUnreadCount > 0
+                              ? 1
+                              : 0),
                       itemBuilder: (context, index) {
                         // With reverse: true, index 0 = newest message (bottom).
                         // The unread divider sits just below the first unread message,
                         // i.e. at position `initialUnreadCount` in the reversed list
                         // (between last-read and first-unread).
-                        final unread = widget.initialUnreadCount;
+                        final unread =
+                            !_searchActive ? widget.initialUnreadCount : 0;
                         if (unread > 0 && index == unread) {
                           return _buildUnreadDivider(context);
                         }
 
                         // Shift the message index down by 1 after the divider slot.
-                        final msgIndex = (unread > 0 && index > unread) ? index - 1 : index;
-                        if (msgIndex >= messages.length) return const SizedBox.shrink();
+                        final msgIndex =
+                            (unread > 0 && index > unread) ? index - 1 : index;
+                        if (msgIndex >= messages.length) {
+                          return const SizedBox.shrink();
+                        }
 
                         final message = messages[msgIndex];
-                        final previousMessage = msgIndex < messages.length - 1 ? messages[msgIndex + 1] : null;
-                        final showDateHeader = _shouldShowDateHeader(message, previousMessage);
+                        final previousMessage = msgIndex < messages.length - 1
+                            ? messages[msgIndex + 1]
+                            : null;
+                        final showDateHeader =
+                            _shouldShowDateHeader(message, previousMessage);
 
                         return Column(
                           children: [
-                            if (showDateHeader) _buildDateHeader(context, message.timestamp),
+                            if (showDateHeader)
+                              _buildDateHeader(context, message.timestamp),
                             _MessageBubble(
                               message: message,
                               isGroup: chatInfo.isGroup,
-                              onReply: () => setState(() => _replyTo = MessageReference(
-                                    messageId: message.messageId,
-                                    sender: message.sender,
-                                    senderDisplayName: message.senderDisplayName,
-                                    body: message.body,
-                                    imageUrl: message.imageUrl,
-                                  )),
-                              onReact: (emoji) => _handleReaction(message, emoji),
-                              onEdit: message.direction == MessageDirection.outgoing
-                                  ? () => setState(() => _editingMessage = message)
-                                  : null,
-                              onDelete: message.direction == MessageDirection.outgoing
-                                  ? () => _handleDelete(message)
-                                  : null,
+                              searchQuery:
+                                  _searchActive ? _searchQuery : null,
+                              onReply: () => setState(
+                                  () => _replyTo = MessageReference(
+                                        messageId: message.messageId,
+                                        sender: message.sender,
+                                        senderDisplayName:
+                                            message.senderDisplayName,
+                                        body: message.body,
+                                        imageUrl: message.imageUrl,
+                                      )),
+                              onReact: (emoji) =>
+                                  _handleReaction(message, emoji),
+                              onEdit:
+                                  message.direction == MessageDirection.outgoing
+                                      ? () => setState(
+                                          () => _editingMessage = message)
+                                      : null,
+                              onDelete:
+                                  message.direction == MessageDirection.outgoing
+                                      ? () => _handleDelete(message)
+                                      : null,
                               onCopy: () => _handleCopy(message),
                             ),
                           ],
@@ -231,34 +307,35 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                     ),
             ),
 
-            // Reply preview
-            if (_replyTo != null)
+            // Reply preview (hidden while searching)
+            if (!_searchActive && _replyTo != null)
               _ReplyPreview(
                 replyTo: _replyTo!,
                 onCancel: () => setState(() => _replyTo = null),
               ),
 
-            // Edit preview
-            if (_editingMessage != null)
+            // Edit preview (hidden while searching)
+            if (!_searchActive && _editingMessage != null)
               _EditPreview(
                 message: _editingMessage!,
                 onCancel: () => setState(() => _editingMessage = null),
               ),
 
-            // Message composer
-            MessageComposer(
-              chatId: widget.chatId,
-              isGroup: chatInfo.isGroup,
-              replyTo: _replyTo,
-              editingMessage: _editingMessage,
-              onMessageSent: () {
-                setState(() {
-                  _replyTo = null;
-                  _editingMessage = null;
-                });
-                _scrollToBottom();
-              },
-            ),
+            // Message composer (hidden while searching)
+            if (!_searchActive)
+              MessageComposer(
+                chatId: widget.chatId,
+                isGroup: chatInfo.isGroup,
+                replyTo: _replyTo,
+                editingMessage: _editingMessage,
+                onMessageSent: () {
+                  setState(() {
+                    _replyTo = null;
+                    _editingMessage = null;
+                  });
+                  _scrollToBottom();
+                },
+              ),
           ],
         ),
       ),
@@ -395,20 +472,73 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       case 'info':
         _showChatInfo();
         break;
-      case 'search':
-        _showSearch();
-        break;
     }
   }
 
   void _showChatInfo() {
     final state = ref.read(chatStoreProvider);
     final chatInfo = _getChatInfo(state);
-    if (chatInfo.avatarUrl != null) {
+    if (chatInfo.isGroup) {
+      _openGroupInfo();
+    } else if (chatInfo.avatarUrl != null) {
       _showAvatarPreview(context, chatInfo.title, chatInfo.avatarUrl!);
     } else {
       showTopToast(context, 'פרטי שיחה - בקרוב');
     }
+  }
+
+  void _openGroupInfo() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => GroupInfoScreen(groupId: widget.chatId),
+      ),
+    );
+  }
+
+  void _openSearch() {
+    setState(() {
+      _searchActive = true;
+      _searchQuery = '';
+    });
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _searchFocus.requestFocus());
+  }
+
+  void _closeSearch() {
+    _searchController.clear();
+    setState(() {
+      _searchActive = false;
+      _searchQuery = '';
+    });
+  }
+
+  Widget _buildSearchEmpty(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.search_off,
+            size: 60,
+            color: Theme.of(context)
+                .colorScheme
+                .onSurface
+                .withAlpha((255 * 0.3).round()),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'לא נמצאו הודעות עבור "$_searchQuery"',
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .onSurface
+                      .withAlpha((255 * 0.5).round()),
+                ),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
   }
 
   void _showAvatarPreview(BuildContext context, String title, String avatarUrl) {
@@ -449,10 +579,6 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
         ),
       ),
     );
-  }
-
-  void _showSearch() {
-    showTopToast(context, 'חיפוש בשיחה - בקרוב');
   }
 
   void _handleReaction(ChatMessage message, String emoji) {
@@ -562,6 +688,7 @@ void _showFullScreenImage(BuildContext context, String imageUrl) {
 class _MessageBubble extends StatelessWidget {
   final ChatMessage message;
   final bool isGroup;
+  final String? searchQuery;
   final VoidCallback onReply;
   final void Function(String emoji) onReact;
   final VoidCallback? onEdit;
@@ -571,6 +698,7 @@ class _MessageBubble extends StatelessWidget {
   const _MessageBubble({
     required this.message,
     required this.isGroup,
+    this.searchQuery,
     required this.onReply,
     required this.onReact,
     this.onEdit,
@@ -689,7 +817,7 @@ class _MessageBubble extends StatelessWidget {
                         ),
                       )
                     else
-                      _MessageBody(body: message.body, theme: theme),
+                      _MessageBody(body: message.body, theme: theme, searchQuery: searchQuery),
 
                     const SizedBox(height: 4),
 
@@ -1068,22 +1196,57 @@ class _EditPreview extends StatelessWidget {
 
 /// Renders a message body. Google Maps links (📍 ...) are shown as a
 /// tappable location button; plain text is displayed as-is.
+/// When [searchQuery] is provided, matching text is highlighted.
 class _MessageBody extends StatelessWidget {
   final String body;
   final ThemeData theme;
+  final String? searchQuery;
 
-  const _MessageBody({required this.body, required this.theme});
+  const _MessageBody(
+      {required this.body, required this.theme, this.searchQuery});
 
   static final _mapsRegex = RegExp(
     r'https?://(www\.)?(maps\.google\.com|google\.com/maps|maps\.app\.goo\.gl)[^\s]*',
     caseSensitive: false,
   );
 
+  /// Build a [TextSpan] with search-term highlights.
+  InlineSpan _buildHighlightedSpan(String text, TextStyle base) {
+    final q = searchQuery;
+    if (q == null || q.isEmpty) return TextSpan(text: text, style: base);
+
+    final lower = text.toLowerCase();
+    final spans = <InlineSpan>[];
+    int start = 0;
+    int idx;
+    while ((idx = lower.indexOf(q, start)) != -1) {
+      if (idx > start) {
+        spans.add(TextSpan(text: text.substring(start, idx), style: base));
+      }
+      spans.add(TextSpan(
+        text: text.substring(idx, idx + q.length),
+        style: base.copyWith(
+          backgroundColor: Colors.yellow.shade600,
+          color: Colors.black,
+          fontWeight: FontWeight.bold,
+        ),
+      ));
+      start = idx + q.length;
+    }
+    if (start < text.length) {
+      spans.add(TextSpan(text: text.substring(start), style: base));
+    }
+    return TextSpan(children: spans);
+  }
+
   @override
   Widget build(BuildContext context) {
+    final base = theme.textTheme.bodyMedium ?? const TextStyle();
     final match = _mapsRegex.firstMatch(body);
     if (match == null) {
-      return Text(body, style: theme.textTheme.bodyMedium);
+      return RichText(
+        text: TextSpan(children: [_buildHighlightedSpan(body, base)]),
+      );
     }
 
     final mapUrl = match.group(0)!;
@@ -1097,10 +1260,14 @@ class _MessageBody extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         if (prefix.isNotEmpty)
-          Text(prefix, style: theme.textTheme.bodyMedium),
+          RichText(
+              text: TextSpan(
+                  children: [_buildHighlightedSpan(prefix, base)])),
         _LocationButton(url: mapUrl),
         if (suffix.isNotEmpty)
-          Text(suffix, style: theme.textTheme.bodyMedium),
+          RichText(
+              text: TextSpan(
+                  children: [_buildHighlightedSpan(suffix, base)])),
       ],
     );
   }
