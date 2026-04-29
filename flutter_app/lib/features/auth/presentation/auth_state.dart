@@ -46,7 +46,12 @@ class AuthAwaitingCode extends AuthState {
 class AuthAuthenticated extends AuthState {
   final String user;
 
-  const AuthAuthenticated({required this.user});
+  /// Phone number that was used to authenticate (stored for convenience, e.g.
+  /// to pre-fill contact-phone fields).  May be null when restoring an older
+  /// persisted session that pre-dates this field.
+  final String? phone;
+
+  const AuthAuthenticated({required this.user, this.phone});
 }
 
 /// Authentication error
@@ -71,6 +76,7 @@ class AuthNotifier extends Notifier<AuthState> {
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
 
   static const _userKey = 'tzmc_current_user';
+  static const _phoneKey = 'tzmc_current_user_phone';
 
   @override
   AuthState build() {
@@ -90,7 +96,8 @@ class AuthNotifier extends Notifier<AuthState> {
 
       if (sessionUser != null) {
         await _secureStorage.write(key: _userKey, value: sessionUser);
-        state = AuthAuthenticated(user: sessionUser);
+        final cachedPhone = await _secureStorage.read(key: _phoneKey);
+        state = AuthAuthenticated(user: sessionUser, phone: cachedPhone);
         _logger.i('Session restored for user: $sessionUser');
       } else {
         await _secureStorage.delete(key: _userKey);
@@ -172,7 +179,8 @@ class AuthNotifier extends Notifier<AuthState> {
         code,
       );
       await _secureStorage.write(key: _userKey, value: user);
-      state = AuthAuthenticated(user: user);
+      await _secureStorage.write(key: _phoneKey, value: currentState.phoneNumber);
+      state = AuthAuthenticated(user: user, phone: currentState.phoneNumber);
       _logger.i('Code verification successful for: $user');
     } on AuthException catch (e) {
       state = AuthError(message: e.message, previousState: previousState);
@@ -202,6 +210,7 @@ class AuthNotifier extends Notifier<AuthState> {
     }
 
     await _secureStorage.delete(key: _userKey);
+    await _secureStorage.delete(key: _phoneKey);
     state = const AuthUnauthenticated();
     _logger.i('User logged out');
   }
@@ -233,4 +242,15 @@ final currentUserProvider = Provider<String?>((ref) {
 final isAuthenticatedProvider = Provider<bool>((ref) {
   final authState = ref.watch(authStateProvider);
   return authState is AuthAuthenticated;
+});
+
+/// Provider for the current user's phone number (the phone used to log in).
+/// Returns null when not authenticated or when the session pre-dates phone
+/// persistence.
+final currentUserPhoneProvider = Provider<String?>((ref) {
+  final authState = ref.watch(authStateProvider);
+  if (authState is AuthAuthenticated) {
+    return authState.phone;
+  }
+  return null;
 });

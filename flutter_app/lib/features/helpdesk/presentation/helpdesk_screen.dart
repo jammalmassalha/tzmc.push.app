@@ -510,10 +510,8 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
     final subjectCtrl = TextEditingController();
     final descCtrl = TextEditingController();
     final locationCtrl = TextEditingController();
-    // Pre-fill with the current user's phone from the contacts store.
-    final currentUsername = ref.read(helpdeskProvider.notifier).currentUser;
-    final userPhone =
-        ref.read(chatStoreProvider).contacts[currentUsername]?.phone ?? '';
+    // Pre-fill with the phone number that was used to log in.
+    final userPhone = ref.read(currentUserPhoneProvider) ?? '';
     final phoneCtrl = TextEditingController(text: userPhone);
     String priority = 'normal';
     List<String> locations = [];
