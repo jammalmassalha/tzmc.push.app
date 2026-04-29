@@ -50,7 +50,22 @@ function createHelpdeskPool(env = {}) {
 }
 
 async function ensureHelpdeskTables(pool) {
-    await pool.execute(`
+    // Each CREATE TABLE is wrapped in its own try/catch so that a failure in
+    // one table (e.g. a FK constraint issue on a first-time install) does not
+    // prevent the remaining tables from being created.  MySQL error 1050
+    // (ER_TABLE_EXISTS_ERROR) is silently ignored because CREATE TABLE IF NOT
+    // EXISTS normally suppresses it, but some MySQL-compatible servers return
+    // it anyway.
+    async function safeCreateTable(sql, label) {
+        try {
+            await pool.execute(sql);
+        } catch (err) {
+            if (err && err.errno === 1050) return; // table already exists — ignore
+            console.error(`[HELPDESK] Failed to create table ${label}:`, err && err.message ? err.message : err);
+        }
+    }
+
+    await safeCreateTable(`
         CREATE TABLE IF NOT EXISTS \`helpdesk_tickets\` (
             \`id\` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             \`creator_username\` VARCHAR(64) NOT NULL,
@@ -70,7 +85,7 @@ async function ensureHelpdeskTables(pool) {
             INDEX \`idx_department\` (\`department\`),
             INDEX \`idx_location\` (\`location\`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
+    `, 'helpdesk_tickets');
 
     // Migration: add location column to existing helpdesk_tickets tables
     try {
@@ -112,7 +127,7 @@ async function ensureHelpdeskTables(pool) {
         }
     }
 
-    await pool.execute(`
+    await safeCreateTable(`
         CREATE TABLE IF NOT EXISTS \`helpdesk_notes\` (
             \`id\` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             \`ticket_id\` INT UNSIGNED NOT NULL,
@@ -125,7 +140,7 @@ async function ensureHelpdeskTables(pool) {
             CONSTRAINT \`fk_helpdesk_notes_ticket\`
                 FOREIGN KEY (\`ticket_id\`) REFERENCES \`helpdesk_tickets\` (\`id\`) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
+    `, 'helpdesk_notes');
 
     // Migration: add attachment_url column to existing helpdesk_notes tables
     try {
@@ -137,7 +152,7 @@ async function ensureHelpdeskTables(pool) {
         }
     }
 
-    await pool.execute(`
+    await safeCreateTable(`
         CREATE TABLE IF NOT EXISTS \`helpdesk_users\` (
             \`id\` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             \`username\` VARCHAR(64) NOT NULL,
@@ -149,9 +164,9 @@ async function ensureHelpdeskTables(pool) {
             INDEX \`idx_department\` (\`department\`),
             INDEX \`idx_role\` (\`role\`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
+    `, 'helpdesk_users');
 
-    await pool.execute(`
+    await safeCreateTable(`
         CREATE TABLE IF NOT EXISTS \`helpdesk_status_history\` (
             \`id\` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             \`ticket_id\` INT UNSIGNED NOT NULL,
@@ -164,9 +179,9 @@ async function ensureHelpdeskTables(pool) {
             CONSTRAINT \`fk_helpdesk_status_history_ticket\`
                 FOREIGN KEY (\`ticket_id\`) REFERENCES \`helpdesk_tickets\` (\`id\`) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
+    `, 'helpdesk_status_history');
 
-    await pool.execute(`
+    await safeCreateTable(`
         CREATE TABLE IF NOT EXISTS \`helpdesk_handler_history\` (
             \`id\` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             \`ticket_id\` INT UNSIGNED NOT NULL,
@@ -179,7 +194,7 @@ async function ensureHelpdeskTables(pool) {
             CONSTRAINT \`fk_helpdesk_handler_history_ticket\`
                 FOREIGN KEY (\`ticket_id\`) REFERENCES \`helpdesk_tickets\` (\`id\`) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
+    `, 'helpdesk_handler_history');
 }
 
 function mapTicketRow(row) {
@@ -201,12 +216,18 @@ function mapTicketRow(row) {
 
 async function getHelpdeskUserRole(pool, username) {
     if (!username) return null;
-    const [rows] = await pool.query(
-        'SELECT `username`, `role`, `department` FROM `helpdesk_users` WHERE `username` = ? LIMIT 1',
-        [username]
-    );
-    if (!rows.length) return null;
-    return { username: rows[0].username, role: rows[0].role, department: rows[0].department };
+    try {
+        const [rows] = await pool.query(
+            'SELECT `username`, `role`, `department` FROM `helpdesk_users` WHERE `username` = ? LIMIT 1',
+            [username]
+        );
+        if (!rows.length) return null;
+        return { username: rows[0].username, role: rows[0].role, department: rows[0].department };
+    } catch (err) {
+        // ER_NO_SUCH_TABLE (1146) — table doesn't exist yet, treat as no role.
+        if (err && err.errno === 1146) return null;
+        throw err;
+    }
 }
 
 function registerHelpdeskController(app, deps = {}) {
@@ -214,10 +235,29 @@ function registerHelpdeskController(app, deps = {}) {
 
     const pool = createHelpdeskPool(env);
 
-    // Initialize tables on startup, log but don't crash on failure
-    ensureHelpdeskTables(pool).catch((error) => {
+    // Store the table-initialization promise so every endpoint handler can await
+    // it before running queries.  This eliminates the startup race (request
+    // arriving before tables exist) and enables automatic retry when the first
+    // attempt failed (e.g. DB temporarily unreachable at process start).
+    let _tablesReady = ensureHelpdeskTables(pool);
+    _tablesReady.catch((error) => {
         console.error('[HELPDESK] Failed to ensure tables:', error && error.message ? error.message : error);
+        // Reset so the next endpoint call triggers a fresh attempt.
+        _tablesReady = null;
     });
+
+    // Returns a promise that resolves once all helpdesk tables exist.
+    // If the previous attempt failed, a new attempt is started automatically.
+    function getTablesReady() {
+        if (!_tablesReady) {
+            _tablesReady = ensureHelpdeskTables(pool);
+            _tablesReady.catch((err) => {
+                console.error('[HELPDESK] Retry to ensure tables failed:', err && err.message ? err.message : err);
+                _tablesReady = null;
+            });
+        }
+        return _tablesReady;
+    }
 
     const requireUser = typeof requireAuthorizedUser === 'function'
         ? requireAuthorizedUser({
@@ -303,6 +343,7 @@ function registerHelpdeskController(app, deps = {}) {
         }
 
         try {
+            await getTablesReady();
             const [result] = await pool.execute(
                 'INSERT INTO `helpdesk_tickets` (`creator_username`, `department`, `title`, `description`, `location`, `phone`, `attachment_url`, `status`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
                 [user, department, title, description, location, phone, attachmentUrl, 'open']
@@ -339,6 +380,7 @@ function registerHelpdeskController(app, deps = {}) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
         }
         try {
+            await getTablesReady();
             const [roleInfo, ticketRows, assignedRows] = await Promise.all([
                 getHelpdeskUserRole(pool, user),
                 pool.query(
@@ -401,6 +443,7 @@ function registerHelpdeskController(app, deps = {}) {
         const handlerUsername = body.handler_username === null ? null : toTrimmedString(body.handler_username || '');
 
         try {
+            await getTablesReady();
             // Verify editor role for this user
             const editorRole = await getHelpdeskUserRole(pool, user);
             if (!editorRole) {
@@ -497,6 +540,7 @@ function registerHelpdeskController(app, deps = {}) {
         }
 
         try {
+            await getTablesReady();
             // Verify the ticket exists and the user is authorized (creator, handler, or Editor of same dept)
             const [ticketRows] = await pool.query(
                 'SELECT `id`, `creator_username`, `handler_username`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
@@ -553,6 +597,7 @@ function registerHelpdeskController(app, deps = {}) {
         }
 
         try {
+            await getTablesReady();
             // Verify the ticket exists and the user is authorized
             const [ticketRows] = await pool.query(
                 'SELECT `id`, `creator_username`, `handler_username`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
@@ -609,6 +654,7 @@ function registerHelpdeskController(app, deps = {}) {
         }
 
         try {
+            await getTablesReady();
             const [ticketRows] = await pool.query(
                 'SELECT `id`, `creator_username`, `handler_username`, `department`, `status` FROM `helpdesk_tickets` WHERE `id` = ?',
                 [ticketId]
@@ -661,6 +707,7 @@ function registerHelpdeskController(app, deps = {}) {
         }
 
         try {
+            await getTablesReady();
             // Verify the ticket exists and the user is authorized
             const [ticketRows] = await pool.query(
                 'SELECT `id`, `creator_username`, `handler_username`, `department`, `status`, `created_at` FROM `helpdesk_tickets` WHERE `id` = ?',
@@ -728,6 +775,7 @@ function registerHelpdeskController(app, deps = {}) {
         }
 
         try {
+            await getTablesReady();
             const [ticketRows] = await pool.query(
                 'SELECT `id`, `creator_username`, `handler_username`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
                 [ticketId]
@@ -773,6 +821,7 @@ function registerHelpdeskController(app, deps = {}) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
         }
         try {
+            await getTablesReady();
             const editorRole = await getHelpdeskUserRole(pool, user);
             if (!editorRole) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה' });
@@ -819,6 +868,7 @@ function registerHelpdeskController(app, deps = {}) {
         if (!VALID_DEPARTMENTS.includes(department)) return res.status(400).json({ result: 'error', message: 'מחלקה לא תקינה' });
 
         try {
+            await getTablesReady();
             const editorRole = await getHelpdeskUserRole(pool, user);
             if (!editorRole || editorRole.role !== 'Admin') {
                 return res.status(403).json({ result: 'error', message: 'רק מנהל יכול להוסיף משתמשים' });
@@ -846,6 +896,7 @@ function registerHelpdeskController(app, deps = {}) {
             return res.status(400).json({ result: 'error', message: 'יש לציין שם משתמש' });
         }
         try {
+            await getTablesReady();
             const editorRole = await getHelpdeskUserRole(pool, user);
             if (!editorRole || editorRole.role !== 'Admin') {
                 return res.status(403).json({ result: 'error', message: 'רק מנהל יכול להסיר משתמשים' });
