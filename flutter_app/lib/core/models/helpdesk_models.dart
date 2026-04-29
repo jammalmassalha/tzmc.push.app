@@ -409,3 +409,38 @@ class HelpdeskStatusHistoryEntry extends Equatable {
     );
   }
 }
+
+/// Helpdesk handler assignment history entry (API response)
+class HelpdeskHandlerHistoryEntry extends Equatable {
+  final int id;
+  final int ticketId;
+  final String? oldHandler;
+  final String? newHandler;
+  final String changedBy;
+  final DateTime createdAt;
+
+  const HelpdeskHandlerHistoryEntry({
+    required this.id,
+    required this.ticketId,
+    this.oldHandler,
+    this.newHandler,
+    required this.changedBy,
+    required this.createdAt,
+  });
+
+  @override
+  List<Object?> get props => [id, ticketId, oldHandler, newHandler, changedBy, createdAt];
+
+  factory HelpdeskHandlerHistoryEntry.fromJson(Map<String, dynamic> json) {
+    return HelpdeskHandlerHistoryEntry(
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      ticketId: (json['ticketId'] as num?)?.toInt() ?? 0,
+      oldHandler: (json['oldHandler'] ?? json['old_handler']) as String?,
+      newHandler: (json['newHandler'] ?? json['new_handler']) as String?,
+      changedBy: (json['changedBy'] ?? json['changed_by']) as String? ?? '',
+      createdAt: DateTime.tryParse(
+              (json['createdAt'] ?? json['created_at']) as String? ?? '') ??
+          DateTime.now(),
+    );
+  }
+}

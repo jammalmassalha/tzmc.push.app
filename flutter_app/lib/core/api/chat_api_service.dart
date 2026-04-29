@@ -819,6 +819,37 @@ class ChatApiService {
     return history.map((item) => HelpdeskStatusHistoryEntry.fromJson(item as Map<String, dynamic>)).toList();
   }
 
+  /// Get helpdesk ticket handler assignment history
+  ///
+  /// [user] is required for backend authorization when session cookies are not available.
+  Future<List<HelpdeskHandlerHistoryEntry>> getHelpdeskTicketHandlerHistory(int ticketId, String user) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) {
+      throw ApiException('User is required for helpdesk handler history request');
+    }
+
+    final response = await _client.get<Map<String, dynamic>>(
+      '${ApiEndpoints.helpdeskTickets}/$ticketId/handler-history',
+      queryParameters: {'user': normalizedUser},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+
+    final body = response.data ?? {};
+
+    if (!response.isSuccessful) {
+      final errorMessage = body['message'] as String? ?? 'שגיאה בטעינת היסטוריית המטפלים';
+      throw ApiException(errorMessage);
+    }
+
+    if (body['result'] == 'error') {
+      final errorMessage = body['message'] as String? ?? 'שגיאה בטעינת היסטוריית המטפלים';
+      throw ApiException(errorMessage);
+    }
+
+    final history = (body['history'] as List?) ?? [];
+    return history.map((item) => HelpdeskHandlerHistoryEntry.fromJson(item as Map<String, dynamic>)).toList();
+  }
+
   /// Get helpdesk ticket notes
   /// 
   /// [user] is required for backend authorization when session cookies are not available.

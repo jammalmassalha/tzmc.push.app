@@ -165,6 +165,21 @@ async function ensureHelpdeskTables(pool) {
                 FOREIGN KEY (\`ticket_id\`) REFERENCES \`helpdesk_tickets\` (\`id\`) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
+
+    await pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`helpdesk_handler_history\` (
+            \`id\` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            \`ticket_id\` INT UNSIGNED NOT NULL,
+            \`old_handler\` VARCHAR(64) NULL DEFAULT NULL,
+            \`new_handler\` VARCHAR(64) NULL DEFAULT NULL,
+            \`changed_by\` VARCHAR(64) NOT NULL,
+            \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (\`id\`),
+            INDEX \`idx_ticket\` (\`ticket_id\`),
+            CONSTRAINT \`fk_helpdesk_handler_history_ticket\`
+                FOREIGN KEY (\`ticket_id\`) REFERENCES \`helpdesk_tickets\` (\`id\`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
 }
 
 function mapTicketRow(row) {
@@ -394,7 +409,7 @@ function registerHelpdeskController(app, deps = {}) {
 
             // Verify ticket exists and belongs to editor's department
             const [ticketRows] = await pool.query(
-                'SELECT `id`, `title`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
+                'SELECT `id`, `title`, `department`, `handler_username` FROM `helpdesk_tickets` WHERE `id` = ?',
                 [ticketId]
             );
             if (!ticketRows.length) {
@@ -412,10 +427,20 @@ function registerHelpdeskController(app, deps = {}) {
                 }
             }
 
+            const oldHandler = ticketRows[0].handler_username || null;
+
             await pool.execute(
                 'UPDATE `helpdesk_tickets` SET `handler_username` = ? WHERE `id` = ?',
                 [handlerUsername || null, ticketId]
             );
+
+            // Record handler change in history (fire-and-forget so it never blocks the response).
+            pool.execute(
+                'INSERT INTO `helpdesk_handler_history` (`ticket_id`, `old_handler`, `new_handler`, `changed_by`) VALUES (?, ?, ?, ?)',
+                [ticketId, oldHandler, handlerUsername || null, user]
+            ).catch((histErr) => {
+                console.error('[HELPDESK] Insert handler history error:', histErr && histErr.message ? histErr.message : histErr);
+            });
 
             // Fire-and-forget push notification to the newly assigned handler.
             // Only sent when a handler is being assigned (not unassigned) and only
@@ -687,6 +712,57 @@ function registerHelpdeskController(app, deps = {}) {
             const message = error && error.message ? error.message : 'Failed to load history';
             console.error('[HELPDESK] Load history error:', message);
             return res.status(500).json({ result: 'error', message: 'שגיאה בטעינת ההיסטוריה' });
+        }
+    });
+
+    // GET /helpdesk/tickets/:id/handler-history - Get handler assignment history for a ticket
+    // Accessible to the ticket creator, assigned handler, and any Editor in the same department.
+    app.get(['/helpdesk/tickets/:id/handler-history', '/notify/helpdesk/tickets/:id/handler-history'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
+        const user = toTrimmedString(req.resolvedUser || '');
+        if (!user) {
+            return res.status(401).json({ result: 'error', message: 'Authentication required' });
+        }
+        const ticketId = toPositiveInteger(req.params && req.params.id, 0);
+        if (!ticketId) {
+            return res.status(400).json({ result: 'error', message: 'מזהה קריאה לא תקין' });
+        }
+
+        try {
+            const [ticketRows] = await pool.query(
+                'SELECT `id`, `creator_username`, `handler_username`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
+                [ticketId]
+            );
+            if (!ticketRows.length) {
+                return res.status(404).json({ result: 'error', message: 'קריאה לא נמצאה' });
+            }
+            const ticket = ticketRows[0];
+            const isDirectUser = ticket.creator_username === user || ticket.handler_username === user;
+            let isAuthorized = isDirectUser;
+            if (!isAuthorized) {
+                const editorRole = await getHelpdeskUserRole(pool, user);
+                isAuthorized = Boolean(editorRole && editorRole.department === ticket.department);
+            }
+            if (!isAuthorized) {
+                return res.status(403).json({ result: 'error', message: 'אין הרשאה לצפות בהיסטוריית המטפלים' });
+            }
+
+            const [historyRows] = await pool.query(
+                'SELECT `id`, `ticket_id`, `old_handler`, `new_handler`, `changed_by`, `created_at` FROM `helpdesk_handler_history` WHERE `ticket_id` = ? ORDER BY `created_at` ASC',
+                [ticketId]
+            );
+            const history = historyRows.map((r) => ({
+                id: r.id,
+                ticketId: r.ticket_id,
+                oldHandler: r.old_handler || null,
+                newHandler: r.new_handler || null,
+                changedBy: r.changed_by,
+                createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at || '')
+            }));
+            return res.json({ result: 'success', history });
+        } catch (error) {
+            const message = error && error.message ? error.message : 'Failed to load handler history';
+            console.error('[HELPDESK] Load handler history error:', message);
+            return res.status(500).json({ result: 'error', message: 'שגיאה בטעינת היסטוריית המטפלים' });
         }
     });
 

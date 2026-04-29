@@ -1182,8 +1182,10 @@ class _TicketDetailSheet extends ConsumerStatefulWidget {
 
 class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
   List<HelpdeskStatusHistoryEntry>? _history;
+  List<HelpdeskHandlerHistoryEntry>? _handlerHistory;
   List<HelpdeskNote>? _notes;
   bool _loadingHistory = true;
+  bool _loadingHandlerHistory = true;
   bool _loadingNotes = true;
   String? _historyError;
 
@@ -1232,7 +1234,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
   Future<void> _loadData() async {
     final api = ref.read(chatApiServiceProvider);
     final ticketId = int.tryParse(_ticket.id) ?? 0;
-    await Future.wait([_loadHistory(api, ticketId), _loadNotes(api, ticketId)]);
+    await Future.wait([_loadHistory(api, ticketId), _loadHandlerHistory(api, ticketId), _loadNotes(api, ticketId)]);
   }
 
   Future<void> _loadHistory(ChatApiService api, int ticketId) async {
@@ -1241,6 +1243,15 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
       if (mounted) setState(() { _history = h; _loadingHistory = false; _historyError = null; });
     } catch (e) {
       if (mounted) setState(() { _history = []; _loadingHistory = false; _historyError = e.toString(); });
+    }
+  }
+
+  Future<void> _loadHandlerHistory(ChatApiService api, int ticketId) async {
+    try {
+      final h = await api.getHelpdeskTicketHandlerHistory(ticketId, _currentUser);
+      if (mounted) setState(() { _handlerHistory = h; _loadingHandlerHistory = false; });
+    } catch (_) {
+      if (mounted) setState(() { _handlerHistory = []; _loadingHandlerHistory = false; });
     }
   }
 
@@ -1261,6 +1272,9 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
           .assignHandler(int.parse(_ticket.id), _selectedHandler);
       if (mounted) {
         showTopToast(context, 'המטפל עודכן בהצלחה');
+        setState(() { _loadingHandlerHistory = true; });
+        final api = ref.read(chatApiServiceProvider);
+        await _loadHandlerHistory(api, int.parse(_ticket.id));
       }
     } catch (e) {
       if (mounted) setState(() => _handlerError = e.toString());
@@ -1461,6 +1475,30 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                     ..._history!.map((h) => _HistoryEntry(
                           entry: h,
                           displayName: _resolveDisplay(h.changedBy),
+                        )),
+
+                  // Handler assignment history (visible to all users)
+                  const SizedBox(height: 16),
+                  const Divider(),
+                  const SizedBox(height: 8),
+                  Row(children: [
+                    const Icon(Icons.person_pin, size: 20),
+                    const SizedBox(width: 6),
+                    Text('היסטוריית מטפלים',
+                        style: theme.textTheme.titleSmall
+                            ?.copyWith(fontWeight: FontWeight.bold)),
+                  ]),
+                  const SizedBox(height: 8),
+                  if (_loadingHandlerHistory)
+                    const Center(child: CircularProgressIndicator())
+                  else if (_handlerHistory == null || _handlerHistory!.isEmpty)
+                    Text('אין היסטוריית שיוך מטפלים.',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurface.withAlpha(128)))
+                  else
+                    ..._handlerHistory!.map((h) => _HandlerHistoryEntry(
+                          entry: h,
+                          resolveDisplay: _resolveDisplay,
                         )),
 
                   // Handler assignment (editor only)
@@ -1762,6 +1800,72 @@ class _MiniStatusChip extends StatelessWidget {
       child: Text(_statusLabel(status),
           style: TextStyle(
               color: color, fontSize: 11, fontWeight: FontWeight.bold)),
+    );
+  }
+}
+
+class _HandlerHistoryEntry extends StatelessWidget {
+  final HelpdeskHandlerHistoryEntry entry;
+  final String Function(String?) resolveDisplay;
+
+  const _HandlerHistoryEntry({required this.entry, required this.resolveDisplay});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final timeStr = DateFormat('H:mm, d.M.yyyy').format(entry.createdAt);
+    final oldName = entry.oldHandler != null ? resolveDisplay(entry.oldHandler) : '—';
+    final newName = entry.newHandler != null ? resolveDisplay(entry.newHandler) : '—';
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Column(children: [
+            Container(
+              width: 10,
+              height: 10,
+              margin: const EdgeInsets.only(top: 4),
+              decoration: BoxDecoration(
+                  color: theme.colorScheme.secondary,
+                  shape: BoxShape.circle),
+            ),
+          ]),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(resolveDisplay(entry.changedBy),
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(fontWeight: FontWeight.bold)),
+                    Text(timeStr,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurface.withAlpha(128))),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Row(children: [
+                  Text(oldName,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurface.withAlpha(160))),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 4),
+                    child: Icon(Icons.arrow_forward, size: 14),
+                  ),
+                  Text(newName,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.bold)),
+                ]),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
