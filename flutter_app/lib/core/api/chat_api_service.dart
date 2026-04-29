@@ -1231,45 +1231,128 @@ class ChatApiService {
   }
 
   /// Add reaction to a message
-  Future<void> addReaction(String messageId, String emoji, String user) async {
+  Future<void> addReaction(
+    String messageId,
+    String emoji,
+    String user, {
+    String? targetUser,
+    String? groupId,
+    String? groupName,
+    List<String>? groupMembers,
+    String? groupCreatedBy,
+    List<String>? groupAdmins,
+    int? groupUpdatedAt,
+    GroupType? groupType,
+  }) async {
     final payload = ReactionPayload(
       targetMessageId: messageId,
       emoji: emoji,
       reactor: user,
       reactorName: user,
+      targetUser: targetUser,
+      groupId: groupId,
+      groupName: groupName,
+      groupMembers: groupMembers,
+      groupCreatedBy: groupCreatedBy,
+      groupAdmins: groupAdmins,
+      groupUpdatedAt: groupUpdatedAt,
+      groupType: groupType,
     );
     await sendReaction(payload);
   }
 
   /// Remove reaction from a message
-  Future<void> removeReaction(String messageId, String emoji, String user) async {
+  Future<void> removeReaction(
+    String messageId,
+    String emoji,
+    String user, {
+    String? targetUser,
+    String? groupId,
+    String? groupName,
+    List<String>? groupMembers,
+    String? groupCreatedBy,
+    List<String>? groupAdmins,
+    int? groupUpdatedAt,
+    GroupType? groupType,
+  }) async {
     // Removing a reaction uses the same endpoint with empty emoji or special action
     final payload = ReactionPayload(
       targetMessageId: messageId,
       emoji: '', // Empty to remove
       reactor: user,
       reactorName: user,
+      targetUser: targetUser,
+      groupId: groupId,
+      groupName: groupName,
+      groupMembers: groupMembers,
+      groupCreatedBy: groupCreatedBy,
+      groupAdmins: groupAdmins,
+      groupUpdatedAt: groupUpdatedAt,
+      groupType: groupType,
     );
     await sendReaction(payload);
   }
 
   /// Edit a message
-  Future<void> editMessage(String messageId, String newBody, String user) async {
+  Future<void> editMessage(
+    String messageId,
+    String newBody,
+    String user, {
+    String? recipient,
+    List<String>? recipients,
+    String? groupId,
+    String? groupName,
+    List<String>? groupMembers,
+    String? groupCreatedBy,
+    List<String>? groupAdmins,
+    int? groupUpdatedAt,
+    GroupType? groupType,
+  }) async {
     final payload = EditMessagePayload(
       sender: user,
       messageId: messageId,
       body: newBody,
       editedAt: DateTime.now().millisecondsSinceEpoch,
+      recipient: recipient,
+      recipients: recipients,
+      groupId: groupId,
+      groupName: groupName,
+      groupMembers: groupMembers,
+      groupCreatedBy: groupCreatedBy,
+      groupAdmins: groupAdmins,
+      groupUpdatedAt: groupUpdatedAt,
+      groupType: groupType,
     );
     await editMessageForEveryone(payload);
   }
 
   /// Delete a message
-  Future<void> deleteMessage(String messageId, String user) async {
+  Future<void> deleteMessage(
+    String messageId,
+    String user, {
+    String? recipient,
+    List<String>? recipients,
+    String? groupId,
+    String? groupName,
+    List<String>? groupMembers,
+    String? groupCreatedBy,
+    List<String>? groupAdmins,
+    int? groupUpdatedAt,
+    GroupType? groupType,
+  }) async {
     final payload = DeleteMessagePayload(
       sender: user,
       messageId: messageId,
       deletedAt: DateTime.now().millisecondsSinceEpoch,
+      recipient: recipient,
+      recipients: recipients,
+      groupId: groupId,
+      groupName: groupName,
+      groupMembers: groupMembers,
+      groupCreatedBy: groupCreatedBy,
+      groupAdmins: groupAdmins,
+      groupUpdatedAt: groupUpdatedAt,
+      groupType: groupType,
     );
     await deleteMessageForEveryone(payload);
   }

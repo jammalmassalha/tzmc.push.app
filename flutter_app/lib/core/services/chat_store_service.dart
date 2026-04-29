@@ -1264,17 +1264,57 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     return '${DateTime.now().millisecondsSinceEpoch}-${DateTime.now().microsecond}';
   }
 
+  /// Find a message in the in-memory store by its [messageId] field.
+  ChatMessage? _findMessageByMessageId(String messageId) {
+    for (final msgs in state.messagesByChat.values) {
+      for (final m in msgs) {
+        if (m.messageId == messageId) return m;
+      }
+    }
+    return null;
+  }
+
   // ---------------------------------------------------------------------------
   // Reactions
   // ---------------------------------------------------------------------------
 
   Future<void> addReaction(String messageId, String emoji) async {
-    await _api.addReaction(messageId, emoji, _currentUser ?? '');
+    final user = _currentUser ?? '';
+    final msg = _findMessageByMessageId(messageId);
+    final group = msg?.groupId != null ? state.groups[msg!.groupId] : null;
+    await _api.addReaction(
+      messageId,
+      emoji,
+      user,
+      targetUser: group == null ? msg?.chatId : null,
+      groupId: group?.id,
+      groupName: group?.name,
+      groupMembers: group?.members,
+      groupCreatedBy: group?.createdBy,
+      groupAdmins: group?.admins,
+      groupUpdatedAt: group?.updatedAt,
+      groupType: group?.type,
+    );
     // Real-time update will apply the change
   }
 
   Future<void> removeReaction(String messageId, String emoji) async {
-    await _api.removeReaction(messageId, emoji, _currentUser ?? '');
+    final user = _currentUser ?? '';
+    final msg = _findMessageByMessageId(messageId);
+    final group = msg?.groupId != null ? state.groups[msg!.groupId] : null;
+    await _api.removeReaction(
+      messageId,
+      emoji,
+      user,
+      targetUser: group == null ? msg?.chatId : null,
+      groupId: group?.id,
+      groupName: group?.name,
+      groupMembers: group?.members,
+      groupCreatedBy: group?.createdBy,
+      groupAdmins: group?.admins,
+      groupUpdatedAt: group?.updatedAt,
+      groupType: group?.type,
+    );
     // Real-time update will apply the change
   }
 
@@ -1283,12 +1323,41 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   // ---------------------------------------------------------------------------
 
   Future<void> editMessage(String messageId, String newBody) async {
-    await _api.editMessage(messageId, newBody, _currentUser ?? '');
+    final user = _currentUser ?? '';
+    final msg = _findMessageByMessageId(messageId);
+    final group = msg?.groupId != null ? state.groups[msg!.groupId] : null;
+    await _api.editMessage(
+      messageId,
+      newBody,
+      user,
+      recipient: group == null ? msg?.chatId : null,
+      groupId: group?.id,
+      groupName: group?.name,
+      groupMembers: group?.members,
+      groupCreatedBy: group?.createdBy,
+      groupAdmins: group?.admins,
+      groupUpdatedAt: group?.updatedAt,
+      groupType: group?.type,
+    );
     // Real-time update will apply the change
   }
 
   Future<void> deleteMessage(String messageId) async {
-    await _api.deleteMessage(messageId, _currentUser ?? '');
+    final user = _currentUser ?? '';
+    final msg = _findMessageByMessageId(messageId);
+    final group = msg?.groupId != null ? state.groups[msg!.groupId] : null;
+    await _api.deleteMessage(
+      messageId,
+      user,
+      recipient: group == null ? msg?.chatId : null,
+      groupId: group?.id,
+      groupName: group?.name,
+      groupMembers: group?.members,
+      groupCreatedBy: group?.createdBy,
+      groupAdmins: group?.admins,
+      groupUpdatedAt: group?.updatedAt,
+      groupType: group?.type,
+    );
     // Real-time update will apply the change
   }
 
