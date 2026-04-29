@@ -1233,12 +1233,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   // ---------------------------------------------------------------------------
 
   Future<void> addReaction(String messageId, String emoji) async {
-    await _api.addReaction(messageId, emoji);
+    await _api.addReaction(messageId, emoji, _currentUser ?? '');
     // Real-time update will apply the change
   }
 
   Future<void> removeReaction(String messageId, String emoji) async {
-    await _api.removeReaction(messageId, emoji);
+    await _api.removeReaction(messageId, emoji, _currentUser ?? '');
     // Real-time update will apply the change
   }
 
@@ -1247,12 +1247,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   // ---------------------------------------------------------------------------
 
   Future<void> editMessage(String messageId, String newBody) async {
-    await _api.editMessage(messageId, newBody);
+    await _api.editMessage(messageId, newBody, _currentUser ?? '');
     // Real-time update will apply the change
   }
 
   Future<void> deleteMessage(String messageId) async {
-    await _api.deleteMessage(messageId);
+    await _api.deleteMessage(messageId, _currentUser ?? '');
     // Real-time update will apply the change
   }
 
@@ -1277,7 +1277,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
 
     try {
-      await _api.markMessagesAsRead(chatId, messageIds);
+      await _api.markMessagesAsRead(chatId, messageIds, _currentUser ?? '');
     } catch (e) {
       // Silent failure
     }

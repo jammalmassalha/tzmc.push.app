@@ -1231,32 +1231,32 @@ class ChatApiService {
   }
 
   /// Add reaction to a message
-  Future<void> addReaction(String messageId, String emoji) async {
+  Future<void> addReaction(String messageId, String emoji, String user) async {
     final payload = ReactionPayload(
       targetMessageId: messageId,
       emoji: emoji,
-      reactor: 'me', // Will be set by server
-      reactorName: 'me', // Will be set by server
+      reactor: user,
+      reactorName: user,
     );
     await sendReaction(payload);
   }
 
   /// Remove reaction from a message
-  Future<void> removeReaction(String messageId, String emoji) async {
+  Future<void> removeReaction(String messageId, String emoji, String user) async {
     // Removing a reaction uses the same endpoint with empty emoji or special action
     final payload = ReactionPayload(
       targetMessageId: messageId,
       emoji: '', // Empty to remove
-      reactor: 'me',
-      reactorName: 'me',
+      reactor: user,
+      reactorName: user,
     );
     await sendReaction(payload);
   }
 
   /// Edit a message
-  Future<void> editMessage(String messageId, String newBody) async {
+  Future<void> editMessage(String messageId, String newBody, String user) async {
     final payload = EditMessagePayload(
-      sender: 'me', // Will be set by server
+      sender: user,
       messageId: messageId,
       body: newBody,
       editedAt: DateTime.now().millisecondsSinceEpoch,
@@ -1265,9 +1265,9 @@ class ChatApiService {
   }
 
   /// Delete a message
-  Future<void> deleteMessage(String messageId) async {
+  Future<void> deleteMessage(String messageId, String user) async {
     final payload = DeleteMessagePayload(
-      sender: 'me', // Will be set by server
+      sender: user,
       messageId: messageId,
       deletedAt: DateTime.now().millisecondsSinceEpoch,
     );
@@ -1275,10 +1275,9 @@ class ChatApiService {
   }
 
   /// Mark messages as read
-  Future<void> markMessagesAsRead(String chatId, List<String> messageIds) async {
-    // Need sender info from the messages
+  Future<void> markMessagesAsRead(String chatId, List<String> messageIds, String user) async {
     final payload = ReadReceiptPayload(
-      reader: 'me', // Will be set by server
+      reader: user,
       sender: chatId, // The chat/sender we're marking as read
       messageIds: messageIds,
       readAt: DateTime.now().millisecondsSinceEpoch,
