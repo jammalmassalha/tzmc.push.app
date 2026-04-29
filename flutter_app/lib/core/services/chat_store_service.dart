@@ -1291,6 +1291,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final user = _currentUser ?? '';
     final msg = _findMessageByMessageId(messageId);
     final group = msg?.groupId != null ? state.groups[msg!.groupId] : null;
+    // Apply optimistically so the sender sees the reaction immediately.
+    _applyReactionToState(messageId, emoji, user, getDisplayName(user));
     await _api.addReaction(
       messageId,
       emoji,
@@ -1304,13 +1306,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       groupUpdatedAt: group?.updatedAt,
       groupType: group?.type,
     );
-    // Real-time update will apply the change
   }
 
   Future<void> removeReaction(String messageId, String emoji) async {
     final user = _currentUser ?? '';
     final msg = _findMessageByMessageId(messageId);
     final group = msg?.groupId != null ? state.groups[msg!.groupId] : null;
+    // Apply optimistically so the sender sees the removal immediately.
+    _applyReactionToState(messageId, '', user, getDisplayName(user));
     await _api.removeReaction(
       messageId,
       emoji,
@@ -1324,7 +1327,38 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       groupUpdatedAt: group?.updatedAt,
       groupType: group?.type,
     );
-    // Real-time update will apply the change
+  }
+
+  /// Updates the reactions on a single message in local state.
+  /// Passing an empty [emoji] removes the reactor's existing reaction.
+  /// This is called both optimistically (on the sender's device) and when
+  /// the server broadcasts the reaction event to the other participant.
+  void _applyReactionToState(
+    String targetMessageId,
+    String? emoji,
+    String reactor,
+    String? reactorName,
+  ) {
+    final newMessagesByChat = <String, List<ChatMessage>>{};
+    for (final entry in state.messagesByChat.entries) {
+      final chatMessages = entry.value.map((m) {
+        if (m.messageId == targetMessageId) {
+          final reactions = List<MessageReaction>.from(m.reactions ?? []);
+          reactions.removeWhere((r) => r.reactor == reactor);
+          if (emoji != null && emoji.isNotEmpty) {
+            reactions.add(MessageReaction(
+              emoji: emoji,
+              reactor: reactor,
+              reactorName: reactorName,
+            ));
+          }
+          return m.copyWith(reactions: reactions);
+        }
+        return m;
+      }).toList();
+      newMessagesByChat[entry.key] = chatMessages;
+    }
+    state = state.copyWith(messagesByChat: newMessagesByChat);
   }
 
   // ---------------------------------------------------------------------------
@@ -1610,39 +1644,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   void _handleReaction(IncomingServerMessage msg) {
     if (msg.targetMessageId == null) return;
-
-    final targetId = msg.targetMessageId!;
-    final emoji = msg.emoji;
-    final reactor = msg.reactor ?? '';
-    final reactorName = msg.reactorName;
-
-    final newMessagesByChat = <String, List<ChatMessage>>{};
-
-    for (final entry in state.messagesByChat.entries) {
-      final chatMessages = entry.value.map((m) {
-        if (m.messageId == targetId) {
-          final reactions = List<MessageReaction>.from(m.reactions ?? []);
-
-          // Remove existing reaction from same reactor
-          reactions.removeWhere((r) => r.reactor == reactor);
-
-          // Add new reaction if emoji is present
-          if (emoji != null && emoji.isNotEmpty) {
-            reactions.add(MessageReaction(
-              emoji: emoji,
-              reactor: reactor,
-              reactorName: reactorName,
-            ));
-          }
-
-          return m.copyWith(reactions: reactions);
-        }
-        return m;
-      }).toList();
-      newMessagesByChat[entry.key] = chatMessages;
-    }
-
-    state = state.copyWith(messagesByChat: newMessagesByChat);
+    _applyReactionToState(
+      msg.targetMessageId!,
+      msg.emoji,
+      msg.reactor ?? '',
+      msg.reactorName,
+    );
   }
 
   void _handleEdit(IncomingServerMessage msg) {
