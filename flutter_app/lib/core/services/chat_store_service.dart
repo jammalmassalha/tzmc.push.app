@@ -12,6 +12,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/chat_api_service.dart';
 import '../database/chat_database.dart' hide Contact;
+import '../database/web_storage.dart';
 import '../models/api_payloads.dart';
 import '../models/chat_models.dart';
 import '../realtime/realtime_transport_service.dart';
@@ -234,8 +235,26 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           unreadByChat: persisted.unreadByChat,
         );
       } catch (dbError) {
-        debugPrint('[ChatStore] DB restore failed, continuing with empty state: $dbError');
-        // State stays empty; the server pull below re-populates it.
+        debugPrint('[ChatStore] DB restore failed, trying web storage fallback: $dbError');
+        // Drift DB is unavailable (e.g. web without sqlite3.wasm).
+        // Try restoring from the shared_preferences-based localStorage snapshot.
+        if (kIsWeb) {
+          try {
+            final webPersisted = await WebChatStorage.getPersistedState();
+            if (webPersisted != null) {
+              state = state.copyWith(
+                contacts: Map.fromEntries(webPersisted.contacts.map((c) => MapEntry(c.username, c))),
+                groups: Map.fromEntries(webPersisted.groups.map((g) => MapEntry(g.id, g))),
+                messagesByChat: _groupMessagesByChat(webPersisted.messages),
+                unreadByChat: webPersisted.unreadByChat,
+              );
+              debugPrint('[ChatStore] Restored state from web storage (${webPersisted.messages.length} messages)');
+            }
+          } catch (webError) {
+            debugPrint('[ChatStore] Web storage restore also failed: $webError');
+          }
+        }
+        // State may be empty; the server pull below re-populates it.
       }
 
       // 2. Pull fresh contacts and groups
@@ -633,7 +652,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     if (user == null || user.isEmpty) return;
 
     try {
-      final latestTimestamp = since ?? await _db.getLatestMessageTimestamp();
+      int latestTimestamp;
+      if (since != null) {
+        latestTimestamp = since;
+      } else {
+        try {
+          latestTimestamp = await _db.getLatestMessageTimestamp();
+        } catch (_) {
+          // DB unavailable on web; use in-memory state.
+          latestTimestamp = _latestTimestampFromState();
+        }
+      }
       final messages = await _api.getMessagesFromLogs(
         user: user,
         since: latestTimestamp,
@@ -666,7 +695,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _lastGapAnalysisTime = now;
 
     try {
-      final latestTimestamp = await _db.getLatestMessageTimestamp();
+      int latestTimestamp;
+      try {
+        latestTimestamp = await _db.getLatestMessageTimestamp();
+      } catch (_) {
+        // DB unavailable (web without WASM files); derive the latest known
+        // timestamp from the in-memory state so we still pull missed messages.
+        latestTimestamp = _latestTimestampFromState();
+      }
       await pullMessages(since: latestTimestamp);
     } catch (e) {
       // Silent failure, will retry on next poll
@@ -1628,12 +1664,22 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         allMessages.addAll(messages);
       }
 
-      await _db.persistState(PersistedChatState(
+      final snapshot = PersistedChatState(
         contacts: state.contacts.values.toList(),
         groups: state.groups.values.toList(),
         unreadByChat: state.unreadByChat,
         messages: allMessages,
-      ));
+      );
+
+      try {
+        await _db.persistState(snapshot);
+      } catch (_) {
+        // Drift DB unavailable (e.g. web without sqlite3.wasm).
+        // Fall back to shared_preferences-based localStorage snapshot.
+        if (kIsWeb) {
+          await WebChatStorage.persistState(snapshot);
+        }
+      }
     } catch (_) {
       // Persistence failure is non-fatal – data remains available in memory
       // for the current session and will be retried on the next trigger.
@@ -1646,9 +1692,26 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     await _persistState();
   }
 
+  /// Returns the latest message timestamp from in-memory state.
+  ///
+  /// Used as a fallback when the Drift DB is unavailable (e.g. Flutter web
+  /// without sqlite3.wasm) so that gap-analysis pulls still work correctly.
+  int _latestTimestampFromState() {
+    var latest = 0;
+    for (final msgs in state.messagesByChat.values) {
+      for (final msg in msgs) {
+        if (msg.timestamp > latest) latest = msg.timestamp;
+      }
+    }
+    return latest;
+  }
+
   /// Clear all local data
   Future<void> clearAll() async {
     await _db.clearAll();
+    if (kIsWeb) {
+      await WebChatStorage.clear();
+    }
     state = const ChatState();
   }
 }

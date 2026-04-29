@@ -304,6 +304,79 @@ class ChatMessage extends Equatable {
         userReceivedTime,
       ];
 
+  factory ChatMessage.fromJson(Map<String, dynamic> json) {
+    return ChatMessage(
+      id: json['id'] as String,
+      messageId: json['messageId'] as String,
+      chatId: json['chatId'] as String,
+      sender: json['sender'] as String,
+      senderDisplayName: json['senderDisplayName'] as String?,
+      recordType: json['recordType'] as String?,
+      body: json['body'] as String,
+      imageUrl: json['imageUrl'] as String?,
+      thumbnailUrl: json['thumbnailUrl'] as String?,
+      fileUrl: json['fileUrl'] as String?,
+      direction: MessageDirection.values.firstWhere(
+        (e) => e.name == json['direction'],
+        orElse: () => MessageDirection.incoming,
+      ),
+      timestamp: json['timestamp'] as int,
+      deliveryStatus: DeliveryStatus.values.firstWhere(
+        (e) => e.name == json['deliveryStatus'],
+        orElse: () => DeliveryStatus.delivered,
+      ),
+      groupId: json['groupId'] as String?,
+      groupName: json['groupName'] as String?,
+      groupType: json['groupType'] != null
+          ? GroupType.values.firstWhere(
+              (e) => e.name == json['groupType'],
+              orElse: () => GroupType.group,
+            )
+          : null,
+      reactions: json['reactions'] != null
+          ? (json['reactions'] as List)
+              .map((r) => MessageReaction.fromJson(r as Map<String, dynamic>))
+              .toList()
+          : null,
+      editedAt: json['editedAt'] as int?,
+      deletedAt: json['deletedAt'] as int?,
+      replyTo: json['replyTo'] != null
+          ? MessageReference.fromJson(json['replyTo'] as Map<String, dynamic>)
+          : null,
+      forwarded: json['forwarded'] as bool? ?? false,
+      forwardedFrom: json['forwardedFrom'] as String?,
+      forwardedFromName: json['forwardedFromName'] as String?,
+      userReceivedTime: json['userReceivedTime'] as int?,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'messageId': messageId,
+        'chatId': chatId,
+        'sender': sender,
+        'senderDisplayName': senderDisplayName,
+        'recordType': recordType,
+        'body': body,
+        'imageUrl': imageUrl,
+        'thumbnailUrl': thumbnailUrl,
+        'fileUrl': fileUrl,
+        'direction': direction.name,
+        'timestamp': timestamp,
+        'deliveryStatus': deliveryStatus.name,
+        'groupId': groupId,
+        'groupName': groupName,
+        'groupType': groupType?.name,
+        'reactions': reactions?.map((r) => r.toJson()).toList(),
+        'editedAt': editedAt,
+        'deletedAt': deletedAt,
+        'replyTo': replyTo?.toJson(),
+        'forwarded': forwarded,
+        'forwardedFrom': forwardedFrom,
+        'forwardedFromName': forwardedFromName,
+        'userReceivedTime': userReceivedTime,
+      };
+
   /// Create a copy with updated fields
   ChatMessage copyWith({
     String? id,
