@@ -511,7 +511,12 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
     final descCtrl = TextEditingController();
     final locationCtrl = TextEditingController();
     // Pre-fill with the phone number that was used to log in.
-    final userPhone = ref.read(currentUserPhoneProvider) ?? '';
+    // currentUserPhoneProvider holds the phone stored at login time.
+    // currentUserProvider is the username, which for this app IS the phone
+    // number — used as a reliable fallback for existing sessions that
+    // pre-date phone persistence.
+    final userPhone =
+        ref.read(currentUserPhoneProvider) ?? ref.read(currentUserProvider) ?? '';
     final phoneCtrl = TextEditingController(text: userPhone);
     String priority = 'normal';
     List<String> locations = [];
