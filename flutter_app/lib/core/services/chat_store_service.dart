@@ -7,6 +7,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/chat_api_service.dart';
@@ -216,14 +217,26 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     state = state.copyWith(isLoading: true);
 
     try {
-      // 1. Restore from local database
-      final persisted = await _db.getPersistedState();
-      state = state.copyWith(
-        contacts: Map.fromEntries(persisted.contacts.map((c) => MapEntry(c.username, c))),
-        groups: Map.fromEntries(persisted.groups.map((g) => MapEntry(g.id, g))),
-        messagesByChat: _groupMessagesByChat(persisted.messages),
-        unreadByChat: persisted.unreadByChat,
-      );
+      // 1. Restore from local database (best-effort).
+      //
+      // On Flutter web the legacy sql.js engine may not initialise correctly
+      // (e.g. missing sqlite3.wasm / drift_worker files), causing
+      // getPersistedState() to throw.  Catching the error here means the rest
+      // of initialise() – most importantly the server-side gap-analysis pull –
+      // still runs, so the user sees their chat history without having to
+      // manually press "sync".
+      try {
+        final persisted = await _db.getPersistedState();
+        state = state.copyWith(
+          contacts: Map.fromEntries(persisted.contacts.map((c) => MapEntry(c.username, c))),
+          groups: Map.fromEntries(persisted.groups.map((g) => MapEntry(g.id, g))),
+          messagesByChat: _groupMessagesByChat(persisted.messages),
+          unreadByChat: persisted.unreadByChat,
+        );
+      } catch (dbError) {
+        debugPrint('[ChatStore] DB restore failed, continuing with empty state: $dbError');
+        // State stays empty; the server pull below re-populates it.
+      }
 
       // 2. Pull fresh contacts and groups
       await Future.wait([
@@ -231,8 +244,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         _pullGroups(),
       ]);
 
-      // 3. Pull missed messages (gap analysis)
-      await recoverMissedMessages();
+      // 3. Pull missed messages (gap analysis).
+      //
+      // Use force:true to bypass the 30-second cooldown.  The realtime
+      // transport can fire _handleConnectionChange(true) before we reach
+      // this point, which advances _lastGapAnalysisTime.  Without force the
+      // cooldown would silently skip the initial pull and leave the chat list
+      // empty until the next poll tick (≥15 s).
+      await recoverMissedMessages(force: true);
 
       state = state.copyWith(isLoading: false, isInitialized: true);
 
