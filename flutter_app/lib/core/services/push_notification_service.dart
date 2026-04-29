@@ -18,6 +18,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../features/auth/presentation/auth_state.dart';
 import '../../features/chat/presentation/message_screen.dart';
+import '../../features/helpdesk/presentation/helpdesk_screen.dart';
 import '../../firebase_options.dart';
 import '../api/chat_api_service.dart';
 import '../navigation/root_navigator.dart';
@@ -514,14 +515,26 @@ class PushNotificationService {
     // Apply push payload (also schedules recovery pulls)
     _applyPushPayload(message);
 
-    // Navigate to the relevant chat
-    _navigateToChat(message);
+    // Navigate to the relevant screen based on notification type
+    final type = (message.data['type'] ?? '').toString().trim().toLowerCase();
+    if (type == 'helpdesk_assigned' || type == 'helpdesk') {
+      _openHelpdeskScreen();
+    } else {
+      _navigateToChat(message);
+    }
   }
 
   /// Handle local notification tap (foreground notifications)
   void _onNotificationTapped(NotificationResponse response) {
     final payload = response.payload;
     if (payload == null) return;
+
+    // Helpdesk notifications are encoded as "helpdesk:{ticketId}"
+    if (payload.startsWith('helpdesk:')) {
+      debugPrint('[PushNotificationService] Helpdesk notification tapped');
+      _openHelpdeskScreen();
+      return;
+    }
 
     // Format: "chatId:messageId"
     final parts = payload.split(':');
@@ -595,17 +608,27 @@ class PushNotificationService {
       iOS: iosDetails,
     );
 
-    // Extract chat ID from data
+    // Extract chat/helpdesk ID from data for the local notification payload.
+    // For helpdesk notifications the payload is encoded as "helpdesk:{ticketId}"
+    // so the tap handler can distinguish them from regular chat notifications.
     final data = message.data;
-    final chatId = data['chatId'] ?? data['groupId'] ?? '';
-    final messageId = data['messageId'] ?? '';
+    final type = (data['type'] ?? '').toString().trim().toLowerCase();
+    final String notificationPayload;
+    if (type == 'helpdesk_assigned' || type == 'helpdesk') {
+      final ticketId = (data['ticketId'] ?? '').toString().trim();
+      notificationPayload = 'helpdesk:$ticketId';
+    } else {
+      final chatId = data['chatId'] ?? data['groupId'] ?? '';
+      final messageId = data['messageId'] ?? '';
+      notificationPayload = '$chatId:$messageId';
+    }
 
     await _localNotifications!.show(
       id: message.hashCode,
       title: notification.title,
       body: notification.body,
       notificationDetails: details,
-      payload: '$chatId:$messageId',
+      payload: notificationPayload,
     );
   }
 
@@ -652,6 +675,19 @@ class PushNotificationService {
     }
     navigator.push(
       MaterialPageRoute(builder: (_) => MessageScreen(chatId: chatId, initialUnreadCount: unreadCount)),
+    );
+  }
+
+  /// Push the [HelpdeskScreen] route via the global [rootNavigatorKey].
+  /// Used when a helpdesk push notification is tapped.
+  void _openHelpdeskScreen() {
+    final navigator = rootNavigatorKey.currentState;
+    if (navigator == null) {
+      debugPrint('[PushNotificationService] Navigator not ready, skipping helpdesk deep link');
+      return;
+    }
+    navigator.push(
+      MaterialPageRoute(builder: (_) => const HelpdeskScreen()),
     );
   }
 
