@@ -300,6 +300,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                                       ? () => _handleDelete(message)
                                       : null,
                               onCopy: () => _handleCopy(message),
+                              onForward: () => _handleForward(message),
                             ),
                           ],
                         );
@@ -624,6 +625,46 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     showTopToast(context, 'ההודעה הועתקה', duration: const Duration(seconds: 1));
   }
 
+  void _handleForward(ChatMessage message) {
+    final state = ref.read(chatStoreProvider);
+    final contacts = state.contacts.values.toList()
+      ..sort((a, b) => a.displayName.compareTo(b.displayName));
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => _ForwardContactPicker(
+        contacts: contacts,
+        onContactSelected: (contact) async {
+          Navigator.of(ctx).pop();
+          final senderName = state.contacts[message.sender]?.displayName ??
+              ref.read(chatStoreProvider.notifier).getDisplayName(message.sender);
+          try {
+            await ref.read(chatStoreProvider.notifier).sendDirectMessage(
+              recipient: contact.username,
+              body: message.body,
+              imageUrl: message.imageUrl,
+              fileUrl: message.fileUrl,
+              forwarded: true,
+              forwardedFrom: message.sender,
+              forwardedFromName: senderName,
+            );
+            if (mounted) {
+              showTopToast(context, 'ההודעה הועברה ל${contact.displayName}');
+            }
+          } catch (_) {
+            if (mounted) {
+              showTopToast(context, 'שגיאה בהעברת ההודעה');
+            }
+          }
+        },
+      ),
+    );
+  }
+
   void _scrollToBottom() {
     if (_scrollController.hasClients) {
       _scrollController.animateTo(
@@ -694,6 +735,7 @@ class _MessageBubble extends StatelessWidget {
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
   final VoidCallback onCopy;
+  final VoidCallback onForward;
 
   const _MessageBubble({
     required this.message,
@@ -704,6 +746,7 @@ class _MessageBubble extends StatelessWidget {
     this.onEdit,
     this.onDelete,
     required this.onCopy,
+    required this.onForward,
   });
 
   @override
@@ -1014,6 +1057,14 @@ class _MessageBubble extends StatelessWidget {
               onTap: () {
                 Navigator.of(context).pop();
                 onCopy();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.forward),
+              title: const Text('העבר'),
+              onTap: () {
+                Navigator.of(context).pop();
+                onForward();
               },
             ),
             if (onEdit != null)
@@ -1379,6 +1430,115 @@ class _FileAttachmentButton extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Forward contact picker
+// ---------------------------------------------------------------------------
+
+class _ForwardContactPicker extends StatefulWidget {
+  final List<Contact> contacts;
+  final void Function(Contact contact) onContactSelected;
+
+  const _ForwardContactPicker({
+    required this.contacts,
+    required this.onContactSelected,
+  });
+
+  @override
+  State<_ForwardContactPicker> createState() => _ForwardContactPickerState();
+}
+
+class _ForwardContactPickerState extends State<_ForwardContactPicker> {
+  String _query = '';
+
+  List<Contact> get _filtered {
+    if (_query.isEmpty) return widget.contacts;
+    final q = _query.toLowerCase();
+    return widget.contacts
+        .where((c) =>
+            c.displayName.toLowerCase().contains(q) ||
+            c.username.toLowerCase().contains(q))
+        .toList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final filtered = _filtered;
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.6,
+      maxChildSize: 0.9,
+      minChildSize: 0.4,
+      builder: (_, scrollController) => Column(
+        children: [
+          const SizedBox(height: 12),
+          Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Colors.grey[400],
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            'העבר הודעה',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            textDirection: ui.TextDirection.rtl,
+          ),
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: TextField(
+              autofocus: false,
+              textDirection: ui.TextDirection.rtl,
+              decoration: const InputDecoration(
+                hintText: 'חפש איש קשר...',
+                prefixIcon: Icon(Icons.search),
+                border: OutlineInputBorder(),
+                isDense: true,
+                contentPadding:
+                    EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              ),
+              onChanged: (v) => setState(() => _query = v),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Expanded(
+            child: filtered.isEmpty
+                ? const Center(child: Text('לא נמצאו אנשי קשר'))
+                : ListView.builder(
+                    controller: scrollController,
+                    itemCount: filtered.length,
+                    itemBuilder: (_, i) {
+                      final contact = filtered[i];
+                      return ListTile(
+                        leading: CircleAvatar(
+                          child: Text(
+                            contact.displayName.isNotEmpty
+                                ? contact.displayName[0].toUpperCase()
+                                : '?',
+                          ),
+                        ),
+                        title: Text(
+                          contact.displayName,
+                          textDirection: ui.TextDirection.rtl,
+                        ),
+                        subtitle: contact.info != null
+                            ? Text(contact.info!,
+                                textDirection: ui.TextDirection.rtl)
+                            : null,
+                        onTap: () => widget.onContactSelected(contact),
+                      );
+                    },
+                  ),
+          ),
+        ],
       ),
     );
   }

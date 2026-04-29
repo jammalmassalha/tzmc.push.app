@@ -1118,6 +1118,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     String? imageUrl,
     String? fileUrl,
     MessageReference? replyTo,
+    bool forwarded = false,
+    String? forwardedFrom,
+    String? forwardedFromName,
   }) async {
     final messageId = _generateMessageId();
     final timestamp = DateTime.now().millisecondsSinceEpoch;
@@ -1136,6 +1139,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       timestamp: timestamp,
       deliveryStatus: DeliveryStatus.pending,
       replyTo: replyTo,
+      forwarded: forwarded,
+      forwardedFrom: forwardedFrom,
+      forwardedFromName: forwardedFromName,
     );
 
     // Add to state optimistically
@@ -1154,6 +1160,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         originalSender: recipient,
         messageId: messageId,
         replyToMessageId: replyTo?.messageId,
+        forwarded: forwarded,
+        forwardedFrom: forwardedFrom,
+        forwardedFromName: forwardedFromName,
       );
       await _sendReply(payload);
 
