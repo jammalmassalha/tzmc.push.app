@@ -1012,12 +1012,18 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
           child: TabBarView(
             controller: _subTabController,
             children: [
-              _TicketList(tickets: newTickets, emptyMessage: 'אין קריאות חדשות'),
+              _TicketList(
+                  tickets: newTickets,
+                  emptyMessage: 'אין קריאות חדשות',
+                  isManagerView: true),
               _TicketList(
                   tickets: inProgressTickets,
-                  emptyMessage: 'אין קריאות בתהליך'),
+                  emptyMessage: 'אין קריאות בתהליך',
+                  isManagerView: true),
               _TicketList(
-                  tickets: closedTickets, emptyMessage: 'אין קריאות סגורות'),
+                  tickets: closedTickets,
+                  emptyMessage: 'אין קריאות סגורות',
+                  isManagerView: true),
             ],
           ),
         ),
@@ -1033,8 +1039,12 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
 class _TicketList extends ConsumerWidget {
   final List<HelpdeskTicket> tickets;
   final String emptyMessage;
+  final bool isManagerView;
 
-  const _TicketList({required this.tickets, required this.emptyMessage});
+  const _TicketList(
+      {required this.tickets,
+      required this.emptyMessage,
+      this.isManagerView = false});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -1086,7 +1096,8 @@ class _TicketList extends ConsumerWidget {
       child: ListView.builder(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         itemCount: tickets.length,
-        itemBuilder: (context, i) => _TicketCard(ticket: tickets[i]),
+        itemBuilder: (context, i) =>
+            _TicketCard(ticket: tickets[i], isManagerView: isManagerView),
       ),
     );
   }
@@ -1098,8 +1109,9 @@ class _TicketList extends ConsumerWidget {
 
 class _TicketCard extends ConsumerWidget {
   final HelpdeskTicket ticket;
+  final bool isManagerView;
 
-  const _TicketCard({required this.ticket});
+  const _TicketCard({required this.ticket, this.isManagerView = false});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -1149,6 +1161,7 @@ class _TicketCard extends ConsumerWidget {
         myRole: state.myRole,
         handlers: state.handlers,
         currentUser: currentUser,
+        isManagerView: isManagerView,
       ),
     );
   }
@@ -1224,12 +1237,14 @@ class _TicketDetailSheet extends ConsumerStatefulWidget {
   final HelpdeskMyRole? myRole;
   final List<HelpdeskManagedUser> handlers;
   final String currentUser;
+  final bool isManagerView;
 
   const _TicketDetailSheet({
     required this.ticket,
     required this.myRole,
     required this.handlers,
     required this.currentUser,
+    this.isManagerView = false,
   });
 
   @override
@@ -1260,11 +1275,13 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
   String get _currentUser => widget.currentUser;
 
   bool get _canManageHandler =>
+      widget.isManagerView &&
       _ticket.status != 'closed' &&
       widget.myRole != null &&
       widget.myRole!.department == _ticket.department;
 
   bool get _canChangeStatus {
+    if (!widget.isManagerView) return false;
     if (_ticket.status == 'closed') return false;
     if (_ticket.creatorUsername == _currentUser) return true;
     if (_ticket.handlerUsername == _currentUser) return true;
