@@ -666,10 +666,10 @@ class PushNotificationService {
         groupAlertBehavior: GroupAlertBehavior.children,
       );
       await _localNotifications!.show(
-        _kGroupSummaryNotificationId,
-        'הודעות חדשות',
-        '',
-        const NotificationDetails(android: summaryAndroid),
+        id: _kGroupSummaryNotificationId,
+        title: 'הודעות חדשות',
+        body: '',
+        notificationDetails: const NotificationDetails(android: summaryAndroid),
       );
     }
   }
