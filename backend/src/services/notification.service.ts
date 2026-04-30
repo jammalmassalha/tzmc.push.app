@@ -306,7 +306,10 @@ export class NotificationService {
       : (shouldLimitPerUserEndpoints ? this.defaultMaxEndpointsPerUser : 0);
     const compactCustomData = this.buildCompactPushCustomData(customData, messageType);
     let msgTitle = (message.title as string) || 'Work Alert';
-    let msgText = (msgBody.shortText as string) || 'New Notification';
+    let msgText = (msgBody.shortText as string)
+      || (msgBody.longText as string)
+      || String(compactCustomData.messageText || '').trim()
+      || 'New Notification';
     if (messageType === 'reaction') {
       const reactionGroupName = String(customData.groupName || message.title || finalSender || '').trim();
       msgTitle = reactionGroupName || 'Group';

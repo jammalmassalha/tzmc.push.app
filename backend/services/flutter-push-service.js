@@ -281,17 +281,23 @@ function createFlutterPushService(options = {}) {
             : (typeof msg.sender === 'string' && msg.sender) || 'System';
 
         let title = (typeof msg.title === 'string' && msg.title) || 'Work Alert';
-        let body = (typeof msgBody.shortText === 'string' && msgBody.shortText) || 'New Notification';
+
+        // Build compactCustomData first so its messageText can serve as a fallback
+        // for the notification body when shortText/longText are absent.
+        const compactCustomData = notificationService.buildCompactPushCustomData(
+            customData,
+            messageType
+        );
+
+        let body = (typeof msgBody.shortText === 'string' && msgBody.shortText)
+            || (typeof msgBody.longText === 'string' && msgBody.longText)
+            || (typeof compactCustomData.messageText === 'string' && compactCustomData.messageText)
+            || 'New Notification';
         if (messageType === 'reaction') {
             const reactionGroupName = String(customData.groupName || msg.title || sender || '').trim();
             title = reactionGroupName || 'Group';
             body = 'new reaction';
         }
-
-        const compactCustomData = notificationService.buildCompactPushCustomData(
-            customData,
-            messageType
-        );
 
         // Build the payload with display-text fields first so that actual data
         // fields from compactCustomData always win.  This is critical for

@@ -528,6 +528,10 @@ class PushNotificationService {
     final type = (message.data['type'] ?? '').toString().trim().toLowerCase();
     if (type == 'helpdesk_assigned' || type == 'helpdesk') {
       _openHelpdeskScreen();
+    } else if (type == 'helpdesk_ticket') {
+      // helpdesk_ticket messages are delivered under 'מוקד איחוד' chat.
+      // Navigate directly to that chat so the user sees the new message.
+      _navigateToChat(message);
     } else {
       _navigateToChat(message);
     }
@@ -645,7 +649,21 @@ class PushNotificationService {
     await _localNotifications!.show(
       id: message.hashCode,
       title: notification.title,
-      body: notification.body,
+      body: (() {
+        // Prefer data fields over the FCM notification.body — they are always
+        // set by the backend and survive payload transformations on every
+        // platform, whereas notification.body may be absent in edge cases.
+        final fromData = (message.data['messageText']?.toString().trim().isNotEmpty == true
+                ? message.data['messageText']?.toString().trim()
+                : null)
+            ?? (message.data['body']?.toString().trim().isNotEmpty == true
+                ? message.data['body']?.toString().trim()
+                : null);
+        if (fromData != null && fromData.toLowerCase() != 'new notification') {
+          return fromData;
+        }
+        return (notification.body?.isNotEmpty == true) ? notification.body : fromData ?? '';
+      })(),
       notificationDetails: details,
       payload: notificationPayload,
     );
