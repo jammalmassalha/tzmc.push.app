@@ -62,7 +62,8 @@ enum HelpdeskStatus {
 /// Helpdesk user role
 enum HelpdeskRole {
   admin,
-  editor;
+  editor,
+  relatedUser;
 
   static HelpdeskRole fromString(String value) {
     switch (value.toLowerCase()) {
@@ -70,6 +71,10 @@ enum HelpdeskRole {
         return HelpdeskRole.admin;
       case 'editor':
         return HelpdeskRole.editor;
+      case 'relateduser':
+      case 'related_user':
+      case 'related':
+        return HelpdeskRole.relatedUser;
       default:
         return HelpdeskRole.editor;
     }

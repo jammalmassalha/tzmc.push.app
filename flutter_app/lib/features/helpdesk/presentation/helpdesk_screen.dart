@@ -965,13 +965,36 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
       );
     }
 
+    // For relatedUser: only show tickets where the current user is creator or handler
+    final currentUser =
+        ref.read(helpdeskProvider.notifier).currentUser;
+    final visibleTickets = role.role == HelpdeskRole.relatedUser
+        ? widget.editorTickets
+            .where((t) =>
+                t.creatorUsername == currentUser ||
+                t.handlerUsername == currentUser)
+            .toList()
+        : widget.editorTickets;
+
     final newTickets =
-        widget.editorTickets.where((t) => t.status == 'open').toList();
+        visibleTickets.where((t) => t.status == 'open').toList();
     final inProgressTickets =
-        widget.editorTickets.where((t) => t.status == 'in_progress').toList();
-    final closedTickets = widget.editorTickets
+        visibleTickets.where((t) => t.status == 'in_progress').toList();
+    final closedTickets = visibleTickets
         .where((t) => !kHelpdeskOngoingStatuses.contains(t.status))
         .toList();
+
+    final String roleLabel;
+    switch (role.role) {
+      case HelpdeskRole.admin:
+        roleLabel = 'Admin';
+        break;
+      case HelpdeskRole.relatedUser:
+        roleLabel = 'RelatedUser';
+        break;
+      default:
+        roleLabel = 'Editor';
+    }
 
     return Column(
       children: [
@@ -986,7 +1009,7 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
                 borderRadius: BorderRadius.circular(16),
               ),
               child: Text(
-                  role.role == HelpdeskRole.admin ? 'Admin' : 'Editor',
+                  roleLabel,
                   style: const TextStyle(
                       color: Colors.white, fontWeight: FontWeight.bold)),
             ),
@@ -1274,11 +1297,18 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
   HelpdeskTicket get _ticket => widget.ticket;
   String get _currentUser => widget.currentUser;
 
-  bool get _canManageHandler =>
-      widget.isManagerView &&
-      _ticket.status != 'closed' &&
-      widget.myRole != null &&
-      widget.myRole!.department == _ticket.department;
+  bool get _canManageHandler {
+    if (!widget.isManagerView) return false;
+    if (_ticket.status == 'closed') return false;
+    if (widget.myRole == null) return false;
+    // relatedUser: allowed only for tickets they created or are handling
+    if (widget.myRole!.role == HelpdeskRole.relatedUser) {
+      return _ticket.creatorUsername == _currentUser ||
+          _ticket.handlerUsername == _currentUser;
+    }
+    // editor / admin: allowed for any ticket in their department
+    return widget.myRole!.department == _ticket.department;
+  }
 
   bool get _canChangeStatus {
     if (!widget.isManagerView) return false;
