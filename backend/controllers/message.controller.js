@@ -708,7 +708,7 @@ function registerMessageController(app, deps = {}) {
                 let actionRecords = [];
                 try {
                     if (typeof getMessageActivitiesForUser === 'function') {
-                        actionRecords = await getMessageActivitiesForUser(user, { since, limit: 2000 });
+                        actionRecords = await getMessageActivitiesForUser(user, { since, limit });
                     }
                 } catch (_actErr) {
                     // Non-fatal: action records are supplementary

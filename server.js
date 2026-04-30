@@ -2368,8 +2368,13 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
     }).catch(() => {});
 
     await addToQueue(membersToNotify, reactionRecord);
-    const result = adminMembersToNotify.length
-        ? await sendPushNotificationToUser(adminMembersToNotify, notificationData, groupId || normalizedReactor, {
+    // Send FCM push to ALL members (not just admins) so that users who are
+    // in polling mode (i.e. socket/SSE not connected) still receive the
+    // reaction update immediately instead of waiting for the next poll cycle.
+    // This matches the behaviour of edit-action which already pushes to all
+    // recipients.
+    const result = membersToNotify.length
+        ? await sendPushNotificationToUser(membersToNotify, notificationData, groupId || normalizedReactor, {
             messageId: reactionId,
             skipBadge: true,
             singlePerUser: true,
