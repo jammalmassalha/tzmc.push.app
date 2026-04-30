@@ -365,6 +365,24 @@ function registerHelpdeskController(app, deps = {}) {
                 [insertId]
             );
             const ticket = rows[0] ? mapTicketRow(rows[0]) : null;
+
+            // Send confirmation message to creator under 'מוקד איחוד' chat
+            if (typeof sendPushNotificationToUser === 'function') {
+                const ticketMsgText = `Ticket #${insertId} - ${title}`;
+                void sendPushNotificationToUser(user, {
+                    title: 'מוקד איחוד',
+                    body: { shortText: ticketMsgText, longText: ticketMsgText },
+                    data: { type: 'helpdesk_ticket', ticketId: String(insertId), messageText: ticketMsgText }
+                }, 'מוקד איחוד', {
+                    messageId: `helpdesk-ticket-${insertId}`,
+                    skipBadge: false,
+                    singlePerUser: true,
+                    allowSecondAttempt: false
+                }).catch((err) => {
+                    console.warn('[HELPDESK] Ticket creation push failed:', err && err.message ? err.message : err);
+                });
+            }
+
             return res.status(201).json({ result: 'success', ticket });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to create ticket';
@@ -490,19 +508,26 @@ function registerHelpdeskController(app, deps = {}) {
             // when the handler is a different user from the assigning editor.
             if (handlerUsername && handlerUsername !== user && typeof sendPushNotificationToUser === 'function') {
                 const ticketTitle = toTrimmedString(ticketRows[0].title || '');
+                const assignMsgText = `Ticket #${ticketId} - ${ticketTitle}`;
                 const notificationData = {
-                    title: `קריאה חדשה שויכה אליך - #${ticketId}`,
+                    title: 'מוקד איחוד',
                     body: {
-                        shortText: ticketTitle || `קריאה #${ticketId}`,
-                        longText: ticketTitle || `קריאה #${ticketId}`
+                        shortText: assignMsgText || `קריאה #${ticketId}`,
+                        longText: assignMsgText || `קריאה #${ticketId}`
                     },
                     data: {
-                        type: 'helpdesk_assigned',
+                        type: 'helpdesk_ticket',
                         ticketId: String(ticketId),
-                        ticketTitle: ticketTitle
+                        ticketTitle: ticketTitle,
+                        messageText: assignMsgText
                     }
                 };
-                void sendPushNotificationToUser(handlerUsername, notificationData, 'מוקד איחות', {}).catch((err) => {
+                void sendPushNotificationToUser(handlerUsername, notificationData, 'מוקד איחוד', {
+                    messageId: `helpdesk-handler-${ticketId}-${Date.now()}`,
+                    skipBadge: false,
+                    singlePerUser: true,
+                    allowSecondAttempt: false
+                }).catch((err) => {
                     console.warn('[HELPDESK] Push notification to handler failed:', err && err.message ? err.message : err);
                 });
             }
@@ -581,29 +606,31 @@ function registerHelpdeskController(app, deps = {}) {
             // ── Notify handler ──────────────────────────────────────────────────
             // When a note is added by someone other than the handler, deliver the
             // note to the handler via both FCM push and real-time SSE/socket so it
-            // appears in the 'מוקד איחות' tab without delay.
+            // appears in the 'מוקד איחוד' tab without delay.
             const handlerUsername = ticket.handler_username;
             if (handlerUsername && handlerUsername !== user) {
                 const ticketTitle = String(ticket.title || ticket.description || '').trim().substring(0, 80);
                 const shortNote = noteText.substring(0, 200);
+                const noteMsgText = `Ticket #${ticketId} - ${ticketTitle}: ${shortNote}`;
                 const notificationData = {
                     messageId: `helpdesk-note-${noteId}`,
-                    title: `קריאה #${ticketId} - ${ticketTitle}`,
+                    title: 'מוקד איחוד',
                     body: {
-                        shortText: `הערה חדשה: ${shortNote}`,
-                        longText: `הערה חדשה: ${shortNote}`
+                        shortText: noteMsgText,
+                        longText: noteMsgText
                     },
                     data: {
-                        type: 'helpdesk',
+                        type: 'helpdesk_ticket',
                         ticketId: String(ticketId),
                         noteId: String(noteId),
-                        noteText: shortNote
+                        noteText: shortNote,
+                        messageText: noteMsgText
                     }
                 };
 
                 // FCM push (fire-and-forget)
                 if (typeof sendPushNotificationToUser === 'function') {
-                    void sendPushNotificationToUser(handlerUsername, notificationData, 'מוקד איחות', {
+                    void sendPushNotificationToUser(handlerUsername, notificationData, 'מוקד איחוד', {
                         messageId: `helpdesk-note-${noteId}`,
                         skipBadge: false,
                         singlePerUser: true,
@@ -709,7 +736,7 @@ function registerHelpdeskController(app, deps = {}) {
         try {
             await getTablesReady();
             const [ticketRows] = await pool.query(
-                'SELECT `id`, `creator_username`, `handler_username`, `department`, `status` FROM `helpdesk_tickets` WHERE `id` = ?',
+                'SELECT `id`, `title`, `creator_username`, `handler_username`, `department`, `status` FROM `helpdesk_tickets` WHERE `id` = ?',
                 [ticketId]
             );
             if (!ticketRows.length) {
@@ -740,6 +767,29 @@ function registerHelpdeskController(app, deps = {}) {
             } catch (histErr) {
                 console.error('[HELPDESK] Insert status history error:', histErr && histErr.message ? histErr.message : histErr);
             }
+
+            // Notify creator and/or handler of the status change under 'מוקד איחוד' chat
+            if (typeof sendPushNotificationToUser === 'function') {
+                const statusLabels = { open: 'פתוח', in_progress: 'בתהליך', resolved: 'פתור', closed: 'סגור' };
+                const statusLabel = statusLabels[status] || status;
+                const ticketTitle = toTrimmedString(ticket.title || '');
+                const statusMsgText = `Ticket #${ticketId}${ticketTitle ? ' - ' + ticketTitle : ''}: סטטוס → ${statusLabel}`;
+                const statusNotifData = {
+                    title: 'מוקד איחוד',
+                    body: { shortText: statusMsgText, longText: statusMsgText },
+                    data: { type: 'helpdesk_ticket', ticketId: String(ticketId), messageText: statusMsgText }
+                };
+                const statusMsgId = `helpdesk-status-${ticketId}-${Date.now()}`;
+                const statusNotifOpts = { messageId: statusMsgId, skipBadge: false, singlePerUser: true, allowSecondAttempt: false };
+                const toNotify = [...new Set([ticket.creator_username, ticket.handler_username].filter(Boolean))];
+                for (const recipient of toNotify) {
+                    if (recipient === user) continue; // skip self
+                    void sendPushNotificationToUser(recipient, statusNotifData, 'מוקד איחוד', statusNotifOpts).catch((err) => {
+                        console.warn('[HELPDESK] Status change push failed:', err && err.message ? err.message : err);
+                    });
+                }
+            }
+
             return res.json({ result: 'success' });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to update status';

@@ -635,7 +635,9 @@ class PushNotificationService {
       final ticketId = (data['ticketId'] ?? '').toString().trim();
       notificationPayload = 'helpdesk:$ticketId';
     } else {
-      final chatId = data['chatId'] ?? data['groupId'] ?? '';
+      // Fall back to sender when chatId/groupId are absent (e.g. helpdesk_ticket messages
+      // sent under 'מוקד איחוד' use the senderuser as the chatId).
+      final chatId = data['chatId'] ?? data['groupId'] ?? data['sender'] ?? '';
       final messageId = data['messageId'] ?? '';
       notificationPayload = '$chatId:$messageId';
     }
