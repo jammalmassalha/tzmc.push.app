@@ -320,7 +320,7 @@ String _totalDurationLabel(List<HelpdeskStatusHistoryEntry> history) {
 }
 
 // ---------------------------------------------------------------------------
-// Helpdesk Screen
+// Helpdesk Screen ('מוקד איחות') — user-facing: open and view own tickets
 // ---------------------------------------------------------------------------
 
 class HelpdeskScreen extends ConsumerStatefulWidget {
@@ -337,7 +337,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 2, vsync: this);
     Future.microtask(() {
       ref.read(helpdeskProvider.notifier).loadTickets(force: true);
     });
@@ -379,7 +379,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    'מוקד איחוד - הקריאות שלי',
+                    'מוקד איחות - הקריאות שלי',
                     style: theme.textTheme.titleMedium
                         ?.copyWith(fontWeight: FontWeight.bold),
                   ),
@@ -400,13 +400,12 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
               ),
             ),
 
-            // Tab bar: ניהול | טופלו | פתוחות
+            // Tab bar: פתוחות | טופלו
             TabBar(
               controller: _tabController,
               tabs: [
-                const Tab(text: 'ניהול'),
-                Tab(text: 'טופלו (${pastTickets.length})'),
                 Tab(text: 'פתוחות (${openTickets.length})'),
+                Tab(text: 'טופלו (${pastTickets.length})'),
               ],
             ),
 
@@ -427,10 +426,8 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
               child: TabBarView(
                 controller: _tabController,
                 children: [
-                  _ManagementTab(
-                      myRole: state.myRole, editorTickets: state.editorTickets),
-                  _TicketList(tickets: pastTickets, emptyMessage: 'אין פניות שטופלו'),
                   _TicketList(tickets: openTickets, emptyMessage: 'אין פניות פתוחות'),
+                  _TicketList(tickets: pastTickets, emptyMessage: 'אין פניות שטופלו'),
                 ],
               ),
             ),
@@ -849,6 +846,65 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
           ),
         );
         },
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ticket Manager Screen ('מנהל קריאות') — admins/editors only
+// ---------------------------------------------------------------------------
+
+/// Standalone screen wrapping [_ManagementTab]. Placed in the bottom-nav as
+/// a separate destination so regular users only see their own tickets in the
+/// 'מוקד איחות' tab while admins/editors access ticket management here.
+class TicketManagerScreen extends ConsumerWidget {
+  const TicketManagerScreen({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(helpdeskProvider);
+    final theme = Theme.of(context);
+
+    return Directionality(
+      textDirection: ui.TextDirection.rtl,
+      child: Scaffold(
+        body: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'מנהל קריאות',
+                    style: theme.textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.bold),
+                  ),
+                  Row(children: [
+                    if (state.isLoading)
+                      const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2)),
+                    IconButton(
+                      icon: const Icon(Icons.refresh),
+                      tooltip: 'רענן',
+                      onPressed: () =>
+                          ref.read(helpdeskProvider.notifier).loadTickets(force: true),
+                    ),
+                  ]),
+                ],
+              ),
+            ),
+            Expanded(
+              child: _ManagementTab(
+                myRole: state.myRole,
+                editorTickets: state.editorTickets,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

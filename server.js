@@ -6255,7 +6255,8 @@ registerHelpdeskController(app, {
     env: process.env,
     buildGoogleSheetGetUrl,
     fetchWithRetry,
-    sendPushNotificationToUser
+    sendPushNotificationToUser,
+    notifyRealtimeClients
 });
 
 registerMessageController(app, {
