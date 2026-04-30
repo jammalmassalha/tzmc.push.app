@@ -231,7 +231,7 @@ async function getHelpdeskUserRole(pool, username) {
 }
 
 function registerHelpdeskController(app, deps = {}) {
-    const { requireAuthorizedUser, env = {}, buildGoogleSheetGetUrl, fetchWithRetry, sendPushNotificationToUser } = deps;
+    const { requireAuthorizedUser, env = {}, buildGoogleSheetGetUrl, fetchWithRetry, sendPushNotificationToUser, notifyRealtimeClients } = deps;
 
     const pool = createHelpdeskPool(env);
 
@@ -502,7 +502,7 @@ function registerHelpdeskController(app, deps = {}) {
                         ticketTitle: ticketTitle
                     }
                 };
-                void sendPushNotificationToUser(handlerUsername, notificationData, 'מוקד איחוד', {}).catch((err) => {
+                void sendPushNotificationToUser(handlerUsername, notificationData, 'מוקד איחות', {}).catch((err) => {
                     console.warn('[HELPDESK] Push notification to handler failed:', err && err.message ? err.message : err);
                 });
             }
@@ -543,7 +543,7 @@ function registerHelpdeskController(app, deps = {}) {
             await getTablesReady();
             // Verify the ticket exists and the user is authorized (creator, handler, or Editor of same dept)
             const [ticketRows] = await pool.query(
-                'SELECT `id`, `creator_username`, `handler_username`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
+                'SELECT `id`, `title`, `creator_username`, `handler_username`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
                 [ticketId]
             );
             if (!ticketRows.length) {
@@ -577,6 +577,59 @@ function registerHelpdeskController(app, deps = {}) {
                 attachmentUrl: noteRow.attachment_url || null,
                 createdAt: noteRow.created_at instanceof Date ? noteRow.created_at.toISOString() : String(noteRow.created_at || '')
             } : { id: noteId, ticketId, authorUsername: user, noteText, attachmentUrl: attachmentUrl || null, createdAt: new Date().toISOString() };
+
+            // ── Notify handler ──────────────────────────────────────────────────
+            // When a note is added by someone other than the handler, deliver the
+            // note to the handler via both FCM push and real-time SSE/socket so it
+            // appears in the 'מוקד איחות' tab without delay.
+            const handlerUsername = ticket.handler_username;
+            if (handlerUsername && handlerUsername !== user) {
+                const ticketTitle = String(ticket.title || ticket.description || '').trim().substring(0, 80);
+                const shortNote = noteText.substring(0, 200);
+                const notificationData = {
+                    messageId: `helpdesk-note-${noteId}`,
+                    title: `קריאה #${ticketId} - ${ticketTitle}`,
+                    body: {
+                        shortText: `הערה חדשה: ${shortNote}`,
+                        longText: `הערה חדשה: ${shortNote}`
+                    },
+                    data: {
+                        type: 'helpdesk',
+                        ticketId: String(ticketId),
+                        noteId: String(noteId),
+                        noteText: shortNote
+                    }
+                };
+
+                // FCM push (fire-and-forget)
+                if (typeof sendPushNotificationToUser === 'function') {
+                    void sendPushNotificationToUser(handlerUsername, notificationData, 'מוקד איחות', {
+                        messageId: `helpdesk-note-${noteId}`,
+                        skipBadge: false,
+                        singlePerUser: true,
+                        allowSecondAttempt: false
+                    }).catch((err) => {
+                        console.warn('[HELPDESK] Note push to handler failed:', err && err.message ? err.message : err);
+                    });
+                }
+
+                // Real-time SSE/socket delivery (fire-and-forget)
+                if (typeof notifyRealtimeClients === 'function') {
+                    try {
+                        notifyRealtimeClients(handlerUsername, {
+                            type: 'helpdesk',
+                            ticketId: String(ticketId),
+                            noteId: String(noteId),
+                            noteText: shortNote,
+                            title: notificationData.title,
+                            timestamp: Date.now()
+                        });
+                    } catch (notifyErr) {
+                        console.warn('[HELPDESK] notifyRealtimeClients error:', notifyErr && notifyErr.message ? notifyErr.message : notifyErr);
+                    }
+                }
+            }
+
             return res.status(201).json({ result: 'success', noteId, note });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to add note';

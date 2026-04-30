@@ -23,7 +23,7 @@ import 'message_screen.dart';
 import 'new_chat_dialog.dart';
 
 /// Main tab enumeration
-enum MainTab { chats, groups, shuttle, helpdesk, settings }
+enum MainTab { chats, groups, shuttle, helpdesk, ticketManager, settings }
 
 /// Chat shell screen widget
 class ChatShellScreen extends ConsumerStatefulWidget {
@@ -205,6 +205,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
                 _buildGroupsTab(),
                 _buildShuttleTab(),
                 _buildHelpdeskTab(),
+                _buildTicketManagerTab(),
                 _buildSettingsTab(),
               ],
             ),
@@ -239,7 +240,12 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
                 BottomNavigationBarItem(
                   icon: Icon(Icons.support_agent_outlined),
                   activeIcon: Icon(Icons.support_agent),
-                  label: 'מוקד איחוד',
+                  label: 'מוקד איחות',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.manage_accounts_outlined),
+                  activeIcon: Icon(Icons.manage_accounts),
+                  label: 'מנהל קריאות',
                 ),
                 BottomNavigationBarItem(
                   icon: Icon(Icons.settings_outlined),
@@ -336,6 +342,10 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     return const HelpdeskScreen();
   }
 
+  Widget _buildTicketManagerTab() {
+    return const TicketManagerScreen();
+  }
+
   Widget _buildSettingsTab() {
     final user = ref.watch(currentUserProvider);
     return _SettingsPlaceholder(user: user);
@@ -350,7 +360,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       case MainTab.shuttle:
         return 'הסעות';
       case MainTab.helpdesk:
-        return 'תמיכה';
+        return 'מוקד איחות';
+      case MainTab.ticketManager:
+        return 'מנהל קריאות';
       case MainTab.settings:
         return 'הגדרות';
     }
