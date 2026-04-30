@@ -1145,6 +1145,67 @@ class MysqlLogsService {
             return [];
         }
     }
+    async getMessageActivitiesForUser(user, options = {}) {
+        await this.ensureMessageActivitiesTable();
+        const requestedUser = normalizePhone(user);
+        if (!requestedUser) return [];
+        const limit = Math.max(1, Math.min(toPositiveInteger(options.limit, 2000), 5000));
+        const sinceTimestamp = Number(options.since) || 0;
+        try {
+            let sql = `SELECT
+          \`ActionType\`      AS actionType,
+          \`MessageId\`       AS messageId,
+          \`Sender\`          AS sender,
+          \`Recipient\`       AS recipient,
+          \`GroupId\`         AS groupId,
+          \`Body\`            AS body,
+          \`Emoji\`           AS emoji,
+          \`TargetMessageId\` AS targetMessageId,
+          \`ActionTimestamp\` AS actionTimestamp
+        FROM \`MessageActivities\`
+        WHERE \`ActionType\` IN ('edit-action', 'reaction', 'delete-action')
+          AND (\`Sender\` = ? OR \`Recipient\` = ? OR \`Recipient\` LIKE ?)`;
+            const params = [requestedUser, requestedUser, `%${requestedUser}%`];
+            if (sinceTimestamp > 0) {
+                sql += ` AND \`ActionTimestamp\` > ?`;
+                params.push(sinceTimestamp);
+            }
+            sql += ` ORDER BY \`ActionTimestamp\` ASC LIMIT ?`;
+            params.push(limit);
+            const [rows] = await this.pool.query(sql, params);
+            return rows.map((row) => {
+                const actionType = String(row.actionType || '').toLowerCase();
+                const ts = Number(row.actionTimestamp) || Date.now();
+                const msgId = String(row.messageId || '').trim();
+                const sender = normalizePhone(String(row.sender || '').trim()) || String(row.sender || '').trim();
+                const targetMsgId = String(row.targetMessageId || '').trim();
+                const record = {
+                    type: actionType,
+                    messageId: msgId,
+                    sender,
+                    toUser: String(row.recipient || '').trim() || undefined,
+                    groupId: String(row.groupId || '').trim() || undefined,
+                    timestamp: ts,
+                };
+                if (actionType === 'edit-action') {
+                    record.body = String(row.body || '').trim() || undefined;
+                    record.editedAt = ts;
+                } else if (actionType === 'reaction') {
+                    record.targetMessageId = targetMsgId || undefined;
+                    record.emoji = String(row.emoji || '').trim() || undefined;
+                    record.reactor = sender;
+                } else if (actionType === 'delete-action') {
+                    record.deletedAt = ts;
+                }
+                return record;
+            });
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.error('[MYSQL] getMessageActivitiesForUser error:', message);
+            return [];
+        }
+    }
     // ─── Server State persistence (replaces file-based state.json) ───────────────
     async ensureServerStateTable() {
         if (this.serverStateTableReady)

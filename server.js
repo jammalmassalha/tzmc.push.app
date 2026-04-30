@@ -6259,6 +6259,7 @@ registerMessageController(app, {
     fetchWithRetry,
     buildGoogleSheetGetUrl,
     getLogsMessagesForUser: (user, options = {}) => mysqlLogsService.getLogsMessagesForUser(user, options),
+    getMessageActivitiesForUser: (user, options = {}) => mysqlLogsService.getMessageActivitiesForUser(user, options),
     getHardcodedGroupIds: () => communityGroupIds,
     getHardcodedGroupMembers: () => {
         const membersMap = {};

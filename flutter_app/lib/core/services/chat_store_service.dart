@@ -1092,8 +1092,21 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   /// Hydrate existing message with new data (pick longer body)
   ChatMessage _hydrateExistingMessage(ChatMessage existing, ChatMessage incoming) {
-    // Pick longer body (for push truncation recovery)
-    final body = (incoming.body.length > existing.body.length) ? incoming.body : existing.body;
+    // Pick the more up-to-date body.
+    // - If the existing message was already edited (editedAt != null), always
+    //   keep the edited body. The poll returns the original text which is
+    //   outdated — applying the longer-body heuristic here would revert an
+    //   edit that made the text shorter (e.g. "Hello World" → "Hi").
+    // - Otherwise fall back to the longer-body heuristic which guards against
+    //   push truncation where the cached body is shorter than the full text.
+    final String body;
+    if (existing.editedAt != null) {
+      body = existing.body;
+    } else if (incoming.body.length > existing.body.length) {
+      body = incoming.body;
+    } else {
+      body = existing.body;
+    }
 
     return existing.copyWith(
       body: body,
