@@ -247,7 +247,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
                 BottomNavigationBarItem(
                   icon: Icon(Icons.support_agent_outlined),
                   activeIcon: Icon(Icons.support_agent),
-                  label: 'מוקד איחות',
+                  label: 'מוקד איחוד',
                 ),
                 BottomNavigationBarItem(
                   icon: Icon(Icons.manage_accounts_outlined),
@@ -367,7 +367,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       case MainTab.shuttle:
         return 'הסעות';
       case MainTab.helpdesk:
-        return 'מוקד איחות';
+        return 'מוקד איחוד';
       case MainTab.ticketManager:
         return 'מנהל קריאות';
       case MainTab.settings:

@@ -320,7 +320,7 @@ String _totalDurationLabel(List<HelpdeskStatusHistoryEntry> history) {
 }
 
 // ---------------------------------------------------------------------------
-// Helpdesk Screen ('מוקד איחות') — user-facing: open and view own tickets
+// Helpdesk Screen ('מוקד איחוד') — user-facing: open and view own tickets
 // ---------------------------------------------------------------------------
 
 class HelpdeskScreen extends ConsumerStatefulWidget {
@@ -379,7 +379,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    'מוקד איחות - הקריאות שלי',
+                    'מוקד איחוד - הקריאות שלי',
                     style: theme.textTheme.titleMedium
                         ?.copyWith(fontWeight: FontWeight.bold),
                   ),
@@ -857,7 +857,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
 
 /// Standalone screen wrapping [_ManagementTab]. Placed in the bottom-nav as
 /// a separate destination so regular users only see their own tickets in the
-/// 'מוקד איחות' tab while admins/editors access ticket management here.
+/// 'מוקד איחוד' tab while admins/editors access ticket management here.
 class TicketManagerScreen extends ConsumerWidget {
   const TicketManagerScreen({super.key});
 
