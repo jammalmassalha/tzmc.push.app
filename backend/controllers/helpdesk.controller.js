@@ -508,12 +508,12 @@ function registerHelpdeskController(app, deps = {}) {
             // when the handler is a different user from the assigning editor.
             if (handlerUsername && handlerUsername !== user && typeof sendPushNotificationToUser === 'function') {
                 const ticketTitle = toTrimmedString(ticketRows[0].title || '');
-                const assignMsgText = `Ticket #${ticketId} - ${ticketTitle}`;
+                const assignMsgText = `שויכת לקריאה מספר #${ticketId} ${ticketTitle}`.trim();
                 const notificationData = {
                     title: 'מוקד איחוד',
                     body: {
-                        shortText: assignMsgText || `קריאה #${ticketId}`,
-                        longText: assignMsgText || `קריאה #${ticketId}`
+                        shortText: assignMsgText,
+                        longText: assignMsgText
                     },
                     data: {
                         type: 'helpdesk_ticket',
