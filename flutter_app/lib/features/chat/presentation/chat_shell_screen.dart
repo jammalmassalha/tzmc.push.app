@@ -95,6 +95,13 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     } catch (e) {
       debugPrint('[ChatShellScreen] pushNotificationService.initialize error: $e');
     }
+    // Clear badges now that the local notifications plugin is fully
+    // initialized. This is the reliable "first-setup" clear — the earlier
+    // addPostFrameCallback call in initState runs a best-effort server-side
+    // reset but _localNotifications may not be ready yet at that point.
+    if (mounted) {
+      unawaited(ref.read(pushNotificationServiceProvider).resetBadge());
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final push = ref.read(pushNotificationServiceProvider);

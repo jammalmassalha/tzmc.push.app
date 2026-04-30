@@ -29,6 +29,15 @@ import '../services/chat_store_service.dart';
 // show the "go to settings" dialog every time the app starts.
 const String _kPushSettingsNagShownKey = 'push_settings_nag_shown_v1';
 
+// Group key used to cluster all chat/helpdesk notifications into a single
+// collapsed group on Android and as the iOS thread identifier.
+const String _kNotificationGroupKey = 'com.tzmc.chat_group';
+
+// Fixed notification ID for the Android group summary. Must not collide with
+// the IDs used for individual messages (message.hashCode, which is non-zero
+// in practice). Using 0 keeps it well separated.
+const int _kGroupSummaryNotificationId = 0;
+
 // Platform detection helper
 bool get _isNativePlatform {
   if (kIsWeb) return false;
@@ -588,6 +597,8 @@ class PushNotificationService {
     // we don't need to do anything here.
     if (kIsWeb || _localNotifications == null) return;
 
+    // All individual notifications share the same group key so the OS
+    // collapses them into a single group entry in the notification shade.
     const androidDetails = AndroidNotificationDetails(
       'chat_messages',
       'Chat Messages',
@@ -596,12 +607,17 @@ class PushNotificationService {
       priority: Priority.high,
       showWhen: true,
       icon: '@drawable/ic_notification',
+      groupKey: _kNotificationGroupKey,
+      // Children handle their own sound/vibration; the summary is silent.
+      groupAlertBehavior: GroupAlertBehavior.children,
     );
 
     const iosDetails = DarwinNotificationDetails(
       presentAlert: true,
       presentBadge: true,
       presentSound: true,
+      // Groups related notifications in iOS Notification Center.
+      threadIdentifier: _kNotificationGroupKey,
     );
 
     const details = NotificationDetails(
@@ -631,6 +647,31 @@ class PushNotificationService {
       notificationDetails: details,
       payload: notificationPayload,
     );
+
+    // Show (or refresh) the Android group summary notification so the OS
+    // presents all pending notifications collapsed under one group header.
+    // This is a no-op on iOS (grouping is handled via threadIdentifier).
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      const summaryAndroid = AndroidNotificationDetails(
+        'chat_messages',
+        'Chat Messages',
+        channelDescription: 'Notifications for new chat messages',
+        importance: Importance.high,
+        priority: Priority.high,
+        icon: '@drawable/ic_notification',
+        groupKey: _kNotificationGroupKey,
+        setAsGroupSummary: true,
+        // The summary itself should be silent — individual child
+        // notifications play their own sound/vibration.
+        groupAlertBehavior: GroupAlertBehavior.children,
+      );
+      await _localNotifications!.show(
+        _kGroupSummaryNotificationId,
+        'הודעות חדשות',
+        '',
+        const NotificationDetails(android: summaryAndroid),
+      );
+    }
   }
 
   /// Apply push payload to chat store
