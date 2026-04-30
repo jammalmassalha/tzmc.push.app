@@ -1145,10 +1145,16 @@ class MysqlLogsService {
             return [];
         }
     }
+    // Return action records (edit-action, reaction, delete-action) from
+    // MessageActivities for the given user so the Flutter poll can restore
+    // edits and reactions after a fresh sync.  Only the three action types
+    // that the Flutter client needs to re-apply are returned; read-receipts
+    // and group-update are omitted (they are handled by other mechanisms).
     async getMessageActivitiesForUser(user, options = {}) {
         await this.ensureMessageActivitiesTable();
         const requestedUser = normalizePhone(user);
-        if (!requestedUser) return [];
+        if (!requestedUser)
+            return [];
         const limit = Math.max(1, Math.min(toPositiveInteger(options.limit, 2000), 5000));
         const sinceTimestamp = Number(options.since) || 0;
         try {
@@ -1165,7 +1171,11 @@ class MysqlLogsService {
         FROM \`MessageActivities\`
         WHERE \`ActionType\` IN ('edit-action', 'reaction', 'delete-action')
           AND (\`Sender\` = ? OR \`Recipient\` = ? OR \`Recipient\` LIKE ?)`;
-            const params = [requestedUser, requestedUser, `%${requestedUser}%`];
+            const params = [
+                requestedUser,
+                requestedUser,
+                `%${requestedUser}%`,
+            ];
             if (sinceTimestamp > 0) {
                 sql += ` AND \`ActionTimestamp\` > ?`;
                 params.push(sinceTimestamp);
@@ -1173,11 +1183,13 @@ class MysqlLogsService {
             sql += ` ORDER BY \`ActionTimestamp\` ASC LIMIT ?`;
             params.push(limit);
             const [rows] = await this.pool.query(sql, params);
-            return rows.map((row) => {
+            const typedRows = rows;
+            return typedRows.map((row) => {
                 const actionType = String(row.actionType || '').toLowerCase();
                 const ts = Number(row.actionTimestamp) || Date.now();
                 const msgId = String(row.messageId || '').trim();
-                const sender = normalizePhone(String(row.sender || '').trim()) || String(row.sender || '').trim();
+                const sender = normalizePhone(String(row.sender || '').trim()) ||
+                    String(row.sender || '').trim();
                 const targetMsgId = String(row.targetMessageId || '').trim();
                 const record = {
                     type: actionType,
@@ -1190,11 +1202,14 @@ class MysqlLogsService {
                 if (actionType === 'edit-action') {
                     record.body = String(row.body || '').trim() || undefined;
                     record.editedAt = ts;
-                } else if (actionType === 'reaction') {
+                }
+                else if (actionType === 'reaction') {
                     record.targetMessageId = targetMsgId || undefined;
                     record.emoji = String(row.emoji || '').trim() || undefined;
+                    // reactor = sender for reactions
                     record.reactor = sender;
-                } else if (actionType === 'delete-action') {
+                }
+                else if (actionType === 'delete-action') {
                     record.deletedAt = ts;
                 }
                 return record;
