@@ -58,10 +58,11 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(ref.read(pushNotificationServiceProvider).resetBadge());
-      // Force a gap-analysis pull (bypassing the cooldown) so messages
-      // delivered via push while the app was backgrounded — and any messages
-      // the user already dismissed by clearing badges from the home screen —
-      // are merged into the local chat history immediately on resume.
+      // Force a gap-analysis pull (bypassing the cooldown) so messages that
+      // arrived while the app was backgrounded — including ones whose
+      // notifications the user just dismissed by clearing badges from the
+      // home screen — are merged into the local chat history immediately on
+      // resume.
       final user = ref.read(currentUserProvider);
       if (user != null) {
         unawaited(
@@ -69,7 +70,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
               .read(chatStoreProvider.notifier)
               .recoverMissedMessages(force: true)
               .catchError((Object e, StackTrace st) {
-            debugPrint('[ChatShellScreen] recoverMissedMessages on resume failed: $e');
+            debugPrint('[ChatShellScreen] recoverMissedMessages on resume failed: $e\n$st');
           }),
         );
       }
