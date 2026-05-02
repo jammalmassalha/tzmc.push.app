@@ -50,11 +50,29 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     });
   }
 
-  /// Clear the app icon badge whenever the app returns to the foreground.
+  /// Clear the app icon badge whenever the app returns to the foreground,
+  /// and pull any messages that arrived while the app was in the background
+  /// so the chat list/threads reflect the same state the user just saw in
+  /// their (now-cleared) notifications.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(ref.read(pushNotificationServiceProvider).resetBadge());
+      // Force a gap-analysis pull (bypassing the cooldown) so messages
+      // delivered via push while the app was backgrounded — and any messages
+      // the user already dismissed by clearing badges from the home screen —
+      // are merged into the local chat history immediately on resume.
+      final user = ref.read(currentUserProvider);
+      if (user != null) {
+        unawaited(
+          ref
+              .read(chatStoreProvider.notifier)
+              .recoverMissedMessages(force: true)
+              .catchError((Object e, StackTrace st) {
+            debugPrint('[ChatShellScreen] recoverMissedMessages on resume failed: $e');
+          }),
+        );
+      }
     }
   }
 
