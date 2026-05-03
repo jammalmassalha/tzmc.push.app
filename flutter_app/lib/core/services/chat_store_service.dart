@@ -1130,7 +1130,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         ? GroupType.community
         : (isGroup ? GroupType.group : null);
 
-    final senderDisplayName = _str(data['groupSenderName']) ?? getDisplayName(sender);
+    // When the server rewrites sender to the groupId (server.js:2138) and no
+    // groupSenderName was provided, getDisplayName would return the raw group
+    // ID string (e.g. "group:grp_F...") because there is no contact for it.
+    // Guard against that by only calling getDisplayName when sender is an
+    // actual user identifier, not the group ID itself.
+    final senderIsGroupId = isGroup &&
+        sender.trim().toLowerCase() == (groupId ?? '').trim().toLowerCase();
+    final senderDisplayName =
+        _str(data['groupSenderName']) ?? (senderIsGroupId ? null : getDisplayName(sender));
     final timestamp = _int(data['timestamp']) ?? DateTime.now().millisecondsSinceEpoch;
 
     final message = ChatMessage(
@@ -1793,7 +1801,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       messageId: msg.messageId!,
       chatId: chatId,
       sender: msg.sender!,
-      senderDisplayName: msg.groupSenderName ?? getDisplayName(msg.sender!),
+      // When the server stores the group ID as sender (server.js:2138) and
+      // groupSenderName is absent, avoid showing the raw group ID string.
+      senderDisplayName: msg.groupSenderName ??
+          (isGroup &&
+                  msg.sender!.trim().toLowerCase() ==
+                      (msg.groupId ?? '').trim().toLowerCase()
+              ? null
+              : getDisplayName(msg.sender!)),
       body: body,
       imageUrl: msg.imageUrl,
       fileUrl: msg.fileUrl,
