@@ -300,9 +300,11 @@ Color _statusColor(String status) {
 
 String _totalDurationLabel(List<HelpdeskStatusHistoryEntry> history) {
   if (history.isEmpty) return '';
-  final openTime = history.first.createdAt;
+  // History is ordered newest-first (DESC). The opening entry is the last one.
+  final openTime = history.last.createdAt;
   HelpdeskStatusHistoryEntry? closedEntry;
-  for (final h in history.reversed) {
+  // Iterate from newest to oldest to find the most recent closed/resolved entry.
+  for (final h in history) {
     if (h.newStatus == 'closed' || h.newStatus == 'resolved') {
       closedEntry = h;
       break;

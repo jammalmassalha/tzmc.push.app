@@ -831,7 +831,7 @@ function registerHelpdeskController(app, deps = {}) {
             }
 
             const [historyRows] = await pool.query(
-                'SELECT `id`, `ticket_id`, `old_status`, `new_status`, `changed_by`, `created_at` FROM `helpdesk_status_history` WHERE `ticket_id` = ? ORDER BY `created_at` ASC',
+                'SELECT `id`, `ticket_id`, `old_status`, `new_status`, `changed_by`, `created_at` FROM `helpdesk_status_history` WHERE `ticket_id` = ? ORDER BY `created_at` DESC',
                 [ticketId]
             );
             let history = historyRows.map((r) => ({
@@ -898,7 +898,7 @@ function registerHelpdeskController(app, deps = {}) {
             }
 
             const [historyRows] = await pool.query(
-                'SELECT `id`, `ticket_id`, `old_handler`, `new_handler`, `changed_by`, `created_at` FROM `helpdesk_handler_history` WHERE `ticket_id` = ? ORDER BY `created_at` ASC',
+                'SELECT `id`, `ticket_id`, `old_handler`, `new_handler`, `changed_by`, `created_at` FROM `helpdesk_handler_history` WHERE `ticket_id` = ? ORDER BY `created_at` DESC',
                 [ticketId]
             );
             const history = historyRows.map((r) => ({
