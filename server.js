@@ -2193,6 +2193,28 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         await addToQueue(targetToNotify, pollingMessage);
 
         const senderForPush = isGroup ? groupId : user;
+
+        // Write the message to the main logs table NOW, before FCM fires.
+        // sendPushNotificationToUser() runs the Google Sheets subscription
+        // lookup before it calls logNotificationStatus(), so without this
+        // early write the message can be absent from /messages/logs for
+        // many seconds after FCM delivery.  The Flutter recovery pull
+        // (recoverMissedMessages → pullMessages → getMessagesFromLogs) would
+        // then return empty results, leaving the chat stale until the next
+        // poll tick.  Awaiting the insert guarantees the row is committed
+        // before FCM is dispatched.
+        await logNotificationStatus(
+            senderForPush,
+            Array.isArray(targetToNotify) ? targetToNotify.join(',') : targetToNotify,
+            reply || '',
+            'Sent',
+            '',
+            '',
+            messageId,
+            imageUrl || '',
+            fileUrl || ''
+        );
+
         const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, { messageId });
         recentProcessedReplyMessages.set(messageId, Date.now());
 
