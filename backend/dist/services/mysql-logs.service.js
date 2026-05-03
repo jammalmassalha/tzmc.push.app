@@ -465,9 +465,20 @@ class MysqlLogsService {
         const limit = Math.max(1, Math.min(toPositiveInteger(options.limit, 700), 200000));
         const offset = Math.max(0, toPositiveInteger(options.offset, 0));
         const excludeSystem = options.excludeSystem !== false;
-        // OPTIMIZATION: Parse the 'since' timestamp into a Date object for MySQL
+        // OPTIMIZATION: Parse the 'since' timestamp into a Date object for MySQL.
+        // The DateTime column is stored with second-level precision (MySQL DATETIME),
+        // so a since value with sub-second precision (e.g. 1746272873151) can
+        // incorrectly exclude rows that were written in the same second
+        // (e.g. DateTime = 1746272873000):
+        //   '2026-05-03 10:47:53' > '2026-05-03 10:47:53.151'  →  FALSE (row excluded!)
+        // Floor since to the nearest second, then subtract 1 ms so the comparison
+        // becomes '2026-05-03 10:47:53' > '2026-05-03 10:47:52.999' → TRUE.
+        // This trades a small chance of returning 1-2 already-seen duplicates
+        // (handled by client-side dedup on messageId) for never missing a new row.
         const sinceTimestamp = Number(options.since) || 0;
-        const sinceDate = sinceTimestamp > 0 ? new Date(sinceTimestamp) : null;
+        const sinceDate = sinceTimestamp > 0
+            ? new Date(Math.floor(sinceTimestamp / 1000) * 1000 - 1)
+            : null;
         const hardcodedGroupKeySet = new Set(Array.isArray(options.hardcodedGroupIds)
             ? options.hardcodedGroupIds.map((value) => normalizeGroupKey(value)).filter(Boolean)
             : []);
