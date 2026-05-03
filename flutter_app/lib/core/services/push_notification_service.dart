@@ -770,12 +770,20 @@ class PushNotificationService {
     }
 
     // Clear all local notifications (also resets the iOS app-icon badge).
+    await clearLocalNotifications();
+  }
+
+  /// Cancel all pending and delivered local notifications without touching the
+  /// server-side badge counter.  Call this **after** chat messages have been
+  /// loaded so the notification tray is only cleared once the user can already
+  /// see the updated chat.
+  Future<void> clearLocalNotifications() async {
     try {
       if (!kIsWeb && _localNotifications != null) {
         await _localNotifications!.cancelAll();
       }
     } catch (e) {
-      debugPrint('[PushNotificationService] cancelAll error: $e');
+      debugPrint('[PushNotificationService] clearLocalNotifications error: $e');
     }
   }
 

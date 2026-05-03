@@ -50,30 +50,40 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     });
   }
 
-  /// Clear the app icon badge whenever the app returns to the foreground,
-  /// and pull any messages that arrived while the app was in the background
-  /// so the chat list/threads reflect the same state the user just saw in
-  /// their (now-cleared) notifications.
+  /// Called when the app returns to the foreground.
+  ///
+  /// Pulls any messages that arrived while the app was backgrounded **first**,
+  /// so the chat is fully up-to-date, and only **then** clears the local
+  /// notifications / app-icon badge.  Doing it in this order prevents the race
+  /// where `cancelAll()` wipes the notification tray before the server fetch
+  /// completes, leaving the user with a blank/stale chat and no badge to hint
+  /// that unread messages exist.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      unawaited(ref.read(pushNotificationServiceProvider).resetBadge());
-      // Force a gap-analysis pull (bypassing the cooldown) so messages that
-      // arrived while the app was backgrounded — including ones whose
-      // notifications the user just dismissed by clearing badges from the
-      // home screen — are merged into the local chat history immediately on
-      // resume.
-      final user = ref.read(currentUserProvider);
-      if (user != null) {
-        unawaited(
-          ref
-              .read(chatStoreProvider.notifier)
-              .recoverMissedMessages(force: true)
-              .catchError((Object e, StackTrace st) {
-            debugPrint('[ChatShellScreen] recoverMissedMessages on resume failed: $e\n$st');
-          }),
-        );
+      unawaited(_handleAppResumed());
+    }
+  }
+
+  Future<void> _handleAppResumed() async {
+    // 1. Pull missed messages first — the chat must be updated before the
+    //    notification tray is cleared so the user immediately sees new content.
+    final user = ref.read(currentUserProvider);
+    if (user != null) {
+      try {
+        await ref
+            .read(chatStoreProvider.notifier)
+            .recoverMissedMessages(force: true);
+      } catch (e, st) {
+        debugPrint('[ChatShellScreen] recoverMissedMessages on resume failed: $e\n$st');
       }
+    }
+
+    // 2. Now reset the server badge counter and clear local notifications.
+    //    Because the chat is already up-to-date at this point the user won't
+    //    see a gap between "badge disappeared" and "messages appeared".
+    if (mounted) {
+      unawaited(ref.read(pushNotificationServiceProvider).resetBadge());
     }
   }
 
