@@ -853,6 +853,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     while (totalFetched < _kFullSyncMaxMessages) {
       final remaining = _kFullSyncMaxMessages - totalFetched;
+      if (remaining <= 0) break;
       final limit = remaining.clamp(1, _kFullSyncPageSize);
 
       List<IncomingServerMessage> page;
