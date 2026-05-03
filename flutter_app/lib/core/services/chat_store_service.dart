@@ -280,9 +280,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // empty until the next poll tick (≥15 s).
       await recoverMissedMessages(force: true);
 
-      // Clear unread counts on first setup so the user doesn't see stale
-      // badges for messages they've already read on another device.
-      // The unread counter will start accumulating again from realtime events
+      // Clear unread counts on app initialization so the user doesn't see
+      // stale badges from a previous session or from messages received while
+      // offline.  The guard `if (state.isInitialized) return` at the top of
+      // `initialize()` ensures this block only runs once per app lifecycle.
+      // The unread counter starts accumulating again from realtime events
       // after this point.
       state = state.copyWith(
         isLoading: false,
