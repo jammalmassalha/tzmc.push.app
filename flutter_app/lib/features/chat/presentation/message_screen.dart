@@ -56,6 +56,15 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   /// `scrollBottomThresholdPx = 44`.
   static const double _scrollBottomThreshold = 44.0;
 
+  /// The date label currently shown in the floating date badge at the top of
+  /// the messages area (e.g. "היום", "אתמול", "01/05/2025").
+  /// Mirrors Angular's `stickyMessageDateLabel` / `messages-sticky-date`.
+  String? _stickyDate;
+
+  /// Latest snapshot of the visible message list, kept in sync inside [build]
+  /// so the scroll listener can compute the floating date without BuildContext.
+  List<ChatMessage> _currentMessages = [];
+
   /// Key placed on the "unread messages" divider so we can scroll to it
   /// precisely once the list has been laid out.
   final _unreadDividerKey = GlobalKey();
@@ -79,15 +88,20 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       setState(() => _searchQuery = _searchController.text.trim().toLowerCase());
     });
 
-    // Listen for scroll position changes to show/hide the scroll-to-bottom button.
+    // Listen for scroll position changes to show/hide the scroll-to-bottom
+    // button and update the floating date badge.
     _scrollController.addListener(_onScrollChanged);
 
     if (unread > 0) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToFirstUnread());
     }
+
+    // Seed the floating date badge on first layout.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _updateStickyDate());
   }
 
-  /// Updates [_showScrollButton] whenever the scroll position changes.
+  /// Updates [_showScrollButton] and [_stickyDate] whenever the scroll
+  /// position changes.
   /// Because the list is `reverse: true`, offset 0 is the bottom (newest
   /// messages). The button appears when the user has scrolled more than
   /// [_scrollBottomThreshold] pixels away from the bottom.
@@ -97,6 +111,43 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     if (shouldShow != _showScrollButton) {
       setState(() => _showScrollButton = shouldShow);
     }
+    _updateStickyDate();
+  }
+
+  /// Computes and stores the floating date label for the topmost visible
+  /// message.  In a `reverse: true` ListView the topmost visible item has a
+  /// reversed-list index of ≈ (offset + viewportHeight) / estimatedItemHeight.
+  void _updateStickyDate() {
+    if (!_scrollController.hasClients || _currentMessages.isEmpty) {
+      if (_stickyDate != null) setState(() => _stickyDate = null);
+      return;
+    }
+    final position = _scrollController.position;
+    final offset = position.pixels;
+    final viewport = position.viewportDimension;
+
+    // Approximate reversed-list index of the message at the top of the viewport.
+    final topReversedIdx =
+        ((offset + viewport) / _estimatedItemHeight).floor()
+            .clamp(0, _currentMessages.length - 1);
+
+    final date = _formatStickyDate(_currentMessages[topReversedIdx].timestamp);
+    if (date != _stickyDate) {
+      setState(() => _stickyDate = date);
+    }
+  }
+
+  /// Returns a short human-readable date string for the floating date badge.
+  /// Mirrors Angular's `formatMessageDateBadge`.
+  String _formatStickyDate(int timestamp) {
+    final date = DateTime.fromMillisecondsSinceEpoch(timestamp);
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final yesterday = today.subtract(const Duration(days: 1));
+    final messageDay = DateTime(date.year, date.month, date.day);
+    if (messageDay == today) return 'היום';
+    if (messageDay == yesterday) return 'אתמול';
+    return DateFormat('dd/MM/yyyy').format(date);
   }
 
   void _scrollToFirstUnread() {
@@ -132,6 +183,10 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                 (m.body ?? '').toLowerCase().contains(_searchQuery))
             .toList()
         : allMessages;
+
+    // Keep _currentMessages in sync so the scroll listener can access the
+    // latest message list for floating-date computation.
+    _currentMessages = messages;
 
     return Directionality(
       textDirection: ui.TextDirection.rtl,
@@ -357,6 +412,44 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                                 Theme.of(context).colorScheme.onPrimaryContainer,
                             elevation: 2,
                             child: const Icon(Icons.keyboard_arrow_down),
+                          ),
+                        ),
+                      ),
+                    ),
+
+                  // ── Floating date badge ───────────────────────────────────
+                  // Shows the date of the topmost visible message, mirroring
+                  // Angular's `messages-sticky-date` chip.
+                  if (!_searchActive && _stickyDate != null && messages.isNotEmpty)
+                    Positioned(
+                      top: 8,
+                      left: 0,
+                      right: 0,
+                      child: Center(
+                        child: AnimatedOpacity(
+                          opacity: 1.0,
+                          duration: const Duration(milliseconds: 200),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .surfaceContainerHighest
+                                  .withAlpha(230),
+                              borderRadius: BorderRadius.circular(16),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withAlpha(25),
+                                  blurRadius: 4,
+                                  offset: const Offset(0, 1),
+                                ),
+                              ],
+                            ),
+                            child: Text(
+                              _stickyDate!,
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
                           ),
                         ),
                       ),
