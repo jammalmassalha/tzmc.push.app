@@ -47,6 +47,15 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   late final TextEditingController _searchController;
   late final FocusNode _searchFocus;
 
+  /// Whether the user has scrolled up far enough that the scroll-to-bottom
+  /// button should be visible. Updated by the scroll listener.
+  bool _showScrollButton = false;
+
+  /// Pixels from the bottom (offset 0 in a reversed list) that must be
+  /// exceeded before the scroll-to-bottom button appears.  Mirrors Angular's
+  /// `scrollBottomThresholdPx = 44`.
+  static const double _scrollBottomThreshold = 44.0;
+
   /// Key placed on the "unread messages" divider so we can scroll to it
   /// precisely once the list has been laid out.
   final _unreadDividerKey = GlobalKey();
@@ -70,8 +79,23 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       setState(() => _searchQuery = _searchController.text.trim().toLowerCase());
     });
 
+    // Listen for scroll position changes to show/hide the scroll-to-bottom button.
+    _scrollController.addListener(_onScrollChanged);
+
     if (unread > 0) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToFirstUnread());
+    }
+  }
+
+  /// Updates [_showScrollButton] whenever the scroll position changes.
+  /// Because the list is `reverse: true`, offset 0 is the bottom (newest
+  /// messages). The button appears when the user has scrolled more than
+  /// [_scrollBottomThreshold] pixels away from the bottom.
+  void _onScrollChanged() {
+    final shouldShow = _scrollController.hasClients &&
+        _scrollController.offset > _scrollBottomThreshold;
+    if (shouldShow != _showScrollButton) {
+      setState(() => _showScrollButton = shouldShow);
     }
   }
 
@@ -88,6 +112,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
 
   @override
   void dispose() {
+    _scrollController.removeListener(_onScrollChanged);
     _scrollController.dispose();
     _searchController.dispose();
     _searchFocus.dispose();
@@ -229,83 +254,115 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
               ),
         body: Column(
           children: [
-            // Messages list
+            // Messages list + scroll-to-bottom FAB
             Expanded(
-              child: messages.isEmpty
-                  ? (_searchActive && _searchQuery.isNotEmpty
-                      ? _buildSearchEmpty(context)
-                      : _buildEmptyState(context))
-                  : ListView.builder(
-                      controller: _scrollController,
-                      reverse: true,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 16),
-                      // +1 for the optional unread divider slot (only when not searching)
-                      itemCount: messages.length +
-                          (!_searchActive && widget.initialUnreadCount > 0
-                              ? 1
-                              : 0),
-                      itemBuilder: (context, index) {
-                        // With reverse: true, index 0 = newest message (bottom).
-                        // The unread divider sits just below the first unread message,
-                        // i.e. at position `initialUnreadCount` in the reversed list
-                        // (between last-read and first-unread).
-                        final unread =
-                            !_searchActive ? widget.initialUnreadCount : 0;
-                        if (unread > 0 && index == unread) {
-                          return _buildUnreadDivider(context);
-                        }
+              child: Stack(
+                children: [
+                  // ── Message list ──────────────────────────────────────────
+                  messages.isEmpty
+                   ? (_searchActive && _searchQuery.isNotEmpty
+                       ? _buildSearchEmpty(context)
+                       : _buildEmptyState(context))
+                   : ListView.builder(
+                       controller: _scrollController,
+                       reverse: true,
+                       padding: const EdgeInsets.symmetric(
+                           horizontal: 8, vertical: 16),
+                       // +1 for the optional unread divider slot (only when not searching)
+                       itemCount: messages.length +
+                           (!_searchActive && widget.initialUnreadCount > 0
+                               ? 1
+                               : 0),
+                       itemBuilder: (context, index) {
+                         // With reverse: true, index 0 = newest message (bottom).
+                         // The unread divider sits just below the first unread message,
+                         // i.e. at position `initialUnreadCount` in the reversed list
+                         // (between last-read and first-unread).
+                         final unread =
+                             !_searchActive ? widget.initialUnreadCount : 0;
+                         if (unread > 0 && index == unread) {
+                           return _buildUnreadDivider(context);
+                         }
 
-                        // Shift the message index down by 1 after the divider slot.
-                        final msgIndex =
-                            (unread > 0 && index > unread) ? index - 1 : index;
-                        if (msgIndex >= messages.length) {
-                          return const SizedBox.shrink();
-                        }
+                         // Shift the message index down by 1 after the divider slot.
+                         final msgIndex =
+                             (unread > 0 && index > unread) ? index - 1 : index;
+                         if (msgIndex >= messages.length) {
+                           return const SizedBox.shrink();
+                         }
 
-                        final message = messages[msgIndex];
-                        final previousMessage = msgIndex < messages.length - 1
-                            ? messages[msgIndex + 1]
-                            : null;
-                        final showDateHeader =
-                            _shouldShowDateHeader(message, previousMessage);
+                         final message = messages[msgIndex];
+                         final previousMessage = msgIndex < messages.length - 1
+                             ? messages[msgIndex + 1]
+                             : null;
+                         final showDateHeader =
+                             _shouldShowDateHeader(message, previousMessage);
 
-                        return Column(
-                          children: [
-                            if (showDateHeader)
-                              _buildDateHeader(context, message.timestamp),
-                            _MessageBubble(
-                              message: message,
-                              isGroup: chatInfo.isGroup,
-                              searchQuery:
-                                  _searchActive ? _searchQuery : null,
-                              onReply: () => setState(
-                                  () => _replyTo = MessageReference(
-                                        messageId: message.messageId,
-                                        sender: message.sender,
-                                        senderDisplayName:
-                                            message.senderDisplayName,
-                                        body: message.body,
-                                        imageUrl: message.imageUrl,
-                                      )),
-                              onReact: (emoji) =>
-                                  _handleReaction(message, emoji),
-                              onEdit:
-                                  message.direction == MessageDirection.outgoing
-                                      ? () => setState(
-                                          () => _editingMessage = message)
-                                      : null,
-                              onDelete:
-                                  message.direction == MessageDirection.outgoing
-                                      ? () => _handleDelete(message)
-                                      : null,
-                              onCopy: () => _handleCopy(message),
-                              onForward: () => _handleForward(message),
-                            ),
-                          ],
-                        );
-                      },
+                         return Column(
+                           children: [
+                             if (showDateHeader)
+                               _buildDateHeader(context, message.timestamp),
+                             _MessageBubble(
+                               message: message,
+                               isGroup: chatInfo.isGroup,
+                               searchQuery:
+                                   _searchActive ? _searchQuery : null,
+                               onReply: () => setState(
+                                   () => _replyTo = MessageReference(
+                                         messageId: message.messageId,
+                                         sender: message.sender,
+                                         senderDisplayName:
+                                             message.senderDisplayName,
+                                         body: message.body,
+                                         imageUrl: message.imageUrl,
+                                       )),
+                               onReact: (emoji) =>
+                                   _handleReaction(message, emoji),
+                               onEdit:
+                                   message.direction == MessageDirection.outgoing
+                                       ? () => setState(
+                                           () => _editingMessage = message)
+                                       : null,
+                               onDelete:
+                                   message.direction == MessageDirection.outgoing
+                                       ? () => _handleDelete(message)
+                                       : null,
+                               onCopy: () => _handleCopy(message),
+                               onForward: () => _handleForward(message),
+                             ),
+                           ],
+                         );
+                       },
+                     ),
+
+                  // ── Scroll-to-bottom button ───────────────────────────────
+                  // Shown when the user has scrolled up (offset > threshold).
+                  // Mirrors Angular's `scroll-bottom-btn`.
+                  if (!_searchActive)
+                    Positioned(
+                      bottom: 12,
+                      left: 12,
+                      child: AnimatedOpacity(
+                        opacity: _showScrollButton ? 1.0 : 0.0,
+                        duration: const Duration(milliseconds: 200),
+                        child: IgnorePointer(
+                          ignoring: !_showScrollButton,
+                          child: FloatingActionButton.small(
+                            heroTag: 'scrollToBottom_${widget.chatId}',
+                            onPressed: _scrollToBottom,
+                            tooltip: 'גלול להודעה האחרונה',
+                            backgroundColor:
+                                Theme.of(context).colorScheme.primaryContainer,
+                            foregroundColor:
+                                Theme.of(context).colorScheme.onPrimaryContainer,
+                            elevation: 2,
+                            child: const Icon(Icons.keyboard_arrow_down),
+                          ),
+                        ),
+                      ),
                     ),
+                ],
+              ),
             ),
 
             // Reply preview (hidden while searching)

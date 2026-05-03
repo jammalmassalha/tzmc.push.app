@@ -280,7 +280,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // empty until the next poll tick (≥15 s).
       await recoverMissedMessages(force: true);
 
-      state = state.copyWith(isLoading: false, isInitialized: true);
+      // Clear unread counts on first setup so the user doesn't see stale
+      // badges for messages they've already read on another device.
+      // The unread counter will start accumulating again from realtime events
+      // after this point.
+      state = state.copyWith(
+        isLoading: false,
+        isInitialized: true,
+        unreadByChat: const {},
+      );
 
       // 4. Schedule periodic persistence
       _schedulePersistence();
