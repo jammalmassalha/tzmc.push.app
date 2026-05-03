@@ -48,12 +48,23 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
   xfile.XFile? _selectedFile;
   Uint8List? _selectedImageBytes; // For preview on all platforms
 
+  /// Whether the composer has notified the server that the user is typing.
+  bool _isTypingNotified = false;
+
+  /// Debounce timer: waits for [_kTypingStopDelay] of inactivity before
+  /// sending isTyping=false and clearing [_isTypingNotified].
+  Timer? _typingStopTimer;
+
+  /// How long after the last keystroke to send the "stopped typing" event.
+  static const Duration _kTypingStopDelay = Duration(seconds: 3);
+
   @override
   void initState() {
     super.initState();
     if (widget.editingMessage != null) {
       _textController.text = widget.editingMessage!.body;
     }
+    _textController.addListener(_onTextChanged);
   }
 
   @override
@@ -71,9 +82,58 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
 
   @override
   void dispose() {
+    _typingStopTimer?.cancel();
+    if (_isTypingNotified) {
+      // Best-effort: tell the server the user stopped typing.
+      ref.read(chatStoreProvider.notifier).sendTypingIndicator(
+            chatId: widget.chatId,
+            isTyping: false,
+            isGroup: widget.isGroup,
+          );
+    }
+    _textController.removeListener(_onTextChanged);
     _textController.dispose();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  void _onTextChanged() {
+    final isEmpty = _textController.text.isEmpty;
+
+    if (isEmpty) {
+      // Text was cleared — immediately send stopped-typing if needed.
+      _typingStopTimer?.cancel();
+      if (_isTypingNotified) {
+        _isTypingNotified = false;
+        ref.read(chatStoreProvider.notifier).sendTypingIndicator(
+              chatId: widget.chatId,
+              isTyping: false,
+              isGroup: widget.isGroup,
+            );
+      }
+      return;
+    }
+
+    // Send isTyping=true once per typing burst (not on every keystroke).
+    if (!_isTypingNotified) {
+      _isTypingNotified = true;
+      ref.read(chatStoreProvider.notifier).sendTypingIndicator(
+            chatId: widget.chatId,
+            isTyping: true,
+            isGroup: widget.isGroup,
+          );
+    }
+
+    // Reset the stop-typing debounce timer.
+    _typingStopTimer?.cancel();
+    _typingStopTimer = Timer(_kTypingStopDelay, () {
+      _isTypingNotified = false;
+      ref.read(chatStoreProvider.notifier).sendTypingIndicator(
+            chatId: widget.chatId,
+            isTyping: false,
+            isGroup: widget.isGroup,
+          );
+    });
   }
 
   @override
@@ -406,6 +466,18 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
     final text = _textController.text.trim();
     if (text.isEmpty && _selectedImage == null && _selectedFile == null) {
       return;
+    }
+
+    // Cancel the stop-typing timer and notify the server that typing has ended.
+    _typingStopTimer?.cancel();
+    _typingStopTimer = null;
+    if (_isTypingNotified) {
+      _isTypingNotified = false;
+      ref.read(chatStoreProvider.notifier).sendTypingIndicator(
+            chatId: widget.chatId,
+            isTyping: false,
+            isGroup: widget.isGroup,
+          );
     }
 
     final hasAttachment = _selectedImage != null || _selectedFile != null;

@@ -58,6 +58,9 @@ class ChatState {
   final int syncProgressPercent;
   final String syncProgressLabel;
 
+  /// Map of chatId → set of usernames currently typing in that chat.
+  final Map<String, Set<String>> typingByChatId;
+
   const ChatState({
     this.contacts = const {},
     this.groups = const {},
@@ -69,6 +72,7 @@ class ChatState {
     this.isSyncing = false,
     this.syncProgressPercent = 0,
     this.syncProgressLabel = '',
+    this.typingByChatId = const <String, Set<String>>{},
   });
 
   ChatState copyWith({
@@ -83,6 +87,7 @@ class ChatState {
     bool? isSyncing,
     int? syncProgressPercent,
     String? syncProgressLabel,
+    Map<String, Set<String>>? typingByChatId,
   }) {
     return ChatState(
       contacts: contacts ?? this.contacts,
@@ -95,6 +100,7 @@ class ChatState {
       isSyncing: isSyncing ?? this.isSyncing,
       syncProgressPercent: syncProgressPercent ?? this.syncProgressPercent,
       syncProgressLabel: syncProgressLabel ?? this.syncProgressLabel,
+      typingByChatId: typingByChatId ?? this.typingByChatId,
     );
   }
 
@@ -180,6 +186,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   int _lastGapAnalysisTime = 0;
   String? _currentUser;
 
+  /// Per-chat timers that clear a typing indicator after an idle period.
+  final Map<String, Map<String, Timer>> _typingClearTimers = {};
+
+  /// How long after the last typing event to clear the indicator.
+  static const Duration _typingClearDelay = Duration(seconds: 5);
+
   /// Username of the currently authenticated user, normalized to lowercase.
   /// Used to dedupe own-message echoes coming back from the server (which
   /// would otherwise show a duplicate "incoming from me" bubble).
@@ -199,6 +211,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       _connectionSubscription?.cancel();
       _pollTickSubscription?.cancel();
       _persistTimer?.cancel();
+      for (final timers in _typingClearTimers.values) {
+        for (final t in timers.values) {
+          t.cancel();
+        }
+      }
+      _typingClearTimers.clear();
     });
     
     return const ChatState();
@@ -1257,7 +1275,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       editedAt: incoming.editedAt ?? existing.editedAt,
       deletedAt: incoming.deletedAt ?? existing.deletedAt,
       reactions: incoming.reactions ?? existing.reactions,
-      deliveryStatus: incoming.deliveryStatus,
+      // Never downgrade the delivery status: once a message is `read` or
+      // `delivered`, a stale server echo (which always carries `sent`) must
+      // not revert it back.
+      deliveryStatus: _maxDeliveryStatus(existing.deliveryStatus, incoming.deliveryStatus),
+      // Hydrate the reply reference from the incoming message when the
+      // existing optimistic bubble was created without it (e.g. the optimistic
+      // message is created locally with replyTo from state, but the server
+      // echo carries the canonically stored reference fields).
+      replyTo: existing.replyTo ?? incoming.replyTo,
     );
   }
 
@@ -1335,6 +1361,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         originalSender: recipient,
         messageId: messageId,
         replyToMessageId: replyTo?.messageId,
+        replyToSender: replyTo?.sender,
+        replyToSenderName: replyTo?.senderDisplayName,
+        replyToBody: replyTo?.body,
+        replyToImageUrl: replyTo?.imageUrl,
         forwarded: forwarded,
         forwardedFrom: forwardedFrom,
         forwardedFromName: forwardedFromName,
@@ -1416,6 +1446,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         groupSenderName: getDisplayName(sender),
         membersToNotify: notify,
         replyToMessageId: replyTo?.messageId,
+        replyToSender: replyTo?.sender,
+        replyToSenderName: replyTo?.senderDisplayName,
+        replyToBody: replyTo?.body,
+        replyToImageUrl: replyTo?.imageUrl,
       );
       await _sendReply(payload);
 
@@ -1442,6 +1476,24 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
 
     state = state.copyWith(messagesByChat: newMessagesByChat);
+  }
+
+  /// Returns the higher-ranked of two [DeliveryStatus] values so that status
+  /// transitions only ever advance (pending → sent → delivered → read) and
+  /// never regress.
+  static DeliveryStatus _maxDeliveryStatus(DeliveryStatus a, DeliveryStatus b) {
+    const rank = {
+      DeliveryStatus.pending: 0,
+      DeliveryStatus.queued: 1,
+      DeliveryStatus.sent: 2,
+      DeliveryStatus.delivered: 3,
+      DeliveryStatus.read: 4,
+      DeliveryStatus.failed: -1,
+    };
+    // Keep `failed` unless the incoming status is a positive advancement.
+    if (a == DeliveryStatus.failed) return b == DeliveryStatus.failed ? a : b;
+    if (b == DeliveryStatus.failed) return a;
+    return (rank[a] ?? 0) >= (rank[b] ?? 0) ? a : b;
   }
 
   String _generateMessageId() {
@@ -1835,7 +1887,83 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   }
 
   void _handleTypingIndicator(IncomingServerMessage msg) {
-    // TODO: Implement typing indicator handling
+    final sender = msg.sender?.trim();
+    if (sender == null || sender.isEmpty) return;
+
+    // Ignore own typing echoes.
+    final me = _currentUser?.trim().toLowerCase();
+    if (sender.trim().toLowerCase() == me) return;
+
+    // Determine which chat the typing is for.
+    // Mirrors Angular: groupId takes precedence over chatId, then falls back
+    // to sender (for direct messages the server sets toUser/targetUser but
+    // sender is the easiest canonical key to use on the recipient side).
+    final chatId = msg.groupId ?? msg.chatId ?? sender;
+
+    final isTyping = msg.isTyping ?? true;
+
+    final newTyping = Map<String, Set<String>>.from(
+      state.typingByChatId.map((k, v) => MapEntry(k, Set<String>.from(v))),
+    );
+
+    if (isTyping) {
+      newTyping[chatId] = {...(newTyping[chatId] ?? {}), sender};
+
+      // Start/reset the auto-clear timer for this sender in this chat.
+      _typingClearTimers[chatId] ??= {};
+      _typingClearTimers[chatId]![sender]?.cancel();
+      _typingClearTimers[chatId]![sender] = Timer(_typingClearDelay, () {
+        _clearTypingForSender(chatId, sender);
+      });
+    } else {
+      newTyping[chatId]?.remove(sender);
+      if (newTyping[chatId]?.isEmpty ?? false) newTyping.remove(chatId);
+      _typingClearTimers[chatId]?[sender]?.cancel();
+      _typingClearTimers[chatId]?.remove(sender);
+    }
+
+    state = state.copyWith(typingByChatId: newTyping);
+  }
+
+  void _clearTypingForSender(String chatId, String sender) {
+    final newTyping = Map<String, Set<String>>.from(
+      state.typingByChatId.map((k, v) => MapEntry(k, Set<String>.from(v))),
+    );
+    newTyping[chatId]?.remove(sender);
+    if (newTyping[chatId]?.isEmpty ?? false) newTyping.remove(chatId);
+    state = state.copyWith(typingByChatId: newTyping);
+    _typingClearTimers[chatId]?.remove(sender);
+  }
+
+  /// Notify the server (and thereby the other user) that the current user is
+  /// typing (or has stopped typing) in [chatId].
+  ///
+  /// [isGroup] controls whether group metadata is included in the payload.
+  Future<void> sendTypingIndicator({
+    required String chatId,
+    required bool isTyping,
+    bool isGroup = false,
+  }) async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty) return;
+
+    final group = isGroup ? state.groups[chatId] : null;
+
+    final payload = TypingPayload(
+      user: user,
+      isTyping: isTyping,
+      targetUser: isGroup ? null : chatId,
+      chatId: chatId,
+      groupId: isGroup ? chatId : null,
+      groupName: group?.name,
+      groupMembers: group?.members,
+    );
+
+    try {
+      await _api.sendTypingState(payload);
+    } catch (_) {
+      // Typing indicators are best-effort; failures are silently ignored.
+    }
   }
 
   void _handleReadReceipt(IncomingServerMessage msg) {

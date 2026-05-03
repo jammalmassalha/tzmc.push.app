@@ -475,6 +475,13 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                 onCancel: () => setState(() => _editingMessage = null),
               ),
 
+            // Typing indicator (hidden while searching)
+            if (!_searchActive)
+              _TypingIndicatorRow(
+                chatId: widget.chatId,
+                state: state,
+              ),
+
             // Message composer (hidden while searching)
             if (!_searchActive)
               MessageComposer(
@@ -1398,9 +1405,111 @@ class _EditPreview extends StatelessWidget {
   }
 }
 
-/// Renders a message body. Google Maps links (📍 ...) are shown as a
-/// tappable location button; plain text is displayed as-is.
-/// When [searchQuery] is provided, matching text is highlighted.
+/// Shows a "…is typing" bubble below the message list.
+/// Only visible when another user in this chat is actively typing.
+class _TypingIndicatorRow extends StatelessWidget {
+  final String chatId;
+  final ChatState state;
+
+  const _TypingIndicatorRow({required this.chatId, required this.state});
+
+  @override
+  Widget build(BuildContext context) {
+    final typingSet = state.typingByChatId[chatId] ?? const <String>{};
+    if (typingSet.isEmpty) return const SizedBox.shrink();
+
+    // Resolve display names for the typing users.
+    String label;
+    if (typingSet.length == 1) {
+      final username = typingSet.first;
+      final displayName =
+          state.contacts[username]?.displayName ?? username;
+      label = '$displayName מקליד/ה...';
+    } else {
+      label = 'כמה אנשים מקלידים...';
+    }
+
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: Row(
+        children: [
+          // Animated three-dot indicator
+          _DotsAnimation(),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: theme.textTheme.bodySmall?.copyWith(
+              fontStyle: FontStyle.italic,
+              color: theme.colorScheme.onSurface.withAlpha((255 * 0.6).round()),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Three animated dots used as the typing indicator.
+class _DotsAnimation extends StatefulWidget {
+  const _DotsAnimation();
+
+  @override
+  State<_DotsAnimation> createState() => _DotsAnimationState();
+}
+
+class _DotsAnimationState extends State<_DotsAnimation>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context)
+        .colorScheme
+        .onSurface
+        .withAlpha((255 * 0.5).round());
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (_, __) {
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: List.generate(3, (i) {
+            final delay = i / 3;
+            final phase = ((_ctrl.value - delay) % 1.0 + 1.0) % 1.0;
+            final scale = 0.6 + 0.4 * (phase < 0.5 ? phase * 2 : (1 - phase) * 2);
+            return Container(
+              margin: const EdgeInsets.symmetric(horizontal: 2),
+              width: 6,
+              height: 6,
+              decoration: BoxDecoration(
+                color: color,
+                shape: BoxShape.circle,
+              ),
+              transform: Matrix4.identity()..scale(scale),
+            );
+          }),
+        );
+      },
+    );
+  }
+}
+
+
 class _MessageBody extends StatelessWidget {
   final String body;
   final ThemeData theme;
