@@ -30,6 +30,14 @@ const int gapAnalysisCooldownMs = 30000;
 /// Max messages to keep per chat
 const int maxMessagesPerChat = 500;
 
+/// Page size for the paginated full-sync logs pull — mirrors Angular's
+/// `pageSize = 500` inside `recoverMissedMessagesFromLogs`.
+const int _kFullSyncPageSize = 500;
+
+/// Maximum messages fetched during a full sync — mirrors Angular's
+/// `LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT = 200000`.
+const int _kFullSyncMaxMessages = 200000;
+
 // ---------------------------------------------------------------------------
 // Chat State
 // ---------------------------------------------------------------------------
@@ -756,46 +764,65 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       state = state.copyWith(
         messagesByChat: const {},
         unreadByChat: const {},
-        syncProgressPercent: 20,
+        groups: const {},
+        syncProgressPercent: 10,
         syncProgressLabel: 'טוען אנשי קשר...',
       );
 
       // 2. Re-pull contacts.
       await _pullContacts();
       state = state.copyWith(
-        syncProgressPercent: 40,
+        syncProgressPercent: 20,
         syncProgressLabel: 'טוען קבוצות...',
       );
 
-      // 3. Re-pull groups.
+      // 3. Re-pull groups (community/runtime list).
       await _pullGroups();
       state = state.copyWith(
-        syncProgressPercent: 60,
+        syncProgressPercent: 30,
+        syncProgressLabel: 'טוען נתוני קבוצות מהשרת...',
+      );
+
+      // 4. Load groups persisted in the server DB and merge them — mirrors
+      //    Angular's `loadUserChatGroupsFromDb()` which prefers the server
+      //    record when its `updatedAt` is newer than the local one.
+      await _mergeUserChatGroups();
+      state = state.copyWith(
+        syncProgressPercent: 40,
+        syncProgressLabel: 'מרענן נתונים...',
+      );
+
+      // 5. Drain the /messages poll queue — mirrors Angular's `pullMessages(user)`
+      //    call inside forceSyncAllMessagesAndClearCache (which uses `pollMessages()`
+      //    on the /messages endpoint rather than the logs endpoint).
+      try {
+        final polled = await _api.pollMessages();
+        for (final msg in polled) {
+          _handleServerMessage(msg);
+        }
+      } catch (_) {
+        // Polling failures are non-fatal; the logs pull below covers any gaps.
+      }
+      state = state.copyWith(
+        syncProgressPercent: 55,
         syncProgressLabel: 'מושך הודעות...',
       );
 
-      // 4. Pull messages (full pull — always since:0 so the stale DB timestamp is
-      //    never used, which is especially important on Flutter web where the DB
-      //    clear above may have silently failed and still holds the old high-water
-      //    timestamp).
-      await pullMessages(since: 0);
+      // 6. Paginated logs pull — mirrors Angular's `recoverMissedMessagesFromLogs`
+      //    with `limit: LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT (200000)` and page
+      //    size 500.  Using since:0 so the full history is fetched after the
+      //    cache clear (the old DB high-water timestamp is gone).
+      await _pullAllMessagesFromLogs(user: user, since: 0);
       state = state.copyWith(
-        syncProgressPercent: 80,
-        syncProgressLabel: 'משחזר הודעות שהוחמצו...',
-      );
-
-      // 5. Gap-analysis recovery pull (force = true bypasses cooldown).
-      await recoverMissedMessages(force: true);
-      state = state.copyWith(
-        syncProgressPercent: 95,
+        syncProgressPercent: 85,
         syncProgressLabel: 'מסיים...',
       );
 
-      // 6. Reset unread counters.
+      // 7. Reset unread counters — mirrors Angular's `this.unreadByChat.set({})`.
       state = state.copyWith(unreadByChat: const {});
 
-      // Persist to disk immediately (do not defer via _schedulePersistence so
-      // that data survives an app close that happens right after the sync).
+      // 8. Persist to disk immediately (do not defer via _schedulePersistence so
+      //    that data survives an app close that happens right after the sync).
       await persistNow();
       state = state.copyWith(
         syncProgressPercent: 100,
@@ -807,6 +834,103 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         syncProgressPercent: 0,
         syncProgressLabel: '',
       );
+    }
+  }
+
+  /// Paginated logs pull used during full sync — mirrors Angular's
+  /// `recoverMissedMessagesFromLogs` with `limit: LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT`.
+  ///
+  /// Pages through the `/messages/logs` endpoint in batches of
+  /// [_kFullSyncPageSize] (500) until there are no more results or
+  /// [_kFullSyncMaxMessages] (200 000) have been fetched — matching the
+  /// Angular behaviour exactly.
+  Future<void> _pullAllMessagesFromLogs({
+    required String user,
+    int since = 0,
+  }) async {
+    int offset = 0;
+    int totalFetched = 0;
+
+    while (totalFetched < _kFullSyncMaxMessages) {
+      final remaining = _kFullSyncMaxMessages - totalFetched;
+      final limit = remaining.clamp(1, _kFullSyncPageSize);
+
+      List<IncomingServerMessage> page;
+      try {
+        page = await _api.getMessagesFromLogs(
+          user: user,
+          limit: limit,
+          offset: offset,
+          since: since,
+        );
+      } catch (_) {
+        break; // Network error — stop paging; already have what we got.
+      }
+
+      if (page.isEmpty) break;
+
+      for (final message in page) {
+        _handleServerMessage(message);
+      }
+
+      offset += page.length;
+      totalFetched += page.length;
+
+      // Server returned fewer items than requested — we've reached the end.
+      if (page.length < limit) break;
+    }
+  }
+
+  /// Loads the groups that are persisted in the server DB and merges them into
+  /// the local state — mirrors Angular's `loadUserChatGroupsFromDb()`.
+  ///
+  /// The server record wins when its `updatedAt` is ≥ the local copy's, but a
+  /// real human-readable name is never replaced by a bare group-ID string
+  /// (matching Angular's `isGroupNameLikeId` guard).
+  Future<void> _mergeUserChatGroups() async {
+    try {
+      final dbGroups = await _api.getUserChatGroups();
+      if (dbGroups.isEmpty) return;
+
+      final groupsById = Map<String, ChatGroup>.from(state.groups);
+      bool changed = false;
+
+      for (final dbGroup in dbGroups) {
+        final existing = groupsById[dbGroup.id];
+        final dbUpdatedAt = dbGroup.updatedAt;
+        final localUpdatedAt = existing?.updatedAt ?? 0;
+
+        if (existing == null || dbUpdatedAt >= localUpdatedAt) {
+          // Preserve a real cached name when the DB record only stores the
+          // group ID as its name — mirrors Angular's `isGroupNameLikeId` guard.
+          final dbNameLooksLikeId =
+              dbGroup.name.trim().toLowerCase() == dbGroup.id.trim().toLowerCase();
+          final localHasRealName = existing != null &&
+              existing.name.trim().toLowerCase() != existing.id.trim().toLowerCase() &&
+              existing.name.trim().isNotEmpty;
+
+          if (localHasRealName && dbNameLooksLikeId) {
+            groupsById[dbGroup.id] = ChatGroup(
+              id: dbGroup.id,
+              name: existing!.name,
+              members: dbGroup.members,
+              admins: dbGroup.admins,
+              createdBy: dbGroup.createdBy,
+              updatedAt: dbGroup.updatedAt,
+              type: dbGroup.type,
+            );
+          } else {
+            groupsById[dbGroup.id] = dbGroup;
+          }
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        state = state.copyWith(groups: groupsById);
+      }
+    } catch (_) {
+      // Non-fatal: groups will be reconstructed from messages.
     }
   }
 
