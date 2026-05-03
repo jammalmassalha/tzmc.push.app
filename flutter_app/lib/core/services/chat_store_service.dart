@@ -1118,18 +1118,31 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final isGroup = groupId != null;
 
     // For self-echo push notifications (skipNotification: true), the server
-    // sends sender=currentUser and toUser/recipient=the other party. Using
-    // sender as chatId would create a spurious "self-chat". Mirror the same
-    // fix applied to _buildChatMessageFromServer.
+    // sends sender=currentUser and toUser=the other party. Using sender as
+    // chatId would create a spurious "self-chat".
+    //
+    // Two scenarios handled:
+    //  1. Normal: _currentUser is set → isSelfEcho detects sender==me, routes
+    //     by toUser.
+    //  2. Race condition on cold-start: _currentUser may be null when the push
+    //     fires.  We can't confirm "isSelfEcho" via phone comparison, but the
+    //     skipNotification flag alone tells us this is a self-echo → use toUser.
+    //
+    // In both cases we must NOT fall back to data['recipient'] — on some paths
+    // that field equals me's phone and would produce a self-chat chatId.
     final meNorm = _currentUser?.trim().toLowerCase() ?? '';
     final senderNorm = sender.trim().toLowerCase();
     final isSelfEcho = meNorm.isNotEmpty && senderNorm == meNorm;
     String chatId;
     if (isGroup) {
       chatId = groupId;
-    } else if (isSelfEcho) {
-      final toUser = (_str(data['toUser']) ?? _str(data['recipient']) ?? '').trim().toLowerCase();
-      chatId = toUser.isNotEmpty ? toUser : senderNorm;
+    } else if (isSelfEcho || skipNotification) {
+      // Use only toUser — never fall back to recipient for self-echo messages.
+      final toUser = (_str(data['toUser']) ?? '').trim().toLowerCase();
+      // Discard if there is no deterministic chat partner: this can happen with
+      // old self-echo DB log entries where ToUser == sender (self-chat artifact).
+      if (toUser.isEmpty || toUser == meNorm || toUser == senderNorm) return;
+      chatId = toUser;
     } else {
       chatId = senderNorm;
     }
@@ -1168,9 +1181,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       body: body,
       imageUrl: _str(data['image']) ?? _str(data['imageUrl']),
       fileUrl: _str(data['fileUrl']),
-      direction: isSelfEcho ? MessageDirection.outgoing : MessageDirection.incoming,
+      direction: (isSelfEcho || skipNotification) ? MessageDirection.outgoing : MessageDirection.incoming,
       timestamp: timestamp,
-      deliveryStatus: isSelfEcho ? DeliveryStatus.sent : DeliveryStatus.delivered,
+      deliveryStatus: (isSelfEcho || skipNotification) ? DeliveryStatus.sent : DeliveryStatus.delivered,
       groupId: groupId,
       groupName: _str(data['groupName']),
       groupType: groupType,
@@ -1783,15 +1796,22 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final isFromMe = me != null && senderNorm == me.trim().toLowerCase();
 
     // For 1:1 outgoing messages the server returns sender=currentUser and
-    // toUser/recipient=the other party. Using sender as chatId would create a
-    // spurious "self-chat". Mirror Angular's logic (chat-store.service.ts:6539):
-    // when the message is from the current user, use toUser/recipient as chatId.
+    // toUser=the other party. Using sender as chatId would create a spurious
+    // "self-chat". Mirror Angular's logic: when isFromMe, use toUser as chatId.
+    //
+    // IMPORTANT: do NOT fall back to msg.recipient here.  The logs endpoint
+    // always sets recipient = requestedUser (= me), so using it as a fallback
+    // when toUser is absent produces chatId = me = self-chat.
     String chatId;
     if (isGroup) {
       chatId = msg.groupId!;
     } else if (isFromMe) {
-      final toUser = (msg.toUser ?? msg.recipient ?? '').trim().toLowerCase();
-      chatId = toUser.isNotEmpty ? toUser : senderNorm;
+      final toUser = (msg.toUser ?? '').trim().toLowerCase();
+      final mePhone = me?.trim().toLowerCase() ?? '';
+      // If toUser is absent or equals the sender (a self-chat DB artifact from
+      // old self-echo log entries where ToUser = sender), skip this message.
+      if (toUser.isEmpty || (mePhone.isNotEmpty && toUser == mePhone)) return null;
+      chatId = toUser;
     } else {
       chatId = senderNorm;
     }

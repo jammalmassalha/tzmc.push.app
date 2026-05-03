@@ -43,11 +43,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initializeServices();
-    // Clear the home-screen app icon badge on first launch / cold start.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      unawaited(ref.read(pushNotificationServiceProvider).resetBadge());
-    });
+    // Badge clearing is deferred to after chat-store initialization completes
+    // so the home-screen badge stays visible until new messages are actually
+    // rendered in the chat list.  See _initializeChatStoreAndClearBadge().
   }
 
   /// Called when the app returns to the foreground.
@@ -95,21 +93,12 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     final transport = ref.read(realtimeTransportServiceProvider);
     transport.connect(user, isNetworkReachable: () => true);
 
-    // Kick off chat store initialization but do not block push notification
-    // setup on it. ChatStoreNotifier.initialize() can throw (e.g. on web
-    // while drift/sqlite-wasm warms up, or when the message-recovery
-    // network call fails); previously the .then() chain was the only path
-    // that triggered the notification permission prompt, so a single
-    // chat-store hiccup would silently suppress the browser's permission
-    // dialog forever on the web build.
-    unawaited(
-      ref
-          .read(chatStoreProvider.notifier)
-          .initialize(user)
-          .catchError((Object e, StackTrace st) {
-        debugPrint('[ChatShellScreen] chatStore.initialize error: $e');
-      }),
-    );
+    // Kick off chat store initialization. Badge clearing is intentionally
+    // deferred inside _initializeChatStoreAndClearBadge so the home-screen
+    // badge stays visible until recoverMissedMessages() has finished loading
+    // new messages — clearing it before that creates a visible gap where the
+    // badge disappears but the chat list has not yet updated.
+    unawaited(_initializeChatStoreAndClearBadge(user));
 
     // Initialize push notifications and request permission independently of
     // chat store init. ensurePermissionAndRegister() shows a Hebrew
@@ -118,18 +107,27 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     unawaited(_initializePushNotifications());
   }
 
+  /// Initializes the chat store and clears the home-screen badge only after
+  /// message recovery completes, so the badge is visible until the UI shows
+  /// the newly arrived messages.
+  Future<void> _initializeChatStoreAndClearBadge(String user) async {
+    try {
+      await ref.read(chatStoreProvider.notifier).initialize(user);
+    } catch (e, st) {
+      debugPrint('[ChatShellScreen] chatStore.initialize error: $e\n$st');
+    }
+    // By this point recoverMissedMessages() inside initialize() has run and
+    // the chat list is up-to-date.  Now it is safe to clear the badge.
+    if (mounted) {
+      unawaited(ref.read(pushNotificationServiceProvider).resetBadge());
+    }
+  }
+
   Future<void> _initializePushNotifications() async {
     try {
       await ref.read(pushNotificationServiceProvider).initialize();
     } catch (e) {
       debugPrint('[ChatShellScreen] pushNotificationService.initialize error: $e');
-    }
-    // Clear badges now that the local notifications plugin is fully
-    // initialized. This is the reliable "first-setup" clear — the earlier
-    // addPostFrameCallback call in initState runs a best-effort server-side
-    // reset but _localNotifications may not be ready yet at that point.
-    if (mounted) {
-      unawaited(ref.read(pushNotificationServiceProvider).resetBadge());
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
