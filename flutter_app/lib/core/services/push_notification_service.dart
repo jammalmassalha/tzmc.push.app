@@ -400,6 +400,29 @@ class PushNotificationService {
       settings: initSettings,
       onDidReceiveNotificationResponse: _onNotificationTapped,
     );
+
+    // Pre-create the notification channel with IMPORTANCE_HIGH on Android 8+
+    // (API 26+). FCM background notifications reference this channel ID
+    // ('chat_messages') from the manifest meta-data. If the channel doesn't
+    // exist yet when the first FCM notification arrives, Android creates it
+    // with default importance, which can delay or suppress heads-up banners.
+    // Creating it explicitly here — before any notification arrives — ensures
+    // that all FCM push notifications are delivered immediately with sound and
+    // vibration, even on a fresh install.
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      const channel = AndroidNotificationChannel(
+        'chat_messages',
+        'Chat Messages',
+        description: 'Notifications for new chat messages',
+        importance: Importance.high,
+        playSound: true,
+        enableVibration: true,
+      );
+      await _localNotifications!
+          .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>()
+          ?.createNotificationChannel(channel);
+    }
   }
 
   Future<void> _getAndRegisterToken() async {

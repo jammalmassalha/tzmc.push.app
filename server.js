@@ -5817,10 +5817,12 @@ registerFlutterPushRoutes(app, {
 });
 
 async function sendPushNotificationToUser(targetUser, message, senderuser, options) {
-    const result = await notificationService.sendPushNotificationToUser(targetUser, message, senderuser, options);
-    // Fire-and-forget fan-out to Flutter FCM tokens. Wrapped in try/catch so
-    // any FCM error (incl. missing FIREBASE_SERVICE_ACCOUNT_BASE64) never
-    // affects the web-push result returned to the caller.
+    // Fire-and-forget fan-out to Flutter FCM tokens immediately, WITHOUT waiting
+    // for the web-push pipeline. The web-push pipeline may block for several
+    // seconds (or up to ~1 minute) while it looks up subscriptions from Google
+    // Sheets when the cache is stale. Dispatching to FCM first ensures that
+    // Flutter / mobile users receive the push notification in real time,
+    // regardless of how long the web-push subscription lookup takes.
     try {
         const fanOut = flutterPushService.dispatchToUsers(targetUser, message, senderuser, options);
         if (fanOut && typeof fanOut.then === 'function') {
@@ -5835,7 +5837,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
             err && err.message ? err.message : err
         );
     }
-    return result;
+    return notificationService.sendPushNotificationToUser(targetUser, message, senderuser, options);
 }
 // --- ROUTES ---
 
