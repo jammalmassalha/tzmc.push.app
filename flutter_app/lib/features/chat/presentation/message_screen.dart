@@ -69,9 +69,10 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   /// precisely once the list has been laid out.
   final _unreadDividerKey = GlobalKey();
 
-  /// Approximate height of one message item (bubble + padding). Used to
-  /// calculate an initial scroll offset when there are many unread messages,
-  /// because a lazy ListView won't have built the divider item yet.
+  /// Approximate height of one message item (bubble + padding).
+  /// Represents a typical single-line text bubble: ~48 px content + 24 px
+  /// vertical padding.  Used both for estimating the initial scroll offset
+  /// when there are unread messages and for the floating date calculation.
   static const double _estimatedItemHeight = 72.0;
 
   @override
@@ -118,6 +119,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   /// message.  In a `reverse: true` ListView the topmost visible item has a
   /// reversed-list index of ≈ (offset + viewportHeight) / estimatedItemHeight.
   void _updateStickyDate() {
+    // No need to update while search is active — the badge is hidden.
+    if (_searchActive) return;
     if (!_scrollController.hasClients || _currentMessages.isEmpty) {
       if (_stickyDate != null) setState(() => _stickyDate = null);
       return;
