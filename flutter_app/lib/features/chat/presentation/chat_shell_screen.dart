@@ -68,6 +68,11 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     //    notification tray is cleared so the user immediately sees new content.
     final user = ref.read(currentUserProvider);
     if (user != null) {
+      // Reconnect the realtime transport in case socket/SSE dropped while the
+      // app was in the background. Auto-reconnect is disabled in socket.io so
+      // we need to trigger it explicitly on every resume.
+      ref.read(realtimeTransportServiceProvider).reconnectIfNeeded(user);
+
       try {
         await ref
             .read(chatStoreProvider.notifier)

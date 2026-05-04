@@ -84,15 +84,32 @@ class RealtimeTransportService {
 
   /// Start the transport state machine for the given user.
   /// Attempts Socket.io first, then falls back to SSE, with automatic reconnect.
+  /// Also starts a periodic polling fallback so that messages are never missed
+  /// even when both socket and SSE are unavailable (e.g. after backgrounding).
   void connect(String user, {bool Function()? isNetworkReachable}) {
     disconnect();
     _activeUser = user;
     _isNetworkReachable = isNetworkReachable ?? () => true;
 
+    // Start the poll timer as a universal fallback. _handlePollTick on the
+    // ChatStoreNotifier side skips the actual HTTP pull when socket/SSE is
+    // active, so this only adds real network calls when truly needed.
+    startPolling(user);
+
     if (!_isNetworkReachable!()) {
       return;
     }
 
+    _connectSocketPreferred(user);
+  }
+
+  /// Reconnect both socket and SSE only when neither is currently active.
+  ///
+  /// Safe to call on every app-resume; does nothing when the transport is
+  /// already connected so it won't interrupt an ongoing socket/SSE session.
+  void reconnectIfNeeded(String user) {
+    if (_socketConnected || _sseSubscription != null) return;
+    // Both transports are down — attempt a fresh connection.
     _connectSocketPreferred(user);
   }
 

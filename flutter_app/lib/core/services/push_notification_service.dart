@@ -745,6 +745,10 @@ class PushNotificationService {
   /// Set current chat in the store and push the [MessageScreen] route via the
   /// global [rootNavigatorKey]. This works from background-tap callbacks
   /// where there is no [BuildContext] in scope.
+  ///
+  /// If the navigator is not yet available (e.g. the app is still building its
+  /// widget tree on a cold start), the navigation is deferred via
+  /// [addPostFrameCallback] so it is attempted after the first rendered frame.
   void _openChatScreen(String chatId) {
     final unreadCount = _ref.read(chatStoreProvider).unreadByChat[chatId] ?? 0;
     try {
@@ -755,7 +759,20 @@ class PushNotificationService {
 
     final navigator = rootNavigatorKey.currentState;
     if (navigator == null) {
-      debugPrint('[PushNotificationService] Navigator not ready, skipping deep link');
+      debugPrint('[PushNotificationService] Navigator not ready, deferring deep link');
+      // The widget tree is still being built (cold-start). Schedule the push
+      // for the very next frame, by which time the MaterialApp navigator will
+      // be mounted and available.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final nav = rootNavigatorKey.currentState;
+        if (nav == null) {
+          debugPrint('[PushNotificationService] Navigator still not ready after post-frame, skipping deep link');
+          return;
+        }
+        nav.push(
+          MaterialPageRoute(builder: (_) => MessageScreen(chatId: chatId, initialUnreadCount: unreadCount)),
+        );
+      });
       return;
     }
     navigator.push(

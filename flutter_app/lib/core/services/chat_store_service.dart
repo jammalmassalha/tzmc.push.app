@@ -2067,7 +2067,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   }
 
   void _handlePollTick() {
-    // Pull messages on poll tick (fallback when socket/SSE unavailable)
+    // Only pull messages via HTTP when the real-time transport (socket/SSE) is
+    // not available. When socket or SSE is active, messages are delivered in
+    // real time; polling would just duplicate network calls.
+    if (_transport.transportMode != RealtimeTransportMode.polling) return;
     pullMessages();
   }
 
