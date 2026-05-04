@@ -1072,7 +1072,7 @@ class _BookingSheet extends ConsumerWidget {
           children: availableDates.map((date) {
             final name = notifier.dayName(date);
             final prefix = state.language == ShuttleLanguage.he ? 'יום ' : '';
-            final dateStr = DateFormat('dd/MM').format(date);
+            final dateStr = DateFormat('dd.MM').format(date);
             return OutlinedButton(
               onPressed: () => notifier.selectDate(date),
               style: OutlinedButton.styleFrom(
@@ -1113,7 +1113,7 @@ class _BookingSheet extends ConsumerWidget {
       final name = notifier.dayName(state.selectedDate!);
       final prefix = state.language == ShuttleLanguage.he ? 'יום ' : '';
       dateLabel =
-          '$prefix$name ${DateFormat('dd/MM/yyyy').format(state.selectedDate!)}';
+          '$prefix$name ${DateFormat('dd.MM.yyyy').format(state.selectedDate!)}';
     }
     final hasAnyEnabled = shiftOptions.any((o) => !o.disabled);
 
