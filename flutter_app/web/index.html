@@ -38,6 +38,82 @@
   <link rel="manifest" href="manifest.json">
 
   <!--
+    PWA Service Worker Update Detection
+    ------------------------------------
+    Flutter's build tool generates a flutter_service_worker.js whose filename
+    hash changes on every new deployment.  By default the old service worker
+    stays in control until ALL tabs are closed, which on iOS Safari (home-screen
+    PWA) can mean the new version is never seen.
+
+    This script wires up the standard "skip-waiting + reload" pattern so that
+    as soon as a new service worker finishes installing the app reloads silently
+    and serves fresh assets.  Flutter's generated service worker already handles
+    the { type: 'SKIP_WAITING' } postMessage — we just need to send it.
+  -->
+  <script>
+    (function () {
+      if (!('serviceWorker' in navigator)) return;
+
+      // Reload flag — prevents infinite reloads if something goes wrong.
+      var _reloading = false;
+
+      // When the active service worker changes (new one took control), reload
+      // the page so Flutter bootstraps against fresh cached assets.
+      navigator.serviceWorker.addEventListener('controllerchange', function () {
+        if (_reloading) return;
+        _reloading = true;
+        window.location.reload();
+      });
+
+      // Poll for updates while the page is visible (every 60 s).
+      // On iOS the browser won't push SW updates to a PWA on its own, so we
+      // must call registration.update() ourselves.
+      function scheduleUpdateCheck(registration) {
+        setInterval(function () {
+          if (!document.hidden) {
+            registration.update().catch(function () {});
+          }
+        }, 60 * 1000);
+      }
+
+      // Tell an already-waiting (installed but not yet active) service worker
+      // to skip the waiting phase and take control immediately.
+      function activateWaiting(registration) {
+        if (registration.waiting) {
+          registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+        }
+      }
+
+      // Wire up the updatefound listener so we catch any new SW that installs
+      // after this page load.
+      function watchForUpdates(registration) {
+        registration.addEventListener('updatefound', function () {
+          var newWorker = registration.installing;
+          if (!newWorker) return;
+
+          newWorker.addEventListener('statechange', function () {
+            // 'installed' means the new SW has finished downloading and is
+            // waiting.  Tell it to skip waiting so controllerchange fires.
+            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+              activateWaiting(registration);
+            }
+          });
+        });
+      }
+
+      navigator.serviceWorker.ready.then(function (registration) {
+        // If there is already a waiting worker from a previous install attempt,
+        // activate it immediately (happens on iOS when the page reloads before
+        // the SW had a chance to take over).
+        activateWaiting(registration);
+
+        watchForUpdates(registration);
+        scheduleUpdateCheck(registration);
+      }).catch(function () {});
+    })();
+  </script>
+
+  <!--
     Firebase JS SDK (compat) — required so the FCM web SDK used by
     `package:firebase_messaging` can register the
     `firebase-messaging-sw.js` service worker for background push
