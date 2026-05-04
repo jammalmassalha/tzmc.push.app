@@ -1577,7 +1577,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                         style: theme.textTheme.bodySmall?.copyWith(
                             color: theme.colorScheme.onSurface.withAlpha(128)))
                   else
-                    ..._history!.map((h) => _HistoryEntry(
+                    ..._history!.reversed.map((h) => _HistoryEntry(
                           entry: h,
                           displayName: _resolveDisplay(h.changedBy),
                         )),
@@ -1601,7 +1601,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                         style: theme.textTheme.bodySmall?.copyWith(
                             color: theme.colorScheme.onSurface.withAlpha(128)))
                   else
-                    ..._handlerHistory!.map((h) => _HandlerHistoryEntry(
+                    ..._handlerHistory!.reversed.map((h) => _HandlerHistoryEntry(
                           entry: h,
                           resolveDisplay: _resolveDisplay,
                         )),
