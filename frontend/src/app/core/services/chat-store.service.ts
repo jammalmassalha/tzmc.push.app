@@ -379,6 +379,7 @@ export class ChatStoreService {
   private readonly helpdeskEditorTicketsSignal = signal<HelpdeskTicket[] | null>(null);
   private readonly helpdeskHandlersSignal = signal<HelpdeskManagedUser[] | null>(null);
   private readonly helpdeskTicketsLoadingSignal = signal(false);
+  private readonly helpdeskDepartmentsSignal = signal<{ name: string; icon: string | null }[]>([]);
   private helpdeskTicketsSyncAt = 0;
   private helpdeskTicketsSyncPromise: Promise<void> | null = null;
   private lastAppliedAppBadgeCount = -1;
@@ -5027,15 +5028,19 @@ export class ChatStoreService {
     }
 
     if (state.awaiting === 'department') {
+      const depts = this.helpdeskDepartmentsSignal();
+      const options = depts.length > 0
+        ? depts.map((d) => ({ value: d.name, label: d.icon ? `${d.icon} ${d.name}` : d.name }))
+        : [
+            { value: 'מערכות מידע', label: '🖥️ מערכות מידע' },
+            { value: 'אחזקה', label: '🔧 אחזקה' }
+          ];
       return {
         key: 'department',
         title: 'בחר מחלקה',
         helperText: 'לאיזו מחלקה שייכת הבקשה?',
         mode: 'buttons',
-        options: [
-          { value: 'מערכות מידע', label: '🖥️ מערכות מידע' },
-          { value: 'אחזקה', label: '🔧 אחזקה' }
-        ],
+        options,
         allowBack: true
       };
     }
@@ -5084,6 +5089,13 @@ export class ChatStoreService {
       if (value === 'פתיחת קריאה חדשה') {
         this.saveHelpdeskState(user, { awaiting: 'department' });
         this.bumpHelpdeskPickerRevision();
+        // Fetch active departments in the background so the picker has up-to-date options
+        this.api.getHelpdeskActiveDepartments().then((depts) => {
+          if (depts.length > 0) {
+            this.helpdeskDepartmentsSignal.set(depts);
+            this.bumpHelpdeskPickerRevision();
+          }
+        }).catch(() => { /* non-critical */ });
         return;
       }
     }
@@ -5120,7 +5132,7 @@ export class ChatStoreService {
     if (!user) throw new Error('יש להתחבר לפני פתיחת קריאה');
 
     const payload: HelpdeskTicketPayload = {
-      department: department as 'מערכות מידע' | 'אחזקה',
+      department: department,
       title,
       description,
       location: location || null,

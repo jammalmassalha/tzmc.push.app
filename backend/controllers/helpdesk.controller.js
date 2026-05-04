@@ -10,9 +10,20 @@ function toPositiveInteger(value, fallbackValue) {
     return Math.floor(parsed);
 }
 
-const VALID_DEPARTMENTS = ['מערכות מידע', 'אחזקה'];
+function toNonNegativeInteger(value, fallbackValue) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 0) return fallbackValue;
+    return Math.floor(parsed);
+}
+
 const VALID_STATUSES = ['open', 'in_progress', 'resolved', 'closed'];
 const VALID_ROLES = ['Admin', 'Editor'];
+const DEFAULT_DEPARTMENTS = [
+    { name: 'מערכות מידע', icon: '🖥️' },
+    { name: 'אחזקה',       icon: '🔧' },
+    { name: 'בית מרקחת',   icon: '💊' },
+    { name: 'הנדסה רפואית', icon: '🏥' }
+];
 const ONGOING_STATUSES = new Set(['open', 'in_progress']);
 
 // Simple rate limiting store (per-user, in-memory)
@@ -195,6 +206,36 @@ async function ensureHelpdeskTables(pool) {
                 FOREIGN KEY (\`ticket_id\`) REFERENCES \`helpdesk_tickets\` (\`id\`) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `, 'helpdesk_handler_history');
+
+    await safeCreateTable(`
+        CREATE TABLE IF NOT EXISTS \`helpdesk_departments\` (
+            \`id\` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            \`name\` VARCHAR(64) NOT NULL,
+            \`icon\` VARCHAR(64) NULL DEFAULT NULL,
+            \`status\` ENUM('active','inactive') NOT NULL DEFAULT 'active',
+            \`sort_order\` INT NOT NULL DEFAULT 0,
+            \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (\`id\`),
+            UNIQUE INDEX \`idx_name\` (\`name\`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `, 'helpdesk_departments');
+
+    // Seed default departments if the table is empty
+    try {
+        const [countRows] = await pool.query('SELECT COUNT(*) AS cnt FROM `helpdesk_departments`');
+        const cnt = countRows[0] && countRows[0].cnt ? Number(countRows[0].cnt) : 0;
+        if (cnt === 0) {
+            for (let i = 0; i < DEFAULT_DEPARTMENTS.length; i++) {
+                const d = DEFAULT_DEPARTMENTS[i];
+                await pool.execute(
+                    'INSERT IGNORE INTO `helpdesk_departments` (`name`, `icon`, `sort_order`) VALUES (?, ?, ?)',
+                    [d.name, d.icon, i]
+                );
+            }
+        }
+    } catch (err) {
+        console.error('[HELPDESK] Seed departments error:', err && err.message ? err.message : err);
+    }
 }
 
 function mapTicketRow(row) {
@@ -226,6 +267,19 @@ async function getHelpdeskUserRole(pool, username) {
     } catch (err) {
         // ER_NO_SUCH_TABLE (1146) — table doesn't exist yet, treat as no role.
         if (err && err.errno === 1146) return null;
+        throw err;
+    }
+}
+
+async function getActiveDepartments(pool) {
+    try {
+        const [rows] = await pool.query(
+            'SELECT `name`, `icon` FROM `helpdesk_departments` WHERE `status` = ? ORDER BY `sort_order`, `id`',
+            ['active']
+        );
+        return rows.map((r) => ({ name: r.name, icon: r.icon || null }));
+    } catch (err) {
+        if (err && err.errno === 1146) return DEFAULT_DEPARTMENTS.map((d) => ({ name: d.name, icon: d.icon }));
         throw err;
     }
 }
@@ -329,7 +383,11 @@ function registerHelpdeskController(app, deps = {}) {
         const phone = toTrimmedString(body.phone || '') || null;
         const attachmentUrl = toTrimmedString(body.attachmentUrl || '') || null;
 
-        if (!VALID_DEPARTMENTS.includes(department)) {
+        if (!department) {
+            return res.status(400).json({ result: 'error', message: 'יש לבחור מחלקה' });
+        }
+        const activeDepts = await getActiveDepartments(pool);
+        if (!activeDepts.some((d) => d.name === department)) {
             return res.status(400).json({ result: 'error', message: 'מחלקה לא תקינה' });
         }
         if (!title) {
@@ -968,10 +1026,11 @@ function registerHelpdeskController(app, deps = {}) {
 
         if (!targetUsername) return res.status(400).json({ result: 'error', message: 'יש להזין שם משתמש' });
         if (!VALID_ROLES.includes(role)) return res.status(400).json({ result: 'error', message: 'תפקיד לא תקין' });
-        if (!VALID_DEPARTMENTS.includes(department)) return res.status(400).json({ result: 'error', message: 'מחלקה לא תקינה' });
 
         try {
             await getTablesReady();
+            const allDepts = await getActiveDepartments(pool);
+            if (!allDepts.some((d) => d.name === department)) return res.status(400).json({ result: 'error', message: 'מחלקה לא תקינה' });
             const editorRole = await getHelpdeskUserRole(pool, user);
             if (!editorRole || editorRole.role !== 'Admin') {
                 return res.status(403).json({ result: 'error', message: 'רק מנהל יכול להוסיף משתמשים' });
@@ -1010,6 +1069,172 @@ function registerHelpdeskController(app, deps = {}) {
             const message = error && error.message ? error.message : 'Failed to remove user';
             console.error('[HELPDESK] Remove user error:', message);
             return res.status(500).json({ result: 'error', message: 'שגיאה בהסרת המשתמש' });
+        }
+    });
+
+    // GET /helpdesk/departments/active - Public: list active departments (for dept picker)
+    app.get(['/helpdesk/departments/active', '/notify/helpdesk/departments/active'], requireUser, helpdeskRateLimit(60, 60 * 1000), async (_req, res) => {
+        try {
+            await getTablesReady();
+            const depts = await getActiveDepartments(pool);
+            return res.json({ result: 'success', departments: depts });
+        } catch (error) {
+            const message = error && error.message ? error.message : 'Failed to load departments';
+            console.error('[HELPDESK] List active departments error:', message);
+            return res.status(500).json({ result: 'error', message: 'שגיאה בטעינת המחלקות' });
+        }
+    });
+
+    // GET /helpdesk/departments - Admin: list all departments (including inactive)
+    app.get(['/helpdesk/departments', '/notify/helpdesk/departments'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
+        const user = toTrimmedString(req.resolvedUser || '');
+        if (!user) return res.status(401).json({ result: 'error', message: 'Authentication required' });
+        try {
+            await getTablesReady();
+            const editorRole = await getHelpdeskUserRole(pool, user);
+            if (!editorRole || editorRole.role !== 'Admin') {
+                return res.status(403).json({ result: 'error', message: 'אין הרשאה' });
+            }
+            const [rows] = await pool.query(
+                'SELECT `id`, `name`, `icon`, `status`, `sort_order`, `created_at` FROM `helpdesk_departments` ORDER BY `sort_order`, `id`'
+            );
+            const departments = rows.map((r) => ({
+                id: r.id,
+                name: r.name,
+                icon: r.icon || null,
+                status: r.status,
+                sortOrder: r.sort_order,
+                createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at || '')
+            }));
+            return res.json({ result: 'success', departments });
+        } catch (error) {
+            const message = error && error.message ? error.message : 'Failed to load departments';
+            console.error('[HELPDESK] List departments error:', message);
+            return res.status(500).json({ result: 'error', message: 'שגיאה בטעינת המחלקות' });
+        }
+    });
+
+    // POST /helpdesk/departments - Admin: add a department
+    app.post(['/helpdesk/departments', '/notify/helpdesk/departments'], requireUser, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
+        const user = toTrimmedString(req.resolvedUser || '');
+        if (!user) return res.status(401).json({ result: 'error', message: 'Authentication required' });
+        const body = req.body && typeof req.body === 'object' ? req.body : {};
+        const name = toTrimmedString(body.name || '');
+        const icon = toTrimmedString(body.icon || '') || null;
+        const status = toTrimmedString(body.status || 'active');
+        const sortOrder = toNonNegativeInteger(body.sortOrder ?? body.sort_order, 0);
+
+        if (!name) return res.status(400).json({ result: 'error', message: 'יש להזין שם מחלקה' });
+        if (!['active', 'inactive'].includes(status)) return res.status(400).json({ result: 'error', message: 'סטטוס לא תקין' });
+
+        try {
+            await getTablesReady();
+            const editorRole = await getHelpdeskUserRole(pool, user);
+            if (!editorRole || editorRole.role !== 'Admin') {
+                return res.status(403).json({ result: 'error', message: 'רק מנהל יכול לנהל מחלקות' });
+            }
+            const [result] = await pool.execute(
+                'INSERT INTO `helpdesk_departments` (`name`, `icon`, `status`, `sort_order`) VALUES (?, ?, ?, ?)',
+                [name, icon, status, sortOrder]
+            );
+            return res.status(201).json({ result: 'success', id: result.insertId });
+        } catch (error) {
+            if (error && error.code === 'ER_DUP_ENTRY') {
+                return res.status(409).json({ result: 'error', message: 'מחלקה בשם זה כבר קיימת' });
+            }
+            const message = error && error.message ? error.message : 'Failed to add department';
+            console.error('[HELPDESK] Add department error:', message);
+            return res.status(500).json({ result: 'error', message: 'שגיאה בהוספת המחלקה' });
+        }
+    });
+
+    // PUT /helpdesk/departments/:id - Admin: edit a department
+    app.put(['/helpdesk/departments/:id', '/notify/helpdesk/departments/:id'], requireUser, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
+        const user = toTrimmedString(req.resolvedUser || '');
+        if (!user) return res.status(401).json({ result: 'error', message: 'Authentication required' });
+        const deptId = toPositiveInteger(req.params && req.params.id, null);
+        if (!deptId) return res.status(400).json({ result: 'error', message: 'מזהה מחלקה לא תקין' });
+
+        const body = req.body && typeof req.body === 'object' ? req.body : {};
+        const name = toTrimmedString(body.name || '');
+        const icon = body.icon !== undefined ? (toTrimmedString(body.icon) || null) : undefined;
+        const status = body.status !== undefined ? toTrimmedString(body.status) : undefined;
+        const sortOrder = (body.sortOrder !== undefined || body.sort_order !== undefined)
+            ? toNonNegativeInteger(body.sortOrder ?? body.sort_order, 0)
+            : undefined;
+
+        if (status !== undefined && !['active', 'inactive'].includes(status)) {
+            return res.status(400).json({ result: 'error', message: 'סטטוס לא תקין' });
+        }
+
+        try {
+            await getTablesReady();
+            const editorRole = await getHelpdeskUserRole(pool, user);
+            if (!editorRole || editorRole.role !== 'Admin') {
+                return res.status(403).json({ result: 'error', message: 'רק מנהל יכול לנהל מחלקות' });
+            }
+
+            const setClauses = [];
+            const params = [];
+            if (name) { setClauses.push('`name` = ?'); params.push(name); }
+            if (icon !== undefined) { setClauses.push('`icon` = ?'); params.push(icon); }
+            if (status !== undefined) { setClauses.push('`status` = ?'); params.push(status); }
+            if (sortOrder !== undefined) { setClauses.push('`sort_order` = ?'); params.push(sortOrder); }
+
+            if (!setClauses.length) return res.status(400).json({ result: 'error', message: 'לא הועברו שדות לעדכון' });
+
+            params.push(deptId);
+            const [result] = await pool.execute(
+                `UPDATE \`helpdesk_departments\` SET ${setClauses.join(', ')} WHERE \`id\` = ?`,
+                params
+            );
+            if (result.affectedRows === 0) return res.status(404).json({ result: 'error', message: 'מחלקה לא נמצאה' });
+            return res.json({ result: 'success' });
+        } catch (error) {
+            if (error && error.code === 'ER_DUP_ENTRY') {
+                return res.status(409).json({ result: 'error', message: 'מחלקה בשם זה כבר קיימת' });
+            }
+            const message = error && error.message ? error.message : 'Failed to update department';
+            console.error('[HELPDESK] Update department error:', message);
+            return res.status(500).json({ result: 'error', message: 'שגיאה בעדכון המחלקה' });
+        }
+    });
+
+    // DELETE /helpdesk/departments/:id - Admin: delete a department (blocked if tickets reference it)
+    app.delete(['/helpdesk/departments/:id', '/notify/helpdesk/departments/:id'], requireUser, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
+        const user = toTrimmedString(req.resolvedUser || '');
+        if (!user) return res.status(401).json({ result: 'error', message: 'Authentication required' });
+        const deptId = toPositiveInteger(req.params && req.params.id, null);
+        if (!deptId) return res.status(400).json({ result: 'error', message: 'מזהה מחלקה לא תקין' });
+
+        try {
+            await getTablesReady();
+            const editorRole = await getHelpdeskUserRole(pool, user);
+            if (!editorRole || editorRole.role !== 'Admin') {
+                return res.status(403).json({ result: 'error', message: 'רק מנהל יכול לנהל מחלקות' });
+            }
+
+            // Fetch the name before deleting so we can check ticket references
+            const [deptRows] = await pool.query('SELECT `name` FROM `helpdesk_departments` WHERE `id` = ? LIMIT 1', [deptId]);
+            if (!deptRows.length) return res.status(404).json({ result: 'error', message: 'מחלקה לא נמצאה' });
+            const deptName = deptRows[0].name;
+
+            // Block deletion if any tickets reference this department
+            const [ticketCount] = await pool.query(
+                'SELECT COUNT(*) AS cnt FROM `helpdesk_tickets` WHERE `department` = ?',
+                [deptName]
+            );
+            const cnt = ticketCount[0] && ticketCount[0].cnt ? Number(ticketCount[0].cnt) : 0;
+            if (cnt > 0) {
+                return res.status(409).json({ result: 'error', message: `לא ניתן למחוק מחלקה שיש לה ${cnt} קריאות. שנה סטטוס ל-inactive במקום.` });
+            }
+
+            await pool.execute('DELETE FROM `helpdesk_departments` WHERE `id` = ?', [deptId]);
+            return res.json({ result: 'success' });
+        } catch (error) {
+            const message = error && error.message ? error.message : 'Failed to delete department';
+            console.error('[HELPDESK] Delete department error:', message);
+            return res.status(500).json({ result: 'error', message: 'שגיאה במחיקת המחלקה' });
         }
     });
 }

@@ -1564,6 +1564,25 @@ export class ChatApiService {
     return Array.isArray(body.locations) ? body.locations : [];
   }
 
+  async getHelpdeskActiveDepartments(): Promise<{ name: string; icon: string | null }[]> {
+    const url = `${this.notifyBaseUrl}/helpdesk/departments/active?_ts=${Date.now()}&ngsw-bypass=1`;
+    try {
+      const response = await this.fetchWithRetry(url, { cache: 'no-store' }, { retries: 1, timeoutMs: 8000 });
+      const body = await response.json() as { result?: string; departments?: { name: string; icon: string | null }[] };
+      if (response.ok && body.result === 'success' && Array.isArray(body.departments)) {
+        return body.departments;
+      }
+    } catch {
+      // Non-critical — fall back to defaults
+    }
+    return [
+      { name: 'מערכות מידע', icon: '🖥️' },
+      { name: 'אחזקה', icon: '🔧' },
+      { name: 'בית מרקחת', icon: '💊' },
+      { name: 'הנדסה רפואית', icon: '🏥' }
+    ];
+  }
+
   async uploadHelpdeskAttachment(file: File): Promise<string> {
     const formData = new FormData();
     formData.append('file', file, file.name);

@@ -980,6 +980,123 @@ class ChatApiService {
     return url;
   }
 
+  /// Get active helpdesk departments (used by department picker for all users).
+  Future<List<HelpdeskDepartmentEntry>> getActiveHelpdeskDepartments(String user) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) throw ApiException('User is required');
+
+    final response = await _client.get<Map<String, dynamic>>(
+      ApiEndpoints.helpdeskDepartmentsActive,
+      queryParameters: {'user': normalizedUser},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+
+    if (!response.isSuccessful) {
+      throw ApiException('Fetch active departments failed with ${response.statusCode}');
+    }
+
+    final list = response.data?['departments'] as List? ?? [];
+    return list
+        .map((e) => HelpdeskDepartmentEntry.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Get all helpdesk departments (Admin only).
+  Future<List<HelpdeskDepartmentEntry>> getAllHelpdeskDepartments(String user) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) throw ApiException('User is required');
+
+    final response = await _client.get<Map<String, dynamic>>(
+      ApiEndpoints.helpdeskDepartments,
+      queryParameters: {'user': normalizedUser},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+
+    if (!response.isSuccessful) {
+      final msg = response.data?['message'] as String? ?? 'שגיאה בטעינת המחלקות';
+      throw ApiException(msg);
+    }
+
+    final list = response.data?['departments'] as List? ?? [];
+    return list
+        .map((e) => HelpdeskDepartmentEntry.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Add a new helpdesk department (Admin only).
+  Future<int> addHelpdeskDepartment(String user, {
+    required String name,
+    String? icon,
+    String status = 'active',
+    int sortOrder = 0,
+  }) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) throw ApiException('User is required');
+
+    final response = await _client.post<Map<String, dynamic>>(
+      ApiEndpoints.helpdeskDepartments,
+      data: {
+        'user': normalizedUser,
+        'name': name,
+        'icon': icon,
+        'status': status,
+        'sortOrder': sortOrder,
+      },
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+
+    final body = response.data ?? {};
+    if (!response.isSuccessful || body['result'] == 'error') {
+      throw ApiException(body['message'] as String? ?? 'שגיאה בהוספת המחלקה');
+    }
+    return (body['id'] as num?)?.toInt() ?? 0;
+  }
+
+  /// Update a helpdesk department (Admin only).
+  Future<void> updateHelpdeskDepartment(String user, int deptId, {
+    String? name,
+    String? icon,
+    String? status,
+    int? sortOrder,
+  }) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) throw ApiException('User is required');
+
+    final data = <String, dynamic>{'user': normalizedUser};
+    if (name != null) data['name'] = name;
+    if (icon != null) data['icon'] = icon;
+    if (status != null) data['status'] = status;
+    if (sortOrder != null) data['sortOrder'] = sortOrder;
+
+    final response = await _client.put<Map<String, dynamic>>(
+      '${ApiEndpoints.helpdeskDepartments}/$deptId',
+      data: data,
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+
+    final body = response.data ?? {};
+    if (!response.isSuccessful || body['result'] == 'error') {
+      throw ApiException(body['message'] as String? ?? 'שגיאה בעדכון המחלקה');
+    }
+  }
+
+  /// Delete a helpdesk department (Admin only).
+  Future<void> deleteHelpdeskDepartment(String user, int deptId) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) throw ApiException('User is required');
+
+    final response = await _client.delete<Map<String, dynamic>>(
+      '${ApiEndpoints.helpdeskDepartments}/$deptId',
+      data: {'user': normalizedUser},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+
+    final body = response.data ?? {};
+    if (!response.isSuccessful || body['result'] == 'error') {
+      throw ApiException(body['message'] as String? ?? 'שגיאה במחיקת המחלקה');
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Convenience Methods (for Flutter screens)
   // ---------------------------------------------------------------------------
@@ -1028,7 +1145,7 @@ class ChatApiService {
     required String user,
     required String subject,
     required String description,
-    required HelpdeskDepartment department,
+    required String department,
     required String priority,
     String? location,
     String? phone,
