@@ -1073,7 +1073,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // GET /helpdesk/departments/active - Public: list active departments (for dept picker)
-    app.get(['/helpdesk/departments/active', '/notify/helpdesk/departments/active'], requireUser, helpdeskRateLimit(60, 60 * 1000), async (_req, res) => {
+    app.get(['/helpdesk/departments/active', '/notify/helpdesk/departments/active'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (_req, res) => {
         try {
             await getTablesReady();
             const depts = await getActiveDepartments(pool);
