@@ -6,6 +6,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -900,7 +901,56 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
-  
-  // We can't access providers here, so just log for now
-  // The message will be processed when the app opens
+
+  final data = message.data;
+
+  // Skip silent / action-only payloads — only real chat messages should
+  // contribute to the pending unread tray.
+  final type = (data['type'] ?? '').toString().trim().toLowerCase();
+  // These payload types carry server-side actions (edits, deletes, reactions,
+  // read receipts) rather than new user messages, so they must not increment
+  // the unread tray counter.
+  const _actionOnlyTypes = {
+    'read-receipt', 'read',
+    'delete-action', 'delete',
+    'edit-action', 'edit',
+    'group-update', 'typing', 'reaction',
+  };
+  final skipNotification = data['skipNotification'] == true ||
+      data['skipNotification'] == 'true';
+  if (skipNotification || _actionOnlyTypes.contains(type)) return;
+
+  // Resolve the chatId using the same priority as PushNotificationService
+  // does when routing a foreground message: groupId first, then sender.
+  final groupId = (data['groupId'] ?? '').toString().trim();
+  final sender =
+      (data['sender'] ?? data['fromUser'] ?? '').toString().trim().toLowerCase();
+  final chatId = groupId.isNotEmpty ? groupId : sender;
+  if (chatId.isEmpty) return;
+
+  // Persist the pending unread count to SharedPreferences so that
+  // ChatStoreNotifier.initialize() can display accurate badges immediately
+  // on the next foreground launch — before the network recovery pull has
+  // had a chance to complete.
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final existing = prefs.getString(kPendingChatUpdatesKey) ?? '{}';
+    final Map<String, dynamic> pending =
+        jsonDecode(existing) as Map<String, dynamic>;
+
+    final prev = pending[chatId] as Map<String, dynamic>?;
+    final ts = int.tryParse(data['timestamp']?.toString() ?? '') ??
+        DateTime.now().millisecondsSinceEpoch;
+
+    pending[chatId] = {
+      'unreadCount': ((prev?['unreadCount'] as int?) ?? 0) + 1,
+      // Keep the earliest timestamp so delta-fetch can use it as a lower bound.
+      'pendingSince': prev?['pendingSince'] ?? ts,
+    };
+
+    await prefs.setString(kPendingChatUpdatesKey, jsonEncode(pending));
+    debugPrint('[BGHandler] Saved pending tray: chatId=$chatId');
+  } catch (e) {
+    debugPrint('[BGHandler] Failed to save pending tray: $e');
+  }
 }

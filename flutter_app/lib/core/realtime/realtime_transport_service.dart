@@ -108,7 +108,10 @@ class RealtimeTransportService {
   /// Safe to call on every app-resume; does nothing when the transport is
   /// already connected so it won't interrupt an ongoing socket/SSE session.
   void reconnectIfNeeded(String user) {
-    if (_socketConnected || _sseSubscription != null) return;
+    if (_socketConnected || _sseSubscription != null) {
+      _logger.d('reconnectIfNeeded: skipped — transport already active (socket=$_socketConnected, sse=${_sseSubscription != null})');
+      return;
+    }
     // Both transports are down — attempt a fresh connection.
     _connectSocketPreferred(user);
   }

@@ -9,6 +9,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/chat_api_service.dart';
 import '../database/chat_database.dart' hide Contact;
@@ -37,6 +38,16 @@ const int _kFullSyncPageSize = 500;
 /// Maximum messages fetched during a full sync — mirrors Angular's
 /// `LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT = 200000`.
 const int _kFullSyncMaxMessages = 200000;
+
+/// SharedPreferences key for the "pending chat updates" tray.
+///
+/// Written by [firebaseMessagingBackgroundHandler] (in
+/// push_notification_service.dart) each time a notification arrives while
+/// the app is not in the foreground. Read and cleared by
+/// [ChatStoreNotifier.initialize] on the next app launch so that unread
+/// badges are immediately available — even before the network recovery
+/// pull completes — and so any messages missed by the pull are still counted.
+const String kPendingChatUpdatesKey = 'tzmc_pending_chat_updates_v1';
 
 // ---------------------------------------------------------------------------
 // Chat State
@@ -252,13 +263,19 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // of initialise() – most importantly the server-side gap-analysis pull –
       // still runs, so the user sees their chat history without having to
       // manually press "sync".
+      //
+      // NOTE: unreadByChat is intentionally NOT restored from the persisted
+      // snapshot — stale counts from a previous session would mislead the user
+      // if they've since read those messages on another device.  The correct
+      // unread counts are accumulated fresh by recoverMissedMessages() below
+      // and supplemented by the background-notification tray (step 4).
       try {
         final persisted = await _db.getPersistedState();
         state = state.copyWith(
           contacts: Map.fromEntries(persisted.contacts.map((c) => MapEntry(c.username, c))),
           groups: Map.fromEntries(persisted.groups.map((g) => MapEntry(g.id, g))),
           messagesByChat: _groupMessagesByChat(persisted.messages),
-          unreadByChat: persisted.unreadByChat,
+          unreadByChat: const {},
         );
       } catch (dbError) {
         debugPrint('[ChatStore] DB restore failed, trying web storage fallback: $dbError');
@@ -272,7 +289,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
                 contacts: Map.fromEntries(webPersisted.contacts.map((c) => MapEntry(c.username, c))),
                 groups: Map.fromEntries(webPersisted.groups.map((g) => MapEntry(g.id, g))),
                 messagesByChat: _groupMessagesByChat(webPersisted.messages),
-                unreadByChat: webPersisted.unreadByChat,
+                unreadByChat: const {},
               );
               debugPrint('[ChatStore] Restored state from web storage (${webPersisted.messages.length} messages)');
             }
@@ -296,21 +313,41 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // this point, which advances _lastGapAnalysisTime.  Without force the
       // cooldown would silently skip the initial pull and leave the chat list
       // empty until the next poll tick (≥15 s).
+      //
+      // This accurately re-counts unread messages by calling
+      // _handleIncomingTextMessage for every new incoming message, starting
+      // from the empty unreadByChat set above.
       await recoverMissedMessages(force: true);
 
-      // Clear unread counts on app initialization so the user doesn't see
-      // stale badges from a previous session or from messages received while
-      // offline.  The guard `if (state.isInitialized) return` at the top of
-      // `initialize()` ensures this block only runs once per app lifecycle.
-      // The unread counter starts accumulating again from realtime events
-      // after this point.
+      // 4. Merge the background-notification pending tray (safety net).
+      //
+      // When notifications arrive while the app is terminated, the
+      // firebaseMessagingBackgroundHandler saves each chat's pending unread
+      // count to SharedPreferences.  Read that tray now and use it to fill
+      // in any chats that the recovery pull may have missed (e.g. server
+      // lag, network error, message not yet persisted when the logs endpoint
+      // was queried).  We take the MAX so we never downgrade a count that
+      // the pull already computed correctly.
+      final tray = await _readAndClearPendingTray();
+      if (tray.isNotEmpty) {
+        final merged = Map<String, int>.from(state.unreadByChat);
+        for (final entry in tray.entries) {
+          final existing = merged[entry.key] ?? 0;
+          if (entry.value > existing) {
+            merged[entry.key] = entry.value;
+          }
+        }
+        state = state.copyWith(unreadByChat: merged);
+      }
+
+      // Mark initialization complete, keeping the freshly-accumulated unread
+      // counts (from recoverMissedMessages + tray) intact.
       state = state.copyWith(
         isLoading: false,
         isInitialized: true,
-        unreadByChat: const {},
       );
 
-      // 4. Schedule periodic persistence
+      // 5. Schedule periodic persistence
       _schedulePersistence();
     } catch (e) {
       state = state.copyWith(isLoading: false);
@@ -2070,8 +2107,50 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // Only pull messages via HTTP when the real-time transport (socket/SSE) is
     // not available. When socket or SSE is active, messages are delivered in
     // real time; polling would just duplicate network calls.
-    if (_transport.transportMode != RealtimeTransportMode.polling) return;
+    if (_transport.transportMode != RealtimeTransportMode.polling) {
+      debugPrint('[ChatStore] Poll tick skipped — transport is ${_transport.transportMode.name}');
+      return;
+    }
     pullMessages();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Background Notification Tray
+  // ---------------------------------------------------------------------------
+
+  /// Read the SharedPreferences "pending chat updates" tray that was written
+  /// by [firebaseMessagingBackgroundHandler] while the app was not in the
+  /// foreground, then clear it so the same counts are never applied twice.
+  ///
+  /// Returns a map of chatId → accumulated unread count.  Returns an empty
+  /// map on web (where the FCM background handler is not used) and on any
+  /// error (failures are non-fatal; the recovery pull already handles the
+  /// common case).
+  Future<Map<String, int>> _readAndClearPendingTray() async {
+    if (kIsWeb) return {};
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final json = prefs.getString(kPendingChatUpdatesKey);
+      if (json == null || json.isEmpty) return {};
+      // Clear immediately so a crash/re-entry can't double-apply.
+      await prefs.remove(kPendingChatUpdatesKey);
+      final raw = jsonDecode(json) as Map<String, dynamic>;
+      final result = <String, int>{};
+      for (final entry in raw.entries) {
+        final val = entry.value;
+        int count = 0;
+        if (val is int) {
+          count = val;
+        } else if (val is Map) {
+          count = (val['unreadCount'] as int?) ?? 0;
+        }
+        if (count > 0) result[entry.key] = count;
+      }
+      return result;
+    } catch (e) {
+      debugPrint('[ChatStore] Failed to read pending tray: $e');
+      return {};
+    }
   }
 
   // ---------------------------------------------------------------------------
