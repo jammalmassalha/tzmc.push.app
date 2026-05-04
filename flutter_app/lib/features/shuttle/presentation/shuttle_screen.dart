@@ -121,13 +121,34 @@ class ShuttleState {
     );
   }
   
-  /// Get ongoing orders
-  List<ShuttleUserOrderPayload> get ongoingOrders => 
-    userOrders.where((o) => o.isOngoing && !o.isCancelled).toList();
-  
-  /// Get past orders
-  List<ShuttleUserOrderPayload> get pastOrders => 
-    userOrders.where((o) => !o.isOngoing || o.isCancelled).toList();
+  /// Returns the best ISO date string (`yyyy-MM-dd`) for an order, accepting
+  /// `dateIso`, ISO-formatted `date`, or `dd/MM/yyyy`-style `date`.
+  static String _orderDateKey(ShuttleUserOrderPayload o) {
+    final iso = (o.dateIso ?? '').trim();
+    if (iso.isNotEmpty) return iso;
+    final raw = (o.date ?? '').trim();
+    if (raw.isEmpty) return '';
+    if (RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(raw)) return raw;
+    final m = RegExp(r'^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$').firstMatch(raw);
+    if (m != null) {
+      return '${m.group(3)}-${m.group(2)!.padLeft(2, '0')}-${m.group(1)!.padLeft(2, '0')}';
+    }
+    return raw;
+  }
+
+  /// Get ongoing orders – sorted ascending (earliest first).
+  List<ShuttleUserOrderPayload> get ongoingOrders {
+    final list = userOrders.where((o) => o.isOngoing && !o.isCancelled).toList();
+    list.sort((a, b) => _orderDateKey(a).compareTo(_orderDateKey(b)));
+    return list;
+  }
+
+  /// Get past orders – sorted descending (most recent first).
+  List<ShuttleUserOrderPayload> get pastOrders {
+    final list = userOrders.where((o) => !o.isOngoing || o.isCancelled).toList();
+    list.sort((a, b) => _orderDateKey(b).compareTo(_orderDateKey(a)));
+    return list;
+  }
     
   /// Check if we can go back from current step
   bool get canGoBack => currentStep != ShuttleBookingStep.menu;
