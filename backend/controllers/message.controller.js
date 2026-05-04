@@ -5,6 +5,7 @@ function registerMessageController(app, deps = {}) {
         fetchWithRetry,
         buildGoogleSheetGetUrl,
         getLogsMessagesForUser,
+        getMessageActivitiesForUser,
         getHardcodedGroupIds,
         getHardcodedGroupMembers,
         // Legacy static fallbacks (kept for backward compatibility)
@@ -698,7 +699,30 @@ function registerMessageController(app, deps = {}) {
                 }).filter(Boolean);
 
                 const dedupedMessages = dedupeLogsMessages(messages);
-                return res.json({ result: 'success', messages: dedupedMessages });
+
+                // Append action records (edit-action, reaction, delete-action) from
+                // MessageActivities so a fresh Flutter sync restores edits and
+                // reactions that were applied after the original messages were logged.
+                // Fire-and-forget failure — if this table doesn't exist yet or the
+                // query fails, the regular messages are still returned normally.
+                let actionRecords = [];
+                try {
+                    if (typeof getMessageActivitiesForUser === 'function') {
+                        actionRecords = await getMessageActivitiesForUser(user, { since, limit });
+                    }
+                } catch (_actErr) {
+                    // Non-fatal: action records are supplementary
+                }
+
+                // Merge & sort by timestamp so the client processes them in
+                // chronological order (original messages first, then their edits).
+                const allMessages = actionRecords.length
+                    ? [...dedupedMessages, ...actionRecords].sort(
+                        (a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0)
+                      )
+                    : dedupedMessages;
+
+                return res.json({ result: 'success', messages: allMessages });
             } catch (error) {
                 console.error('[LOGS SYNC] Failed:', error.message);
                 return res.status(502).json({ messages: [], error: 'Logs sync failed' });

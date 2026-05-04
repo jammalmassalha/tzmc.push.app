@@ -18,6 +18,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../features/auth/presentation/auth_state.dart';
 import '../../features/chat/presentation/message_screen.dart';
+import '../../features/helpdesk/presentation/helpdesk_screen.dart';
 import '../../firebase_options.dart';
 import '../api/chat_api_service.dart';
 import '../navigation/root_navigator.dart';
@@ -27,6 +28,15 @@ import '../services/chat_store_service.dart';
 // to re-enable notifications from the system Settings screen, so we don't
 // show the "go to settings" dialog every time the app starts.
 const String _kPushSettingsNagShownKey = 'push_settings_nag_shown_v1';
+
+// Group key used to cluster all chat/helpdesk notifications into a single
+// collapsed group on Android and as the iOS thread identifier.
+const String _kNotificationGroupKey = 'com.tzmc.chat_group';
+
+// Fixed notification ID for the Android group summary. Must not collide with
+// the IDs used for individual messages (message.hashCode, which is non-zero
+// in practice). Using 0 keeps it well separated.
+const int _kGroupSummaryNotificationId = 0;
 
 // Platform detection helper
 bool get _isNativePlatform {
@@ -390,6 +400,29 @@ class PushNotificationService {
       settings: initSettings,
       onDidReceiveNotificationResponse: _onNotificationTapped,
     );
+
+    // Pre-create the notification channel with IMPORTANCE_HIGH on Android 8+
+    // (API 26+). FCM background notifications reference this channel ID
+    // ('chat_messages') from the manifest meta-data. If the channel doesn't
+    // exist yet when the first FCM notification arrives, Android creates it
+    // with default importance, which can delay or suppress heads-up banners.
+    // Creating it explicitly here — before any notification arrives — ensures
+    // that all FCM push notifications are delivered immediately with sound and
+    // vibration, even on a fresh install.
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      const channel = AndroidNotificationChannel(
+        'chat_messages',
+        'Chat Messages',
+        description: 'Notifications for new chat messages',
+        importance: Importance.high,
+        playSound: true,
+        enableVibration: true,
+      );
+      await _localNotifications!
+          .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>()
+          ?.createNotificationChannel(channel);
+    }
   }
 
   Future<void> _getAndRegisterToken() async {
@@ -514,14 +547,30 @@ class PushNotificationService {
     // Apply push payload (also schedules recovery pulls)
     _applyPushPayload(message);
 
-    // Navigate to the relevant chat
-    _navigateToChat(message);
+    // Navigate to the relevant screen based on notification type
+    final type = (message.data['type'] ?? '').toString().trim().toLowerCase();
+    if (type == 'helpdesk_assigned' || type == 'helpdesk') {
+      _openHelpdeskScreen();
+    } else if (type == 'helpdesk_ticket') {
+      // helpdesk_ticket messages are delivered under 'מוקד איחוד' chat.
+      // Navigate directly to that chat so the user sees the new message.
+      _navigateToChat(message);
+    } else {
+      _navigateToChat(message);
+    }
   }
 
   /// Handle local notification tap (foreground notifications)
   void _onNotificationTapped(NotificationResponse response) {
     final payload = response.payload;
     if (payload == null) return;
+
+    // Helpdesk notifications are encoded as "helpdesk:{ticketId}"
+    if (payload.startsWith('helpdesk:')) {
+      debugPrint('[PushNotificationService] Helpdesk notification tapped');
+      _openHelpdeskScreen();
+      return;
+    }
 
     // Format: "chatId:messageId"
     final parts = payload.split(':');
@@ -553,6 +602,7 @@ class PushNotificationService {
       'edit',
       'group-update',
       'typing',
+      'reaction',
     };
     final type = (data['type'] ?? '').toString().trim().toLowerCase();
     return silentTypes.contains(type);
@@ -574,6 +624,8 @@ class PushNotificationService {
     // we don't need to do anything here.
     if (kIsWeb || _localNotifications == null) return;
 
+    // All individual notifications share the same group key so the OS
+    // collapses them into a single group entry in the notification shade.
     const androidDetails = AndroidNotificationDetails(
       'chat_messages',
       'Chat Messages',
@@ -582,12 +634,17 @@ class PushNotificationService {
       priority: Priority.high,
       showWhen: true,
       icon: '@drawable/ic_notification',
+      groupKey: _kNotificationGroupKey,
+      // Children handle their own sound/vibration; the summary is silent.
+      groupAlertBehavior: GroupAlertBehavior.children,
     );
 
     const iosDetails = DarwinNotificationDetails(
       presentAlert: true,
       presentBadge: true,
       presentSound: true,
+      // Groups related notifications in iOS Notification Center.
+      threadIdentifier: _kNotificationGroupKey,
     );
 
     const details = NotificationDetails(
@@ -595,18 +652,69 @@ class PushNotificationService {
       iOS: iosDetails,
     );
 
-    // Extract chat ID from data
+    // Extract chat/helpdesk ID from data for the local notification payload.
+    // For helpdesk notifications the payload is encoded as "helpdesk:{ticketId}"
+    // so the tap handler can distinguish them from regular chat notifications.
     final data = message.data;
-    final chatId = data['chatId'] ?? data['groupId'] ?? '';
-    final messageId = data['messageId'] ?? '';
+    final type = (data['type'] ?? '').toString().trim().toLowerCase();
+    final String notificationPayload;
+    if (type == 'helpdesk_assigned' || type == 'helpdesk') {
+      final ticketId = (data['ticketId'] ?? '').toString().trim();
+      notificationPayload = 'helpdesk:$ticketId';
+    } else {
+      // Fall back to sender when chatId/groupId are absent (e.g. helpdesk_ticket messages
+      // sent under 'מוקד איחוד' use the senderuser as the chatId).
+      final chatId = data['chatId'] ?? data['groupId'] ?? data['sender'] ?? '';
+      final messageId = data['messageId'] ?? '';
+      notificationPayload = '$chatId:$messageId';
+    }
 
     await _localNotifications!.show(
       id: message.hashCode,
       title: notification.title,
-      body: notification.body,
+      body: (() {
+        // Prefer data fields over the FCM notification.body — they are always
+        // set by the backend and survive payload transformations on every
+        // platform, whereas notification.body may be absent in edge cases.
+        final fromData = (message.data['messageText']?.toString().trim().isNotEmpty == true
+                ? message.data['messageText']?.toString().trim()
+                : null)
+            ?? (message.data['body']?.toString().trim().isNotEmpty == true
+                ? message.data['body']?.toString().trim()
+                : null);
+        if (fromData != null && fromData.toLowerCase() != 'new notification') {
+          return fromData;
+        }
+        return (notification.body?.isNotEmpty == true) ? notification.body : fromData ?? '';
+      })(),
       notificationDetails: details,
-      payload: '$chatId:$messageId',
+      payload: notificationPayload,
     );
+
+    // Show (or refresh) the Android group summary notification so the OS
+    // presents all pending notifications collapsed under one group header.
+    // This is a no-op on iOS (grouping is handled via threadIdentifier).
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      const summaryAndroid = AndroidNotificationDetails(
+        'chat_messages',
+        'Chat Messages',
+        channelDescription: 'Notifications for new chat messages',
+        importance: Importance.high,
+        priority: Priority.high,
+        icon: '@drawable/ic_notification',
+        groupKey: _kNotificationGroupKey,
+        setAsGroupSummary: true,
+        // The summary itself should be silent — individual child
+        // notifications play their own sound/vibration.
+        groupAlertBehavior: GroupAlertBehavior.children,
+      );
+      await _localNotifications!.show(
+        id: _kGroupSummaryNotificationId,
+        title: 'הודעות חדשות',
+        body: '',
+        notificationDetails: const NotificationDetails(android: summaryAndroid),
+      );
+    }
   }
 
   /// Apply push payload to chat store
@@ -638,6 +746,7 @@ class PushNotificationService {
   /// global [rootNavigatorKey]. This works from background-tap callbacks
   /// where there is no [BuildContext] in scope.
   void _openChatScreen(String chatId) {
+    final unreadCount = _ref.read(chatStoreProvider).unreadByChat[chatId] ?? 0;
     try {
       _ref.read(chatStoreProvider.notifier).setCurrentChat(chatId);
     } catch (e) {
@@ -650,7 +759,20 @@ class PushNotificationService {
       return;
     }
     navigator.push(
-      MaterialPageRoute(builder: (_) => MessageScreen(chatId: chatId)),
+      MaterialPageRoute(builder: (_) => MessageScreen(chatId: chatId, initialUnreadCount: unreadCount)),
+    );
+  }
+
+  /// Push the [HelpdeskScreen] route via the global [rootNavigatorKey].
+  /// Used when a helpdesk push notification is tapped.
+  void _openHelpdeskScreen() {
+    final navigator = rootNavigatorKey.currentState;
+    if (navigator == null) {
+      debugPrint('[PushNotificationService] Navigator not ready, skipping helpdesk deep link');
+      return;
+    }
+    navigator.push(
+      MaterialPageRoute(builder: (_) => const HelpdeskScreen()),
     );
   }
 
@@ -671,12 +793,20 @@ class PushNotificationService {
     }
 
     // Clear all local notifications (also resets the iOS app-icon badge).
+    await clearLocalNotifications();
+  }
+
+  /// Cancel all pending and delivered local notifications without touching the
+  /// server-side badge counter.  Call this **after** chat messages have been
+  /// loaded so the notification tray is only cleared once the user can already
+  /// see the updated chat.
+  Future<void> clearLocalNotifications() async {
     try {
       if (!kIsWeb && _localNotifications != null) {
         await _localNotifications!.cancelAll();
       }
     } catch (e) {
-      debugPrint('[PushNotificationService] cancelAll error: $e');
+      debugPrint('[PushNotificationService] clearLocalNotifications error: $e');
     }
   }
 

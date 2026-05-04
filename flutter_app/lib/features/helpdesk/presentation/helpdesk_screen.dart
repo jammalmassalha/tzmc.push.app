@@ -4,15 +4,20 @@
 library;
 
 import 'dart:async';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart' as img_picker;
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/api/chat_api_service.dart';
 import '../../../core/models/helpdesk_models.dart';
 import '../../../core/services/chat_store_service.dart';
+import '../../../core/utils/xfile.dart' as xfile;
 import '../../auth/presentation/auth_state.dart';
 import '../../../core/utils/toast_utils.dart';
 
@@ -295,9 +300,11 @@ Color _statusColor(String status) {
 
 String _totalDurationLabel(List<HelpdeskStatusHistoryEntry> history) {
   if (history.isEmpty) return '';
-  final openTime = history.first.createdAt;
+  // History is ordered newest-first (DESC). The opening entry is the last one.
+  final openTime = history.last.createdAt;
   HelpdeskStatusHistoryEntry? closedEntry;
-  for (final h in history.reversed) {
+  // Iterate from newest to oldest to find the most recent closed/resolved entry.
+  for (final h in history) {
     if (h.newStatus == 'closed' || h.newStatus == 'resolved') {
       closedEntry = h;
       break;
@@ -315,7 +322,7 @@ String _totalDurationLabel(List<HelpdeskStatusHistoryEntry> history) {
 }
 
 // ---------------------------------------------------------------------------
-// Helpdesk Screen
+// Helpdesk Screen ('מוקד איחוד') — user-facing: open and view own tickets
 // ---------------------------------------------------------------------------
 
 class HelpdeskScreen extends ConsumerStatefulWidget {
@@ -332,7 +339,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 2, vsync: this);
     Future.microtask(() {
       ref.read(helpdeskProvider.notifier).loadTickets(force: true);
     });
@@ -395,13 +402,12 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
               ),
             ),
 
-            // Tab bar: ניהול | טופלו | פתוחות
+            // Tab bar: פתוחות | טופלו
             TabBar(
               controller: _tabController,
               tabs: [
-                const Tab(text: 'ניהול'),
-                Tab(text: 'טופלו (${pastTickets.length})'),
                 Tab(text: 'פתוחות (${openTickets.length})'),
+                Tab(text: 'טופלו (${pastTickets.length})'),
               ],
             ),
 
@@ -422,10 +428,8 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
               child: TabBarView(
                 controller: _tabController,
                 children: [
-                  _ManagementTab(
-                      myRole: state.myRole, editorTickets: state.editorTickets),
-                  _TicketList(tickets: pastTickets, emptyMessage: 'אין פניות שטופלו'),
                   _TicketList(tickets: openTickets, emptyMessage: 'אין פניות פתוחות'),
+                  _TicketList(tickets: pastTickets, emptyMessage: 'אין פניות שטופלו'),
                 ],
               ),
             ),
@@ -510,20 +514,122 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
     final subjectCtrl = TextEditingController();
     final descCtrl = TextEditingController();
     final locationCtrl = TextEditingController();
-    final phoneCtrl = TextEditingController();
+    // Pre-fill with the phone number that was used to log in.
+    // currentUserPhoneProvider holds the phone stored at login time.
+    // currentUserProvider is the username, which for this app IS the phone
+    // number — used as a reliable fallback for existing sessions that
+    // pre-date phone persistence.
+    final userPhone =
+        ref.read(currentUserPhoneProvider) ?? ref.read(currentUserProvider) ?? '';
+    final phoneCtrl = TextEditingController(text: userPhone);
     String priority = 'normal';
     List<String> locations = [];
     bool loadingLoc = true;
+    bool locFetchStarted = false;
 
-    ref.read(helpdeskProvider.notifier).loadLocations().then((locs) {
-      locations = locs;
-      loadingLoc = false;
-    });
+    // Attachment state
+    xfile.XFile? attachedFile;
+    Uint8List? attachedFileBytes;
+    bool isUploadingAttachment = false;
+
+    Future<void> pickAttachment(StateSetter setSt) async {
+      // Show source picker for images; on web only gallery is available.
+      final picker = img_picker.ImagePicker();
+
+      if (kIsWeb) {
+        // Web: pick from gallery only.
+        final picked = await picker.pickImage(
+          source: img_picker.ImageSource.gallery,
+          imageQuality: 85,
+          maxWidth: 1920,
+          maxHeight: 1920,
+        );
+        if (picked != null) {
+          final bytes = await picked.readAsBytes();
+          final mimeType =
+              xfile.XFileUtils.mimeTypeFromExtension(picked.name.split('.').last);
+          setSt(() {
+            attachedFile =
+                xfile.XFile.fromBytes(name: picked.name, bytes: bytes, mimeType: mimeType);
+            attachedFileBytes = bytes;
+          });
+        }
+        return;
+      }
+
+      // Native: ask camera or gallery.
+      final source = await showModalBottomSheet<img_picker.ImageSource>(
+        context: ctx,
+        shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+        builder: (_) => SafeArea(
+          child: Directionality(
+            textDirection: ui.TextDirection.rtl,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.camera_alt),
+                    title: const Text('צלם תמונה'),
+                    onTap: () =>
+                        Navigator.of(ctx).pop(img_picker.ImageSource.camera),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.photo_library),
+                    title: const Text('בחר מהגלריה'),
+                    onTap: () =>
+                        Navigator.of(ctx).pop(img_picker.ImageSource.gallery),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.cancel_outlined),
+                    title: const Text('ביטול'),
+                    onTap: () => Navigator.of(ctx).pop(),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+
+      if (source == null) return;
+
+      final picked = await picker.pickImage(
+        source: source,
+        imageQuality: 85,
+        maxWidth: 1920,
+        maxHeight: 1920,
+      );
+      if (picked != null) {
+        final bytes = await picked.readAsBytes();
+        final mimeType =
+            xfile.XFileUtils.mimeTypeFromExtension(picked.name.split('.').last);
+        setSt(() {
+          attachedFile =
+              xfile.XFile.fromBytes(name: picked.name, bytes: bytes, mimeType: mimeType);
+          attachedFileBytes = bytes;
+        });
+      }
+    }
 
     showDialog(
       context: ctx,
       builder: (_) => StatefulBuilder(
-        builder: (context, setSt) => Directionality(
+        builder: (context, setSt) {
+          if (!locFetchStarted) {
+            locFetchStarted = true;
+            ref.read(helpdeskProvider.notifier).loadLocations().then((locs) {
+              setSt(() {
+                locations = locs;
+                loadingLoc = false;
+              });
+            }).catchError((_) {
+              setSt(() => loadingLoc = false);
+            });
+          }
+          return Directionality(
           textDirection: ui.TextDirection.rtl,
           child: AlertDialog(
             title: Text('קריאה חדשה - ${dept.label}'),
@@ -550,6 +656,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                   ),
                   const SizedBox(height: 16),
                   Autocomplete<String>(
+                    key: ValueKey(loadingLoc),
                     optionsBuilder: (tv) => tv.text.isEmpty
                         ? locations
                         : locations.where((l) =>
@@ -600,6 +707,66 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                     ],
                     onChanged: (v) => setSt(() => priority = v ?? 'normal'),
                   ),
+                  const SizedBox(height: 16),
+                  // Attachment picker
+                  if (attachedFileBytes != null) ...[
+                    Stack(
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Image.memory(
+                            attachedFileBytes!,
+                            height: 120,
+                            width: double.infinity,
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                        Positioned(
+                          top: 4,
+                          left: 4,
+                          child: GestureDetector(
+                            onTap: () => setSt(() {
+                              attachedFile = null;
+                              attachedFileBytes = null;
+                            }),
+                            child: Container(
+                              decoration: const BoxDecoration(
+                                color: Colors.black54,
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(Icons.close,
+                                  color: Colors.white, size: 18),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                  ] else ...[
+                    OutlinedButton.icon(
+                      onPressed: isUploadingAttachment
+                          ? null
+                          : () => pickAttachment(setSt),
+                      icon: const Icon(Icons.attach_file),
+                      label: const Text('צרף תמונה / קובץ'),
+                      style: OutlinedButton.styleFrom(
+                          minimumSize:
+                              const Size(double.infinity, 44)),
+                    ),
+                  ],
+                  if (isUploadingAttachment)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 8),
+                      child: Row(children: [
+                        SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2)),
+                        SizedBox(width: 8),
+                        Text('מעלה קובץ...', style: TextStyle(fontSize: 12)),
+                      ]),
+                    ),
                 ],
               ),
             ),
@@ -608,46 +775,137 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                   onPressed: () => Navigator.of(context).pop(),
                   child: const Text('ביטול')),
               ElevatedButton(
-                onPressed: () async {
-                  if (subjectCtrl.text.trim().isEmpty) {
-                    showTopToast(context, 'יש להזין כותרת');
-                    return;
-                  }
-                  if (locationCtrl.text.trim().isEmpty) {
-                    showTopToast(context, 'יש להזין מיקום');
-                    return;
-                  }
-                  Navigator.of(context).pop();
-                  try {
-                    await ref.read(helpdeskProvider.notifier).createTicket(
-                          subject: subjectCtrl.text.trim(),
-                          description: descCtrl.text.trim(),
-                          department: dept,
-                          priority: priority,
-                          location: locationCtrl.text.trim().isEmpty
-                              ? null
-                              : locationCtrl.text.trim(),
-                          phone: phoneCtrl.text.trim().isEmpty
-                              ? null
-                              : phoneCtrl.text.trim(),
-                        );
-                    if (ctx.mounted) {
-                      showTopToast(ctx, 'הפנייה נוצרה בהצלחה');
-                    }
-                  } catch (e) {
-                    if (ctx.mounted) {
-                      showTopToast(
-                        ctx,
-                        'שגיאה: ${e.toString()}',
-                        backgroundColor: Theme.of(ctx).colorScheme.error,
-                      );
-                    }
-                  }
-                },
+                onPressed: isUploadingAttachment
+                    ? null
+                    : () async {
+                        if (subjectCtrl.text.trim().isEmpty) {
+                          showTopToast(context, 'יש להזין כותרת');
+                          return;
+                        }
+                        if (locationCtrl.text.trim().isEmpty) {
+                          showTopToast(context, 'יש להזין מיקום');
+                          return;
+                        }
+
+                        // Upload attachment if one was selected.
+                        String? attachmentUrl;
+                        final pendingFile = attachedFile;
+                        if (pendingFile != null) {
+                          setSt(() => isUploadingAttachment = true);
+                          try {
+                            final api = ref.read(chatApiServiceProvider);
+                            attachmentUrl =
+                                await api.uploadHelpdeskAttachment(pendingFile);
+                          } catch (e) {
+                            setSt(() => isUploadingAttachment = false);
+                            if (ctx.mounted) {
+                              showTopToast(
+                                ctx,
+                                'שגיאה בהעלאת הקובץ: ${e.toString()}',
+                                backgroundColor:
+                                    Theme.of(ctx).colorScheme.error,
+                              );
+                            }
+                            return;
+                          }
+                          setSt(() => isUploadingAttachment = false);
+                        }
+
+                        Navigator.of(context).pop();
+                        try {
+                          await ref
+                              .read(helpdeskProvider.notifier)
+                              .createTicket(
+                                subject: subjectCtrl.text.trim(),
+                                description: descCtrl.text.trim(),
+                                department: dept,
+                                priority: priority,
+                                location: locationCtrl.text.trim().isEmpty
+                                    ? null
+                                    : locationCtrl.text.trim(),
+                                phone: phoneCtrl.text.trim().isEmpty
+                                    ? null
+                                    : phoneCtrl.text.trim(),
+                                attachmentUrl: attachmentUrl,
+                              );
+                          if (ctx.mounted) {
+                            showTopToast(ctx, 'הפנייה נוצרה בהצלחה');
+                          }
+                        } catch (e) {
+                          if (ctx.mounted) {
+                            showTopToast(
+                              ctx,
+                              'שגיאה: ${e.toString()}',
+                              backgroundColor:
+                                  Theme.of(ctx).colorScheme.error,
+                            );
+                          }
+                        }
+                      },
                 child: const Text('שלח קריאה'),
               ),
             ],
           ),
+        );
+        },
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ticket Manager Screen ('מנהל קריאות') — admins/editors only
+// ---------------------------------------------------------------------------
+
+/// Standalone screen wrapping [_ManagementTab]. Placed in the bottom-nav as
+/// a separate destination so regular users only see their own tickets in the
+/// 'מוקד איחוד' tab while admins/editors access ticket management here.
+class TicketManagerScreen extends ConsumerWidget {
+  const TicketManagerScreen({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(helpdeskProvider);
+    final theme = Theme.of(context);
+
+    return Directionality(
+      textDirection: ui.TextDirection.rtl,
+      child: Scaffold(
+        body: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'מנהל קריאות',
+                    style: theme.textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.bold),
+                  ),
+                  Row(children: [
+                    if (state.isLoading)
+                      const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2)),
+                    IconButton(
+                      icon: const Icon(Icons.refresh),
+                      tooltip: 'רענן',
+                      onPressed: () =>
+                          ref.read(helpdeskProvider.notifier).loadTickets(force: true),
+                    ),
+                  ]),
+                ],
+              ),
+            ),
+            Expanded(
+              child: _ManagementTab(
+                myRole: state.myRole,
+                editorTickets: state.editorTickets,
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -709,13 +967,36 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
       );
     }
 
+    // For relatedUser: only show tickets where the current user is creator or handler
+    final currentUser =
+        ref.read(helpdeskProvider.notifier).currentUser;
+    final visibleTickets = role.role == HelpdeskRole.relatedUser
+        ? widget.editorTickets
+            .where((t) =>
+                t.creatorUsername == currentUser ||
+                t.handlerUsername == currentUser)
+            .toList()
+        : widget.editorTickets;
+
     final newTickets =
-        widget.editorTickets.where((t) => t.status == 'open').toList();
+        visibleTickets.where((t) => t.status == 'open').toList();
     final inProgressTickets =
-        widget.editorTickets.where((t) => t.status == 'in_progress').toList();
-    final closedTickets = widget.editorTickets
+        visibleTickets.where((t) => t.status == 'in_progress').toList();
+    final closedTickets = visibleTickets
         .where((t) => !kHelpdeskOngoingStatuses.contains(t.status))
         .toList();
+
+    final String roleLabel;
+    switch (role.role) {
+      case HelpdeskRole.admin:
+        roleLabel = 'Admin';
+        break;
+      case HelpdeskRole.relatedUser:
+        roleLabel = 'RelatedUser';
+        break;
+      default:
+        roleLabel = 'Editor';
+    }
 
     return Column(
       children: [
@@ -730,7 +1011,7 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
                 borderRadius: BorderRadius.circular(16),
               ),
               child: Text(
-                  role.role == HelpdeskRole.admin ? 'Admin' : 'Editor',
+                  roleLabel,
                   style: const TextStyle(
                       color: Colors.white, fontWeight: FontWeight.bold)),
             ),
@@ -756,12 +1037,18 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
           child: TabBarView(
             controller: _subTabController,
             children: [
-              _TicketList(tickets: newTickets, emptyMessage: 'אין קריאות חדשות'),
+              _TicketList(
+                  tickets: newTickets,
+                  emptyMessage: 'אין קריאות חדשות',
+                  isManagerView: true),
               _TicketList(
                   tickets: inProgressTickets,
-                  emptyMessage: 'אין קריאות בתהליך'),
+                  emptyMessage: 'אין קריאות בתהליך',
+                  isManagerView: true),
               _TicketList(
-                  tickets: closedTickets, emptyMessage: 'אין קריאות סגורות'),
+                  tickets: closedTickets,
+                  emptyMessage: 'אין קריאות סגורות',
+                  isManagerView: true),
             ],
           ),
         ),
@@ -777,8 +1064,12 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
 class _TicketList extends ConsumerWidget {
   final List<HelpdeskTicket> tickets;
   final String emptyMessage;
+  final bool isManagerView;
 
-  const _TicketList({required this.tickets, required this.emptyMessage});
+  const _TicketList(
+      {required this.tickets,
+      required this.emptyMessage,
+      this.isManagerView = false});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -830,7 +1121,8 @@ class _TicketList extends ConsumerWidget {
       child: ListView.builder(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         itemCount: tickets.length,
-        itemBuilder: (context, i) => _TicketCard(ticket: tickets[i]),
+        itemBuilder: (context, i) =>
+            _TicketCard(ticket: tickets[i], isManagerView: isManagerView),
       ),
     );
   }
@@ -842,8 +1134,9 @@ class _TicketList extends ConsumerWidget {
 
 class _TicketCard extends ConsumerWidget {
   final HelpdeskTicket ticket;
+  final bool isManagerView;
 
-  const _TicketCard({required this.ticket});
+  const _TicketCard({required this.ticket, this.isManagerView = false});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -893,6 +1186,7 @@ class _TicketCard extends ConsumerWidget {
         myRole: state.myRole,
         handlers: state.handlers,
         currentUser: currentUser,
+        isManagerView: isManagerView,
       ),
     );
   }
@@ -968,12 +1262,14 @@ class _TicketDetailSheet extends ConsumerStatefulWidget {
   final HelpdeskMyRole? myRole;
   final List<HelpdeskManagedUser> handlers;
   final String currentUser;
+  final bool isManagerView;
 
   const _TicketDetailSheet({
     required this.ticket,
     required this.myRole,
     required this.handlers,
     required this.currentUser,
+    this.isManagerView = false,
   });
 
   @override
@@ -982,8 +1278,10 @@ class _TicketDetailSheet extends ConsumerStatefulWidget {
 
 class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
   List<HelpdeskStatusHistoryEntry>? _history;
+  List<HelpdeskHandlerHistoryEntry>? _handlerHistory;
   List<HelpdeskNote>? _notes;
   bool _loadingHistory = true;
+  bool _loadingHandlerHistory = true;
   bool _loadingNotes = true;
   String? _historyError;
 
@@ -1001,11 +1299,22 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
   HelpdeskTicket get _ticket => widget.ticket;
   String get _currentUser => widget.currentUser;
 
-  bool get _canManageHandler =>
-      widget.myRole != null &&
-      widget.myRole!.department == _ticket.department;
+  bool get _canManageHandler {
+    if (!widget.isManagerView) return false;
+    if (_ticket.status == 'closed') return false;
+    if (widget.myRole == null) return false;
+    // relatedUser: allowed only for tickets they created or are handling
+    if (widget.myRole!.role == HelpdeskRole.relatedUser) {
+      return _ticket.creatorUsername == _currentUser ||
+          _ticket.handlerUsername == _currentUser;
+    }
+    // editor / admin: allowed for any ticket in their department
+    return widget.myRole!.department == _ticket.department;
+  }
 
   bool get _canChangeStatus {
+    if (!widget.isManagerView) return false;
+    if (_ticket.status == 'closed') return false;
     if (_ticket.creatorUsername == _currentUser) return true;
     if (_ticket.handlerUsername == _currentUser) return true;
     if (widget.myRole != null &&
@@ -1030,7 +1339,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
   Future<void> _loadData() async {
     final api = ref.read(chatApiServiceProvider);
     final ticketId = int.tryParse(_ticket.id) ?? 0;
-    await Future.wait([_loadHistory(api, ticketId), _loadNotes(api, ticketId)]);
+    await Future.wait([_loadHistory(api, ticketId), _loadHandlerHistory(api, ticketId), _loadNotes(api, ticketId)]);
   }
 
   Future<void> _loadHistory(ChatApiService api, int ticketId) async {
@@ -1039,6 +1348,15 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
       if (mounted) setState(() { _history = h; _loadingHistory = false; _historyError = null; });
     } catch (e) {
       if (mounted) setState(() { _history = []; _loadingHistory = false; _historyError = e.toString(); });
+    }
+  }
+
+  Future<void> _loadHandlerHistory(ChatApiService api, int ticketId) async {
+    try {
+      final h = await api.getHelpdeskTicketHandlerHistory(ticketId, _currentUser);
+      if (mounted) setState(() { _handlerHistory = h; _loadingHandlerHistory = false; });
+    } catch (_) {
+      if (mounted) setState(() { _handlerHistory = []; _loadingHandlerHistory = false; });
     }
   }
 
@@ -1059,6 +1377,9 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
           .assignHandler(int.parse(_ticket.id), _selectedHandler);
       if (mounted) {
         showTopToast(context, 'המטפל עודכן בהצלחה');
+        setState(() { _loadingHandlerHistory = true; });
+        final api = ref.read(chatApiServiceProvider);
+        await _loadHandlerHistory(api, int.parse(_ticket.id));
       }
     } catch (e) {
       if (mounted) setState(() => _handlerError = e.toString());
@@ -1194,6 +1515,9 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                         icon: Icons.phone,
                         label: 'טלפון',
                         value: _ticket.phone!),
+                  if (_ticket.attachmentUrl != null &&
+                      _ticket.attachmentUrl!.isNotEmpty)
+                    _AttachmentRow(url: _ticket.attachmentUrl!),
                   _DetailRow(
                       icon: Icons.support_agent,
                       label: 'מטפל',
@@ -1256,6 +1580,30 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                     ..._history!.map((h) => _HistoryEntry(
                           entry: h,
                           displayName: _resolveDisplay(h.changedBy),
+                        )),
+
+                  // Handler assignment history (visible to all users)
+                  const SizedBox(height: 16),
+                  const Divider(),
+                  const SizedBox(height: 8),
+                  Row(children: [
+                    const Icon(Icons.person_pin, size: 20),
+                    const SizedBox(width: 6),
+                    Text('היסטוריית מטפלים',
+                        style: theme.textTheme.titleSmall
+                            ?.copyWith(fontWeight: FontWeight.bold)),
+                  ]),
+                  const SizedBox(height: 8),
+                  if (_loadingHandlerHistory)
+                    const Center(child: CircularProgressIndicator())
+                  else if (_handlerHistory == null || _handlerHistory!.isEmpty)
+                    Text('אין היסטוריית שיוך מטפלים.',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurface.withAlpha(128)))
+                  else
+                    ..._handlerHistory!.map((h) => _HandlerHistoryEntry(
+                          entry: h,
+                          resolveDisplay: _resolveDisplay,
                         )),
 
                   // Handler assignment (editor only)
@@ -1561,6 +1909,72 @@ class _MiniStatusChip extends StatelessWidget {
   }
 }
 
+class _HandlerHistoryEntry extends StatelessWidget {
+  final HelpdeskHandlerHistoryEntry entry;
+  final String Function(String?) resolveDisplay;
+
+  const _HandlerHistoryEntry({required this.entry, required this.resolveDisplay});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final timeStr = DateFormat('H:mm, d.M.yyyy').format(entry.createdAt);
+    final oldName = entry.oldHandler != null ? resolveDisplay(entry.oldHandler) : '—';
+    final newName = entry.newHandler != null ? resolveDisplay(entry.newHandler) : '—';
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Column(children: [
+            Container(
+              width: 10,
+              height: 10,
+              margin: const EdgeInsets.only(top: 4),
+              decoration: BoxDecoration(
+                  color: theme.colorScheme.secondary,
+                  shape: BoxShape.circle),
+            ),
+          ]),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(resolveDisplay(entry.changedBy),
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(fontWeight: FontWeight.bold)),
+                    Text(timeStr,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurface.withAlpha(128))),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Row(children: [
+                  Text(oldName,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurface.withAlpha(160))),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 4),
+                    child: Icon(Icons.arrow_forward, size: 14),
+                  ),
+                  Text(newName,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.bold)),
+                ]),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _NoteItem extends StatelessWidget {
   final HelpdeskNote note;
   final bool isOwn;
@@ -1617,6 +2031,116 @@ class _NoteItem extends StatelessWidget {
                       decoration: TextDecoration.underline)),
             ]),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Attachment row – displayed in ticket detail when a file was attached.
+// ---------------------------------------------------------------------------
+
+class _AttachmentRow extends StatelessWidget {
+  final String url;
+
+  const _AttachmentRow({required this.url});
+
+  static const _imageExtensions = {
+    'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'heif',
+  };
+
+  bool get _isImage {
+    final ext = url.split('?').first.split('.').last.toLowerCase();
+    return _imageExtensions.contains(ext);
+  }
+
+  Future<void> _open(BuildContext context) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('לא ניתן לפתוח את הקובץ')),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.attach_file, size: 20, color: theme.colorScheme.primary),
+          const SizedBox(width: 10),
+          SizedBox(
+            width: 90,
+            child: Text('קובץ מצורף',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSurface.withAlpha(150))),
+          ),
+          Expanded(
+            child: _isImage
+                ? GestureDetector(
+                    onTap: () => _open(context),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.network(
+                        url,
+                        height: 160,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                        loadingBuilder: (context, child, progress) {
+                          if (progress == null) return child;
+                          return SizedBox(
+                            height: 160,
+                            child: Center(
+                              child: CircularProgressIndicator(
+                                value: progress.expectedTotalBytes != null
+                                    ? progress.cumulativeBytesLoaded /
+                                        progress.expectedTotalBytes!
+                                    : null,
+                              ),
+                            ),
+                          );
+                        },
+                        errorBuilder: (_, __, ___) => GestureDetector(
+                          onTap: () => _open(context),
+                          child: Row(children: [
+                            Icon(Icons.broken_image,
+                                color: theme.colorScheme.primary),
+                            const SizedBox(width: 4),
+                            Text('פתח קובץ',
+                                style: TextStyle(
+                                    color: theme.colorScheme.primary,
+                                    decoration: TextDecoration.underline)),
+                          ]),
+                        ),
+                      ),
+                    ),
+                  )
+                : GestureDetector(
+                    onTap: () => _open(context),
+                    child: Row(children: [
+                      Icon(Icons.open_in_new,
+                          size: 16, color: theme.colorScheme.primary),
+                      const SizedBox(width: 4),
+                      Flexible(
+                        child: Text(
+                          url.split('/').last.split('?').first,
+                          style: TextStyle(
+                              color: theme.colorScheme.primary,
+                              decoration: TextDecoration.underline),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ]),
+                  ),
+          ),
         ],
       ),
     );

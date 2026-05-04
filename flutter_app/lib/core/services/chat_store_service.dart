@@ -7,10 +7,12 @@ library;
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/chat_api_service.dart';
 import '../database/chat_database.dart' hide Contact;
+import '../database/web_storage.dart';
 import '../models/api_payloads.dart';
 import '../models/chat_models.dart';
 import '../realtime/realtime_transport_service.dart';
@@ -27,6 +29,14 @@ const int gapAnalysisCooldownMs = 30000;
 
 /// Max messages to keep per chat
 const int maxMessagesPerChat = 500;
+
+/// Page size for the paginated full-sync logs pull — mirrors Angular's
+/// `pageSize = 500` inside `recoverMissedMessagesFromLogs`.
+const int _kFullSyncPageSize = 500;
+
+/// Maximum messages fetched during a full sync — mirrors Angular's
+/// `LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT = 200000`.
+const int _kFullSyncMaxMessages = 200000;
 
 // ---------------------------------------------------------------------------
 // Chat State
@@ -48,6 +58,9 @@ class ChatState {
   final int syncProgressPercent;
   final String syncProgressLabel;
 
+  /// Map of chatId → set of usernames currently typing in that chat.
+  final Map<String, Set<String>> typingByChatId;
+
   const ChatState({
     this.contacts = const {},
     this.groups = const {},
@@ -59,6 +72,7 @@ class ChatState {
     this.isSyncing = false,
     this.syncProgressPercent = 0,
     this.syncProgressLabel = '',
+    this.typingByChatId = const <String, Set<String>>{},
   });
 
   ChatState copyWith({
@@ -73,6 +87,7 @@ class ChatState {
     bool? isSyncing,
     int? syncProgressPercent,
     String? syncProgressLabel,
+    Map<String, Set<String>>? typingByChatId,
   }) {
     return ChatState(
       contacts: contacts ?? this.contacts,
@@ -85,6 +100,7 @@ class ChatState {
       isSyncing: isSyncing ?? this.isSyncing,
       syncProgressPercent: syncProgressPercent ?? this.syncProgressPercent,
       syncProgressLabel: syncProgressLabel ?? this.syncProgressLabel,
+      typingByChatId: typingByChatId ?? this.typingByChatId,
     );
   }
 
@@ -170,6 +186,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   int _lastGapAnalysisTime = 0;
   String? _currentUser;
 
+  /// Per-chat timers that clear a typing indicator after an idle period.
+  final Map<String, Map<String, Timer>> _typingClearTimers = {};
+
+  /// How long after the last typing event to clear the indicator.
+  static const Duration _typingClearDelay = Duration(seconds: 5);
+
   /// Username of the currently authenticated user, normalized to lowercase.
   /// Used to dedupe own-message echoes coming back from the server (which
   /// would otherwise show a duplicate "incoming from me" bubble).
@@ -189,6 +211,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       _connectionSubscription?.cancel();
       _pollTickSubscription?.cancel();
       _persistTimer?.cancel();
+      for (final timers in _typingClearTimers.values) {
+        for (final t in timers.values) {
+          t.cancel();
+        }
+      }
+      _typingClearTimers.clear();
     });
     
     return const ChatState();
@@ -216,14 +244,44 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     state = state.copyWith(isLoading: true);
 
     try {
-      // 1. Restore from local database
-      final persisted = await _db.getPersistedState();
-      state = state.copyWith(
-        contacts: Map.fromEntries(persisted.contacts.map((c) => MapEntry(c.username, c))),
-        groups: Map.fromEntries(persisted.groups.map((g) => MapEntry(g.id, g))),
-        messagesByChat: _groupMessagesByChat(persisted.messages),
-        unreadByChat: persisted.unreadByChat,
-      );
+      // 1. Restore from local database (best-effort).
+      //
+      // On Flutter web the legacy sql.js engine may not initialise correctly
+      // (e.g. missing sqlite3.wasm / drift_worker files), causing
+      // getPersistedState() to throw.  Catching the error here means the rest
+      // of initialise() – most importantly the server-side gap-analysis pull –
+      // still runs, so the user sees their chat history without having to
+      // manually press "sync".
+      try {
+        final persisted = await _db.getPersistedState();
+        state = state.copyWith(
+          contacts: Map.fromEntries(persisted.contacts.map((c) => MapEntry(c.username, c))),
+          groups: Map.fromEntries(persisted.groups.map((g) => MapEntry(g.id, g))),
+          messagesByChat: _groupMessagesByChat(persisted.messages),
+          unreadByChat: persisted.unreadByChat,
+        );
+      } catch (dbError) {
+        debugPrint('[ChatStore] DB restore failed, trying web storage fallback: $dbError');
+        // Drift DB is unavailable (e.g. web without sqlite3.wasm).
+        // Try restoring from the shared_preferences-based localStorage snapshot.
+        if (kIsWeb) {
+          try {
+            final webPersisted = await WebChatStorage.getPersistedState();
+            if (webPersisted != null) {
+              state = state.copyWith(
+                contacts: Map.fromEntries(webPersisted.contacts.map((c) => MapEntry(c.username, c))),
+                groups: Map.fromEntries(webPersisted.groups.map((g) => MapEntry(g.id, g))),
+                messagesByChat: _groupMessagesByChat(webPersisted.messages),
+                unreadByChat: webPersisted.unreadByChat,
+              );
+              debugPrint('[ChatStore] Restored state from web storage (${webPersisted.messages.length} messages)');
+            }
+          } catch (webError) {
+            debugPrint('[ChatStore] Web storage restore also failed: $webError');
+          }
+        }
+        // State may be empty; the server pull below re-populates it.
+      }
 
       // 2. Pull fresh contacts and groups
       await Future.wait([
@@ -231,10 +289,26 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         _pullGroups(),
       ]);
 
-      // 3. Pull missed messages (gap analysis)
-      await recoverMissedMessages();
+      // 3. Pull missed messages (gap analysis).
+      //
+      // Use force:true to bypass the 30-second cooldown.  The realtime
+      // transport can fire _handleConnectionChange(true) before we reach
+      // this point, which advances _lastGapAnalysisTime.  Without force the
+      // cooldown would silently skip the initial pull and leave the chat list
+      // empty until the next poll tick (≥15 s).
+      await recoverMissedMessages(force: true);
 
-      state = state.copyWith(isLoading: false, isInitialized: true);
+      // Clear unread counts on app initialization so the user doesn't see
+      // stale badges from a previous session or from messages received while
+      // offline.  The guard `if (state.isInitialized) return` at the top of
+      // `initialize()` ensures this block only runs once per app lifecycle.
+      // The unread counter starts accumulating again from realtime events
+      // after this point.
+      state = state.copyWith(
+        isLoading: false,
+        isInitialized: true,
+        unreadByChat: const {},
+      );
 
       // 4. Schedule periodic persistence
       _schedulePersistence();
@@ -410,6 +484,174 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     return group;
   }
 
+  /// Whether the current user is an admin of [groupId].
+  bool isGroupAdmin(String groupId) {
+    final me = _currentUser;
+    if (me == null || me.isEmpty) return false;
+    final group = state.groups[groupId];
+    if (group == null) return false;
+    final admins = (group.admins ?? const <String>[])
+        .map((a) => a.trim().toLowerCase())
+        .where((a) => a.isNotEmpty)
+        .toList();
+    return admins.contains(me) || group.createdBy.trim().toLowerCase() == me;
+  }
+
+  /// Rename a group. Only admins may rename. Notifies all members.
+  Future<void> renameGroup(String groupId, String newName) async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty) return;
+    final group = state.groups[groupId];
+    if (group == null) return;
+    final trimmedName = newName.trim();
+    if (trimmedName.isEmpty || trimmedName == group.name) return;
+
+    final updatedAt = DateTime.now().millisecondsSinceEpoch;
+    final updated = ChatGroup(
+      id: group.id,
+      name: trimmedName,
+      members: group.members,
+      admins: group.admins,
+      createdBy: group.createdBy,
+      updatedAt: updatedAt,
+      type: group.type,
+    );
+
+    final newGroups = Map<String, ChatGroup>.from(state.groups);
+    newGroups[groupId] = updated;
+    state = state.copyWith(groups: newGroups);
+    await _db.upsertGroup(updated);
+    _schedulePersistence();
+
+    final membersToNotify = group.members.where((m) => m != user).toList();
+    try {
+      await _api.sendGroupUpdate(GroupUpdatePayload(
+        groupId: updated.id,
+        groupName: updated.name,
+        groupMembers: updated.members,
+        groupCreatedBy: updated.createdBy,
+        groupAdmins: updated.admins,
+        actorUser: user,
+        groupUpdatedAt: updatedAt,
+        groupType: updated.type,
+        membersToNotify: membersToNotify,
+      ));
+    } catch (_) {}
+  }
+
+  /// Add new members to a group. Only admins may add. Notifies all members.
+  Future<void> addGroupMembers(String groupId, List<String> newMembers) async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty) return;
+    final group = state.groups[groupId];
+    if (group == null) return;
+
+    final toAdd = newMembers
+        .map((m) => m.trim().toLowerCase())
+        .where((m) => m.isNotEmpty && !group.members.contains(m))
+        .toList();
+    if (toAdd.isEmpty) return;
+
+    final updatedAt = DateTime.now().millisecondsSinceEpoch;
+    final updatedMembers = [...group.members, ...toAdd];
+    final updated = ChatGroup(
+      id: group.id,
+      name: group.name,
+      members: updatedMembers,
+      admins: group.admins,
+      createdBy: group.createdBy,
+      updatedAt: updatedAt,
+      type: group.type,
+    );
+
+    final newGroups = Map<String, ChatGroup>.from(state.groups);
+    newGroups[groupId] = updated;
+    state = state.copyWith(groups: newGroups);
+    await _db.upsertGroup(updated);
+    _schedulePersistence();
+
+    final membersToNotify = updatedMembers.where((m) => m != user).toList();
+    try {
+      await _api.sendGroupUpdate(GroupUpdatePayload(
+        groupId: updated.id,
+        groupName: updated.name,
+        groupMembers: updated.members,
+        groupCreatedBy: updated.createdBy,
+        groupAdmins: updated.admins,
+        actorUser: user,
+        groupUpdatedAt: updatedAt,
+        groupType: updated.type,
+        membersToNotify: membersToNotify,
+      ));
+    } catch (_) {}
+  }
+
+  /// Remove a member from a group. Only admins may remove others.
+  /// Members may remove themselves (leave).
+  Future<void> removeGroupMember(String groupId, String member) async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty) return;
+    final group = state.groups[groupId];
+    if (group == null) return;
+
+    final normalizedMember = member.trim().toLowerCase();
+    if (!group.members.contains(normalizedMember)) return;
+
+    final updatedAt = DateTime.now().millisecondsSinceEpoch;
+    final updatedMembers =
+        group.members.where((m) => m != normalizedMember).toList();
+    final updatedAdmins =
+        group.admins?.where((a) => a != normalizedMember).toList();
+
+    final updated = ChatGroup(
+      id: group.id,
+      name: group.name,
+      members: updatedMembers,
+      admins: updatedAdmins,
+      createdBy: group.createdBy,
+      updatedAt: updatedAt,
+      type: group.type,
+    );
+
+    final newGroups = Map<String, ChatGroup>.from(state.groups);
+    newGroups[groupId] = updated;
+    state = state.copyWith(groups: newGroups);
+    await _db.upsertGroup(updated);
+    _schedulePersistence();
+
+    // Notify remaining members and also the removed member so their client
+    // can drop the group from their list.
+    final membersToNotify = [
+      ...updatedMembers,
+      normalizedMember,
+    ].where((m) => m != user).toList();
+    try {
+      await _api.sendGroupUpdate(GroupUpdatePayload(
+        groupId: updated.id,
+        groupName: updated.name,
+        groupMembers: updated.members,
+        groupCreatedBy: updated.createdBy,
+        groupAdmins: updated.admins,
+        actorUser: user,
+        groupUpdatedAt: updatedAt,
+        groupType: updated.type,
+        membersToNotify: membersToNotify,
+      ));
+    } catch (_) {}
+  }
+
+  /// Leave a group (current user removes themselves and drops the group locally).
+  Future<void> leaveGroup(String groupId) async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty) return;
+    await removeGroupMember(groupId, user);
+    // After removeGroupMember the group still exists in state (without this
+    // user). Fully remove it so it no longer appears in the user's list.
+    final newGroups = Map<String, ChatGroup>.from(state.groups);
+    newGroups.remove(groupId);
+    state = state.copyWith(groups: newGroups);
+  }
+
   /// Whether the current user is allowed to send messages to [chatId]. Always
   /// true for direct messages and regular groups; for community groups only
   /// admins (and the group creator) may post — mirroring Angular
@@ -446,7 +688,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     if (user == null || user.isEmpty) return;
 
     try {
-      final latestTimestamp = since ?? await _db.getLatestMessageTimestamp();
+      int latestTimestamp;
+      if (since != null) {
+        latestTimestamp = since;
+      } else {
+        try {
+          latestTimestamp = await _db.getLatestMessageTimestamp();
+        } catch (_) {
+          // DB unavailable on web; use in-memory state.
+          latestTimestamp = _latestTimestampFromState();
+        }
+      }
       final messages = await _api.getMessagesFromLogs(
         user: user,
         since: latestTimestamp,
@@ -479,7 +731,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _lastGapAnalysisTime = now;
 
     try {
-      final latestTimestamp = await _db.getLatestMessageTimestamp();
+      int latestTimestamp;
+      try {
+        latestTimestamp = await _db.getLatestMessageTimestamp();
+      } catch (_) {
+        // DB unavailable (web without WASM files); derive the latest known
+        // timestamp from the in-memory state so we still pull missed messages.
+        latestTimestamp = _latestTimestampFromState();
+      }
       await pullMessages(since: latestTimestamp);
     } catch (e) {
       // Silent failure, will retry on next poll
@@ -533,46 +792,65 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       state = state.copyWith(
         messagesByChat: const {},
         unreadByChat: const {},
-        syncProgressPercent: 20,
+        groups: const {},
+        syncProgressPercent: 10,
         syncProgressLabel: 'טוען אנשי קשר...',
       );
 
       // 2. Re-pull contacts.
       await _pullContacts();
       state = state.copyWith(
-        syncProgressPercent: 40,
+        syncProgressPercent: 20,
         syncProgressLabel: 'טוען קבוצות...',
       );
 
-      // 3. Re-pull groups.
+      // 3. Re-pull groups (community/runtime list).
       await _pullGroups();
       state = state.copyWith(
-        syncProgressPercent: 60,
+        syncProgressPercent: 30,
+        syncProgressLabel: 'טוען נתוני קבוצות מהשרת...',
+      );
+
+      // 4. Load groups persisted in the server DB and merge them — mirrors
+      //    Angular's `loadUserChatGroupsFromDb()` which prefers the server
+      //    record when its `updatedAt` is newer than the local one.
+      await _mergeUserChatGroups();
+      state = state.copyWith(
+        syncProgressPercent: 40,
+        syncProgressLabel: 'מרענן נתונים...',
+      );
+
+      // 5. Drain the /messages poll queue — mirrors Angular's `pullMessages(user)`
+      //    call inside forceSyncAllMessagesAndClearCache (which uses `pollMessages()`
+      //    on the /messages endpoint rather than the logs endpoint).
+      try {
+        final polled = await _api.pollMessages();
+        for (final msg in polled) {
+          _handleServerMessage(msg);
+        }
+      } catch (_) {
+        // Polling failures are non-fatal; the logs pull below covers any gaps.
+      }
+      state = state.copyWith(
+        syncProgressPercent: 55,
         syncProgressLabel: 'מושך הודעות...',
       );
 
-      // 4. Pull messages (full pull — always since:0 so the stale DB timestamp is
-      //    never used, which is especially important on Flutter web where the DB
-      //    clear above may have silently failed and still holds the old high-water
-      //    timestamp).
-      await pullMessages(since: 0);
+      // 6. Paginated logs pull — mirrors Angular's `recoverMissedMessagesFromLogs`
+      //    with `limit: LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT (200000)` and page
+      //    size 500.  Using since:0 so the full history is fetched after the
+      //    cache clear (the old DB high-water timestamp is gone).
+      await _pullAllMessagesFromLogs(user: user, since: 0);
       state = state.copyWith(
-        syncProgressPercent: 80,
-        syncProgressLabel: 'משחזר הודעות שהוחמצו...',
-      );
-
-      // 5. Gap-analysis recovery pull (force = true bypasses cooldown).
-      await recoverMissedMessages(force: true);
-      state = state.copyWith(
-        syncProgressPercent: 95,
+        syncProgressPercent: 85,
         syncProgressLabel: 'מסיים...',
       );
 
-      // 6. Reset unread counters.
+      // 7. Reset unread counters — mirrors Angular's `this.unreadByChat.set({})`.
       state = state.copyWith(unreadByChat: const {});
 
-      // Persist to disk immediately (do not defer via _schedulePersistence so
-      // that data survives an app close that happens right after the sync).
+      // 8. Persist to disk immediately (do not defer via _schedulePersistence so
+      //    that data survives an app close that happens right after the sync).
       await persistNow();
       state = state.copyWith(
         syncProgressPercent: 100,
@@ -584,6 +862,104 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         syncProgressPercent: 0,
         syncProgressLabel: '',
       );
+    }
+  }
+
+  /// Paginated logs pull used during full sync — mirrors Angular's
+  /// `recoverMissedMessagesFromLogs` with `limit: LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT`.
+  ///
+  /// Pages through the `/messages/logs` endpoint in batches of
+  /// [_kFullSyncPageSize] (500) until there are no more results or
+  /// [_kFullSyncMaxMessages] (200 000) have been fetched — matching the
+  /// Angular behaviour exactly.
+  Future<void> _pullAllMessagesFromLogs({
+    required String user,
+    int since = 0,
+  }) async {
+    int offset = 0;
+    int totalFetched = 0;
+
+    while (totalFetched < _kFullSyncMaxMessages) {
+      final remaining = _kFullSyncMaxMessages - totalFetched;
+      if (remaining <= 0) break;
+      final limit = remaining.clamp(1, _kFullSyncPageSize);
+
+      List<IncomingServerMessage> page;
+      try {
+        page = await _api.getMessagesFromLogs(
+          user: user,
+          limit: limit,
+          offset: offset,
+          since: since,
+        );
+      } catch (_) {
+        break; // Network error — stop paging; already have what we got.
+      }
+
+      if (page.isEmpty) break;
+
+      for (final message in page) {
+        _handleServerMessage(message);
+      }
+
+      offset += page.length;
+      totalFetched += page.length;
+
+      // Server returned fewer items than requested — we've reached the end.
+      if (page.length < limit) break;
+    }
+  }
+
+  /// Loads the groups that are persisted in the server DB and merges them into
+  /// the local state — mirrors Angular's `loadUserChatGroupsFromDb()`.
+  ///
+  /// The server record wins when its `updatedAt` is ≥ the local copy's, but a
+  /// real human-readable name is never replaced by a bare group-ID string
+  /// (matching Angular's `isGroupNameLikeId` guard).
+  Future<void> _mergeUserChatGroups() async {
+    try {
+      final dbGroups = await _api.getUserChatGroups();
+      if (dbGroups.isEmpty) return;
+
+      final groupsById = Map<String, ChatGroup>.from(state.groups);
+      bool changed = false;
+
+      for (final dbGroup in dbGroups) {
+        final existing = groupsById[dbGroup.id];
+        final dbUpdatedAt = dbGroup.updatedAt;
+        final localUpdatedAt = existing?.updatedAt ?? 0;
+
+        if (existing == null || dbUpdatedAt >= localUpdatedAt) {
+          // Preserve a real cached name when the DB record only stores the
+          // group ID as its name — mirrors Angular's `isGroupNameLikeId` guard.
+          final dbNameLooksLikeId =
+              dbGroup.name.trim().toLowerCase() == dbGroup.id.trim().toLowerCase();
+          final localHasRealName = existing != null &&
+              existing.name.trim().toLowerCase() != existing.id.trim().toLowerCase() &&
+              existing.name.trim().isNotEmpty;
+
+          if (localHasRealName && dbNameLooksLikeId) {
+            groupsById[dbGroup.id] = ChatGroup(
+              id: dbGroup.id,
+              name: existing!.name,
+              members: dbGroup.members,
+              admins: dbGroup.admins,
+              createdBy: dbGroup.createdBy,
+              updatedAt: dbGroup.updatedAt,
+              type: dbGroup.type,
+            );
+          } else {
+            groupsById[dbGroup.id] = dbGroup;
+          }
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        state = state.copyWith(groups: groupsById);
+      }
+    } catch (_) {
+      // Non-fatal: groups will be reconstructed from messages.
     }
   }
 
@@ -706,6 +1082,25 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
       case 'typing':
         return; // Typing indicators from push are not actionable.
+
+      case 'reaction':
+        {
+          // Reaction pushes must update the emoji on the target message, not
+          // create a new chat bubble. Route through the same handler used by
+          // socket/SSE so the UI reflects the change silently.
+          final targetId = _str(data['targetMessageId']) ?? _str(data['messageId']);
+          if (targetId == null) return;
+          final msg = IncomingServerMessage(
+            type: type,
+            targetMessageId: targetId,
+            emoji: _str(data['emoji']),
+            reactor: _str(data['reactor']) ?? _str(data['sender']),
+            reactorName: _str(data['reactorName']),
+            sender: _str(data['sender']),
+          );
+          _handleReaction(msg);
+          return;
+        }
     }
 
     // ── Regular chat message ───────────────────────────────────────────────
@@ -723,18 +1118,31 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final isGroup = groupId != null;
 
     // For self-echo push notifications (skipNotification: true), the server
-    // sends sender=currentUser and toUser/recipient=the other party. Using
-    // sender as chatId would create a spurious "self-chat". Mirror the same
-    // fix applied to _buildChatMessageFromServer.
+    // sends sender=currentUser and toUser=the other party. Using sender as
+    // chatId would create a spurious "self-chat".
+    //
+    // Two scenarios handled:
+    //  1. Normal: _currentUser is set → isSelfEcho detects sender==me, routes
+    //     by toUser.
+    //  2. Race condition on cold-start: _currentUser may be null when the push
+    //     fires.  We can't confirm "isSelfEcho" via phone comparison, but the
+    //     skipNotification flag alone tells us this is a self-echo → use toUser.
+    //
+    // In both cases we must NOT fall back to data['recipient'] — on some paths
+    // that field equals me's phone and would produce a self-chat chatId.
     final meNorm = _currentUser?.trim().toLowerCase() ?? '';
     final senderNorm = sender.trim().toLowerCase();
     final isSelfEcho = meNorm.isNotEmpty && senderNorm == meNorm;
     String chatId;
     if (isGroup) {
       chatId = groupId;
-    } else if (isSelfEcho) {
-      final toUser = (_str(data['toUser']) ?? _str(data['recipient']) ?? '').trim().toLowerCase();
-      chatId = toUser.isNotEmpty ? toUser : senderNorm;
+    } else if (isSelfEcho || skipNotification) {
+      // Use only toUser — never fall back to recipient for self-echo messages.
+      final toUser = (_str(data['toUser']) ?? '').trim().toLowerCase();
+      // Discard if there is no deterministic chat partner: this can happen with
+      // old self-echo DB log entries where ToUser == sender (self-chat artifact).
+      if (toUser.isEmpty || toUser == meNorm || toUser == senderNorm) return;
+      chatId = toUser;
     } else {
       chatId = senderNorm;
     }
@@ -753,7 +1161,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         ? GroupType.community
         : (isGroup ? GroupType.group : null);
 
-    final senderDisplayName = _str(data['groupSenderName']) ?? getDisplayName(sender);
+    // When the server rewrites sender to the groupId (server.js:2138) and no
+    // groupSenderName was provided, getDisplayName would return the raw group
+    // ID string (e.g. "group:grp_F...") because there is no contact for it.
+    // Guard against that by only calling getDisplayName when sender is an
+    // actual user identifier, not the group ID itself.
+    final senderIsGroupId = isGroup &&
+        sender.trim().toLowerCase() == (groupId ?? '').trim().toLowerCase();
+    final senderDisplayName =
+        _str(data['groupSenderName']) ?? (senderIsGroupId ? null : getDisplayName(sender));
     final timestamp = _int(data['timestamp']) ?? DateTime.now().millisecondsSinceEpoch;
 
     final message = ChatMessage(
@@ -765,9 +1181,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       body: body,
       imageUrl: _str(data['image']) ?? _str(data['imageUrl']),
       fileUrl: _str(data['fileUrl']),
-      direction: isSelfEcho ? MessageDirection.outgoing : MessageDirection.incoming,
+      direction: (isSelfEcho || skipNotification) ? MessageDirection.outgoing : MessageDirection.incoming,
       timestamp: timestamp,
-      deliveryStatus: isSelfEcho ? DeliveryStatus.sent : DeliveryStatus.delivered,
+      deliveryStatus: (isSelfEcho || skipNotification) ? DeliveryStatus.sent : DeliveryStatus.delivered,
       groupId: groupId,
       groupName: _str(data['groupName']),
       groupType: groupType,
@@ -850,8 +1266,21 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   /// Hydrate existing message with new data (pick longer body)
   ChatMessage _hydrateExistingMessage(ChatMessage existing, ChatMessage incoming) {
-    // Pick longer body (for push truncation recovery)
-    final body = (incoming.body.length > existing.body.length) ? incoming.body : existing.body;
+    // Pick the more up-to-date body.
+    // - If the existing message was already edited (editedAt != null), always
+    //   keep the edited body. The poll returns the original text which is
+    //   outdated — applying the longer-body heuristic here would revert an
+    //   edit that made the text shorter (e.g. "Hello World" → "Hi").
+    // - Otherwise fall back to the longer-body heuristic which guards against
+    //   push truncation where the cached body is shorter than the full text.
+    final String body;
+    if (existing.editedAt != null) {
+      body = existing.body;
+    } else if (incoming.body.length > existing.body.length) {
+      body = incoming.body;
+    } else {
+      body = existing.body;
+    }
 
     return existing.copyWith(
       body: body,
@@ -859,7 +1288,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       editedAt: incoming.editedAt ?? existing.editedAt,
       deletedAt: incoming.deletedAt ?? existing.deletedAt,
       reactions: incoming.reactions ?? existing.reactions,
-      deliveryStatus: incoming.deliveryStatus,
+      // Never downgrade the delivery status: once a message is `read` or
+      // `delivered`, a stale server echo (which always carries `sent`) must
+      // not revert it back.
+      deliveryStatus: _maxDeliveryStatus(existing.deliveryStatus, incoming.deliveryStatus),
+      // Hydrate the reply reference from the incoming message when the
+      // existing optimistic bubble was created without it (e.g. the optimistic
+      // message is created locally with replyTo from state, but the server
+      // echo carries the canonically stored reference fields).
+      replyTo: existing.replyTo ?? incoming.replyTo,
     );
   }
 
@@ -895,6 +1332,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     String? imageUrl,
     String? fileUrl,
     MessageReference? replyTo,
+    bool forwarded = false,
+    String? forwardedFrom,
+    String? forwardedFromName,
   }) async {
     final messageId = _generateMessageId();
     final timestamp = DateTime.now().millisecondsSinceEpoch;
@@ -913,6 +1353,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       timestamp: timestamp,
       deliveryStatus: DeliveryStatus.pending,
       replyTo: replyTo,
+      forwarded: forwarded,
+      forwardedFrom: forwardedFrom,
+      forwardedFromName: forwardedFromName,
     );
 
     // Add to state optimistically
@@ -931,6 +1374,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         originalSender: recipient,
         messageId: messageId,
         replyToMessageId: replyTo?.messageId,
+        replyToSender: replyTo?.sender,
+        replyToSenderName: replyTo?.senderDisplayName,
+        replyToBody: replyTo?.body,
+        replyToImageUrl: replyTo?.imageUrl,
+        forwarded: forwarded,
+        forwardedFrom: forwardedFrom,
+        forwardedFromName: forwardedFromName,
       );
       await _sendReply(payload);
 
@@ -1009,6 +1459,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         groupSenderName: getDisplayName(sender),
         membersToNotify: notify,
         replyToMessageId: replyTo?.messageId,
+        replyToSender: replyTo?.sender,
+        replyToSenderName: replyTo?.senderDisplayName,
+        replyToBody: replyTo?.body,
+        replyToImageUrl: replyTo?.imageUrl,
       );
       await _sendReply(payload);
 
@@ -1037,8 +1491,36 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     state = state.copyWith(messagesByChat: newMessagesByChat);
   }
 
+  /// Returns the higher-ranked of two [DeliveryStatus] values so that status
+  /// transitions only ever advance (pending → sent → delivered → read) and
+  /// never regress.
+  static DeliveryStatus _maxDeliveryStatus(DeliveryStatus a, DeliveryStatus b) {
+    const rank = {
+      DeliveryStatus.pending: 0,
+      DeliveryStatus.queued: 1,
+      DeliveryStatus.sent: 2,
+      DeliveryStatus.delivered: 3,
+      DeliveryStatus.read: 4,
+      DeliveryStatus.failed: -1,
+    };
+    // Keep `failed` unless the incoming status is a positive advancement.
+    if (a == DeliveryStatus.failed) return b == DeliveryStatus.failed ? a : b;
+    if (b == DeliveryStatus.failed) return a;
+    return (rank[a] ?? 0) >= (rank[b] ?? 0) ? a : b;
+  }
+
   String _generateMessageId() {
     return '${DateTime.now().millisecondsSinceEpoch}-${DateTime.now().microsecond}';
+  }
+
+  /// Find a message in the in-memory store by its [messageId] field.
+  ChatMessage? _findMessageByMessageId(String messageId) {
+    for (final msgs in state.messagesByChat.values) {
+      for (final m in msgs) {
+        if (m.messageId == messageId) return m;
+      }
+    }
+    return null;
   }
 
   // ---------------------------------------------------------------------------
@@ -1046,13 +1528,77 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   // ---------------------------------------------------------------------------
 
   Future<void> addReaction(String messageId, String emoji) async {
-    await _api.addReaction(messageId, emoji);
-    // Real-time update will apply the change
+    final user = _currentUser ?? '';
+    final msg = _findMessageByMessageId(messageId);
+    final group = msg?.groupId != null ? state.groups[msg!.groupId] : null;
+    // Apply optimistically so the sender sees the reaction immediately.
+    _applyReactionToState(messageId, emoji, user, getDisplayName(user));
+    await _api.addReaction(
+      messageId,
+      emoji,
+      user,
+      targetUser: group == null ? msg?.chatId : null,
+      groupId: group?.id,
+      groupName: group?.name,
+      groupMembers: group?.members,
+      groupCreatedBy: group?.createdBy,
+      groupAdmins: group?.admins,
+      groupUpdatedAt: group?.updatedAt,
+      groupType: group?.type,
+    );
   }
 
   Future<void> removeReaction(String messageId, String emoji) async {
-    await _api.removeReaction(messageId, emoji);
-    // Real-time update will apply the change
+    final user = _currentUser ?? '';
+    final msg = _findMessageByMessageId(messageId);
+    final group = msg?.groupId != null ? state.groups[msg!.groupId] : null;
+    // Apply optimistically so the sender sees the removal immediately.
+    _applyReactionToState(messageId, '', user, getDisplayName(user));
+    await _api.removeReaction(
+      messageId,
+      emoji,
+      user,
+      targetUser: group == null ? msg?.chatId : null,
+      groupId: group?.id,
+      groupName: group?.name,
+      groupMembers: group?.members,
+      groupCreatedBy: group?.createdBy,
+      groupAdmins: group?.admins,
+      groupUpdatedAt: group?.updatedAt,
+      groupType: group?.type,
+    );
+  }
+
+  /// Updates the reactions on a single message in local state.
+  /// Passing an empty [emoji] removes the reactor's existing reaction.
+  /// This is called both optimistically (on the sender's device) and when
+  /// the server broadcasts the reaction event to the other participant.
+  void _applyReactionToState(
+    String targetMessageId,
+    String? emoji,
+    String reactor,
+    String? reactorName,
+  ) {
+    final newMessagesByChat = <String, List<ChatMessage>>{};
+    for (final entry in state.messagesByChat.entries) {
+      final chatMessages = entry.value.map((m) {
+        if (m.messageId == targetMessageId) {
+          final reactions = List<MessageReaction>.from(m.reactions ?? []);
+          reactions.removeWhere((r) => r.reactor == reactor);
+          if (emoji != null && emoji.isNotEmpty) {
+            reactions.add(MessageReaction(
+              emoji: emoji,
+              reactor: reactor,
+              reactorName: reactorName,
+            ));
+          }
+          return m.copyWith(reactions: reactions);
+        }
+        return m;
+      }).toList();
+      newMessagesByChat[entry.key] = chatMessages;
+    }
+    state = state.copyWith(messagesByChat: newMessagesByChat);
   }
 
   // ---------------------------------------------------------------------------
@@ -1060,13 +1606,74 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   // ---------------------------------------------------------------------------
 
   Future<void> editMessage(String messageId, String newBody) async {
-    await _api.editMessage(messageId, newBody);
-    // Real-time update will apply the change
+    final user = _currentUser ?? '';
+    final msg = _findMessageByMessageId(messageId);
+    final group = msg?.groupId != null ? state.groups[msg!.groupId] : null;
+    final editedAt = DateTime.now().millisecondsSinceEpoch;
+    // Apply optimistically so the sender sees the edit immediately.
+    _applyEditToState(messageId, newBody, editedAt);
+    await _api.editMessage(
+      messageId,
+      newBody,
+      user,
+      recipient: group == null ? msg?.chatId : null,
+      groupId: group?.id,
+      groupName: group?.name,
+      groupMembers: group?.members,
+      groupCreatedBy: group?.createdBy,
+      groupAdmins: group?.admins,
+      groupUpdatedAt: group?.updatedAt,
+      groupType: group?.type,
+    );
   }
 
   Future<void> deleteMessage(String messageId) async {
-    await _api.deleteMessage(messageId);
-    // Real-time update will apply the change
+    final user = _currentUser ?? '';
+    final msg = _findMessageByMessageId(messageId);
+    final group = msg?.groupId != null ? state.groups[msg!.groupId] : null;
+    final deletedAt = DateTime.now().millisecondsSinceEpoch;
+    // Apply optimistically so the sender sees the deletion immediately.
+    _applyDeleteToState(messageId, deletedAt);
+    await _api.deleteMessage(
+      messageId,
+      user,
+      recipient: group == null ? msg?.chatId : null,
+      groupId: group?.id,
+      groupName: group?.name,
+      groupMembers: group?.members,
+      groupCreatedBy: group?.createdBy,
+      groupAdmins: group?.admins,
+      groupUpdatedAt: group?.updatedAt,
+      groupType: group?.type,
+    );
+  }
+
+  void _applyEditToState(String targetMessageId, String newBody, int editedAt) {
+    final newMessagesByChat = <String, List<ChatMessage>>{};
+    for (final entry in state.messagesByChat.entries) {
+      final chatMessages = entry.value.map((m) {
+        if (m.messageId == targetMessageId) {
+          return m.copyWith(body: newBody, editedAt: editedAt);
+        }
+        return m;
+      }).toList();
+      newMessagesByChat[entry.key] = chatMessages;
+    }
+    state = state.copyWith(messagesByChat: newMessagesByChat);
+  }
+
+  void _applyDeleteToState(String targetMessageId, int deletedAt) {
+    final newMessagesByChat = <String, List<ChatMessage>>{};
+    for (final entry in state.messagesByChat.entries) {
+      final chatMessages = entry.value.map((m) {
+        if (m.messageId == targetMessageId) {
+          return m.copyWith(deletedAt: deletedAt);
+        }
+        return m;
+      }).toList();
+      newMessagesByChat[entry.key] = chatMessages;
+    }
+    state = state.copyWith(messagesByChat: newMessagesByChat);
   }
 
   // ---------------------------------------------------------------------------
@@ -1090,7 +1697,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
 
     try {
-      await _api.markMessagesAsRead(chatId, messageIds);
+      await _api.markMessagesAsRead(chatId, messageIds, _currentUser ?? '');
     } catch (e) {
       // Silent failure
     }
@@ -1189,15 +1796,22 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final isFromMe = me != null && senderNorm == me.trim().toLowerCase();
 
     // For 1:1 outgoing messages the server returns sender=currentUser and
-    // toUser/recipient=the other party. Using sender as chatId would create a
-    // spurious "self-chat". Mirror Angular's logic (chat-store.service.ts:6539):
-    // when the message is from the current user, use toUser/recipient as chatId.
+    // toUser=the other party. Using sender as chatId would create a spurious
+    // "self-chat". Mirror Angular's logic: when isFromMe, use toUser as chatId.
+    //
+    // IMPORTANT: do NOT fall back to msg.recipient here.  The logs endpoint
+    // always sets recipient = requestedUser (= me), so using it as a fallback
+    // when toUser is absent produces chatId = me = self-chat.
     String chatId;
     if (isGroup) {
       chatId = msg.groupId!;
     } else if (isFromMe) {
-      final toUser = (msg.toUser ?? msg.recipient ?? '').trim().toLowerCase();
-      chatId = toUser.isNotEmpty ? toUser : senderNorm;
+      final toUser = (msg.toUser ?? '').trim().toLowerCase();
+      final mePhone = me?.trim().toLowerCase() ?? '';
+      // If toUser is absent or equals the sender (a self-chat DB artifact from
+      // old self-echo log entries where ToUser = sender), skip this message.
+      if (toUser.isEmpty || (mePhone.isNotEmpty && toUser == mePhone)) return null;
+      chatId = toUser;
     } else {
       chatId = senderNorm;
     }
@@ -1259,7 +1873,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       messageId: msg.messageId!,
       chatId: chatId,
       sender: msg.sender!,
-      senderDisplayName: msg.groupSenderName ?? getDisplayName(msg.sender!),
+      // When the server stores the group ID as sender (server.js:2138) and
+      // groupSenderName is absent, avoid showing the raw group ID string.
+      senderDisplayName: msg.groupSenderName ??
+          (isGroup &&
+                  msg.sender!.trim().toLowerCase() ==
+                      (msg.groupId ?? '').trim().toLowerCase()
+              ? null
+              : getDisplayName(msg.sender!)),
       body: body,
       imageUrl: msg.imageUrl,
       fileUrl: msg.fileUrl,
@@ -1286,7 +1907,83 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   }
 
   void _handleTypingIndicator(IncomingServerMessage msg) {
-    // TODO: Implement typing indicator handling
+    final sender = msg.sender?.trim();
+    if (sender == null || sender.isEmpty) return;
+
+    // Ignore own typing echoes.
+    final me = _currentUser?.trim().toLowerCase();
+    if (sender.trim().toLowerCase() == me) return;
+
+    // Determine which chat the typing is for.
+    // Mirrors Angular: groupId takes precedence over chatId, then falls back
+    // to sender (for direct messages the server sets toUser/targetUser but
+    // sender is the easiest canonical key to use on the recipient side).
+    final chatId = msg.groupId ?? msg.chatId ?? sender;
+
+    final isTyping = msg.isTyping ?? true;
+
+    final newTyping = Map<String, Set<String>>.from(
+      state.typingByChatId.map((k, v) => MapEntry(k, Set<String>.from(v))),
+    );
+
+    if (isTyping) {
+      newTyping[chatId] = {...(newTyping[chatId] ?? {}), sender};
+
+      // Start/reset the auto-clear timer for this sender in this chat.
+      _typingClearTimers[chatId] ??= {};
+      _typingClearTimers[chatId]![sender]?.cancel();
+      _typingClearTimers[chatId]![sender] = Timer(_typingClearDelay, () {
+        _clearTypingForSender(chatId, sender);
+      });
+    } else {
+      newTyping[chatId]?.remove(sender);
+      if (newTyping[chatId]?.isEmpty ?? false) newTyping.remove(chatId);
+      _typingClearTimers[chatId]?[sender]?.cancel();
+      _typingClearTimers[chatId]?.remove(sender);
+    }
+
+    state = state.copyWith(typingByChatId: newTyping);
+  }
+
+  void _clearTypingForSender(String chatId, String sender) {
+    final newTyping = Map<String, Set<String>>.from(
+      state.typingByChatId.map((k, v) => MapEntry(k, Set<String>.from(v))),
+    );
+    newTyping[chatId]?.remove(sender);
+    if (newTyping[chatId]?.isEmpty ?? false) newTyping.remove(chatId);
+    state = state.copyWith(typingByChatId: newTyping);
+    _typingClearTimers[chatId]?.remove(sender);
+  }
+
+  /// Notify the server (and thereby the other user) that the current user is
+  /// typing (or has stopped typing) in [chatId].
+  ///
+  /// [isGroup] controls whether group metadata is included in the payload.
+  Future<void> sendTypingIndicator({
+    required String chatId,
+    required bool isTyping,
+    bool isGroup = false,
+  }) async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty) return;
+
+    final group = isGroup ? state.groups[chatId] : null;
+
+    final payload = TypingPayload(
+      user: user,
+      isTyping: isTyping,
+      targetUser: isGroup ? null : chatId,
+      chatId: chatId,
+      groupId: isGroup ? chatId : null,
+      groupName: group?.name,
+      groupMembers: group?.members,
+    );
+
+    try {
+      await _api.sendTypingState(payload);
+    } catch (_) {
+      // Typing indicators are best-effort; failures are silently ignored.
+    }
   }
 
   void _handleReadReceipt(IncomingServerMessage msg) {
@@ -1309,39 +2006,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   void _handleReaction(IncomingServerMessage msg) {
     if (msg.targetMessageId == null) return;
-
-    final targetId = msg.targetMessageId!;
-    final emoji = msg.emoji;
-    final reactor = msg.reactor ?? '';
-    final reactorName = msg.reactorName;
-
-    final newMessagesByChat = <String, List<ChatMessage>>{};
-
-    for (final entry in state.messagesByChat.entries) {
-      final chatMessages = entry.value.map((m) {
-        if (m.messageId == targetId) {
-          final reactions = List<MessageReaction>.from(m.reactions ?? []);
-
-          // Remove existing reaction from same reactor
-          reactions.removeWhere((r) => r.reactor == reactor);
-
-          // Add new reaction if emoji is present
-          if (emoji != null && emoji.isNotEmpty) {
-            reactions.add(MessageReaction(
-              emoji: emoji,
-              reactor: reactor,
-              reactorName: reactorName,
-            ));
-          }
-
-          return m.copyWith(reactions: reactions);
-        }
-        return m;
-      }).toList();
-      newMessagesByChat[entry.key] = chatMessages;
-    }
-
-    state = state.copyWith(messagesByChat: newMessagesByChat);
+    _applyReactionToState(
+      msg.targetMessageId!,
+      msg.emoji,
+      msg.reactor ?? '',
+      msg.reactorName,
+    );
   }
 
   void _handleEdit(IncomingServerMessage msg) {
@@ -1355,19 +2025,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     if (newBody == null || editedAt == null) return;
 
-    final newMessagesByChat = <String, List<ChatMessage>>{};
-
-    for (final entry in state.messagesByChat.entries) {
-      final chatMessages = entry.value.map((m) {
-        if (m.messageId == targetId) {
-          return m.copyWith(body: newBody, editedAt: editedAt);
-        }
-        return m;
-      }).toList();
-      newMessagesByChat[entry.key] = chatMessages;
-    }
-
-    state = state.copyWith(messagesByChat: newMessagesByChat);
+    _applyEditToState(targetId, newBody, editedAt);
   }
 
   void _handleDelete(IncomingServerMessage msg) {
@@ -1378,19 +2036,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     final deletedAt = msg.deletedAt ?? DateTime.now().millisecondsSinceEpoch;
 
-    final newMessagesByChat = <String, List<ChatMessage>>{};
-
-    for (final entry in state.messagesByChat.entries) {
-      final chatMessages = entry.value.map((m) {
-        if (m.messageId == targetId) {
-          return m.copyWith(deletedAt: deletedAt);
-        }
-        return m;
-      }).toList();
-      newMessagesByChat[entry.key] = chatMessages;
-    }
-
-    state = state.copyWith(messagesByChat: newMessagesByChat);
+    _applyDeleteToState(targetId, deletedAt);
   }
 
   void _handleGroupUpdate(IncomingServerMessage msg) {
@@ -1441,12 +2087,22 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         allMessages.addAll(messages);
       }
 
-      await _db.persistState(PersistedChatState(
+      final snapshot = PersistedChatState(
         contacts: state.contacts.values.toList(),
         groups: state.groups.values.toList(),
         unreadByChat: state.unreadByChat,
         messages: allMessages,
-      ));
+      );
+
+      try {
+        await _db.persistState(snapshot);
+      } catch (_) {
+        // Drift DB unavailable (e.g. web without sqlite3.wasm).
+        // Fall back to shared_preferences-based localStorage snapshot.
+        if (kIsWeb) {
+          await WebChatStorage.persistState(snapshot);
+        }
+      }
     } catch (_) {
       // Persistence failure is non-fatal – data remains available in memory
       // for the current session and will be retried on the next trigger.
@@ -1459,9 +2115,26 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     await _persistState();
   }
 
+  /// Returns the latest message timestamp from in-memory state.
+  ///
+  /// Used as a fallback when the Drift DB is unavailable (e.g. Flutter web
+  /// without sqlite3.wasm) so that gap-analysis pulls still work correctly.
+  int _latestTimestampFromState() {
+    var latest = 0;
+    for (final msgs in state.messagesByChat.values) {
+      for (final msg in msgs) {
+        if (msg.timestamp > latest) latest = msg.timestamp;
+      }
+    }
+    return latest;
+  }
+
   /// Clear all local data
   Future<void> clearAll() async {
     await _db.clearAll();
+    if (kIsWeb) {
+      await WebChatStorage.clear();
+    }
     state = const ChatState();
   }
 }

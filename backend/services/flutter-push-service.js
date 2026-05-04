@@ -281,20 +281,31 @@ function createFlutterPushService(options = {}) {
             : (typeof msg.sender === 'string' && msg.sender) || 'System';
 
         let title = (typeof msg.title === 'string' && msg.title) || 'Work Alert';
-        let body = (typeof msgBody.shortText === 'string' && msgBody.shortText) || 'New Notification';
+
+        // Build compactCustomData first so its messageText can serve as a fallback
+        // for the notification body when shortText/longText are absent.
+        const compactCustomData = notificationService.buildCompactPushCustomData(
+            customData,
+            messageType
+        );
+
+        let body = (typeof msgBody.shortText === 'string' && msgBody.shortText)
+            || (typeof msgBody.longText === 'string' && msgBody.longText)
+            || (typeof compactCustomData.messageText === 'string' && compactCustomData.messageText)
+            || 'New Notification';
         if (messageType === 'reaction') {
             const reactionGroupName = String(customData.groupName || msg.title || sender || '').trim();
             title = reactionGroupName || 'Group';
             body = 'new reaction';
         }
 
-        const compactCustomData = notificationService.buildCompactPushCustomData(
-            customData,
-            messageType
-        );
-
+        // Build the payload with display-text fields first so that actual data
+        // fields from compactCustomData always win.  This is critical for
+        // edit-action: customData.body = the real edited text; if we spread
+        // compactCustomData first and then set `body` to the display fallback
+        // ('New Notification'), the edited text is overwritten and the Flutter
+        // client applies 'New Notification' as the new message body.
         const payloadData = {
-            ...compactCustomData,
             title,
             body,
             badge: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
@@ -302,15 +313,18 @@ function createFlutterPushService(options = {}) {
             requireInteraction: true,
             image: imageUrl,
             sender,
-            messageId: messageId || undefined
+            messageId: messageId || undefined,
+            ...compactCustomData
         };
 
         const includeNotification = !(
             payloadData.skipNotification === true ||
+            payloadData.skipNotification === 'true' ||
             messageType === 'read-receipt' ||
             messageType === 'group-update' ||
             messageType === 'delete-action' ||
-            messageType === 'edit-action'
+            messageType === 'edit-action' ||
+            messageType === 'reaction'
         );
 
         return notificationService.buildPushPayloadString(payloadData, { includeNotification });

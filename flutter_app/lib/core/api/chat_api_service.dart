@@ -648,7 +648,6 @@ class ChatApiService {
       ApiEndpoints.shuttleUserOrders,
       queryParameters: {
         'user': normalizedUser,
-        'force': '1',
         '_ts': DateTime.now().millisecondsSinceEpoch.toString(),
       },
       retryOptions: const RetryOptions(retries: 1, timeout: NetworkTimeouts.shuttleTimeout),
@@ -818,6 +817,37 @@ class ChatApiService {
 
     final history = (body['history'] as List?) ?? [];
     return history.map((item) => HelpdeskStatusHistoryEntry.fromJson(item as Map<String, dynamic>)).toList();
+  }
+
+  /// Get helpdesk ticket handler assignment history
+  ///
+  /// [user] is required for backend authorization when session cookies are not available.
+  Future<List<HelpdeskHandlerHistoryEntry>> getHelpdeskTicketHandlerHistory(int ticketId, String user) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) {
+      throw ApiException('User is required for helpdesk handler history request');
+    }
+
+    final response = await _client.get<Map<String, dynamic>>(
+      '${ApiEndpoints.helpdeskTickets}/$ticketId/handler-history',
+      queryParameters: {'user': normalizedUser},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+
+    final body = response.data ?? {};
+
+    if (!response.isSuccessful) {
+      final errorMessage = body['message'] as String? ?? 'שגיאה בטעינת היסטוריית המטפלים';
+      throw ApiException(errorMessage);
+    }
+
+    if (body['result'] == 'error') {
+      final errorMessage = body['message'] as String? ?? 'שגיאה בטעינת היסטוריית המטפלים';
+      throw ApiException(errorMessage);
+    }
+
+    final history = (body['history'] as List?) ?? [];
+    return history.map((item) => HelpdeskHandlerHistoryEntry.fromJson(item as Map<String, dynamic>)).toList();
   }
 
   /// Get helpdesk ticket notes
@@ -1201,54 +1231,136 @@ class ChatApiService {
   }
 
   /// Add reaction to a message
-  Future<void> addReaction(String messageId, String emoji) async {
+  Future<void> addReaction(
+    String messageId,
+    String emoji,
+    String user, {
+    String? targetUser,
+    String? groupId,
+    String? groupName,
+    List<String>? groupMembers,
+    String? groupCreatedBy,
+    List<String>? groupAdmins,
+    int? groupUpdatedAt,
+    GroupType? groupType,
+  }) async {
     final payload = ReactionPayload(
       targetMessageId: messageId,
       emoji: emoji,
-      reactor: 'me', // Will be set by server
-      reactorName: 'me', // Will be set by server
+      reactor: user,
+      reactorName: user,
+      targetUser: targetUser,
+      groupId: groupId,
+      groupName: groupName,
+      groupMembers: groupMembers,
+      groupCreatedBy: groupCreatedBy,
+      groupAdmins: groupAdmins,
+      groupUpdatedAt: groupUpdatedAt,
+      groupType: groupType,
     );
     await sendReaction(payload);
   }
 
   /// Remove reaction from a message
-  Future<void> removeReaction(String messageId, String emoji) async {
+  Future<void> removeReaction(
+    String messageId,
+    String emoji,
+    String user, {
+    String? targetUser,
+    String? groupId,
+    String? groupName,
+    List<String>? groupMembers,
+    String? groupCreatedBy,
+    List<String>? groupAdmins,
+    int? groupUpdatedAt,
+    GroupType? groupType,
+  }) async {
     // Removing a reaction uses the same endpoint with empty emoji or special action
     final payload = ReactionPayload(
       targetMessageId: messageId,
       emoji: '', // Empty to remove
-      reactor: 'me',
-      reactorName: 'me',
+      reactor: user,
+      reactorName: user,
+      targetUser: targetUser,
+      groupId: groupId,
+      groupName: groupName,
+      groupMembers: groupMembers,
+      groupCreatedBy: groupCreatedBy,
+      groupAdmins: groupAdmins,
+      groupUpdatedAt: groupUpdatedAt,
+      groupType: groupType,
     );
     await sendReaction(payload);
   }
 
   /// Edit a message
-  Future<void> editMessage(String messageId, String newBody) async {
+  Future<void> editMessage(
+    String messageId,
+    String newBody,
+    String user, {
+    String? recipient,
+    List<String>? recipients,
+    String? groupId,
+    String? groupName,
+    List<String>? groupMembers,
+    String? groupCreatedBy,
+    List<String>? groupAdmins,
+    int? groupUpdatedAt,
+    GroupType? groupType,
+  }) async {
     final payload = EditMessagePayload(
-      sender: 'me', // Will be set by server
+      sender: user,
       messageId: messageId,
       body: newBody,
       editedAt: DateTime.now().millisecondsSinceEpoch,
+      recipient: recipient,
+      recipients: recipients,
+      groupId: groupId,
+      groupName: groupName,
+      groupMembers: groupMembers,
+      groupCreatedBy: groupCreatedBy,
+      groupAdmins: groupAdmins,
+      groupUpdatedAt: groupUpdatedAt,
+      groupType: groupType,
     );
     await editMessageForEveryone(payload);
   }
 
   /// Delete a message
-  Future<void> deleteMessage(String messageId) async {
+  Future<void> deleteMessage(
+    String messageId,
+    String user, {
+    String? recipient,
+    List<String>? recipients,
+    String? groupId,
+    String? groupName,
+    List<String>? groupMembers,
+    String? groupCreatedBy,
+    List<String>? groupAdmins,
+    int? groupUpdatedAt,
+    GroupType? groupType,
+  }) async {
     final payload = DeleteMessagePayload(
-      sender: 'me', // Will be set by server
+      sender: user,
       messageId: messageId,
       deletedAt: DateTime.now().millisecondsSinceEpoch,
+      recipient: recipient,
+      recipients: recipients,
+      groupId: groupId,
+      groupName: groupName,
+      groupMembers: groupMembers,
+      groupCreatedBy: groupCreatedBy,
+      groupAdmins: groupAdmins,
+      groupUpdatedAt: groupUpdatedAt,
+      groupType: groupType,
     );
     await deleteMessageForEveryone(payload);
   }
 
   /// Mark messages as read
-  Future<void> markMessagesAsRead(String chatId, List<String> messageIds) async {
-    // Need sender info from the messages
+  Future<void> markMessagesAsRead(String chatId, List<String> messageIds, String user) async {
     final payload = ReadReceiptPayload(
-      reader: 'me', // Will be set by server
+      reader: user,
       sender: chatId, // The chat/sender we're marking as read
       messageIds: messageIds,
       readAt: DateTime.now().millisecondsSinceEpoch,

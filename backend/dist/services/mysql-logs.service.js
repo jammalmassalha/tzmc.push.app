@@ -465,9 +465,20 @@ class MysqlLogsService {
         const limit = Math.max(1, Math.min(toPositiveInteger(options.limit, 700), 200000));
         const offset = Math.max(0, toPositiveInteger(options.offset, 0));
         const excludeSystem = options.excludeSystem !== false;
-        // OPTIMIZATION: Parse the 'since' timestamp into a Date object for MySQL
+        // OPTIMIZATION: Parse the 'since' timestamp into a Date object for MySQL.
+        // The DateTime column is stored with second-level precision (MySQL DATETIME),
+        // so a since value with sub-second precision (e.g. 1746272873151) can
+        // incorrectly exclude rows that were written in the same second
+        // (e.g. DateTime = 1746272873000):
+        //   '2026-05-03 10:47:53' > '2026-05-03 10:47:53.151'  →  FALSE (row excluded!)
+        // Floor since to the nearest second, then subtract 1 ms so the comparison
+        // becomes '2026-05-03 10:47:53' > '2026-05-03 10:47:52.999' → TRUE.
+        // This trades a small chance of returning 1-2 already-seen duplicates
+        // (handled by client-side dedup on messageId) for never missing a new row.
         const sinceTimestamp = Number(options.since) || 0;
-        const sinceDate = sinceTimestamp > 0 ? new Date(sinceTimestamp) : null;
+        const sinceDate = sinceTimestamp > 0
+            ? new Date(Math.floor(sinceTimestamp / 1000) * 1000 - 1)
+            : null;
         const hardcodedGroupKeySet = new Set(Array.isArray(options.hardcodedGroupIds)
             ? options.hardcodedGroupIds.map((value) => normalizeGroupKey(value)).filter(Boolean)
             : []);
@@ -1142,6 +1153,82 @@ class MysqlLogsService {
         catch (err) {
             const message = String(err.message || '');
             console.error('[MYSQL] getAllMessageActivities error:', message);
+            return [];
+        }
+    }
+    // Return action records (edit-action, reaction, delete-action) from
+    // MessageActivities for the given user so the Flutter poll can restore
+    // edits and reactions after a fresh sync.  Only the three action types
+    // that the Flutter client needs to re-apply are returned; read-receipts
+    // and group-update are omitted (they are handled by other mechanisms).
+    async getMessageActivitiesForUser(user, options = {}) {
+        await this.ensureMessageActivitiesTable();
+        const requestedUser = normalizePhone(user);
+        if (!requestedUser)
+            return [];
+        const limit = Math.max(1, Math.min(toPositiveInteger(options.limit, 2000), 5000));
+        const sinceTimestamp = Number(options.since) || 0;
+        try {
+            let sql = `SELECT
+          \`ActionType\`      AS actionType,
+          \`MessageId\`       AS messageId,
+          \`Sender\`          AS sender,
+          \`Recipient\`       AS recipient,
+          \`GroupId\`         AS groupId,
+          \`Body\`            AS body,
+          \`Emoji\`           AS emoji,
+          \`TargetMessageId\` AS targetMessageId,
+          \`ActionTimestamp\` AS actionTimestamp
+        FROM \`MessageActivities\`
+        WHERE \`ActionType\` IN ('edit-action', 'reaction', 'delete-action')
+          AND (\`Sender\` = ? OR \`Recipient\` = ? OR \`Recipient\` LIKE ?)`;
+            const params = [
+                requestedUser,
+                requestedUser,
+                `%${requestedUser}%`,
+            ];
+            if (sinceTimestamp > 0) {
+                sql += ` AND \`ActionTimestamp\` > ?`;
+                params.push(sinceTimestamp);
+            }
+            sql += ` ORDER BY \`ActionTimestamp\` ASC LIMIT ?`;
+            params.push(limit);
+            const [rows] = await this.pool.query(sql, params);
+            const typedRows = rows;
+            return typedRows.map((row) => {
+                const actionType = String(row.actionType || '').toLowerCase();
+                const ts = Number(row.actionTimestamp) || Date.now();
+                const msgId = String(row.messageId || '').trim();
+                const sender = normalizePhone(String(row.sender || '').trim()) ||
+                    String(row.sender || '').trim();
+                const targetMsgId = String(row.targetMessageId || '').trim();
+                const record = {
+                    type: actionType,
+                    messageId: msgId,
+                    sender,
+                    toUser: String(row.recipient || '').trim() || undefined,
+                    groupId: String(row.groupId || '').trim() || undefined,
+                    timestamp: ts,
+                };
+                if (actionType === 'edit-action') {
+                    record.body = String(row.body || '').trim() || undefined;
+                    record.editedAt = ts;
+                }
+                else if (actionType === 'reaction') {
+                    record.targetMessageId = targetMsgId || undefined;
+                    record.emoji = String(row.emoji || '').trim() || undefined;
+                    // reactor = sender for reactions
+                    record.reactor = sender;
+                }
+                else if (actionType === 'delete-action') {
+                    record.deletedAt = ts;
+                }
+                return record;
+            });
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.error('[MYSQL] getMessageActivitiesForUser error:', message);
             return [];
         }
     }

@@ -201,14 +201,24 @@ class NotificationService {
             : (shouldLimitPerUserEndpoints ? this.defaultMaxEndpointsPerUser : 0);
         const compactCustomData = this.buildCompactPushCustomData(customData, messageType);
         let msgTitle = message.title || 'Work Alert';
-        let msgText = msgBody.shortText || 'New Notification';
+        let msgText = msgBody.shortText
+            || msgBody.longText
+            || String(compactCustomData.messageText || '').trim()
+            || 'New Notification';
         if (messageType === 'reaction') {
             const reactionGroupName = String(customData.groupName || message.title || finalSender || '').trim();
             msgTitle = reactionGroupName || 'Group';
             msgText = 'new reaction';
         }
         const logContent = msgText || messageType || 'System Notification';
-        const shouldPersistPushLog = messageType !== 'read-receipt';
+        // Self-echo pushes carry skipNotification:true so the sender's device can
+        // update its outgoing bubble without creating a visible notification.
+        // Skip the MySQL log for these — logging with ToUser = sender (the same
+        // user who sent the message) creates a spurious self-chat row that
+        // pullMessages() later returns to the sender as if it were a new incoming
+        // message in a conversation with themselves.
+        const skipNotificationFlag = customData.skipNotification === true || customData.skipNotification === 'true';
+        const shouldPersistPushLog = messageType !== 'read-receipt' && !skipNotificationFlag;
         const messageId = options.messageId || message.messageId || this.deps.generateMessageId();
         const shouldDedupLog = Boolean(options.dedupLog);
         const shouldIncrementBadge = !options.skipBadge;

@@ -23,7 +23,7 @@ import 'message_screen.dart';
 import 'new_chat_dialog.dart';
 
 /// Main tab enumeration
-enum MainTab { chats, groups, shuttle, helpdesk, settings }
+enum MainTab { chats, groups, shuttle, helpdesk, ticketManager, settings }
 
 /// Chat shell screen widget
 class ChatShellScreen extends ConsumerStatefulWidget {
@@ -43,17 +43,44 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initializeServices();
-    // Clear the home-screen app icon badge on first launch / cold start.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      unawaited(ref.read(pushNotificationServiceProvider).resetBadge());
-    });
+    // Badge clearing is deferred to after chat-store initialization completes
+    // so the home-screen badge stays visible until new messages are actually
+    // rendered in the chat list.  See _initializeChatStoreAndClearBadge().
   }
 
-  /// Clear the app icon badge whenever the app returns to the foreground.
+  /// Called when the app returns to the foreground.
+  ///
+  /// Pulls any messages that arrived while the app was backgrounded **first**,
+  /// so the chat is fully up-to-date, and only **then** clears the local
+  /// notifications / app-icon badge.  Doing it in this order prevents the race
+  /// where `cancelAll()` wipes the notification tray before the server fetch
+  /// completes, leaving the user with a blank/stale chat and no badge to hint
+  /// that unread messages exist.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      unawaited(_handleAppResumed());
+    }
+  }
+
+  Future<void> _handleAppResumed() async {
+    // 1. Pull missed messages first — the chat must be updated before the
+    //    notification tray is cleared so the user immediately sees new content.
+    final user = ref.read(currentUserProvider);
+    if (user != null) {
+      try {
+        await ref
+            .read(chatStoreProvider.notifier)
+            .recoverMissedMessages(force: true);
+      } catch (e, st) {
+        debugPrint('[ChatShellScreen] recoverMissedMessages on resume failed: $e\n$st');
+      }
+    }
+
+    // 2. Now reset the server badge counter and clear local notifications.
+    //    Because the chat is already up-to-date at this point the user won't
+    //    see a gap between "badge disappeared" and "messages appeared".
+    if (mounted) {
       unawaited(ref.read(pushNotificationServiceProvider).resetBadge());
     }
   }
@@ -66,27 +93,34 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     final transport = ref.read(realtimeTransportServiceProvider);
     transport.connect(user, isNetworkReachable: () => true);
 
-    // Kick off chat store initialization but do not block push notification
-    // setup on it. ChatStoreNotifier.initialize() can throw (e.g. on web
-    // while drift/sqlite-wasm warms up, or when the message-recovery
-    // network call fails); previously the .then() chain was the only path
-    // that triggered the notification permission prompt, so a single
-    // chat-store hiccup would silently suppress the browser's permission
-    // dialog forever on the web build.
-    unawaited(
-      ref
-          .read(chatStoreProvider.notifier)
-          .initialize(user)
-          .catchError((Object e, StackTrace st) {
-        debugPrint('[ChatShellScreen] chatStore.initialize error: $e');
-      }),
-    );
+    // Kick off chat store initialization. Badge clearing is intentionally
+    // deferred inside _initializeChatStoreAndClearBadge so the home-screen
+    // badge stays visible until recoverMissedMessages() has finished loading
+    // new messages — clearing it before that creates a visible gap where the
+    // badge disappears but the chat list has not yet updated.
+    unawaited(_initializeChatStoreAndClearBadge(user));
 
     // Initialize push notifications and request permission independently of
     // chat store init. ensurePermissionAndRegister() shows a Hebrew
     // rationale dialog before the OS / browser prompt, so wait one frame
     // to make sure [context] is mounted.
     unawaited(_initializePushNotifications());
+  }
+
+  /// Initializes the chat store and clears the home-screen badge only after
+  /// message recovery completes, so the badge is visible until the UI shows
+  /// the newly arrived messages.
+  Future<void> _initializeChatStoreAndClearBadge(String user) async {
+    try {
+      await ref.read(chatStoreProvider.notifier).initialize(user);
+    } catch (e, st) {
+      debugPrint('[ChatShellScreen] chatStore.initialize error: $e\n$st');
+    }
+    // By this point recoverMissedMessages() inside initialize() has run and
+    // the chat list is up-to-date.  Now it is safe to clear the badge.
+    if (mounted) {
+      unawaited(ref.read(pushNotificationServiceProvider).resetBadge());
+    }
   }
 
   Future<void> _initializePushNotifications() async {
@@ -205,6 +239,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
                 _buildGroupsTab(),
                 _buildShuttleTab(),
                 _buildHelpdeskTab(),
+                _buildTicketManagerTab(),
                 _buildSettingsTab(),
               ],
             ),
@@ -240,6 +275,11 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
                   icon: Icon(Icons.support_agent_outlined),
                   activeIcon: Icon(Icons.support_agent),
                   label: 'מוקד איחוד',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.manage_accounts_outlined),
+                  activeIcon: Icon(Icons.manage_accounts),
+                  label: 'מנהל קריאות',
                 ),
                 BottomNavigationBarItem(
                   icon: Icon(Icons.settings_outlined),
@@ -336,6 +376,10 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     return const HelpdeskScreen();
   }
 
+  Widget _buildTicketManagerTab() {
+    return const TicketManagerScreen();
+  }
+
   Widget _buildSettingsTab() {
     final user = ref.watch(currentUserProvider);
     return _SettingsPlaceholder(user: user);
@@ -350,7 +394,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       case MainTab.shuttle:
         return 'הסעות';
       case MainTab.helpdesk:
-        return 'תמיכה';
+        return 'מוקד איחוד';
+      case MainTab.ticketManager:
+        return 'מנהל קריאות';
       case MainTab.settings:
         return 'הגדרות';
     }

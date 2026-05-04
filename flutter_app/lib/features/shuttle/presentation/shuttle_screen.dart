@@ -157,8 +157,13 @@ class ShuttleNotifier extends Notifier<ShuttleState> {
       );
       return;
     }
-    
-    state = state.copyWith(isLoading: true, error: null);
+
+    // Stale-while-revalidate: if we already have data, refresh silently in the
+    // background without showing a full-screen loading indicator.
+    final hasData = state.stations.isNotEmpty || state.userOrders.isNotEmpty;
+    if (!hasData) {
+      state = state.copyWith(isLoading: true, error: null);
+    }
 
     try {
       // Load stations and user orders in parallel
@@ -216,10 +221,11 @@ class ShuttleNotifier extends Notifier<ShuttleState> {
       );
       
       await _api.submitShuttleOrder(payload, _currentUser!);
-      await loadUserOrders();
       state = state.copyWith(isLoading: false);
       // Reset wizard after successful submission
       resetWizard();
+      // Background sync — don't block the success flow on the Google-Sheets round-trip.
+      unawaited(loadUserOrders());
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
@@ -260,8 +266,23 @@ class ShuttleNotifier extends Notifier<ShuttleState> {
         status: shuttleStatusCancelValue,
       );
       await _api.submitShuttleOrder(payload, _currentUser!);
-      await loadUserOrders();
-      state = state.copyWith(isLoading: false);
+      // Optimistically mark the order as cancelled in local state so the UI
+      // updates immediately without waiting for the next Google-Sheets round-trip.
+      final optimistic = state.userOrders.map((o) {
+        final sameRow = o.sheetRow != null && o.sheetRow == order.sheetRow;
+        final sameId = o.id != null && o.id == order.id;
+        if (sameRow || sameId || o == order) {
+          return o.copyWith(
+            isCancelled: true,
+            isOngoing: false,
+            status: shuttleStatusCancelValue,
+          );
+        }
+        return o;
+      }).toList();
+      state = state.copyWith(userOrders: optimistic, isLoading: false);
+      // Background sync to pull the authoritative server state.
+      unawaited(loadUserOrders());
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
@@ -684,17 +705,19 @@ class _ShuttleScreenState extends ConsumerState<ShuttleScreen>
             ],
           ),
 
-        // ── Header row: title | refresh | language toggle ─────────────────
+        // ── Header row: title (right) | refresh | language toggle (left) ──
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           child: Row(
             children: [
-              // Language toggle: RU / עב
-              _LangToggle(
-                language: state.language,
-                onChanged: notifier.setLanguage,
+              // Title on the right in RTL (first child = right side)
+              Text(
+                notifier.text('ההזמנות שלי', 'Мои заказы'),
+                style: theme.textTheme.titleSmall
+                    ?.copyWith(fontWeight: FontWeight.bold),
+                textDirection: ui.TextDirection.rtl,
               ),
-              const SizedBox(width: 6),
+              const Spacer(),
               // Refresh button
               IconButton(
                 onPressed: () => notifier.loadData(),
@@ -710,12 +733,11 @@ class _ShuttleScreenState extends ConsumerState<ShuttleScreen>
                     : const Icon(Icons.refresh),
                 tooltip: notifier.text('רענן', 'Обновить'),
               ),
-              const Spacer(),
-              Text(
-                notifier.text('ההזמנות שלי', 'Мои заказы'),
-                style: theme.textTheme.titleSmall
-                    ?.copyWith(fontWeight: FontWeight.bold),
-                textDirection: ui.TextDirection.rtl,
+              const SizedBox(width: 6),
+              // Language toggle on the left in RTL (last child = left side)
+              _LangToggle(
+                language: state.language,
+                onChanged: notifier.setLanguage,
               ),
             ],
           ),
@@ -1275,14 +1297,23 @@ class _OrderList extends ConsumerWidget {
   }
 }
 
-class _OrderCard extends ConsumerWidget {
+class _OrderCard extends ConsumerStatefulWidget {
   final ShuttleUserOrderPayload order;
   final bool isPast;
 
   const _OrderCard({required this.order, required this.isPast});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_OrderCard> createState() => _OrderCardState();
+}
+
+class _OrderCardState extends ConsumerState<_OrderCard> {
+  bool _isCancelling = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final order = widget.order;
+    final isPast = widget.isPast;
     final theme = Theme.of(context);
     final canCancel = !isPast && !order.isCancelled && order.isOngoing;
 
@@ -1347,11 +1378,20 @@ class _OrderCard extends ConsumerWidget {
                     ),
                   ),
                 if (canCancel)
-                  IconButton(
-                    tooltip: 'מחק הזמנה',
-                    icon: Icon(Icons.delete_outline, color: theme.colorScheme.error),
-                    onPressed: () => _confirmAndCancel(context, ref),
-                  ),
+                  _isCancelling
+                      ? const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: Padding(
+                            padding: EdgeInsets.all(4),
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        )
+                      : IconButton(
+                          tooltip: 'מחק הזמנה',
+                          icon: Icon(Icons.delete_outline, color: theme.colorScheme.error),
+                          onPressed: () => _confirmAndCancel(context),
+                        ),
               ],
             ),
             const Divider(height: 16),
@@ -1380,7 +1420,7 @@ class _OrderCard extends ConsumerWidget {
     );
   }
 
-  Future<void> _confirmAndCancel(BuildContext context, WidgetRef ref) async {
+  Future<void> _confirmAndCancel(BuildContext context) async {
     final overlay = Overlay.of(context, rootOverlay: true);
     final errorColor = Theme.of(context).colorScheme.error;
     final confirmed = await showDialog<bool>(
@@ -1408,11 +1448,13 @@ class _OrderCard extends ConsumerWidget {
     );
     if (confirmed != true) return;
 
+    setState(() => _isCancelling = true);
     try {
-      await ref.read(shuttleProvider.notifier).cancelOrder(order);
+      await ref.read(shuttleProvider.notifier).cancelOrder(widget.order);
       showTopToastOnOverlay(overlay, 'ההזמנה בוטלה בהצלחה ✅',
           backgroundColor: AppColors.success);
     } catch (e) {
+      if (mounted) setState(() => _isCancelling = false);
       showTopToastOnOverlay(overlay, 'שגיאה בביטול הזמנה: ${e.toString()}',
           backgroundColor: errorColor);
     }

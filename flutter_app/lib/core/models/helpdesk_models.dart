@@ -62,7 +62,8 @@ enum HelpdeskStatus {
 /// Helpdesk user role
 enum HelpdeskRole {
   admin,
-  editor;
+  editor,
+  relatedUser;
 
   static HelpdeskRole fromString(String value) {
     switch (value.toLowerCase()) {
@@ -70,6 +71,10 @@ enum HelpdeskRole {
         return HelpdeskRole.admin;
       case 'editor':
         return HelpdeskRole.editor;
+      case 'relateduser':
+      case 'related_user':
+      case 'related':
+        return HelpdeskRole.relatedUser;
       default:
         return HelpdeskRole.editor;
     }
@@ -402,6 +407,41 @@ class HelpdeskStatusHistoryEntry extends Equatable {
       ticketId: (json['ticketId'] as num?)?.toInt() ?? 0,
       oldStatus: (json['oldStatus'] ?? json['old_status']) as String?,
       newStatus: (json['newStatus'] ?? json['new_status']) as String? ?? '',
+      changedBy: (json['changedBy'] ?? json['changed_by']) as String? ?? '',
+      createdAt: DateTime.tryParse(
+              (json['createdAt'] ?? json['created_at']) as String? ?? '') ??
+          DateTime.now(),
+    );
+  }
+}
+
+/// Helpdesk handler assignment history entry (API response)
+class HelpdeskHandlerHistoryEntry extends Equatable {
+  final int id;
+  final int ticketId;
+  final String? oldHandler;
+  final String? newHandler;
+  final String changedBy;
+  final DateTime createdAt;
+
+  const HelpdeskHandlerHistoryEntry({
+    required this.id,
+    required this.ticketId,
+    this.oldHandler,
+    this.newHandler,
+    required this.changedBy,
+    required this.createdAt,
+  });
+
+  @override
+  List<Object?> get props => [id, ticketId, oldHandler, newHandler, changedBy, createdAt];
+
+  factory HelpdeskHandlerHistoryEntry.fromJson(Map<String, dynamic> json) {
+    return HelpdeskHandlerHistoryEntry(
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      ticketId: (json['ticketId'] as num?)?.toInt() ?? 0,
+      oldHandler: (json['oldHandler'] ?? json['old_handler']) as String?,
+      newHandler: (json['newHandler'] ?? json['new_handler']) as String?,
       changedBy: (json['changedBy'] ?? json['changed_by']) as String? ?? '',
       createdAt: DateTime.tryParse(
               (json['createdAt'] ?? json['created_at']) as String? ?? '') ??

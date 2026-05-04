@@ -15,6 +15,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../../shared/theme/app_theme.dart';
+import '../../../shared/widgets/authenticated_image.dart';
 
 /// Show the new-chat dialog. Returns the selected contact's username,
 /// or `null` if the user cancelled.
@@ -136,46 +137,34 @@ class _NewChatDialogState extends ConsumerState<_NewChatDialog> {
   }
 }
 
-class _ContactTile extends StatefulWidget {
+class _ContactTile extends StatelessWidget {
   final Contact contact;
   final VoidCallback onTap;
 
   const _ContactTile({required this.contact, required this.onTap});
 
   @override
-  State<_ContactTile> createState() => _ContactTileState();
-}
-
-class _ContactTileState extends State<_ContactTile> {
-  bool _avatarError = false;
-
-  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final contact = widget.contact;
     final initial =
         contact.displayName.isNotEmpty ? contact.displayName[0].toUpperCase() : '?';
 
-    Widget avatar;
-    if (!_avatarError && contact.upic != null && contact.upic!.isNotEmpty) {
-      avatar = CircleAvatar(
-        backgroundImage: NetworkImage(contact.upic!),
-        onBackgroundImageError: (_, __) {
-          if (mounted) setState(() => _avatarError = true);
-        },
-        backgroundColor: AppColors.primary,
-        child: null,
-      );
-    } else {
-      avatar = CircleAvatar(
-        backgroundColor: AppColors.primary,
-        child: Text(initial,
-            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-      );
-    }
+    final fallbackAvatar = CircleAvatar(
+      backgroundColor: AppColors.primary,
+      child: Text(initial,
+          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+    );
+
+    final Widget avatar = (contact.upic != null && contact.upic!.isNotEmpty)
+        ? AuthenticatedCircleAvatar(
+            url: contact.upic,
+            radius: 20,
+            fallback: fallbackAvatar,
+          )
+        : fallbackAvatar;
 
     return ListTile(
-      onTap: widget.onTap,
+      onTap: onTap,
       leading: avatar,
       title: Text(contact.displayName, style: theme.textTheme.bodyLarge),
       subtitle: contact.info != null && contact.info!.isNotEmpty

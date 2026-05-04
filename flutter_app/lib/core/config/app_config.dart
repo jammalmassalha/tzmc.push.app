@@ -126,8 +126,10 @@ class NetworkTimeouts {
 class RealtimeConfig {
   const RealtimeConfig._();
 
-  /// Polling interval when fallback to polling mode
-  static const Duration pollInterval = Duration(seconds: 15);
+  /// Polling interval when fallback to polling mode.
+  /// Reduced to 5 s so that edits and reactions reach polling-mode users
+  /// within a few seconds even when socket/SSE is unavailable.
+  static const Duration pollInterval = Duration(seconds: 5);
 
   /// SSE stream retry delay
   static const Duration streamRetryDelay = Duration(seconds: 5);

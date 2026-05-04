@@ -2193,6 +2193,28 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         await addToQueue(targetToNotify, pollingMessage);
 
         const senderForPush = isGroup ? groupId : user;
+
+        // Write the message to the main logs table NOW, before FCM fires.
+        // sendPushNotificationToUser() runs the Google Sheets subscription
+        // lookup before it calls logNotificationStatus(), so without this
+        // early write the message can be absent from /messages/logs for
+        // many seconds after FCM delivery.  The Flutter recovery pull
+        // (recoverMissedMessages → pullMessages → getMessagesFromLogs) would
+        // then return empty results, leaving the chat stale until the next
+        // poll tick.  Awaiting the insert guarantees the row is committed
+        // before FCM is dispatched.
+        await logNotificationStatus(
+            senderForPush,
+            Array.isArray(targetToNotify) ? targetToNotify.join(',') : targetToNotify,
+            reply || '',
+            'Sent',
+            '',
+            '',
+            messageId,
+            imageUrl || '',
+            fileUrl || ''
+        );
+
         const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, { messageId });
         recentProcessedReplyMessages.set(messageId, Date.now());
 
@@ -2368,8 +2390,13 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
     }).catch(() => {});
 
     await addToQueue(membersToNotify, reactionRecord);
-    const result = adminMembersToNotify.length
-        ? await sendPushNotificationToUser(adminMembersToNotify, notificationData, groupId || normalizedReactor, {
+    // Send FCM push to ALL members (not just admins) so that users who are
+    // in polling mode (i.e. socket/SSE not connected) still receive the
+    // reaction update immediately instead of waiting for the next poll cycle.
+    // This matches the behaviour of edit-action which already pushes to all
+    // recipients.
+    const result = membersToNotify.length
+        ? await sendPushNotificationToUser(membersToNotify, notificationData, groupId || normalizedReactor, {
             messageId: reactionId,
             skipBadge: true,
             singlePerUser: true,
@@ -5812,10 +5839,12 @@ registerFlutterPushRoutes(app, {
 });
 
 async function sendPushNotificationToUser(targetUser, message, senderuser, options) {
-    const result = await notificationService.sendPushNotificationToUser(targetUser, message, senderuser, options);
-    // Fire-and-forget fan-out to Flutter FCM tokens. Wrapped in try/catch so
-    // any FCM error (incl. missing FIREBASE_SERVICE_ACCOUNT_BASE64) never
-    // affects the web-push result returned to the caller.
+    // Fire-and-forget fan-out to Flutter FCM tokens immediately, WITHOUT waiting
+    // for the web-push pipeline. The web-push pipeline may block for several
+    // seconds (or up to ~1 minute) while it looks up subscriptions from Google
+    // Sheets when the cache is stale. Dispatching to FCM first ensures that
+    // Flutter / mobile users receive the push notification in real time,
+    // regardless of how long the web-push subscription lookup takes.
     try {
         const fanOut = flutterPushService.dispatchToUsers(targetUser, message, senderuser, options);
         if (fanOut && typeof fanOut.then === 'function') {
@@ -5830,7 +5859,7 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
             err && err.message ? err.message : err
         );
     }
-    return result;
+    return notificationService.sendPushNotificationToUser(targetUser, message, senderuser, options);
 }
 // --- ROUTES ---
 
@@ -6249,7 +6278,9 @@ registerHelpdeskController(app, {
     requireAuthorizedUser,
     env: process.env,
     buildGoogleSheetGetUrl,
-    fetchWithRetry
+    fetchWithRetry,
+    sendPushNotificationToUser,
+    notifyRealtimeClients
 });
 
 registerMessageController(app, {
@@ -6258,6 +6289,7 @@ registerMessageController(app, {
     fetchWithRetry,
     buildGoogleSheetGetUrl,
     getLogsMessagesForUser: (user, options = {}) => mysqlLogsService.getLogsMessagesForUser(user, options),
+    getMessageActivitiesForUser: (user, options = {}) => mysqlLogsService.getMessageActivitiesForUser(user, options),
     getHardcodedGroupIds: () => communityGroupIds,
     getHardcodedGroupMembers: () => {
         const membersMap = {};

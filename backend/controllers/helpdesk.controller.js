@@ -50,7 +50,22 @@ function createHelpdeskPool(env = {}) {
 }
 
 async function ensureHelpdeskTables(pool) {
-    await pool.execute(`
+    // Each CREATE TABLE is wrapped in its own try/catch so that a failure in
+    // one table (e.g. a FK constraint issue on a first-time install) does not
+    // prevent the remaining tables from being created.  MySQL error 1050
+    // (ER_TABLE_EXISTS_ERROR) is silently ignored because CREATE TABLE IF NOT
+    // EXISTS normally suppresses it, but some MySQL-compatible servers return
+    // it anyway.
+    async function safeCreateTable(sql, label) {
+        try {
+            await pool.execute(sql);
+        } catch (err) {
+            if (err && err.errno === 1050) return; // table already exists — ignore
+            console.error(`[HELPDESK] Failed to create table ${label}:`, err && err.message ? err.message : err);
+        }
+    }
+
+    await safeCreateTable(`
         CREATE TABLE IF NOT EXISTS \`helpdesk_tickets\` (
             \`id\` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             \`creator_username\` VARCHAR(64) NOT NULL,
@@ -70,7 +85,7 @@ async function ensureHelpdeskTables(pool) {
             INDEX \`idx_department\` (\`department\`),
             INDEX \`idx_location\` (\`location\`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
+    `, 'helpdesk_tickets');
 
     // Migration: add location column to existing helpdesk_tickets tables
     try {
@@ -112,7 +127,7 @@ async function ensureHelpdeskTables(pool) {
         }
     }
 
-    await pool.execute(`
+    await safeCreateTable(`
         CREATE TABLE IF NOT EXISTS \`helpdesk_notes\` (
             \`id\` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             \`ticket_id\` INT UNSIGNED NOT NULL,
@@ -125,7 +140,7 @@ async function ensureHelpdeskTables(pool) {
             CONSTRAINT \`fk_helpdesk_notes_ticket\`
                 FOREIGN KEY (\`ticket_id\`) REFERENCES \`helpdesk_tickets\` (\`id\`) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
+    `, 'helpdesk_notes');
 
     // Migration: add attachment_url column to existing helpdesk_notes tables
     try {
@@ -137,7 +152,7 @@ async function ensureHelpdeskTables(pool) {
         }
     }
 
-    await pool.execute(`
+    await safeCreateTable(`
         CREATE TABLE IF NOT EXISTS \`helpdesk_users\` (
             \`id\` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             \`username\` VARCHAR(64) NOT NULL,
@@ -149,9 +164,9 @@ async function ensureHelpdeskTables(pool) {
             INDEX \`idx_department\` (\`department\`),
             INDEX \`idx_role\` (\`role\`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
+    `, 'helpdesk_users');
 
-    await pool.execute(`
+    await safeCreateTable(`
         CREATE TABLE IF NOT EXISTS \`helpdesk_status_history\` (
             \`id\` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             \`ticket_id\` INT UNSIGNED NOT NULL,
@@ -164,7 +179,22 @@ async function ensureHelpdeskTables(pool) {
             CONSTRAINT \`fk_helpdesk_status_history_ticket\`
                 FOREIGN KEY (\`ticket_id\`) REFERENCES \`helpdesk_tickets\` (\`id\`) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
+    `, 'helpdesk_status_history');
+
+    await safeCreateTable(`
+        CREATE TABLE IF NOT EXISTS \`helpdesk_handler_history\` (
+            \`id\` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            \`ticket_id\` INT UNSIGNED NOT NULL,
+            \`old_handler\` VARCHAR(64) NULL DEFAULT NULL,
+            \`new_handler\` VARCHAR(64) NULL DEFAULT NULL,
+            \`changed_by\` VARCHAR(64) NOT NULL,
+            \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (\`id\`),
+            INDEX \`idx_ticket\` (\`ticket_id\`),
+            CONSTRAINT \`fk_helpdesk_handler_history_ticket\`
+                FOREIGN KEY (\`ticket_id\`) REFERENCES \`helpdesk_tickets\` (\`id\`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `, 'helpdesk_handler_history');
 }
 
 function mapTicketRow(row) {
@@ -186,23 +216,48 @@ function mapTicketRow(row) {
 
 async function getHelpdeskUserRole(pool, username) {
     if (!username) return null;
-    const [rows] = await pool.query(
-        'SELECT `username`, `role`, `department` FROM `helpdesk_users` WHERE `username` = ? LIMIT 1',
-        [username]
-    );
-    if (!rows.length) return null;
-    return { username: rows[0].username, role: rows[0].role, department: rows[0].department };
+    try {
+        const [rows] = await pool.query(
+            'SELECT `username`, `role`, `department` FROM `helpdesk_users` WHERE `username` = ? LIMIT 1',
+            [username]
+        );
+        if (!rows.length) return null;
+        return { username: rows[0].username, role: rows[0].role, department: rows[0].department };
+    } catch (err) {
+        // ER_NO_SUCH_TABLE (1146) — table doesn't exist yet, treat as no role.
+        if (err && err.errno === 1146) return null;
+        throw err;
+    }
 }
 
 function registerHelpdeskController(app, deps = {}) {
-    const { requireAuthorizedUser, env = {}, buildGoogleSheetGetUrl, fetchWithRetry } = deps;
+    const { requireAuthorizedUser, env = {}, buildGoogleSheetGetUrl, fetchWithRetry, sendPushNotificationToUser, notifyRealtimeClients } = deps;
 
     const pool = createHelpdeskPool(env);
 
-    // Initialize tables on startup, log but don't crash on failure
-    ensureHelpdeskTables(pool).catch((error) => {
+    // Store the table-initialization promise so every endpoint handler can await
+    // it before running queries.  This eliminates the startup race (request
+    // arriving before tables exist) and enables automatic retry when the first
+    // attempt failed (e.g. DB temporarily unreachable at process start).
+    let _tablesReady = ensureHelpdeskTables(pool);
+    _tablesReady.catch((error) => {
         console.error('[HELPDESK] Failed to ensure tables:', error && error.message ? error.message : error);
+        // Reset so the next endpoint call triggers a fresh attempt.
+        _tablesReady = null;
     });
+
+    // Returns a promise that resolves once all helpdesk tables exist.
+    // If the previous attempt failed, a new attempt is started automatically.
+    function getTablesReady() {
+        if (!_tablesReady) {
+            _tablesReady = ensureHelpdeskTables(pool);
+            _tablesReady.catch((err) => {
+                console.error('[HELPDESK] Retry to ensure tables failed:', err && err.message ? err.message : err);
+                _tablesReady = null;
+            });
+        }
+        return _tablesReady;
+    }
 
     const requireUser = typeof requireAuthorizedUser === 'function'
         ? requireAuthorizedUser({
@@ -288,6 +343,7 @@ function registerHelpdeskController(app, deps = {}) {
         }
 
         try {
+            await getTablesReady();
             const [result] = await pool.execute(
                 'INSERT INTO `helpdesk_tickets` (`creator_username`, `department`, `title`, `description`, `location`, `phone`, `attachment_url`, `status`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
                 [user, department, title, description, location, phone, attachmentUrl, 'open']
@@ -309,6 +365,24 @@ function registerHelpdeskController(app, deps = {}) {
                 [insertId]
             );
             const ticket = rows[0] ? mapTicketRow(rows[0]) : null;
+
+            // Send confirmation message to creator under 'מוקד איחוד' chat
+            if (typeof sendPushNotificationToUser === 'function') {
+                const ticketMsgText = `Ticket #${insertId} - ${title}`;
+                void sendPushNotificationToUser(user, {
+                    title: 'מוקד איחוד',
+                    body: { shortText: ticketMsgText, longText: ticketMsgText },
+                    data: { type: 'helpdesk_ticket', ticketId: String(insertId), messageText: ticketMsgText }
+                }, 'מוקד איחוד', {
+                    messageId: `helpdesk-ticket-${insertId}`,
+                    skipBadge: false,
+                    singlePerUser: true,
+                    allowSecondAttempt: false
+                }).catch((err) => {
+                    console.warn('[HELPDESK] Ticket creation push failed:', err && err.message ? err.message : err);
+                });
+            }
+
             return res.status(201).json({ result: 'success', ticket });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to create ticket';
@@ -324,6 +398,7 @@ function registerHelpdeskController(app, deps = {}) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
         }
         try {
+            await getTablesReady();
             const [roleInfo, ticketRows, assignedRows] = await Promise.all([
                 getHelpdeskUserRole(pool, user),
                 pool.query(
@@ -386,6 +461,7 @@ function registerHelpdeskController(app, deps = {}) {
         const handlerUsername = body.handler_username === null ? null : toTrimmedString(body.handler_username || '');
 
         try {
+            await getTablesReady();
             // Verify editor role for this user
             const editorRole = await getHelpdeskUserRole(pool, user);
             if (!editorRole) {
@@ -394,7 +470,7 @@ function registerHelpdeskController(app, deps = {}) {
 
             // Verify ticket exists and belongs to editor's department
             const [ticketRows] = await pool.query(
-                'SELECT `id`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
+                'SELECT `id`, `title`, `department`, `handler_username` FROM `helpdesk_tickets` WHERE `id` = ?',
                 [ticketId]
             );
             if (!ticketRows.length) {
@@ -412,10 +488,50 @@ function registerHelpdeskController(app, deps = {}) {
                 }
             }
 
+            const oldHandler = ticketRows[0].handler_username || null;
+
             await pool.execute(
                 'UPDATE `helpdesk_tickets` SET `handler_username` = ? WHERE `id` = ?',
                 [handlerUsername || null, ticketId]
             );
+
+            // Record handler change in history (fire-and-forget so it never blocks the response).
+            pool.execute(
+                'INSERT INTO `helpdesk_handler_history` (`ticket_id`, `old_handler`, `new_handler`, `changed_by`) VALUES (?, ?, ?, ?)',
+                [ticketId, oldHandler, handlerUsername || null, user]
+            ).catch((histErr) => {
+                console.error('[HELPDESK] Insert handler history error:', histErr && histErr.message ? histErr.message : histErr);
+            });
+
+            // Fire-and-forget push notification to the newly assigned handler.
+            // Only sent when a handler is being assigned (not unassigned) and only
+            // when the handler is a different user from the assigning editor.
+            if (handlerUsername && handlerUsername !== user && typeof sendPushNotificationToUser === 'function') {
+                const ticketTitle = toTrimmedString(ticketRows[0].title || '');
+                const assignMsgText = `שויכת לקריאה מספר #${ticketId} ${ticketTitle}`.trim();
+                const notificationData = {
+                    title: 'מוקד איחוד',
+                    body: {
+                        shortText: assignMsgText,
+                        longText: assignMsgText
+                    },
+                    data: {
+                        type: 'helpdesk_ticket',
+                        ticketId: String(ticketId),
+                        ticketTitle: ticketTitle,
+                        messageText: assignMsgText
+                    }
+                };
+                void sendPushNotificationToUser(handlerUsername, notificationData, 'מוקד איחוד', {
+                    messageId: `helpdesk-handler-${ticketId}-${Date.now()}`,
+                    skipBadge: false,
+                    singlePerUser: true,
+                    allowSecondAttempt: false
+                }).catch((err) => {
+                    console.warn('[HELPDESK] Push notification to handler failed:', err && err.message ? err.message : err);
+                });
+            }
+
             return res.json({ result: 'success' });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to assign handler';
@@ -449,9 +565,10 @@ function registerHelpdeskController(app, deps = {}) {
         }
 
         try {
+            await getTablesReady();
             // Verify the ticket exists and the user is authorized (creator, handler, or Editor of same dept)
             const [ticketRows] = await pool.query(
-                'SELECT `id`, `creator_username`, `handler_username`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
+                'SELECT `id`, `title`, `creator_username`, `handler_username`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
                 [ticketId]
             );
             if (!ticketRows.length) {
@@ -485,6 +602,61 @@ function registerHelpdeskController(app, deps = {}) {
                 attachmentUrl: noteRow.attachment_url || null,
                 createdAt: noteRow.created_at instanceof Date ? noteRow.created_at.toISOString() : String(noteRow.created_at || '')
             } : { id: noteId, ticketId, authorUsername: user, noteText, attachmentUrl: attachmentUrl || null, createdAt: new Date().toISOString() };
+
+            // ── Notify handler ──────────────────────────────────────────────────
+            // When a note is added by someone other than the handler, deliver the
+            // note to the handler via both FCM push and real-time SSE/socket so it
+            // appears in the 'מוקד איחוד' tab without delay.
+            const handlerUsername = ticket.handler_username;
+            if (handlerUsername && handlerUsername !== user) {
+                const ticketTitle = String(ticket.title || ticket.description || '').trim().substring(0, 80);
+                const shortNote = noteText.substring(0, 200);
+                const noteMsgText = `Ticket #${ticketId} - ${ticketTitle}: ${shortNote}`;
+                const notificationData = {
+                    messageId: `helpdesk-note-${noteId}`,
+                    title: 'מוקד איחוד',
+                    body: {
+                        shortText: noteMsgText,
+                        longText: noteMsgText
+                    },
+                    data: {
+                        type: 'helpdesk_ticket',
+                        ticketId: String(ticketId),
+                        noteId: String(noteId),
+                        noteText: shortNote,
+                        messageText: noteMsgText
+                    }
+                };
+
+                // FCM push (fire-and-forget)
+                if (typeof sendPushNotificationToUser === 'function') {
+                    void sendPushNotificationToUser(handlerUsername, notificationData, 'מוקד איחוד', {
+                        messageId: `helpdesk-note-${noteId}`,
+                        skipBadge: false,
+                        singlePerUser: true,
+                        allowSecondAttempt: false
+                    }).catch((err) => {
+                        console.warn('[HELPDESK] Note push to handler failed:', err && err.message ? err.message : err);
+                    });
+                }
+
+                // Real-time SSE/socket delivery (fire-and-forget)
+                if (typeof notifyRealtimeClients === 'function') {
+                    try {
+                        notifyRealtimeClients(handlerUsername, {
+                            type: 'helpdesk',
+                            ticketId: String(ticketId),
+                            noteId: String(noteId),
+                            noteText: shortNote,
+                            title: notificationData.title,
+                            timestamp: Date.now()
+                        });
+                    } catch (notifyErr) {
+                        console.warn('[HELPDESK] notifyRealtimeClients error:', notifyErr && notifyErr.message ? notifyErr.message : notifyErr);
+                    }
+                }
+            }
+
             return res.status(201).json({ result: 'success', noteId, note });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to add note';
@@ -505,6 +677,7 @@ function registerHelpdeskController(app, deps = {}) {
         }
 
         try {
+            await getTablesReady();
             // Verify the ticket exists and the user is authorized
             const [ticketRows] = await pool.query(
                 'SELECT `id`, `creator_username`, `handler_username`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
@@ -561,8 +734,9 @@ function registerHelpdeskController(app, deps = {}) {
         }
 
         try {
+            await getTablesReady();
             const [ticketRows] = await pool.query(
-                'SELECT `id`, `creator_username`, `handler_username`, `department`, `status` FROM `helpdesk_tickets` WHERE `id` = ?',
+                'SELECT `id`, `title`, `creator_username`, `handler_username`, `department`, `status` FROM `helpdesk_tickets` WHERE `id` = ?',
                 [ticketId]
             );
             if (!ticketRows.length) {
@@ -593,6 +767,29 @@ function registerHelpdeskController(app, deps = {}) {
             } catch (histErr) {
                 console.error('[HELPDESK] Insert status history error:', histErr && histErr.message ? histErr.message : histErr);
             }
+
+            // Notify creator and/or handler of the status change under 'מוקד איחוד' chat
+            if (typeof sendPushNotificationToUser === 'function') {
+                const statusLabels = { open: 'פתוח', in_progress: 'בתהליך', resolved: 'פתור', closed: 'סגור' };
+                const statusLabel = statusLabels[status] || status;
+                const ticketTitle = toTrimmedString(ticket.title || '');
+                const statusMsgText = `Ticket #${ticketId}${ticketTitle ? ' - ' + ticketTitle : ''}: סטטוס → ${statusLabel}`;
+                const statusNotifData = {
+                    title: 'מוקד איחוד',
+                    body: { shortText: statusMsgText, longText: statusMsgText },
+                    data: { type: 'helpdesk_ticket', ticketId: String(ticketId), messageText: statusMsgText }
+                };
+                const statusMsgId = `helpdesk-status-${ticketId}-${Date.now()}`;
+                const statusNotifOpts = { messageId: statusMsgId, skipBadge: false, singlePerUser: true, allowSecondAttempt: false };
+                const toNotify = [...new Set([ticket.creator_username, ticket.handler_username].filter(Boolean))];
+                for (const recipient of toNotify) {
+                    if (recipient === user) continue; // skip self
+                    void sendPushNotificationToUser(recipient, statusNotifData, 'מוקד איחוד', statusNotifOpts).catch((err) => {
+                        console.warn('[HELPDESK] Status change push failed:', err && err.message ? err.message : err);
+                    });
+                }
+            }
+
             return res.json({ result: 'success' });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to update status';
@@ -613,6 +810,7 @@ function registerHelpdeskController(app, deps = {}) {
         }
 
         try {
+            await getTablesReady();
             // Verify the ticket exists and the user is authorized
             const [ticketRows] = await pool.query(
                 'SELECT `id`, `creator_username`, `handler_username`, `department`, `status`, `created_at` FROM `helpdesk_tickets` WHERE `id` = ?',
@@ -633,7 +831,7 @@ function registerHelpdeskController(app, deps = {}) {
             }
 
             const [historyRows] = await pool.query(
-                'SELECT `id`, `ticket_id`, `old_status`, `new_status`, `changed_by`, `created_at` FROM `helpdesk_status_history` WHERE `ticket_id` = ? ORDER BY `created_at` ASC',
+                'SELECT `id`, `ticket_id`, `old_status`, `new_status`, `changed_by`, `created_at` FROM `helpdesk_status_history` WHERE `ticket_id` = ? ORDER BY `created_at` DESC',
                 [ticketId]
             );
             let history = historyRows.map((r) => ({
@@ -667,6 +865,58 @@ function registerHelpdeskController(app, deps = {}) {
         }
     });
 
+    // GET /helpdesk/tickets/:id/handler-history - Get handler assignment history for a ticket
+    // Accessible to the ticket creator, assigned handler, and any Editor in the same department.
+    app.get(['/helpdesk/tickets/:id/handler-history', '/notify/helpdesk/tickets/:id/handler-history'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
+        const user = toTrimmedString(req.resolvedUser || '');
+        if (!user) {
+            return res.status(401).json({ result: 'error', message: 'Authentication required' });
+        }
+        const ticketId = toPositiveInteger(req.params && req.params.id, 0);
+        if (!ticketId) {
+            return res.status(400).json({ result: 'error', message: 'מזהה קריאה לא תקין' });
+        }
+
+        try {
+            await getTablesReady();
+            const [ticketRows] = await pool.query(
+                'SELECT `id`, `creator_username`, `handler_username`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
+                [ticketId]
+            );
+            if (!ticketRows.length) {
+                return res.status(404).json({ result: 'error', message: 'קריאה לא נמצאה' });
+            }
+            const ticket = ticketRows[0];
+            const isDirectUser = ticket.creator_username === user || ticket.handler_username === user;
+            let isAuthorized = isDirectUser;
+            if (!isAuthorized) {
+                const editorRole = await getHelpdeskUserRole(pool, user);
+                isAuthorized = Boolean(editorRole && editorRole.department === ticket.department);
+            }
+            if (!isAuthorized) {
+                return res.status(403).json({ result: 'error', message: 'אין הרשאה לצפות בהיסטוריית המטפלים' });
+            }
+
+            const [historyRows] = await pool.query(
+                'SELECT `id`, `ticket_id`, `old_handler`, `new_handler`, `changed_by`, `created_at` FROM `helpdesk_handler_history` WHERE `ticket_id` = ? ORDER BY `created_at` DESC',
+                [ticketId]
+            );
+            const history = historyRows.map((r) => ({
+                id: r.id,
+                ticketId: r.ticket_id,
+                oldHandler: r.old_handler || null,
+                newHandler: r.new_handler || null,
+                changedBy: r.changed_by,
+                createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at || '')
+            }));
+            return res.json({ result: 'success', history });
+        } catch (error) {
+            const message = error && error.message ? error.message : 'Failed to load handler history';
+            console.error('[HELPDESK] Load handler history error:', message);
+            return res.status(500).json({ result: 'error', message: 'שגיאה בטעינת היסטוריית המטפלים' });
+        }
+    });
+
     // GET /helpdesk/users - Admin: list all helpdesk_users; Editor: list users in own department
     app.get(['/helpdesk/users', '/notify/helpdesk/users'], requireUser, helpdeskRateLimit(20, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
@@ -674,6 +924,7 @@ function registerHelpdeskController(app, deps = {}) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
         }
         try {
+            await getTablesReady();
             const editorRole = await getHelpdeskUserRole(pool, user);
             if (!editorRole) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה' });
@@ -720,6 +971,7 @@ function registerHelpdeskController(app, deps = {}) {
         if (!VALID_DEPARTMENTS.includes(department)) return res.status(400).json({ result: 'error', message: 'מחלקה לא תקינה' });
 
         try {
+            await getTablesReady();
             const editorRole = await getHelpdeskUserRole(pool, user);
             if (!editorRole || editorRole.role !== 'Admin') {
                 return res.status(403).json({ result: 'error', message: 'רק מנהל יכול להוסיף משתמשים' });
@@ -747,6 +999,7 @@ function registerHelpdeskController(app, deps = {}) {
             return res.status(400).json({ result: 'error', message: 'יש לציין שם משתמש' });
         }
         try {
+            await getTablesReady();
             const editorRole = await getHelpdeskUserRole(pool, user);
             if (!editorRole || editorRole.role !== 'Admin') {
                 return res.status(403).json({ result: 'error', message: 'רק מנהל יכול להסיר משתמשים' });
