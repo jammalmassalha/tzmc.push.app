@@ -794,39 +794,10 @@ class PushNotificationService {
     );
   }
 
-  /// Reset the app icon badge to zero.
-  ///
-  /// Calls the server's `/reset-badge` endpoint (so future push payloads
-  /// from APNs/FCM carry badge=0) and cancels all local notifications
-  /// (which on iOS also zeroes the home-screen icon badge number).
-  Future<void> resetBadge() async {
-    final username = _ref.read(currentUserProvider);
-    if (username == null || username.trim().isEmpty) return;
-
-    // Tell the server to reset the badge counter for this user.
-    try {
-      await _api.resetServerBadge(username);
-    } catch (e) {
-      debugPrint('[PushNotificationService] resetServerBadge error: $e');
-    }
-
-    // Clear all local notifications (also resets the iOS app-icon badge).
-    await clearLocalNotifications();
-  }
-
-  /// Cancel all pending and delivered local notifications without touching the
-  /// server-side badge counter.  Call this **after** chat messages have been
-  /// loaded so the notification tray is only cleared once the user can already
-  /// see the updated chat.
-  Future<void> clearLocalNotifications() async {
-    try {
-      if (!kIsWeb && _localNotifications != null) {
-        await _localNotifications!.cancelAll();
-      }
-    } catch (e) {
-      debugPrint('[PushNotificationService] clearLocalNotifications error: $e');
-    }
-  }
+  // NOTE: resetBadge() and clearLocalNotifications() were intentionally
+  // removed.  The app no longer wipes the OS notification tray or the
+  // app-icon badge — notifications stay visible on the device until the
+  // user dismisses them manually.
 
   /// Unregister device token (on logout)
   Future<void> unregisterToken() async {

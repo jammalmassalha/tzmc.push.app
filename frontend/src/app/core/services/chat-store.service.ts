@@ -53,7 +53,6 @@ const GROUPS_DB_MIGRATION_KEY = 'tzmc-groups-db-migrated-v4';
 const PUSH_REGISTER_MIN_INTERVAL_MS = 30000;
 const PUSH_REGISTER_REFRESH_MS = 6 * 60 * 60 * 1000;
 const FOREGROUND_SYNC_MIN_INTERVAL_MS = 4000;
-const BADGE_RESET_MIN_INTERVAL_MS = 30000;
 const PUSH_RECOVERY_PULL_DELAYS_MS = [1200, 3600];
 const LOGS_RECOVERY_MIN_INTERVAL_MS = 2 * 60 * 1000;
 const LOGS_RECOVERY_MAX_FETCH_LIMIT = 1000;
@@ -236,23 +235,7 @@ interface DeliveryTelemetryCounters {
   pollMessagesApplied: number;
 }
 
-type BadgeCapableNavigator = Navigator & {
-  setAppBadge?: (count?: number) => Promise<void>;
-  clearAppBadge?: () => Promise<void>;
-};
-
-type BadgeCapableServiceWorkerRegistration = ServiceWorkerRegistration & {
-  setAppBadge?: (count?: number) => Promise<void>;
-  clearAppBadge?: () => Promise<void>;
-  setBadge?: (count?: number) => Promise<void>;
-  clearBadge?: () => Promise<void>;
-};
-
-type BadgeMessage =
-  | { action: 'set-app-badge-count'; count: number }
-  | { action: 'clear-app-badge' }
-  | { action: 'clear-device-attention' }
-  | { action: 'flush-offline-replies' };
+type ServiceWorkerControlMessage = { action: 'flush-offline-replies' };
 
 export interface IncomingReactionNotice {
   id: string;
@@ -382,9 +365,6 @@ export class ChatStoreService {
   private readonly helpdeskDepartmentsSignal = signal<{ name: string; icon: string | null }[]>([]);
   private helpdeskTicketsSyncAt = 0;
   private helpdeskTicketsSyncPromise: Promise<void> | null = null;
-  private lastAppliedAppBadgeCount = -1;
-  private lastServerBadgeResetAt = 0;
-  private serverBadgeResetInFlight = false;
   private lastForegroundSyncAt = 0;
   private logsRecoveryInFlight = false;
   private lastLogsRecoveryAt = 0;
@@ -535,11 +515,9 @@ export class ChatStoreService {
     return this.canUserSendToCommunityGroup(group, this.currentUser());
   });
 
-  private readonly appBadgeSyncEffect = effect(() => {
-    const unreadMap = this.unreadByChat();
-    const unreadTotal = Object.values(unreadMap).reduce((sum, count) => sum + (Number(count) || 0), 0);
-    this.syncAppBadge(unreadTotal);
-  });
+  // Notification-tray / app-icon badge clearing was intentionally removed.
+  // The badge stays visible on the device until the OS clears it (e.g. when
+  // the user dismisses the notification), matching the requested behavior.
 
   private readonly dovrutGroupSyncEffect = effect(() => {
     const user = this.currentUser();
@@ -563,7 +541,6 @@ export class ChatStoreService {
     if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
       navigator.serviceWorker.addEventListener('message', this.handleServiceWorkerMessage);
     }
-    this.clearHomeScreenBadgeOnAppOpen();
 
     // Subscribe to transport events
     this.transport.message$.subscribe((data) => {
@@ -764,7 +741,6 @@ export class ChatStoreService {
       return;
     }
 
-    this.clearDeviceAttention({ resetServerBadge: true });
     // Recover silently if a device lost its push subscription.
     void this.ensurePushRegistrationHealth(user, {
       forceRegister: true,
@@ -1274,8 +1250,6 @@ export class ChatStoreService {
 
     const result = await this.api.resetAllServerBadges(user);
     this.unreadByChat.set({});
-    this.lastServerBadgeResetAt = Date.now();
-    this.clearDeviceAttention();
     this.schedulePersist();
     return result.clearedKeys;
   }
@@ -1880,8 +1854,6 @@ export class ChatStoreService {
 
       this.applyInitialChatSelection(user);
       this.schedulePersist();
-      this.lastServerBadgeResetAt = 0;
-      this.clearDeviceAttention({ resetServerBadge: true, forceServerBadgeReset: true });
       this.syncProgressPercent.set(100);
     } finally {
       this.syncing.set(false);
@@ -8338,7 +8310,6 @@ export class ChatStoreService {
     const user = this.currentUser();
     if (!user) return;
     this.postBadgeMessageToServiceWorker({ action: 'flush-offline-replies' });
-    this.clearDeviceAttention({ resetServerBadge: true });
     void this.tryRegisterPush(user, {
       force: true,
       allowPermissionPrompt: false,
@@ -8367,9 +8338,7 @@ export class ChatStoreService {
   private handleWindowFocus = (): void => {
     this.refreshPushRegistrationForCurrentUser(false);
     this.flushPendingServiceWorkerMessages();
-    void this.consumePendingPushPayloadsFromServiceWorker().finally(() => {
-      this.clearDeviceAttention({ resetServerBadge: true });
-    });
+    void this.consumePendingPushPayloadsFromServiceWorker();
     this.syncForegroundState();
   };
 
@@ -8379,9 +8348,7 @@ export class ChatStoreService {
     }
     this.refreshPushRegistrationForCurrentUser(false);
     this.flushPendingServiceWorkerMessages();
-    void this.consumePendingPushPayloadsFromServiceWorker().finally(() => {
-      this.clearDeviceAttention({ resetServerBadge: true });
-    });
+    void this.consumePendingPushPayloadsFromServiceWorker();
     this.syncForegroundState();
   };
 
@@ -8539,7 +8506,6 @@ export class ChatStoreService {
   ): void {
     const action = String(messageData.action ?? '').trim();
     if (action === 'notification-clicked') {
-      this.clearDeviceAttention({ resetServerBadge: true });
       const clickedPayloadRaw = messageData.payload;
       if (clickedPayloadRaw && typeof clickedPayloadRaw === 'object') {
         this.incrementDeliveryTelemetry('pushPayloadReceived');
@@ -8785,122 +8751,7 @@ export class ChatStoreService {
     void this.refresh(forceRefresh);
   }
 
-  private syncAppBadge(unreadTotal: number): void {
-    if (typeof navigator === 'undefined') return;
-
-    if (this.isAppInForeground()) {
-      this.clearDeviceAttention();
-      return;
-    }
-
-    const normalizedUnread = Math.max(0, Math.floor(Number(unreadTotal) || 0));
-    if (this.lastAppliedAppBadgeCount === normalizedUnread) {
-      return;
-    }
-    this.lastAppliedAppBadgeCount = normalizedUnread;
-
-    const badgeNavigator = navigator as BadgeCapableNavigator;
-    if (normalizedUnread > 0) {
-      if (typeof badgeNavigator.setAppBadge === 'function') {
-        void badgeNavigator.setAppBadge(normalizedUnread).catch(() => undefined);
-        return;
-      }
-      this.postBadgeMessageToServiceWorker({ action: 'set-app-badge-count', count: normalizedUnread });
-      return;
-    }
-
-    if (typeof badgeNavigator.clearAppBadge === 'function') {
-      void badgeNavigator.clearAppBadge().catch(() => undefined);
-      return;
-    }
-    if (typeof badgeNavigator.setAppBadge === 'function') {
-      void badgeNavigator.setAppBadge(0).catch(() => undefined);
-      return;
-    }
-    this.postBadgeMessageToServiceWorker({ action: 'clear-app-badge' });
-  }
-
-  private clearHomeScreenBadgeOnAppOpen(): void {
-    if (typeof navigator === 'undefined') return;
-
-    this.lastAppliedAppBadgeCount = 0;
-    const badgeNavigator = navigator as BadgeCapableNavigator;
-    if (typeof badgeNavigator.clearAppBadge === 'function') {
-      void badgeNavigator.clearAppBadge().catch(() => undefined);
-    } else if (typeof badgeNavigator.setAppBadge === 'function') {
-      void badgeNavigator.setAppBadge(0).catch(() => undefined);
-    }
-
-    if ('serviceWorker' in navigator) {
-      void navigator.serviceWorker.ready
-        .then((registration) => {
-          const badgeRegistration = registration as BadgeCapableServiceWorkerRegistration;
-          if (typeof badgeRegistration.clearAppBadge === 'function') {
-            return badgeRegistration.clearAppBadge().catch(() => undefined);
-          }
-          if (typeof badgeRegistration.clearBadge === 'function') {
-            return badgeRegistration.clearBadge().catch(() => undefined);
-          }
-          if (typeof badgeRegistration.setAppBadge === 'function') {
-            return badgeRegistration.setAppBadge(0).catch(() => undefined);
-          }
-          if (typeof badgeRegistration.setBadge === 'function') {
-            return badgeRegistration.setBadge(0).catch(() => undefined);
-          }
-          return undefined;
-        })
-        .catch(() => undefined);
-    }
-
-    this.postBadgeMessageToServiceWorker({ action: 'clear-device-attention' });
-  }
-
-  private isAppInForeground(): boolean {
-    if (typeof document === 'undefined') return false;
-    return document.visibilityState === 'visible';
-  }
-
-  private clearDeviceAttention(
-    options: { resetServerBadge?: boolean; forceServerBadgeReset?: boolean } = {}
-  ): void {
-    if (typeof navigator === 'undefined') return;
-
-    const badgeNavigator = navigator as BadgeCapableNavigator;
-    if (typeof badgeNavigator.clearAppBadge === 'function') {
-      void badgeNavigator.clearAppBadge().catch(() => undefined);
-    } else if (typeof badgeNavigator.setAppBadge === 'function') {
-      void badgeNavigator.setAppBadge(0).catch(() => undefined);
-    }
-    this.postBadgeMessageToServiceWorker({ action: 'clear-device-attention' });
-
-    if (!options.resetServerBadge) {
-      return;
-    }
-
-    const user = this.currentUser();
-    if (!user || !this.networkOnline()) {
-      return;
-    }
-    const now = Date.now();
-    const forceServerBadgeReset = Boolean(options.forceServerBadgeReset);
-    if (!forceServerBadgeReset && now - this.lastServerBadgeResetAt < BADGE_RESET_MIN_INTERVAL_MS) {
-      return;
-    }
-    if (this.serverBadgeResetInFlight) {
-      return;
-    }
-    this.serverBadgeResetInFlight = true;
-    void this.api.resetServerBadge(user)
-      .then(() => {
-        this.lastServerBadgeResetAt = Date.now();
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        this.serverBadgeResetInFlight = false;
-      });
-  }
-
-  private postBadgeMessageToServiceWorker(message: BadgeMessage): void {
+  private postBadgeMessageToServiceWorker(message: ServiceWorkerControlMessage): void {
     if (!('serviceWorker' in navigator)) return;
 
     void navigator.serviceWorker.ready
@@ -8909,6 +8760,11 @@ export class ChatStoreService {
         activeWorker?.postMessage(message);
       })
       .catch(() => undefined);
+  }
+
+  private isAppInForeground(): boolean {
+    if (typeof document === 'undefined') return false;
+    return document.visibilityState === 'visible';
   }
 
   private refreshPushRegistrationForCurrentUser(force: boolean): void {

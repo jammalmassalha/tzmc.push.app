@@ -43,19 +43,14 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initializeServices();
-    // Badge clearing is deferred to after chat-store initialization completes
-    // so the home-screen badge stays visible until new messages are actually
-    // rendered in the chat list.  See _initializeChatStoreAndClearBadge().
   }
 
   /// Called when the app returns to the foreground.
   ///
-  /// Pulls any messages that arrived while the app was backgrounded **first**,
-  /// so the chat is fully up-to-date, and only **then** clears the local
-  /// notifications / app-icon badge.  Doing it in this order prevents the race
-  /// where `cancelAll()` wipes the notification tray before the server fetch
-  /// completes, leaving the user with a blank/stale chat and no badge to hint
-  /// that unread messages exist.
+  /// Pulls any messages that arrived while the app was backgrounded so the
+  /// chat is up-to-date.  The OS notification tray and app-icon badge are
+  /// intentionally **not** cleared here — notifications stay visible on the
+  /// device until the user dismisses them manually.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
@@ -64,8 +59,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   }
 
   Future<void> _handleAppResumed() async {
-    // 1. Pull missed messages first — the chat must be updated before the
-    //    notification tray is cleared so the user immediately sees new content.
+    // Pull missed messages so the chat list reflects whatever arrived while
+    // the app was backgrounded.
     final user = ref.read(currentUserProvider);
     if (user != null) {
       // Reconnect the realtime transport in case socket/SSE dropped while the
@@ -81,13 +76,6 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         debugPrint('[ChatShellScreen] recoverMissedMessages on resume failed: $e\n$st');
       }
     }
-
-    // 2. Now reset the server badge counter and clear local notifications.
-    //    Because the chat is already up-to-date at this point the user won't
-    //    see a gap between "badge disappeared" and "messages appeared".
-    if (mounted) {
-      unawaited(ref.read(pushNotificationServiceProvider).resetBadge());
-    }
   }
 
   void _initializeServices() {
@@ -98,12 +86,10 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     final transport = ref.read(realtimeTransportServiceProvider);
     transport.connect(user, isNetworkReachable: () => true);
 
-    // Kick off chat store initialization. Badge clearing is intentionally
-    // deferred inside _initializeChatStoreAndClearBadge so the home-screen
-    // badge stays visible until recoverMissedMessages() has finished loading
-    // new messages — clearing it before that creates a visible gap where the
-    // badge disappears but the chat list has not yet updated.
-    unawaited(_initializeChatStoreAndClearBadge(user));
+    // Kick off chat store initialization.  The OS notification tray and
+    // app-icon badge are intentionally not cleared here — notifications
+    // stay visible on the device until the user dismisses them manually.
+    unawaited(_initializeChatStore(user));
 
     // Initialize push notifications and request permission independently of
     // chat store init. ensurePermissionAndRegister() shows a Hebrew
@@ -112,19 +98,14 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     unawaited(_initializePushNotifications());
   }
 
-  /// Initializes the chat store and clears the home-screen badge only after
-  /// message recovery completes, so the badge is visible until the UI shows
-  /// the newly arrived messages.
-  Future<void> _initializeChatStoreAndClearBadge(String user) async {
+  /// Initializes the chat store.  Notification tray / app-icon badge
+  /// clearing was removed — notifications stay visible until the user
+  /// dismisses them manually.
+  Future<void> _initializeChatStore(String user) async {
     try {
       await ref.read(chatStoreProvider.notifier).initialize(user);
     } catch (e, st) {
       debugPrint('[ChatShellScreen] chatStore.initialize error: $e\n$st');
-    }
-    // By this point recoverMissedMessages() inside initialize() has run and
-    // the chat list is up-to-date.  Now it is safe to clear the badge.
-    if (mounted) {
-      unawaited(ref.read(pushNotificationServiceProvider).resetBadge());
     }
   }
 
