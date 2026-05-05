@@ -976,18 +976,17 @@ class _MessageBubble extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Sender name (for groups)
+                    // Sender name (for groups). `resolvedSenderLabel`
+                    // already incorporates the fallback through
+                    // `message.senderDisplayName` and contact lookup.
                     if (isGroup &&
                         !isOutgoing &&
-                        (resolvedSenderLabel ?? message.senderDisplayName) !=
-                            null &&
-                        (resolvedSenderLabel ?? message.senderDisplayName!)
-                            .trim()
-                            .isNotEmpty)
+                        resolvedSenderLabel != null &&
+                        resolvedSenderLabel!.isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 4),
                         child: Text(
-                          resolvedSenderLabel ?? message.senderDisplayName!,
+                          resolvedSenderLabel!,
                           style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.bold,
