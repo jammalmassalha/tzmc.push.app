@@ -804,7 +804,23 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // timestamp from the in-memory state so we still pull missed messages.
         latestTimestamp = _latestTimestampFromState();
       }
-      await pullMessages(since: latestTimestamp);
+
+      if (latestTimestamp == 0) {
+        // No local history (first install or DB cleared): use the batch-import
+        // path so that all historical messages are loaded without incrementing
+        // unread counters. Treating the entire history as "unread" on first open
+        // would produce thousands of spurious badge counts that confuse users.
+        // On the next open the DB will have messages and the incremental path
+        // below is used — only genuinely new messages are counted as unread.
+        final user = _currentUser;
+        if (user != null && user.isNotEmpty) {
+          await _pullAllMessagesFromLogs(user: user, since: latestTimestamp);
+        }
+      } else {
+        // Incremental update: use the normal per-message handler so that new
+        // messages increment unread counts for the user.
+        await pullMessages(since: latestTimestamp);
+      }
     } catch (e) {
       // Silent failure, will retry on next poll
     }

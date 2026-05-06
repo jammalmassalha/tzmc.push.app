@@ -287,6 +287,8 @@ export class ChatStoreService {
   readonly currentUser = signal<string | null>(null);
   readonly contacts = signal<Contact[]>([]);
   readonly groups = signal<ChatGroup[]>([]);
+  /** Cached Set of known group IDs — recomputed only when the groups signal changes. */
+  private readonly groupIdSet = computed(() => new Set(this.groups().map((g) => g.id)));
   readonly activeChatId = signal<string | null>(null);
   readonly lastActivatedChatMeta = signal<ActivatedChatMeta | null>(null);
   readonly unreadByChat = signal<Record<string, number>>({});
@@ -648,12 +650,24 @@ export class ChatStoreService {
   }
 
   async initialize(): Promise<void> {
+    // Show the loading spinner immediately so the template never shows the
+    // "no active chats" placeholder while the session bootstrap is in flight.
+    // We only do this on the very first call (initializedUser is null); subsequent
+    // calls (e.g. on tab focus when already initialized) must not flash a spinner.
+    if (this.initializedUser === null) {
+      this.loading.set(true);
+    }
+
     await this.ensureSessionReady();
     const user = this.currentUser();
-    if (!user) return;
+    if (!user) {
+      this.loading.set(false);
+      return;
+    }
 
     // If already initialized for this user, just check for new background payloads
     if (this.initializedUser === user) {
+      this.loading.set(false);
       this.flushPendingServiceWorkerMessages();
       await this.consumePendingPushPayloadsFromServiceWorker();
       this.schedulePendingPushDrainRetry();
@@ -7954,6 +7968,12 @@ export class ChatStoreService {
     if (!normalizedSender || /^group:/i.test(normalizedSender)) {
       return '';
     }
+    // If sender is a known group (e.g. community groups whose sender field
+    // holds the group name/ID rather than a human phone), avoid returning the
+    // group name as the individual sender label.
+    if (this.groupIdSet().has(normalizedSender)) {
+      return '';
+    }
     return this.getDisplayName(sender);
   }
 
@@ -8179,6 +8199,13 @@ export class ChatStoreService {
         ? parsed.unreadByChat
         : {};
 
+      // Set contacts and groups BEFORE building the message map so that
+      // resolveGroupSenderDisplayName can look up phone numbers in the
+      // contacts signal and return proper display names rather than raw
+      // phone digits for messages loaded from the persisted cache.
+      this.contacts.set(contacts);
+      this.groups.set(groups);
+
       const messageMap: Record<string, ChatMessage[]> = {};
       for (const record of parsed.messages ?? []) {
         if (!record || !record.chatId) continue;
@@ -8225,8 +8252,6 @@ export class ChatStoreService {
         list.sort((a, b) => a.timestamp - b.timestamp);
       }
 
-      this.contacts.set(contacts);
-      this.groups.set(groups);
       this.unreadByChat.set(unreadByChat);
       this.messagesByChat.set(messageMap);
     } catch {
