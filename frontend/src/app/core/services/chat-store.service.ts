@@ -7940,36 +7940,10 @@ export class ChatStoreService {
   }
 
   /**
-   * Extract a sender name from a legacy group-message body of the form
-   * "SenderName: message text".  Returns null when the body does not match
-   * (including URL bodies such as "https://...") or when the extracted
-   * candidate is suspicious (contains '/' which is typical of URLs or paths).
-   *
-   * The maximum sender-name prefix length is 80 characters to match the same
-   * limit enforced by the backend (message.controller.js) and Flutter
-   * (_kGroupSenderPrefixMaxLength constant in chat_store_service.dart).
-   */
-  private extractGroupSenderFromBodyPrefix(
-    body: string
-  ): { senderName: string; strippedBody: string } | null {
-    const trimmed = String(body || '').trim();
-    if (!trimmed) return null;
-    // Guard against URL bodies — the colon in "https://" or "http://" would
-    // otherwise be misread as the sender-name separator.
-    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return null;
-    const match = trimmed.match(/^([^:\n]{1,80})\s*:\s*([\s\S]+)$/);
-    if (!match) return null;
-    const senderName = String(match[1] || '').trim();
-    const strippedBody = String(match[2] || '').trim();
-    if (!senderName || !strippedBody) return null;
-    return { senderName, strippedBody };
-  }
-
-  /**
    * Resolve the display name for a sender in a group message.
-   * The groupSenderName (extracted from body prefix or provided by backend) may be
-   * a phone number rather than a proper display name. In that case, look up the
-   * contact list to find a better name. Falls back to getDisplayName(sender).
+   * groupSenderName is provided by the backend (from Logs.GroupSenderName or
+   * MessageActivities.Sender) and may be a raw phone number. In that case, look
+   * up the contact list to find the proper name. Falls back to getDisplayName(sender).
    */
   private resolveGroupSenderDisplayName(
     groupSenderName: string | null | undefined,
