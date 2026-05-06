@@ -345,6 +345,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         state = state.copyWith(unreadByChat: merged);
       }
 
+      // 5. Persist the fully-initialized state immediately so that if the user
+      // closes the app right after the first open (before the 2-second deferred
+      // timer fires), the recovered messages are already in the DB and the chat
+      // list is populated on the very next cold start without needing another
+      // server round-trip.
+      await persistNow();
+
       // Mark initialization complete, keeping the freshly-accumulated unread
       // counts (from recoverMissedMessages + tray) intact.
       state = state.copyWith(
@@ -352,7 +359,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         isInitialized: true,
       );
 
-      // 5. Schedule periodic persistence
+      // 6. Schedule periodic persistence for subsequent state changes
       _schedulePersistence();
     } catch (e) {
       state = state.copyWith(isLoading: false);

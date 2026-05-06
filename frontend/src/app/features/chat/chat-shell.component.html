@@ -103,7 +103,14 @@
       </div>
 
       @if (!filteredChats().length) {
-        <div class="empty-chat-list">אין צ׳אטים פעילים. צור צ׳אט חדש כדי להתחיל.</div>
+        @if (store.loading()) {
+          <div class="empty-chat-list loading-chats">
+            <mat-spinner diameter="32"></mat-spinner>
+            <span>טוען שיחות...</span>
+          </div>
+        } @else {
+          <div class="empty-chat-list">אין צ׳אטים פעילים. צור צ׳אט חדש כדי להתחיל.</div>
+        }
       } @else {
         @if (pinnedChats().length) {
           <div class="pinned-row">

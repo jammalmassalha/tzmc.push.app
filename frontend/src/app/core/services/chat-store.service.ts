@@ -663,6 +663,10 @@ export class ChatStoreService {
 
     this.initializedUser = user;
 
+    // Signal to the UI that data is being fetched so it can show a spinner
+    // instead of an empty "no chats" state during the initial recovery period.
+    this.loading.set(true);
+
     // Load community group configs from DB (async, non-blocking for critical path)
     await this.loadCommunityGroupConfigs();
 
@@ -688,6 +692,10 @@ export class ChatStoreService {
       incrementUnread: true, // Marks missed messages as unread so they appear in badges
       limit: 1000            // Window large enough to cover several hours of activity
     }).catch(() => undefined);
+
+    // Recovery complete — the chat list is now populated. Hide the loading
+    // spinner so the user sees their chats.
+    this.loading.set(false);
 
     /**
      * SYNC STEP 3: Process pending SW messages AFTER drain + recovery.
