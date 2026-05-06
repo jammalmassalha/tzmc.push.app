@@ -7937,12 +7937,23 @@ export class ChatStoreService {
         if (resolved !== this.normalizeUser(raw)) {
           return resolved;
         }
+        // Phone not in contacts — return the raw phone number as-is rather
+        // than falling through to getDisplayName(sender), which would return
+        // the group ID or group name instead of the actual sender identifier.
+        return raw;
       } else {
         // Not a phone number – use the provided name as-is.
         return raw;
       }
     }
-    // Fallback: resolve the sender field itself (could be a groupId or phone).
+    // groupSenderName is absent — try to resolve the sender field itself
+    // (it may be a phone number for 1:1 chats or hardcoded group senders).
+    // If sender is a group ID (starts with "group:"), skip the lookup and
+    // return empty so the template can decide not to render the label.
+    const normalizedSender = this.normalizeUser(sender);
+    if (!normalizedSender || /^group:/i.test(normalizedSender)) {
+      return '';
+    }
     return this.getDisplayName(sender);
   }
 

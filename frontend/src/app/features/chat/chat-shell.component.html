@@ -804,8 +804,8 @@
               [class.outgoing]="message.direction === 'outgoing'"
               [attr.data-message-index]="messageAbsoluteIndex(index)">
               <div class="message-bubble" [class.deleted]="isMessageDeleted(message)" (contextmenu)="onMessageContextMenu($event, message)" (touchstart)="onTouchStart($event, message)" (touchend)="onTouchEnd()" (touchmove)="onTouchMove()">
-                @if (message.direction === 'incoming' && message.groupId) {
-                  <div class="message-sender">{{ message.senderDisplayName || message.sender }}</div>
+                @if (message.direction === 'incoming' && message.groupId && message.senderDisplayName) {
+                  <div class="message-sender">{{ message.senderDisplayName }}</div>
                 }
 
                 @if (canOpenMessageActions(message)) {
