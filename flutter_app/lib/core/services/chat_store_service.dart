@@ -250,10 +250,26 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   /// Initialize chat store - restore from database and pull fresh data
   Future<void> initialize(String currentUser) async {
-    // Always remember the current user, even if we've already initialized,
-    // so own-message echoes can be tagged as outgoing (avoids the
-    // "see my message twice" bug).
-    _currentUser = currentUser.trim().toLowerCase();
+    final normalized = currentUser.trim().toLowerCase();
+
+    // -----------------------------------------------------------------------
+    // USER-CHANGE GUARD
+    // If a different user is logging in while the store still holds data from
+    // a previous session, wipe everything (in-memory state + persisted DB)
+    // before proceeding.  Without this guard the new user would see the old
+    // user's contacts and messages until the first server pull completes.
+    // -----------------------------------------------------------------------
+    if (_currentUser != null && _currentUser != normalized) {
+      // Null out _currentUser before clearAll() so any callbacks that fire
+      // during the DB wipe don't accidentally act on the stale username.
+      _currentUser = null;
+      await clearAll(); // resets state (isInitialized → false) and wipes DB
+      _lastGapAnalysisTime = 0;
+    }
+
+    // Always keep _currentUser up-to-date so own-message echoes are tagged
+    // as outgoing (avoids the "see my message twice" bug).
+    _currentUser = normalized;
 
     if (state.isInitialized) return;
 
@@ -2539,8 +2555,20 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     return latest;
   }
 
-  /// Clear all local data
+  /// Clear all local data and reset to a clean state.
+  ///
+  /// Called during explicit logout and when a different user logs in on the
+  /// same device so the previous user's data is never exposed to the new user.
   Future<void> clearAll() async {
+    // Cancel any pending deferred write to prevent stale data being persisted
+    // after the wipe.
+    _persistTimer?.cancel();
+    _persistTimer = null;
+
+    // Reset per-session tracking fields.
+    _currentUser = null;
+    _lastGapAnalysisTime = 0;
+
     await _db.clearAll();
     if (kIsWeb) {
       await WebChatStorage.clear();

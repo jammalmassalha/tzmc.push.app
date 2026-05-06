@@ -10,6 +10,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:logger/logger.dart';
 
 import '../../../core/api/chat_api_service.dart';
+import '../../../core/services/chat_store_service.dart';
 import '../../../core/services/push_notification_service.dart';
 
 final _logger = Logger(
@@ -207,6 +208,15 @@ class AuthNotifier extends Notifier<AuthState> {
       await _apiService.clearSession();
     } catch (e) {
       _logger.w('Error clearing server session: $e');
+    }
+
+    // Wipe all local chat data so the next user to log in on this device
+    // starts with a completely clean slate and never sees the previous
+    // user's contacts, messages, or unread counts.
+    try {
+      await ref.read(chatStoreProvider.notifier).clearAll();
+    } catch (e) {
+      _logger.w('Error clearing chat store on logout: $e');
     }
 
     await _secureStorage.delete(key: _userKey);
