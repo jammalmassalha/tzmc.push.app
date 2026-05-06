@@ -371,11 +371,22 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                                widget.chatId.trim().toLowerCase();
                            final fromName =
                                (message.senderDisplayName ?? '').trim();
+                           // fromName may be a raw phone/username stored as
+                           // groupSenderName — try resolving it against the
+                           // local contact list so the receiver sees a real
+                           // display name instead of a phone number.
+                           final fromNameContact = fromName.isNotEmpty
+                               ? (state.contacts[fromName]?.displayName ??
+                                   state.contacts[fromName.toLowerCase()]
+                                       ?.displayName)
+                               : null;
                            final fromContact = (state.contacts[senderId]
                                        ?.displayName ??
                                    '')
                                .trim();
-                           if (fromName.isNotEmpty) {
+                           if ((fromNameContact ?? '').isNotEmpty) {
+                             resolvedSenderLabel = fromNameContact;
+                           } else if (fromName.isNotEmpty) {
                              resolvedSenderLabel = fromName;
                            } else if (fromContact.isNotEmpty) {
                              resolvedSenderLabel = fromContact;
