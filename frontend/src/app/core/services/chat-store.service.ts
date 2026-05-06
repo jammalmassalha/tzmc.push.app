@@ -7960,7 +7960,7 @@ export class ChatStoreService {
     // Guard against URL bodies — the colon in "https://" or "http://" would
     // otherwise be misread as the sender-name separator.
     if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return null;
-    const match = trimmed.match(/^([^:\n/]{1,80})\s*:\s*([\s\S]+)$/);
+    const match = trimmed.match(/^([^:\n]{1,80})\s*:\s*([\s\S]+)$/);
     if (!match) return null;
     const senderName = String(match[1] || '').trim();
     const strippedBody = String(match[2] || '').trim();

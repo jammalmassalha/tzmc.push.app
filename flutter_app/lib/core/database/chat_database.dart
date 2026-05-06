@@ -40,7 +40,7 @@ const int _kMaxGroupSenderPrefixLength = 80;
   final senderName = trimmed.substring(0, colonIdx).trim();
   final strippedBody = trimmed.substring(colonIdx + 1).trim();
   if (senderName.isEmpty || strippedBody.isEmpty) return null;
-  if (senderName.contains('\n') || senderName.contains('/')) return null;
+  if (senderName.contains('\n')) return null;
   if (senderName.length > _kMaxGroupSenderPrefixLength) return null;
   return (senderName: senderName, strippedBody: strippedBody);
 }

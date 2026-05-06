@@ -648,10 +648,9 @@ function registerMessageController(app, deps = {}) {
                     if (!groupSenderName && looksLikeGroupMessage && body) {
                         // Guard against URL bodies (e.g. "https://example.com"): the colon in
                         // the URL scheme must not be extracted as a sender-name separator.
-                        // Also reject candidate senders containing '/' (URL path segments).
                         const isUrl = body.startsWith('http://') || body.startsWith('https://');
                         if (!isUrl) {
-                            const senderPrefixMatch = body.match(/^([^:\n/]{1,80})\s*:\s*([\s\S]+)$/);
+                            const senderPrefixMatch = body.match(/^([^:\n]{1,80})\s*:\s*([\s\S]+)$/);
                             if (senderPrefixMatch) {
                                 groupSenderName = String(senderPrefixMatch[1] || '').trim();
                                 resolvedBody = String(senderPrefixMatch[2] || '').trim() || body;
@@ -678,9 +677,12 @@ function registerMessageController(app, deps = {}) {
                     // actual human Sender (phone number) for ActionType='message', so
                     // we can show the correct sender label even for older Logs rows
                     // whose GroupSenderName column was NULL.
+                    // Note: getGroupMessageSendersByMessageId already filters out the
+                    // requesting user on the DB side, so any entry in the map is from
+                    // a different sender.
                     if (!groupSenderName && resolvedGroupId && messageIdRaw) {
                         const activitySender = groupSenderByMsgId.get(messageIdRaw);
-                        if (activitySender && activitySender !== user) {
+                        if (activitySender) {
                             groupSenderName = activitySender;
                         }
                     }

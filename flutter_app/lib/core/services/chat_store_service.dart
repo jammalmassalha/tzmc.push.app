@@ -1134,7 +1134,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           final potentialBody   = rawBody.substring(colonIdx + 1).trim();
           if (potentialSender.length <= _kGroupSenderPrefixMaxLength &&
               !potentialSender.contains('\n') &&
-              !potentialSender.contains('/') &&
               potentialBody.isNotEmpty) {
             groupSenderName = potentialSender;
             body = potentialBody;
