@@ -1266,6 +1266,58 @@ class MysqlLogsService {
             return [];
         }
     }
+    // Return a map of messageId → senderPhone for group messages in
+    // MessageActivities where the sender is NOT the requesting user.
+    // Used by the /messages/logs endpoint to supplement groupSenderName
+    // for Logs rows whose GroupSenderName column is null/empty.
+    async getGroupMessageSendersByMessageId(user, options = {}) {
+        await this.ensureMessageActivitiesTable();
+        const requestedUser = normalizePhone(user);
+        if (!requestedUser)
+            return new Map();
+        const limit = Math.max(1, Math.min(toPositiveInteger(options.limit, 5000), 10000));
+        const sinceTimestamp = Number(options.since) || 0;
+        try {
+            let sql = `SELECT
+          \`MessageId\` AS messageId,
+          \`Sender\`    AS sender
+        FROM \`MessageActivities\`
+        WHERE \`ActionType\` = 'message'
+          AND \`GroupId\` IS NOT NULL AND \`GroupId\` != ''
+          AND \`Sender\` != ?
+          AND (\`Recipient\` = ? OR \`Recipient\` LIKE ?)`;
+            const params = [
+                requestedUser,
+                requestedUser,
+                `%${requestedUser}%`,
+            ];
+            if (sinceTimestamp > 0) {
+                sql += ` AND \`ActionTimestamp\` > ?`;
+                params.push(sinceTimestamp);
+            }
+            sql += ` ORDER BY \`ActionTimestamp\` ASC LIMIT ?`;
+            params.push(limit);
+            const [rows] = await this.pool.query(sql, params);
+            const typedRows = rows;
+            const result = new Map();
+            for (const row of typedRows) {
+                const msgId = toTrimmedString(row.messageId);
+                // Prefer the normalized phone form; fall back to the raw value so
+                // non-phone senders (e.g. service accounts) are still captured.
+                const rawSender = toTrimmedString(row.sender);
+                const sender = normalizePhone(rawSender) || rawSender;
+                if (msgId && sender) {
+                    result.set(msgId, sender);
+                }
+            }
+            return result;
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.error('[MYSQL] getGroupMessageSendersByMessageId error:', message);
+            return new Map();
+        }
+    }
     // ─── Server State persistence (replaces file-based state.json) ───────────────
     async ensureServerStateTable() {
         if (this.serverStateTableReady)

@@ -6,6 +6,7 @@ function registerMessageController(app, deps = {}) {
         buildGoogleSheetGetUrl,
         getLogsMessagesForUser,
         getMessageActivitiesForUser,
+        getGroupMessageSendersByMessageId,
         getHardcodedGroupIds,
         getHardcodedGroupMembers,
         // Legacy static fallbacks (kept for backward compatibility)
@@ -538,6 +539,22 @@ function registerMessageController(app, deps = {}) {
                     })
                     : [];
 
+                // Supplementary sender lookup from MessageActivities.
+                // For group messages whose GroupSenderName column is null in the
+                // Logs table (e.g. older rows written before the column existed),
+                // MessageActivities stores the actual human Sender phone number so
+                // we can still display the sender label on the bubble.
+                // The query filters out messages sent BY the current user, so this
+                // map only contains senders that are NOT the requesting user.
+                let groupSenderByMsgId = new Map();
+                try {
+                    if (typeof getGroupMessageSendersByMessageId === 'function') {
+                        groupSenderByMsgId = await getGroupMessageSendersByMessageId(user, { since, limit });
+                    }
+                } catch (_gsErr) {
+                    // Non-fatal: fall back to the existing extraction logic
+                }
+
                 const messages = rawMessages.map((message, index) => {
                     if (!message || typeof message !== 'object') return null;
 
@@ -653,6 +670,18 @@ function registerMessageController(app, deps = {}) {
                             if (stripped) {
                                 resolvedBody = stripped;
                             }
+                        }
+                    }
+
+                    // If groupSenderName is still empty for a group message, look up
+                    // MessageActivities by MessageId.  That table always stores the
+                    // actual human Sender (phone number) for ActionType='message', so
+                    // we can show the correct sender label even for older Logs rows
+                    // whose GroupSenderName column was NULL.
+                    if (!groupSenderName && resolvedGroupId && messageIdRaw) {
+                        const activitySender = groupSenderByMsgId.get(messageIdRaw);
+                        if (activitySender && activitySender !== user) {
+                            groupSenderName = activitySender;
                         }
                     }
 
