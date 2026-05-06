@@ -259,7 +259,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // before proceeding.  Without this guard the new user would see the old
     // user's contacts and messages until the first server pull completes.
     // -----------------------------------------------------------------------
-    if (_currentUser != null && _currentUser != normalized) {
+    if (_currentUser != null && _currentUser!.toLowerCase() != normalized) {
       // Null out _currentUser before clearAll() so any callbacks that fire
       // during the DB wipe don't accidentally act on the stale username.
       _currentUser = null;
