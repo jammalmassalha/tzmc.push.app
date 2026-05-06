@@ -1118,29 +1118,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       resolvedGroupName = rawGroupName.isNotEmpty ? rawGroupName : resolvedGroupId;
     }
 
-    // Extract "SenderName: message" prefix from body when groupSenderName is absent.
+    // groupSenderName comes exclusively from the server field — never extracted
+    // from the message body.  The display name in the bubble is resolved via
+    // getDisplayName(groupSenderName) so it reflects the device contact name.
     String groupSenderName = (msg.groupSenderName ?? '').trim();
     String body = rawBody;
 
-    if (groupSenderName.isEmpty && rawBody.isNotEmpty) {
-      // Guard against bodies that are URLs (e.g. "https://example.com"):
-      // the colon in the scheme would be incorrectly extracted as a sender.
-      final isUrl = rawBody.startsWith('http://') ||
-          rawBody.startsWith('https://');
-      if (!isUrl) {
-        final colonIdx = rawBody.indexOf(':');
-        if (colonIdx > 0 && colonIdx <= _kGroupSenderPrefixMaxLength) {
-          final potentialSender = rawBody.substring(0, colonIdx).trim();
-          final potentialBody   = rawBody.substring(colonIdx + 1).trim();
-          if (potentialSender.length <= _kGroupSenderPrefixMaxLength &&
-              !potentialSender.contains('\n') &&
-              potentialBody.isNotEmpty) {
-            groupSenderName = potentialSender;
-            body = potentialBody;
-          }
-        }
-      }
-    } else if (groupSenderName.isNotEmpty && rawBody.isNotEmpty) {
+    // If groupSenderName was provided by the backend, strip any matching prefix
+    // from the body so the name does not appear twice (in the bubble AND the text).
+    if (groupSenderName.isNotEmpty && rawBody.isNotEmpty) {
       body = _stripGroupSenderPrefixFromBody(rawBody, groupSenderName);
     }
 

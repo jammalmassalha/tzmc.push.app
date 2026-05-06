@@ -2107,9 +2107,6 @@ export class ChatStoreService {
         this.normalizeChatId(normalizedGroupName) === resolvedGroupId
       );
       const rawBody = String(incoming.body ?? '').trim();
-      const senderPrefixExtracted = this.extractGroupSenderFromBodyPrefix(rawBody);
-      const inferredSenderName = senderPrefixExtracted?.senderName ?? '';
-      const inferredBody = senderPrefixExtracted?.strippedBody ?? rawBody;
 
       return {
         ...incoming,
@@ -2118,8 +2115,8 @@ export class ChatStoreService {
           ? (existingGroup?.name || normalizedGroupName || resolvedGroupId)
           : normalizedGroupName,
         groupType: incoming.groupType ?? existingGroup?.type ?? 'group',
-        groupSenderName: String(incoming.groupSenderName ?? '').trim() || inferredSenderName || undefined,
-        body: inferredBody || rawBody
+        groupSenderName: String(incoming.groupSenderName ?? '').trim() || undefined,
+        body: rawBody
       };
     });
   }
@@ -8256,24 +8253,16 @@ export class ChatStoreService {
             ? record.groupType
             : (normalizedGroupId ? (groupsById.get(normalizedGroupId)?.type ?? null) : null);
 
-        // For old group messages cached before senderDisplayName was reliably
-        // populated, try to extract the sender from the legacy body prefix
-        // "SenderName: message text".  URL bodies (http/https) are guarded so
-        // the URL scheme is never misread as a sender name.
-        let resolvedSenderDisplayName = this.resolveGroupSenderDisplayName(
+        // Resolve sender display name solely from the stored senderDisplayName
+        // (which is the groupSenderName phone/name from the backend) — do NOT
+        // fall back to body-prefix extraction.
+        const resolvedSenderDisplayName = this.resolveGroupSenderDisplayName(
           record.senderDisplayName,
           record.sender ?? ''
         );
-        let resolvedBody = normalizedGroupId
+        const resolvedBody = normalizedGroupId
           ? this.stripGroupSenderPrefixFromBody(String(record.body ?? ''), record.senderDisplayName)
           : String(record.body ?? '');
-        if (!resolvedSenderDisplayName && normalizedGroupId && record.direction !== 'outgoing') {
-          const extracted = this.extractGroupSenderFromBodyPrefix(String(record.body ?? ''));
-          if (extracted) {
-            resolvedSenderDisplayName = this.resolveGroupSenderDisplayName(extracted.senderName, record.sender ?? '');
-            resolvedBody = extracted.strippedBody;
-          }
-        }
 
         const normalized: ChatMessage = {
           ...record,
