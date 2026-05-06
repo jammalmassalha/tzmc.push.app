@@ -2107,7 +2107,11 @@ export class ChatStoreService {
         this.normalizeChatId(normalizedGroupName) === resolvedGroupId
       );
       const rawBody = String(incoming.body ?? '').trim();
-      const senderPrefixMatch = rawBody.match(/^([^:\n]{1,80})\s*:\s*([\s\S]+)$/);
+      // Guard against URL bodies (e.g. "https://example.com"): the colon in
+      // the URL scheme must not be extracted as a sender-name separator.
+      // Also reject candidate senders containing '/' (URL path segments).
+      const isUrl = rawBody.startsWith('http://') || rawBody.startsWith('https://');
+      const senderPrefixMatch = !isUrl ? rawBody.match(/^([^:\n/]{1,80})\s*:\s*([\s\S]+)$/) : null;
       const inferredSenderName = senderPrefixMatch ? String(senderPrefixMatch[1] || '').trim() : '';
       const inferredBody = senderPrefixMatch ? String(senderPrefixMatch[2] || '').trim() : rawBody;
 
@@ -6270,7 +6274,10 @@ export class ChatStoreService {
           continue;
         }
         const list = getMutableList(chatId);
-        if (this.hydrateIncomingMessageInList(list, messageId, incomingBody, incomingImageUrl)) {
+        if (this.hydrateIncomingMessageInList(
+          list, messageId, incomingBody, incomingImageUrl,
+          this.resolveGroupSenderDisplayName(incoming.groupSenderName, sender) || undefined
+        )) {
           messagesChanged = true;
           appliedCount += 1;
         }
@@ -6580,7 +6587,10 @@ export class ChatStoreService {
       (message) => message.messageId === messageId
     );
     if (alreadyExists) {
-      return this.hydrateExistingIncomingMessage(chatId, messageId, incomingBody, incomingImageUrl);
+      return this.hydrateExistingIncomingMessage(
+        chatId, messageId, incomingBody, incomingImageUrl,
+        this.resolveGroupSenderDisplayName(incoming.groupSenderName, sender) || undefined
+      );
     }
     if (!this.hasRenderableIncomingContent(incomingBody, incomingImageUrl)) {
       return false;
@@ -6835,7 +6845,8 @@ export class ChatStoreService {
     chatId: string,
     messageId: string,
     incomingBody: string,
-    incomingImageUrl: string | null
+    incomingImageUrl: string | null,
+    incomingSenderDisplayName?: string
   ): boolean {
     if (!this.hasRenderableIncomingContent(incomingBody, incomingImageUrl)) {
       return false;
@@ -6849,7 +6860,7 @@ export class ChatStoreService {
       }
 
       const nextList = [...list];
-      if (!this.hydrateIncomingMessageInList(nextList, messageId, incomingBody, incomingImageUrl)) {
+      if (!this.hydrateIncomingMessageInList(nextList, messageId, incomingBody, incomingImageUrl, incomingSenderDisplayName)) {
         return messageMap;
       }
       changed = true;
@@ -6869,7 +6880,8 @@ export class ChatStoreService {
     list: ChatMessage[],
     messageId: string,
     incomingBody: string,
-    incomingImageUrl: string | null
+    incomingImageUrl: string | null,
+    incomingSenderDisplayName?: string
   ): boolean {
     const index = list.findIndex((message) => message.messageId === messageId);
     if (index < 0) return false;
@@ -6884,14 +6896,20 @@ export class ChatStoreService {
     const normalizedIncoming = String(incomingBody || '').trim();
     const nextBody = normalizedIncoming.length > currentBody.length ? normalizedIncoming : (currentBody || normalizedIncoming);
     const nextImage = currentImage || String(incomingImageUrl || '').trim();
-    if (nextBody === currentBody && nextImage === currentImage) {
+    // Back-fill senderDisplayName when the cached message has none but the
+    // incoming payload (from a recovery pull or re-delivery) now carries one.
+    const nextSenderDisplayName = (incomingSenderDisplayName && !current.senderDisplayName)
+      ? incomingSenderDisplayName
+      : current.senderDisplayName;
+    if (nextBody === currentBody && nextImage === currentImage && nextSenderDisplayName === current.senderDisplayName) {
       return false;
     }
 
     list[index] = {
       ...current,
       body: nextBody,
-      imageUrl: nextImage || null
+      imageUrl: nextImage || null,
+      senderDisplayName: nextSenderDisplayName
     };
     return true;
   }
@@ -8215,18 +8233,41 @@ export class ChatStoreService {
           record.groupType === 'group' || record.groupType === 'community'
             ? record.groupType
             : (normalizedGroupId ? (groupsById.get(normalizedGroupId)?.type ?? null) : null);
+
+        // For old group messages cached before senderDisplayName was reliably
+        // populated, try to extract the sender from the legacy body prefix
+        // "SenderName: message text".  URL bodies (http/https) are guarded so
+        // the URL scheme is never misread as a sender name.
+        let resolvedSenderDisplayName = this.resolveGroupSenderDisplayName(
+          record.senderDisplayName,
+          record.sender ?? ''
+        );
+        let resolvedBody = normalizedGroupId
+          ? this.stripGroupSenderPrefixFromBody(String(record.body ?? ''), record.senderDisplayName)
+          : String(record.body ?? '');
+        if (!resolvedSenderDisplayName && normalizedGroupId && record.direction !== 'outgoing') {
+          const rawBody = String(record.body ?? '').trim();
+          const isUrl = rawBody.startsWith('http://') || rawBody.startsWith('https://');
+          if (!isUrl) {
+            const prefixMatch = rawBody.match(/^([^:\n/]{1,80})\s*:\s*([\s\S]+)$/);
+            if (prefixMatch) {
+              const potentialSender = String(prefixMatch[1] || '').trim();
+              const potentialBody = String(prefixMatch[2] || '').trim();
+              if (potentialSender && potentialBody) {
+                resolvedSenderDisplayName = this.resolveGroupSenderDisplayName(potentialSender, record.sender ?? '');
+                resolvedBody = potentialBody;
+              }
+            }
+          }
+        }
+
         const normalized: ChatMessage = {
           ...record,
           chatId,
           sender: this.normalizeUser(record.sender),
-          senderDisplayName: this.resolveGroupSenderDisplayName(
-            record.senderDisplayName,
-            record.sender ?? ''
-          ),
+          senderDisplayName: resolvedSenderDisplayName,
           messageId: String(record.messageId || this.generateId('msg')),
-          body: normalizedGroupId
-            ? this.stripGroupSenderPrefixFromBody(String(record.body ?? ''), record.senderDisplayName)
-            : String(record.body ?? ''),
+          body: resolvedBody,
           timestamp: Number(record.timestamp ?? Date.now()),
           direction: record.direction === 'incoming' ? 'incoming' : 'outgoing',
           deliveryStatus: record.deliveryStatus ?? 'sent',

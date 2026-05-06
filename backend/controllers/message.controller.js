@@ -629,10 +629,16 @@ function registerMessageController(app, deps = {}) {
                     const looksLikeGroupMessage = resolvedGroupId || sender.startsWith('group:') || hardcodedGroupKeySet.has(sender) || knownGroupIds.has(sender);
                     let resolvedBody = body;
                     if (!groupSenderName && looksLikeGroupMessage && body) {
-                        const senderPrefixMatch = body.match(/^([^:\n]{1,80})\s*:\s*([\s\S]+)$/);
-                        if (senderPrefixMatch) {
-                            groupSenderName = String(senderPrefixMatch[1] || '').trim();
-                            resolvedBody = String(senderPrefixMatch[2] || '').trim() || body;
+                        // Guard against URL bodies (e.g. "https://example.com"): the colon in
+                        // the URL scheme must not be extracted as a sender-name separator.
+                        // Also reject candidate senders containing '/' (URL path segments).
+                        const isUrl = body.startsWith('http://') || body.startsWith('https://');
+                        if (!isUrl) {
+                            const senderPrefixMatch = body.match(/^([^:\n/]{1,80})\s*:\s*([\s\S]+)$/);
+                            if (senderPrefixMatch) {
+                                groupSenderName = String(senderPrefixMatch[1] || '').trim();
+                                resolvedBody = String(senderPrefixMatch[2] || '').trim() || body;
+                            }
                         }
                     }
                     // Safety net: if groupSenderName is already known and the body still starts
