@@ -362,8 +362,20 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                          // and finally to the raw sender username so the
                          // user can always tell who sent the message in a
                          // group (matches what the FCM notification shows).
+                         //
+                         // Use `message.groupId != null` as the per-message
+                         // group check in addition to `chatInfo.isGroup`.
+                         // `chatInfo.isGroup` is only true when the group entry
+                         // is already present in `state.groups`; on a cold
+                         // start the groups map may still be empty when the
+                         // first frame is rendered, silently suppressing every
+                         // sender label.  `message.groupId != null` is set the
+                         // moment the message is built from the server payload
+                         // so it is always reliable.
+                         final messageIsFromGroup =
+                             chatInfo.isGroup || message.groupId != null;
                          String? resolvedSenderLabel;
-                         if (chatInfo.isGroup &&
+                         if (messageIsFromGroup &&
                              message.direction !=
                                  MessageDirection.outgoing) {
                            final senderId = message.sender.trim();
@@ -402,7 +414,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                                _buildDateHeader(context, message.timestamp),
                              _MessageBubble(
                                message: message,
-                               isGroup: chatInfo.isGroup,
+                               isGroup: messageIsFromGroup,
                                resolvedSenderLabel: resolvedSenderLabel,
                                searchQuery:
                                    _searchActive ? _searchQuery : null,

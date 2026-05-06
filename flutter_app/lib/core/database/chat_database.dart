@@ -327,14 +327,42 @@ class ChatDatabase extends _$ChatDatabase {
   }
 
   ChatMessage _messageFromRow(MessagesData row) {
+    // For older group-message rows that pre-date the GroupSenderName column,
+    // the server wrote the sender as a prefix in the body ("SenderName: text").
+    // Extract it in-memory so the UI shows the sender label correctly without
+    // requiring a DB schema migration.  The transformation is idempotent: if
+    // `senderDisplayName` is already set we skip it; URL bodies (http/https)
+    // are also guarded so the scheme is never misread as a sender name.
+    String? senderDisplayName = row.senderDisplayName;
+    String body = row.body;
+    if (senderDisplayName == null &&
+        row.groupId != null &&
+        body.isNotEmpty &&
+        !body.startsWith('http://') &&
+        !body.startsWith('https://')) {
+      final colonIdx = body.indexOf(':');
+      if (colonIdx > 0 && colonIdx <= 80) {
+        final potentialSender = body.substring(0, colonIdx).trim();
+        final potentialBody = body.substring(colonIdx + 1).trim();
+        if (potentialSender.isNotEmpty &&
+            potentialSender.length <= 80 &&
+            !potentialSender.contains('\n') &&
+            !potentialSender.contains('/') &&
+            potentialBody.isNotEmpty) {
+          senderDisplayName = potentialSender;
+          body = potentialBody;
+        }
+      }
+    }
+
     return ChatMessage(
       id: row.id,
       messageId: row.messageId,
       chatId: row.chatId,
       sender: row.sender,
-      senderDisplayName: row.senderDisplayName,
+      senderDisplayName: senderDisplayName,
       recordType: row.recordType,
-      body: row.body,
+      body: body,
       imageUrl: row.imageUrl,
       thumbnailUrl: row.thumbnailUrl,
       fileUrl: row.fileUrl,

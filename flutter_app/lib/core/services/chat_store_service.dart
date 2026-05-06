@@ -1123,15 +1123,22 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     String body = rawBody;
 
     if (groupSenderName.isEmpty && rawBody.isNotEmpty) {
-      final colonIdx = rawBody.indexOf(':');
-      if (colonIdx > 0 && colonIdx <= _kGroupSenderPrefixMaxLength) {
-        final potentialSender = rawBody.substring(0, colonIdx).trim();
-        final potentialBody   = rawBody.substring(colonIdx + 1).trim();
-        if (potentialSender.length <= _kGroupSenderPrefixMaxLength &&
-            !potentialSender.contains('\n') &&
-            potentialBody.isNotEmpty) {
-          groupSenderName = potentialSender;
-          body = potentialBody;
+      // Guard against bodies that are URLs (e.g. "https://example.com"):
+      // the colon in the scheme would be incorrectly extracted as a sender.
+      final isUrl = rawBody.startsWith('http://') ||
+          rawBody.startsWith('https://');
+      if (!isUrl) {
+        final colonIdx = rawBody.indexOf(':');
+        if (colonIdx > 0 && colonIdx <= _kGroupSenderPrefixMaxLength) {
+          final potentialSender = rawBody.substring(0, colonIdx).trim();
+          final potentialBody   = rawBody.substring(colonIdx + 1).trim();
+          if (potentialSender.length <= _kGroupSenderPrefixMaxLength &&
+              !potentialSender.contains('\n') &&
+              !potentialSender.contains('/') &&
+              potentialBody.isNotEmpty) {
+            groupSenderName = potentialSender;
+            body = potentialBody;
+          }
         }
       }
     } else if (groupSenderName.isNotEmpty && rawBody.isNotEmpty) {
