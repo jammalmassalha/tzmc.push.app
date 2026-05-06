@@ -848,8 +848,8 @@ export class MysqlLogsService {
           emoji: toTrimmedString(detailsMap.emoji || detailsMap.reaction) || undefined,
           reactor: toTrimmedString(detailsMap.reactor || detailsMap.user) || undefined,
           // Persisted human display name for group senders. message.controller.js
-          // uses this when present; otherwise it falls back to legacy
-          // body-prefix parsing for older rows that pre-date this column.
+          // uses this when present; otherwise it falls back to a MessageActivities
+          // lookup by MessageId for older rows that pre-date this column.
           groupSenderName: toTrimmedString(row.groupSenderName) || undefined,
           userReceivedTime: parseFlexibleTimestamp(row.userReceivedTime) || undefined
         });
