@@ -1522,12 +1522,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       groupType: groupType,
     );
 
-    _applyIncomingMessage(message);
+    final isNew = _applyIncomingMessage(message);
 
     // Update unread count if not the currently open chat.
     // Skip for self-echo messages (sender's own devices) to avoid
     // incrementing the badge for messages the user just sent.
-    if (!skipNotification && chatId != state.currentChatId) {
+    // Also skip when the message was already known locally (isNew == false) to
+    // prevent re-incrementing a badge the user has already cleared by reading.
+    if (isNew && !skipNotification && chatId != state.currentChatId) {
       final newUnread = Map<String, int>.from(state.unreadByChat);
       newUnread[chatId] = (newUnread[chatId] ?? 0) + 1;
       state = state.copyWith(unreadByChat: newUnread);
@@ -1540,8 +1542,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     if (!skipNotification) schedulePushRecoveryPulls();
   }
 
-  /// Apply an incoming message to state
-  void _applyIncomingMessage(ChatMessage message) {
+  /// Apply an incoming message to state.
+  ///
+  /// Returns `true` when the message was genuinely new (inserted for the first
+  /// time), or `false` when it was a hydration of an already-known entry.
+  ///
+  /// Callers that increment the unread badge should only do so when this
+  /// method returns `true` — returning `false` means the message was already
+  /// present in the local state (e.g. a server-side duplicate returned by the
+  /// logs endpoint near the `since` boundary) and the user may have already
+  /// read it, so re-incrementing the badge would be incorrect.
+  bool _applyIncomingMessage(ChatMessage message) {
     final chatId = message.chatId;
     final newMessagesByChat = Map<String, List<ChatMessage>>.from(state.messagesByChat);
     final chatMessages = List<ChatMessage>.from(newMessagesByChat[chatId] ?? []);
@@ -1575,7 +1586,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       }
     }
 
-    if (existingIndex >= 0) {
+    final isNew = existingIndex < 0;
+
+    if (!isNew) {
       // Hydrate existing message (keep longer body)
       final existing = chatMessages[existingIndex];
       final hydrated = _hydrateExistingMessage(existing, message);
@@ -1595,6 +1608,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     newMessagesByChat[chatId] = chatMessages;
     state = state.copyWith(messagesByChat: newMessagesByChat);
+
+    return isNew;
   }
 
   /// Hydrate existing message with new data (pick longer body)
@@ -2106,10 +2121,18 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   void _handleIncomingTextMessage(IncomingServerMessage msg) {
     final chatMessage = _buildChatMessageFromServer(msg);
     if (chatMessage != null) {
-      _applyIncomingMessage(chatMessage);
+      final isNew = _applyIncomingMessage(chatMessage);
 
-      // Update unread count if not current chat
-      if (chatMessage.chatId != state.currentChatId && 
+      // Only increment the unread badge when:
+      //  • the message is for a chat the user is NOT currently viewing, AND
+      //  • the message is incoming (not our own echo), AND
+      //  • the message is genuinely new — not an already-known entry returned
+      //    by the logs endpoint near the `since` boundary (the server
+      //    intentionally returns 1-2 such duplicates to avoid missing rows;
+      //    _applyIncomingMessage returns false for those so we never re-count
+      //    a message the user has already read).
+      if (isNew &&
+          chatMessage.chatId != state.currentChatId &&
           chatMessage.direction == MessageDirection.incoming) {
         final newUnread = Map<String, int>.from(state.unreadByChat);
         newUnread[chatMessage.chatId] = (newUnread[chatMessage.chatId] ?? 0) + 1;
