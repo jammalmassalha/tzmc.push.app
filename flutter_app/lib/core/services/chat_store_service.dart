@@ -907,14 +907,26 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   ///
   /// Pages through the `/messages/logs` endpoint in batches of
   /// [_kFullSyncPageSize] (500) until there are no more results or
-  /// [_kFullSyncMaxMessages] (200 000) have been fetched — matching the
-  /// Angular behaviour exactly.
+  /// [_kFullSyncMaxMessages] (200 000) have been fetched.
+  ///
+  /// All pages are collected first, then:
+  ///   1. System/sentinel messages are filtered out.
+  ///   2. Group messages are normalised (sender-prefix stripped from body).
+  ///   3. Missing groups are synthesised from the message metadata.
+  ///   4. Action messages (delete, edit, reaction, …) are applied one-by-one
+  ///      through the normal handler.
+  ///   5. Regular text messages are applied in a single batch without
+  ///      incrementing unread counters.
+  ///
+  /// This avoids O(n) state rebuilds for large histories (up to 200 000 msgs).
   Future<void> _pullAllMessagesFromLogs({
     required String user,
     int since = 0,
   }) async {
+    // ── 1. Fetch all pages ──────────────────────────────────────────────────
     int offset = 0;
     int totalFetched = 0;
+    final allRaw = <IncomingServerMessage>[];
 
     while (totalFetched < _kFullSyncMaxMessages) {
       final remaining = _kFullSyncMaxMessages - totalFetched;
@@ -930,21 +942,294 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           since: since,
         );
       } catch (_) {
-        break; // Network error — stop paging; already have what we got.
+        break; // Network error — stop paging; keep what we already have.
       }
 
       if (page.isEmpty) break;
 
-      for (final message in page) {
-        _handleServerMessage(message);
-      }
-
+      allRaw.addAll(page);
       offset += page.length;
       totalFetched += page.length;
 
-      // Server returned fewer items than requested — we've reached the end.
+      // Server returned fewer items than the page size → end of results.
       if (page.length < limit) break;
     }
+
+    if (allRaw.isEmpty) return;
+
+    // ── 2. Filter system/sentinel messages ──────────────────────────────────
+    // Mirrors Angular's `shouldSkipLogsMessage`:
+    //   • keep action types (delete-action, edit-action, reaction, read-receipt,
+    //     group-update) so deletions and edits are reflected in the history.
+    //   • drop messages with no sender or sender == "system".
+    //   • drop sentinel bodies "new notification" / "new reaction".
+    const actionTypes = {
+      'read',
+      'read-receipt',
+      'delete',
+      'delete-action',
+      'edit',
+      'edit-action',
+      'reaction',
+      'group-update',
+    };
+    final filtered = allRaw.where((msg) {
+      final type = (msg.type ?? '').trim().toLowerCase();
+      if (actionTypes.contains(type)) return true; // always keep actions
+      final sender = (msg.sender ?? '').trim().toLowerCase();
+      if (sender.isEmpty || sender == 'system') return false;
+      final body = (msg.body ?? '').trim().toLowerCase();
+      if (body == 'new notification' || body == 'new reaction') return false;
+      return true;
+    }).toList();
+
+    if (filtered.isEmpty) return;
+
+    // ── 3. Normalise group messages ─────────────────────────────────────────
+    // Mirrors Angular's `normalizeLogsMessagesForImport`:
+    //   • resolve groupId when sender holds a known group ID.
+    //   • strip the "SenderName: body" prefix that the server writes to the
+    //     body column for group messages, and promote the prefix to
+    //     groupSenderName.
+    final normalized = filtered.map(_normalizeLogMessageForImport).toList();
+
+    // ── 4. Synthesise missing groups ────────────────────────────────────────
+    // Mirrors Angular's `ensureGroupsFromImportedLogs`.
+    _ensureGroupsFromImportedLogs(normalized);
+
+    // ── 5. Apply messages ───────────────────────────────────────────────────
+    // Action messages are dispatched through the regular handler (small count).
+    // Text messages are applied in a single batch state update — no unread
+    // increment (mirrors Angular's `applyIncomingMessagesBatch` with
+    // `incrementUnread: false`).
+    final textMessages = <ChatMessage>[];
+
+    for (final msg in normalized) {
+      final type = (msg.type ?? '').trim().toLowerCase();
+      if (actionTypes.contains(type)) {
+        _handleServerMessage(msg); // delete / edit / reaction / group-update
+      } else {
+        final chatMsg = _buildChatMessageFromServer(msg);
+        if (chatMsg != null) textMessages.add(chatMsg);
+      }
+    }
+
+    _applyMessagesBatch(textMessages);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Full-sync helpers (mirrors Angular normalizeLogsMessagesForImport,
+  //   ensureGroupsFromImportedLogs, applyRegularIncomingMessagesBulk)
+  // ---------------------------------------------------------------------------
+
+  /// Normalise a single logs message for batch import.
+  ///
+  /// • Resolves [IncomingServerMessage.groupId] from the sender field when
+  ///   the sender ID matches a known group (mirrors Angular's group:// check).
+  /// • Strips the "SenderName: body" prefix embedded in group message bodies
+  ///   by the server and promotes it to [IncomingServerMessage.groupSenderName].
+  /// • Preserves the resolved group name from local state when the server
+  ///   record only stores the group ID as its name.
+  IncomingServerMessage _normalizeLogMessageForImport(IncomingServerMessage msg) {
+    final rawGroupId = (msg.groupId ?? '').trim();
+    final rawSender  = (msg.sender  ?? '').trim();
+
+    // Resolve groupId from sender when sender looks like a group.
+    String resolvedGroupId = rawGroupId.toLowerCase();
+    if (resolvedGroupId.isEmpty && rawSender.isNotEmpty) {
+      final senderNorm = rawSender.toLowerCase();
+      if (senderNorm.startsWith('group:') ||
+          state.groups.containsKey(senderNorm)) {
+        resolvedGroupId = senderNorm;
+      }
+    }
+
+    if (resolvedGroupId.isEmpty) {
+      // Not a group message — still strip an explicit sender-prefix if present.
+      final gsn = (msg.groupSenderName ?? '').trim();
+      if (gsn.isNotEmpty && msg.body != null) {
+        final strippedBody = _stripGroupSenderPrefixFromBody(msg.body!, gsn);
+        if (strippedBody != msg.body) {
+          return _copyMsgWith(msg, body: strippedBody);
+        }
+      }
+      return msg;
+    }
+
+    final existingGroup  = state.groups[resolvedGroupId];
+    final rawGroupName   = (msg.groupName ?? '').trim();
+    final rawBody        = (msg.body      ?? '').trim();
+
+    // Determine the best group name.
+    final resolvedGroupName = (rawGroupName.isNotEmpty &&
+            rawGroupName.toLowerCase() != resolvedGroupId)
+        ? rawGroupName
+        : (existingGroup?.name.isNotEmpty == true
+            ? existingGroup!.name
+            : (rawGroupName.isNotEmpty ? rawGroupName : resolvedGroupId));
+
+    // Extract "SenderName: message" prefix from body when groupSenderName is absent.
+    String groupSenderName = (msg.groupSenderName ?? '').trim();
+    String body = rawBody;
+
+    if (groupSenderName.isEmpty && rawBody.isNotEmpty) {
+      final colonIdx = rawBody.indexOf(':');
+      if (colonIdx > 0 && colonIdx <= 80) {
+        final potentialSender = rawBody.substring(0, colonIdx).trim();
+        final potentialBody   = rawBody.substring(colonIdx + 1).trim();
+        if (!potentialSender.contains('\n') && potentialBody.isNotEmpty) {
+          groupSenderName = potentialSender;
+          body = potentialBody;
+        }
+      }
+    } else if (groupSenderName.isNotEmpty && rawBody.isNotEmpty) {
+      body = _stripGroupSenderPrefixFromBody(rawBody, groupSenderName);
+    }
+
+    return _copyMsgWith(
+      msg,
+      groupId:        resolvedGroupId,
+      groupName:      resolvedGroupName,
+      groupSenderName: groupSenderName.isNotEmpty ? groupSenderName : msg.groupSenderName,
+      body:           body.isNotEmpty ? body : rawBody,
+      groupType:      msg.groupType ?? existingGroup?.type.name,
+    );
+  }
+
+  /// Return a shallow copy of [msg] with optional field overrides.
+  IncomingServerMessage _copyMsgWith(
+    IncomingServerMessage msg, {
+    String? groupId,
+    String? groupName,
+    String? groupSenderName,
+    String? body,
+    String? groupType,
+  }) {
+    return IncomingServerMessage(
+      messageId:        msg.messageId,
+      sender:           msg.sender,
+      toUser:           msg.toUser,
+      recipient:        msg.recipient,
+      type:             msg.type,
+      chatId:           msg.chatId,
+      isTyping:         msg.isTyping,
+      editedAt:         msg.editedAt,
+      deletedAt:        msg.deletedAt,
+      messageIds:       msg.messageIds,
+      readAt:           msg.readAt,
+      targetMessageId:  msg.targetMessageId,
+      emoji:            msg.emoji,
+      reactor:          msg.reactor,
+      reactorName:      msg.reactorName,
+      body:             body          ?? msg.body,
+      timestamp:        msg.timestamp,
+      imageUrl:         msg.imageUrl,
+      fileUrl:          msg.fileUrl,
+      groupId:          groupId       ?? msg.groupId,
+      groupName:        groupName     ?? msg.groupName,
+      groupMembers:     msg.groupMembers,
+      groupCreatedBy:   msg.groupCreatedBy,
+      groupAdmins:      msg.groupAdmins,
+      groupUpdatedAt:   msg.groupUpdatedAt,
+      groupType:        groupType     ?? msg.groupType,
+      groupSenderName:  groupSenderName ?? msg.groupSenderName,
+      replyToMessageId: msg.replyToMessageId,
+      replyToSender:    msg.replyToSender,
+      replyToSenderName: msg.replyToSenderName,
+      replyToBody:      msg.replyToBody,
+      replyToImageUrl:  msg.replyToImageUrl,
+      forwarded:        msg.forwarded,
+      forwardedFrom:    msg.forwardedFrom,
+      forwardedFromName: msg.forwardedFromName,
+      userReceivedTime: msg.userReceivedTime,
+    );
+  }
+
+  /// Remove the leading "SenderName: " prefix from a group message body.
+  String _stripGroupSenderPrefixFromBody(String body, String senderName) {
+    if (senderName.isEmpty) return body;
+    final prefix = '$senderName:';
+    if (body.startsWith(prefix)) {
+      return body.substring(prefix.length).trimLeft();
+    }
+    return body;
+  }
+
+  /// Synthesise [ChatGroup] entries for any group referenced in the import
+  /// batch that is not already present in [state.groups].
+  ///
+  /// Mirrors Angular's `ensureGroupsFromImportedLogs`:
+  ///   • Only creates a group when its name is a real human-readable string
+  ///     (not just the group ID). This prevents "ghost" groups for unknown IDs.
+  ///   • Does NOT overwrite an existing group entry.
+  void _ensureGroupsFromImportedLogs(List<IncomingServerMessage> messages) {
+    final groupsById = Map<String, ChatGroup>.from(state.groups);
+    final me = _currentUser ?? '';
+    bool changed = false;
+
+    for (final msg in messages) {
+      final groupId = (msg.groupId ?? '').trim().toLowerCase();
+      if (groupId.isEmpty) continue;
+      if (groupsById.containsKey(groupId)) continue;
+
+      final groupName = (msg.groupName ?? '').trim();
+      // Skip if the name is absent or identical to the ID (ghost group guard).
+      if (groupName.isEmpty || groupName.toLowerCase() == groupId) continue;
+
+      groupsById[groupId] = ChatGroup(
+        id: groupId,
+        name: groupName,
+        members: me.isNotEmpty ? [me] : const [],
+        createdBy: me.isNotEmpty ? me : 'system',
+        updatedAt: DateTime.now().millisecondsSinceEpoch,
+        type: msg.groupType == 'community' ? GroupType.community : GroupType.group,
+      );
+      changed = true;
+    }
+
+    if (changed) {
+      state = state.copyWith(groups: groupsById);
+    }
+  }
+
+  /// Apply a list of already-built [ChatMessage]s to the store in a single
+  /// state update, without incrementing unread counters.
+  ///
+  /// Used by the full-sync batch import to avoid O(n) Riverpod state rebuilds.
+  void _applyMessagesBatch(List<ChatMessage> messages) {
+    if (messages.isEmpty) return;
+
+    final newMessagesByChat =
+        Map<String, List<ChatMessage>>.from(state.messagesByChat);
+
+    for (final message in messages) {
+      final chatId = message.chatId;
+      final chatMessages =
+          List<ChatMessage>.from(newMessagesByChat[chatId] ?? const <ChatMessage>[]);
+
+      final existingIndex =
+          chatMessages.indexWhere((m) => m.messageId == message.messageId);
+
+      if (existingIndex >= 0) {
+        chatMessages[existingIndex] =
+            _hydrateExistingMessage(chatMessages[existingIndex], message);
+      } else {
+        chatMessages.add(message);
+      }
+
+      newMessagesByChat[chatId] = chatMessages;
+    }
+
+    // Sort each chat descending by timestamp and trim to the per-chat cap.
+    for (final entry in newMessagesByChat.entries) {
+      final msgs = entry.value;
+      msgs.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+      if (msgs.length > maxMessagesPerChat) {
+        newMessagesByChat[entry.key] = msgs.sublist(0, maxMessagesPerChat);
+      }
+    }
+
+    state = state.copyWith(messagesByChat: newMessagesByChat);
   }
 
   /// Loads the groups that are persisted in the server DB and merges them into
