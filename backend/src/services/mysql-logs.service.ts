@@ -1512,7 +1512,7 @@ export class MysqlLogsService {
     // always covers the messages that are about to be returned, regardless of
     // how many total group messages exist in MessageActivities.
     const messageIds = Array.isArray(options.messageIds)
-      ? options.messageIds.filter(id => typeof id === 'string' && id.trim())
+      ? options.messageIds.filter(id => typeof id === 'string' && id.trim()).slice(0, 1000)
       : [];
 
     try {
