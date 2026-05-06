@@ -2107,13 +2107,9 @@ export class ChatStoreService {
         this.normalizeChatId(normalizedGroupName) === resolvedGroupId
       );
       const rawBody = String(incoming.body ?? '').trim();
-      // Guard against URL bodies (e.g. "https://example.com"): the colon in
-      // the URL scheme must not be extracted as a sender-name separator.
-      // Also reject candidate senders containing '/' (URL path segments).
-      const isUrl = rawBody.startsWith('http://') || rawBody.startsWith('https://');
-      const senderPrefixMatch = !isUrl ? rawBody.match(/^([^:\n/]{1,80})\s*:\s*([\s\S]+)$/) : null;
-      const inferredSenderName = senderPrefixMatch ? String(senderPrefixMatch[1] || '').trim() : '';
-      const inferredBody = senderPrefixMatch ? String(senderPrefixMatch[2] || '').trim() : rawBody;
+      const senderPrefixExtracted = this.extractGroupSenderFromBodyPrefix(rawBody);
+      const inferredSenderName = senderPrefixExtracted?.senderName ?? '';
+      const inferredBody = senderPrefixExtracted?.strippedBody ?? rawBody;
 
       return {
         ...incoming,
@@ -7947,6 +7943,32 @@ export class ChatStoreService {
   }
 
   /**
+   * Extract a sender name from a legacy group-message body of the form
+   * "SenderName: message text".  Returns null when the body does not match
+   * (including URL bodies such as "https://...") or when the extracted
+   * candidate is suspicious (contains '/' which is typical of URLs or paths).
+   *
+   * The maximum sender-name prefix length is 80 characters to match the same
+   * limit enforced by the backend (message.controller.js) and Flutter
+   * (_kGroupSenderPrefixMaxLength constant in chat_store_service.dart).
+   */
+  private extractGroupSenderFromBodyPrefix(
+    body: string
+  ): { senderName: string; strippedBody: string } | null {
+    const trimmed = String(body || '').trim();
+    if (!trimmed) return null;
+    // Guard against URL bodies — the colon in "https://" or "http://" would
+    // otherwise be misread as the sender-name separator.
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return null;
+    const match = trimmed.match(/^([^:\n/]{1,80})\s*:\s*([\s\S]+)$/);
+    if (!match) return null;
+    const senderName = String(match[1] || '').trim();
+    const strippedBody = String(match[2] || '').trim();
+    if (!senderName || !strippedBody) return null;
+    return { senderName, strippedBody };
+  }
+
+  /**
    * Resolve the display name for a sender in a group message.
    * The groupSenderName (extracted from body prefix or provided by backend) may be
    * a phone number rather than a proper display name. In that case, look up the
@@ -8246,18 +8268,10 @@ export class ChatStoreService {
           ? this.stripGroupSenderPrefixFromBody(String(record.body ?? ''), record.senderDisplayName)
           : String(record.body ?? '');
         if (!resolvedSenderDisplayName && normalizedGroupId && record.direction !== 'outgoing') {
-          const rawBody = String(record.body ?? '').trim();
-          const isUrl = rawBody.startsWith('http://') || rawBody.startsWith('https://');
-          if (!isUrl) {
-            const prefixMatch = rawBody.match(/^([^:\n/]{1,80})\s*:\s*([\s\S]+)$/);
-            if (prefixMatch) {
-              const potentialSender = String(prefixMatch[1] || '').trim();
-              const potentialBody = String(prefixMatch[2] || '').trim();
-              if (potentialSender && potentialBody) {
-                resolvedSenderDisplayName = this.resolveGroupSenderDisplayName(potentialSender, record.sender ?? '');
-                resolvedBody = potentialBody;
-              }
-            }
+          const extracted = this.extractGroupSenderFromBodyPrefix(String(record.body ?? ''));
+          if (extracted) {
+            resolvedSenderDisplayName = this.resolveGroupSenderDisplayName(extracted.senderName, record.sender ?? '');
+            resolvedBody = extracted.strippedBody;
           }
         }
 
