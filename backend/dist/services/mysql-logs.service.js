@@ -193,6 +193,7 @@ class MysqlLogsService {
     imageUrlColumnReady = false;
     fileUrlColumnReady = false;
     seenTimeColumnReady = false;
+    groupSenderNameColumnReady = false;
     dedupIndexReady = false;
     communityGroupsTablesReady = false;
     chatGroupsTablesReady = false;
@@ -200,9 +201,9 @@ class MysqlLogsService {
     serverStateTableReady = false;
     constructor(config) {
         this.tableName = normalizeTableName(config.table);
-        // 10 columns / 10 parameters — keep in sync with insertLog() and insertLogsBulk()
-        this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        // 11 columns / 11 parameters — keep in sync with insertLog() and insertLogsBulk()
+        this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`, \`GroupSenderName\`)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
         this.pool = promise_1.default.createPool({
             host: config.host,
             port: config.port,
@@ -215,6 +216,7 @@ class MysqlLogsService {
         void this.ensureImageUrlColumn();
         void this.ensureFileUrlColumn();
         void this.ensureSeenTimeColumn();
+        void this.ensureGroupSenderNameColumn();
     }
     async ensureImageUrlColumn() {
         if (this.imageUrlColumnReady)
@@ -261,6 +263,29 @@ class MysqlLogsService {
             }
         }
         this.seenTimeColumnReady = true;
+    }
+    /**
+     * For group messages the `From` column holds the group ID, so the user-facing
+     * sender label (shown in the FCM notification) used to be lost on the way to
+     * the DB.  Persist it in a dedicated column so missed-message recovery via
+     * /messages/logs can return the same label that the push notification
+     * displayed, and the in-app group bubble can render the sender name.
+     */
+    async ensureGroupSenderNameColumn() {
+        if (this.groupSenderNameColumnReady)
+            return;
+        try {
+            await this.pool.execute(`ALTER TABLE \`${this.tableName}\` ADD COLUMN \`GroupSenderName\` VARCHAR(255) NULL DEFAULT NULL`);
+        }
+        catch (err) {
+            const code = err.code;
+            const message = String(err.message || '');
+            // ER_DUP_FIELDNAME = column already exists — expected on subsequent restarts.
+            if (code !== 'ER_DUP_FIELDNAME' && !message.includes('Duplicate column')) {
+                console.warn('[MYSQL] ensureGroupSenderNameColumn warning:', message);
+            }
+        }
+        this.groupSenderNameColumnReady = true;
     }
     async ensureDedupIndex() {
         if (this.dedupIndexReady)
@@ -310,7 +335,8 @@ class MysqlLogsService {
         const dateTime = normalizeDateTimeForStorage(payload.dateTime);
         const imageUrl = toTrimmedString(payload.imageUrl);
         const fileUrl = toTrimmedString(payload.fileUrl);
-        await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null]);
+        const groupSenderName = toTrimmedString(payload.groupSenderName);
+        await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null, groupSenderName || null]);
         return true;
     }
     /**
@@ -331,13 +357,14 @@ class MysqlLogsService {
         const dateTime = normalizeDateTimeForStorage(payload.dateTime);
         const imageUrl = toTrimmedString(payload.imageUrl);
         const fileUrl = toTrimmedString(payload.fileUrl);
+        const groupSenderName = toTrimmedString(payload.groupSenderName);
         if (!recipient) {
             // Cannot deduplicate without recipient — fall back to normal insert
-            await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null]);
+            await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null, groupSenderName || null]);
             return true;
         }
-        const sql = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        const sql = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`, \`GroupSenderName\`)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
        FROM DUAL
        WHERE NOT EXISTS (
          SELECT 1 FROM \`${this.tableName}\`
@@ -345,7 +372,7 @@ class MysqlLogsService {
          LIMIT 1
        )`;
         const [result] = await this.pool.execute(sql, [
-            dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null,
+            dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null, groupSenderName || null,
             sender, recipient, dateTime
         ]);
         const affectedRows = result.affectedRows ?? 0;
@@ -430,6 +457,7 @@ class MysqlLogsService {
                 const dateTime = normalizeDateTimeForStorage(payload.dateTime);
                 const imageUrl = toTrimmedString(payload.imageUrl);
                 const fileUrl = toTrimmedString(payload.fileUrl);
+                const groupSenderName = toTrimmedString(payload.groupSenderName);
                 await connection.execute(this.insertQuery, [
                     dateTime,
                     recipient,
@@ -440,7 +468,8 @@ class MysqlLogsService {
                     details,
                     recipientAuthJson,
                     imageUrl || null,
-                    fileUrl || null
+                    fileUrl || null,
+                    groupSenderName || null
                 ]);
             }
             await connection.commit();
@@ -522,7 +551,8 @@ class MysqlLogsService {
           \`UserReceivedTime\` AS userReceivedTime,
           \`ImageUrl\` AS imageUrl,
           \`FileUrl\` AS fileUrl,
-          \`SeenTime\` AS seenTime 
+          \`SeenTime\` AS seenTime,
+          \`GroupSenderName\` AS groupSenderName 
         FROM \`${this.tableName}\` 
         WHERE 1=1`;
             const params = [];
@@ -664,6 +694,10 @@ class MysqlLogsService {
                     targetMessageId: toTrimmedString(detailsMap.targetMessageId || detailsMap.target_message_id || detailsMap.messageId || detailsMap.message_id) || undefined,
                     emoji: toTrimmedString(detailsMap.emoji || detailsMap.reaction) || undefined,
                     reactor: toTrimmedString(detailsMap.reactor || detailsMap.user) || undefined,
+                    // Persisted human display name for group senders. message.controller.js
+                    // uses this when present; otherwise it falls back to legacy
+                    // body-prefix parsing for older rows that pre-date this column.
+                    groupSenderName: toTrimmedString(row.groupSenderName) || undefined,
                     userReceivedTime: parseFlexibleTimestamp(row.userReceivedTime) || undefined
                 });
                 matchedCount = nextMatchedCount;

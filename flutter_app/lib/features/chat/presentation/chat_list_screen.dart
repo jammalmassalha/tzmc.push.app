@@ -20,6 +20,28 @@ class ChatListScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final chatItems = ref.watch(chatListItemsProvider);
+    final isLoading = ref.watch(chatStoreProvider.select((s) => s.isLoading));
+
+    // While the store is initializing (fetching contacts + recovering messages),
+    // show a spinner rather than the "no chats yet" empty state so the user
+    // knows data is being loaded.
+    if (chatItems.isEmpty && isLoading) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const CircularProgressIndicator(),
+            const SizedBox(height: 16),
+            Text(
+              'טוען שיחות...',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.6).round()),
+                  ),
+            ),
+          ],
+        ),
+      );
+    }
 
     // Match the Angular behavior: render the (possibly empty) list immediately
     // and let the background sync populate it. No full-screen loader on entry.

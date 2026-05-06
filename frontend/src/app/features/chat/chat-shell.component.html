@@ -103,7 +103,14 @@
       </div>
 
       @if (!filteredChats().length) {
-        <div class="empty-chat-list">אין צ׳אטים פעילים. צור צ׳אט חדש כדי להתחיל.</div>
+        @if (store.loading()) {
+          <div class="empty-chat-list loading-chats">
+            <mat-spinner diameter="32"></mat-spinner>
+            <span>טוען שיחות...</span>
+          </div>
+        } @else {
+          <div class="empty-chat-list">אין צ׳אטים פעילים. צור צ׳אט חדש כדי להתחיל.</div>
+        }
       } @else {
         @if (pinnedChats().length) {
           <div class="pinned-row">
@@ -797,8 +804,8 @@
               [class.outgoing]="message.direction === 'outgoing'"
               [attr.data-message-index]="messageAbsoluteIndex(index)">
               <div class="message-bubble" [class.deleted]="isMessageDeleted(message)" (contextmenu)="onMessageContextMenu($event, message)" (touchstart)="onTouchStart($event, message)" (touchend)="onTouchEnd()" (touchmove)="onTouchMove()">
-                @if (message.direction === 'incoming' && message.groupId) {
-                  <div class="message-sender">{{ message.senderDisplayName || message.sender }}</div>
+                @if (message.direction === 'incoming' && message.groupId && message.senderDisplayName) {
+                  <div class="message-sender">{{ message.senderDisplayName }}</div>
                 }
 
                 @if (canOpenMessageActions(message)) {

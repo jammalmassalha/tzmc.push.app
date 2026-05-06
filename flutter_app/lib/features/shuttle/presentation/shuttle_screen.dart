@@ -121,13 +121,34 @@ class ShuttleState {
     );
   }
   
-  /// Get ongoing orders
-  List<ShuttleUserOrderPayload> get ongoingOrders => 
-    userOrders.where((o) => o.isOngoing && !o.isCancelled).toList();
-  
-  /// Get past orders
-  List<ShuttleUserOrderPayload> get pastOrders => 
-    userOrders.where((o) => !o.isOngoing || o.isCancelled).toList();
+  /// Returns the best ISO date string (`yyyy-MM-dd`) for an order, accepting
+  /// `dateIso`, ISO-formatted `date`, or `dd/MM/yyyy`-style `date`.
+  static String _orderDateKey(ShuttleUserOrderPayload o) {
+    final iso = (o.dateIso ?? '').trim();
+    if (iso.isNotEmpty) return iso;
+    final raw = (o.date ?? '').trim();
+    if (raw.isEmpty) return '';
+    if (RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(raw)) return raw;
+    final m = RegExp(r'^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$').firstMatch(raw);
+    if (m != null) {
+      return '${m.group(3)}-${m.group(2)!.padLeft(2, '0')}-${m.group(1)!.padLeft(2, '0')}';
+    }
+    return raw;
+  }
+
+  /// Get ongoing orders – sorted ascending (earliest first).
+  List<ShuttleUserOrderPayload> get ongoingOrders {
+    final list = userOrders.where((o) => o.isOngoing && !o.isCancelled).toList();
+    list.sort((a, b) => _orderDateKey(a).compareTo(_orderDateKey(b)));
+    return list;
+  }
+
+  /// Get past orders – sorted descending (most recent first).
+  List<ShuttleUserOrderPayload> get pastOrders {
+    final list = userOrders.where((o) => !o.isOngoing || o.isCancelled).toList();
+    list.sort((a, b) => _orderDateKey(b).compareTo(_orderDateKey(a)));
+    return list;
+  }
     
   /// Check if we can go back from current step
   bool get canGoBack => currentStep != ShuttleBookingStep.menu;
@@ -1072,7 +1093,7 @@ class _BookingSheet extends ConsumerWidget {
           children: availableDates.map((date) {
             final name = notifier.dayName(date);
             final prefix = state.language == ShuttleLanguage.he ? 'יום ' : '';
-            final dateStr = DateFormat('dd/MM').format(date);
+            final dateStr = DateFormat('dd.MM').format(date);
             return OutlinedButton(
               onPressed: () => notifier.selectDate(date),
               style: OutlinedButton.styleFrom(
@@ -1113,7 +1134,7 @@ class _BookingSheet extends ConsumerWidget {
       final name = notifier.dayName(state.selectedDate!);
       final prefix = state.language == ShuttleLanguage.he ? 'יום ' : '';
       dateLabel =
-          '$prefix$name ${DateFormat('dd/MM/yyyy').format(state.selectedDate!)}';
+          '$prefix$name ${DateFormat('dd.MM.yyyy').format(state.selectedDate!)}';
     }
     final hasAnyEnabled = shiftOptions.any((o) => !o.disabled);
 
@@ -1310,6 +1331,28 @@ class _OrderCard extends ConsumerStatefulWidget {
 class _OrderCardState extends ConsumerState<_OrderCard> {
   bool _isCancelling = false;
 
+  /// Formats a raw date string (ISO `yyyy-MM-dd`, `dd/MM/yyyy`, or
+  /// `dd.MM.yyyy`) to `dd.MM.yyyy`. Returns the original string unchanged if
+  /// it cannot be parsed.
+  String _formatOrderDate(String? raw) {
+    if (raw == null || raw.trim().isEmpty) return '—';
+    final s = raw.trim();
+    // ISO yyyy-MM-dd
+    final iso = RegExp(r'^(\d{4})-(\d{2})-(\d{2})$').firstMatch(s);
+    if (iso != null) {
+      return '${iso.group(3)}.${iso.group(2)}.${iso.group(1)}';
+    }
+    // dd/MM/yyyy or dd.MM.yyyy or dd-MM-yyyy
+    final dmy = RegExp(r'^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$').firstMatch(s);
+    if (dmy != null) {
+      final d = dmy.group(1)!.padLeft(2, '0');
+      final m = dmy.group(2)!.padLeft(2, '0');
+      final y = dmy.group(3)!;
+      return '$d.$m.$y';
+    }
+    return s;
+  }
+
   @override
   Widget build(BuildContext context) {
     final order = widget.order;
@@ -1400,7 +1443,7 @@ class _OrderCardState extends ConsumerState<_OrderCard> {
             _OrderDetailRow(
               icon: Icons.calendar_today,
               label: 'תאריך',
-              value: order.date ?? '—',
+              value: _formatOrderDate(order.dateIso ?? order.date),
             ),
             const SizedBox(height: 4),
             _OrderDetailRow(

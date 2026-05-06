@@ -3,7 +3,50 @@ library;
 
 import 'package:equatable/equatable.dart';
 
-/// Helpdesk departments
+/// A single helpdesk department as returned by the API.
+class HelpdeskDepartmentEntry extends Equatable {
+  final int id;
+  final String name;
+  final String? icon;
+  final String status;
+  final int sortOrder;
+
+  const HelpdeskDepartmentEntry({
+    required this.id,
+    required this.name,
+    this.icon,
+    this.status = 'active',
+    this.sortOrder = 0,
+  });
+
+  bool get isActive => status == 'active';
+
+  @override
+  List<Object?> get props => [id, name, icon, status, sortOrder];
+
+  factory HelpdeskDepartmentEntry.fromJson(Map<String, dynamic> json) {
+    return HelpdeskDepartmentEntry(
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      name: json['name'] as String? ?? '',
+      icon: json['icon'] as String?,
+      status: json['status'] as String? ?? 'active',
+      sortOrder: (json['sortOrder'] ?? json['sort_order'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'icon': icon,
+    'status': status,
+    'sortOrder': sortOrder,
+  };
+}
+
+/// Helpdesk departments — kept as a simple alias so callers that just need a
+/// list of names can use [HelpdeskDepartmentEntry] directly.
+// ignore: deprecated_member_use_from_same_package
+@Deprecated('Use HelpdeskDepartmentEntry instead')
 enum HelpdeskDepartment {
   it('מערכות מידע'),
   maintenance('אחזקה');
@@ -86,7 +129,8 @@ class HelpdeskTicketPayload extends Equatable {
   final String subject;
   final String description;
   final String priority;
-  final HelpdeskDepartment? department;
+  /// Department name as a plain string (Hebrew), e.g. 'מערכות מידע'.
+  final String department;
   final String? title;
   final String? location;
   final String? phone;
@@ -96,7 +140,7 @@ class HelpdeskTicketPayload extends Equatable {
     this.subject = '',
     this.description = '',
     this.priority = 'normal',
-    this.department,
+    this.department = '',
     this.title,
     this.location,
     this.phone,
@@ -111,8 +155,7 @@ class HelpdeskTicketPayload extends Equatable {
       'title': title ?? subject,
       'subject': subject,
       'description': description,
-      // Backend expects 'department' with Hebrew values (מערכות מידע, אחזקה)
-      'department': department?.label ?? HelpdeskDepartment.it.label,
+      'department': department,
       'priority': priority,
     };
     if (location != null && location!.isNotEmpty) json['location'] = location;

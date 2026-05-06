@@ -411,7 +411,7 @@ export class NotificationService {
       this.deps.logNotificationStatus(
         finalSender, targetUsersArray.join(','), logContent,
         'Failed', 'No subscriptions found', recipientAuthJsonForLog,
-        messageId, '', '', { dedup: shouldDedupLog }
+        messageId, '', '', { dedup: shouldDedupLog, groupSenderName: String((customData.groupSenderName as string) || '').trim() }
       );
       return { success: 0, failed: 0 };
     }
@@ -590,7 +590,7 @@ export class NotificationService {
         finalSender, targetUsersArray.join(','), logContent,
         finalStatus, fullReport, recipientAuthJsonForLog,
         messageId, imageUrl || '', fileUrl || '',
-        { dedup: shouldDedupLog }
+        { dedup: shouldDedupLog, groupSenderName: String((customData.groupSenderName as string) || '').trim() }
       );
     }
 

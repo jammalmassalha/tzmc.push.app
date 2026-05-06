@@ -6,6 +6,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -745,6 +746,10 @@ class PushNotificationService {
   /// Set current chat in the store and push the [MessageScreen] route via the
   /// global [rootNavigatorKey]. This works from background-tap callbacks
   /// where there is no [BuildContext] in scope.
+  ///
+  /// If the navigator is not yet available (e.g. the app is still building its
+  /// widget tree on a cold start), the navigation is deferred via
+  /// [addPostFrameCallback] so it is attempted after the first rendered frame.
   void _openChatScreen(String chatId) {
     final unreadCount = _ref.read(chatStoreProvider).unreadByChat[chatId] ?? 0;
     try {
@@ -755,7 +760,20 @@ class PushNotificationService {
 
     final navigator = rootNavigatorKey.currentState;
     if (navigator == null) {
-      debugPrint('[PushNotificationService] Navigator not ready, skipping deep link');
+      debugPrint('[PushNotificationService] Navigator not ready, deferring deep link');
+      // The widget tree is still being built (cold-start). Schedule the push
+      // for the very next frame, by which time the MaterialApp navigator will
+      // be mounted and available.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final nav = rootNavigatorKey.currentState;
+        if (nav == null) {
+          debugPrint('[PushNotificationService] Navigator still not ready after post-frame, skipping deep link');
+          return;
+        }
+        nav.push(
+          MaterialPageRoute(builder: (_) => MessageScreen(chatId: chatId, initialUnreadCount: unreadCount)),
+        );
+      });
       return;
     }
     navigator.push(
@@ -776,39 +794,10 @@ class PushNotificationService {
     );
   }
 
-  /// Reset the app icon badge to zero.
-  ///
-  /// Calls the server's `/reset-badge` endpoint (so future push payloads
-  /// from APNs/FCM carry badge=0) and cancels all local notifications
-  /// (which on iOS also zeroes the home-screen icon badge number).
-  Future<void> resetBadge() async {
-    final username = _ref.read(currentUserProvider);
-    if (username == null || username.trim().isEmpty) return;
-
-    // Tell the server to reset the badge counter for this user.
-    try {
-      await _api.resetServerBadge(username);
-    } catch (e) {
-      debugPrint('[PushNotificationService] resetServerBadge error: $e');
-    }
-
-    // Clear all local notifications (also resets the iOS app-icon badge).
-    await clearLocalNotifications();
-  }
-
-  /// Cancel all pending and delivered local notifications without touching the
-  /// server-side badge counter.  Call this **after** chat messages have been
-  /// loaded so the notification tray is only cleared once the user can already
-  /// see the updated chat.
-  Future<void> clearLocalNotifications() async {
-    try {
-      if (!kIsWeb && _localNotifications != null) {
-        await _localNotifications!.cancelAll();
-      }
-    } catch (e) {
-      debugPrint('[PushNotificationService] clearLocalNotifications error: $e');
-    }
-  }
+  // NOTE: resetBadge() and clearLocalNotifications() were intentionally
+  // removed.  The app no longer wipes the OS notification tray or the
+  // app-icon badge — notifications stay visible on the device until the
+  // user dismisses them manually.
 
   /// Unregister device token (on logout)
   Future<void> unregisterToken() async {
@@ -883,7 +872,56 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
-  
-  // We can't access providers here, so just log for now
-  // The message will be processed when the app opens
+
+  final data = message.data;
+
+  // Skip silent / action-only payloads — only real chat messages should
+  // contribute to the pending unread tray.
+  final type = (data['type'] ?? '').toString().trim().toLowerCase();
+  // These payload types carry server-side actions (edits, deletes, reactions,
+  // read receipts) rather than new user messages, so they must not increment
+  // the unread tray counter.
+  const _actionOnlyTypes = {
+    'read-receipt', 'read',
+    'delete-action', 'delete',
+    'edit-action', 'edit',
+    'group-update', 'typing', 'reaction',
+  };
+  final skipNotification = data['skipNotification'] == true ||
+      data['skipNotification'] == 'true';
+  if (skipNotification || _actionOnlyTypes.contains(type)) return;
+
+  // Resolve the chatId using the same priority as PushNotificationService
+  // does when routing a foreground message: groupId first, then sender.
+  final groupId = (data['groupId'] ?? '').toString().trim();
+  final sender =
+      (data['sender'] ?? data['fromUser'] ?? '').toString().trim().toLowerCase();
+  final chatId = groupId.isNotEmpty ? groupId : sender;
+  if (chatId.isEmpty) return;
+
+  // Persist the pending unread count to SharedPreferences so that
+  // ChatStoreNotifier.initialize() can display accurate badges immediately
+  // on the next foreground launch — before the network recovery pull has
+  // had a chance to complete.
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final existing = prefs.getString(kPendingChatUpdatesKey) ?? '{}';
+    final Map<String, dynamic> pending =
+        jsonDecode(existing) as Map<String, dynamic>;
+
+    final prev = pending[chatId] as Map<String, dynamic>?;
+    final ts = int.tryParse(data['timestamp']?.toString() ?? '') ??
+        DateTime.now().millisecondsSinceEpoch;
+
+    pending[chatId] = {
+      'unreadCount': ((prev?['unreadCount'] as int?) ?? 0) + 1,
+      // Keep the earliest timestamp so delta-fetch can use it as a lower bound.
+      'pendingSince': prev?['pendingSince'] ?? ts,
+    };
+
+    await prefs.setString(kPendingChatUpdatesKey, jsonEncode(pending));
+    debugPrint('[BGHandler] Saved pending tray: chatId=$chatId');
+  } catch (e) {
+    debugPrint('[BGHandler] Failed to save pending tray: $e');
+  }
 }

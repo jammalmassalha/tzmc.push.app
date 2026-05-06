@@ -37,6 +37,7 @@ class HelpdeskState {
   final HelpdeskMyRole? myRole;
   final List<HelpdeskTicket> editorTickets;
   final List<HelpdeskManagedUser> handlers;
+  final List<HelpdeskDepartmentEntry> departments;
   final bool isLoading;
   final String? error;
 
@@ -47,6 +48,7 @@ class HelpdeskState {
     this.myRole,
     this.editorTickets = const [],
     this.handlers = const [],
+    this.departments = const [],
     this.isLoading = false,
     this.error,
   });
@@ -62,6 +64,7 @@ class HelpdeskState {
     bool clearMyRole = false,
     List<HelpdeskTicket>? editorTickets,
     List<HelpdeskManagedUser>? handlers,
+    List<HelpdeskDepartmentEntry>? departments,
     bool? isLoading,
     String? error,
   }) {
@@ -72,6 +75,7 @@ class HelpdeskState {
       myRole: clearMyRole ? null : (myRole ?? this.myRole),
       editorTickets: editorTickets ?? this.editorTickets,
       handlers: handlers ?? this.handlers,
+      departments: departments ?? this.departments,
       isLoading: isLoading ?? this.isLoading,
       error: error,
     );
@@ -158,7 +162,12 @@ class HelpdeskNotifier extends Notifier<HelpdeskState> {
   Future<void> _doLoad() async {
     state = state.copyWith(isLoading: true, error: null);
     try {
-      final dashboard = await _api.getHelpdeskDashboard(_currentUser!);
+      final results = await Future.wait([
+        _api.getHelpdeskDashboard(_currentUser!),
+        _api.getActiveHelpdeskDepartments(_currentUser!).catchError((_) => <HelpdeskDepartmentEntry>[]),
+      ]);
+      final dashboard = results[0] as HelpdeskDashboard;
+      final departments = results[1] as List<HelpdeskDepartmentEntry>;
       _lastLoadAt = DateTime.now();
       state = HelpdeskState(
         ongoing: dashboard.ongoing,
@@ -167,6 +176,7 @@ class HelpdeskNotifier extends Notifier<HelpdeskState> {
         myRole: dashboard.myRole,
         editorTickets: dashboard.editorTickets ?? const [],
         handlers: dashboard.handlers ?? const [],
+        departments: departments,
         isLoading: false,
       );
     } catch (e) {
@@ -180,7 +190,7 @@ class HelpdeskNotifier extends Notifier<HelpdeskState> {
   Future<HelpdeskTicket> createTicket({
     required String subject,
     required String description,
-    required HelpdeskDepartment department,
+    required String department,
     required String priority,
     String? location,
     String? phone,
@@ -445,6 +455,15 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
   }
 
   void _showDepartmentSelectionDialog(BuildContext ctx) {
+    final departments = ref.read(helpdeskProvider).departments;
+    // Fallback if departments haven't loaded yet
+    final depts = departments.isEmpty
+        ? const [
+            HelpdeskDepartmentEntry(id: 0, name: 'מערכות מידע', icon: '🖥️'),
+            HelpdeskDepartmentEntry(id: 0, name: 'אחזקה', icon: '🔧'),
+          ]
+        : departments;
+
     showModalBottomSheet(
       context: ctx,
       isScrollControlled: true,
@@ -475,28 +494,21 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                         ),
                     textAlign: TextAlign.center),
                 const SizedBox(height: 24),
-                OutlinedButton.icon(
-                  onPressed: () {
-                    Navigator.of(ctx).pop();
-                    _showTicketFormDialog(ctx, HelpdeskDepartment.it);
-                  },
-                  icon: const Icon(Icons.computer),
-                  label: const Text('מערכות מידע'),
-                  style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16)),
-                ),
-                const SizedBox(height: 12),
-                OutlinedButton.icon(
-                  onPressed: () {
-                    Navigator.of(ctx).pop();
-                    _showTicketFormDialog(ctx, HelpdeskDepartment.maintenance);
-                  },
-                  icon: const Icon(Icons.build),
-                  label: const Text('אחזקה'),
-                  style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16)),
-                ),
-                const SizedBox(height: 16),
+                ...depts.map((dept) => Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      Navigator.of(ctx).pop();
+                      _showTicketFormDialog(ctx, dept.name);
+                    },
+                    icon: dept.icon != null && dept.icon!.isNotEmpty
+                        ? Text(dept.icon!, style: const TextStyle(fontSize: 20))
+                        : const Icon(Icons.apartment),
+                    label: Text(dept.name),
+                    style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16)),
+                  ),
+                )),
                 TextButton.icon(
                   onPressed: () => Navigator.of(ctx).pop(),
                   icon: const Icon(Icons.arrow_back),
@@ -510,7 +522,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
     );
   }
 
-  void _showTicketFormDialog(BuildContext ctx, HelpdeskDepartment dept) {
+  void _showTicketFormDialog(BuildContext ctx, String dept) {
     final subjectCtrl = TextEditingController();
     final descCtrl = TextEditingController();
     final locationCtrl = TextEditingController();
@@ -632,7 +644,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
           return Directionality(
           textDirection: ui.TextDirection.rtl,
           child: AlertDialog(
-            title: Text('קריאה חדשה - ${dept.label}'),
+            title: Text('קריאה חדשה - $dept'),
             content: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -1021,6 +1033,16 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
                   style: theme.textTheme.titleSmall
                       ?.copyWith(fontWeight: FontWeight.bold)),
             ),
+            if (role.role == HelpdeskRole.admin && currentUser == '0546799693')
+              IconButton(
+                icon: const Icon(Icons.settings),
+                tooltip: 'הגדרות מחלקות',
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => _DepartmentSettingsScreen(currentUser: currentUser),
+                  ),
+                ),
+              ),
           ]),
         ),
         TabBar(
@@ -1577,7 +1599,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                         style: theme.textTheme.bodySmall?.copyWith(
                             color: theme.colorScheme.onSurface.withAlpha(128)))
                   else
-                    ..._history!.map((h) => _HistoryEntry(
+                    ..._history!.reversed.map((h) => _HistoryEntry(
                           entry: h,
                           displayName: _resolveDisplay(h.changedBy),
                         )),
@@ -1601,7 +1623,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                         style: theme.textTheme.bodySmall?.copyWith(
                             color: theme.colorScheme.onSurface.withAlpha(128)))
                   else
-                    ..._handlerHistory!.map((h) => _HandlerHistoryEntry(
+                    ..._handlerHistory!.reversed.map((h) => _HandlerHistoryEntry(
                           entry: h,
                           resolveDisplay: _resolveDisplay,
                         )),
@@ -2142,6 +2164,301 @@ class _AttachmentRow extends StatelessWidget {
                   ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Department Settings Screen (Admin only — user 0546799693)
+// ---------------------------------------------------------------------------
+
+class _DepartmentSettingsScreen extends ConsumerStatefulWidget {
+  final String currentUser;
+  const _DepartmentSettingsScreen({required this.currentUser});
+
+  @override
+  ConsumerState<_DepartmentSettingsScreen> createState() =>
+      _DepartmentSettingsScreenState();
+}
+
+class _DepartmentSettingsScreenState
+    extends ConsumerState<_DepartmentSettingsScreen> {
+  List<HelpdeskDepartmentEntry> _departments = [];
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchDepartments();
+  }
+
+  Future<void> _fetchDepartments() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final api = ref.read(chatApiServiceProvider);
+      final depts = await api.getAllHelpdeskDepartments(widget.currentUser);
+      setState(() {
+        _departments = depts;
+        _loading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _error = e.toString();
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _showAddEditDialog({HelpdeskDepartmentEntry? existing}) async {
+    final nameCtrl = TextEditingController(text: existing?.name ?? '');
+    final iconCtrl = TextEditingController(text: existing?.icon ?? '');
+    final sortCtrl = TextEditingController(
+        text: existing != null ? existing.sortOrder.toString() : '0');
+    String status = existing?.status ?? 'active';
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSt) => Directionality(
+          textDirection: ui.TextDirection.rtl,
+          child: AlertDialog(
+            title: Text(existing == null ? 'הוסף מחלקה' : 'ערוך מחלקה'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: nameCtrl,
+                    textDirection: ui.TextDirection.rtl,
+                    decoration: const InputDecoration(
+                        labelText: 'שם מחלקה *',
+                        border: OutlineInputBorder()),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: iconCtrl,
+                    decoration: const InputDecoration(
+                        labelText: 'אייקון (אמוג\'י)',
+                        border: OutlineInputBorder(),
+                        hintText: '🖥️'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: sortCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                        labelText: 'סדר מיון',
+                        border: OutlineInputBorder()),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    value: status,
+                    decoration: const InputDecoration(
+                        labelText: 'סטטוס', border: OutlineInputBorder()),
+                    items: const [
+                      DropdownMenuItem(value: 'active', child: Text('פעיל')),
+                      DropdownMenuItem(
+                          value: 'inactive', child: Text('לא פעיל')),
+                    ],
+                    onChanged: (v) => setSt(() => status = v ?? 'active'),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(false),
+                  child: const Text('ביטול')),
+              ElevatedButton(
+                  onPressed: () => Navigator.of(ctx).pop(true),
+                  child: const Text('שמור')),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    if (confirmed != true) return;
+    if (nameCtrl.text.trim().isEmpty) {
+      showTopToast(context, 'יש להזין שם מחלקה');
+      return;
+    }
+
+    final api = ref.read(chatApiServiceProvider);
+    try {
+      if (existing == null) {
+        await api.addHelpdeskDepartment(
+          widget.currentUser,
+          name: nameCtrl.text.trim(),
+          icon: iconCtrl.text.trim().isEmpty ? null : iconCtrl.text.trim(),
+          status: status,
+          sortOrder: int.tryParse(sortCtrl.text.trim()) ?? 0,
+        );
+        if (mounted) showTopToast(context, 'המחלקה נוספה בהצלחה');
+      } else {
+        await api.updateHelpdeskDepartment(
+          widget.currentUser,
+          existing.id,
+          name: nameCtrl.text.trim(),
+          icon: iconCtrl.text.trim().isEmpty ? '' : iconCtrl.text.trim(),
+          status: status,
+          sortOrder: int.tryParse(sortCtrl.text.trim()) ?? existing.sortOrder,
+        );
+        if (mounted) showTopToast(context, 'המחלקה עודכנה בהצלחה');
+      }
+      await _fetchDepartments();
+      // Refresh main helpdesk so department picker updates
+      ref.read(helpdeskProvider.notifier).loadTickets(force: true);
+    } catch (e) {
+      if (mounted) {
+        showTopToast(context, 'שגיאה: ${e.toString()}',
+            backgroundColor: Theme.of(context).colorScheme.error);
+      }
+    }
+  }
+
+  Future<void> _deleteDepartment(HelpdeskDepartmentEntry dept) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => Directionality(
+        textDirection: ui.TextDirection.rtl,
+        child: AlertDialog(
+          title: const Text('מחיקת מחלקה'),
+          content: Text(
+              'למחוק את המחלקה "${dept.name}"?\n\nלא ניתן למחוק מחלקה שיש לה קריאות פתוחות.'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('ביטול')),
+            ElevatedButton(
+              style:
+                  ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('מחק',
+                  style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    final api = ref.read(chatApiServiceProvider);
+    try {
+      await api.deleteHelpdeskDepartment(widget.currentUser, dept.id);
+      if (mounted) showTopToast(context, 'המחלקה נמחקה');
+      await _fetchDepartments();
+      ref.read(helpdeskProvider.notifier).loadTickets(force: true);
+    } catch (e) {
+      if (mounted) {
+        showTopToast(context, 'שגיאה: ${e.toString()}',
+            backgroundColor: Theme.of(context).colorScheme.error);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Directionality(
+      textDirection: ui.TextDirection.rtl,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('הגדרות מחלקות'),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              onPressed: _fetchDepartments,
+            ),
+          ],
+        ),
+        floatingActionButton: FloatingActionButton(
+          onPressed: () => _showAddEditDialog(),
+          child: const Icon(Icons.add),
+        ),
+        body: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : _error != null
+                ? Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(_error!,
+                            style:
+                                TextStyle(color: theme.colorScheme.error)),
+                        const SizedBox(height: 12),
+                        ElevatedButton(
+                            onPressed: _fetchDepartments,
+                            child: const Text('נסה שוב')),
+                      ],
+                    ),
+                  )
+                : _departments.isEmpty
+                    ? const Center(child: Text('אין מחלקות'))
+                    : ListView.separated(
+                        padding: const EdgeInsets.all(12),
+                        itemCount: _departments.length,
+                        separatorBuilder: (_, __) =>
+                            const Divider(height: 1),
+                        itemBuilder: (context, i) {
+                          final dept = _departments[i];
+                          return ListTile(
+                            leading: dept.icon != null &&
+                                    dept.icon!.isNotEmpty
+                                ? Text(dept.icon!,
+                                    style:
+                                        const TextStyle(fontSize: 24))
+                                : const Icon(Icons.apartment),
+                            title: Text(dept.name,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold)),
+                            subtitle: Text('סדר: ${dept.sortOrder}'),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: dept.isActive
+                                        ? Colors.green.shade100
+                                        : Colors.grey.shade200,
+                                    borderRadius:
+                                        BorderRadius.circular(12),
+                                  ),
+                                  child: Text(
+                                    dept.isActive ? 'פעיל' : 'לא פעיל',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: dept.isActive
+                                          ? Colors.green.shade800
+                                          : Colors.grey.shade700,
+                                    ),
+                                  ),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.edit,
+                                      size: 20),
+                                  onPressed: () =>
+                                      _showAddEditDialog(existing: dept),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline,
+                                      size: 20, color: Colors.red),
+                                  onPressed: () =>
+                                      _deleteDepartment(dept),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
       ),
     );
   }

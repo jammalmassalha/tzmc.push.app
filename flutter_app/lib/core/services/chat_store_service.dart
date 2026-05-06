@@ -9,6 +9,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/chat_api_service.dart';
 import '../database/chat_database.dart' hide Contact;
@@ -37,6 +38,21 @@ const int _kFullSyncPageSize = 500;
 /// Maximum messages fetched during a full sync — mirrors Angular's
 /// `LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT = 200000`.
 const int _kFullSyncMaxMessages = 200000;
+
+/// Maximum number of characters before the colon that are considered a
+/// group-sender prefix in the "SenderName: body" pattern stored by the server.
+/// Mirrors the 80-character cap in Angular's `normalizeLogsMessagesForImport`.
+const int _kGroupSenderPrefixMaxLength = 80;
+
+/// SharedPreferences key for the "pending chat updates" tray.
+///
+/// Written by [firebaseMessagingBackgroundHandler] (in
+/// push_notification_service.dart) each time a notification arrives while
+/// the app is not in the foreground. Read and cleared by
+/// [ChatStoreNotifier.initialize] on the next app launch so that unread
+/// badges are immediately available — even before the network recovery
+/// pull completes — and so any messages missed by the pull are still counted.
+const String kPendingChatUpdatesKey = 'tzmc_pending_chat_updates_v1';
 
 // ---------------------------------------------------------------------------
 // Chat State
@@ -234,10 +250,26 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   /// Initialize chat store - restore from database and pull fresh data
   Future<void> initialize(String currentUser) async {
-    // Always remember the current user, even if we've already initialized,
-    // so own-message echoes can be tagged as outgoing (avoids the
-    // "see my message twice" bug).
-    _currentUser = currentUser.trim().toLowerCase();
+    final normalized = currentUser.trim().toLowerCase();
+
+    // -----------------------------------------------------------------------
+    // USER-CHANGE GUARD
+    // If a different user is logging in while the store still holds data from
+    // a previous session, wipe everything (in-memory state + persisted DB)
+    // before proceeding.  Without this guard the new user would see the old
+    // user's contacts and messages until the first server pull completes.
+    // -----------------------------------------------------------------------
+    if (_currentUser != null && _currentUser!.toLowerCase() != normalized) {
+      // Null out _currentUser before clearAll() so any callbacks that fire
+      // during the DB wipe don't accidentally act on the stale username.
+      _currentUser = null;
+      await clearAll(); // resets state (isInitialized → false) and wipes DB
+      _lastGapAnalysisTime = 0;
+    }
+
+    // Always keep _currentUser up-to-date so own-message echoes are tagged
+    // as outgoing (avoids the "see my message twice" bug).
+    _currentUser = normalized;
 
     if (state.isInitialized) return;
 
@@ -252,13 +284,19 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // of initialise() – most importantly the server-side gap-analysis pull –
       // still runs, so the user sees their chat history without having to
       // manually press "sync".
+      //
+      // NOTE: unreadByChat is intentionally NOT restored from the persisted
+      // snapshot — stale counts from a previous session would mislead the user
+      // if they've since read those messages on another device.  The correct
+      // unread counts are accumulated fresh by recoverMissedMessages() below
+      // and supplemented by the background-notification tray (step 4).
       try {
         final persisted = await _db.getPersistedState();
         state = state.copyWith(
           contacts: Map.fromEntries(persisted.contacts.map((c) => MapEntry(c.username, c))),
           groups: Map.fromEntries(persisted.groups.map((g) => MapEntry(g.id, g))),
           messagesByChat: _groupMessagesByChat(persisted.messages),
-          unreadByChat: persisted.unreadByChat,
+          unreadByChat: const {},
         );
       } catch (dbError) {
         debugPrint('[ChatStore] DB restore failed, trying web storage fallback: $dbError');
@@ -272,7 +310,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
                 contacts: Map.fromEntries(webPersisted.contacts.map((c) => MapEntry(c.username, c))),
                 groups: Map.fromEntries(webPersisted.groups.map((g) => MapEntry(g.id, g))),
                 messagesByChat: _groupMessagesByChat(webPersisted.messages),
-                unreadByChat: webPersisted.unreadByChat,
+                unreadByChat: const {},
               );
               debugPrint('[ChatStore] Restored state from web storage (${webPersisted.messages.length} messages)');
             }
@@ -296,21 +334,48 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // this point, which advances _lastGapAnalysisTime.  Without force the
       // cooldown would silently skip the initial pull and leave the chat list
       // empty until the next poll tick (≥15 s).
+      //
+      // This accurately re-counts unread messages by calling
+      // _handleIncomingTextMessage for every new incoming message, starting
+      // from the empty unreadByChat set above.
       await recoverMissedMessages(force: true);
 
-      // Clear unread counts on app initialization so the user doesn't see
-      // stale badges from a previous session or from messages received while
-      // offline.  The guard `if (state.isInitialized) return` at the top of
-      // `initialize()` ensures this block only runs once per app lifecycle.
-      // The unread counter starts accumulating again from realtime events
-      // after this point.
+      // 4. Merge the background-notification pending tray (safety net).
+      //
+      // When notifications arrive while the app is terminated, the
+      // firebaseMessagingBackgroundHandler saves each chat's pending unread
+      // count to SharedPreferences.  Read that tray now and use it to fill
+      // in any chats that the recovery pull may have missed (e.g. server
+      // lag, network error, message not yet persisted when the logs endpoint
+      // was queried).  We take the MAX so we never downgrade a count that
+      // the pull already computed correctly.
+      final tray = await _readAndClearPendingTray();
+      if (tray.isNotEmpty) {
+        final merged = Map<String, int>.from(state.unreadByChat);
+        for (final entry in tray.entries) {
+          final existing = merged[entry.key] ?? 0;
+          if (entry.value > existing) {
+            merged[entry.key] = entry.value;
+          }
+        }
+        state = state.copyWith(unreadByChat: merged);
+      }
+
+      // 5. Persist the fully-initialized state immediately so that if the user
+      // closes the app right after the first open (before the 2-second deferred
+      // timer fires), the recovered messages are already in the DB and the chat
+      // list is populated on the very next cold start without needing another
+      // server round-trip.
+      await persistNow();
+
+      // Mark initialization complete, keeping the freshly-accumulated unread
+      // counts (from recoverMissedMessages + tray) intact.
       state = state.copyWith(
         isLoading: false,
         isInitialized: true,
-        unreadByChat: const {},
       );
 
-      // 4. Schedule periodic persistence
+      // 6. Schedule periodic persistence for subsequent state changes
       _schedulePersistence();
     } catch (e) {
       state = state.copyWith(isLoading: false);
@@ -870,14 +935,26 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   ///
   /// Pages through the `/messages/logs` endpoint in batches of
   /// [_kFullSyncPageSize] (500) until there are no more results or
-  /// [_kFullSyncMaxMessages] (200 000) have been fetched — matching the
-  /// Angular behaviour exactly.
+  /// [_kFullSyncMaxMessages] (200 000) have been fetched.
+  ///
+  /// All pages are collected first, then:
+  ///   1. System/sentinel messages are filtered out.
+  ///   2. Group messages are normalised (sender-prefix stripped from body).
+  ///   3. Missing groups are synthesised from the message metadata.
+  ///   4. Action messages (delete, edit, reaction, …) are applied one-by-one
+  ///      through the normal handler.
+  ///   5. Regular text messages are applied in a single batch without
+  ///      incrementing unread counters.
+  ///
+  /// This avoids O(n) state rebuilds for large histories (up to 200 000 msgs).
   Future<void> _pullAllMessagesFromLogs({
     required String user,
     int since = 0,
   }) async {
+    // ── 1. Fetch all pages ──────────────────────────────────────────────────
     int offset = 0;
     int totalFetched = 0;
+    final allRaw = <IncomingServerMessage>[];
 
     while (totalFetched < _kFullSyncMaxMessages) {
       final remaining = _kFullSyncMaxMessages - totalFetched;
@@ -893,21 +970,302 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           since: since,
         );
       } catch (_) {
-        break; // Network error — stop paging; already have what we got.
+        break; // Network error — stop paging; keep what we already have.
       }
 
       if (page.isEmpty) break;
 
-      for (final message in page) {
-        _handleServerMessage(message);
-      }
-
+      allRaw.addAll(page);
       offset += page.length;
       totalFetched += page.length;
 
-      // Server returned fewer items than requested — we've reached the end.
+      // Server returned fewer items than the page size → end of results.
       if (page.length < limit) break;
     }
+
+    if (allRaw.isEmpty) return;
+
+    // ── 2. Filter system/sentinel messages ──────────────────────────────────
+    // Mirrors Angular's `shouldSkipLogsMessage`:
+    //   • keep action types (delete-action, edit-action, reaction, read-receipt,
+    //     group-update) so deletions and edits are reflected in the history.
+    //   • drop messages with no sender or sender == "system".
+    //   • drop sentinel bodies "new notification" / "new reaction".
+    const actionTypes = {
+      'read',
+      'read-receipt',
+      'delete',
+      'delete-action',
+      'edit',
+      'edit-action',
+      'reaction',
+      'group-update',
+    };
+    final filtered = allRaw.where((msg) {
+      final type = (msg.type ?? '').trim().toLowerCase();
+      if (actionTypes.contains(type)) return true; // always keep actions
+      final sender = (msg.sender ?? '').trim().toLowerCase();
+      if (sender.isEmpty || sender == 'system') return false;
+      final body = (msg.body ?? '').trim().toLowerCase();
+      if (body == 'new notification' || body == 'new reaction') return false;
+      return true;
+    }).toList();
+
+    if (filtered.isEmpty) return;
+
+    // ── 3. Normalise group messages ─────────────────────────────────────────
+    // Mirrors Angular's `normalizeLogsMessagesForImport`:
+    //   • resolve groupId when sender holds a known group ID.
+    //   • strip the "SenderName: body" prefix that the server writes to the
+    //     body column for group messages, and promote the prefix to
+    //     groupSenderName.
+    final normalized = filtered.map(_normalizeLogMessageForImport).toList();
+
+    // ── 4. Synthesise missing groups ────────────────────────────────────────
+    // Mirrors Angular's `ensureGroupsFromImportedLogs`.
+    _ensureGroupsFromImportedLogs(normalized);
+
+    // ── 5. Apply messages ───────────────────────────────────────────────────
+    // Action messages are dispatched through the regular handler (small count).
+    // Text messages are applied in a single batch state update — no unread
+    // increment (mirrors Angular's `applyIncomingMessagesBatch` with
+    // `incrementUnread: false`).
+    final textMessages = <ChatMessage>[];
+
+    for (final msg in normalized) {
+      final type = (msg.type ?? '').trim().toLowerCase();
+      if (actionTypes.contains(type)) {
+        _handleServerMessage(msg); // delete / edit / reaction / group-update
+      } else {
+        final chatMsg = _buildChatMessageFromServer(msg);
+        if (chatMsg != null) textMessages.add(chatMsg);
+      }
+    }
+
+    _applyMessagesBatch(textMessages);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Full-sync helpers (mirrors Angular normalizeLogsMessagesForImport,
+  //   ensureGroupsFromImportedLogs, applyRegularIncomingMessagesBulk)
+  // ---------------------------------------------------------------------------
+
+  /// Normalise a single logs message for batch import.
+  ///
+  /// • Resolves [IncomingServerMessage.groupId] from the sender field when
+  ///   the sender ID matches a known group (mirrors Angular's group:// check).
+  /// • Strips the "SenderName: body" prefix embedded in group message bodies
+  ///   by the server and promotes it to [IncomingServerMessage.groupSenderName].
+  /// • Preserves the resolved group name from local state when the server
+  ///   record only stores the group ID as its name.
+  IncomingServerMessage _normalizeLogMessageForImport(IncomingServerMessage msg) {
+    final rawGroupId = (msg.groupId ?? '').trim();
+    final rawSender  = (msg.sender  ?? '').trim();
+
+    // Resolve groupId from sender when sender looks like a group.
+    String resolvedGroupId = rawGroupId.toLowerCase();
+    if (resolvedGroupId.isEmpty && rawSender.isNotEmpty) {
+      final senderNorm = rawSender.toLowerCase();
+      if (senderNorm.startsWith('group:') ||
+          state.groups.containsKey(senderNorm)) {
+        resolvedGroupId = senderNorm;
+      }
+    }
+
+    if (resolvedGroupId.isEmpty) {
+      // Not a group message — still strip an explicit sender-prefix if present.
+      final gsn = (msg.groupSenderName ?? '').trim();
+      if (gsn.isNotEmpty && msg.body != null) {
+        final strippedBody = _stripGroupSenderPrefixFromBody(msg.body!, gsn);
+        if (strippedBody != msg.body) {
+          return _copyMsgWith(msg, body: strippedBody);
+        }
+      }
+      return msg;
+    }
+
+    final existingGroup  = state.groups[resolvedGroupId];
+    final rawGroupName   = (msg.groupName ?? '').trim();
+    final rawBody        = (msg.body      ?? '').trim();
+
+    // Determine the best group name.
+    final String resolvedGroupName;
+    if (rawGroupName.isNotEmpty &&
+        rawGroupName.toLowerCase() != resolvedGroupId) {
+      // The record carries a real human-readable name.
+      resolvedGroupName = rawGroupName;
+    } else if (existingGroup != null && existingGroup.name.isNotEmpty) {
+      // Fall back to the locally-cached name.
+      resolvedGroupName = existingGroup.name;
+    } else {
+      // Last resort: use the raw group-name field if present, else the ID.
+      resolvedGroupName = rawGroupName.isNotEmpty ? rawGroupName : resolvedGroupId;
+    }
+
+    // Extract "SenderName: message" prefix from body when groupSenderName is absent.
+    String groupSenderName = (msg.groupSenderName ?? '').trim();
+    String body = rawBody;
+
+    if (groupSenderName.isEmpty && rawBody.isNotEmpty) {
+      final colonIdx = rawBody.indexOf(':');
+      if (colonIdx > 0 && colonIdx <= _kGroupSenderPrefixMaxLength) {
+        final potentialSender = rawBody.substring(0, colonIdx).trim();
+        final potentialBody   = rawBody.substring(colonIdx + 1).trim();
+        if (potentialSender.length <= _kGroupSenderPrefixMaxLength &&
+            !potentialSender.contains('\n') &&
+            potentialBody.isNotEmpty) {
+          groupSenderName = potentialSender;
+          body = potentialBody;
+        }
+      }
+    } else if (groupSenderName.isNotEmpty && rawBody.isNotEmpty) {
+      body = _stripGroupSenderPrefixFromBody(rawBody, groupSenderName);
+    }
+
+    return _copyMsgWith(
+      msg,
+      groupId:        resolvedGroupId,
+      groupName:      resolvedGroupName,
+      groupSenderName: groupSenderName.isNotEmpty ? groupSenderName : msg.groupSenderName,
+      body:           body.isNotEmpty ? body : rawBody,
+      groupType:      msg.groupType ?? existingGroup?.type.name,
+    );
+  }
+
+  /// Return a shallow copy of [msg] with optional field overrides.
+  IncomingServerMessage _copyMsgWith(
+    IncomingServerMessage msg, {
+    String? groupId,
+    String? groupName,
+    String? groupSenderName,
+    String? body,
+    String? groupType,
+  }) {
+    return IncomingServerMessage(
+      messageId:        msg.messageId,
+      sender:           msg.sender,
+      toUser:           msg.toUser,
+      recipient:        msg.recipient,
+      type:             msg.type,
+      chatId:           msg.chatId,
+      isTyping:         msg.isTyping,
+      editedAt:         msg.editedAt,
+      deletedAt:        msg.deletedAt,
+      messageIds:       msg.messageIds,
+      readAt:           msg.readAt,
+      targetMessageId:  msg.targetMessageId,
+      emoji:            msg.emoji,
+      reactor:          msg.reactor,
+      reactorName:      msg.reactorName,
+      body:             body          ?? msg.body,
+      timestamp:        msg.timestamp,
+      imageUrl:         msg.imageUrl,
+      fileUrl:          msg.fileUrl,
+      groupId:          groupId       ?? msg.groupId,
+      groupName:        groupName     ?? msg.groupName,
+      groupMembers:     msg.groupMembers,
+      groupCreatedBy:   msg.groupCreatedBy,
+      groupAdmins:      msg.groupAdmins,
+      groupUpdatedAt:   msg.groupUpdatedAt,
+      groupType:        groupType     ?? msg.groupType,
+      groupSenderName:  groupSenderName ?? msg.groupSenderName,
+      replyToMessageId: msg.replyToMessageId,
+      replyToSender:    msg.replyToSender,
+      replyToSenderName: msg.replyToSenderName,
+      replyToBody:      msg.replyToBody,
+      replyToImageUrl:  msg.replyToImageUrl,
+      forwarded:        msg.forwarded,
+      forwardedFrom:    msg.forwardedFrom,
+      forwardedFromName: msg.forwardedFromName,
+      userReceivedTime: msg.userReceivedTime,
+    );
+  }
+
+  /// Remove the leading "SenderName: " prefix from a group message body.
+  String _stripGroupSenderPrefixFromBody(String body, String senderName) {
+    if (senderName.isEmpty) return body;
+    final prefix = '$senderName:';
+    if (body.startsWith(prefix)) {
+      return body.substring(prefix.length).trimLeft();
+    }
+    return body;
+  }
+
+  /// Synthesise [ChatGroup] entries for any group referenced in the import
+  /// batch that is not already present in [state.groups].
+  ///
+  /// Mirrors Angular's `ensureGroupsFromImportedLogs`:
+  ///   • Only creates a group when its name is a real human-readable string
+  ///     (not just the group ID). This prevents "ghost" groups for unknown IDs.
+  ///   • Does NOT overwrite an existing group entry.
+  void _ensureGroupsFromImportedLogs(List<IncomingServerMessage> messages) {
+    final groupsById = Map<String, ChatGroup>.from(state.groups);
+    final me = _currentUser ?? '';
+    bool changed = false;
+
+    for (final msg in messages) {
+      final groupId = (msg.groupId ?? '').trim().toLowerCase();
+      if (groupId.isEmpty) continue;
+      if (groupsById.containsKey(groupId)) continue;
+
+      final groupName = (msg.groupName ?? '').trim();
+      // Skip if the name is absent or identical to the ID (ghost group guard).
+      if (groupName.isEmpty || groupName.toLowerCase() == groupId) continue;
+
+      groupsById[groupId] = ChatGroup(
+        id: groupId,
+        name: groupName,
+        members: me.isNotEmpty ? [me] : const [],
+        createdBy: me.isNotEmpty ? me : 'system',
+        updatedAt: DateTime.now().millisecondsSinceEpoch,
+        type: msg.groupType == 'community' ? GroupType.community : GroupType.group,
+      );
+      changed = true;
+    }
+
+    if (changed) {
+      state = state.copyWith(groups: groupsById);
+    }
+  }
+
+  /// Apply a list of already-built [ChatMessage]s to the store in a single
+  /// state update, without incrementing unread counters.
+  ///
+  /// Used by the full-sync batch import to avoid O(n) Riverpod state rebuilds.
+  void _applyMessagesBatch(List<ChatMessage> messages) {
+    if (messages.isEmpty) return;
+
+    final newMessagesByChat =
+        Map<String, List<ChatMessage>>.from(state.messagesByChat);
+
+    for (final message in messages) {
+      final chatId = message.chatId;
+      final chatMessages =
+          List<ChatMessage>.from(newMessagesByChat[chatId] ?? const <ChatMessage>[]);
+
+      final existingIndex =
+          chatMessages.indexWhere((m) => m.messageId == message.messageId);
+
+      if (existingIndex >= 0) {
+        chatMessages[existingIndex] =
+            _hydrateExistingMessage(chatMessages[existingIndex], message);
+      } else {
+        chatMessages.add(message);
+      }
+
+      newMessagesByChat[chatId] = chatMessages;
+    }
+
+    // Sort each chat descending by timestamp and trim to the per-chat cap.
+    for (final entry in newMessagesByChat.entries) {
+      final msgs = entry.value;
+      msgs.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+      if (msgs.length > maxMessagesPerChat) {
+        newMessagesByChat[entry.key] = msgs.sublist(0, maxMessagesPerChat);
+      }
+    }
+
+    state = state.copyWith(messagesByChat: newMessagesByChat);
   }
 
   /// Loads the groups that are persisted in the server DB and merges them into
@@ -1189,12 +1547,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       groupType: groupType,
     );
 
-    _applyIncomingMessage(message);
+    final isNew = _applyIncomingMessage(message);
 
     // Update unread count if not the currently open chat.
     // Skip for self-echo messages (sender's own devices) to avoid
     // incrementing the badge for messages the user just sent.
-    if (!skipNotification && chatId != state.currentChatId) {
+    // Also skip when the message was already known locally (isNew == false) to
+    // prevent re-incrementing a badge the user has already cleared by reading.
+    if (isNew && !skipNotification && chatId != state.currentChatId) {
       final newUnread = Map<String, int>.from(state.unreadByChat);
       newUnread[chatId] = (newUnread[chatId] ?? 0) + 1;
       state = state.copyWith(unreadByChat: newUnread);
@@ -1207,8 +1567,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     if (!skipNotification) schedulePushRecoveryPulls();
   }
 
-  /// Apply an incoming message to state
-  void _applyIncomingMessage(ChatMessage message) {
+  /// Apply an incoming message to state.
+  ///
+  /// Returns `true` when the message was genuinely new (inserted for the first
+  /// time), or `false` when it was a hydration of an already-known entry.
+  ///
+  /// Callers that increment the unread badge should only do so when this
+  /// method returns `true` — returning `false` means the message was already
+  /// present in the local state (e.g. a server-side duplicate returned by the
+  /// logs endpoint near the `since` boundary) and the user may have already
+  /// read it, so re-incrementing the badge would be incorrect.
+  bool _applyIncomingMessage(ChatMessage message) {
     final chatId = message.chatId;
     final newMessagesByChat = Map<String, List<ChatMessage>>.from(state.messagesByChat);
     final chatMessages = List<ChatMessage>.from(newMessagesByChat[chatId] ?? []);
@@ -1242,7 +1611,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       }
     }
 
-    if (existingIndex >= 0) {
+    final isNew = existingIndex < 0;
+
+    if (!isNew) {
       // Hydrate existing message (keep longer body)
       final existing = chatMessages[existingIndex];
       final hydrated = _hydrateExistingMessage(existing, message);
@@ -1262,6 +1633,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     newMessagesByChat[chatId] = chatMessages;
     state = state.copyWith(messagesByChat: newMessagesByChat);
+
+    return isNew;
   }
 
   /// Hydrate existing message with new data (pick longer body)
@@ -1773,10 +2146,18 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   void _handleIncomingTextMessage(IncomingServerMessage msg) {
     final chatMessage = _buildChatMessageFromServer(msg);
     if (chatMessage != null) {
-      _applyIncomingMessage(chatMessage);
+      final isNew = _applyIncomingMessage(chatMessage);
 
-      // Update unread count if not current chat
-      if (chatMessage.chatId != state.currentChatId && 
+      // Only increment the unread badge when:
+      //  • the message is for a chat the user is NOT currently viewing, AND
+      //  • the message is incoming (not our own echo), AND
+      //  • the message is genuinely new — not an already-known entry returned
+      //    by the logs endpoint near the `since` boundary (the server
+      //    intentionally returns 1-2 such duplicates to avoid missing rows;
+      //    _applyIncomingMessage returns false for those so we never re-count
+      //    a message the user has already read).
+      if (isNew &&
+          chatMessage.chatId != state.currentChatId &&
           chatMessage.direction == MessageDirection.incoming) {
         final newUnread = Map<String, int>.from(state.unreadByChat);
         newUnread[chatMessage.chatId] = (newUnread[chatMessage.chatId] ?? 0) + 1;
@@ -2067,8 +2448,53 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   }
 
   void _handlePollTick() {
-    // Pull messages on poll tick (fallback when socket/SSE unavailable)
+    // Only pull messages via HTTP when the real-time transport (socket/SSE) is
+    // not available. When socket or SSE is active, messages are delivered in
+    // real time; polling would just duplicate network calls.
+    if (_transport.transportMode != RealtimeTransportMode.polling) {
+      debugPrint('[ChatStore] Poll tick skipped — transport is ${_transport.transportMode.name}');
+      return;
+    }
     pullMessages();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Background Notification Tray
+  // ---------------------------------------------------------------------------
+
+  /// Read the SharedPreferences "pending chat updates" tray that was written
+  /// by [firebaseMessagingBackgroundHandler] while the app was not in the
+  /// foreground, then clear it so the same counts are never applied twice.
+  ///
+  /// Returns a map of chatId → accumulated unread count.  Returns an empty
+  /// map on web (where the FCM background handler is not used) and on any
+  /// error (failures are non-fatal; the recovery pull already handles the
+  /// common case).
+  Future<Map<String, int>> _readAndClearPendingTray() async {
+    if (kIsWeb) return {};
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final json = prefs.getString(kPendingChatUpdatesKey);
+      if (json == null || json.isEmpty) return {};
+      // Clear immediately so a crash/re-entry can't double-apply.
+      await prefs.remove(kPendingChatUpdatesKey);
+      final raw = jsonDecode(json) as Map<String, dynamic>;
+      final result = <String, int>{};
+      for (final entry in raw.entries) {
+        final val = entry.value;
+        int count = 0;
+        if (val is int) {
+          count = val;
+        } else if (val is Map) {
+          count = (val['unreadCount'] as int?) ?? 0;
+        }
+        if (count > 0) result[entry.key] = count;
+      }
+      return result;
+    } catch (e) {
+      debugPrint('[ChatStore] Failed to read pending tray: $e');
+      return {};
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -2129,8 +2555,20 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     return latest;
   }
 
-  /// Clear all local data
+  /// Clear all local data and reset to a clean state.
+  ///
+  /// Called during explicit logout and when a different user logs in on the
+  /// same device so the previous user's data is never exposed to the new user.
   Future<void> clearAll() async {
+    // Cancel any pending deferred write to prevent stale data being persisted
+    // after the wipe.
+    _persistTimer?.cancel();
+    _persistTimer = null;
+
+    // Reset per-session tracking fields.
+    _currentUser = null;
+    _lastGapAnalysisTime = 0;
+
     await _db.clearAll();
     if (kIsWeb) {
       await WebChatStorage.clear();

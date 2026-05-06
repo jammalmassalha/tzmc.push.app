@@ -356,6 +356,46 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                          final showDateHeader =
                              _shouldShowDateHeader(message, previousMessage);
 
+                         // Resolve a non-null sender label for group bubbles.
+                         // Older messages or edge-case payloads may arrive
+                         // without `senderDisplayName`; fall back to contacts
+                         // and finally to the raw sender username so the
+                         // user can always tell who sent the message in a
+                         // group (matches what the FCM notification shows).
+                         String? resolvedSenderLabel;
+                         if (chatInfo.isGroup &&
+                             message.direction !=
+                                 MessageDirection.outgoing) {
+                           final senderId = message.sender.trim();
+                           final senderIsGroupId = senderId.toLowerCase() ==
+                               widget.chatId.trim().toLowerCase();
+                           final fromName =
+                               (message.senderDisplayName ?? '').trim();
+                           // fromName may be a raw phone/username stored as
+                           // groupSenderName — try resolving it against the
+                           // local contact list so the receiver sees a real
+                           // display name instead of a phone number.
+                           final fromNameContact = fromName.isNotEmpty
+                               ? (state.contacts[fromName]?.displayName ??
+                                   state.contacts[fromName.toLowerCase()]
+                                       ?.displayName)
+                               : null;
+                           final fromContact = (state.contacts[senderId]
+                                       ?.displayName ??
+                                   '')
+                               .trim();
+                           if ((fromNameContact ?? '').isNotEmpty) {
+                             resolvedSenderLabel = fromNameContact;
+                           } else if (fromName.isNotEmpty) {
+                             resolvedSenderLabel = fromName;
+                           } else if (fromContact.isNotEmpty) {
+                             resolvedSenderLabel = fromContact;
+                           } else if (!senderIsGroupId &&
+                               senderId.isNotEmpty) {
+                             resolvedSenderLabel = senderId;
+                           }
+                         }
+
                          return Column(
                            children: [
                              if (showDateHeader)
@@ -363,6 +403,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                              _MessageBubble(
                                message: message,
                                isGroup: chatInfo.isGroup,
+                               resolvedSenderLabel: resolvedSenderLabel,
                                searchQuery:
                                    _searchActive ? _searchQuery : null,
                                onReply: () => setState(
@@ -889,6 +930,7 @@ void _showFullScreenImage(BuildContext context, String imageUrl) {
 class _MessageBubble extends StatelessWidget {
   final ChatMessage message;
   final bool isGroup;
+  final String? resolvedSenderLabel;
   final String? searchQuery;
   final VoidCallback onReply;
   final void Function(String emoji) onReact;
@@ -900,6 +942,7 @@ class _MessageBubble extends StatelessWidget {
   const _MessageBubble({
     required this.message,
     required this.isGroup,
+    this.resolvedSenderLabel,
     this.searchQuery,
     required this.onReply,
     required this.onReact,
@@ -944,12 +987,17 @@ class _MessageBubble extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Sender name (for groups)
-                    if (isGroup && !isOutgoing && message.senderDisplayName != null)
+                    // Sender name (for groups). `resolvedSenderLabel`
+                    // already incorporates the fallback through
+                    // `message.senderDisplayName` and contact lookup.
+                    if (isGroup &&
+                        !isOutgoing &&
+                        resolvedSenderLabel != null &&
+                        resolvedSenderLabel!.isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 4),
                         child: Text(
-                          message.senderDisplayName!,
+                          resolvedSenderLabel!,
                           style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.bold,

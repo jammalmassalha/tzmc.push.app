@@ -283,7 +283,7 @@ class NotificationService {
         }
         const recipientAuthJsonForLog = this.deps.buildMobileSubscriptionAuthJsonForLog(targetUsersArray.join(','), rawSubscriptions || []);
         if (!rawSubscriptions.length) {
-            this.deps.logNotificationStatus(finalSender, targetUsersArray.join(','), logContent, 'Failed', 'No subscriptions found', recipientAuthJsonForLog, messageId, '', '', { dedup: shouldDedupLog });
+            this.deps.logNotificationStatus(finalSender, targetUsersArray.join(','), logContent, 'Failed', 'No subscriptions found', recipientAuthJsonForLog, messageId, '', '', { dedup: shouldDedupLog, groupSenderName: String(customData.groupSenderName || '').trim() });
             return { success: 0, failed: 0 };
         }
         // ── Send to subscriptions helper ────────────────────────────────────
@@ -444,7 +444,7 @@ class NotificationService {
         if (shouldPersistPushLog) {
             const fullReport = executionLogs.join('\n');
             const finalStatus = successCount > 0 ? 'Sent' : 'Failed';
-            this.deps.logNotificationStatus(finalSender, targetUsersArray.join(','), logContent, finalStatus, fullReport, recipientAuthJsonForLog, messageId, imageUrl || '', fileUrl || '', { dedup: shouldDedupLog });
+            this.deps.logNotificationStatus(finalSender, targetUsersArray.join(','), logContent, finalStatus, fullReport, recipientAuthJsonForLog, messageId, imageUrl || '', fileUrl || '', { dedup: shouldDedupLog, groupSenderName: String(customData.groupSenderName || '').trim() });
         }
         return { success: successCount, failed: failCount };
     }

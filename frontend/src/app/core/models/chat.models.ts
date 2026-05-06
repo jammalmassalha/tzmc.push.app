@@ -253,9 +253,17 @@ export interface OutboxGroupUpdateItem {
 
 export type OutboxItem = OutboxDirectItem | OutboxGroupItem | OutboxGroupUpdateItem;
 
-export type HelpdeskDepartment = 'מערכות מידע' | 'אחזקה';
+export type HelpdeskDepartment = string;
 export type HelpdeskStatus = 'open' | 'in_progress' | 'resolved' | 'closed';
 export type HelpdeskRole = 'Admin' | 'Editor';
+
+export interface HelpdeskDepartmentEntry {
+  id: number;
+  name: string;
+  icon: string | null;
+  status: 'active' | 'inactive';
+  sortOrder: number;
+}
 
 export interface HelpdeskTicketPayload {
   department: HelpdeskDepartment;

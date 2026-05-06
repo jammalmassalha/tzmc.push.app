@@ -97,6 +97,8 @@ class ApiEndpoints {
   static const String helpdeskMyRole = '/helpdesk/my-role';
   static const String helpdeskHandlers = '/helpdesk/handlers';
   static const String helpdeskLocations = '/helpdesk/locations';
+  static const String helpdeskDepartments = '/helpdesk/departments';
+  static const String helpdeskDepartmentsActive = '/helpdesk/departments/active';
 }
 
 /// Network timeouts (matching Angular frontend behavior)

@@ -2212,7 +2212,8 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             '',
             messageId,
             imageUrl || '',
-            fileUrl || ''
+            fileUrl || '',
+            { groupSenderName: isGroup ? senderLabel : '' }
         );
 
         const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, { messageId });
@@ -4702,7 +4703,11 @@ function logNotificationStatus(sender, recipient, messageShort, status, details,
         details: details,
         recipientAuthJson: recipientAuthJson || '',
         imageUrl: imageUrl || '',
-        fileUrl: fileUrl || ''
+        fileUrl: fileUrl || '',
+        // For group messages the `sender` is the groupId, so the human display
+        // name shown in the FCM notification is preserved separately and
+        // returned again by /messages/logs (see mysql-logs.service.ts).
+        groupSenderName: String(options.groupSenderName || '').trim()
     };
     const insertFn = options.dedup
         ? mysqlLogsService.insertLogIfNotDuplicate(logPayload)

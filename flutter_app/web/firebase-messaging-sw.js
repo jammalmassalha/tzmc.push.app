@@ -10,6 +10,27 @@
 importScripts('https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js');
 importScripts('https://www.gstatic.com/firebasejs/10.13.2/firebase-messaging-compat.js');
 
+// ---------------------------------------------------------------------------
+// Update / cache-busting hooks
+// ---------------------------------------------------------------------------
+// Immediately claim all open clients so the new SW takes control without
+// waiting for a page reload, and honour the { type: 'SKIP_WAITING' } message
+// that the index.html update-detection script sends.
+self.addEventListener('install', function (event) {
+  event.waitUntil(self.skipWaiting());
+});
+
+self.addEventListener('activate', function (event) {
+  event.waitUntil(self.clients.claim());
+});
+
+self.addEventListener('message', function (event) {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
+});
+// ---------------------------------------------------------------------------
+
 // Public client config — same values as
 // `lib/firebase_options.dart#DefaultFirebaseOptions.web`. These are NOT
 // secrets (Google explicitly designs them to ship inside clients).
