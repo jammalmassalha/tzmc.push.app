@@ -39,6 +39,11 @@ const int _kFullSyncPageSize = 500;
 /// `LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT = 200000`.
 const int _kFullSyncMaxMessages = 200000;
 
+/// Maximum number of characters before the colon that are considered a
+/// group-sender prefix in the "SenderName: body" pattern stored by the server.
+/// Mirrors the 80-character cap in Angular's `normalizeLogsMessagesForImport`.
+const int _kGroupSenderPrefixMaxLength = 80;
+
 /// SharedPreferences key for the "pending chat updates" tray.
 ///
 /// Written by [firebaseMessagingBackgroundHandler] (in
@@ -1061,12 +1066,18 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final rawBody        = (msg.body      ?? '').trim();
 
     // Determine the best group name.
-    final resolvedGroupName = (rawGroupName.isNotEmpty &&
-            rawGroupName.toLowerCase() != resolvedGroupId)
-        ? rawGroupName
-        : (existingGroup?.name.isNotEmpty == true
-            ? existingGroup!.name
-            : (rawGroupName.isNotEmpty ? rawGroupName : resolvedGroupId));
+    final String resolvedGroupName;
+    if (rawGroupName.isNotEmpty &&
+        rawGroupName.toLowerCase() != resolvedGroupId) {
+      // The record carries a real human-readable name.
+      resolvedGroupName = rawGroupName;
+    } else if (existingGroup != null && existingGroup.name.isNotEmpty) {
+      // Fall back to the locally-cached name.
+      resolvedGroupName = existingGroup.name;
+    } else {
+      // Last resort: use the raw group-name field if present, else the ID.
+      resolvedGroupName = rawGroupName.isNotEmpty ? rawGroupName : resolvedGroupId;
+    }
 
     // Extract "SenderName: message" prefix from body when groupSenderName is absent.
     String groupSenderName = (msg.groupSenderName ?? '').trim();
@@ -1074,7 +1085,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     if (groupSenderName.isEmpty && rawBody.isNotEmpty) {
       final colonIdx = rawBody.indexOf(':');
-      if (colonIdx > 0 && colonIdx <= 80) {
+      if (colonIdx > 0 && colonIdx <= _kGroupSenderPrefixMaxLength) {
         final potentialSender = rawBody.substring(0, colonIdx).trim();
         final potentialBody   = rawBody.substring(colonIdx + 1).trim();
         if (!potentialSender.contains('\n') && potentialBody.isNotEmpty) {
