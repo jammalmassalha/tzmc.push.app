@@ -1501,33 +1501,61 @@ export class MysqlLogsService {
   // Logs (scoped by getLogsMessagesForUser) are ever looked up in this map.
   async getGroupMessageSendersByMessageId(
     user: string,
-    options: { since?: number; limit?: number } = {}
+    options: { since?: number; limit?: number; messageIds?: string[] } = {}
   ): Promise<Map<string, string>> {
     await this.ensureMessageActivitiesTable();
     const requestedUser = normalizePhone(user);
     if (!requestedUser) return new Map();
 
-    const limit = Math.max(1, Math.min(toPositiveInteger(options.limit, 5000), 10000));
-    const sinceTimestamp = Number(options.since) || 0;
+    // When an explicit set of message IDs is provided, query exactly those rows.
+    // This is the primary code path used by /messages/logs so that the result
+    // always covers the messages that are about to be returned, regardless of
+    // how many total group messages exist in MessageActivities.
+    const messageIds = Array.isArray(options.messageIds)
+      ? options.messageIds.filter(id => typeof id === 'string' && id.trim())
+      : [];
 
     try {
-      let sql = `SELECT
-          \`MessageId\` AS messageId,
-          \`Sender\`    AS sender
-        FROM \`MessageActivities\`
-        WHERE \`ActionType\` = 'message'
-          AND \`GroupId\` IS NOT NULL AND \`GroupId\` != ''
-          AND \`Sender\` != ?`;
+      let sql: string;
+      let params: (string | number)[];
 
-      const params: (string | number)[] = [requestedUser];
+      if (messageIds.length > 0) {
+        // Targeted query: only return rows whose MessageId is in the provided list.
+        // No ORDER BY / LIMIT needed — the list size is already bounded by the
+        // caller (number of Logs records per request page, typically ≤ 700).
+        const placeholders = messageIds.map(() => '?').join(', ');
+        sql = `SELECT
+            \`MessageId\` AS messageId,
+            \`Sender\`    AS sender
+          FROM \`MessageActivities\`
+          WHERE \`ActionType\` = 'message'
+            AND \`GroupId\` IS NOT NULL AND \`GroupId\` != ''
+            AND \`Sender\` != ?
+            AND \`MessageId\` IN (${placeholders})`;
+        params = [requestedUser, ...messageIds];
+      } else {
+        // Fallback (no messageIds supplied): return the most-recent N rows so
+        // that the map is biased toward recent messages.
+        const limit = Math.max(1, Math.min(toPositiveInteger(options.limit, 5000), 10000));
+        const sinceTimestamp = Number(options.since) || 0;
 
-      if (sinceTimestamp > 0) {
-        sql += ` AND \`ActionTimestamp\` > ?`;
-        params.push(sinceTimestamp);
+        sql = `SELECT
+            \`MessageId\` AS messageId,
+            \`Sender\`    AS sender
+          FROM \`MessageActivities\`
+          WHERE \`ActionType\` = 'message'
+            AND \`GroupId\` IS NOT NULL AND \`GroupId\` != ''
+            AND \`Sender\` != ?`;
+        params = [requestedUser];
+
+        if (sinceTimestamp > 0) {
+          sql += ` AND \`ActionTimestamp\` > ?`;
+          params.push(sinceTimestamp);
+        }
+
+        sql += ` ORDER BY \`ActionTimestamp\` DESC LIMIT ?`;
+        params.push(limit);
       }
-
-      sql += ` ORDER BY \`ActionTimestamp\` ASC LIMIT ?`;
-      params.push(limit);
 
       const [rows] = await this.pool.query(sql, params);
       const typedRows = rows as Array<Record<string, unknown>>;

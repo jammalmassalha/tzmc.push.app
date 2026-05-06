@@ -541,18 +541,31 @@ function registerMessageController(app, deps = {}) {
 
                 // Supplementary sender lookup from MessageActivities.
                 // For group messages whose GroupSenderName column is null in the
-                // Logs table (e.g. older rows written before the column existed),
-                // MessageActivities stores the actual human Sender phone number so
-                // we can still display the sender label on the bubble.
-                // The query filters out messages sent BY the current user, so this
-                // map only contains senders that are NOT the requesting user.
+                // Logs table, MessageActivities stores the actual human Sender phone
+                // number so we can display the correct sender label on the bubble.
+                // We collect the exact messageIds from rawMessages so the DB query
+                // returns precisely the needed rows regardless of how many total
+                // group messages exist in MessageActivities (fixes the off-by-limit
+                // bug where ORDER BY ASC + LIMIT caused recent messages to be missed).
                 let groupSenderByMsgId = new Map();
                 try {
                     if (typeof getGroupMessageSendersByMessageId === 'function') {
-                        groupSenderByMsgId = await getGroupMessageSendersByMessageId(user, { since, limit });
+                        // Collect unique messageIds present in the raw log result.
+                        const rawGroupMessageIds = [];
+                        for (const m of rawMessages) {
+                            if (!m || typeof m !== 'object') continue;
+                            const mid = String(m.messageId || m.id || '').trim();
+                            if (mid) rawGroupMessageIds.push(mid);
+                        }
+                        groupSenderByMsgId = await getGroupMessageSendersByMessageId(
+                            user,
+                            rawGroupMessageIds.length > 0
+                                ? { messageIds: rawGroupMessageIds }
+                                : { since, limit }
+                        );
                     }
                 } catch (_gsErr) {
-                    // Non-fatal: fall back to the existing extraction logic
+                    // Non-fatal — sender label will fall back to whatever is in GroupSenderName
                 }
 
                 const messages = rawMessages.map((message, index) => {
@@ -639,29 +652,12 @@ function registerMessageController(app, deps = {}) {
                     const groupTypeRaw = String(message.groupType ?? '').trim().toLowerCase();
                     let groupSenderName = String(message.groupSenderName ?? message.senderName ?? message.fromName ?? '').trim();
 
-                    // For group messages from DB logs, the body is stored as "SenderName: message text".
-                    // Extract the sender name from the body prefix if not already set.
-                    // Use a broad condition: strip whenever the message is group-like (resolved group ID,
-                    // sender that looks like a group identifier, or sender matching a known/hardcoded group).
                     const looksLikeGroupMessage = resolvedGroupId || sender.startsWith('group:') || hardcodedGroupKeySet.has(sender) || knownGroupIds.has(sender);
                     let resolvedBody = body;
-                    if (!groupSenderName && looksLikeGroupMessage && body) {
-                        // Guard against URL bodies (e.g. "https://example.com"): the colon in
-                        // the URL scheme must not be extracted as a sender-name separator.
-                        const isUrl = body.startsWith('http://') || body.startsWith('https://');
-                        if (!isUrl) {
-                            const senderPrefixMatch = body.match(/^([^:\n]{1,80})\s*:\s*([\s\S]+)$/);
-                            if (senderPrefixMatch) {
-                                groupSenderName = String(senderPrefixMatch[1] || '').trim();
-                                resolvedBody = String(senderPrefixMatch[2] || '').trim() || body;
-                            }
-                        }
-                    }
-                    // Safety net: if groupSenderName is already known and the body still starts
-                    // with "SenderName: ...", strip the redundant prefix to prevent duplication.
-                    if (groupSenderName && resolvedBody && resolvedBody !== body) {
-                        // Already stripped above – no further action needed.
-                    } else if (groupSenderName && looksLikeGroupMessage && body) {
+
+                    // If groupSenderName is already known and the body starts with
+                    // "SenderName: ...", strip the redundant prefix to prevent duplication.
+                    if (groupSenderName && looksLikeGroupMessage && body) {
                         const escapedName = groupSenderName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                         const prefixPattern = new RegExp(`^${escapedName}\\s*:\\s*`);
                         if (prefixPattern.test(body)) {
@@ -673,13 +669,8 @@ function registerMessageController(app, deps = {}) {
                     }
 
                     // If groupSenderName is still empty for a group message, look up
-                    // MessageActivities by MessageId.  That table always stores the
-                    // actual human Sender (phone number) for ActionType='message', so
-                    // we can show the correct sender label even for older Logs rows
-                    // whose GroupSenderName column was NULL.
-                    // Note: getGroupMessageSendersByMessageId already filters out the
-                    // requesting user on the DB side, so any entry in the map is from
-                    // a different sender.
+                    // MessageActivities by MessageId.  The map was built from the exact
+                    // messageIds in this Logs page so every group message is covered.
                     if (!groupSenderName && resolvedGroupId && messageIdRaw) {
                         const activitySender = groupSenderByMsgId.get(messageIdRaw);
                         if (activitySender) {
