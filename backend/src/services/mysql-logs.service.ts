@@ -1493,6 +1493,12 @@ export class MysqlLogsService {
   // MessageActivities where the sender is NOT the requesting user.
   // Used by the /messages/logs endpoint to supplement groupSenderName
   // for Logs rows whose GroupSenderName column is null/empty.
+  //
+  // NOTE: For group messages MessageActivities.Recipient stores the groupId,
+  // not the individual user's phone — so filtering by Recipient would always
+  // return zero rows.  Relevancy is guaranteed by the messageId cross-reference
+  // in message.controller.js: only messageIds already present in the user's
+  // Logs (scoped by getLogsMessagesForUser) are ever looked up in this map.
   async getGroupMessageSendersByMessageId(
     user: string,
     options: { since?: number; limit?: number } = {}
@@ -1511,14 +1517,9 @@ export class MysqlLogsService {
         FROM \`MessageActivities\`
         WHERE \`ActionType\` = 'message'
           AND \`GroupId\` IS NOT NULL AND \`GroupId\` != ''
-          AND \`Sender\` != ?
-          AND (\`Recipient\` = ? OR \`Recipient\` LIKE ?)`;
+          AND \`Sender\` != ?`;
 
-      const params: (string | number)[] = [
-        requestedUser,
-        requestedUser,
-        `%${requestedUser}%`,
-      ];
+      const params: (string | number)[] = [requestedUser];
 
       if (sinceTimestamp > 0) {
         sql += ` AND \`ActionTimestamp\` > ?`;

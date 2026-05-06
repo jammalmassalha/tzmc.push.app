@@ -1548,8 +1548,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // actual user identifier, not the group ID itself.
     final senderIsGroupId = isGroup &&
         sender.trim().toLowerCase() == (groupId ?? '').trim().toLowerCase();
-    final senderDisplayName =
-        _str(data['groupSenderName']) ?? (senderIsGroupId ? null : getDisplayName(sender));
+    // groupSenderName from the server may be a raw phone number (e.g. when
+    // sourced from MessageActivities.Sender).  Always run it through
+    // getDisplayName so the bubble shows the contact name when available;
+    // getDisplayName returns the input unchanged when no match is found.
+    final rawGroupSenderName = _str(data['groupSenderName']) ?? '';
+    final senderDisplayName = rawGroupSenderName.isNotEmpty
+        ? getDisplayName(rawGroupSenderName)
+        : (senderIsGroupId ? null : getDisplayName(sender));
     final timestamp = _int(data['timestamp']) ?? DateTime.now().millisecondsSinceEpoch;
 
     final message = ChatMessage(
@@ -2278,8 +2284,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       sender: msg.sender!,
       // When the server stores the group ID as sender (server.js:2138) and
       // groupSenderName is absent, avoid showing the raw group ID string.
-      senderDisplayName: msg.groupSenderName ??
-          (isGroup &&
+      // groupSenderName may be a raw phone (sourced from MessageActivities),
+      // so always resolve it through getDisplayName for a proper contact name.
+      senderDisplayName: (msg.groupSenderName != null && msg.groupSenderName!.isNotEmpty)
+          ? getDisplayName(msg.groupSenderName!)
+          : (isGroup &&
                   msg.sender!.trim().toLowerCase() ==
                       (msg.groupId ?? '').trim().toLowerCase()
               ? null
