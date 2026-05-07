@@ -1518,9 +1518,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // still keep the longer body if a fresher pull replaces it.
     final messageText = _str(data['messageText']);
     final groupMessageText = _str(data['groupMessageText']);
-    final body = (messageText != null && groupMessageText != null)
+    final rawBody = (messageText != null && groupMessageText != null)
         ? (messageText.length >= groupMessageText.length ? messageText : groupMessageText)
-        : (messageText ?? groupMessageText ?? _str(data['body']) ?? '');
+        : (messageText ?? groupMessageText ?? _str(data['body']) ?? _str(data['message']) ?? '');
+    final locationUrl = _str(data['locationUrl']) ?? _str(data['location']);
+    final lat = _str(data['latitude']) ?? _str(data['lat']);
+    final lon = _str(data['longitude']) ?? _str(data['lng']) ?? _str(data['lon']);
+    final body = rawBody.isNotEmpty
+        ? rawBody
+        : ((lat != null && lon != null)
+            ? '📍 https://www.google.com/maps?q=$lat,$lon'
+            : (locationUrl ?? ''));
 
     final groupTypeRaw = _str(data['groupType']);
     final groupType = groupTypeRaw == 'community'
@@ -1551,8 +1559,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       sender: sender,
       senderDisplayName: senderDisplayName,
       body: body,
-      imageUrl: _str(data['image']) ?? _str(data['imageUrl']),
-      fileUrl: _str(data['fileUrl']),
+      imageUrl: _str(data['image']) ?? _str(data['imageUrl']) ?? _str(data['imageURL']),
+      fileUrl: _str(data['fileUrl']) ?? _str(data['file']) ?? _str(data['attachmentUrl']) ?? _str(data['url']),
       direction: (isSelfEcho || skipNotification) ? MessageDirection.outgoing : MessageDirection.incoming,
       timestamp: timestamp,
       deliveryStatus: (isSelfEcho || skipNotification) ? DeliveryStatus.sent : DeliveryStatus.delivered,
