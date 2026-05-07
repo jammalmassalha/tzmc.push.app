@@ -79,7 +79,12 @@ export class HelpdeskTicketDialogComponent implements OnInit {
   customControl(fieldId: string): FormControl<string> {
     const existing = this.customFieldControls.get(fieldId);
     if (existing) return existing;
-    const fallback = new FormControl<string>('', { nonNullable: true });
+    const field = this.departmentFormFields().find((item) => item.id === fieldId);
+    const validators = field?.required ? [Validators.required] : [];
+    const fallback = new FormControl<string>(String(field?.initialValue ?? '').trim(), {
+      nonNullable: true,
+      validators
+    });
     this.customFieldControls.set(fieldId, fallback);
     return fallback;
   }

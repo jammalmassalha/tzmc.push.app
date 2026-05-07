@@ -57,12 +57,14 @@ function sanitizeTicketFormOptions(options) {
     return sanitized;
 }
 
-function sanitizeTicketFormField(rawField, index = 0) {
+function sanitizeTicketFormField(rawField) {
     if (!rawField || typeof rawField !== 'object') return null;
     const type = toTrimmedString(rawField.type || '').toLowerCase();
     if (!VALID_FORM_FIELD_TYPES.has(type)) return null;
 
-    const rawId = toTrimmedString(rawField.id || rawField.key || `field_${index + 1}`).toLowerCase().slice(0, 256);
+    const rawId = toTrimmedString(
+        rawField.id || rawField.key || rawField.label || rawField.name || 'field'
+    ).toLowerCase().slice(0, 256);
     let idCandidate = '';
     let previousUnderscore = false;
     for (let i = 0; i < rawId.length && idCandidate.length < 64; i++) {
@@ -122,7 +124,7 @@ function parseDepartmentTicketFormConfig(rawConfig) {
     const fields = [];
     const usedIds = new Set();
     for (let i = 0; i < fieldsSource.length && fields.length < 50; i++) {
-        const field = sanitizeTicketFormField(fieldsSource[i], i);
+        const field = sanitizeTicketFormField(fieldsSource[i]);
         if (!field) continue;
         if (usedIds.has(field.id)) continue;
         usedIds.add(field.id);
@@ -144,7 +146,7 @@ function validateAndNormalizeTicketCustomFields(formFields, customFieldsInput) {
     const normalized = {};
     for (const field of formFields) {
         const rawValue = customFields[field.id];
-        const value = toTrimmedString(rawValue || '');
+        const value = toTrimmedString(rawValue === null || rawValue === undefined ? '' : rawValue);
         if (!value) {
             if (field.required) {
                 return { ok: false, message: `יש להזין ערך בשדה ${field.label}` };
