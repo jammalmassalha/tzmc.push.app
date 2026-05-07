@@ -92,7 +92,13 @@ The Flutter app uses **Firebase Cloud Messaging (FCM)** on Android and APNs (via
 
 1. In the Firebase console add an iOS app with bundle id matching `ios/Runner.xcodeproj`.
 2. Download `GoogleService-Info.plist` and add it to `ios/Runner/` **inside Xcode** (so it is added to the Runner target).
-3. In Xcode → Runner target → **Signing & Capabilities**:
+3. For CI builds the `Flutter Build` and `iOS Release Build` GitHub Actions workflows decode it at build time from the **`GOOGLE_SERVICE_INFO_PLIST_BASE64`** repository secret. Create the secret with:
+   ```bash
+   base64 -i GoogleService-Info.plist | tr -d '\n' | pbcopy   # macOS
+   base64 -w0 GoogleService-Info.plist                        # Linux (copy output)
+   ```
+   then in GitHub: **Settings → Secrets and variables → Actions → New repository secret** → name `GOOGLE_SERVICE_INFO_PLIST_BASE64`, value the base64 string. Without this secret the workflow logs a `::warning::` and the resulting IPA silently has FCM disabled.
+4. In Xcode → Runner target → **Signing & Capabilities**:
    - Add **Push Notifications** (this creates `Runner.entitlements` with the `aps-environment` key).
    - Add **Background Modes** and tick **Remote notifications** — note that
      the corresponding `Info.plist` entry is already committed in this repo
