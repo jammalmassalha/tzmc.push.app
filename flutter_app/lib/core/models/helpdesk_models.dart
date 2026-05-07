@@ -387,7 +387,7 @@ enum HelpdeskRole {
   relatedUser;
 
   static HelpdeskRole fromString(String value) {
-    switch (value.toLowerCase()) {
+    switch (value.trim().toLowerCase()) {
       case 'admin':
         return HelpdeskRole.admin;
       case 'editor':

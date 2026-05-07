@@ -481,16 +481,11 @@ async function getHelpdeskUserRole(pool, username) {
 }
 
 async function getActiveDepartments(pool) {
-    try {
-        const [rows] = await pool.query(
-            'SELECT `name`, `icon` FROM `helpdesk_departments` WHERE `status` = ? ORDER BY `sort_order`, `id`',
-            ['active']
-        );
-        return rows.map((r) => ({ name: r.name, icon: r.icon || null }));
-    } catch (err) {
-        if (err && err.errno === 1146) return DEFAULT_DEPARTMENTS.map((d) => ({ name: d.name, icon: d.icon }));
-        throw err;
-    }
+    const [rows] = await pool.query(
+        'SELECT `name`, `icon` FROM `helpdesk_departments` WHERE `status` = ? ORDER BY `sort_order`, `id`',
+        ['active']
+    );
+    return rows.map((r) => ({ name: r.name, icon: r.icon || null }));
 }
 
 function registerHelpdeskController(app, deps = {}) {
@@ -596,12 +591,12 @@ function registerHelpdeskController(app, deps = {}) {
         if (!department) {
             return res.status(400).json({ result: 'error', message: 'יש לבחור מחלקה' });
         }
-        const activeDepts = await getActiveDepartments(pool);
-        if (!activeDepts.some((d) => d.name === department)) {
-            return res.status(400).json({ result: 'error', message: 'מחלקה לא תקינה' });
-        }
         try {
             await getTablesReady();
+            const activeDepts = await getActiveDepartments(pool);
+            if (!activeDepts.some((d) => d.name === department)) {
+                return res.status(400).json({ result: 'error', message: 'מחלקה לא תקינה' });
+            }
             let departmentFormFields = [];
             let initialFormVisibility = { ...DEFAULT_INITIAL_FORM_VISIBILITY };
             try {
