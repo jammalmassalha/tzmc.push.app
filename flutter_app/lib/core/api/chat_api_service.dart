@@ -980,16 +980,17 @@ class ChatApiService {
     return url;
   }
 
-  /// Get department-specific ticket form fields.
-  ///
-  /// Returns the list of custom form fields configured for the given department.
-  Future<List<HelpdeskTicketFormField>> getHelpdeskDepartmentTicketForm(
+  /// Get department-specific ticket form config.
+  Future<HelpdeskDepartmentTicketFormConfig>
+      getHelpdeskDepartmentTicketFormConfig(
       String user, String department) async {
     final normalizedUser = user.trim();
     if (normalizedUser.isEmpty) throw ApiException('User is required');
 
     final encodedDept = Uri.encodeComponent(department.trim());
-    if (encodedDept.isEmpty) return [];
+    if (encodedDept.isEmpty) {
+      return const HelpdeskDepartmentTicketFormConfig();
+    }
 
     final response = await _client.get<Map<String, dynamic>>(
       '${ApiEndpoints.helpdeskDepartmentsTicketForm}/$encodedDept/ticket-form',
@@ -999,16 +1000,21 @@ class ChatApiService {
 
     if (!response.isSuccessful) {
       // Non-critical — treat as empty form on failure
-      return [];
+      return const HelpdeskDepartmentTicketFormConfig();
     }
 
     final body = response.data ?? {};
-    if (body['result'] != 'success') return [];
-    final list = body['fields'] as List? ?? [];
-    return list
-        .whereType<Map<String, dynamic>>()
-        .map((e) => HelpdeskTicketFormField.fromJson(e))
-        .toList();
+    if (body['result'] != 'success') {
+      return const HelpdeskDepartmentTicketFormConfig();
+    }
+    return HelpdeskDepartmentTicketFormConfig.fromJson(body);
+  }
+
+  /// Backward-compatible helper returning only custom fields.
+  Future<List<HelpdeskTicketFormField>> getHelpdeskDepartmentTicketForm(
+      String user, String department) async {
+    final config = await getHelpdeskDepartmentTicketFormConfig(user, department);
+    return config.fields;
   }
 
 
@@ -1061,6 +1067,7 @@ class ChatApiService {
     String status = 'active',
     int sortOrder = 0,
     List<HelpdeskTicketFormField> ticketForm = const [],
+    HelpdeskInitialFormConfig initialForm = const HelpdeskInitialFormConfig(),
   }) async {
     final normalizedUser = user.trim();
     if (normalizedUser.isEmpty) throw ApiException('User is required');
@@ -1074,6 +1081,7 @@ class ChatApiService {
         'status': status,
         'sortOrder': sortOrder,
         'ticketForm': ticketForm.map((f) => f.toJson()).toList(),
+        'initialForm': initialForm.toJson(),
       },
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
@@ -1092,6 +1100,7 @@ class ChatApiService {
     String? status,
     int? sortOrder,
     List<HelpdeskTicketFormField>? ticketForm,
+    HelpdeskInitialFormConfig? initialForm,
   }) async {
     final normalizedUser = user.trim();
     if (normalizedUser.isEmpty) throw ApiException('User is required');
@@ -1103,6 +1112,9 @@ class ChatApiService {
     if (sortOrder != null) data['sortOrder'] = sortOrder;
     if (ticketForm != null) {
       data['ticketForm'] = ticketForm.map((f) => f.toJson()).toList();
+    }
+    if (initialForm != null) {
+      data['initialForm'] = initialForm.toJson();
     }
 
     final response = await _client.put<Map<String, dynamic>>(

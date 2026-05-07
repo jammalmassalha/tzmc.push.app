@@ -20,6 +20,14 @@ const VALID_STATUSES = ['open', 'in_progress', 'resolved', 'closed'];
 const VALID_ROLES = ['Admin', 'Editor'];
 const VALID_FORM_FIELD_TYPES = new Set(['input', 'textarea', 'radio', 'select']);
 const VALID_INPUT_TYPES = new Set(['text', 'tel', 'number']);
+const DEFAULT_INITIAL_FORM_VISIBILITY = Object.freeze({
+    title: true,
+    description: true,
+    location: true,
+    phone: true,
+    priority: true,
+    attachment: true
+});
 const DEFAULT_DEPARTMENTS = [
     { name: 'מערכות מידע', icon: '🖥️' },
     { name: 'אחזקה',       icon: '🔧' },
@@ -116,11 +124,28 @@ function sanitizeTicketFormField(rawField) {
     return field;
 }
 
-function parseDepartmentTicketFormConfig(rawConfig) {
+function sanitizeInitialFormVisibility(rawVisibility) {
+    if (!rawVisibility || typeof rawVisibility !== 'object' || Array.isArray(rawVisibility)) {
+        return { ...DEFAULT_INITIAL_FORM_VISIBILITY };
+    }
+    return {
+        title: rawVisibility.title !== false,
+        description: rawVisibility.description !== false,
+        location: rawVisibility.location !== false,
+        phone: rawVisibility.phone !== false,
+        priority: rawVisibility.priority !== false,
+        attachment: rawVisibility.attachment !== false
+    };
+}
+
+function parseDepartmentTicketFormConfigDetails(rawConfig) {
     const parsed = parseJsonObject(rawConfig, rawConfig);
     const fieldsSource = Array.isArray(parsed)
         ? parsed
         : (parsed && Array.isArray(parsed.fields) ? parsed.fields : []);
+    const initialFormSource = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed.initialForm || parsed.initial_form || null)
+        : null;
     const fields = [];
     const usedIds = new Set();
     for (let i = 0; i < fieldsSource.length && fields.length < 50; i++) {
@@ -130,7 +155,25 @@ function parseDepartmentTicketFormConfig(rawConfig) {
         usedIds.add(field.id);
         fields.push(field);
     }
-    return fields;
+    return {
+        fields,
+        initialForm: sanitizeInitialFormVisibility(initialFormSource)
+    };
+}
+
+function parseDepartmentTicketFormConfig(rawConfig) {
+    return parseDepartmentTicketFormConfigDetails(rawConfig).fields;
+}
+
+function parseDepartmentInitialFormVisibility(rawConfig) {
+    return parseDepartmentTicketFormConfigDetails(rawConfig).initialForm;
+}
+
+function serializeDepartmentTicketFormConfig(fields, initialForm) {
+    return JSON.stringify({
+        fields: Array.isArray(fields) ? fields : [],
+        initialForm: sanitizeInitialFormVisibility(initialForm)
+    });
 }
 
 function parseTicketCustomFields(raw) {
@@ -557,31 +600,33 @@ function registerHelpdeskController(app, deps = {}) {
         if (!activeDepts.some((d) => d.name === department)) {
             return res.status(400).json({ result: 'error', message: 'מחלקה לא תקינה' });
         }
-        if (!title) {
-            return res.status(400).json({ result: 'error', message: 'יש להזין כותרת לקריאה' });
-        }
-        if (!description) {
-            return res.status(400).json({ result: 'error', message: 'יש להזין תיאור לקריאה' });
-        }
-        if (!location) {
-            return res.status(400).json({ result: 'error', message: 'יש לבחור מיקום' });
-        }
-
         try {
             await getTablesReady();
             let departmentFormFields = [];
+            let initialFormVisibility = { ...DEFAULT_INITIAL_FORM_VISIBILITY };
             try {
                 const [departmentRows] = await pool.query(
                     'SELECT `ticket_form_config` FROM `helpdesk_departments` WHERE `name` = ? LIMIT 1',
                     [department]
                 );
                 if (departmentRows.length) {
-                    departmentFormFields = parseDepartmentTicketFormConfig(departmentRows[0].ticket_form_config);
+                    const parsedConfig = parseDepartmentTicketFormConfigDetails(departmentRows[0].ticket_form_config);
+                    departmentFormFields = parsedConfig.fields;
+                    initialFormVisibility = parsedConfig.initialForm;
                 }
             } catch (deptConfigErr) {
                 if (!(deptConfigErr && deptConfigErr.errno === 1146)) {
                     throw deptConfigErr;
                 }
+            }
+            if (initialFormVisibility.title && !title) {
+                return res.status(400).json({ result: 'error', message: 'יש להזין כותרת לקריאה' });
+            }
+            if (initialFormVisibility.description && !description) {
+                return res.status(400).json({ result: 'error', message: 'יש להזין תיאור לקריאה' });
+            }
+            if (initialFormVisibility.location && !location) {
+                return res.status(400).json({ result: 'error', message: 'יש לבחור מיקום' });
             }
             const customFieldsValidation = validateAndNormalizeTicketCustomFields(departmentFormFields, customFieldsInput);
             if (!customFieldsValidation.ok) {
@@ -590,9 +635,11 @@ function registerHelpdeskController(app, deps = {}) {
             const customFieldsJson = Object.keys(customFieldsValidation.data || {}).length
                 ? JSON.stringify(customFieldsValidation.data)
                 : null;
+            const normalizedTitle = title || `פנייה למחלקה ${department}`;
+            const normalizedDescription = description || 'ללא תיאור';
             const [result] = await pool.execute(
                 'INSERT INTO `helpdesk_tickets` (`creator_username`, `department`, `title`, `description`, `location`, `phone`, `attachment_url`, `custom_fields_json`, `status`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [user, department, title, description, location, phone, attachmentUrl, customFieldsJson, 'open']
+                [user, department, normalizedTitle, normalizedDescription, location, phone, attachmentUrl, customFieldsJson, 'open']
             );
             const insertId = result.insertId;
             // Record initial "open" status in history.  Awaited so the entry is
@@ -614,7 +661,7 @@ function registerHelpdeskController(app, deps = {}) {
 
             // Send confirmation message to creator under 'מוקד איחוד' chat
             if (typeof sendPushNotificationToUser === 'function') {
-                const ticketMsgText = `Ticket #${insertId} - ${title}`;
+                const ticketMsgText = `Ticket #${insertId} - ${normalizedTitle}`;
                 void sendPushNotificationToUser(user, {
                     title: 'מוקד איחוד',
                     body: { shortText: ticketMsgText, longText: ticketMsgText },
@@ -1289,8 +1336,13 @@ function registerHelpdeskController(app, deps = {}) {
             if (!rows.length || rows[0].status !== 'active') {
                 return res.status(404).json({ result: 'error', message: 'מחלקה לא נמצאה' });
             }
-            const fields = parseDepartmentTicketFormConfig(rows[0].ticket_form_config);
-            return res.json({ result: 'success', department: rows[0].name, fields });
+            const parsedConfig = parseDepartmentTicketFormConfigDetails(rows[0].ticket_form_config);
+            return res.json({
+                result: 'success',
+                department: rows[0].name,
+                fields: parsedConfig.fields,
+                initialForm: parsedConfig.initialForm
+            });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to load ticket form';
             console.error('[HELPDESK] Load department ticket form error:', message);
@@ -1318,6 +1370,7 @@ function registerHelpdeskController(app, deps = {}) {
                 status: r.status,
                 sortOrder: r.sort_order,
                 ticketForm: parseDepartmentTicketFormConfig(r.ticket_form_config),
+                initialForm: parseDepartmentInitialFormVisibility(r.ticket_form_config),
                 createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at || '')
             }));
             return res.json({ result: 'success', departments });
@@ -1340,6 +1393,9 @@ function registerHelpdeskController(app, deps = {}) {
         const ticketForm = parseDepartmentTicketFormConfig(
             body.ticketForm !== undefined ? body.ticketForm : body.ticket_form_config
         );
+        const initialForm = sanitizeInitialFormVisibility(
+            body.initialForm !== undefined ? body.initialForm : body.initial_form
+        );
 
         if (!name) return res.status(400).json({ result: 'error', message: 'יש להזין שם מחלקה' });
         if (!['active', 'inactive'].includes(status)) return res.status(400).json({ result: 'error', message: 'סטטוס לא תקין' });
@@ -1352,7 +1408,7 @@ function registerHelpdeskController(app, deps = {}) {
             }
             const [result] = await pool.execute(
                 'INSERT INTO `helpdesk_departments` (`name`, `icon`, `status`, `sort_order`, `ticket_form_config`) VALUES (?, ?, ?, ?, ?)',
-                [name, icon, status, sortOrder, JSON.stringify(ticketForm)]
+                [name, icon, status, sortOrder, serializeDepartmentTicketFormConfig(ticketForm, initialForm)]
             );
             return res.status(201).json({ result: 'success', id: result.insertId });
         } catch (error) {
@@ -1382,6 +1438,9 @@ function registerHelpdeskController(app, deps = {}) {
         const ticketForm = (body.ticketForm !== undefined || body.ticket_form_config !== undefined)
             ? parseDepartmentTicketFormConfig(body.ticketForm !== undefined ? body.ticketForm : body.ticket_form_config)
             : undefined;
+        const initialForm = (body.initialForm !== undefined || body.initial_form !== undefined)
+            ? sanitizeInitialFormVisibility(body.initialForm !== undefined ? body.initialForm : body.initial_form)
+            : undefined;
 
         if (status !== undefined && !['active', 'inactive'].includes(status)) {
             return res.status(400).json({ result: 'error', message: 'סטטוס לא תקין' });
@@ -1400,7 +1459,20 @@ function registerHelpdeskController(app, deps = {}) {
             if (icon !== undefined) { setClauses.push('`icon` = ?'); params.push(icon); }
             if (status !== undefined) { setClauses.push('`status` = ?'); params.push(status); }
             if (sortOrder !== undefined) { setClauses.push('`sort_order` = ?'); params.push(sortOrder); }
-            if (ticketForm !== undefined) { setClauses.push('`ticket_form_config` = ?'); params.push(JSON.stringify(ticketForm)); }
+            if (ticketForm !== undefined || initialForm !== undefined) {
+                const [existingRows] = await pool.query(
+                    'SELECT `ticket_form_config` FROM `helpdesk_departments` WHERE `id` = ? LIMIT 1',
+                    [deptId]
+                );
+                if (!existingRows.length) {
+                    return res.status(404).json({ result: 'error', message: 'מחלקה לא נמצאה' });
+                }
+                const parsedExisting = parseDepartmentTicketFormConfigDetails(existingRows[0].ticket_form_config);
+                const nextTicketForm = ticketForm !== undefined ? ticketForm : parsedExisting.fields;
+                const nextInitialForm = initialForm !== undefined ? initialForm : parsedExisting.initialForm;
+                setClauses.push('`ticket_form_config` = ?');
+                params.push(serializeDepartmentTicketFormConfig(nextTicketForm, nextInitialForm));
+            }
 
             if (!setClauses.length) return res.status(400).json({ result: 'error', message: 'לא הועברו שדות לעדכון' });
 

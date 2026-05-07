@@ -70,6 +70,102 @@ enum HelpdeskTicketFormInputType {
   }
 }
 
+/// Visibility settings for the built-in initial helpdesk form inputs.
+class HelpdeskInitialFormConfig extends Equatable {
+  final bool showTitle;
+  final bool showDescription;
+  final bool showLocation;
+  final bool showPhone;
+  final bool showPriority;
+  final bool showAttachment;
+
+  const HelpdeskInitialFormConfig({
+    this.showTitle = true,
+    this.showDescription = true,
+    this.showLocation = true,
+    this.showPhone = true,
+    this.showPriority = true,
+    this.showAttachment = true,
+  });
+
+  @override
+  List<Object?> get props => [
+        showTitle,
+        showDescription,
+        showLocation,
+        showPhone,
+        showPriority,
+        showAttachment,
+      ];
+
+  factory HelpdeskInitialFormConfig.fromJson(Map<String, dynamic>? json) {
+    final raw = json ?? const <String, dynamic>{};
+    return HelpdeskInitialFormConfig(
+      showTitle: raw['title'] != false,
+      showDescription: raw['description'] != false,
+      showLocation: raw['location'] != false,
+      showPhone: raw['phone'] != false,
+      showPriority: raw['priority'] != false,
+      showAttachment: raw['attachment'] != false,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'title': showTitle,
+        'description': showDescription,
+        'location': showLocation,
+        'phone': showPhone,
+        'priority': showPriority,
+        'attachment': showAttachment,
+      };
+
+  HelpdeskInitialFormConfig copyWith({
+    bool? showTitle,
+    bool? showDescription,
+    bool? showLocation,
+    bool? showPhone,
+    bool? showPriority,
+    bool? showAttachment,
+  }) {
+    return HelpdeskInitialFormConfig(
+      showTitle: showTitle ?? this.showTitle,
+      showDescription: showDescription ?? this.showDescription,
+      showLocation: showLocation ?? this.showLocation,
+      showPhone: showPhone ?? this.showPhone,
+      showPriority: showPriority ?? this.showPriority,
+      showAttachment: showAttachment ?? this.showAttachment,
+    );
+  }
+}
+
+/// Department ticket form config payload (dynamic fields + initial visibility).
+class HelpdeskDepartmentTicketFormConfig extends Equatable {
+  final List<HelpdeskTicketFormField> fields;
+  final HelpdeskInitialFormConfig initialForm;
+
+  const HelpdeskDepartmentTicketFormConfig({
+    this.fields = const [],
+    this.initialForm = const HelpdeskInitialFormConfig(),
+  });
+
+  @override
+  List<Object?> get props => [fields, initialForm];
+
+  factory HelpdeskDepartmentTicketFormConfig.fromJson(
+      Map<String, dynamic> json) {
+    final rawFields = json['fields'] as List? ?? const [];
+    return HelpdeskDepartmentTicketFormConfig(
+      fields: rawFields
+          .whereType<Map<String, dynamic>>()
+          .map((e) => HelpdeskTicketFormField.fromJson(e))
+          .toList(),
+      initialForm: HelpdeskInitialFormConfig.fromJson(
+        json['initialForm'] as Map<String, dynamic>?,
+      ),
+    );
+  }
+}
+
 /// A single configurable field in a department's custom ticket form.
 class HelpdeskTicketFormField extends Equatable {
   final String id;
@@ -175,6 +271,7 @@ class HelpdeskDepartmentEntry extends Equatable {
   final String status;
   final int sortOrder;
   final List<HelpdeskTicketFormField> ticketForm;
+  final HelpdeskInitialFormConfig initialForm;
 
   const HelpdeskDepartmentEntry({
     required this.id,
@@ -183,12 +280,14 @@ class HelpdeskDepartmentEntry extends Equatable {
     this.status = 'active',
     this.sortOrder = 0,
     this.ticketForm = const [],
+    this.initialForm = const HelpdeskInitialFormConfig(),
   });
 
   bool get isActive => status == 'active';
 
   @override
-  List<Object?> get props => [id, name, icon, status, sortOrder, ticketForm];
+  List<Object?> get props =>
+      [id, name, icon, status, sortOrder, ticketForm, initialForm];
 
   factory HelpdeskDepartmentEntry.fromJson(Map<String, dynamic> json) {
     final rawForm = json['ticketForm'] ?? json['ticket_form'];
@@ -205,6 +304,9 @@ class HelpdeskDepartmentEntry extends Equatable {
       status: json['status'] as String? ?? 'active',
       sortOrder: (json['sortOrder'] ?? json['sort_order'] as num?)?.toInt() ?? 0,
       ticketForm: ticketForm,
+      initialForm: HelpdeskInitialFormConfig.fromJson(
+        json['initialForm'] as Map<String, dynamic>?,
+      ),
     );
   }
 
@@ -215,6 +317,7 @@ class HelpdeskDepartmentEntry extends Equatable {
         'status': status,
         'sortOrder': sortOrder,
         'ticketForm': ticketForm.map((f) => f.toJson()).toList(),
+        'initialForm': initialForm.toJson(),
       };
 }
 

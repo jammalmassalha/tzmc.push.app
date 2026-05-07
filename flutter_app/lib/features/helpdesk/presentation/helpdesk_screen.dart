@@ -540,6 +540,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
 
     // Department custom form fields
     List<HelpdeskTicketFormField> formFields = [];
+    HelpdeskInitialFormConfig initialForm = const HelpdeskInitialFormConfig();
     Map<String, TextEditingController> customCtrlMap = {};
     Map<String, String> radioValues = {};
     Map<String, String> selectValues = {};
@@ -658,11 +659,12 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
           if (!formFieldsLoaded) {
             formFieldsLoaded = true;
             ref.read(chatApiServiceProvider)
-                .getHelpdeskDepartmentTicketForm(
+                .getHelpdeskDepartmentTicketFormConfig(
                   ref.read(helpdeskProvider.notifier).currentUser,
                   dept,
                 )
-                .then((fields) {
+                .then((config) {
+              final fields = config.fields;
               // Build controllers with initial values
               final ctrlMap = <String, TextEditingController>{};
               final radioMap = <String, String>{};
@@ -686,6 +688,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
               }
               setSt(() {
                 formFields = fields;
+                initialForm = config.initialForm;
                 customCtrlMap = ctrlMap;
                 radioValues = radioMap;
                 selectValues = selectMap;
@@ -827,80 +830,92 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  TextField(
-                    controller: subjectCtrl,
-                    textDirection: ui.TextDirection.rtl,
-                    decoration: const InputDecoration(
-                        labelText: 'כותרת הקריאה *',
-                        border: OutlineInputBorder()),
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: descCtrl,
-                    textDirection: ui.TextDirection.rtl,
-                    maxLines: 4,
-                    decoration: const InputDecoration(
-                        labelText: 'תיאור הבעיה',
-                        border: OutlineInputBorder()),
-                  ),
-                  const SizedBox(height: 16),
-                  Autocomplete<String>(
-                    key: ValueKey(loadingLoc),
-                    optionsBuilder: (tv) => tv.text.isEmpty
-                        ? locations
-                        : locations.where((l) =>
-                            l.toLowerCase().contains(tv.text.toLowerCase())),
-                    onSelected: (v) => locationCtrl.text = v,
-                    fieldViewBuilder: (context, ctrl, fn, oec) => TextField(
-                      controller: ctrl,
-                      focusNode: fn,
-                      onEditingComplete: oec,
+                  if (initialForm.showTitle) ...[
+                    TextField(
+                      controller: subjectCtrl,
                       textDirection: ui.TextDirection.rtl,
-                      decoration: InputDecoration(
-                        labelText: 'מיקום *',
-                        border: const OutlineInputBorder(),
-                        suffixIcon: loadingLoc
-                            ? const Padding(
-                                padding: EdgeInsets.all(8),
-                                child: SizedBox(
-                                    width: 20,
-                                    height: 20,
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 2)),
-                              )
-                            : null,
-                      ),
-                      onChanged: (v) => locationCtrl.text = v,
+                      decoration: const InputDecoration(
+                          labelText: 'כותרת הקריאה *',
+                          border: OutlineInputBorder()),
                     ),
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: phoneCtrl,
-                    textDirection: ui.TextDirection.ltr,
-                    keyboardType: TextInputType.phone,
-                    decoration: const InputDecoration(
-                        labelText: 'טלפון ליצירת קשר',
-                        border: OutlineInputBorder(),
-                        hintText: '05X-XXXXXXX'),
-                  ),
-                  const SizedBox(height: 16),
-                  DropdownButtonFormField<String>(
-                    value: priority,
-                    decoration: const InputDecoration(
-                        labelText: 'דחיפות', border: OutlineInputBorder()),
-                    items: const [
-                      DropdownMenuItem(value: 'low', child: Text('נמוכה')),
-                      DropdownMenuItem(value: 'normal', child: Text('רגילה')),
-                      DropdownMenuItem(value: 'high', child: Text('גבוהה')),
-                      DropdownMenuItem(value: 'urgent', child: Text('דחופה')),
-                    ],
-                    onChanged: (v) => setSt(() => priority = v ?? 'normal'),
-                  ),
+                    const SizedBox(height: 16),
+                  ],
+                  if (initialForm.showDescription) ...[
+                    TextField(
+                      controller: descCtrl,
+                      textDirection: ui.TextDirection.rtl,
+                      maxLines: 4,
+                      decoration: const InputDecoration(
+                          labelText: 'תיאור הבעיה',
+                          border: OutlineInputBorder()),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                  if (initialForm.showLocation) ...[
+                    Autocomplete<String>(
+                      key: ValueKey(loadingLoc),
+                      optionsBuilder: (tv) => tv.text.isEmpty
+                          ? locations
+                          : locations.where((l) =>
+                              l.toLowerCase().contains(tv.text.toLowerCase())),
+                      onSelected: (v) => locationCtrl.text = v,
+                      fieldViewBuilder: (context, ctrl, fn, oec) => TextField(
+                        controller: ctrl,
+                        focusNode: fn,
+                        onEditingComplete: oec,
+                        textDirection: ui.TextDirection.rtl,
+                        decoration: InputDecoration(
+                          labelText: 'מיקום *',
+                          border: const OutlineInputBorder(),
+                          suffixIcon: loadingLoc
+                              ? const Padding(
+                                  padding: EdgeInsets.all(8),
+                                  child: SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2)),
+                                )
+                              : null,
+                        ),
+                        onChanged: (v) => locationCtrl.text = v,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                  if (initialForm.showPhone) ...[
+                    TextField(
+                      controller: phoneCtrl,
+                      textDirection: ui.TextDirection.ltr,
+                      keyboardType: TextInputType.phone,
+                      decoration: const InputDecoration(
+                          labelText: 'טלפון ליצירת קשר',
+                          border: OutlineInputBorder(),
+                          hintText: '05X-XXXXXXX'),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                  if (initialForm.showPriority) ...[
+                    DropdownButtonFormField<String>(
+                      value: priority,
+                      decoration: const InputDecoration(
+                          labelText: 'דחיפות', border: OutlineInputBorder()),
+                      items: const [
+                        DropdownMenuItem(value: 'low', child: Text('נמוכה')),
+                        DropdownMenuItem(value: 'normal', child: Text('רגילה')),
+                        DropdownMenuItem(value: 'high', child: Text('גבוהה')),
+                        DropdownMenuItem(value: 'urgent', child: Text('דחופה')),
+                      ],
+                      onChanged: (v) => setSt(() => priority = v ?? 'normal'),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
                   // Dynamic department form fields
                   ...dynamicFieldWidgets,
-                  const SizedBox(height: 16),
-                  // Attachment picker
-                  if (attachedFileBytes != null) ...[
+                  if (initialForm.showAttachment) ...[
+                    const SizedBox(height: 16),
+                    // Attachment picker
+                    if (attachedFileBytes != null) ...[
                     Stack(
                       children: [
                         ClipRRect(
@@ -932,32 +947,33 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                         ),
                       ],
                     ),
-                    const SizedBox(height: 8),
-                  ] else ...[
-                    OutlinedButton.icon(
-                      onPressed: isUploadingAttachment
-                          ? null
-                          : () => pickAttachment(setSt),
-                      icon: const Icon(Icons.attach_file),
-                      label: const Text('צרף תמונה / קובץ'),
-                      style: OutlinedButton.styleFrom(
-                          minimumSize:
-                              const Size(double.infinity, 44)),
-                    ),
+                      const SizedBox(height: 8),
+                    ] else ...[
+                      OutlinedButton.icon(
+                        onPressed: isUploadingAttachment
+                            ? null
+                            : () => pickAttachment(setSt),
+                        icon: const Icon(Icons.attach_file),
+                        label: const Text('צרף תמונה / קובץ'),
+                        style: OutlinedButton.styleFrom(
+                            minimumSize:
+                                const Size(double.infinity, 44)),
+                      ),
+                    ],
+                    if (isUploadingAttachment)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 8),
+                        child: Row(children: [
+                          SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2)),
+                          SizedBox(width: 8),
+                          Text('מעלה קובץ...', style: TextStyle(fontSize: 12)),
+                        ]),
+                      ),
                   ],
-                  if (isUploadingAttachment)
-                    const Padding(
-                      padding: EdgeInsets.only(top: 8),
-                      child: Row(children: [
-                        SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2)),
-                        SizedBox(width: 8),
-                        Text('מעלה קובץ...', style: TextStyle(fontSize: 12)),
-                      ]),
-                    ),
                 ],
               ),
             ),
@@ -972,11 +988,13 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                 onPressed: isUploadingAttachment
                     ? null
                     : () async {
-                        if (subjectCtrl.text.trim().isEmpty) {
+                        if (initialForm.showTitle &&
+                            subjectCtrl.text.trim().isEmpty) {
                           showTopToast(context, 'יש להזין כותרת');
                           return;
                         }
-                        if (locationCtrl.text.trim().isEmpty) {
+                        if (initialForm.showLocation &&
+                            locationCtrl.text.trim().isEmpty) {
                           showTopToast(context, 'יש להזין מיקום');
                           return;
                         }
@@ -1054,22 +1072,34 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                           setSt(() => isUploadingAttachment = false);
                         }
 
+                        final subjectValue = initialForm.showTitle
+                            ? subjectCtrl.text.trim()
+                            : 'פנייה חדשה';
+                        final descriptionValue = initialForm.showDescription
+                            ? descCtrl.text.trim()
+                            : 'ללא תיאור';
+                        final locationValue = initialForm.showLocation &&
+                                locationCtrl.text.trim().isNotEmpty
+                            ? locationCtrl.text.trim()
+                            : null;
+                        final phoneValue = initialForm.showPhone &&
+                                phoneCtrl.text.trim().isNotEmpty
+                            ? phoneCtrl.text.trim()
+                            : null;
+
                         disposeCustomCtrls();
                         Navigator.of(context).pop();
                         try {
                           await ref
                               .read(helpdeskProvider.notifier)
                               .createTicket(
-                                subject: subjectCtrl.text.trim(),
-                                description: descCtrl.text.trim(),
+                                subject: subjectValue,
+                                description: descriptionValue,
                                 department: dept,
-                                priority: priority,
-                                location: locationCtrl.text.trim().isEmpty
-                                    ? null
-                                    : locationCtrl.text.trim(),
-                                phone: phoneCtrl.text.trim().isEmpty
-                                    ? null
-                                    : phoneCtrl.text.trim(),
+                                priority:
+                                    initialForm.showPriority ? priority : 'normal',
+                                location: locationValue,
+                                phone: phoneValue,
                                 attachmentUrl: attachmentUrl,
                                 customFields: customFields,
                               );
@@ -2456,6 +2486,8 @@ class _DepartmentSettingsScreenState
     // Working copy of ticket form fields — mutable during the dialog session.
     List<HelpdeskTicketFormField> ticketForm =
         List<HelpdeskTicketFormField>.from(existing?.ticketForm ?? []);
+    HelpdeskInitialFormConfig initialForm =
+        existing?.initialForm ?? const HelpdeskInitialFormConfig();
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -2505,6 +2537,55 @@ class _DepartmentSettingsScreenState
                     onChanged: (v) => setSt(() => status = v ?? 'active'),
                   ),
                   const SizedBox(height: 16),
+                  const Divider(),
+                  const Align(
+                    alignment: Alignment.centerRight,
+                    child: Text('שדות טופס ראשוני',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                  SwitchListTile(
+                    value: initialForm.showTitle,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('הצג כותרת'),
+                    onChanged: (v) =>
+                        setSt(() => initialForm = initialForm.copyWith(showTitle: v)),
+                  ),
+                  SwitchListTile(
+                    value: initialForm.showDescription,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('הצג תיאור'),
+                    onChanged: (v) => setSt(
+                        () => initialForm = initialForm.copyWith(showDescription: v)),
+                  ),
+                  SwitchListTile(
+                    value: initialForm.showLocation,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('הצג מיקום'),
+                    onChanged: (v) => setSt(
+                        () => initialForm = initialForm.copyWith(showLocation: v)),
+                  ),
+                  SwitchListTile(
+                    value: initialForm.showPhone,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('הצג טלפון'),
+                    onChanged: (v) =>
+                        setSt(() => initialForm = initialForm.copyWith(showPhone: v)),
+                  ),
+                  SwitchListTile(
+                    value: initialForm.showPriority,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('הצג דחיפות'),
+                    onChanged: (v) => setSt(
+                        () => initialForm = initialForm.copyWith(showPriority: v)),
+                  ),
+                  SwitchListTile(
+                    value: initialForm.showAttachment,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('הצג צרוף קובץ'),
+                    onChanged: (v) => setSt(
+                        () => initialForm = initialForm.copyWith(showAttachment: v)),
+                  ),
+                  const SizedBox(height: 12),
                   // Ticket form fields section
                   const Divider(),
                   Row(
@@ -2611,6 +2692,7 @@ class _DepartmentSettingsScreenState
           status: status,
           sortOrder: int.tryParse(sortCtrl.text.trim()) ?? 0,
           ticketForm: ticketForm,
+          initialForm: initialForm,
         );
         if (mounted) showTopToast(context, 'המחלקה נוספה בהצלחה');
       } else {
@@ -2622,6 +2704,7 @@ class _DepartmentSettingsScreenState
           status: status,
           sortOrder: int.tryParse(sortCtrl.text.trim()) ?? existing.sortOrder,
           ticketForm: ticketForm,
+          initialForm: initialForm,
         );
         if (mounted) showTopToast(context, 'המחלקה עודכנה בהצלחה');
       }
