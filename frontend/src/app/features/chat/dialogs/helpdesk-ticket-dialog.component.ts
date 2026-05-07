@@ -67,7 +67,6 @@ export class HelpdeskTicketDialogComponent implements OnInit {
   readonly filteredSelectOptions = signal<Record<string, string[]>>({});
 
   private readonly customFieldControls = new Map<string, FormControl<string>>();
-  private readonly selectSearchControls = new Map<string, FormControl<string>>();
 
   ngOnInit(): void {
     this.loadLocations();
@@ -85,18 +84,10 @@ export class HelpdeskTicketDialogComponent implements OnInit {
     return fallback;
   }
 
-  selectSearchControl(fieldId: string): FormControl<string> {
-    const existing = this.selectSearchControls.get(fieldId);
-    if (existing) return existing;
-    const fallback = new FormControl<string>('', { nonNullable: true });
-    this.selectSearchControls.set(fieldId, fallback);
-    return fallback;
-  }
-
   onSelectSearch(fieldId: string): void {
     const field = this.departmentFormFields().find((item) => item.id === fieldId && item.type === 'select');
     if (!field) return;
-    const searchValue = (this.selectSearchControl(fieldId).value || '').trim().toLowerCase();
+    const searchValue = (this.customControl(fieldId).value || '').trim().toLowerCase();
     const source = Array.isArray(field.options) ? field.options : [];
     const next = searchValue
       ? source.filter((option) => option.toLowerCase().includes(searchValue))
@@ -134,7 +125,6 @@ export class HelpdeskTicketDialogComponent implements OnInit {
           new FormControl<string>(initialValue, { nonNullable: true, validators })
         );
         if (field.type === 'select') {
-          this.selectSearchControls.set(field.id, new FormControl<string>('', { nonNullable: true }));
           nextFiltered[field.id] = Array.isArray(field.options) ? field.options : [];
         }
       }

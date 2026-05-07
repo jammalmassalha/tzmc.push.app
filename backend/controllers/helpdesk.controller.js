@@ -71,7 +71,6 @@ function sanitizeTicketFormField(rawField, index = 0) {
         const isLetter = code >= 97 && code <= 122;
         const isNumber = code >= 48 && code <= 57;
         const isDash = ch === '-';
-        const isUnderscore = ch === '_';
         if (isLetter || isNumber || isDash) {
             idCandidate += ch;
             previousUnderscore = false;
@@ -79,10 +78,6 @@ function sanitizeTicketFormField(rawField, index = 0) {
         }
         if (!previousUnderscore && idCandidate.length > 0) {
             idCandidate += '_';
-            previousUnderscore = true;
-        }
-        if (isUnderscore && !previousUnderscore && idCandidate.length === 0) {
-            // ignore leading underscore
             previousUnderscore = true;
         }
     }

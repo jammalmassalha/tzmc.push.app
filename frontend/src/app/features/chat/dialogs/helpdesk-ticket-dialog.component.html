@@ -120,22 +120,18 @@
               <mat-label>{{ field.label }} (חיפוש)</mat-label>
               <input
                 matInput
-                [formControl]="selectSearchControl(field.id)"
+                [formControl]="customControl(field.id)"
                 [matAutocomplete]="selectAuto"
                 [placeholder]="field.placeholder || 'חיפוש אפשרות...'"
                 (input)="onSelectSearch(field.id)"
                 autocomplete="off" />
               <mat-autocomplete #selectAuto="matAutocomplete">
                 @for (option of selectOptions(field.id); track option) {
-                  <mat-option [value]="option" (onSelectionChange)="$event.isUserInput && customControl(field.id).setValue(option)">
+                  <mat-option [value]="option">
                     {{ option }}
                   </mat-option>
                 }
               </mat-autocomplete>
-            </mat-form-field>
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>ערך נבחר · {{ field.label }}</mat-label>
-              <input matInput [formControl]="customControl(field.id)" [readonly]="true" />
               @if (isFieldInvalid(field)) {
                 <mat-error>יש לבחור ערך.</mat-error>
               }
