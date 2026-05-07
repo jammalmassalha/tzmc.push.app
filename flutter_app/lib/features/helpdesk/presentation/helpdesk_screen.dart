@@ -693,8 +693,9 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                 radioValues = radioMap;
                 selectValues = selectMap;
               });
-            }).catchError((_) {
+            }).catchError((error) {
               // Non-critical — continue with empty dynamic fields
+              debugPrint('Failed to load helpdesk department form config: $error');
             });
           }
 
