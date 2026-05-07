@@ -270,8 +270,6 @@ class HelpdeskNotifier extends Notifier<HelpdeskState> {
     await _api.updateHelpdeskTicketStatus(ticketId, helpdeskStatus, _currentUser!);
     await loadTickets(force: true);
   }
-
-  String get currentUser => _currentUser ?? '';
 }
 
 final helpdeskProvider = NotifierProvider<HelpdeskNotifier, HelpdeskState>(() {
