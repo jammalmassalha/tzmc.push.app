@@ -2788,7 +2788,7 @@ class _DepartmentSettingsScreenState
                   } else {
                     final transformed = label
                         .toLowerCase()
-                        .replaceAll(RegExp(r'[^\w]'), '_')
+                        .replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_')
                         .replaceAll(RegExp(r'_+'), '_')
                         .replaceAll(RegExp(r'^_+|_+$'), '');
                     rawId = transformed.length > 64
