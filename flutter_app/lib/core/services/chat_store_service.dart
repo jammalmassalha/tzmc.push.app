@@ -804,7 +804,23 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // timestamp from the in-memory state so we still pull missed messages.
         latestTimestamp = _latestTimestampFromState();
       }
-      await pullMessages(since: latestTimestamp);
+
+      if (latestTimestamp == 0) {
+        // No local history (first install or DB cleared): use the batch-import
+        // path so that all historical messages are loaded without incrementing
+        // unread counters. Treating the entire history as "unread" on first open
+        // would produce thousands of spurious badge counts that confuse users.
+        // On the next open the DB will have messages and the incremental path
+        // below is used — only genuinely new messages are counted as unread.
+        final user = _currentUser;
+        if (user != null && user.isNotEmpty) {
+          await _pullAllMessagesFromLogs(user: user, since: latestTimestamp);
+        }
+      } else {
+        // Incremental update: use the normal per-message handler so that new
+        // messages increment unread counts for the user.
+        await pullMessages(since: latestTimestamp);
+      }
     } catch (e) {
       // Silent failure, will retry on next poll
     }
@@ -1102,23 +1118,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       resolvedGroupName = rawGroupName.isNotEmpty ? rawGroupName : resolvedGroupId;
     }
 
-    // Extract "SenderName: message" prefix from body when groupSenderName is absent.
+    // groupSenderName comes exclusively from the server field — never extracted
+    // from the message body.  The display name in the bubble is resolved via
+    // getDisplayName(groupSenderName) so it reflects the device contact name.
     String groupSenderName = (msg.groupSenderName ?? '').trim();
     String body = rawBody;
 
-    if (groupSenderName.isEmpty && rawBody.isNotEmpty) {
-      final colonIdx = rawBody.indexOf(':');
-      if (colonIdx > 0 && colonIdx <= _kGroupSenderPrefixMaxLength) {
-        final potentialSender = rawBody.substring(0, colonIdx).trim();
-        final potentialBody   = rawBody.substring(colonIdx + 1).trim();
-        if (potentialSender.length <= _kGroupSenderPrefixMaxLength &&
-            !potentialSender.contains('\n') &&
-            potentialBody.isNotEmpty) {
-          groupSenderName = potentialSender;
-          body = potentialBody;
-        }
-      }
-    } else if (groupSenderName.isNotEmpty && rawBody.isNotEmpty) {
+    // If groupSenderName was provided by the backend, strip any matching prefix
+    // from the body so the name does not appear twice (in the bubble AND the text).
+    if (groupSenderName.isNotEmpty && rawBody.isNotEmpty) {
       body = _stripGroupSenderPrefixFromBody(rawBody, groupSenderName);
     }
 
@@ -1510,9 +1518,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // still keep the longer body if a fresher pull replaces it.
     final messageText = _str(data['messageText']);
     final groupMessageText = _str(data['groupMessageText']);
-    final body = (messageText != null && groupMessageText != null)
+    final rawBody = (messageText != null && groupMessageText != null)
         ? (messageText.length >= groupMessageText.length ? messageText : groupMessageText)
-        : (messageText ?? groupMessageText ?? _str(data['body']) ?? '');
+        : (messageText ?? groupMessageText ?? _str(data['body']) ?? _str(data['message']) ?? '');
+    final locationUrl = _str(data['locationUrl']) ?? _str(data['location']);
+    final lat = _str(data['latitude']) ?? _str(data['lat']);
+    final lon = _str(data['longitude']) ?? _str(data['lng']) ?? _str(data['lon']);
+    final body = rawBody.isNotEmpty
+        ? rawBody
+        : ((lat != null && lon != null)
+            ? '📍 https://www.google.com/maps?q=$lat,$lon'
+            : (locationUrl ?? ''));
 
     final groupTypeRaw = _str(data['groupType']);
     final groupType = groupTypeRaw == 'community'
@@ -1526,8 +1542,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // actual user identifier, not the group ID itself.
     final senderIsGroupId = isGroup &&
         sender.trim().toLowerCase() == (groupId ?? '').trim().toLowerCase();
-    final senderDisplayName =
-        _str(data['groupSenderName']) ?? (senderIsGroupId ? null : getDisplayName(sender));
+    // groupSenderName from the server may be a raw phone number (e.g. when
+    // sourced from MessageActivities.Sender).  Always run it through
+    // getDisplayName so the bubble shows the contact name when available;
+    // getDisplayName returns the input unchanged when no match is found.
+    final rawGroupSenderName = _str(data['groupSenderName']) ?? '';
+    final senderDisplayName = rawGroupSenderName.isNotEmpty
+        ? getDisplayName(rawGroupSenderName)
+        : (senderIsGroupId ? null : getDisplayName(sender));
     final timestamp = _int(data['timestamp']) ?? DateTime.now().millisecondsSinceEpoch;
 
     final message = ChatMessage(
@@ -1537,8 +1559,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       sender: sender,
       senderDisplayName: senderDisplayName,
       body: body,
-      imageUrl: _str(data['image']) ?? _str(data['imageUrl']),
-      fileUrl: _str(data['fileUrl']),
+      imageUrl: _str(data['image']) ?? _str(data['imageUrl']) ?? _str(data['imageURL']),
+      fileUrl: _str(data['fileUrl']) ?? _str(data['file']) ?? _str(data['attachmentUrl']) ?? _str(data['url']),
       direction: (isSelfEcho || skipNotification) ? MessageDirection.outgoing : MessageDirection.incoming,
       timestamp: timestamp,
       deliveryStatus: (isSelfEcho || skipNotification) ? DeliveryStatus.sent : DeliveryStatus.delivered,
@@ -2256,8 +2278,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       sender: msg.sender!,
       // When the server stores the group ID as sender (server.js:2138) and
       // groupSenderName is absent, avoid showing the raw group ID string.
-      senderDisplayName: msg.groupSenderName ??
-          (isGroup &&
+      // groupSenderName may be a raw phone (sourced from MessageActivities),
+      // so always resolve it through getDisplayName for a proper contact name.
+      senderDisplayName: (msg.groupSenderName != null && msg.groupSenderName!.isNotEmpty)
+          ? getDisplayName(msg.groupSenderName!)
+          : (isGroup &&
                   msg.sender!.trim().toLowerCase() ==
                       (msg.groupId ?? '').trim().toLowerCase()
               ? null

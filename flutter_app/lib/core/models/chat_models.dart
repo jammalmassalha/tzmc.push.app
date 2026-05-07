@@ -583,43 +583,82 @@ class IncomingServerMessage extends Equatable {
       ];
 
   factory IncomingServerMessage.fromJson(Map<String, dynamic> json) {
+    String? asString(dynamic value) {
+      if (value == null) return null;
+      final text = value.toString().trim();
+      return text.isEmpty ? null : text;
+    }
+
+    int? asInt(dynamic value) {
+      if (value == null) return null;
+      if (value is int) return value;
+      if (value is num) return value.toInt();
+      return int.tryParse(value.toString().trim());
+    }
+
+    List<String>? asStringList(dynamic value) {
+      if (value == null) return null;
+      if (value is List) {
+        final values = value.map((e) => e.toString().trim()).where((e) => e.isNotEmpty).toList();
+        return values.isEmpty ? null : values;
+      }
+      final text = value.toString().trim();
+      if (text.isEmpty) return null;
+      final values = text.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+      return values.isEmpty ? null : values;
+    }
+
+    final lat = asString(json['latitude'] ?? json['lat']);
+    final lon = asString(json['longitude'] ?? json['lng'] ?? json['lon']);
+    final locationUrl = asString(json['locationUrl'] ?? json['location']);
+    final locationBody = (lat != null && lon != null)
+        ? '📍 https://www.google.com/maps?q=$lat,$lon'
+        : locationUrl;
+    final body = asString(
+      json['body'] ??
+      json['message'] ??
+      json['messageText'] ??
+      json['groupMessageText'] ??
+      json['reply'],
+    ) ?? locationBody;
+
     return IncomingServerMessage(
-      messageId: json['messageId'] as String?,
-      sender: json['sender'] as String?,
-      toUser: json['toUser'] as String?,
-      recipient: json['recipient'] as String?,
-      type: json['type'] as String?,
-      chatId: json['chatId'] as String?,
+      messageId: asString(json['messageId'] ?? json['msgId']),
+      sender: asString(json['sender'] ?? json['from'] ?? json['fromUser']),
+      toUser: asString(json['toUser'] ?? json['to']),
+      recipient: asString(json['recipient']),
+      type: asString(json['type']),
+      chatId: asString(json['chatId']),
       isTyping: json['isTyping'] as bool?,
-      editedAt: json['editedAt'] as int?,
-      deletedAt: json['deletedAt'] as int?,
-      messageIds: (json['messageIds'] as List?)?.cast<String>(),
-      readAt: json['readAt'] as int?,
-      targetMessageId: json['targetMessageId'] as String?,
-      emoji: json['emoji'] as String?,
-      reactor: json['reactor'] as String?,
-      reactorName: json['reactorName'] as String?,
-      body: json['body'] as String?,
-      timestamp: json['timestamp'] as int?,
-      imageUrl: json['imageUrl'] as String?,
-      fileUrl: json['fileUrl'] as String?,
-      groupId: json['groupId'] as String?,
-      groupName: json['groupName'] as String?,
-      groupMembers: (json['groupMembers'] as List?)?.cast<String>(),
-      groupCreatedBy: json['groupCreatedBy'] as String?,
-      groupAdmins: (json['groupAdmins'] as List?)?.cast<String>(),
-      groupUpdatedAt: json['groupUpdatedAt'] as int?,
-      groupType: json['groupType'] as String?,
-      groupSenderName: json['groupSenderName'] as String?,
-      replyToMessageId: json['replyToMessageId'] as String?,
-      replyToSender: json['replyToSender'] as String?,
-      replyToSenderName: json['replyToSenderName'] as String?,
-      replyToBody: json['replyToBody'] as String?,
-      replyToImageUrl: json['replyToImageUrl'] as String?,
+      editedAt: asInt(json['editedAt']),
+      deletedAt: asInt(json['deletedAt']),
+      messageIds: asStringList(json['messageIds']),
+      readAt: asInt(json['readAt']),
+      targetMessageId: asString(json['targetMessageId']),
+      emoji: asString(json['emoji']),
+      reactor: asString(json['reactor']),
+      reactorName: asString(json['reactorName']),
+      body: body,
+      timestamp: asInt(json['timestamp']),
+      imageUrl: asString(json['imageUrl'] ?? json['image'] ?? json['imageURL']),
+      fileUrl: asString(json['fileUrl'] ?? json['file'] ?? json['attachmentUrl'] ?? json['url']),
+      groupId: asString(json['groupId']),
+      groupName: asString(json['groupName']),
+      groupMembers: asStringList(json['groupMembers']),
+      groupCreatedBy: asString(json['groupCreatedBy']),
+      groupAdmins: asStringList(json['groupAdmins']),
+      groupUpdatedAt: asInt(json['groupUpdatedAt']),
+      groupType: asString(json['groupType']),
+      groupSenderName: asString(json['groupSenderName'] ?? json['senderName'] ?? json['fromName']),
+      replyToMessageId: asString(json['replyToMessageId']),
+      replyToSender: asString(json['replyToSender']),
+      replyToSenderName: asString(json['replyToSenderName']),
+      replyToBody: asString(json['replyToBody']),
+      replyToImageUrl: asString(json['replyToImageUrl']),
       forwarded: json['forwarded'] as bool?,
-      forwardedFrom: json['forwardedFrom'] as String?,
-      forwardedFromName: json['forwardedFromName'] as String?,
-      userReceivedTime: json['userReceivedTime'] as int?,
+      forwardedFrom: asString(json['forwardedFrom']),
+      forwardedFromName: asString(json['forwardedFromName']),
+      userReceivedTime: asInt(json['userReceivedTime']),
     );
   }
 

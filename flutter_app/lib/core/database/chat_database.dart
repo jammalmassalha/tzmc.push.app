@@ -23,6 +23,28 @@ part 'chat_database.g.dart';
 // Table Definitions
 // ---------------------------------------------------------------------------
 
+/// Maximum length of a sender-name prefix that can be extracted from a legacy
+/// group-message body ("SenderName: message text" format).
+/// Must match _kGroupSenderPrefixMaxLength in chat_store_service.dart.
+const int _kMaxGroupSenderPrefixLength = 80;
+
+/// Extracts a sender name from a legacy group-message body of the form
+/// "SenderName: message text".  Returns null when the body does not match
+/// (including URL bodies) or when the candidate is suspicious.
+({String senderName, String strippedBody})? _extractGroupSenderFromBodyPrefix(String body) {
+  final trimmed = body.trim();
+  if (trimmed.isEmpty) return null;
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return null;
+  final colonIdx = trimmed.indexOf(':');
+  if (colonIdx <= 0 || colonIdx > _kMaxGroupSenderPrefixLength) return null;
+  final senderName = trimmed.substring(0, colonIdx).trim();
+  final strippedBody = trimmed.substring(colonIdx + 1).trim();
+  if (senderName.isEmpty || strippedBody.isEmpty) return null;
+  if (senderName.contains('\n')) return null;
+  if (senderName.length > _kMaxGroupSenderPrefixLength) return null;
+  return (senderName: senderName, strippedBody: strippedBody);
+}
+
 /// Contacts table
 @DataClassName('ContactsData')
 class Contacts extends Table {
@@ -327,14 +349,29 @@ class ChatDatabase extends _$ChatDatabase {
   }
 
   ChatMessage _messageFromRow(MessagesData row) {
+    // For older group-message rows that pre-date the GroupSenderName column,
+    // the server wrote the sender as a prefix in the body ("SenderName: text").
+    // Extract it in-memory so the UI shows the sender label correctly without
+    // requiring a DB schema migration.  The transformation is idempotent: if
+    // `senderDisplayName` is already set we skip it.
+    String? senderDisplayName = row.senderDisplayName;
+    String body = row.body;
+    if (senderDisplayName == null && row.groupId != null && body.isNotEmpty) {
+      final extracted = _extractGroupSenderFromBodyPrefix(body);
+      if (extracted != null) {
+        senderDisplayName = extracted.senderName;
+        body = extracted.strippedBody;
+      }
+    }
+
     return ChatMessage(
       id: row.id,
       messageId: row.messageId,
       chatId: row.chatId,
       sender: row.sender,
-      senderDisplayName: row.senderDisplayName,
+      senderDisplayName: senderDisplayName,
       recordType: row.recordType,
-      body: row.body,
+      body: body,
       imageUrl: row.imageUrl,
       thumbnailUrl: row.thumbnailUrl,
       fileUrl: row.fileUrl,

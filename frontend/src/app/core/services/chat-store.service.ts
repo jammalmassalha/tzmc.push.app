@@ -287,6 +287,8 @@ export class ChatStoreService {
   readonly currentUser = signal<string | null>(null);
   readonly contacts = signal<Contact[]>([]);
   readonly groups = signal<ChatGroup[]>([]);
+  /** Cached Set of known group IDs — recomputed only when the groups signal changes. */
+  private readonly groupIdSet = computed(() => new Set(this.groups().map((g) => g.id)));
   readonly activeChatId = signal<string | null>(null);
   readonly lastActivatedChatMeta = signal<ActivatedChatMeta | null>(null);
   readonly unreadByChat = signal<Record<string, number>>({});
@@ -648,12 +650,24 @@ export class ChatStoreService {
   }
 
   async initialize(): Promise<void> {
+    // Show the loading spinner immediately so the template never shows the
+    // "no active chats" placeholder while the session bootstrap is in flight.
+    // We only do this on the very first call (initializedUser is null); subsequent
+    // calls (e.g. on tab focus when already initialized) must not flash a spinner.
+    if (this.initializedUser === null) {
+      this.loading.set(true);
+    }
+
     await this.ensureSessionReady();
     const user = this.currentUser();
-    if (!user) return;
+    if (!user) {
+      this.loading.set(false);
+      return;
+    }
 
     // If already initialized for this user, just check for new background payloads
     if (this.initializedUser === user) {
+      this.loading.set(false);
       this.flushPendingServiceWorkerMessages();
       await this.consumePendingPushPayloadsFromServiceWorker();
       this.schedulePendingPushDrainRetry();
@@ -2093,9 +2107,6 @@ export class ChatStoreService {
         this.normalizeChatId(normalizedGroupName) === resolvedGroupId
       );
       const rawBody = String(incoming.body ?? '').trim();
-      const senderPrefixMatch = rawBody.match(/^([^:\n]{1,80})\s*:\s*([\s\S]+)$/);
-      const inferredSenderName = senderPrefixMatch ? String(senderPrefixMatch[1] || '').trim() : '';
-      const inferredBody = senderPrefixMatch ? String(senderPrefixMatch[2] || '').trim() : rawBody;
 
       return {
         ...incoming,
@@ -2104,8 +2115,8 @@ export class ChatStoreService {
           ? (existingGroup?.name || normalizedGroupName || resolvedGroupId)
           : normalizedGroupName,
         groupType: incoming.groupType ?? existingGroup?.type ?? 'group',
-        groupSenderName: String(incoming.groupSenderName ?? '').trim() || inferredSenderName || undefined,
-        body: inferredBody || rawBody
+        groupSenderName: String(incoming.groupSenderName ?? '').trim() || undefined,
+        body: rawBody
       };
     });
   }
@@ -6256,7 +6267,10 @@ export class ChatStoreService {
           continue;
         }
         const list = getMutableList(chatId);
-        if (this.hydrateIncomingMessageInList(list, messageId, incomingBody, incomingImageUrl)) {
+        if (this.hydrateIncomingMessageInList(
+          list, messageId, incomingBody, incomingImageUrl,
+          this.resolveGroupSenderDisplayName(incoming.groupSenderName, sender) || undefined
+        )) {
           messagesChanged = true;
           appliedCount += 1;
         }
@@ -6566,7 +6580,10 @@ export class ChatStoreService {
       (message) => message.messageId === messageId
     );
     if (alreadyExists) {
-      return this.hydrateExistingIncomingMessage(chatId, messageId, incomingBody, incomingImageUrl);
+      return this.hydrateExistingIncomingMessage(
+        chatId, messageId, incomingBody, incomingImageUrl,
+        this.resolveGroupSenderDisplayName(incoming.groupSenderName, sender) || undefined
+      );
     }
     if (!this.hasRenderableIncomingContent(incomingBody, incomingImageUrl)) {
       return false;
@@ -6821,7 +6838,8 @@ export class ChatStoreService {
     chatId: string,
     messageId: string,
     incomingBody: string,
-    incomingImageUrl: string | null
+    incomingImageUrl: string | null,
+    incomingSenderDisplayName?: string
   ): boolean {
     if (!this.hasRenderableIncomingContent(incomingBody, incomingImageUrl)) {
       return false;
@@ -6835,7 +6853,7 @@ export class ChatStoreService {
       }
 
       const nextList = [...list];
-      if (!this.hydrateIncomingMessageInList(nextList, messageId, incomingBody, incomingImageUrl)) {
+      if (!this.hydrateIncomingMessageInList(nextList, messageId, incomingBody, incomingImageUrl, incomingSenderDisplayName)) {
         return messageMap;
       }
       changed = true;
@@ -6855,7 +6873,8 @@ export class ChatStoreService {
     list: ChatMessage[],
     messageId: string,
     incomingBody: string,
-    incomingImageUrl: string | null
+    incomingImageUrl: string | null,
+    incomingSenderDisplayName?: string
   ): boolean {
     const index = list.findIndex((message) => message.messageId === messageId);
     if (index < 0) return false;
@@ -6870,14 +6889,20 @@ export class ChatStoreService {
     const normalizedIncoming = String(incomingBody || '').trim();
     const nextBody = normalizedIncoming.length > currentBody.length ? normalizedIncoming : (currentBody || normalizedIncoming);
     const nextImage = currentImage || String(incomingImageUrl || '').trim();
-    if (nextBody === currentBody && nextImage === currentImage) {
+    // Back-fill senderDisplayName when the cached message has none but the
+    // incoming payload (from a recovery pull or re-delivery) now carries one.
+    const nextSenderDisplayName = (incomingSenderDisplayName && !current.senderDisplayName)
+      ? incomingSenderDisplayName
+      : current.senderDisplayName;
+    if (nextBody === currentBody && nextImage === currentImage && nextSenderDisplayName === current.senderDisplayName) {
       return false;
     }
 
     list[index] = {
       ...current,
       body: nextBody,
-      imageUrl: nextImage || null
+      imageUrl: nextImage || null,
+      senderDisplayName: nextSenderDisplayName
     };
     return true;
   }
@@ -7916,9 +7941,9 @@ export class ChatStoreService {
 
   /**
    * Resolve the display name for a sender in a group message.
-   * The groupSenderName (extracted from body prefix or provided by backend) may be
-   * a phone number rather than a proper display name. In that case, look up the
-   * contact list to find a better name. Falls back to getDisplayName(sender).
+   * groupSenderName is provided by the backend (from Logs.GroupSenderName or
+   * MessageActivities.Sender) and may be a raw phone number. In that case, look
+   * up the contact list to find the proper name. Falls back to getDisplayName(sender).
    */
   private resolveGroupSenderDisplayName(
     groupSenderName: string | null | undefined,
@@ -7952,6 +7977,12 @@ export class ChatStoreService {
     // return empty so the template can decide not to render the label.
     const normalizedSender = this.normalizeUser(sender);
     if (!normalizedSender || /^group:/i.test(normalizedSender)) {
+      return '';
+    }
+    // If sender is a known group (e.g. community groups whose sender field
+    // holds the group name/ID rather than a human phone), avoid returning the
+    // group name as the individual sender label.
+    if (this.groupIdSet().has(normalizedSender)) {
       return '';
     }
     return this.getDisplayName(sender);
@@ -8179,6 +8210,13 @@ export class ChatStoreService {
         ? parsed.unreadByChat
         : {};
 
+      // Set contacts and groups BEFORE building the message map so that
+      // resolveGroupSenderDisplayName can look up phone numbers in the
+      // contacts signal and return proper display names rather than raw
+      // phone digits for messages loaded from the persisted cache.
+      this.contacts.set(contacts);
+      this.groups.set(groups);
+
       const messageMap: Record<string, ChatMessage[]> = {};
       for (const record of parsed.messages ?? []) {
         if (!record || !record.chatId) continue;
@@ -8188,18 +8226,25 @@ export class ChatStoreService {
           record.groupType === 'group' || record.groupType === 'community'
             ? record.groupType
             : (normalizedGroupId ? (groupsById.get(normalizedGroupId)?.type ?? null) : null);
+
+        // Resolve sender display name solely from the stored senderDisplayName
+        // (which is the groupSenderName phone/name from the backend) — do NOT
+        // fall back to body-prefix extraction.
+        const resolvedSenderDisplayName = this.resolveGroupSenderDisplayName(
+          record.senderDisplayName,
+          record.sender ?? ''
+        );
+        const resolvedBody = normalizedGroupId
+          ? this.stripGroupSenderPrefixFromBody(String(record.body ?? ''), record.senderDisplayName)
+          : String(record.body ?? '');
+
         const normalized: ChatMessage = {
           ...record,
           chatId,
           sender: this.normalizeUser(record.sender),
-          senderDisplayName: this.resolveGroupSenderDisplayName(
-            record.senderDisplayName,
-            record.sender ?? ''
-          ),
+          senderDisplayName: resolvedSenderDisplayName,
           messageId: String(record.messageId || this.generateId('msg')),
-          body: normalizedGroupId
-            ? this.stripGroupSenderPrefixFromBody(String(record.body ?? ''), record.senderDisplayName)
-            : String(record.body ?? ''),
+          body: resolvedBody,
           timestamp: Number(record.timestamp ?? Date.now()),
           direction: record.direction === 'incoming' ? 'incoming' : 'outgoing',
           deliveryStatus: record.deliveryStatus ?? 'sent',
@@ -8225,8 +8270,6 @@ export class ChatStoreService {
         list.sort((a, b) => a.timestamp - b.timestamp);
       }
 
-      this.contacts.set(contacts);
-      this.groups.set(groups);
       this.unreadByChat.set(unreadByChat);
       this.messagesByChat.set(messageMap);
     } catch {

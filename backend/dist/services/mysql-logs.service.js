@@ -695,8 +695,8 @@ class MysqlLogsService {
                     emoji: toTrimmedString(detailsMap.emoji || detailsMap.reaction) || undefined,
                     reactor: toTrimmedString(detailsMap.reactor || detailsMap.user) || undefined,
                     // Persisted human display name for group senders. message.controller.js
-                    // uses this when present; otherwise it falls back to legacy
-                    // body-prefix parsing for older rows that pre-date this column.
+                    // uses this when present; otherwise it falls back to a MessageActivities
+                    // lookup by MessageId for older rows that pre-date this column.
                     groupSenderName: toTrimmedString(row.groupSenderName) || undefined,
                     userReceivedTime: parseFlexibleTimestamp(row.userReceivedTime) || undefined
                 });
@@ -1201,8 +1201,24 @@ class MysqlLogsService {
         if (!requestedUser)
             return [];
         const limit = Math.max(1, Math.min(toPositiveInteger(options.limit, 2000), 5000));
+        const offset = Math.max(0, toPositiveInteger(options.offset, 0));
         const sinceTimestamp = Number(options.since) || 0;
+        const includeActions = options.includeActions !== false;
+        const includeMessages = options.includeMessages === true;
+        const allowedGroupIds = Array.isArray(options.allowedGroupIds)
+            ? options.allowedGroupIds.map((gid) => toTrimmedString(gid)).filter(Boolean)
+            : [];
+        const actionTypes = [];
+        if (includeActions) {
+            actionTypes.push('edit-action', 'reaction', 'delete-action');
+        }
+        if (includeMessages) {
+            actionTypes.push('message', 'queue-message');
+        }
+        if (!actionTypes.length)
+            return [];
         try {
+            const actionTypePlaceholders = actionTypes.map(() => '?').join(', ');
             let sql = `SELECT
           \`ActionType\`      AS actionType,
           \`MessageId\`       AS messageId,
@@ -1210,23 +1226,45 @@ class MysqlLogsService {
           \`Recipient\`       AS recipient,
           \`GroupId\`         AS groupId,
           \`Body\`            AS body,
+          \`ImageUrl\`        AS imageUrl,
+          \`FileUrl\`         AS fileUrl,
           \`Emoji\`           AS emoji,
           \`TargetMessageId\` AS targetMessageId,
           \`ActionTimestamp\` AS actionTimestamp
         FROM \`MessageActivities\`
-        WHERE \`ActionType\` IN ('edit-action', 'reaction', 'delete-action')
-          AND (\`Sender\` = ? OR \`Recipient\` = ? OR \`Recipient\` LIKE ?)`;
+        WHERE \`ActionType\` IN (${actionTypePlaceholders})
+          AND (\`Sender\` = ? OR \`Recipient\` = ? OR \`Recipient\` LIKE ?`;
             const params = [
+                ...actionTypes,
                 requestedUser,
                 requestedUser,
                 `%${requestedUser}%`,
             ];
+            if (allowedGroupIds.length > 0) {
+                const groupPlaceholders = allowedGroupIds.map(() => '?').join(', ');
+                sql += ` OR \`GroupId\` IN (${groupPlaceholders})`;
+                params.push(...allowedGroupIds);
+            }
+            sql += `)`;
             if (sinceTimestamp > 0) {
                 sql += ` AND \`ActionTimestamp\` > ?`;
                 params.push(sinceTimestamp);
             }
-            sql += ` ORDER BY \`ActionTimestamp\` ASC LIMIT ?`;
-            params.push(limit);
+            if (includeMessages) {
+                // Full-sync mode paginates newest-first to mirror the historical Logs-table paging.
+                sql += ` ORDER BY \`ActionTimestamp\` DESC LIMIT ?, ?`;
+                params.push(offset, limit);
+            }
+            else if (offset > 0) {
+                // Backward-compatible actions-only mode (used by incremental sync callers).
+                sql += ` ORDER BY \`ActionTimestamp\` ASC LIMIT ?, ?`;
+                params.push(offset, limit);
+            }
+            else {
+                // Preserve historical ordering for existing callers that did not use offset.
+                sql += ` ORDER BY \`ActionTimestamp\` ASC LIMIT ?`;
+                params.push(limit);
+            }
             const [rows] = await this.pool.query(sql, params);
             const typedRows = rows;
             return typedRows.map((row) => {
@@ -1236,12 +1274,14 @@ class MysqlLogsService {
                 const sender = normalizePhone(String(row.sender || '').trim()) ||
                     String(row.sender || '').trim();
                 const targetMsgId = String(row.targetMessageId || '').trim();
+                const groupId = String(row.groupId || '').trim();
+                const recipient = String(row.recipient || '').trim();
                 const record = {
                     type: actionType,
                     messageId: msgId,
                     sender,
-                    toUser: String(row.recipient || '').trim() || undefined,
-                    groupId: String(row.groupId || '').trim() || undefined,
+                    toUser: recipient || undefined,
+                    groupId: groupId || undefined,
                     timestamp: ts,
                 };
                 if (actionType === 'edit-action') {
@@ -1257,6 +1297,14 @@ class MysqlLogsService {
                 else if (actionType === 'delete-action') {
                     record.deletedAt = ts;
                 }
+                else {
+                    record.body = String(row.body || '').trim() || undefined;
+                    record.imageUrl = String(row.imageUrl || '').trim() || undefined;
+                    record.fileUrl = String(row.fileUrl || '').trim() || undefined;
+                    if (groupId && sender) {
+                        record.groupSenderName = sender;
+                    }
+                }
                 return record;
             });
         }
@@ -1264,6 +1312,87 @@ class MysqlLogsService {
             const message = String(err.message || '');
             console.error('[MYSQL] getMessageActivitiesForUser error:', message);
             return [];
+        }
+    }
+    // Return a map of messageId → senderPhone for group messages in
+    // MessageActivities where the sender is NOT the requesting user.
+    // Used by the /messages/logs endpoint to supplement groupSenderName
+    // for Logs rows whose GroupSenderName column is null/empty.
+    //
+    // NOTE: For group messages MessageActivities.Recipient stores the groupId,
+    // not the individual user's phone — so filtering by Recipient would always
+    // return zero rows.  Relevancy is guaranteed by the messageId cross-reference
+    // in message.controller.js: only messageIds already present in the user's
+    // Logs (scoped by getLogsMessagesForUser) are ever looked up in this map.
+    async getGroupMessageSendersByMessageId(user, options = {}) {
+        await this.ensureMessageActivitiesTable();
+        const requestedUser = normalizePhone(user);
+        if (!requestedUser)
+            return new Map();
+        // When an explicit set of message IDs is provided, query exactly those rows.
+        // This is the primary code path used by /messages/logs so that the result
+        // always covers the messages that are about to be returned, regardless of
+        // how many total group messages exist in MessageActivities.
+        const messageIds = Array.isArray(options.messageIds)
+            ? options.messageIds.filter(id => typeof id === 'string' && id.trim()).slice(0, 1000)
+            : [];
+        try {
+            let sql;
+            let params;
+            if (messageIds.length > 0) {
+                // Targeted query: only return rows whose MessageId is in the provided list.
+                // No ORDER BY / LIMIT needed — the list size is already bounded by the
+                // caller (number of Logs records per request page, typically ≤ 700).
+                const placeholders = messageIds.map(() => '?').join(', ');
+                sql = `SELECT
+            \`MessageId\` AS messageId,
+            \`Sender\`    AS sender
+          FROM \`MessageActivities\`
+          WHERE \`ActionType\` = 'message'
+            AND \`GroupId\` IS NOT NULL AND \`GroupId\` != ''
+            AND \`Sender\` != ?
+            AND \`MessageId\` IN (${placeholders})`;
+                params = [requestedUser, ...messageIds];
+            }
+            else {
+                // Fallback (no messageIds supplied): return the most-recent N rows so
+                // that the map is biased toward recent messages.
+                const limit = Math.max(1, Math.min(toPositiveInteger(options.limit, 5000), 10000));
+                const sinceTimestamp = Number(options.since) || 0;
+                sql = `SELECT
+            \`MessageId\` AS messageId,
+            \`Sender\`    AS sender
+          FROM \`MessageActivities\`
+          WHERE \`ActionType\` = 'message'
+            AND \`GroupId\` IS NOT NULL AND \`GroupId\` != ''
+            AND \`Sender\` != ?`;
+                params = [requestedUser];
+                if (sinceTimestamp > 0) {
+                    sql += ` AND \`ActionTimestamp\` > ?`;
+                    params.push(sinceTimestamp);
+                }
+                sql += ` ORDER BY \`ActionTimestamp\` DESC LIMIT ?`;
+                params.push(limit);
+            }
+            const [rows] = await this.pool.query(sql, params);
+            const typedRows = rows;
+            const result = new Map();
+            for (const row of typedRows) {
+                const msgId = toTrimmedString(row.messageId);
+                // Prefer the normalized phone form; fall back to the raw value so
+                // non-phone senders (e.g. service accounts) are still captured.
+                const rawSender = toTrimmedString(row.sender);
+                const sender = normalizePhone(rawSender) || rawSender;
+                if (msgId && sender) {
+                    result.set(msgId, sender);
+                }
+            }
+            return result;
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.error('[MYSQL] getGroupMessageSendersByMessageId error:', message);
+            return new Map();
         }
     }
     // ─── Server State persistence (replaces file-based state.json) ───────────────

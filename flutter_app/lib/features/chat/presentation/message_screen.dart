@@ -362,8 +362,20 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                          // and finally to the raw sender username so the
                          // user can always tell who sent the message in a
                          // group (matches what the FCM notification shows).
+                         //
+                         // Use `message.groupId != null` as the per-message
+                         // group check in addition to `chatInfo.isGroup`.
+                         // `chatInfo.isGroup` is only true when the group entry
+                         // is already present in `state.groups`; on a cold
+                         // start the groups map may still be empty when the
+                         // first frame is rendered, silently suppressing every
+                         // sender label.  `message.groupId != null` is set the
+                         // moment the message is built from the server payload
+                         // so it is always reliable.
+                         final messageIsFromGroup =
+                             chatInfo.isGroup || message.groupId != null;
                          String? resolvedSenderLabel;
-                         if (chatInfo.isGroup &&
+                         if (messageIsFromGroup &&
                              message.direction !=
                                  MessageDirection.outgoing) {
                            final senderId = message.sender.trim();
@@ -402,7 +414,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                                _buildDateHeader(context, message.timestamp),
                              _MessageBubble(
                                message: message,
-                               isGroup: chatInfo.isGroup,
+                               isGroup: messageIsFromGroup,
                                resolvedSenderLabel: resolvedSenderLabel,
                                searchQuery:
                                    _searchActive ? _searchQuery : null,
@@ -1570,6 +1582,8 @@ class _MessageBody extends StatelessWidget {
     r'https?://(www\.)?(maps\.google\.com|google\.com/maps|maps\.app\.goo\.gl)[^\s]*',
     caseSensitive: false,
   );
+  static final _geoRegex = RegExp(r'geo:\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)', caseSensitive: false);
+  static final _coordsRegex = RegExp(r'(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)');
 
   /// Build a [TextSpan] with search-term highlights.
   InlineSpan _buildHighlightedSpan(String text, TextStyle base) {
@@ -1604,17 +1618,35 @@ class _MessageBody extends StatelessWidget {
   Widget build(BuildContext context) {
     final base = theme.textTheme.bodyMedium ?? const TextStyle();
     final match = _mapsRegex.firstMatch(body);
-    if (match == null) {
+    String? mapUrl;
+    int start = 0;
+    int end = 0;
+
+    if (match != null) {
+      mapUrl = match.group(0)!;
+      start = match.start;
+      end = match.end;
+    } else {
+      final geoMatch = _geoRegex.firstMatch(body);
+      final coordsMatch = geoMatch ?? _coordsRegex.firstMatch(body);
+      if (coordsMatch != null) {
+        final lat = coordsMatch.group(1)!;
+        final lon = coordsMatch.group(2)!;
+        mapUrl = 'https://www.google.com/maps?q=$lat,$lon';
+        start = coordsMatch.start;
+        end = coordsMatch.end;
+      }
+    }
+    if (mapUrl == null) {
       return RichText(
         text: TextSpan(children: [_buildHighlightedSpan(body, base)]),
       );
     }
 
-    final mapUrl = match.group(0)!;
     // Text before the URL (e.g. "📍 ")
-    final prefix = body.substring(0, match.start).trimRight();
+    final prefix = body.substring(0, start).trimRight();
     // Text after the URL
-    final suffix = body.substring(match.end).trimLeft();
+    final suffix = body.substring(end).trimLeft();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

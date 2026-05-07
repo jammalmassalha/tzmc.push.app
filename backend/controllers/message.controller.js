@@ -6,6 +6,7 @@ function registerMessageController(app, deps = {}) {
         buildGoogleSheetGetUrl,
         getLogsMessagesForUser,
         getMessageActivitiesForUser,
+        getGroupMessageSendersByMessageId,
         getHardcodedGroupIds,
         getHardcodedGroupMembers,
         // Legacy static fallbacks (kept for backward compatibility)
@@ -424,6 +425,7 @@ function registerMessageController(app, deps = {}) {
             const knownGroupIds = new Set();
             const knownGroupIdByName = new Map();
             const knownGroupTypeById = new Map();
+            const userAllowedGroupIds = new Set();
             const hardcodedGroupKeySet = new Set(
                 (() => {
                     const ids = resolveHardcodedGroupIds();
@@ -484,6 +486,7 @@ function registerMessageController(app, deps = {}) {
                     const gid = normalizeUserKey(String(group.id || group.groupID || group.groupId || '').trim());
                     if (!gid) return;
                     knownGroupIds.add(gid);
+                    userAllowedGroupIds.add(gid);
                     const gname = String(group.name || group.title || group.groupName || '').trim();
                     if (gname) {
                         knownGroupNamesById.set(gid, gname);
@@ -514,9 +517,12 @@ function registerMessageController(app, deps = {}) {
                     const gtype = String(dbGroup.type || '').trim().toLowerCase();
                     if (gtype === 'community' || gtype === 'group') knownGroupTypeById.set(gid, gtype);
                     else if (hardcodedGroupKeySet.has(gid)) knownGroupTypeById.set(gid, 'community');
+                    const normalizedMembers = (dbGroup.members || []).map(normalizeUserKey).filter(Boolean);
+                    if (!normalizedMembers.length || normalizedMembers.includes(user)) {
+                        userAllowedGroupIds.add(gid);
+                    }
                     // Track dynamic groups (group:xxx) the user actually belongs to
                     if (gid.startsWith('group:')) {
-                        const normalizedMembers = (dbGroup.members || []).map(normalizeUserKey).filter(Boolean);
                         if (normalizedMembers.length > 0 && normalizedMembers.includes(user)) {
                             userDynamicGroupIds.push(gid);
                         }
@@ -525,18 +531,65 @@ function registerMessageController(app, deps = {}) {
             } catch (_dbError) { }
 
             try {
-                // CALLING OPTIMIZED SERVICE
-                const rawMessages = typeof getLogsMessagesForUser === 'function'
-                    ? await getLogsMessagesForUser(user, {
+                const hardcodedGroupMembers = resolveHardcodedGroupMembers();
+                const allowedHardcodedGroupIds = Array.from(hardcodedGroupKeySet).filter((groupId) => {
+                    const restrictedMembers = hardcodedGroupMembers[groupId];
+                    if (!Array.isArray(restrictedMembers) || !restrictedMembers.length) return true;
+                    return restrictedMembers.map(normalizeUserKey).includes(user);
+                });
+                allowedHardcodedGroupIds.forEach((groupId) => userAllowedGroupIds.add(groupId));
+
+                const isFullSync = since <= 0;
+                let rawMessages = [];
+                if (isFullSync && typeof getMessageActivitiesForUser === 'function') {
+                    rawMessages = await getMessageActivitiesForUser(user, {
+                        since,
+                        limit,
+                        offset,
+                        includeActions: true,
+                        includeMessages: true,
+                        allowedGroupIds: Array.from(userAllowedGroupIds)
+                    });
+                } else if (typeof getLogsMessagesForUser === 'function') {
+                    rawMessages = await getLogsMessagesForUser(user, {
                         limit,
                         offset,
                         since, // Optimization passed here
                         excludeSystem: true,
                         hardcodedGroupIds: Array.from(hardcodedGroupKeySet),
-                        hardcodedGroupMembers: resolveHardcodedGroupMembers(),
+                        hardcodedGroupMembers,
                         dynamicGroupIds: userDynamicGroupIds
-                    })
-                    : [];
+                    });
+                }
+
+                // Supplementary sender lookup from MessageActivities.
+                // For group messages whose GroupSenderName column is null in the
+                // Logs table, MessageActivities stores the actual human Sender phone
+                // number so we can display the correct sender label on the bubble.
+                // We collect the exact messageIds from rawMessages so the DB query
+                // returns precisely the needed rows regardless of how many total
+                // group messages exist in MessageActivities (fixes the off-by-limit
+                // bug where ORDER BY ASC + LIMIT caused recent messages to be missed).
+                let groupSenderByMsgId = new Map();
+                try {
+                    if (typeof getGroupMessageSendersByMessageId === 'function') {
+                        // Collect unique messageIds present in the raw log result.
+                        const rawGroupMessageIds = [];
+                        for (const m of rawMessages) {
+                            if (!m || typeof m !== 'object') continue;
+                            const mid = String(m.messageId || m.id || '').trim();
+                            if (mid) rawGroupMessageIds.push(mid);
+                        }
+                        groupSenderByMsgId = await getGroupMessageSendersByMessageId(
+                            user,
+                            rawGroupMessageIds.length > 0
+                                ? { messageIds: rawGroupMessageIds }
+                                : { since, limit }
+                        );
+                    }
+                } catch (_gsErr) {
+                    // Non-fatal — sender label will fall back to whatever is in GroupSenderName
+                }
 
                 const messages = rawMessages.map((message, index) => {
                     if (!message || typeof message !== 'object') return null;
@@ -622,24 +675,12 @@ function registerMessageController(app, deps = {}) {
                     const groupTypeRaw = String(message.groupType ?? '').trim().toLowerCase();
                     let groupSenderName = String(message.groupSenderName ?? message.senderName ?? message.fromName ?? '').trim();
 
-                    // For group messages from DB logs, the body is stored as "SenderName: message text".
-                    // Extract the sender name from the body prefix if not already set.
-                    // Use a broad condition: strip whenever the message is group-like (resolved group ID,
-                    // sender that looks like a group identifier, or sender matching a known/hardcoded group).
                     const looksLikeGroupMessage = resolvedGroupId || sender.startsWith('group:') || hardcodedGroupKeySet.has(sender) || knownGroupIds.has(sender);
                     let resolvedBody = body;
-                    if (!groupSenderName && looksLikeGroupMessage && body) {
-                        const senderPrefixMatch = body.match(/^([^:\n]{1,80})\s*:\s*([\s\S]+)$/);
-                        if (senderPrefixMatch) {
-                            groupSenderName = String(senderPrefixMatch[1] || '').trim();
-                            resolvedBody = String(senderPrefixMatch[2] || '').trim() || body;
-                        }
-                    }
-                    // Safety net: if groupSenderName is already known and the body still starts
-                    // with "SenderName: ...", strip the redundant prefix to prevent duplication.
-                    if (groupSenderName && resolvedBody && resolvedBody !== body) {
-                        // Already stripped above – no further action needed.
-                    } else if (groupSenderName && looksLikeGroupMessage && body) {
+
+                    // If groupSenderName is already known and the body starts with
+                    // "SenderName: ...", strip the redundant prefix to prevent duplication.
+                    if (groupSenderName && looksLikeGroupMessage && body) {
                         const escapedName = groupSenderName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                         const prefixPattern = new RegExp(`^${escapedName}\\s*:\\s*`);
                         if (prefixPattern.test(body)) {
@@ -647,6 +688,16 @@ function registerMessageController(app, deps = {}) {
                             if (stripped) {
                                 resolvedBody = stripped;
                             }
+                        }
+                    }
+
+                    // If groupSenderName is still empty for a group message, look up
+                    // MessageActivities by MessageId.  The map was built from the exact
+                    // messageIds in this Logs page so every group message is covered.
+                    if (!groupSenderName && resolvedGroupId && messageIdRaw) {
+                        const activitySender = groupSenderByMsgId.get(messageIdRaw);
+                        if (activitySender) {
+                            groupSenderName = activitySender;
                         }
                     }
 
@@ -707,7 +758,7 @@ function registerMessageController(app, deps = {}) {
                 // query fails, the regular messages are still returned normally.
                 let actionRecords = [];
                 try {
-                    if (typeof getMessageActivitiesForUser === 'function') {
+                    if (!isFullSync && typeof getMessageActivitiesForUser === 'function') {
                         actionRecords = await getMessageActivitiesForUser(user, { since, limit });
                     }
                 } catch (_actErr) {
