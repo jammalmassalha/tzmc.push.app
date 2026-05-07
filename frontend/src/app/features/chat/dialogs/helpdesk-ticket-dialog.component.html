@@ -64,6 +64,87 @@
       }
     </mat-form-field>
 
+    @if (isLoadingDepartmentForm()) {
+      <div class="full-width">
+        <mat-spinner diameter="20"></mat-spinner>
+      </div>
+    } @else {
+      @for (field of departmentFormFields(); track field.id) {
+        @switch (field.type) {
+          @case ('input') {
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>{{ field.label }}</mat-label>
+              <input
+                matInput
+                [formControl]="customControl(field.id)"
+                [type]="field.inputType || 'text'"
+                [placeholder]="field.placeholder || ''"
+                autocomplete="off" />
+              @if (isFieldInvalid(field)) {
+                <mat-error>יש להזין ערך.</mat-error>
+              }
+            </mat-form-field>
+          }
+          @case ('textarea') {
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>{{ field.label }}</mat-label>
+              <textarea
+                matInput
+                [formControl]="customControl(field.id)"
+                [placeholder]="field.placeholder || ''"
+                rows="4"
+                cdkTextareaAutosize
+                cdkAutosizeMinRows="3"
+                cdkAutosizeMaxRows="8">
+              </textarea>
+              @if (isFieldInvalid(field)) {
+                <mat-error>יש להזין ערך.</mat-error>
+              }
+            </mat-form-field>
+          }
+          @case ('radio') {
+            <div class="full-width">
+              <label class="mat-body-medium">{{ field.label }}</label>
+              <mat-radio-group [formControl]="customControl(field.id)">
+                @for (option of field.options || []; track option) {
+                  <mat-radio-button [value]="option">{{ option }}</mat-radio-button>
+                }
+              </mat-radio-group>
+              @if (isFieldInvalid(field)) {
+                <div class="mat-body-small">יש לבחור ערך.</div>
+              }
+            </div>
+          }
+          @case ('select') {
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>{{ field.label }} (חיפוש)</mat-label>
+              <input
+                matInput
+                [formControl]="selectSearchControl(field.id)"
+                [matAutocomplete]="selectAuto"
+                [placeholder]="field.placeholder || 'חיפוש אפשרות...'"
+                (input)="onSelectSearch(field.id)"
+                autocomplete="off" />
+              <mat-autocomplete #selectAuto="matAutocomplete">
+                @for (option of selectOptions(field.id); track option) {
+                  <mat-option [value]="option" (onSelectionChange)="$event.isUserInput && customControl(field.id).setValue(option)">
+                    {{ option }}
+                  </mat-option>
+                }
+              </mat-autocomplete>
+            </mat-form-field>
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>ערך נבחר · {{ field.label }}</mat-label>
+              <input matInput [formControl]="customControl(field.id)" [readonly]="true" />
+              @if (isFieldInvalid(field)) {
+                <mat-error>יש לבחור ערך.</mat-error>
+              }
+            </mat-form-field>
+          }
+        }
+      }
+    }
+
     <div class="file-upload-section">
       <input
         #fileInput

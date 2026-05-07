@@ -11,6 +11,7 @@ import {
   HelpdeskManagedUser,
   HelpdeskMyRole,
   HelpdeskNote,
+  HelpdeskTicketFormField,
   HelpdeskStatusHistoryEntry,
   HelpdeskTicket,
   HelpdeskTicketPayload,
@@ -1581,6 +1582,20 @@ export class ChatApiService {
       { name: 'בית מרקחת', icon: '💊' },
       { name: 'הנדסה רפואית', icon: '🏥' }
     ];
+  }
+
+  async getHelpdeskDepartmentTicketForm(department: string): Promise<HelpdeskTicketFormField[]> {
+    const safeDepartment = encodeURIComponent(String(department || '').trim());
+    if (!safeDepartment) {
+      return [];
+    }
+    const url = `${this.notifyBaseUrl}/helpdesk/departments/${safeDepartment}/ticket-form?_ts=${Date.now()}&ngsw-bypass=1`;
+    const response = await this.fetchWithRetry(url, { cache: 'no-store' }, { retries: 1, timeoutMs: 8000 });
+    const body = await response.json() as { result?: string; message?: string; fields?: HelpdeskTicketFormField[] };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה בטעינת טופס המחלקה'));
+    }
+    return Array.isArray(body.fields) ? body.fields : [];
   }
 
   async uploadHelpdeskAttachment(file: File): Promise<string> {

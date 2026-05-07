@@ -18,6 +18,8 @@ function toNonNegativeInteger(value, fallbackValue) {
 
 const VALID_STATUSES = ['open', 'in_progress', 'resolved', 'closed'];
 const VALID_ROLES = ['Admin', 'Editor'];
+const VALID_FORM_FIELD_TYPES = new Set(['input', 'textarea', 'radio', 'select']);
+const VALID_INPUT_TYPES = new Set(['text', 'tel', 'number']);
 const DEFAULT_DEPARTMENTS = [
     { name: 'מערכות מידע', icon: '🖥️' },
     { name: 'אחזקה',       icon: '🔧' },
@@ -28,6 +30,129 @@ const ONGOING_STATUSES = new Set(['open', 'in_progress']);
 
 // Simple rate limiting store (per-user, in-memory)
 const helpdeskRateLimitStore = new Map();
+
+function parseJsonObject(value, fallbackValue = null) {
+    if (value === null || value === undefined || value === '') return fallbackValue;
+    if (typeof value === 'object') return value;
+    try {
+        return JSON.parse(String(value));
+    } catch {
+        return fallbackValue;
+    }
+}
+
+function sanitizeTicketFormOptions(options) {
+    if (!Array.isArray(options)) return [];
+    const seen = new Set();
+    const sanitized = [];
+    for (const option of options) {
+        const normalized = toTrimmedString(option);
+        if (!normalized) continue;
+        const key = normalized.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        sanitized.push(normalized);
+        if (sanitized.length >= 100) break;
+    }
+    return sanitized;
+}
+
+function sanitizeTicketFormField(rawField, index = 0) {
+    if (!rawField || typeof rawField !== 'object') return null;
+    const type = toTrimmedString(rawField.type || '').toLowerCase();
+    if (!VALID_FORM_FIELD_TYPES.has(type)) return null;
+
+    const idCandidate = toTrimmedString(rawField.id || rawField.key || `field_${index + 1}`)
+        .toLowerCase()
+        .replace(/[^\w\-]/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 64);
+    if (!idCandidate) return null;
+
+    const label = toTrimmedString(rawField.label || rawField.name || idCandidate).slice(0, 120);
+    if (!label) return null;
+
+    const inputTypeCandidate = toTrimmedString(rawField.inputType || rawField.input_type || 'text').toLowerCase();
+    const inputType = VALID_INPUT_TYPES.has(inputTypeCandidate) ? inputTypeCandidate : 'text';
+    const required = Boolean(rawField.required);
+    const initialValue = toTrimmedString(rawField.initialValue || rawField.initial_value || '').slice(0, 500);
+    const placeholder = toTrimmedString(rawField.placeholder || '').slice(0, 160);
+
+    const field = {
+        id: idCandidate,
+        type,
+        label,
+        required,
+        initialValue
+    };
+    if (placeholder) {
+        field.placeholder = placeholder;
+    }
+    if (type === 'input') {
+        field.inputType = inputType;
+    }
+    if (type === 'radio' || type === 'select') {
+        field.options = sanitizeTicketFormOptions(rawField.options);
+    }
+    return field;
+}
+
+function parseDepartmentTicketFormConfig(rawConfig) {
+    const parsed = parseJsonObject(rawConfig, rawConfig);
+    const fieldsSource = Array.isArray(parsed)
+        ? parsed
+        : (parsed && Array.isArray(parsed.fields) ? parsed.fields : []);
+    const fields = [];
+    const usedIds = new Set();
+    for (let i = 0; i < fieldsSource.length && fields.length < 50; i++) {
+        const field = sanitizeTicketFormField(fieldsSource[i], i);
+        if (!field) continue;
+        if (usedIds.has(field.id)) continue;
+        usedIds.add(field.id);
+        fields.push(field);
+    }
+    return fields;
+}
+
+function parseTicketCustomFields(raw) {
+    const parsed = parseJsonObject(raw, raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return parsed;
+}
+
+function validateAndNormalizeTicketCustomFields(formFields, customFieldsInput) {
+    const customFields = customFieldsInput && typeof customFieldsInput === 'object' && !Array.isArray(customFieldsInput)
+        ? customFieldsInput
+        : {};
+    const normalized = {};
+    for (const field of formFields) {
+        const rawValue = customFields[field.id];
+        const value = toTrimmedString(rawValue || '');
+        if (!value) {
+            if (field.required) {
+                return { ok: false, message: `יש להזין ערך בשדה ${field.label}` };
+            }
+            continue;
+        }
+        if (field.type === 'input' && field.inputType === 'number') {
+            const parsedNumber = Number(value);
+            if (!Number.isFinite(parsedNumber)) {
+                return { ok: false, message: `השדה ${field.label} חייב להכיל מספר` };
+            }
+            normalized[field.id] = parsedNumber;
+            continue;
+        }
+        if (field.type === 'radio' || field.type === 'select') {
+            const options = Array.isArray(field.options) ? field.options : [];
+            if (options.length > 0 && !options.includes(value)) {
+                return { ok: false, message: `הערך בשדה ${field.label} אינו תקין` };
+            }
+        }
+        normalized[field.id] = value;
+    }
+    return { ok: true, data: normalized };
+}
 
 function consumeHelpdeskRateLimit(user, maxAttempts, windowMs) {
     const now = Date.now();
@@ -86,6 +211,7 @@ async function ensureHelpdeskTables(pool) {
             \`location\` VARCHAR(255) NULL DEFAULT NULL,
             \`phone\` VARCHAR(32) NULL DEFAULT NULL,
             \`attachment_url\` VARCHAR(512) NULL DEFAULT NULL,
+            \`custom_fields_json\` LONGTEXT NULL,
             \`status\` VARCHAR(32) NOT NULL DEFAULT 'open',
             \`handler_username\` VARCHAR(64) NULL DEFAULT NULL,
             \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -135,6 +261,16 @@ async function ensureHelpdeskTables(pool) {
         // ER_DUP_FIELDNAME (1060) — column already exists, safe to ignore
         if (!(err && err.errno === 1060)) {
             console.error('[HELPDESK] Migration ticket attachment_url column error:', err && err.message ? err.message : err);
+        }
+    }
+
+    // Migration: add custom_fields_json column to existing helpdesk_tickets tables
+    try {
+        await pool.execute(`ALTER TABLE \`helpdesk_tickets\` ADD COLUMN \`custom_fields_json\` LONGTEXT NULL AFTER \`attachment_url\``);
+    } catch (err) {
+        // ER_DUP_FIELDNAME (1060) — column already exists, safe to ignore
+        if (!(err && err.errno === 1060)) {
+            console.error('[HELPDESK] Migration ticket custom_fields_json column error:', err && err.message ? err.message : err);
         }
     }
 
@@ -214,6 +350,7 @@ async function ensureHelpdeskTables(pool) {
             \`icon\` VARCHAR(64) NULL DEFAULT NULL,
             \`status\` ENUM('active','inactive') NOT NULL DEFAULT 'active',
             \`sort_order\` INT NOT NULL DEFAULT 0,
+            \`ticket_form_config\` LONGTEXT NULL,
             \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (\`id\`),
             UNIQUE INDEX \`idx_name\` (\`name\`)
@@ -236,6 +373,16 @@ async function ensureHelpdeskTables(pool) {
     } catch (err) {
         console.error('[HELPDESK] Seed departments error:', err && err.message ? err.message : err);
     }
+
+    // Migration: add ticket_form_config column to existing helpdesk_departments tables
+    try {
+        await pool.execute(`ALTER TABLE \`helpdesk_departments\` ADD COLUMN \`ticket_form_config\` LONGTEXT NULL AFTER \`sort_order\``);
+    } catch (err) {
+        // ER_DUP_FIELDNAME (1060) — column already exists, safe to ignore
+        if (!(err && err.errno === 1060)) {
+            console.error('[HELPDESK] Migration department ticket_form_config column error:', err && err.message ? err.message : err);
+        }
+    }
 }
 
 function mapTicketRow(row) {
@@ -248,6 +395,7 @@ function mapTicketRow(row) {
         location: row.location || null,
         phone: row.phone || null,
         attachmentUrl: row.attachment_url || null,
+        customFields: parseTicketCustomFields(row.custom_fields_json),
         status: row.status,
         handlerUsername: row.handler_username || null,
         createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at || ''),
@@ -382,6 +530,7 @@ function registerHelpdeskController(app, deps = {}) {
         const location = toTrimmedString(body.location || '') || null;
         const phone = toTrimmedString(body.phone || '') || null;
         const attachmentUrl = toTrimmedString(body.attachmentUrl || '') || null;
+        const customFieldsInput = body.customFields;
 
         if (!department) {
             return res.status(400).json({ result: 'error', message: 'יש לבחור מחלקה' });
@@ -402,9 +551,30 @@ function registerHelpdeskController(app, deps = {}) {
 
         try {
             await getTablesReady();
+            let departmentFormFields = [];
+            try {
+                const [departmentRows] = await pool.query(
+                    'SELECT `ticket_form_config` FROM `helpdesk_departments` WHERE `name` = ? LIMIT 1',
+                    [department]
+                );
+                if (departmentRows.length) {
+                    departmentFormFields = parseDepartmentTicketFormConfig(departmentRows[0].ticket_form_config);
+                }
+            } catch (deptConfigErr) {
+                if (!(deptConfigErr && deptConfigErr.errno === 1146)) {
+                    throw deptConfigErr;
+                }
+            }
+            const customFieldsValidation = validateAndNormalizeTicketCustomFields(departmentFormFields, customFieldsInput);
+            if (!customFieldsValidation.ok) {
+                return res.status(400).json({ result: 'error', message: customFieldsValidation.message || 'שדות מותאמים אינם תקינים' });
+            }
+            const customFieldsJson = Object.keys(customFieldsValidation.data || {}).length
+                ? JSON.stringify(customFieldsValidation.data)
+                : null;
             const [result] = await pool.execute(
-                'INSERT INTO `helpdesk_tickets` (`creator_username`, `department`, `title`, `description`, `location`, `phone`, `attachment_url`, `status`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                [user, department, title, description, location, phone, attachmentUrl, 'open']
+                'INSERT INTO `helpdesk_tickets` (`creator_username`, `department`, `title`, `description`, `location`, `phone`, `attachment_url`, `custom_fields_json`, `status`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [user, department, title, description, location, phone, attachmentUrl, customFieldsJson, 'open']
             );
             const insertId = result.insertId;
             // Record initial "open" status in history.  Awaited so the entry is
@@ -1085,6 +1255,31 @@ function registerHelpdeskController(app, deps = {}) {
         }
     });
 
+    // GET /helpdesk/departments/:department/ticket-form - authenticated users: get department ticket form config
+    app.get(['/helpdesk/departments/:department/ticket-form', '/notify/helpdesk/departments/:department/ticket-form'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
+        const user = toTrimmedString(req.resolvedUser || '');
+        if (!user) return res.status(401).json({ result: 'error', message: 'Authentication required' });
+        const department = toTrimmedString(decodeURIComponent(req.params && req.params.department || ''));
+        if (!department) return res.status(400).json({ result: 'error', message: 'מחלקה לא תקינה' });
+
+        try {
+            await getTablesReady();
+            const [rows] = await pool.query(
+                'SELECT `name`, `status`, `ticket_form_config` FROM `helpdesk_departments` WHERE `name` = ? LIMIT 1',
+                [department]
+            );
+            if (!rows.length || rows[0].status !== 'active') {
+                return res.status(404).json({ result: 'error', message: 'מחלקה לא נמצאה' });
+            }
+            const fields = parseDepartmentTicketFormConfig(rows[0].ticket_form_config);
+            return res.json({ result: 'success', department: rows[0].name, fields });
+        } catch (error) {
+            const message = error && error.message ? error.message : 'Failed to load ticket form';
+            console.error('[HELPDESK] Load department ticket form error:', message);
+            return res.status(500).json({ result: 'error', message: 'שגיאה בטעינת טופס המחלקה' });
+        }
+    });
+
     // GET /helpdesk/departments - Admin: list all departments (including inactive)
     app.get(['/helpdesk/departments', '/notify/helpdesk/departments'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
@@ -1096,7 +1291,7 @@ function registerHelpdeskController(app, deps = {}) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה' });
             }
             const [rows] = await pool.query(
-                'SELECT `id`, `name`, `icon`, `status`, `sort_order`, `created_at` FROM `helpdesk_departments` ORDER BY `sort_order`, `id`'
+                'SELECT `id`, `name`, `icon`, `status`, `sort_order`, `ticket_form_config`, `created_at` FROM `helpdesk_departments` ORDER BY `sort_order`, `id`'
             );
             const departments = rows.map((r) => ({
                 id: r.id,
@@ -1104,6 +1299,7 @@ function registerHelpdeskController(app, deps = {}) {
                 icon: r.icon || null,
                 status: r.status,
                 sortOrder: r.sort_order,
+                ticketForm: parseDepartmentTicketFormConfig(r.ticket_form_config),
                 createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at || '')
             }));
             return res.json({ result: 'success', departments });
@@ -1123,6 +1319,9 @@ function registerHelpdeskController(app, deps = {}) {
         const icon = toTrimmedString(body.icon || '') || null;
         const status = toTrimmedString(body.status || 'active');
         const sortOrder = toNonNegativeInteger(body.sortOrder ?? body.sort_order, 0);
+        const ticketForm = parseDepartmentTicketFormConfig(
+            body.ticketForm !== undefined ? body.ticketForm : body.ticket_form_config
+        );
 
         if (!name) return res.status(400).json({ result: 'error', message: 'יש להזין שם מחלקה' });
         if (!['active', 'inactive'].includes(status)) return res.status(400).json({ result: 'error', message: 'סטטוס לא תקין' });
@@ -1134,8 +1333,8 @@ function registerHelpdeskController(app, deps = {}) {
                 return res.status(403).json({ result: 'error', message: 'רק מנהל יכול לנהל מחלקות' });
             }
             const [result] = await pool.execute(
-                'INSERT INTO `helpdesk_departments` (`name`, `icon`, `status`, `sort_order`) VALUES (?, ?, ?, ?)',
-                [name, icon, status, sortOrder]
+                'INSERT INTO `helpdesk_departments` (`name`, `icon`, `status`, `sort_order`, `ticket_form_config`) VALUES (?, ?, ?, ?, ?)',
+                [name, icon, status, sortOrder, JSON.stringify(ticketForm)]
             );
             return res.status(201).json({ result: 'success', id: result.insertId });
         } catch (error) {
@@ -1162,6 +1361,9 @@ function registerHelpdeskController(app, deps = {}) {
         const sortOrder = (body.sortOrder !== undefined || body.sort_order !== undefined)
             ? toNonNegativeInteger(body.sortOrder ?? body.sort_order, 0)
             : undefined;
+        const ticketForm = (body.ticketForm !== undefined || body.ticket_form_config !== undefined)
+            ? parseDepartmentTicketFormConfig(body.ticketForm !== undefined ? body.ticketForm : body.ticket_form_config)
+            : undefined;
 
         if (status !== undefined && !['active', 'inactive'].includes(status)) {
             return res.status(400).json({ result: 'error', message: 'סטטוס לא תקין' });
@@ -1180,6 +1382,7 @@ function registerHelpdeskController(app, deps = {}) {
             if (icon !== undefined) { setClauses.push('`icon` = ?'); params.push(icon); }
             if (status !== undefined) { setClauses.push('`status` = ?'); params.push(status); }
             if (sortOrder !== undefined) { setClauses.push('`sort_order` = ?'); params.push(sortOrder); }
+            if (ticketForm !== undefined) { setClauses.push('`ticket_form_config` = ?'); params.push(JSON.stringify(ticketForm)); }
 
             if (!setClauses.length) return res.status(400).json({ result: 'error', message: 'לא הועברו שדות לעדכון' });
 

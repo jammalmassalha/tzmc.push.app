@@ -263,6 +263,21 @@ export interface HelpdeskDepartmentEntry {
   icon: string | null;
   status: 'active' | 'inactive';
   sortOrder: number;
+  ticketForm?: HelpdeskTicketFormField[];
+}
+
+export type HelpdeskTicketFormFieldType = 'input' | 'textarea' | 'radio' | 'select';
+export type HelpdeskTicketFormInputType = 'text' | 'tel' | 'number';
+
+export interface HelpdeskTicketFormField {
+  id: string;
+  label: string;
+  type: HelpdeskTicketFormFieldType;
+  inputType?: HelpdeskTicketFormInputType;
+  required?: boolean;
+  initialValue?: string;
+  placeholder?: string;
+  options?: string[];
 }
 
 export interface HelpdeskTicketPayload {
@@ -272,6 +287,7 @@ export interface HelpdeskTicketPayload {
   location?: string | null;
   phone?: string | null;
   attachmentUrl?: string | null;
+  customFields?: Record<string, string | number>;
 }
 
 export interface HelpdeskTicket {
@@ -283,6 +299,7 @@ export interface HelpdeskTicket {
   location?: string | null;
   phone?: string | null;
   attachmentUrl?: string | null;
+  customFields?: Record<string, unknown>;
   status: HelpdeskStatus;
   handlerUsername?: string | null;
   createdAt: string;
