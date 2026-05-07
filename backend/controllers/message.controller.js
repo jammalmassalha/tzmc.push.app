@@ -425,6 +425,7 @@ function registerMessageController(app, deps = {}) {
             const knownGroupIds = new Set();
             const knownGroupIdByName = new Map();
             const knownGroupTypeById = new Map();
+            const userAllowedGroupIds = new Set();
             const hardcodedGroupKeySet = new Set(
                 (() => {
                     const ids = resolveHardcodedGroupIds();
@@ -485,6 +486,7 @@ function registerMessageController(app, deps = {}) {
                     const gid = normalizeUserKey(String(group.id || group.groupID || group.groupId || '').trim());
                     if (!gid) return;
                     knownGroupIds.add(gid);
+                    userAllowedGroupIds.add(gid);
                     const gname = String(group.name || group.title || group.groupName || '').trim();
                     if (gname) {
                         knownGroupNamesById.set(gid, gname);
@@ -515,9 +517,12 @@ function registerMessageController(app, deps = {}) {
                     const gtype = String(dbGroup.type || '').trim().toLowerCase();
                     if (gtype === 'community' || gtype === 'group') knownGroupTypeById.set(gid, gtype);
                     else if (hardcodedGroupKeySet.has(gid)) knownGroupTypeById.set(gid, 'community');
+                    const normalizedMembers = (dbGroup.members || []).map(normalizeUserKey).filter(Boolean);
+                    if (!normalizedMembers.length || normalizedMembers.includes(user)) {
+                        userAllowedGroupIds.add(gid);
+                    }
                     // Track dynamic groups (group:xxx) the user actually belongs to
                     if (gid.startsWith('group:')) {
-                        const normalizedMembers = (dbGroup.members || []).map(normalizeUserKey).filter(Boolean);
                         if (normalizedMembers.length > 0 && normalizedMembers.includes(user)) {
                             userDynamicGroupIds.push(gid);
                         }
@@ -526,18 +531,35 @@ function registerMessageController(app, deps = {}) {
             } catch (_dbError) { }
 
             try {
-                // CALLING OPTIMIZED SERVICE
-                const rawMessages = typeof getLogsMessagesForUser === 'function'
-                    ? await getLogsMessagesForUser(user, {
+                const hardcodedGroupMembers = resolveHardcodedGroupMembers();
+                const allowedHardcodedGroupIds = Array.from(hardcodedGroupKeySet).filter((groupId) => {
+                    const restrictedMembers = hardcodedGroupMembers[groupId];
+                    if (!Array.isArray(restrictedMembers) || !restrictedMembers.length) return true;
+                    return restrictedMembers.map(normalizeUserKey).includes(user);
+                });
+                allowedHardcodedGroupIds.forEach((groupId) => userAllowedGroupIds.add(groupId));
+
+                const isFullSync = since <= 0;
+                const rawMessages = isFullSync && typeof getMessageActivitiesForUser === 'function'
+                    ? await getMessageActivitiesForUser(user, {
+                        since,
                         limit,
                         offset,
-                        since, // Optimization passed here
-                        excludeSystem: true,
-                        hardcodedGroupIds: Array.from(hardcodedGroupKeySet),
-                        hardcodedGroupMembers: resolveHardcodedGroupMembers(),
-                        dynamicGroupIds: userDynamicGroupIds
+                        includeActions: true,
+                        includeMessages: true,
+                        allowedGroupIds: Array.from(userAllowedGroupIds)
                     })
-                    : [];
+                    : (typeof getLogsMessagesForUser === 'function'
+                        ? await getLogsMessagesForUser(user, {
+                            limit,
+                            offset,
+                            since, // Optimization passed here
+                            excludeSystem: true,
+                            hardcodedGroupIds: Array.from(hardcodedGroupKeySet),
+                            hardcodedGroupMembers,
+                            dynamicGroupIds: userDynamicGroupIds
+                        })
+                        : []);
 
                 // Supplementary sender lookup from MessageActivities.
                 // For group messages whose GroupSenderName column is null in the
@@ -735,7 +757,7 @@ function registerMessageController(app, deps = {}) {
                 // query fails, the regular messages are still returned normally.
                 let actionRecords = [];
                 try {
-                    if (typeof getMessageActivitiesForUser === 'function') {
+                    if (!isFullSync && typeof getMessageActivitiesForUser === 'function') {
                         actionRecords = await getMessageActivitiesForUser(user, { since, limit });
                     }
                 } catch (_actErr) {

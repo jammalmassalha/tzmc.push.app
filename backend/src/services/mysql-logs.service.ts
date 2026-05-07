@@ -1409,16 +1409,39 @@ export class MysqlLogsService {
   // and group-update are omitted (they are handled by other mechanisms).
   async getMessageActivitiesForUser(
     user: string,
-    options: { since?: number; limit?: number } = {}
+    options: {
+      since?: number;
+      limit?: number;
+      offset?: number;
+      includeActions?: boolean;
+      includeMessages?: boolean;
+      allowedGroupIds?: string[];
+    } = {}
   ): Promise<Record<string, unknown>[]> {
     await this.ensureMessageActivitiesTable();
     const requestedUser = normalizePhone(user);
     if (!requestedUser) return [];
 
     const limit = Math.max(1, Math.min(toPositiveInteger(options.limit, 2000), 5000));
+    const offset = Math.max(0, toPositiveInteger(options.offset, 0));
     const sinceTimestamp = Number(options.since) || 0;
+    const includeActions = options.includeActions !== false;
+    const includeMessages = options.includeMessages === true;
+    const allowedGroupIds = Array.isArray(options.allowedGroupIds)
+      ? options.allowedGroupIds.map((gid) => toTrimmedString(gid)).filter(Boolean)
+      : [];
+
+    const actionTypes: string[] = [];
+    if (includeActions) {
+      actionTypes.push('edit-action', 'reaction', 'delete-action');
+    }
+    if (includeMessages) {
+      actionTypes.push('message', 'queue-message');
+    }
+    if (!actionTypes.length) return [];
 
     try {
+      const actionTypePlaceholders = actionTypes.map(() => '?').join(', ');
       let sql = `SELECT
           \`ActionType\`      AS actionType,
           \`MessageId\`       AS messageId,
@@ -1426,26 +1449,36 @@ export class MysqlLogsService {
           \`Recipient\`       AS recipient,
           \`GroupId\`         AS groupId,
           \`Body\`            AS body,
+          \`ImageUrl\`        AS imageUrl,
+          \`FileUrl\`         AS fileUrl,
           \`Emoji\`           AS emoji,
           \`TargetMessageId\` AS targetMessageId,
           \`ActionTimestamp\` AS actionTimestamp
         FROM \`MessageActivities\`
-        WHERE \`ActionType\` IN ('edit-action', 'reaction', 'delete-action')
-          AND (\`Sender\` = ? OR \`Recipient\` = ? OR \`Recipient\` LIKE ?)`;
+        WHERE \`ActionType\` IN (${actionTypePlaceholders})
+          AND (\`Sender\` = ? OR \`Recipient\` = ? OR \`Recipient\` LIKE ?`;
 
       const params: (string | number)[] = [
+        ...actionTypes,
         requestedUser,
         requestedUser,
         `%${requestedUser}%`,
       ];
+
+      if (allowedGroupIds.length > 0) {
+        const groupPlaceholders = allowedGroupIds.map(() => '?').join(', ');
+        sql += ` OR \`GroupId\` IN (${groupPlaceholders})`;
+        params.push(...allowedGroupIds);
+      }
+      sql += `)`;
 
       if (sinceTimestamp > 0) {
         sql += ` AND \`ActionTimestamp\` > ?`;
         params.push(sinceTimestamp);
       }
 
-      sql += ` ORDER BY \`ActionTimestamp\` ASC LIMIT ?`;
-      params.push(limit);
+      sql += ` ORDER BY \`ActionTimestamp\` DESC LIMIT ?, ?`;
+      params.push(offset, limit);
 
       const [rows] = await this.pool.query(sql, params);
       const typedRows = rows as Array<Record<string, unknown>>;
@@ -1458,13 +1491,15 @@ export class MysqlLogsService {
           normalizePhone(String(row.sender || '').trim()) ||
           String(row.sender || '').trim();
         const targetMsgId = String(row.targetMessageId || '').trim();
+        const groupId = String(row.groupId || '').trim();
+        const recipient = String(row.recipient || '').trim();
 
         const record: Record<string, unknown> = {
           type: actionType,
           messageId: msgId,
           sender,
-          toUser: String(row.recipient || '').trim() || undefined,
-          groupId: String(row.groupId || '').trim() || undefined,
+          toUser: recipient || undefined,
+          groupId: groupId || undefined,
           timestamp: ts,
         };
 
@@ -1478,6 +1513,13 @@ export class MysqlLogsService {
           record.reactor = sender;
         } else if (actionType === 'delete-action') {
           record.deletedAt = ts;
+        } else {
+          record.body = String(row.body || '').trim() || undefined;
+          record.imageUrl = String(row.imageUrl || '').trim() || undefined;
+          record.fileUrl = String(row.fileUrl || '').trim() || undefined;
+          if (groupId && sender) {
+            record.groupSenderName = sender;
+          }
         }
 
         return record;
