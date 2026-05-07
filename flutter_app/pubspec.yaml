@@ -20,7 +20,7 @@ dependencies:
   riverpod: ^3.2.1
   flutter_riverpod: ^3.3.1
   hooks_riverpod: ^3.3.1
-  flutter_hooks: ^0.21.3+1
+  flutter_hooks: ^0.21.0
 
   # Networking
   dio: ^5.4.0
@@ -76,6 +76,7 @@ dependencies:
 # additional artifact downloads.
 dependency_overrides:
   shared_preferences_android: 2.4.2
+  flutter_hooks: 0.21.0
 
 dev_dependencies:
   flutter_test:
