@@ -31,7 +31,7 @@ dependencies:
 
   # Local Storage
   drift: ^2.20.0
-  sqlite3_flutter_libs: ^0.6.0+eol
+  sqlite3_flutter_libs: ^0.5.42
   drift_flutter: ^0.3.0  # Cross-platform database support (includes web)
   shared_preferences: ^2.2.2
   flutter_secure_storage: ^10.0.0
