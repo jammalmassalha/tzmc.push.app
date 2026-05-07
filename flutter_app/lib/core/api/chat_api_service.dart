@@ -980,7 +980,38 @@ class ChatApiService {
     return url;
   }
 
-  /// Get active helpdesk departments (used by department picker for all users).
+  /// Get department-specific ticket form fields.
+  ///
+  /// Returns the list of custom form fields configured for the given department.
+  Future<List<HelpdeskTicketFormField>> getHelpdeskDepartmentTicketForm(
+      String user, String department) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) throw ApiException('User is required');
+
+    final encodedDept = Uri.encodeComponent(department.trim());
+    if (encodedDept.isEmpty) return [];
+
+    final response = await _client.get<Map<String, dynamic>>(
+      '${ApiEndpoints.helpdeskDepartmentsTicketForm}/$encodedDept/ticket-form',
+      queryParameters: {'user': normalizedUser},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 8)),
+    );
+
+    if (!response.isSuccessful) {
+      // Non-critical — treat as empty form on failure
+      return [];
+    }
+
+    final body = response.data ?? {};
+    if (body['result'] != 'success') return [];
+    final list = body['fields'] as List? ?? [];
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map((e) => HelpdeskTicketFormField.fromJson(e))
+        .toList();
+  }
+
+
   Future<List<HelpdeskDepartmentEntry>> getActiveHelpdeskDepartments(String user) async {
     final normalizedUser = user.trim();
     if (normalizedUser.isEmpty) throw ApiException('User is required');
@@ -1029,6 +1060,7 @@ class ChatApiService {
     String? icon,
     String status = 'active',
     int sortOrder = 0,
+    List<HelpdeskTicketFormField> ticketForm = const [],
   }) async {
     final normalizedUser = user.trim();
     if (normalizedUser.isEmpty) throw ApiException('User is required');
@@ -1041,6 +1073,7 @@ class ChatApiService {
         'icon': icon,
         'status': status,
         'sortOrder': sortOrder,
+        'ticketForm': ticketForm.map((f) => f.toJson()).toList(),
       },
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
@@ -1058,6 +1091,7 @@ class ChatApiService {
     String? icon,
     String? status,
     int? sortOrder,
+    List<HelpdeskTicketFormField>? ticketForm,
   }) async {
     final normalizedUser = user.trim();
     if (normalizedUser.isEmpty) throw ApiException('User is required');
@@ -1067,6 +1101,9 @@ class ChatApiService {
     if (icon != null) data['icon'] = icon;
     if (status != null) data['status'] = status;
     if (sortOrder != null) data['sortOrder'] = sortOrder;
+    if (ticketForm != null) {
+      data['ticketForm'] = ticketForm.map((f) => f.toJson()).toList();
+    }
 
     final response = await _client.put<Map<String, dynamic>>(
       '${ApiEndpoints.helpdeskDepartments}/$deptId',
@@ -1150,6 +1187,7 @@ class ChatApiService {
     String? location,
     String? phone,
     String? attachmentUrl,
+    Map<String, dynamic> customFields = const {},
   }) async {
     final payload = HelpdeskTicketPayload(
       subject: subject,
@@ -1159,6 +1197,7 @@ class ChatApiService {
       location: location,
       phone: phone,
       attachmentUrl: attachmentUrl,
+      customFields: customFields,
     );
     return _createHelpdeskTicketFromPayload(payload, user);
   }

@@ -3,6 +3,170 @@ library;
 
 import 'package:equatable/equatable.dart';
 
+// ---------------------------------------------------------------------------
+// Ticket form field types
+// ---------------------------------------------------------------------------
+
+/// Valid field types for a department ticket form field.
+enum HelpdeskTicketFormFieldType {
+  input,
+  textarea,
+  radio,
+  select;
+
+  static HelpdeskTicketFormFieldType fromString(String value) {
+    switch (value.toLowerCase()) {
+      case 'textarea':
+        return HelpdeskTicketFormFieldType.textarea;
+      case 'radio':
+        return HelpdeskTicketFormFieldType.radio;
+      case 'select':
+        return HelpdeskTicketFormFieldType.select;
+      default:
+        return HelpdeskTicketFormFieldType.input;
+    }
+  }
+
+  String toApiValue() {
+    switch (this) {
+      case HelpdeskTicketFormFieldType.textarea:
+        return 'textarea';
+      case HelpdeskTicketFormFieldType.radio:
+        return 'radio';
+      case HelpdeskTicketFormFieldType.select:
+        return 'select';
+      case HelpdeskTicketFormFieldType.input:
+        return 'input';
+    }
+  }
+}
+
+/// Valid input sub-types for [HelpdeskTicketFormFieldType.input].
+enum HelpdeskTicketFormInputType {
+  text,
+  tel,
+  number;
+
+  static HelpdeskTicketFormInputType fromString(String value) {
+    switch (value.toLowerCase()) {
+      case 'tel':
+        return HelpdeskTicketFormInputType.tel;
+      case 'number':
+        return HelpdeskTicketFormInputType.number;
+      default:
+        return HelpdeskTicketFormInputType.text;
+    }
+  }
+
+  String toApiValue() {
+    switch (this) {
+      case HelpdeskTicketFormInputType.tel:
+        return 'tel';
+      case HelpdeskTicketFormInputType.number:
+        return 'number';
+      case HelpdeskTicketFormInputType.text:
+        return 'text';
+    }
+  }
+}
+
+/// A single configurable field in a department's custom ticket form.
+class HelpdeskTicketFormField extends Equatable {
+  final String id;
+  final String label;
+  final HelpdeskTicketFormFieldType type;
+  final HelpdeskTicketFormInputType inputType;
+  final bool required;
+  final String initialValue;
+  final String placeholder;
+  final List<String> options;
+
+  const HelpdeskTicketFormField({
+    required this.id,
+    required this.label,
+    this.type = HelpdeskTicketFormFieldType.input,
+    this.inputType = HelpdeskTicketFormInputType.text,
+    this.required = false,
+    this.initialValue = '',
+    this.placeholder = '',
+    this.options = const [],
+  });
+
+  @override
+  List<Object?> get props =>
+      [id, label, type, inputType, required, initialValue, placeholder, options];
+
+  factory HelpdeskTicketFormField.fromJson(Map<String, dynamic> json) {
+    final rawType = (json['type'] as String? ?? '').toLowerCase();
+    final type = HelpdeskTicketFormFieldType.fromString(rawType);
+    final rawInputType = (json['inputType'] as String? ??
+            json['input_type'] as String? ??
+            'text')
+        .toLowerCase();
+    final rawOptions = json['options'];
+    final options = rawOptions is List
+        ? rawOptions.map((o) => o.toString()).toList()
+        : <String>[];
+    return HelpdeskTicketFormField(
+      id: json['id'] as String? ?? '',
+      label: json['label'] as String? ?? json['name'] as String? ?? '',
+      type: type,
+      inputType: HelpdeskTicketFormInputType.fromString(rawInputType),
+      required: json['required'] == true,
+      initialValue: json['initialValue'] as String? ??
+          json['initial_value'] as String? ??
+          '',
+      placeholder: json['placeholder'] as String? ?? '',
+      options: options,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{
+      'id': id,
+      'label': label,
+      'type': type.toApiValue(),
+      'required': required,
+      'initialValue': initialValue,
+    };
+    if (placeholder.isNotEmpty) json['placeholder'] = placeholder;
+    if (type == HelpdeskTicketFormFieldType.input) {
+      json['inputType'] = inputType.toApiValue();
+    }
+    if (type == HelpdeskTicketFormFieldType.radio ||
+        type == HelpdeskTicketFormFieldType.select) {
+      json['options'] = options;
+    }
+    return json;
+  }
+
+  HelpdeskTicketFormField copyWith({
+    String? id,
+    String? label,
+    HelpdeskTicketFormFieldType? type,
+    HelpdeskTicketFormInputType? inputType,
+    bool? required,
+    String? initialValue,
+    String? placeholder,
+    List<String>? options,
+  }) {
+    return HelpdeskTicketFormField(
+      id: id ?? this.id,
+      label: label ?? this.label,
+      type: type ?? this.type,
+      inputType: inputType ?? this.inputType,
+      required: required ?? this.required,
+      initialValue: initialValue ?? this.initialValue,
+      placeholder: placeholder ?? this.placeholder,
+      options: options ?? this.options,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Department
+// ---------------------------------------------------------------------------
+
 /// A single helpdesk department as returned by the API.
 class HelpdeskDepartmentEntry extends Equatable {
   final int id;
@@ -10,6 +174,7 @@ class HelpdeskDepartmentEntry extends Equatable {
   final String? icon;
   final String status;
   final int sortOrder;
+  final List<HelpdeskTicketFormField> ticketForm;
 
   const HelpdeskDepartmentEntry({
     required this.id,
@@ -17,30 +182,40 @@ class HelpdeskDepartmentEntry extends Equatable {
     this.icon,
     this.status = 'active',
     this.sortOrder = 0,
+    this.ticketForm = const [],
   });
 
   bool get isActive => status == 'active';
 
   @override
-  List<Object?> get props => [id, name, icon, status, sortOrder];
+  List<Object?> get props => [id, name, icon, status, sortOrder, ticketForm];
 
   factory HelpdeskDepartmentEntry.fromJson(Map<String, dynamic> json) {
+    final rawForm = json['ticketForm'] ?? json['ticket_form'];
+    final ticketForm = rawForm is List
+        ? rawForm
+            .whereType<Map<String, dynamic>>()
+            .map((f) => HelpdeskTicketFormField.fromJson(f))
+            .toList()
+        : <HelpdeskTicketFormField>[];
     return HelpdeskDepartmentEntry(
       id: (json['id'] as num?)?.toInt() ?? 0,
       name: json['name'] as String? ?? '',
       icon: json['icon'] as String?,
       status: json['status'] as String? ?? 'active',
       sortOrder: (json['sortOrder'] ?? json['sort_order'] as num?)?.toInt() ?? 0,
+      ticketForm: ticketForm,
     );
   }
 
   Map<String, dynamic> toJson() => {
-    'id': id,
-    'name': name,
-    'icon': icon,
-    'status': status,
-    'sortOrder': sortOrder,
-  };
+        'id': id,
+        'name': name,
+        'icon': icon,
+        'status': status,
+        'sortOrder': sortOrder,
+        'ticketForm': ticketForm.map((f) => f.toJson()).toList(),
+      };
 }
 
 /// Helpdesk departments — kept as a simple alias so callers that just need a
@@ -135,6 +310,8 @@ class HelpdeskTicketPayload extends Equatable {
   final String? location;
   final String? phone;
   final String? attachmentUrl;
+  /// Per-department dynamic field values keyed by field id.
+  final Map<String, dynamic> customFields;
 
   const HelpdeskTicketPayload({
     this.subject = '',
@@ -145,10 +322,11 @@ class HelpdeskTicketPayload extends Equatable {
     this.location,
     this.phone,
     this.attachmentUrl,
+    this.customFields = const {},
   });
 
   @override
-  List<Object?> get props => [subject, description, priority, department, title, location, phone, attachmentUrl];
+  List<Object?> get props => [subject, description, priority, department, title, location, phone, attachmentUrl, customFields];
 
   Map<String, dynamic> toJson() {
     final json = <String, dynamic>{
@@ -161,6 +339,7 @@ class HelpdeskTicketPayload extends Equatable {
     if (location != null && location!.isNotEmpty) json['location'] = location;
     if (phone != null && phone!.isNotEmpty) json['phone'] = phone;
     if (attachmentUrl != null && attachmentUrl!.isNotEmpty) json['attachmentUrl'] = attachmentUrl;
+    if (customFields.isNotEmpty) json['customFields'] = customFields;
     return json;
   }
 }
