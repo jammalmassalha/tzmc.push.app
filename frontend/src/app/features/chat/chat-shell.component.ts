@@ -1420,7 +1420,8 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
           result.description,
           result.location,
           result.phone,
-          result.attachmentUrl
+          result.attachmentUrl,
+          result.customFields
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : 'שגיאה בפתיחת הקריאה';

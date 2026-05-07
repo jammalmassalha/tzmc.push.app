@@ -99,6 +99,7 @@ class ApiEndpoints {
   static const String helpdeskLocations = '/helpdesk/locations';
   static const String helpdeskDepartments = '/helpdesk/departments';
   static const String helpdeskDepartmentsActive = '/helpdesk/departments/active';
+  static const String helpdeskDepartmentsTicketForm = '/helpdesk/departments';
 }
 
 /// Network timeouts (matching Angular frontend behavior)

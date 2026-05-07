@@ -7,7 +7,9 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatRadioModule } from '@angular/material/radio';
 import { ChatApiService } from '../../../core/services/chat-api.service';
+import { HelpdeskTicketFormField } from '../../../core/models/chat.models';
 
 export interface HelpdeskTicketDialogData {
   department: string;
@@ -19,6 +21,7 @@ export interface HelpdeskTicketDialogResult {
   location: string | null;
   phone: string | null;
   attachmentUrl: string | null;
+  customFields: Record<string, string | number>;
 }
 
 @Component({
@@ -32,7 +35,8 @@ export interface HelpdeskTicketDialogResult {
     MatButtonModule,
     MatAutocompleteModule,
     MatIconModule,
-    MatProgressSpinnerModule
+    MatProgressSpinnerModule,
+    MatRadioModule
   ],
   templateUrl: './helpdesk-ticket-dialog.component.html',
   styleUrl: './helpdesk-ticket-dialog.component.scss'
@@ -58,12 +62,83 @@ export class HelpdeskTicketDialogComponent implements OnInit {
   readonly selectedFile = signal<File | null>(null);
   readonly uploadedUrl = signal<string | null>(null);
   readonly isUploading = signal(false);
+  readonly isLoadingDepartmentForm = signal(false);
+  readonly departmentFormFields = signal<HelpdeskTicketFormField[]>([]);
+  readonly filteredSelectOptions = signal<Record<string, string[]>>({});
+
+  private readonly customFieldControls = new Map<string, FormControl<string>>();
 
   ngOnInit(): void {
     this.loadLocations();
+    this.loadDepartmentForm();
     this.locationControl.valueChanges.subscribe((value) => {
       this.filterLocations(value || '');
     });
+  }
+
+  customControl(fieldId: string): FormControl<string> {
+    const existing = this.customFieldControls.get(fieldId);
+    if (existing) return existing;
+    const field = this.departmentFormFields().find((item) => item.id === fieldId);
+    const validators = field?.required ? [Validators.required] : [];
+    const fallback = new FormControl<string>(String(field?.initialValue ?? '').trim(), {
+      nonNullable: true,
+      validators
+    });
+    this.customFieldControls.set(fieldId, fallback);
+    return fallback;
+  }
+
+  onSelectSearch(fieldId: string): void {
+    const field = this.departmentFormFields().find((item) => item.id === fieldId && item.type === 'select');
+    if (!field) return;
+    const searchValue = (this.customControl(fieldId).value || '').trim().toLowerCase();
+    const source = Array.isArray(field.options) ? field.options : [];
+    const next = searchValue
+      ? source.filter((option) => option.toLowerCase().includes(searchValue))
+      : source;
+    this.filteredSelectOptions.update((current) => ({ ...current, [fieldId]: next }));
+  }
+
+  selectOptions(fieldId: string): string[] {
+    const fromFilter = this.filteredSelectOptions()[fieldId];
+    if (Array.isArray(fromFilter)) return fromFilter;
+    const field = this.departmentFormFields().find((item) => item.id === fieldId && item.type === 'select');
+    return Array.isArray(field?.options) ? field.options : [];
+  }
+
+  isFieldInvalid(field: HelpdeskTicketFormField): boolean {
+    const control = this.customControl(field.id);
+    return Boolean(field.required && control.hasError('required') && control.touched);
+  }
+
+  private async loadDepartmentForm(): Promise<void> {
+    this.isLoadingDepartmentForm.set(true);
+    try {
+      const fields = await this.api.getHelpdeskDepartmentTicketForm(this.data.department);
+      const parsedFields = Array.isArray(fields)
+        ? fields.filter((field) => field && typeof field.id === 'string' && typeof field.label === 'string')
+        : [];
+      this.departmentFormFields.set(parsedFields);
+
+      const nextFiltered: Record<string, string[]> = {};
+      for (const field of parsedFields) {
+        const initialValue = String(field.initialValue ?? '').trim();
+        const validators = field.required ? [Validators.required] : [];
+        this.customFieldControls.set(
+          field.id,
+          new FormControl<string>(initialValue, { nonNullable: true, validators })
+        );
+        if (field.type === 'select') {
+          nextFiltered[field.id] = Array.isArray(field.options) ? field.options : [];
+        }
+      }
+      this.filteredSelectOptions.set(nextFiltered);
+    } catch {
+      this.departmentFormFields.set([]);
+    } finally {
+      this.isLoadingDepartmentForm.set(false);
+    }
   }
 
   private async loadLocations(): Promise<void> {
@@ -133,6 +208,31 @@ export class HelpdeskTicketDialogComponent implements OnInit {
       this.locationControl.markAsTouched();
       return;
     }
+    for (const field of this.departmentFormFields()) {
+      const control = this.customControl(field.id);
+      if (field.required && !String(control.value || '').trim()) {
+        control.markAsTouched();
+      }
+      if (control.invalid) {
+        return;
+      }
+    }
+
+    const customFields: Record<string, string | number> = {};
+    for (const field of this.departmentFormFields()) {
+      const control = this.customControl(field.id);
+      const value = String(control.value || '').trim();
+      if (!value) continue;
+      if (field.type === 'input' && field.inputType === 'number') {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) {
+          customFields[field.id] = parsed;
+        }
+      } else {
+        customFields[field.id] = value;
+      }
+    }
+
     const locationValue = (this.locationControl.value || '').trim();
     const phoneValue = (this.phoneControl.value || '').trim();
     this.dialogRef.close({
@@ -140,7 +240,8 @@ export class HelpdeskTicketDialogComponent implements OnInit {
       description: this.form.controls.description.value.trim(),
       location: locationValue || null,
       phone: phoneValue || null,
-      attachmentUrl: this.uploadedUrl()
+      attachmentUrl: this.uploadedUrl(),
+      customFields
     });
   }
 }

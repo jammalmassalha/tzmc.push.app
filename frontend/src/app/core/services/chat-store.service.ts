@@ -5117,7 +5117,8 @@ export class ChatStoreService {
     description: string,
     location?: string | null,
     phone?: string | null,
-    attachmentUrl?: string | null
+    attachmentUrl?: string | null,
+    customFields?: Record<string, string | number>
   ): Promise<HelpdeskTicket> {
     const user = this.currentUser();
     if (!user) throw new Error('יש להתחבר לפני פתיחת קריאה');
@@ -5128,7 +5129,8 @@ export class ChatStoreService {
       description,
       location: location || null,
       phone: phone || null,
-      attachmentUrl: attachmentUrl || null
+      attachmentUrl: attachmentUrl || null,
+      customFields: customFields || {}
     };
 
     let ticket: HelpdeskTicket;
