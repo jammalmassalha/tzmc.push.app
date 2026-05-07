@@ -29,10 +29,10 @@ const DEFAULT_INITIAL_FORM_VISIBILITY = Object.freeze({
     attachment: true
 });
 const DEFAULT_DEPARTMENTS = [
-    { name: 'מערכות מידע', icon: '🖥️' },
-    { name: 'אחזקה',       icon: '🔧' },
-    { name: 'בית מרקחת',   icon: '💊' },
-    { name: 'הנדסה רפואית', icon: '🏥' }
+    { name: 'מערכות מידע', icon: 'computer' },
+    { name: 'אחזקה',       icon: 'build' },
+    { name: 'בית מרקחת',   icon: 'local_pharmacy' },
+    { name: 'הנדסה רפואית', icon: 'biotech' }
 ];
 const ONGOING_STATUSES = new Set(['open', 'in_progress']);
 

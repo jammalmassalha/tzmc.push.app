@@ -30,6 +30,49 @@ import '../../../core/utils/toast_utils.dart';
 /// "past" so that no tickets are silently dropped from the UI.
 const Set<String> kHelpdeskOngoingStatuses = {'open', 'in_progress'};
 
+class _HelpdeskDepartmentIconOption {
+  final String key;
+  final String label;
+  final IconData icon;
+  const _HelpdeskDepartmentIconOption(this.key, this.label, this.icon);
+}
+
+const List<_HelpdeskDepartmentIconOption> _kHelpdeskDepartmentIconOptions = [
+  _HelpdeskDepartmentIconOption('computer', 'מחשבים / מערכות מידע', Icons.computer),
+  _HelpdeskDepartmentIconOption('build', 'אחזקה / כלים', Icons.build),
+  _HelpdeskDepartmentIconOption('local_pharmacy', 'בית מרקחת', Icons.local_pharmacy),
+  _HelpdeskDepartmentIconOption('biotech', 'הנדסה רפואית', Icons.biotech),
+  _HelpdeskDepartmentIconOption('support_agent', 'מוקד שירות', Icons.support_agent),
+  _HelpdeskDepartmentIconOption('medical_services', 'שירותים רפואיים', Icons.medical_services),
+  _HelpdeskDepartmentIconOption('electrical_services', 'חשמל', Icons.electrical_services),
+  _HelpdeskDepartmentIconOption('plumbing', 'אינסטלציה', Icons.plumbing),
+  _HelpdeskDepartmentIconOption('cleaning_services', 'ניקיון', Icons.cleaning_services),
+  _HelpdeskDepartmentIconOption('inventory_2', 'מחסן', Icons.inventory_2),
+  _HelpdeskDepartmentIconOption('security', 'אבטחה', Icons.security),
+  _HelpdeskDepartmentIconOption('apartment', 'כללי', Icons.apartment),
+];
+
+IconData? _departmentIconDataFromKey(String? iconKey) {
+  final key = (iconKey ?? '').trim();
+  if (key.isEmpty) return null;
+  for (final option in _kHelpdeskDepartmentIconOptions) {
+    if (option.key == key) return option.icon;
+  }
+  return null;
+}
+
+Widget _buildDepartmentIcon(String? iconKey, {double size = 22}) {
+  final iconData = _departmentIconDataFromKey(iconKey);
+  if (iconData != null) {
+    return Icon(iconData, size: size);
+  }
+  final text = (iconKey ?? '').trim();
+  if (text.isNotEmpty) {
+    return Text(text, style: TextStyle(fontSize: size));
+  }
+  return Icon(Icons.apartment, size: size);
+}
+
 class HelpdeskState {
   final List<HelpdeskTicket> ongoing;
   final List<HelpdeskTicket> past;
@@ -462,8 +505,8 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
     // Fallback if departments haven't loaded yet
     final depts = departments.isEmpty
         ? const [
-            HelpdeskDepartmentEntry(id: 0, name: 'מערכות מידע', icon: '🖥️'),
-            HelpdeskDepartmentEntry(id: 0, name: 'אחזקה', icon: '🔧'),
+            HelpdeskDepartmentEntry(id: 0, name: 'מערכות מידע', icon: 'computer'),
+            HelpdeskDepartmentEntry(id: 0, name: 'אחזקה', icon: 'build'),
           ]
         : departments;
 
@@ -504,9 +547,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                       Navigator.of(ctx).pop();
                       _showTicketFormDialog(ctx, dept.name);
                     },
-                    icon: dept.icon != null && dept.icon!.isNotEmpty
-                        ? Text(dept.icon!, style: const TextStyle(fontSize: 20))
-                        : const Icon(Icons.apartment),
+                    icon: _buildDepartmentIcon(dept.icon, size: 20),
                     label: Text(dept.name),
                     style: OutlinedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 16)),
@@ -2480,10 +2521,14 @@ class _DepartmentSettingsScreenState
 
   Future<void> _showAddEditDialog({HelpdeskDepartmentEntry? existing}) async {
     final nameCtrl = TextEditingController(text: existing?.name ?? '');
-    final iconCtrl = TextEditingController(text: existing?.icon ?? '');
     final sortCtrl = TextEditingController(
         text: existing != null ? existing.sortOrder.toString() : '0');
     String status = existing?.status ?? 'active';
+    final legacyIcon = (existing?.icon ?? '').trim();
+    final hasKnownExistingIcon = _departmentIconDataFromKey(legacyIcon) != null;
+    String selectedIconKey = hasKnownExistingIcon
+        ? legacyIcon
+        : _kHelpdeskDepartmentIconOptions.first.key;
     // Working copy of ticket form fields — mutable during the dialog session.
     List<HelpdeskTicketFormField> ticketForm =
         List<HelpdeskTicketFormField>.from(existing?.ticketForm ?? []);
@@ -2510,13 +2555,36 @@ class _DepartmentSettingsScreenState
                         border: OutlineInputBorder()),
                   ),
                   const SizedBox(height: 12),
-                  TextField(
-                    controller: iconCtrl,
+                  DropdownButtonFormField<String>(
+                    value: selectedIconKey,
                     decoration: const InputDecoration(
-                        labelText: 'אייקון (אמוג\'י)',
-                        border: OutlineInputBorder(),
-                        hintText: '🖥️'),
+                        labelText: 'אייקון מחלקה', border: OutlineInputBorder()),
+                    items: [
+                      ..._kHelpdeskDepartmentIconOptions.map((option) =>
+                          DropdownMenuItem(
+                            value: option.key,
+                            child: Row(
+                              children: [
+                                Icon(option.icon),
+                                const SizedBox(width: 8),
+                                Expanded(child: Text(option.label)),
+                              ],
+                            ),
+                          )),
+                    ],
+                    onChanged: (value) {
+                      if (value == null) return;
+                      setSt(() => selectedIconKey = value);
+                    },
                   ),
+                  if (legacyIcon.isNotEmpty && !hasKnownExistingIcon)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                        'סמל קודם לא נתמך עוד: $legacyIcon',
+                        style: TextStyle(color: Theme.of(ctx).colorScheme.error),
+                      ),
+                    ),
                   const SizedBox(height: 12),
                   TextField(
                     controller: sortCtrl,
@@ -2689,7 +2757,7 @@ class _DepartmentSettingsScreenState
         await api.addHelpdeskDepartment(
           widget.currentUser,
           name: nameCtrl.text.trim(),
-          icon: iconCtrl.text.trim().isEmpty ? null : iconCtrl.text.trim(),
+          icon: selectedIconKey,
           status: status,
           sortOrder: int.tryParse(sortCtrl.text.trim()) ?? 0,
           ticketForm: ticketForm,
@@ -2701,7 +2769,7 @@ class _DepartmentSettingsScreenState
           widget.currentUser,
           existing.id,
           name: nameCtrl.text.trim(),
-          icon: iconCtrl.text.trim().isEmpty ? '' : iconCtrl.text.trim(),
+          icon: selectedIconKey,
           status: status,
           sortOrder: int.tryParse(sortCtrl.text.trim()) ?? existing.sortOrder,
           ticketForm: ticketForm,
@@ -2997,12 +3065,7 @@ class _DepartmentSettingsScreenState
                         itemBuilder: (context, i) {
                           final dept = _departments[i];
                           return ListTile(
-                            leading: dept.icon != null &&
-                                    dept.icon!.isNotEmpty
-                                ? Text(dept.icon!,
-                                    style:
-                                        const TextStyle(fontSize: 24))
-                                : const Icon(Icons.apartment),
+                            leading: _buildDepartmentIcon(dept.icon, size: 24),
                             title: Text(dept.name,
                                 style: const TextStyle(
                                     fontWeight: FontWeight.bold)),
