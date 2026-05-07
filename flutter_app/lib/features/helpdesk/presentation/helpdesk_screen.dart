@@ -272,6 +272,29 @@ class HelpdeskNotifier extends Notifier<HelpdeskState> {
     }
   }
 
+  Future<List<HelpdeskDepartmentEntry>> loadActiveDepartments({
+    bool force = false,
+  }) async {
+    if (_currentUser == null) {
+      throw Exception('יש להתחבר תחילה');
+    }
+
+    if (!force && state.departments.isNotEmpty) {
+      return state.departments;
+    }
+
+    try {
+      final departments = await _api.getActiveHelpdeskDepartments(_currentUser!);
+      state = state.copyWith(departments: departments, error: null);
+      return departments;
+    } catch (e) {
+      state = state.copyWith(
+        error: 'שגיאה בטעינת המחלקות: ${e.toString()}',
+      );
+      rethrow;
+    }
+  }
+
   /// Load helpdesk locations for dropdown
   Future<List<String>> loadLocations() async {
     if (_currentUser == null) return [];
@@ -500,17 +523,29 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
     );
   }
 
-  void _showDepartmentSelectionDialog(BuildContext ctx) {
-    final departments = ref.read(helpdeskProvider).departments;
-    // Fallback if departments haven't loaded yet
-    final depts = departments.isEmpty
-        ? const [
-            HelpdeskDepartmentEntry(id: 9001, name: 'מערכות מידע', icon: 'computer'),
-            HelpdeskDepartmentEntry(id: 9002, name: 'אחזקה', icon: 'build'),
-            HelpdeskDepartmentEntry(id: 9003, name: 'בית מרקחת', icon: 'local_pharmacy'),
-            HelpdeskDepartmentEntry(id: 9004, name: 'הנדסה רפואית', icon: 'biotech'),
-          ]
-        : departments;
+  Future<void> _showDepartmentSelectionDialog(BuildContext ctx) async {
+    final overlay = Overlay.of(ctx, rootOverlay: true);
+    var depts = ref.read(helpdeskProvider).departments;
+
+    if (depts.isEmpty) {
+      try {
+        depts = await ref
+            .read(helpdeskProvider.notifier)
+            .loadActiveDepartments(force: true);
+      } catch (_) {
+        if (ctx.mounted) {
+          showTopToastOnOverlay(overlay, 'לא ניתן לטעון את המחלקות כרגע');
+        }
+        return;
+      }
+    }
+
+    if (!ctx.mounted) return;
+
+    if (depts.isEmpty) {
+      showTopToastOnOverlay(overlay, 'לא נמצאו מחלקות פעילות');
+      return;
+    }
 
     showModalBottomSheet(
       context: ctx,
