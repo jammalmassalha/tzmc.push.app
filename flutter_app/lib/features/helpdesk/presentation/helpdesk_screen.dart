@@ -507,6 +507,8 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
         ? const [
             HelpdeskDepartmentEntry(id: 0, name: 'מערכות מידע', icon: 'computer'),
             HelpdeskDepartmentEntry(id: 0, name: 'אחזקה', icon: 'build'),
+            HelpdeskDepartmentEntry(id: 0, name: 'בית מרקחת', icon: 'local_pharmacy'),
+            HelpdeskDepartmentEntry(id: 0, name: 'הנדסה רפואית', icon: 'biotech'),
           ]
         : departments;
 
@@ -1338,7 +1340,7 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
                   style: theme.textTheme.titleSmall
                       ?.copyWith(fontWeight: FontWeight.bold)),
             ),
-            if (role.role == HelpdeskRole.admin && currentUser == '0546799693')
+            if (role.role == HelpdeskRole.admin)
               IconButton(
                 icon: const Icon(Icons.settings),
                 tooltip: 'הגדרות מחלקות',
@@ -2475,7 +2477,7 @@ class _AttachmentRow extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// Department Settings Screen (Admin only — user 0546799693)
+// Department Settings Screen (Admin only)
 // ---------------------------------------------------------------------------
 
 class _DepartmentSettingsScreen extends ConsumerStatefulWidget {
