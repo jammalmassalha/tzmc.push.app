@@ -26,7 +26,7 @@ dependencies:
   dio: ^5.4.0
   dio_cookie_manager: ^3.1.1
   cookie_jar: ^4.0.8
-  retrofit: ^4.1.0
+  retrofit: ^4.6.0
   connectivity_plus: ^7.1.1
 
   # Local Storage
@@ -84,7 +84,7 @@ dev_dependencies:
   flutter_lints: ^5.0.0
   build_runner: ^2.4.11
   json_serializable: ^6.7.1
-  retrofit_generator: ^9.7.0
+  retrofit_generator: ">=9.6.0 <9.7.0"
   drift_dev: ^2.15.0
   freezed: ^3.1.0
   mockito: ^5.4.4
