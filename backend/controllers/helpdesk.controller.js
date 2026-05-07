@@ -62,12 +62,33 @@ function sanitizeTicketFormField(rawField, index = 0) {
     const type = toTrimmedString(rawField.type || '').toLowerCase();
     if (!VALID_FORM_FIELD_TYPES.has(type)) return null;
 
-    const idCandidate = toTrimmedString(rawField.id || rawField.key || `field_${index + 1}`)
-        .toLowerCase()
-        .replace(/[^\w\-]/g, '_')
-        .replace(/_+/g, '_')
-        .replace(/^_+|_+$/g, '')
-        .slice(0, 64);
+    const rawId = toTrimmedString(rawField.id || rawField.key || `field_${index + 1}`).toLowerCase().slice(0, 256);
+    let idCandidate = '';
+    let previousUnderscore = false;
+    for (let i = 0; i < rawId.length && idCandidate.length < 64; i++) {
+        const ch = rawId[i];
+        const code = ch.charCodeAt(0);
+        const isLetter = code >= 97 && code <= 122;
+        const isNumber = code >= 48 && code <= 57;
+        const isDash = ch === '-';
+        const isUnderscore = ch === '_';
+        if (isLetter || isNumber || isDash) {
+            idCandidate += ch;
+            previousUnderscore = false;
+            continue;
+        }
+        if (!previousUnderscore && idCandidate.length > 0) {
+            idCandidate += '_';
+            previousUnderscore = true;
+        }
+        if (isUnderscore && !previousUnderscore && idCandidate.length === 0) {
+            // ignore leading underscore
+            previousUnderscore = true;
+        }
+    }
+    if (idCandidate.endsWith('_')) {
+        idCandidate = idCandidate.slice(0, -1);
+    }
     if (!idCandidate) return null;
 
     const label = toTrimmedString(rawField.label || rawField.name || idCandidate).slice(0, 120);

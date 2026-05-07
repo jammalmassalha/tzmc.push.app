@@ -108,7 +108,7 @@ export class HelpdeskTicketDialogComponent implements OnInit {
     const fromFilter = this.filteredSelectOptions()[fieldId];
     if (Array.isArray(fromFilter)) return fromFilter;
     const field = this.departmentFormFields().find((item) => item.id === fieldId && item.type === 'select');
-    return Array.isArray(field?.options) ? field.options! : [];
+    return Array.isArray(field?.options) ? field.options : [];
   }
 
   isFieldInvalid(field: HelpdeskTicketFormField): boolean {
