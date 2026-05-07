@@ -85,7 +85,7 @@ dev_dependencies:
   json_serializable: ^6.7.1
   retrofit_generator: ^10.2.5
   drift_dev: ^2.15.0
-  freezed: ^3.2.5
+  freezed: ^3.1.0
   mockito: ^5.4.4
   mocktail: ^1.0.3
 
