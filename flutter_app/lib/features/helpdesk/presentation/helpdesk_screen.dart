@@ -505,10 +505,10 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
     // Fallback if departments haven't loaded yet
     final depts = departments.isEmpty
         ? const [
-            HelpdeskDepartmentEntry(id: 0, name: 'מערכות מידע', icon: 'computer'),
-            HelpdeskDepartmentEntry(id: 0, name: 'אחזקה', icon: 'build'),
-            HelpdeskDepartmentEntry(id: 0, name: 'בית מרקחת', icon: 'local_pharmacy'),
-            HelpdeskDepartmentEntry(id: 0, name: 'הנדסה רפואית', icon: 'biotech'),
+            HelpdeskDepartmentEntry(id: -1, name: 'מערכות מידע', icon: 'computer'),
+            HelpdeskDepartmentEntry(id: -2, name: 'אחזקה', icon: 'build'),
+            HelpdeskDepartmentEntry(id: -3, name: 'בית מרקחת', icon: 'local_pharmacy'),
+            HelpdeskDepartmentEntry(id: -4, name: 'הנדסה רפואית', icon: 'biotech'),
           ]
         : departments;
 
