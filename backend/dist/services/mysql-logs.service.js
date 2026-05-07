@@ -1250,8 +1250,21 @@ class MysqlLogsService {
                 sql += ` AND \`ActionTimestamp\` > ?`;
                 params.push(sinceTimestamp);
             }
-            sql += ` ORDER BY \`ActionTimestamp\` DESC LIMIT ?, ?`;
-            params.push(offset, limit);
+            if (includeMessages) {
+                // Full-sync mode paginates newest-first to mirror the historical Logs-table paging.
+                sql += ` ORDER BY \`ActionTimestamp\` DESC LIMIT ?, ?`;
+                params.push(offset, limit);
+            }
+            else if (offset > 0) {
+                // Backward-compatible actions-only mode (used by incremental sync callers).
+                sql += ` ORDER BY \`ActionTimestamp\` ASC LIMIT ?, ?`;
+                params.push(offset, limit);
+            }
+            else {
+                // Preserve historical ordering for existing callers that did not use offset.
+                sql += ` ORDER BY \`ActionTimestamp\` ASC LIMIT ?`;
+                params.push(limit);
+            }
             const [rows] = await this.pool.query(sql, params);
             const typedRows = rows;
             return typedRows.map((row) => {

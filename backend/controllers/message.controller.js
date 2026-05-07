@@ -540,26 +540,27 @@ function registerMessageController(app, deps = {}) {
                 allowedHardcodedGroupIds.forEach((groupId) => userAllowedGroupIds.add(groupId));
 
                 const isFullSync = since <= 0;
-                const rawMessages = isFullSync && typeof getMessageActivitiesForUser === 'function'
-                    ? await getMessageActivitiesForUser(user, {
+                let rawMessages = [];
+                if (isFullSync && typeof getMessageActivitiesForUser === 'function') {
+                    rawMessages = await getMessageActivitiesForUser(user, {
                         since,
                         limit,
                         offset,
                         includeActions: true,
                         includeMessages: true,
                         allowedGroupIds: Array.from(userAllowedGroupIds)
-                    })
-                    : (typeof getLogsMessagesForUser === 'function'
-                        ? await getLogsMessagesForUser(user, {
-                            limit,
-                            offset,
-                            since, // Optimization passed here
-                            excludeSystem: true,
-                            hardcodedGroupIds: Array.from(hardcodedGroupKeySet),
-                            hardcodedGroupMembers,
-                            dynamicGroupIds: userDynamicGroupIds
-                        })
-                        : []);
+                    });
+                } else if (typeof getLogsMessagesForUser === 'function') {
+                    rawMessages = await getLogsMessagesForUser(user, {
+                        limit,
+                        offset,
+                        since, // Optimization passed here
+                        excludeSystem: true,
+                        hardcodedGroupIds: Array.from(hardcodedGroupKeySet),
+                        hardcodedGroupMembers,
+                        dynamicGroupIds: userDynamicGroupIds
+                    });
+                }
 
                 // Supplementary sender lookup from MessageActivities.
                 // For group messages whose GroupSenderName column is null in the
