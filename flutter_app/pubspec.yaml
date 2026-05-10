@@ -50,6 +50,8 @@ dependencies:
 
   # Utilities
   json_annotation: ^4.8.1
+  # Flutter CI runs on Flutter 3.27.4 / Dart 3.6.2, so keep freezed on the
+  # last range that does not pull in Dart >=3.7 build dependencies.
   freezed_annotation: ">=3.0.0 <3.1.0"
   equatable: ^2.0.5
   collection: ^1.18.0
@@ -79,6 +81,7 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
+  # build_runner 2.5.0+ requires Dart >=3.7.
   build_runner: ">=2.4.11 <2.5.0"
   json_serializable: ^6.7.1
   retrofit_generator: ">=9.6.0 <9.7.0"
