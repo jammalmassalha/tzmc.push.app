@@ -79,7 +79,7 @@ concurrency:
 
 env:
   FLUTTER_VERSION: '3.27.4'
-  BUNDLE_ID: 'co.il.tzmc.tzmcPush'
+  BUNDLE_ID: 'TZMC.PORIA.ORG'
 
 jobs:
   build-ios:
