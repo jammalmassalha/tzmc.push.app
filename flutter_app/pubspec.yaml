@@ -25,9 +25,9 @@ dependencies:
   dio_cookie_manager: ^3.1.1
   cookie_jar: ^4.0.8
   retrofit: ^4.6.0
-  # connectivity_plus 7.1.1 references NWPath.isUltraConstrained in iOS code,
-  # which fails to compile on the current CI Xcode SDK. Keep below 7.1.1.
-  connectivity_plus: ">=7.0.0 <7.1.1"
+  # connectivity_plus 7.1.0+ references NWPath.isUltraConstrained in iOS code,
+  # which fails to compile on the current CI Xcode SDK. Keep below 7.1.0.
+  connectivity_plus: ">=7.0.0 <7.1.0"
 
   # Local Storage
   drift: ^2.20.0
