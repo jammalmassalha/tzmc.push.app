@@ -98,6 +98,22 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Deep clean build cache
+        run: |
+          rm -rf .dart_tool/build
+          rm -f pubspec.lock
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Verify analyzer override (6.x)
+        run: |
+          if ! dart pub deps | grep -Eq 'analyzer 6\.'; then
+            echo "::error::analyzer override not applied (expected 6.x)."
+            dart pub deps | grep analyzer || true
+            exit 1
+          fi
+
       # ── 3. Install Apple distribution certificate ─────────────────────────
       - name: Import distribution certificate into a temporary Keychain
         env:
