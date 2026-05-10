@@ -81,9 +81,9 @@ dependency_overrides:
   # Mockito 5.4.x uses analyzer internals that changed in analyzer 7.x.
   # Keep analyzer pinned to a stable 6.x release for build_runner precompile.
   analyzer: 6.11.0
-  # Force resolver to an older build_runner line if transitive deps try to pull
-  # analyzer 7.x back in through newer build tooling.
-  build_runner: 2.4.9
+  # Keep build_runner on a patch line that supports web_socket_channel 3.x while
+  # still staying below the 2.5.x tooling jump used in this app's Dart 3.6 CI.
+  build_runner: 2.4.10
 
 dev_dependencies:
   flutter_test:
@@ -91,7 +91,7 @@ dev_dependencies:
   flutter_lints: ^5.0.0
   # Keep build_runner on the Dart 3.6-compatible line; exact resolution is
   # enforced above via dependency_overrides.
-  build_runner: ">=2.4.9 <2.5.0"
+  build_runner: ">=2.4.10 <2.5.0"
   json_serializable: ^6.7.1
   retrofit_generator: ">=9.6.0 <9.7.0"
   drift_dev: ^2.15.0
