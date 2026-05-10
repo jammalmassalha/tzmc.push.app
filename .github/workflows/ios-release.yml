@@ -20,7 +20,8 @@ name: iOS Release Build
 #      Download from https://developer.apple.com/account/resources/profiles
 #
 #  KEYCHAIN_PASSWORD
-#      Password used to create/unlock the temporary keychain on CI.
+#      Optional override for temporary CI keychain password.
+#      If omitted, the workflow generates a random password per run.
 #
 #  APPLE_TEAM_ID
 #      Your 10-character Apple Developer Team ID, found at
@@ -122,20 +123,16 @@ jobs:
         env:
           P12_BASE64: ${{ secrets.P12_BASE64 }}
           P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          KEYCHAIN_PASSWORD_SECRET: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
           if [ -z "${P12_BASE64:-}" ]; then
             echo "::error::P12_BASE64 secret is not set."
             exit 1
           fi
 
-          if [ -z "${KEYCHAIN_PASSWORD:-}" ]; then
-            echo "::error::KEYCHAIN_PASSWORD secret is not set."
-            exit 1
-          fi
-
           CERT_PATH="$RUNNER_TEMP/distribution.p12"
           KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="${KEYCHAIN_PASSWORD_SECRET:-$(openssl rand -hex 20)}"
 
           # Decode certificate
           echo "$P12_BASE64" | base64 --decode > "$CERT_PATH"
