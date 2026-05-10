@@ -213,7 +213,27 @@ jobs:
           CURRENT_NAME="${CURRENT%%+*}"
           CURRENT_BUILD="${CURRENT##*+}"
 
-          FINAL_VERSION="${VERSION:-$CURRENT_NAME}+${BUILD:-$CURRENT_BUILD}"
+          BASE_VERSION="${VERSION:-$CURRENT_NAME}"
+          BASE_BUILD="${BUILD:-$CURRENT_BUILD}"
+
+          # Allow short numeric forms like 1 or 1.2 and normalize to x.y.z
+          if [[ "$BASE_VERSION" =~ ^[0-9]+$ ]]; then
+            BASE_VERSION="${BASE_VERSION}.0.0"
+          elif [[ "$BASE_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            BASE_VERSION="${BASE_VERSION}.0"
+          fi
+
+          if ! [[ "$BASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid version_name '$BASE_VERSION'. Use semantic version format x.y.z (e.g. 1.0.0)."
+            exit 1
+          fi
+
+          if ! [[ "$BASE_BUILD" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid build_number '$BASE_BUILD'. Use a numeric value (e.g. 22)."
+            exit 1
+          fi
+
+          FINAL_VERSION="${BASE_VERSION}+${BASE_BUILD}"
           echo "Setting version to: $FINAL_VERSION"
           sed -i '' "s/^version:.*/version: $FINAL_VERSION/" pubspec.yaml
 
