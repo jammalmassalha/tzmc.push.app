@@ -5,19 +5,23 @@ name: iOS Release Build
 #
 # ─── REQUIRED GITHUB SECRETS ────────────────────────────────────────────────
 #
-#  IOS_CERTIFICATE_P12_BASE64
+#  P12_BASE64
 #      Your Apple Distribution certificate exported from Keychain Access as a
 #      .p12 file, then base64-encoded:
 #        base64 -i Certificates.p12 | tr -d '\n'
 #      (on Linux/CI use: base64 -w0 Certificates.p12)
 #
-#  IOS_CERTIFICATE_P12_PASSWORD
+#  P12_PASSWORD
 #      The password you set when exporting the .p12 (may be empty string "").
 #
-#  IOS_PROVISIONING_PROFILE_BASE64
+#  MOBILEPROVISION_BASE64
 #      Your provisioning profile (.mobileprovision) base64-encoded:
 #        base64 -i MyApp.mobileprovision | tr -d '\n'
 #      Download from https://developer.apple.com/account/resources/profiles
+#
+#  KEYCHAIN_PASSWORD
+#      Optional override for temporary CI keychain password.
+#      If omitted, the workflow generates a random password per run.
 #
 #  APPLE_TEAM_ID
 #      Your 10-character Apple Developer Team ID, found at
@@ -117,17 +121,18 @@ jobs:
       # ── 3. Install Apple distribution certificate ─────────────────────────
       - name: Import distribution certificate into a temporary Keychain
         env:
-          P12_BASE64: ${{ secrets.IOS_CERTIFICATE_P12_BASE64 }}
-          P12_PASSWORD: ${{ secrets.IOS_CERTIFICATE_P12_PASSWORD }}
+          P12_BASE64: ${{ secrets.P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          KEYCHAIN_PASSWORD_SECRET: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
           if [ -z "${P12_BASE64:-}" ]; then
-            echo "::error::IOS_CERTIFICATE_P12_BASE64 secret is not set."
+            echo "::error::P12_BASE64 secret is not set."
             exit 1
           fi
 
           CERT_PATH="$RUNNER_TEMP/distribution.p12"
           KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
-          KEYCHAIN_PASSWORD="$(openssl rand -hex 20)"
+          KEYCHAIN_PASSWORD="${KEYCHAIN_PASSWORD_SECRET:-$(openssl rand -hex 20)}"
 
           # Decode certificate
           echo "$P12_BASE64" | base64 --decode > "$CERT_PATH"
@@ -155,10 +160,10 @@ jobs:
       # ── 4. Install provisioning profile ───────────────────────────────────
       - name: Install provisioning profile
         env:
-          PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+          PROFILE_BASE64: ${{ secrets.MOBILEPROVISION_BASE64 }}
         run: |
           if [ -z "${PROFILE_BASE64:-}" ]; then
-            echo "::error::IOS_PROVISIONING_PROFILE_BASE64 secret is not set."
+            echo "::error::MOBILEPROVISION_BASE64 secret is not set."
             exit 1
           fi
 
