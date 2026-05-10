@@ -398,7 +398,7 @@ class PushNotificationService {
     );
 
     await _localNotifications!.initialize(
-      settings: initSettings,
+      initSettings,
       onDidReceiveNotificationResponse: _onNotificationTapped,
     );
 
