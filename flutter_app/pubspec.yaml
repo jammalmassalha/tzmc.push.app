@@ -78,20 +78,27 @@ dependencies:
 # additional artifact downloads.
 dependency_overrides:
   shared_preferences_android: 2.4.2
+  # Mockito 5.4.x uses analyzer internals that changed in analyzer 7.x.
+  # Keep analyzer pinned to a stable 6.x release for build_runner precompile.
+  analyzer: 6.11.0
+  # Force resolver to an older build_runner line if transitive deps try to pull
+  # analyzer 7.x back in through newer build tooling.
+  build_runner: 2.4.9
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
-  # build_runner 2.5.0+ requires Dart >=3.7.
-  build_runner: ">=2.4.11 <2.5.0"
+  # Keep build_runner on the Dart 3.6-compatible line; exact resolution is
+  # enforced above via dependency_overrides.
+  build_runner: ">=2.4.9 <2.5.0"
   json_serializable: ^6.7.1
   retrofit_generator: ">=9.6.0 <9.7.0"
   drift_dev: ^2.15.0
   freezed: ">=3.0.0 <3.1.0"
-  # mockito 5.4.x (last Dart 3.6-compatible line) fails to precompile with
-  # analyzer 7.5.x+; keep analyzer in the compatible 7.4.x range on CI.
-  analyzer: ">=7.4.1 <7.5.0"
+  # Mockito 5.4.x relies on analyzer internals; keep the compatible major line.
+  # dependency_overrides pins the exact resolved version to 6.11.0.
+  analyzer: ">=6.11.0 <7.0.0"
   mockito: ">=5.4.4 <5.5.0"
   mocktail: ^1.0.3
 

@@ -64,8 +64,21 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Deep clean build cache
+        run: |
+          rm -rf .dart_tool/build
+          rm -f pubspec.lock
+
       - name: Get dependencies
         run: flutter pub get
+
+      - name: Verify analyzer override (6.11.0)
+        run: |
+          if ! dart pub deps | grep -Eq 'analyzer 6\.11\.0'; then
+            echo "::error::analyzer override not applied (expected 6.11.0)."
+            dart pub deps | grep analyzer || true
+            exit 1
+          fi
 
       - name: Materialize google-services.json from secret
         # The google-services.json file is intentionally not committed.
@@ -127,8 +140,21 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Deep clean build cache
+        run: |
+          rm -rf .dart_tool/build
+          rm -f pubspec.lock
+
       - name: Get dependencies
         run: flutter pub get
+
+      - name: Verify analyzer override (6.11.0)
+        run: |
+          if ! dart pub deps | grep -Eq 'analyzer 6\.11\.0'; then
+            echo "::error::analyzer override not applied (expected 6.11.0)."
+            dart pub deps | grep analyzer || true
+            exit 1
+          fi
 
       - name: Run code generation
         run: dart run build_runner build --delete-conflicting-outputs
@@ -163,8 +189,21 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Deep clean build cache
+        run: |
+          rm -rf .dart_tool/build
+          rm -f pubspec.lock
+
       - name: Get dependencies
         run: flutter pub get
+
+      - name: Verify analyzer override (6.11.0)
+        run: |
+          if ! dart pub deps | grep -Eq 'analyzer 6\.11\.0'; then
+            echo "::error::analyzer override not applied (expected 6.11.0)."
+            dart pub deps | grep analyzer || true
+            exit 1
+          fi
 
       - name: Materialize GoogleService-Info.plist from secret
         env:
