@@ -89,10 +89,10 @@ dev_dependencies:
   retrofit_generator: ">=9.6.0 <9.7.0"
   drift_dev: ^2.15.0
   freezed: ">=3.0.0 <3.1.0"
-  # mockito 5.4.5 (last Dart 3.6-compatible line) fails to precompile against
-  # analyzer 7.6.x+; keep analyzer below that range for build_runner on CI.
-  analyzer: ">=7.4.1 <7.6.0"
-  mockito: ^5.4.4
+  # mockito 5.4.x (last Dart 3.6-compatible line) fails to precompile with
+  # analyzer 7.5.x+; keep analyzer in the compatible 7.4.x range on CI.
+  analyzer: ">=7.4.1 <7.5.0"
+  mockito: ">=5.4.4 <5.5.0"
   mocktail: ^1.0.3
 
 flutter:
