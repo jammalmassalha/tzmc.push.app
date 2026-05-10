@@ -9,7 +9,7 @@
     <string>manual</string>
     <key>provisioningProfiles</key>
     <dict>
-        <key>co.il.tzmc.tzmcPush</key>
+        <key>TZMC.PORIA.ORG</key>
         <string>TZMC_App_Store_Profile</string> </dict>
 </dict>
 </plist>
