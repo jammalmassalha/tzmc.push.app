@@ -90,8 +90,8 @@ dev_dependencies:
   drift_dev: ^2.15.0
   freezed: ">=3.0.0 <3.1.0"
   # mockito 5.4.5 (last Dart 3.6-compatible line) fails to precompile against
-  # analyzer 7.7.x; keep analyzer below that range for build_runner on CI.
-  analyzer: ">=7.4.1 <7.7.0"
+  # analyzer 7.6.x+; keep analyzer below that range for build_runner on CI.
+  analyzer: ">=7.4.1 <7.6.0"
   mockito: ^5.4.4
   mocktail: ^1.0.3
 
