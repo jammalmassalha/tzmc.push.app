@@ -97,7 +97,7 @@ dev_dependencies:
   drift_dev: ^2.15.0
   freezed: ">=3.0.0 <3.1.0"
   # Mockito 5.4.x relies on analyzer internals; keep the compatible major line.
-  # Exact resolution is enforced above via dependency_overrides.
+  # dependency_overrides pins the exact resolved version to 6.11.0.
   analyzer: ">=6.11.0 <7.0.0"
   mockito: ">=5.4.4 <5.5.0"
   mocktail: ^1.0.3

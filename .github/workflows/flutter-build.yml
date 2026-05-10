@@ -72,10 +72,10 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
-      - name: Verify analyzer override (6.x)
+      - name: Verify analyzer override (6.11.0)
         run: |
-          if ! dart pub deps | grep -Eq 'analyzer 6\.'; then
-            echo "::error::analyzer override not applied (expected 6.x)."
+          if ! dart pub deps | grep -Eq 'analyzer 6\.11\.0'; then
+            echo "::error::analyzer override not applied (expected 6.11.0)."
             dart pub deps | grep analyzer || true
             exit 1
           fi
@@ -148,10 +148,10 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
-      - name: Verify analyzer override (6.x)
+      - name: Verify analyzer override (6.11.0)
         run: |
-          if ! dart pub deps | grep -Eq 'analyzer 6\.'; then
-            echo "::error::analyzer override not applied (expected 6.x)."
+          if ! dart pub deps | grep -Eq 'analyzer 6\.11\.0'; then
+            echo "::error::analyzer override not applied (expected 6.11.0)."
             dart pub deps | grep analyzer || true
             exit 1
           fi
@@ -197,10 +197,10 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
-      - name: Verify analyzer override (6.x)
+      - name: Verify analyzer override (6.11.0)
         run: |
-          if ! dart pub deps | grep -Eq 'analyzer 6\.'; then
-            echo "::error::analyzer override not applied (expected 6.x)."
+          if ! dart pub deps | grep -Eq 'analyzer 6\.11\.0'; then
+            echo "::error::analyzer override not applied (expected 6.11.0)."
             dart pub deps | grep analyzer || true
             exit 1
           fi
