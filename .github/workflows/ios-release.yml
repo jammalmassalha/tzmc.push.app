@@ -285,20 +285,24 @@ jobs:
       # ── 8. Build signed IPA ───────────────────────────────────────────────
       - name: Build Flutter IPA
         run: |
-          flutter build ipa \
-            --release \
-            --export-options-plist="$RUNNER_TEMP/ExportOptions.plist"
+          # 1. Build the archive without trying to sign it yet
+          flutter build ipa --release --no-codesign
 
-          # Copy to dist folder
+          # 2. Now use Xcode to sign and export it using your P12 and Profile
+          xcodebuild -exportArchive \
+            -archivePath build/ios/archive/Runner.xcarchive \
+            -exportPath build/ios/ipa \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -allowProvisioningUpdates
+
+          # 3. Copy to dist folder (same as your previous logic)
           mkdir -p ../dist/ios
           IPA_PATH=$(find build/ios/ipa -name "*.ipa" | head -1)
           if [ -z "$IPA_PATH" ]; then
-            echo "::error::No .ipa file found after build. Check the signing configuration."
-            ls -la build/ios/ || true
+            echo "::error::No .ipa file found. Check signing logs above."
             exit 1
           fi
           cp "$IPA_PATH" ../dist/ios/tzmc-push-release.ipa
-          echo "IPA size: $(du -sh ../dist/ios/tzmc-push-release.ipa)"
 
       # ── 9. Upload artifact ────────────────────────────────────────────────
       - name: Upload IPA artifact
