@@ -671,9 +671,9 @@ class PushNotificationService {
     }
 
     await _localNotifications!.show(
-      id: message.hashCode,
-      title: notification.title,
-      body: (() {
+      message.hashCode,
+      notification.title,
+      (() {
         // Prefer data fields over the FCM notification.body — they are always
         // set by the backend and survive payload transformations on every
         // platform, whereas notification.body may be absent in edge cases.
@@ -688,7 +688,7 @@ class PushNotificationService {
         }
         return (notification.body?.isNotEmpty == true) ? notification.body : fromData ?? '';
       })(),
-      notificationDetails: details,
+      details,
       payload: notificationPayload,
     );
 
@@ -710,10 +710,10 @@ class PushNotificationService {
         groupAlertBehavior: GroupAlertBehavior.children,
       );
       await _localNotifications!.show(
-        id: _kGroupSummaryNotificationId,
-        title: 'הודעות חדשות',
-        body: '',
-        notificationDetails: const NotificationDetails(android: summaryAndroid),
+        _kGroupSummaryNotificationId,
+        'הודעות חדשות',
+        '',
+        const NotificationDetails(android: summaryAndroid),
       );
     }
   }
