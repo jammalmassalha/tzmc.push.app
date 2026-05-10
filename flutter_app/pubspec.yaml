@@ -30,7 +30,9 @@ dependencies:
   # Local Storage
   drift: ^2.20.0
   sqlite3_flutter_libs: ^0.5.24
-  drift_flutter: ^0.2.8  # Cross-platform database support (includes web)
+  # drift_flutter 0.2.8+ pulls drift 2.30+, which forces drift_dev onto
+  # source_gen 3.x and breaks retrofit_generator 9.6 on Dart 3.6 CI.
+  drift_flutter: ^0.2.7  # Cross-platform database support (includes web)
   shared_preferences: ^2.2.2
   flutter_secure_storage: ^10.0.0
   path: ^1.8.3
