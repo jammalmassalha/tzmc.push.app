@@ -12,6 +12,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -40,11 +41,16 @@ const String _kNotificationGroupKey = 'com.tzmc.chat_group';
 const int _kGroupSummaryNotificationId = 0;
 
 // APNs can take a short time to hand firebase_messaging its native token
-// immediately after the user grants notification permission on iOS.
-const int _kAPNSTokenMaxAttempts = 5;
+// immediately after the user grants notification permission on iOS. Wait up
+// to 20 seconds because production devices have reported five seconds was not
+// enough on first launch after granting permission.
+const int _kAPNSTokenMaxAttempts = 20;
 const Duration _kAPNSTokenRetryDelay = Duration(seconds: 1);
 const int _kTokenRegistrationMaxAttempts = 12;
 const Duration _kTokenRegistrationRetryDelay = Duration(seconds: 5);
+// Must match AppDelegate.swift's FlutterMethodChannel name.
+const String _kPushRegistrationChannelName = 'flutter_push_registration';
+const Duration _kNativeRegistrationTimeout = Duration(seconds: 10);
 
 // Platform detection helper
 bool get _isNativePlatform {
@@ -90,6 +96,8 @@ bool _isAndroidPlatform() {
 class PushNotificationService {
   final ChatApiService _api;
   final Ref _ref;
+  late final MethodChannel _pushRegistrationChannel =
+      const MethodChannel(_kPushRegistrationChannelName);
 
   FirebaseMessaging? _messaging;
   FlutterLocalNotificationsPlugin? _localNotifications;
@@ -533,6 +541,7 @@ class PushNotificationService {
         // Get APNs token first on iOS. It is often unavailable for a moment
         // right after permission is granted; retry so first-run registration
         // doesn't silently fail until the next app launch.
+        await _requestIOSRemoteNotificationRegistration();
         _logIOSRegistrationStep(
           'ios_apns_token_wait_start',
           'start',
@@ -689,6 +698,44 @@ class PushNotificationService {
       }
     }
     return null;
+  }
+
+  Future<void> _requestIOSRemoteNotificationRegistration() async {
+    if (!_isIOSPlatform()) return;
+
+    _logIOSRegistrationStep(
+      'ios_remote_notifications_register_start',
+      'start',
+      message: 'Requesting native APNs registration',
+    );
+    try {
+      await _pushRegistrationChannel
+          .invokeMethod<void>('registerForRemoteNotifications')
+          .timeout(_kNativeRegistrationTimeout);
+      _logIOSRegistrationStep(
+        'ios_remote_notifications_register_requested',
+        'success',
+        message: 'Native APNs registration requested',
+      );
+    } on MissingPluginException catch (e) {
+      debugPrint(
+        '[PushNotificationService] APNs registration bridge missing: $e',
+      );
+      _logIOSRegistrationStep(
+        'ios_remote_notifications_register_missing_plugin',
+        'error',
+        message: e.toString(),
+      );
+    } catch (e) {
+      debugPrint(
+        '[PushNotificationService] APNs registration request error: $e',
+      );
+      _logIOSRegistrationStep(
+        'ios_remote_notifications_register_error',
+        'error',
+        message: e.toString(),
+      );
+    }
   }
 
   void _onTokenRefresh(String token) {

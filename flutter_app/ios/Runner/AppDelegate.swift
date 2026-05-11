@@ -4,13 +4,43 @@ import UIKit
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
+  // Must match _kPushRegistrationChannelName in push_notification_service.dart.
+  private let pushRegistrationChannelName = "flutter_push_registration"
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     GeneratedPluginRegistrant.register(with: self)
-    application.registerForRemoteNotifications()
-    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+    let didFinishLaunching = super.application(
+      application,
+      didFinishLaunchingWithOptions: launchOptions
+    )
+    if let controller = window?.rootViewController as? FlutterViewController {
+      let pushRegistrationChannel = FlutterMethodChannel(
+        name: pushRegistrationChannelName,
+        binaryMessenger: controller.binaryMessenger
+      )
+      pushRegistrationChannel.setMethodCallHandler { call, result in
+        guard call.method == "registerForRemoteNotifications" else {
+          result(FlutterMethodNotImplemented)
+          return
+        }
+        let dispatchRegistrationRequest = {
+          UIApplication.shared.registerForRemoteNotifications()
+          // This confirms only that the request was dispatched, not that APNs
+          // registration succeeded. APNs completion/failure is reported later
+          // via the UIApplicationDelegate callbacks.
+          result(nil)
+        }
+        if Thread.isMainThread {
+          dispatchRegistrationRequest()
+        } else {
+          DispatchQueue.main.async(execute: dispatchRegistrationRequest)
+        }
+      }
+    }
+    return didFinishLaunching
   }
 
   override func application(
