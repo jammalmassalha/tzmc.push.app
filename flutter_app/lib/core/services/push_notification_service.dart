@@ -102,6 +102,7 @@ class PushNotificationService {
   String? _pendingToken;
   Timer? _tokenRegistrationRetryTimer;
   int _tokenRegistrationRetryAttempt = 0;
+  bool _tokenRegistrationRetryInFlight = false;
   StreamSubscription? _tokenRefreshSubscription;
   StreamSubscription? _messageSubscription;
 
@@ -533,11 +534,11 @@ class PushNotificationService {
   }
 
   void _scheduleTokenRegistrationRetry() {
-    final shouldSkipRetry =
-        !_isIOSPlatform() ||
-        _messaging == null ||
-        _isRegisteredForCurrentUser();
-    if (shouldSkipRetry) return;
+    if (!_isIOSPlatform()) return;
+    if (_messaging == null) return;
+    if (!_hasCurrentUser()) return;
+    if (_isRegisteredForCurrentUser()) return;
+    if (_tokenRegistrationRetryInFlight) return;
     if (_tokenRegistrationRetryTimer?.isActive ?? false) return;
     if (_tokenRegistrationRetryAttempt >= _kTokenRegistrationMaxAttempts) {
       debugPrint(
@@ -549,20 +550,36 @@ class PushNotificationService {
     final attempt = _tokenRegistrationRetryAttempt;
     _tokenRegistrationRetryTimer = Timer(
       _kTokenRegistrationRetryDelay,
-      () {
-        Future<void>(() async {
-          debugPrint(
-            '[PushNotificationService] Retrying iOS token registration '
-            '($attempt/$_kTokenRegistrationMaxAttempts)',
-          );
-          await _getAndRegisterToken();
-        }).catchError((Object e, StackTrace st) {
-          debugPrint(
-            '[PushNotificationService] Token registration retry crashed: $e\n$st',
-          );
-        });
-      },
+      () => _runScheduledTokenRegistrationRetry(attempt),
     );
+  }
+
+  void _runScheduledTokenRegistrationRetry(int attempt) {
+    if (_tokenRegistrationRetryInFlight) return;
+    _tokenRegistrationRetryInFlight = true;
+    Future<void>(() async {
+      debugPrint(
+        '[PushNotificationService] Retrying iOS token registration '
+        '($attempt/$_kTokenRegistrationMaxAttempts)',
+      );
+      try {
+        await _getAndRegisterToken();
+      } catch (e, st) {
+        debugPrint(
+          '[PushNotificationService] Token registration retry crashed: $e\n$st',
+        );
+      } finally {
+        _tokenRegistrationRetryInFlight = false;
+        if (!_isRegisteredForCurrentUser()) {
+          _scheduleTokenRegistrationRetry();
+        }
+      }
+    });
+  }
+
+  bool _hasCurrentUser() {
+    final username = _ref.read(currentUserProvider);
+    return username != null && username.trim().isNotEmpty;
   }
 
   bool _isRegisteredForCurrentUser() {
@@ -649,7 +666,12 @@ class PushNotificationService {
       // but we never got around to calling getToken (e.g. permission
       // granted in a previous session).
       if (_messaging != null && !_isRegisteredForCurrentUser()) {
-        await _getAndRegisterToken();
+        final existingToken = _deviceToken;
+        if (existingToken != null) {
+          await _registerDeviceToken(existingToken);
+        } else {
+          await _getAndRegisterToken();
+        }
       }
       return;
     }
