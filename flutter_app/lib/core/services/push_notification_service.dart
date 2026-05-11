@@ -525,11 +525,13 @@ class PushNotificationService {
   }
 
   Future<String?> _waitForAPNSToken() async {
-    for (var attempt = 1; attempt <= _kAPNSTokenMaxAttempts; attempt += 1) {
+    for (var attemptNumber = 1;
+        attemptNumber <= _kAPNSTokenMaxAttempts;
+        attemptNumber += 1) {
       final apnsToken = await _messaging!.getAPNSToken();
       if (apnsToken != null) return apnsToken;
 
-      if (attempt < _kAPNSTokenMaxAttempts) {
+      if (attemptNumber < _kAPNSTokenMaxAttempts) {
         await Future.delayed(_kAPNSTokenRetryDelay);
       }
     }

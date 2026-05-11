@@ -250,6 +250,11 @@ function trimDataMap(data) {
     return trimmed;
 }
 
+function normalizeBadgeCount(value) {
+    const badgeCount = Number(value);
+    return Number.isFinite(badgeCount) && badgeCount >= 0 ? badgeCount : undefined;
+}
+
 function buildFcmMessage(token, parsedPayload, subscription) {
     const envelope = (parsedPayload && typeof parsedPayload === 'object') ? parsedPayload : {};
     const notification = (envelope.notification && typeof envelope.notification === 'object')
@@ -287,9 +292,8 @@ function buildFcmMessage(token, parsedPayload, subscription) {
     };
 
     if (isApnsSubscription(subscription)) {
-        const badgeCount = Number(data.badgeCount);
         const aps = {
-            badge: Number.isFinite(badgeCount) && badgeCount >= 0 ? badgeCount : undefined,
+            badge: normalizeBadgeCount(data.badgeCount),
             'content-available': 1
         };
 
