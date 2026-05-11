@@ -68,7 +68,7 @@ class DefaultFirebaseOptions {
     messagingSenderId: '917008922776',
     projectId: 'tzmc-notifications',
     storageBucket: 'tzmc-notifications.firebasestorage.app',
-    iosBundleId: 'TZMC.PORIA.ORG',
+    iosBundleId: 'co.il.tzmc.tzmcPush',
   );
 
   /// **Web Push certificate (VAPID key)** for FCM JS SDK
