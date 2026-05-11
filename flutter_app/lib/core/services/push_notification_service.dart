@@ -71,6 +71,11 @@ bool _isIOSPlatform() {
   return defaultTargetPlatform == TargetPlatform.iOS;
 }
 
+bool _isAndroidPlatform() {
+  if (kIsWeb) return false;
+  return defaultTargetPlatform == TargetPlatform.android;
+}
+
 // ---------------------------------------------------------------------------
 // Push Notification Service
 // ---------------------------------------------------------------------------
@@ -162,14 +167,17 @@ class PushNotificationService {
   /// `await`, so callers should pass a context that belongs to a mounted
   /// widget.
   Future<void> ensurePermissionAndRegister(BuildContext context) async {
-    // On native platforms (Android/iOS) we rely on `permission_handler` to
-    // determine the *real* permission state and to trigger the system
-    // dialog. firebase_messaging's `getNotificationSettings()` is
-    // unreliable on Android — it reports `denied` even when the runtime
-    // permission has never been requested, which would otherwise cause us
-    // to skip the OS prompt entirely and jump straight to the
-    // "open Settings" rationale (the exact bug users hit on Android 13+).
-    if (!kIsWeb) {
+    // iOS must trigger Apple's UNUserNotificationCenter authorization prompt.
+    // Once that prompt has been requested, iOS adds the Notifications entry to
+    // the app's Settings page. Keep Android on permission_handler below
+    // because firebase_messaging's `getNotificationSettings()` is unreliable
+    // there (it reports denied before the runtime permission is requested).
+    if (_isIOSPlatform()) {
+      await _ensureIOSPermissionViaFirebaseMessaging(context);
+      return;
+    }
+
+    if (_isAndroidPlatform()) {
       await _ensurePermissionViaPermissionHandler(context);
       return;
     }
@@ -212,12 +220,54 @@ class PushNotificationService {
     await _maybeShowOpenSettingsDialog(context);
   }
 
-  /// Native (Android/iOS) permission flow.
+  /// iOS permission flow.
+  ///
+  /// Uses Firebase Messaging directly so the native iOS notification
+  /// authorization prompt is shown. The app-level Notifications Settings row
+  /// only appears after this authorization request has been made.
+  Future<void> _ensureIOSPermissionViaFirebaseMessaging(
+    BuildContext context,
+  ) async {
+    if (_messaging == null) {
+      debugPrint(
+          '[PushNotificationService] FirebaseMessaging not available on iOS — '
+          'check Firebase initialization / firebase_options.');
+      return;
+    }
+
+    NotificationSettings settings;
+    try {
+      settings = await _messaging!.getNotificationSettings();
+    } catch (e) {
+      debugPrint('[PushNotificationService] getNotificationSettings error: $e');
+      return;
+    }
+
+    final status = settings.authorizationStatus;
+    if (_isAuthorized(status)) {
+      await _clearSettingsNagFlag();
+      await _getAndRegisterToken();
+      return;
+    }
+
+    if (status == AuthorizationStatus.notDetermined) {
+      if (!context.mounted) return;
+      final accepted = await _showRationaleDialog(context);
+      if (accepted != true) return;
+      await _requestPermissionAndRegister();
+      return;
+    }
+
+    if (!context.mounted) return;
+    await _maybeShowOpenSettingsDialog(context);
+  }
+
+  /// Android permission flow.
   ///
   /// `permission_handler` correctly distinguishes `denied` (never asked, or
   /// asked once and dismissed) from `permanentlyDenied` (the user picked
-  /// "Don't allow" twice on Android 13+ or toggled it off in Settings on
-  /// iOS), which `firebase_messaging.getNotificationSettings()` does not.
+  /// "Don't allow" twice on Android 13+), which
+  /// `firebase_messaging.getNotificationSettings()` does not.
   /// We use it to gate when we show the OS dialog vs. the "open Settings"
   /// rationale.
   ///
