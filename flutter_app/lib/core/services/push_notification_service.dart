@@ -533,7 +533,9 @@ class PushNotificationService {
   }
 
   void _scheduleTokenRegistrationRetry() {
-    if (!_isIOSPlatform() || _messaging == null || _deviceToken != null) return;
+    if (!_isIOSPlatform() || _messaging == null || _isRegisteredForCurrentUser()) {
+      return;
+    }
     if (_tokenRegistrationRetryTimer?.isActive ?? false) return;
     if (_tokenRegistrationRetryAttempt >= _kTokenRegistrationRetryMaxAttempts) {
       debugPrint(
@@ -548,8 +550,24 @@ class PushNotificationService {
         '[PushNotificationService] Retrying iOS token registration '
         '($attempt/$_kTokenRegistrationRetryMaxAttempts)',
       );
-      unawaited(_getAndRegisterToken());
+      unawaited(
+        _getAndRegisterToken().catchError((Object e, StackTrace st) {
+          debugPrint(
+            '[PushNotificationService] Token registration retry crashed: $e\n$st',
+          );
+        }),
+      );
     });
+  }
+
+  bool _isRegisteredForCurrentUser() {
+    final token = _deviceToken;
+    if (token == null) return false;
+    final username = _ref.read(currentUserProvider);
+    final normalizedUser = username?.trim().toLowerCase();
+    return normalizedUser != null &&
+        normalizedUser.isNotEmpty &&
+        normalizedUser == _registeredForUser;
   }
 
   Future<String?> _waitForAPNSToken() async {
@@ -625,7 +643,7 @@ class PushNotificationService {
       // No deferred token: try fetching a fresh one in case FCM was ready
       // but we never got around to calling getToken (e.g. permission
       // granted in a previous session).
-      if (_messaging != null && _deviceToken == null) {
+      if (_messaging != null && !_isRegisteredForCurrentUser()) {
         await _getAndRegisterToken();
       }
       return;
