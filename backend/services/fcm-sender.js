@@ -36,6 +36,8 @@ let initWarned = false;
 const DEFAULT_CRED_FILENAME =
     'tzmc-notifications-firebase-adminsdk-fbsvc-bb92594301.json';
 const DEFAULT_CRED_PATH = path.resolve(__dirname, '..', '..', DEFAULT_CRED_FILENAME);
+const DEFAULT_NOTIFICATION_TITLE = 'Work Alert';
+const DEFAULT_NOTIFICATION_BODY = 'New Notification';
 
 function readJsonFile(filePath, envLabel) {
     let text;
@@ -259,8 +261,12 @@ function buildFcmMessage(token, parsedPayload, subscription) {
     const message = { token, data };
 
     if (notification) {
-        const title = typeof notification.title === 'string' ? notification.title : 'Work Alert';
-        const body = typeof notification.body === 'string' ? notification.body : 'New Notification';
+        const title = typeof notification.title === 'string'
+            ? notification.title
+            : DEFAULT_NOTIFICATION_TITLE;
+        const body = typeof notification.body === 'string'
+            ? notification.body
+            : DEFAULT_NOTIFICATION_BODY;
         message.notification = { title, body };
         if (typeof notification.image === 'string' && notification.image.trim()) {
             message.notification.imageUrl = notification.image.trim();
@@ -288,8 +294,12 @@ function buildFcmMessage(token, parsedPayload, subscription) {
         };
 
         if (notification) {
-            const title = typeof notification.title === 'string' ? notification.title : 'Work Alert';
-            const body = typeof notification.body === 'string' ? notification.body : 'New Notification';
+            const title = typeof notification.title === 'string'
+                ? notification.title
+                : DEFAULT_NOTIFICATION_TITLE;
+            const body = typeof notification.body === 'string'
+                ? notification.body
+                : DEFAULT_NOTIFICATION_BODY;
             aps.alert = { title, body };
             aps.sound = 'default';
             aps['mutable-content'] = 1;
