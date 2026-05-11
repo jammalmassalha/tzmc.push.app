@@ -199,6 +199,7 @@ class MysqlLogsService {
     chatGroupsTablesReady = false;
     messageActivitiesTableReady = false;
     serverStateTableReady = false;
+    flutterPushRegistrationDebugTableReady = false;
     constructor(config) {
         this.tableName = normalizeTableName(config.table);
         // 11 columns / 11 parameters — keep in sync with insertLog() and insertLogsBulk()
@@ -850,6 +851,74 @@ class MysqlLogsService {
             const message = String(err.message || '');
             console.warn('[MYSQL] getUnseenCountsByUser error:', message);
             return {};
+        }
+    }
+    // ─── Flutter push registration debug table ──────────────────────────────────
+    async ensureFlutterPushRegistrationDebugTable() {
+        if (this.flutterPushRegistrationDebugTableReady)
+            return;
+        try {
+            await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`FlutterPushRegistrationDebug\` (
+          \`Id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          \`CreatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP,
+          \`Action\` VARCHAR(32) NOT NULL,
+          \`Username\` VARCHAR(100) DEFAULT NULL,
+          \`Platform\` VARCHAR(50) DEFAULT NULL,
+          \`TokenHash\` CHAR(64) DEFAULT NULL,
+          \`TokenPreview\` VARCHAR(40) DEFAULT NULL,
+          \`TokenLength\` INT UNSIGNED DEFAULT NULL,
+          \`Status\` VARCHAR(32) NOT NULL,
+          \`Message\` VARCHAR(512) DEFAULT NULL,
+          \`SheetColumn\` VARCHAR(8) DEFAULT NULL,
+          \`TokenCountForUser\` INT UNSIGNED DEFAULT NULL,
+          \`Removed\` TINYINT(1) DEFAULT NULL,
+          \`RequestIp\` VARCHAR(128) DEFAULT NULL,
+          \`UserAgent\` TEXT DEFAULT NULL,
+          \`RoutePath\` VARCHAR(255) DEFAULT NULL,
+          PRIMARY KEY (\`Id\`),
+          INDEX \`idx_fprd_created_at\` (\`CreatedAt\`),
+          INDEX \`idx_fprd_username\` (\`Username\`),
+          INDEX \`idx_fprd_platform\` (\`Platform\`),
+          INDEX \`idx_fprd_token_hash\` (\`TokenHash\`),
+          INDEX \`idx_fprd_status\` (\`Status\`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+            this.flutterPushRegistrationDebugTableReady = true;
+            console.log('[MYSQL] FlutterPushRegistrationDebug table ensured.');
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.warn('[MYSQL] ensureFlutterPushRegistrationDebugTable warning:', message);
+        }
+    }
+    async insertFlutterPushRegistrationDebugEvent(event) {
+        await this.ensureFlutterPushRegistrationDebugTable();
+        try {
+            const tokenLength = Number(event.tokenLength);
+            const tokenCountForUser = Number(event.tokenCountForUser);
+            await this.pool.execute(`INSERT INTO \`FlutterPushRegistrationDebug\`
+           (\`Action\`, \`Username\`, \`Platform\`, \`TokenHash\`, \`TokenPreview\`, \`TokenLength\`, \`Status\`, \`Message\`, \`SheetColumn\`, \`TokenCountForUser\`, \`Removed\`, \`RequestIp\`, \`UserAgent\`, \`RoutePath\`)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+                toTrimmedString(event.action) || 'unknown',
+                toTrimmedString(event.username) || null,
+                toTrimmedString(event.platform) || null,
+                toTrimmedString(event.tokenHash) || null,
+                toTrimmedString(event.tokenPreview) || null,
+                Number.isFinite(tokenLength) && tokenLength >= 0 ? Math.floor(tokenLength) : null,
+                toTrimmedString(event.status) || 'unknown',
+                toTrimmedString(event.message).slice(0, 512) || null,
+                toTrimmedString(event.sheetColumn) || null,
+                Number.isFinite(tokenCountForUser) && tokenCountForUser >= 0 ? Math.floor(tokenCountForUser) : null,
+                event.removed === null || event.removed === undefined ? null : (event.removed ? 1 : 0),
+                toTrimmedString(event.requestIp) || null,
+                toTrimmedString(event.userAgent) || null,
+                toTrimmedString(event.routePath) || null
+            ]);
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.warn('[MYSQL] insertFlutterPushRegistrationDebugEvent warning:', message);
         }
     }
     async ensureCommunityGroupsTables() {
