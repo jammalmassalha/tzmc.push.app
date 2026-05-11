@@ -426,6 +426,11 @@ class PushNotificationService {
   /// Trigger the OS permission prompt and, on success, register the FCM
   /// device token with the backend.
   Future<void> _requestPermissionAndRegister() async {
+    _logIOSRegistrationStep(
+      'ios_permission_request_start',
+      'start',
+      message: 'Requesting iOS notification permission',
+    );
     try {
       final settings = await _messaging!.requestPermission(
         alert: true,
@@ -433,13 +438,24 @@ class PushNotificationService {
         sound: true,
         provisional: false,
       );
+      final authorizationStatus = settings.authorizationStatus;
       debugPrint(
-          '[PushNotificationService] Permission status: ${settings.authorizationStatus}');
-      if (_isAuthorized(settings.authorizationStatus)) {
+          '[PushNotificationService] Permission status: $authorizationStatus');
+      _logIOSRegistrationStep(
+        'ios_permission_request_result',
+        _isAuthorized(authorizationStatus) ? 'success' : 'denied',
+        message: 'Permission status: $authorizationStatus',
+      );
+      if (_isAuthorized(authorizationStatus)) {
         await _getAndRegisterToken();
       }
     } catch (e) {
       debugPrint('[PushNotificationService] requestPermission error: $e');
+      _logIOSRegistrationStep(
+        'ios_permission_request_error',
+        'error',
+        message: e.toString(),
+      );
     }
   }
 
@@ -485,7 +501,32 @@ class PushNotificationService {
     }
   }
 
+
+  void _logIOSRegistrationStep(
+    String action,
+    String status, {
+    String? message,
+    String? token,
+    int? tokenLength,
+  }) {
+    if (!_isIOSPlatform()) return;
+    final username = _ref.read(currentUserProvider)?.trim().toLowerCase();
+    unawaited(_api.logFlutterPushRegistrationStep(
+      action: action,
+      status: status,
+      username: username?.isNotEmpty == true ? username : null,
+      platform: _getPlatformName(),
+      message: message,
+      tokenLength: tokenLength ?? token?.length,
+    ));
+  }
+
   Future<void> _getAndRegisterToken() async {
+    _logIOSRegistrationStep(
+      'ios_registration_start',
+      'start',
+      message: 'Starting iOS push registration flow',
+    );
     try {
       String? token;
 
@@ -493,11 +534,28 @@ class PushNotificationService {
         // Get APNs token first on iOS. It is often unavailable for a moment
         // right after permission is granted; retry so first-run registration
         // doesn't silently fail until the next app launch.
+        _logIOSRegistrationStep(
+          'ios_apns_token_wait_start',
+          'start',
+          message: 'Waiting for APNs token',
+        );
         final apnsToken = await _waitForAPNSToken();
         if (apnsToken == null) {
           debugPrint('[PushNotificationService] APNs token not available yet');
+          _logIOSRegistrationStep(
+            'ios_apns_token_unavailable',
+            'retry',
+            message: 'APNs token not available after $_kAPNSTokenMaxAttempts attempts',
+          );
           _scheduleTokenRegistrationRetry();
           return;
+        } else {
+          _logIOSRegistrationStep(
+            'ios_apns_token_available',
+            'success',
+            message: 'APNs token is available',
+            tokenLength: apnsToken.length,
+          );
         }
       }
 
@@ -518,16 +576,37 @@ class PushNotificationService {
           token = await _messaging!.getToken(vapidKey: vapidKey);
         }
       } else {
+        _logIOSRegistrationStep(
+          'ios_fcm_token_request_start',
+          'start',
+          message: 'Requesting Firebase Messaging token',
+        );
         token = await _messaging!.getToken();
       }
 
       if (token != null) {
+        _logIOSRegistrationStep(
+          'ios_fcm_token_created',
+          'success',
+          message: 'Firebase Messaging token created',
+          tokenLength: token.length,
+        );
         await _registerDeviceToken(token);
       } else {
+        _logIOSRegistrationStep(
+          'ios_fcm_token_missing',
+          'retry',
+          message: 'Firebase Messaging returned no token',
+        );
         _scheduleTokenRegistrationRetry();
       }
     } catch (e) {
       debugPrint('[PushNotificationService] Error getting token: $e');
+      _logIOSRegistrationStep(
+        'ios_fcm_token_error',
+        'error',
+        message: e.toString(),
+      );
       _scheduleTokenRegistrationRetry();
     }
   }
@@ -591,8 +670,21 @@ class PushNotificationService {
         attemptNumber <= _kAPNSTokenMaxAttempts;
         attemptNumber += 1) {
       final apnsToken = await _messaging!.getAPNSToken();
-      if (apnsToken != null) return apnsToken;
+      if (apnsToken != null) {
+        _logIOSRegistrationStep(
+          'ios_apns_token_attempt',
+          'success',
+          message: 'APNs token found on attempt $attemptNumber',
+          tokenLength: apnsToken.length,
+        );
+        return apnsToken;
+      }
 
+      _logIOSRegistrationStep(
+        'ios_apns_token_attempt',
+        'retry',
+        message: 'APNs token missing on attempt $attemptNumber',
+      );
       if (attemptNumber < _kAPNSTokenMaxAttempts) {
         await Future.delayed(_kAPNSTokenRetryDelay);
       }
@@ -601,6 +693,12 @@ class PushNotificationService {
   }
 
   void _onTokenRefresh(String token) {
+    _logIOSRegistrationStep(
+      'ios_fcm_token_refresh',
+      'start',
+      message: 'Firebase Messaging token refresh received',
+      tokenLength: token.length,
+    );
     _registerDeviceToken(token);
   }
 
@@ -609,6 +707,12 @@ class PushNotificationService {
     if (username == null || username.trim().isEmpty) {
       debugPrint(
           '[PushNotificationService] No current user — deferring token registration');
+      _logIOSRegistrationStep(
+        'ios_backend_registration_deferred',
+        'deferred',
+        message: 'No current user; token registration deferred',
+        tokenLength: token.length,
+      );
       // Remember the token so we can replay registration once auth
       // completes — without this an Android device whose push init
       // raced ahead of auth would never register its FCM token, and the
@@ -622,11 +726,23 @@ class PushNotificationService {
     // Re-register on user switch (logout → re-login as a different
     // account) so the backend routes pushes to the right user.
     if (token == _deviceToken && normalizedUser == _registeredForUser) {
+      _logIOSRegistrationStep(
+        'ios_backend_registration_skipped',
+        'success',
+        message: 'Token already registered for current user',
+        tokenLength: token.length,
+      );
       return;
     }
 
     try {
       final platform = _getPlatformName();
+      _logIOSRegistrationStep(
+        'ios_backend_registration_start',
+        'start',
+        message: 'Posting FCM token to backend',
+        tokenLength: token.length,
+      );
       await _api.registerDeviceToken(
         username: normalizedUser,
         token: token,
@@ -640,8 +756,20 @@ class PushNotificationService {
       _tokenRegistrationRetryTimer = null;
       debugPrint('[PushNotificationService] Device token registered for '
           '$normalizedUser: ${token.substring(0, 20)}...');
+      _logIOSRegistrationStep(
+        'ios_backend_registration_success',
+        'success',
+        message: 'Backend accepted FCM token registration',
+        tokenLength: token.length,
+      );
     } catch (e) {
       debugPrint('[PushNotificationService] Error registering token: $e');
+      _logIOSRegistrationStep(
+        'ios_backend_registration_error',
+        'error',
+        message: e.toString(),
+        tokenLength: token.length,
+      );
       _scheduleTokenRegistrationRetry();
     }
   }

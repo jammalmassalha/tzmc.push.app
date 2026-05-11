@@ -72,6 +72,7 @@ class ApiEndpoints {
   // independent on the server.
   static const String registerFlutterFcm = '/flutter/register-fcm';
   static const String unregisterFlutterFcm = '/flutter/unregister-fcm';
+  static const String flutterRegistrationDebug = '/flutter/registration-debug';
   static const String resetBadge = '/reset-badge';
   static const String subscriptions = '/subscriptions';
 

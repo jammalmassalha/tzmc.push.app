@@ -1270,6 +1270,41 @@ class ChatApiService {
     }
   }
 
+  /// Log a Flutter push registration debug step to the backend.
+  ///
+  /// This is intentionally best-effort: callers use it for visibility into
+  /// iOS APNs/FCM/backend registration progress, so logging failures must not
+  /// break the registration flow itself. Raw tokens are not sent here.
+  Future<void> logFlutterPushRegistrationStep({
+    required String action,
+    required String status,
+    String? username,
+    String? platform,
+    String? message,
+    int? tokenLength,
+  }) async {
+    final payload = <String, dynamic>{
+      'action': action,
+      'status': status,
+      if (username != null && username.trim().isNotEmpty)
+        'username': username.trim().toLowerCase(),
+      if (platform != null && platform.trim().isNotEmpty)
+        'platform': _normalizeRegisterDevicePlatform(platform),
+      if (message != null && message.trim().isNotEmpty) 'message': message.trim(),
+      if (tokenLength != null && tokenLength >= 0) 'tokenLength': tokenLength,
+    };
+
+    try {
+      await _client.post<Map<String, dynamic>>(
+        ApiEndpoints.flutterRegistrationDebug,
+        data: payload,
+        retryOptions: const RetryOptions(retries: 0, timeout: Duration(seconds: 4)),
+      );
+    } catch (_) {
+      // Debug logging is best-effort only.
+    }
+  }
+
   /// Unregister an FCM/APNs device token (called on logout).
   Future<void> unregisterDeviceToken({
     required String username,
