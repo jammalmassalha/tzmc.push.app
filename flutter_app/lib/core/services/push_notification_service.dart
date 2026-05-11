@@ -542,7 +542,8 @@ class PushNotificationService {
     if (_tokenRegistrationRetryTimer?.isActive ?? false) return;
     if (_tokenRegistrationRetryAttempt >= _kTokenRegistrationMaxAttempts) {
       debugPrint(
-          '[PushNotificationService] Token registration retry limit reached');
+        '[PushNotificationService] Token registration retry limit reached',
+      );
       return;
     }
 
@@ -554,27 +555,25 @@ class PushNotificationService {
     );
   }
 
-  void _runScheduledTokenRegistrationRetry(int attempt) {
+  void _runScheduledTokenRegistrationRetry(int attempt) async {
     if (_tokenRegistrationRetryInFlight) return;
     _tokenRegistrationRetryInFlight = true;
-    Future<void>(() async {
+    try {
       debugPrint(
         '[PushNotificationService] Retrying iOS token registration '
         '($attempt/$_kTokenRegistrationMaxAttempts)',
       );
-      try {
-        await _getAndRegisterToken();
-      } catch (e, st) {
-        debugPrint(
-          '[PushNotificationService] Token registration retry crashed: $e\n$st',
-        );
-      } finally {
-        _tokenRegistrationRetryInFlight = false;
-        if (!_isRegisteredForCurrentUser()) {
-          _scheduleTokenRegistrationRetry();
-        }
+      await _getAndRegisterToken();
+    } catch (e, st) {
+      debugPrint(
+        '[PushNotificationService] Token registration retry crashed: $e\n$st',
+      );
+    } finally {
+      _tokenRegistrationRetryInFlight = false;
+      if (!_isRegisteredForCurrentUser()) {
+        _scheduleTokenRegistrationRetry();
       }
-    });
+    }
   }
 
   bool _hasCurrentUser() {
