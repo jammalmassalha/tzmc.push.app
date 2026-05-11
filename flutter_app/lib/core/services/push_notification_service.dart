@@ -46,9 +46,6 @@ const int _kAPNSTokenMaxAttempts = 20;
 const Duration _kAPNSTokenRetryDelay = Duration(seconds: 1);
 const int _kTokenRegistrationMaxAttempts = 12;
 const Duration _kTokenRegistrationRetryDelay = Duration(seconds: 5);
-const MethodChannel _pushRegistrationChannel = MethodChannel(
-  'co.il.tzmc.tzmc_push/push_registration',
-);
 
 // Platform detection helper
 bool get _isNativePlatform {
@@ -705,9 +702,9 @@ class PushNotificationService {
       message: 'Requesting native APNs registration',
     );
     try {
-      await _pushRegistrationChannel.invokeMethod<void>(
-        'registerForRemoteNotifications',
-      );
+      await const MethodChannel('co.il.tzmc.tzmc_push/push_registration')
+          .invokeMethod<void>('registerForRemoteNotifications')
+          .timeout(const Duration(seconds: 10));
       _logIOSRegistrationStep(
         'ios_remote_notifications_register_requested',
         'success',

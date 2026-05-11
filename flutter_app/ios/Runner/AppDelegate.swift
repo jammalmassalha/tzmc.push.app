@@ -25,8 +25,16 @@ import UIKit
           result(FlutterMethodNotImplemented)
           return
         }
+        guard let application = application else {
+          result(FlutterError(
+            code: "APPLICATION_UNAVAILABLE",
+            message: "UIApplication is unavailable",
+            details: nil
+          ))
+          return
+        }
         DispatchQueue.main.async {
-          application?.registerForRemoteNotifications()
+          application.registerForRemoteNotifications()
           result(nil)
         }
       }
