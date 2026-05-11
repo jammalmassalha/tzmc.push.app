@@ -94,7 +94,8 @@ bool _isAndroidPlatform() {
 class PushNotificationService {
   final ChatApiService _api;
   final Ref _ref;
-  final MethodChannel _pushRegistrationChannel;
+  final MethodChannel _pushRegistrationChannel =
+      const MethodChannel(_kPushRegistrationChannelName);
 
   FirebaseMessaging? _messaging;
   FlutterLocalNotificationsPlugin? _localNotifications;
@@ -110,12 +111,7 @@ class PushNotificationService {
   StreamSubscription? _tokenRefreshSubscription;
   StreamSubscription? _messageSubscription;
 
-  PushNotificationService(
-    this._api,
-    this._ref, {
-    MethodChannel pushRegistrationChannel =
-        const MethodChannel(_kPushRegistrationChannelName),
-  }) : _pushRegistrationChannel = pushRegistrationChannel;
+  PushNotificationService(this._api, this._ref);
 
   /// Initialize push notifications.
   ///

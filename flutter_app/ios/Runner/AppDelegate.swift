@@ -25,11 +25,16 @@ import UIKit
           result(FlutterMethodNotImplemented)
           return
         }
-        DispatchQueue.main.async {
+        let dispatchRegistrationRequest = {
           UIApplication.shared.registerForRemoteNotifications()
           // This confirms the request was dispatched. APNs completion/failure
           // is reported asynchronously via the UIApplicationDelegate callbacks.
           result(nil)
+        }
+        if Thread.isMainThread {
+          dispatchRegistrationRequest()
+        } else {
+          DispatchQueue.main.async(execute: dispatchRegistrationRequest)
         }
       }
     }
