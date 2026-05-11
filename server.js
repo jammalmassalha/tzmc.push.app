@@ -6755,6 +6755,33 @@ async function checkOutgoingQueue() {
                 };
                 await addToQueue(targetUsers, pollingMessage);
 
+                // 1.5 Write the message to the main Logs table NOW, before FCM
+                // fires.  sendPushNotificationToUser() runs the Google Sheets
+                // subscription lookup before it calls logNotificationStatus(),
+                // so without this early write the message can be absent from
+                // /messages/logs for many seconds after FCM delivery.  When
+                // the user taps the push notification the client immediately
+                // runs recoverMissedMessages → pullMessages → getMessagesFromLogs
+                // (Flutter) / pullMessages (Angular), and an empty result
+                // leaves the chat stale even though the notification was
+                // received.  Awaiting the insert guarantees the row is
+                // committed before FCM is dispatched.  `dedup: true` matches
+                // the `dedupLog: true` used in the push call below so the
+                // late log inside sendPushNotificationToUser does not create
+                // a duplicate row.
+                await logNotificationStatus(
+                    senderName,
+                    targetUsers.join(','),
+                    bodyText || '',
+                    'Sent',
+                    '',
+                    '',
+                    messageId,
+                    '',
+                    '',
+                    { dedup: true }
+                );
+
                 // 2. Send Push Notification (Handles all devices)
                 const pushResult = await sendPushNotificationToUser(targetUsers, notificationData, senderName, {
                     messageId,
