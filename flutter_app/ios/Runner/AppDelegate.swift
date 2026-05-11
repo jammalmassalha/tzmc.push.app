@@ -4,6 +4,7 @@ import UIKit
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
+  // Must match _kPushRegistrationChannelName in push_notification_service.dart.
   private let pushRegistrationChannelName = "flutter_push_registration"
 
   override func application(
@@ -27,8 +28,9 @@ import UIKit
         }
         let dispatchRegistrationRequest = {
           UIApplication.shared.registerForRemoteNotifications()
-          // This confirms the request was dispatched. APNs completion/failure
-          // is reported asynchronously via the UIApplicationDelegate callbacks.
+          // This confirms only that the request was dispatched, not that APNs
+          // registration succeeded. APNs completion/failure is reported later
+          // via the UIApplicationDelegate callbacks.
           result(nil)
         }
         if Thread.isMainThread {

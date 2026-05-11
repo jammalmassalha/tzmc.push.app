@@ -41,11 +41,14 @@ const String _kNotificationGroupKey = 'com.tzmc.chat_group';
 const int _kGroupSummaryNotificationId = 0;
 
 // APNs can take a short time to hand firebase_messaging its native token
-// immediately after the user grants notification permission on iOS.
+// immediately after the user grants notification permission on iOS. Wait up
+// to 20 seconds because production devices have reported five seconds was not
+// enough on first launch after granting permission.
 const int _kAPNSTokenMaxAttempts = 20;
 const Duration _kAPNSTokenRetryDelay = Duration(seconds: 1);
 const int _kTokenRegistrationMaxAttempts = 12;
 const Duration _kTokenRegistrationRetryDelay = Duration(seconds: 5);
+// Must match AppDelegate.swift's FlutterMethodChannel name.
 const String _kPushRegistrationChannelName = 'flutter_push_registration';
 const Duration _kNativeRegistrationTimeout = Duration(seconds: 10);
 
