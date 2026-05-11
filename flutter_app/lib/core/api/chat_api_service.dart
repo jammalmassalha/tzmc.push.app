@@ -1262,13 +1262,11 @@ class ChatApiService {
       retryOptions: const RetryOptions(retries: 2, timeout: Duration(seconds: 12)),
     );
     if (!response.isSuccessful) {
-      final body = response.data;
-      final message = (body?['message'] ?? body?['error'] ?? '').toString().trim();
-      throw ApiException(
-        message.isNotEmpty
-            ? message
-            : 'FCM token registration failed with ${response.statusCode}',
-      );
+      throw ApiException(_pushRegistrationFailureMessage(
+        response.data,
+        response.statusCode,
+        'registration',
+      ));
     }
   }
 
@@ -1293,14 +1291,22 @@ class ChatApiService {
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 8)),
     );
     if (!response.isSuccessful) {
-      final body = response.data;
-      final message = (body?['message'] ?? body?['error'] ?? '').toString().trim();
-      throw ApiException(
-        message.isNotEmpty
-            ? message
-            : 'FCM token unregister failed with ${response.statusCode}',
-      );
+      throw ApiException(_pushRegistrationFailureMessage(
+        response.data,
+        response.statusCode,
+        'unregistration',
+      ));
     }
+  }
+
+  String _pushRegistrationFailureMessage(
+    Map<String, dynamic>? body,
+    int? statusCode,
+    String action,
+  ) {
+    final message = (body?['message'] ?? body?['error'] ?? '').toString().trim();
+    if (message.isNotEmpty) return message;
+    return 'FCM token $action failed with $statusCode';
   }
 
   /// Normalize the Flutter platform name to the values the backend
