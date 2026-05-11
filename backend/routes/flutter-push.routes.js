@@ -65,7 +65,7 @@ function syncFlutterRegistrationToSheet(deps, payload) {
 }
 
 function buildTokenDebugFields(token) {
-    const tokenStr = typeof token === 'string' ? token.trim() : '';
+    const tokenStr = normalizeTokenForDebug(token);
     if (!tokenStr) {
         return { tokenHash: null, tokenPreview: null, tokenLength: 0 };
     }
@@ -78,13 +78,20 @@ function buildTokenDebugFields(token) {
     };
 }
 
+function normalizeTokenForDebug(value) {
+    return typeof value === 'string' ? value.trim() : '';
+}
+
 function logFlutterRegistrationDebug(deps, req, event) {
     const service = deps && deps.mysqlLogsService;
     if (!service || typeof service.insertFlutterPushRegistrationDebugEvent !== 'function') {
         return;
     }
     const headers = (req && req.headers) || {};
-    const forwardedFor = String(headers['x-forwarded-for'] || '').split(',')[0].trim();
+    const forwardedHeader = headers['x-forwarded-for'];
+    const forwardedFor = (Array.isArray(forwardedHeader) ? forwardedHeader[0] : forwardedHeader || '')
+        .split(',')[0]
+        .trim();
     const requestIp = forwardedFor || (req && (req.ip || (req.socket && req.socket.remoteAddress))) || null;
     service.insertFlutterPushRegistrationDebugEvent({
         ...event,

@@ -1085,7 +1085,7 @@ export class MysqlLogsService {
           toTrimmedString(event.message).slice(0, 512) || null,
           toTrimmedString(event.sheetColumn) || null,
           Number.isFinite(tokenCountForUser) && tokenCountForUser >= 0 ? Math.floor(tokenCountForUser) : null,
-          event.removed == null ? null : (event.removed ? 1 : 0),
+          event.removed === null || event.removed === undefined ? null : (event.removed ? 1 : 0),
           toTrimmedString(event.requestIp) || null,
           toTrimmedString(event.userAgent) || null,
           toTrimmedString(event.routePath) || null
