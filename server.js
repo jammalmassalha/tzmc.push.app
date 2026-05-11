@@ -5839,6 +5839,7 @@ flutterPushService.loadFromDisk().catch((err) =>
 registerFlutterPushRoutes(app, {
     flutterPushService,
     requireAuthorizedUser,
+    mysqlLogsService,
     googleSheetUrl: GOOGLE_SHEET_URL,
     fetchWithRetry
 });
