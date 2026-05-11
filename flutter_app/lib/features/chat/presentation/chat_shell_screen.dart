@@ -75,6 +75,16 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       } catch (e, st) {
         debugPrint('[ChatShellScreen] recoverMissedMessages on resume failed: $e\n$st');
       }
+
+      try {
+        await ref
+            .read(pushNotificationServiceProvider)
+            .registerPendingTokenForUser();
+      } catch (e, st) {
+        debugPrint(
+          '[ChatShellScreen] push token registration on resume failed: $e\n$st',
+        );
+      }
     }
   }
 

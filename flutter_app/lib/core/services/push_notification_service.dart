@@ -43,6 +43,8 @@ const int _kGroupSummaryNotificationId = 0;
 // immediately after the user grants notification permission on iOS.
 const int _kAPNSTokenMaxAttempts = 5;
 const Duration _kAPNSTokenRetryDelay = Duration(seconds: 1);
+const int _kTokenRegistrationMaxAttempts = 12;
+const Duration _kTokenRegistrationRetryDelay = Duration(seconds: 5);
 
 // Platform detection helper
 bool get _isNativePlatform {
@@ -98,6 +100,8 @@ class PushNotificationService {
   // completes, so Android devices that init push before auth still get
   // their token registered with the backend.
   String? _pendingToken;
+  Timer? _tokenRegistrationRetryTimer;
+  int _tokenRegistrationRetryAttempt = 0;
   StreamSubscription? _tokenRefreshSubscription;
   StreamSubscription? _messageSubscription;
 
@@ -492,6 +496,7 @@ class PushNotificationService {
         final apnsToken = await _waitForAPNSToken();
         if (apnsToken == null) {
           debugPrint('[PushNotificationService] APNs token not available yet');
+          _scheduleTokenRegistrationRetry();
           return;
         }
       }
@@ -518,10 +523,67 @@ class PushNotificationService {
 
       if (token != null) {
         await _registerDeviceToken(token);
+      } else {
+        _scheduleTokenRegistrationRetry();
       }
     } catch (e) {
       debugPrint('[PushNotificationService] Error getting token: $e');
+      _scheduleTokenRegistrationRetry();
     }
+  }
+
+  void _scheduleTokenRegistrationRetry() {
+    if (!_isIOSPlatform() ||
+        _messaging == null ||
+        !_hasCurrentUser() ||
+        _isRegisteredForCurrentUser()) {
+      return;
+    }
+    if (_tokenRegistrationRetryTimer?.isActive ?? false) return;
+    if (_tokenRegistrationRetryAttempt >= _kTokenRegistrationMaxAttempts) {
+      debugPrint(
+        '[PushNotificationService] Token registration retry limit reached',
+      );
+      return;
+    }
+
+    _tokenRegistrationRetryAttempt += 1;
+    final attempt = _tokenRegistrationRetryAttempt;
+    _tokenRegistrationRetryTimer = Timer(
+      _kTokenRegistrationRetryDelay,
+      () {
+        _runScheduledTokenRegistrationRetry(attempt);
+      },
+    );
+  }
+
+  Future<void> _runScheduledTokenRegistrationRetry(int attempt) async {
+    try {
+      debugPrint(
+        '[PushNotificationService] Retrying iOS token registration '
+        '($attempt/$_kTokenRegistrationMaxAttempts)',
+      );
+      await _getAndRegisterToken();
+    } catch (e, st) {
+      debugPrint(
+        '[PushNotificationService] Token registration retry crashed: $e\n$st',
+      );
+    }
+  }
+
+  bool _hasCurrentUser() {
+    final username = _ref.read(currentUserProvider);
+    return username != null && username.trim().isNotEmpty;
+  }
+
+  bool _isRegisteredForCurrentUser() {
+    final token = _deviceToken;
+    if (token == null) return false;
+    final username = _ref.read(currentUserProvider);
+    final normalizedUser = username?.trim().toLowerCase();
+    return normalizedUser != null &&
+        normalizedUser.isNotEmpty &&
+        normalizedUser == _registeredForUser;
   }
 
   Future<String?> _waitForAPNSToken() async {
@@ -573,10 +635,14 @@ class PushNotificationService {
       _deviceToken = token;
       _registeredForUser = normalizedUser;
       _pendingToken = null;
+      _tokenRegistrationRetryAttempt = 0;
+      _tokenRegistrationRetryTimer?.cancel();
+      _tokenRegistrationRetryTimer = null;
       debugPrint('[PushNotificationService] Device token registered for '
           '$normalizedUser: ${token.substring(0, 20)}...');
     } catch (e) {
       debugPrint('[PushNotificationService] Error registering token: $e');
+      _scheduleTokenRegistrationRetry();
     }
   }
 
@@ -593,8 +659,13 @@ class PushNotificationService {
       // No deferred token: try fetching a fresh one in case FCM was ready
       // but we never got around to calling getToken (e.g. permission
       // granted in a previous session).
-      if (_messaging != null && _deviceToken == null) {
-        await _getAndRegisterToken();
+      if (_messaging != null && !_isRegisteredForCurrentUser()) {
+        final existingToken = _deviceToken;
+        if (existingToken != null) {
+          await _registerDeviceToken(existingToken);
+        } else {
+          await _getAndRegisterToken();
+        }
       }
       return;
     }
@@ -907,6 +978,7 @@ class PushNotificationService {
 
   /// Clean up
   void dispose() {
+    _tokenRegistrationRetryTimer?.cancel();
     _tokenRefreshSubscription?.cancel();
     _messageSubscription?.cancel();
   }
