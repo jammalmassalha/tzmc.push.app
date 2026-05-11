@@ -13,9 +13,10 @@
 // writes the value to the column named in `targetColumn`.
 // ─────────────────────────────────────────────────────────────────────────────
 
+const crypto = require('crypto');
+
 const FLUTTER_MOBILE_SHEET_COLUMN = 'L';
 const FLUTTER_WEB_SHEET_COLUMN = 'M';
-const crypto = require('crypto');
 
 function classifyFlutterPlatform(rawPlatform) {
     const normalized = String(rawPlatform || '').trim().toLowerCase();
@@ -121,12 +122,12 @@ function registerFlutterPushRoutes(app, deps = {}) {
         ['/flutter/register-fcm', '/notify/flutter/register-fcm'],
         authMiddleware,
         async (req, res) => {
+            const body = readBody(req);
+            const username = req.resolvedUser || body.username || body.user;
+            const token = body.fcmToken || body.token;
+            const platform = body.platform || body.deviceType;
+            const tokenDebug = buildTokenDebugFields(token);
             try {
-                const body = readBody(req);
-                const username = req.resolvedUser || body.username || body.user;
-                const token = body.fcmToken || body.token;
-                const platform = body.platform || body.deviceType;
-                const tokenDebug = buildTokenDebugFields(token);
                 const result = flutterPushService.registerToken({ username, token, platform });
                 const sheetPayload = buildFlutterSheetPayload({
                     username: result.username,
@@ -155,15 +156,11 @@ function registerFlutterPushRoutes(app, deps = {}) {
                 });
             } catch (error) {
                 const status = (error && Number(error.statusCode)) || 500;
-                const body = readBody(req);
-                const token = body.fcmToken || body.token;
-                const platform = body.platform || body.deviceType;
-                const username = req.resolvedUser || body.username || body.user;
                 logFlutterRegistrationDebug(deps, req, {
                     action: 'register',
                     username,
                     platform,
-                    ...buildTokenDebugFields(token),
+                    ...tokenDebug,
                     status: 'error',
                     message: (error && error.message) || 'Failed to register FCM token'
                 });
@@ -183,12 +180,12 @@ function registerFlutterPushRoutes(app, deps = {}) {
         ['/flutter/unregister-fcm', '/notify/flutter/unregister-fcm'],
         authMiddleware,
         async (req, res) => {
+            const body = readBody(req);
+            const username = req.resolvedUser || body.username || body.user;
+            const token = body.fcmToken || body.token;
+            const platform = body.platform || body.deviceType;
+            const tokenDebug = buildTokenDebugFields(token);
             try {
-                const body = readBody(req);
-                const username = req.resolvedUser || body.username || body.user;
-                const token = body.fcmToken || body.token;
-                const platform = body.platform || body.deviceType;
-                const tokenDebug = buildTokenDebugFields(token);
                 const result = flutterPushService.unregisterToken({ username, token });
                 const sheetPayload = buildFlutterSheetPayload({
                     username: result.username || username,
@@ -214,15 +211,11 @@ function registerFlutterPushRoutes(app, deps = {}) {
                 });
             } catch (error) {
                 const status = (error && Number(error.statusCode)) || 500;
-                const body = readBody(req);
-                const token = body.fcmToken || body.token;
-                const platform = body.platform || body.deviceType;
-                const username = req.resolvedUser || body.username || body.user;
                 logFlutterRegistrationDebug(deps, req, {
                     action: 'unregister',
                     username,
                     platform,
-                    ...buildTokenDebugFields(token),
+                    ...tokenDebug,
                     status: 'error',
                     message: (error && error.message) || 'Failed to unregister FCM token'
                 });
