@@ -43,7 +43,7 @@ const int _kGroupSummaryNotificationId = 0;
 // immediately after the user grants notification permission on iOS.
 const int _kAPNSTokenMaxAttempts = 5;
 const Duration _kAPNSTokenRetryDelay = Duration(seconds: 1);
-const int _kTokenRegistrationRetryMaxAttempts = 12;
+const int _kTokenRegistrationMaxAttempts = 12;
 const Duration _kTokenRegistrationRetryDelay = Duration(seconds: 5);
 
 // Platform detection helper
@@ -533,11 +533,13 @@ class PushNotificationService {
   }
 
   void _scheduleTokenRegistrationRetry() {
-    if (!_isIOSPlatform() || _messaging == null || _isRegisteredForCurrentUser()) {
-      return;
-    }
+    final shouldSkipRetry =
+        !_isIOSPlatform() ||
+        _messaging == null ||
+        _isRegisteredForCurrentUser();
+    if (shouldSkipRetry) return;
     if (_tokenRegistrationRetryTimer?.isActive ?? false) return;
-    if (_tokenRegistrationRetryAttempt >= _kTokenRegistrationRetryMaxAttempts) {
+    if (_tokenRegistrationRetryAttempt >= _kTokenRegistrationMaxAttempts) {
       debugPrint(
           '[PushNotificationService] Token registration retry limit reached');
       return;
@@ -545,19 +547,22 @@ class PushNotificationService {
 
     _tokenRegistrationRetryAttempt += 1;
     final attempt = _tokenRegistrationRetryAttempt;
-    _tokenRegistrationRetryTimer = Timer(_kTokenRegistrationRetryDelay, () {
-      debugPrint(
-        '[PushNotificationService] Retrying iOS token registration '
-        '($attempt/$_kTokenRegistrationRetryMaxAttempts)',
-      );
-      unawaited(
-        _getAndRegisterToken().catchError((Object e, StackTrace st) {
+    _tokenRegistrationRetryTimer = Timer(
+      _kTokenRegistrationRetryDelay,
+      () async {
+        debugPrint(
+          '[PushNotificationService] Retrying iOS token registration '
+          '($attempt/$_kTokenRegistrationMaxAttempts)',
+        );
+        try {
+          await _getAndRegisterToken();
+        } catch (e, st) {
           debugPrint(
             '[PushNotificationService] Token registration retry crashed: $e\n$st',
           );
-        }),
-      );
-    });
+        }
+      },
+    );
   }
 
   bool _isRegisteredForCurrentUser() {
