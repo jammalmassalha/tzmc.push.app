@@ -4,7 +4,7 @@ import UIKit
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
-  private let pushRegistrationChannelName = "co.il.tzmc.tzmc_push/push_registration"
+  private let pushRegistrationChannelName = "flutter_push_registration"
 
   override func application(
     _ application: UIApplication,

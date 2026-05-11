@@ -46,8 +46,7 @@ const int _kAPNSTokenMaxAttempts = 20;
 const Duration _kAPNSTokenRetryDelay = Duration(seconds: 1);
 const int _kTokenRegistrationMaxAttempts = 12;
 const Duration _kTokenRegistrationRetryDelay = Duration(seconds: 5);
-const String _kPushRegistrationChannelName =
-    'co.il.tzmc.tzmc_push/push_registration';
+const String _kPushRegistrationChannelName = 'flutter_push_registration';
 const Duration _kNativeRegistrationTimeout = Duration(seconds: 10);
 
 // Platform detection helper
@@ -94,7 +93,7 @@ bool _isAndroidPlatform() {
 class PushNotificationService {
   final ChatApiService _api;
   final Ref _ref;
-  final MethodChannel _pushRegistrationChannel =
+  late final MethodChannel _pushRegistrationChannel =
       const MethodChannel(_kPushRegistrationChannelName);
 
   FirebaseMessaging? _messaging;
