@@ -94,6 +94,7 @@ bool _isAndroidPlatform() {
 class PushNotificationService {
   final ChatApiService _api;
   final Ref _ref;
+  final MethodChannel _pushRegistrationChannel;
 
   FirebaseMessaging? _messaging;
   FlutterLocalNotificationsPlugin? _localNotifications;
@@ -109,7 +110,12 @@ class PushNotificationService {
   StreamSubscription? _tokenRefreshSubscription;
   StreamSubscription? _messageSubscription;
 
-  PushNotificationService(this._api, this._ref);
+  PushNotificationService(
+    this._api,
+    this._ref, {
+    MethodChannel pushRegistrationChannel =
+        const MethodChannel(_kPushRegistrationChannelName),
+  }) : _pushRegistrationChannel = pushRegistrationChannel;
 
   /// Initialize push notifications.
   ///
@@ -705,7 +711,7 @@ class PushNotificationService {
       message: 'Requesting native APNs registration',
     );
     try {
-      await const MethodChannel(_kPushRegistrationChannelName)
+      await _pushRegistrationChannel
           .invokeMethod<void>('registerForRemoteNotifications')
           .timeout(_kNativeRegistrationTimeout);
       _logIOSRegistrationStep(

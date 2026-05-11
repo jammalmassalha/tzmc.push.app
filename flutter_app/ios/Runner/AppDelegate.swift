@@ -20,21 +20,15 @@ import UIKit
         name: pushRegistrationChannelName,
         binaryMessenger: controller.binaryMessenger
       )
-      pushRegistrationChannel.setMethodCallHandler { [weak application] call, result in
+      pushRegistrationChannel.setMethodCallHandler { call, result in
         guard call.method == "registerForRemoteNotifications" else {
           result(FlutterMethodNotImplemented)
           return
         }
-        guard let application = application else {
-          result(FlutterError(
-            code: "APPLICATION_UNAVAILABLE",
-            message: "UIApplication is unavailable",
-            details: nil
-          ))
-          return
-        }
         DispatchQueue.main.async {
-          application.registerForRemoteNotifications()
+          UIApplication.shared.registerForRemoteNotifications()
+          // This confirms the request was dispatched. APNs completion/failure
+          // is reported asynchronously via the UIApplicationDelegate callbacks.
           result(nil)
         }
       }
