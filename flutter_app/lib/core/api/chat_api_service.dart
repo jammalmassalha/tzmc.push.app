@@ -21,6 +21,8 @@ final chatApiServiceProvider = Provider<ChatApiService>((ref) {
 
 /// Chat API service implementation
 class ChatApiService {
+  static const Duration _debugLogTimeout = Duration(seconds: 4);
+
   final HttpClient _client;
 
   ChatApiService(this._client);
@@ -1298,7 +1300,7 @@ class ChatApiService {
       await _client.post<Map<String, dynamic>>(
         ApiEndpoints.flutterRegistrationDebug,
         data: payload,
-        retryOptions: const RetryOptions(retries: 0, timeout: Duration(seconds: 4)),
+        retryOptions: const RetryOptions(retries: 0, timeout: _debugLogTimeout),
       );
     } catch (_) {
       // Debug logging is best-effort only.

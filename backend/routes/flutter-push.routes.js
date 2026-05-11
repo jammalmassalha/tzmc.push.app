@@ -140,14 +140,13 @@ function readFlutterRegistrationRequest(req) {
 
 function readFlutterRegistrationDebugRequest(req) {
     const body = readBody(req);
-    const tokenDebug = buildTokenDebugFields(body.fcmToken || body.token);
     return {
         action: body.action || body.step || 'client-step',
         username: req.resolvedUser || body.username || body.user,
         platform: body.platform || body.deviceType,
-        tokenHash: body.tokenHash || tokenDebug.tokenHash,
-        tokenPreview: body.tokenPreview || tokenDebug.tokenPreview,
-        tokenLength: body.tokenLength ?? tokenDebug.tokenLength,
+        tokenHash: body.tokenHash || null,
+        tokenPreview: body.tokenPreview || null,
+        tokenLength: body.tokenLength ?? null,
         status: body.status || 'info',
         message: body.message || body.detail || null
     };
