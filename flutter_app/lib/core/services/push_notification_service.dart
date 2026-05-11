@@ -102,7 +102,6 @@ class PushNotificationService {
   String? _pendingToken;
   Timer? _tokenRegistrationRetryTimer;
   int _tokenRegistrationRetryAttempt = 0;
-  bool _tokenRegistrationRetryInFlight = false;
   StreamSubscription? _tokenRefreshSubscription;
   StreamSubscription? _messageSubscription;
 
@@ -559,11 +558,6 @@ class PushNotificationService {
   }
 
   Future<void> _runScheduledTokenRegistrationRetry(int attempt) async {
-    if (_tokenRegistrationRetryInFlight) {
-      _scheduleTokenRegistrationRetry();
-      return;
-    }
-    _tokenRegistrationRetryInFlight = true;
     try {
       debugPrint(
         '[PushNotificationService] Retrying iOS token registration '
@@ -574,8 +568,6 @@ class PushNotificationService {
       debugPrint(
         '[PushNotificationService] Token registration retry crashed: $e\n$st',
       );
-    } finally {
-      _tokenRegistrationRetryInFlight = false;
     }
   }
 
