@@ -282,15 +282,25 @@ function buildFcmMessage(token, parsedPayload, subscription) {
 
     if (isApnsSubscription(subscription)) {
         const badgeCount = Number(data.badgeCount);
+        const aps = {
+            badge: Number.isFinite(badgeCount) && badgeCount >= 0 ? badgeCount : undefined,
+            'content-available': 1
+        };
+
+        if (notification) {
+            const title = typeof notification.title === 'string' ? notification.title : 'Work Alert';
+            const body = typeof notification.body === 'string' ? notification.body : 'New Notification';
+            aps.alert = { title, body };
+            aps.sound = 'default';
+            aps['mutable-content'] = 1;
+        }
+
         message.apns = {
-            headers: { 'apns-priority': '10' },
+            headers: notification
+                ? { 'apns-priority': '10', 'apns-push-type': 'alert' }
+                : { 'apns-priority': '5', 'apns-push-type': 'background' },
             payload: {
-                aps: {
-                    sound: 'default',
-                    badge: Number.isFinite(badgeCount) && badgeCount >= 0 ? badgeCount : undefined,
-                    'mutable-content': 1,
-                    'content-available': 1
-                }
+                aps
             }
         };
     }

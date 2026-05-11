@@ -39,6 +39,11 @@ const String _kNotificationGroupKey = 'com.tzmc.chat_group';
 // in practice). Using 0 keeps it well separated.
 const int _kGroupSummaryNotificationId = 0;
 
+// APNs can take a short time to hand firebase_messaging its native token
+// immediately after the user grants notification permission on iOS.
+const int _kAPNSTokenMaxAttempts = 5;
+const Duration _kAPNSTokenRetryDelay = Duration(seconds: 1);
+
 // Platform detection helper
 bool get _isNativePlatform {
   if (kIsWeb) return false;
@@ -481,8 +486,10 @@ class PushNotificationService {
       String? token;
 
       if (_isIOSPlatform()) {
-        // Get APNs token first on iOS
-        final apnsToken = await _messaging!.getAPNSToken();
+        // Get APNs token first on iOS. It is often unavailable for a moment
+        // right after permission is granted; retry so first-run registration
+        // doesn't silently fail until the next app launch.
+        final apnsToken = await _waitForAPNSToken();
         if (apnsToken == null) {
           debugPrint('[PushNotificationService] APNs token not available yet');
           return;
@@ -515,6 +522,18 @@ class PushNotificationService {
     } catch (e) {
       debugPrint('[PushNotificationService] Error getting token: $e');
     }
+  }
+
+  Future<String?> _waitForAPNSToken() async {
+    for (var attempt = 1; attempt <= _kAPNSTokenMaxAttempts; attempt += 1) {
+      final apnsToken = await _messaging!.getAPNSToken();
+      if (apnsToken != null) return apnsToken;
+
+      if (attempt < _kAPNSTokenMaxAttempts) {
+        await Future.delayed(_kAPNSTokenRetryDelay);
+      }
+    }
+    return null;
   }
 
   void _onTokenRefresh(String token) {
