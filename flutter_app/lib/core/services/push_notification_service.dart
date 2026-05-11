@@ -552,12 +552,17 @@ class PushNotificationService {
     final attempt = _tokenRegistrationRetryAttempt;
     _tokenRegistrationRetryTimer = Timer(
       _kTokenRegistrationRetryDelay,
-      () => unawaited(_runScheduledTokenRegistrationRetry(attempt)),
+      () {
+        _runScheduledTokenRegistrationRetry(attempt);
+      },
     );
   }
 
   Future<void> _runScheduledTokenRegistrationRetry(int attempt) async {
-    if (_tokenRegistrationRetryInFlight) return;
+    if (_tokenRegistrationRetryInFlight) {
+      _scheduleTokenRegistrationRetry();
+      return;
+    }
     _tokenRegistrationRetryInFlight = true;
     try {
       debugPrint(
