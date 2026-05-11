@@ -534,11 +534,12 @@ class PushNotificationService {
   }
 
   void _scheduleTokenRegistrationRetry() {
-    if (!_isIOSPlatform()) return;
-    if (_messaging == null) return;
-    if (!_hasCurrentUser()) return;
-    if (_isRegisteredForCurrentUser()) return;
-    if (_tokenRegistrationRetryInFlight) return;
+    if (!_isIOSPlatform() ||
+        _messaging == null ||
+        !_hasCurrentUser() ||
+        _isRegisteredForCurrentUser()) {
+      return;
+    }
     if (_tokenRegistrationRetryTimer?.isActive ?? false) return;
     if (_tokenRegistrationRetryAttempt >= _kTokenRegistrationMaxAttempts) {
       debugPrint(
@@ -551,11 +552,11 @@ class PushNotificationService {
     final attempt = _tokenRegistrationRetryAttempt;
     _tokenRegistrationRetryTimer = Timer(
       _kTokenRegistrationRetryDelay,
-      () => _runScheduledTokenRegistrationRetry(attempt),
+      () => unawaited(_runScheduledTokenRegistrationRetry(attempt)),
     );
   }
 
-  void _runScheduledTokenRegistrationRetry(int attempt) async {
+  Future<void> _runScheduledTokenRegistrationRetry(int attempt) async {
     if (_tokenRegistrationRetryInFlight) return;
     _tokenRegistrationRetryInFlight = true;
     try {
@@ -570,9 +571,6 @@ class PushNotificationService {
       );
     } finally {
       _tokenRegistrationRetryInFlight = false;
-      if (!_isRegisteredForCurrentUser()) {
-        _scheduleTokenRegistrationRetry();
-      }
     }
   }
 
