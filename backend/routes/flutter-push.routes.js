@@ -138,6 +138,31 @@ function readFlutterRegistrationRequest(req) {
     };
 }
 
+function readFlutterRegistrationDebugRequest(req) {
+    const body = readBody(req);
+    return {
+        action: body.action || body.step || 'client-step',
+        username: req.resolvedUser || body.username || body.user,
+        platform: body.platform || body.deviceType,
+        tokenHash: body.tokenHash || null,
+        tokenPreview: body.tokenPreview || null,
+        tokenLength: body.tokenLength ?? null,
+        status: body.status || 'info',
+        message: body.message || body.detail || null
+    };
+}
+
+    app.post(
+        ['/flutter/registration-debug', '/notify/flutter/registration-debug'],
+        authMiddleware,
+        async (req, res) => {
+            const event = readFlutterRegistrationDebugRequest(req);
+            // Fire-and-forget so debug logging never slows or breaks registration.
+            logFlutterRegistrationDebug(deps, req, event);
+            return res.json({ status: 'success' });
+        }
+    );
+
     app.post(
         ['/flutter/register-fcm', '/notify/flutter/register-fcm'],
         authMiddleware,

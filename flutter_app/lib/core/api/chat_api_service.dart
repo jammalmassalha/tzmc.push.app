@@ -21,6 +21,8 @@ final chatApiServiceProvider = Provider<ChatApiService>((ref) {
 
 /// Chat API service implementation
 class ChatApiService {
+  static const Duration _debugLogTimeout = Duration(seconds: 4);
+
   final HttpClient _client;
 
   ChatApiService(this._client);
@@ -1267,6 +1269,42 @@ class ChatApiService {
         response.statusCode,
         'registration',
       ));
+    }
+  }
+
+  /// Log a Flutter push registration debug step to the backend.
+  ///
+  /// This is intentionally best-effort: callers use it for visibility into
+  /// iOS APNs/FCM/backend registration progress, so logging failures must not
+  /// break the registration flow itself. Raw tokens are not sent here.
+  Future<void> logFlutterPushRegistrationStep({
+    required String action,
+    required String status,
+    String? username,
+    String? platform,
+    String? message,
+    int? tokenLength,
+  }) async {
+    final payload = <String, dynamic>{
+      'action': action,
+      'status': status,
+      // Normalize defensively so all callers produce the same backend key.
+      if (username != null && username.trim().isNotEmpty)
+        'username': username.trim().toLowerCase(),
+      if (platform != null && platform.trim().isNotEmpty)
+        'platform': _normalizeRegisterDevicePlatform(platform),
+      if (message != null && message.trim().isNotEmpty) 'message': message.trim(),
+      if (tokenLength != null && tokenLength > 0) 'tokenLength': tokenLength,
+    };
+
+    try {
+      await _client.post<Map<String, dynamic>>(
+        ApiEndpoints.flutterRegistrationDebug,
+        data: payload,
+        retryOptions: const RetryOptions(retries: 0, timeout: _debugLogTimeout),
+      );
+    } catch (_) {
+      // Debug logging is best-effort only.
     }
   }
 
