@@ -1288,12 +1288,13 @@ class ChatApiService {
     final payload = <String, dynamic>{
       'action': action,
       'status': status,
+      // Normalize defensively so all callers produce the same backend key.
       if (username != null && username.trim().isNotEmpty)
         'username': username.trim().toLowerCase(),
       if (platform != null && platform.trim().isNotEmpty)
         'platform': _normalizeRegisterDevicePlatform(platform),
       if (message != null && message.trim().isNotEmpty) 'message': message.trim(),
-      if (tokenLength != null && tokenLength >= 0) 'tokenLength': tokenLength,
+      if (tokenLength != null && tokenLength > 0) 'tokenLength': tokenLength,
     };
 
     try {

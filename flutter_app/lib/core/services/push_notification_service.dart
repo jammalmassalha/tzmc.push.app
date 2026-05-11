@@ -510,11 +510,10 @@ class PushNotificationService {
     int? tokenLength,
   }) {
     if (!_isIOSPlatform()) return;
-    final username = _ref.read(currentUserProvider)?.trim().toLowerCase();
     unawaited(_api.logFlutterPushRegistrationStep(
       action: action,
       status: status,
-      username: username?.isNotEmpty == true ? username : null,
+      username: _currentNormalizedUsername(),
       platform: _getPlatformName(),
       message: message,
       tokenLength: tokenLength ?? token?.length,
@@ -650,19 +649,19 @@ class PushNotificationService {
     }
   }
 
+  String? _currentNormalizedUsername() {
+    final normalized = _ref.read(currentUserProvider)?.trim().toLowerCase();
+    return normalized?.isNotEmpty == true ? normalized : null;
+  }
+
   bool _hasCurrentUser() {
-    final username = _ref.read(currentUserProvider);
-    return username != null && username.trim().isNotEmpty;
+    return _currentNormalizedUsername() != null;
   }
 
   bool _isRegisteredForCurrentUser() {
     final token = _deviceToken;
     if (token == null) return false;
-    final username = _ref.read(currentUserProvider);
-    final normalizedUser = username?.trim().toLowerCase();
-    return normalizedUser != null &&
-        normalizedUser.isNotEmpty &&
-        normalizedUser == _registeredForUser;
+    return _currentNormalizedUsername() == _registeredForUser;
   }
 
   Future<String?> _waitForAPNSToken() async {
@@ -703,8 +702,8 @@ class PushNotificationService {
   }
 
   Future<void> _registerDeviceToken(String token) async {
-    final username = _ref.read(currentUserProvider);
-    if (username == null || username.trim().isEmpty) {
+    final normalizedUser = _currentNormalizedUsername();
+    if (normalizedUser == null) {
       debugPrint(
           '[PushNotificationService] No current user — deferring token registration');
       _logIOSRegistrationStep(
@@ -721,7 +720,6 @@ class PushNotificationService {
       return;
     }
 
-    final normalizedUser = username.trim().toLowerCase();
     // Skip only if the same token is already registered for the same user.
     // Re-register on user switch (logout → re-login as a different
     // account) so the backend routes pushes to the right user.
