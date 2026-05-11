@@ -513,7 +513,7 @@ class PushNotificationService {
     unawaited(_api.logFlutterPushRegistrationStep(
       action: action,
       status: status,
-      username: _currentNormalizedUsername(),
+      username: _getCurrentNormalizedUsername(),
       platform: _getPlatformName(),
       message: message,
       tokenLength: tokenLength ?? token?.length,
@@ -649,19 +649,19 @@ class PushNotificationService {
     }
   }
 
-  String? _currentNormalizedUsername() {
+  String? _getCurrentNormalizedUsername() {
     final normalized = _ref.read(currentUserProvider)?.trim().toLowerCase();
     return normalized?.isNotEmpty == true ? normalized : null;
   }
 
   bool _hasCurrentUser() {
-    return _currentNormalizedUsername() != null;
+    return _getCurrentNormalizedUsername() != null;
   }
 
   bool _isRegisteredForCurrentUser() {
     final token = _deviceToken;
     if (token == null) return false;
-    return _currentNormalizedUsername() == _registeredForUser;
+    return _getCurrentNormalizedUsername() == _registeredForUser;
   }
 
   Future<String?> _waitForAPNSToken() async {
@@ -702,7 +702,7 @@ class PushNotificationService {
   }
 
   Future<void> _registerDeviceToken(String token) async {
-    final normalizedUser = _currentNormalizedUsername();
+    final normalizedUser = _getCurrentNormalizedUsername();
     if (normalizedUser == null) {
       debugPrint(
           '[PushNotificationService] No current user — deferring token registration');

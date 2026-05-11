@@ -157,6 +157,7 @@ function readFlutterRegistrationDebugRequest(req) {
         authMiddleware,
         async (req, res) => {
             const event = readFlutterRegistrationDebugRequest(req);
+            // Fire-and-forget so debug logging never slows or breaks registration.
             logFlutterRegistrationDebug(deps, req, event);
             return res.json({ status: 'success' });
         }
