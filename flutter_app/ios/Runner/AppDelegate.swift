@@ -4,13 +4,34 @@ import UIKit
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
+  private let pushRegistrationChannelName = "co.il.tzmc.tzmc_push/push_registration"
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     GeneratedPluginRegistrant.register(with: self)
-    application.registerForRemoteNotifications()
-    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+    let didFinishLaunching = super.application(
+      application,
+      didFinishLaunchingWithOptions: launchOptions
+    )
+    if let controller = window?.rootViewController as? FlutterViewController {
+      let pushRegistrationChannel = FlutterMethodChannel(
+        name: pushRegistrationChannelName,
+        binaryMessenger: controller.binaryMessenger
+      )
+      pushRegistrationChannel.setMethodCallHandler { [weak application] call, result in
+        guard call.method == "registerForRemoteNotifications" else {
+          result(FlutterMethodNotImplemented)
+          return
+        }
+        DispatchQueue.main.async {
+          application?.registerForRemoteNotifications()
+          result(nil)
+        }
+      }
+    }
+    return didFinishLaunching
   }
 
   override func application(

@@ -12,6 +12,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -41,10 +42,13 @@ const int _kGroupSummaryNotificationId = 0;
 
 // APNs can take a short time to hand firebase_messaging its native token
 // immediately after the user grants notification permission on iOS.
-const int _kAPNSTokenMaxAttempts = 5;
+const int _kAPNSTokenMaxAttempts = 20;
 const Duration _kAPNSTokenRetryDelay = Duration(seconds: 1);
 const int _kTokenRegistrationMaxAttempts = 12;
 const Duration _kTokenRegistrationRetryDelay = Duration(seconds: 5);
+const MethodChannel _pushRegistrationChannel = MethodChannel(
+  'co.il.tzmc.tzmc_push/push_registration',
+);
 
 // Platform detection helper
 bool get _isNativePlatform {
@@ -533,6 +537,7 @@ class PushNotificationService {
         // Get APNs token first on iOS. It is often unavailable for a moment
         // right after permission is granted; retry so first-run registration
         // doesn't silently fail until the next app launch.
+        await _requestIOSRemoteNotificationRegistration();
         _logIOSRegistrationStep(
           'ios_apns_token_wait_start',
           'start',
@@ -689,6 +694,44 @@ class PushNotificationService {
       }
     }
     return null;
+  }
+
+  Future<void> _requestIOSRemoteNotificationRegistration() async {
+    if (!_isIOSPlatform()) return;
+
+    _logIOSRegistrationStep(
+      'ios_remote_notifications_register_start',
+      'start',
+      message: 'Requesting native APNs registration',
+    );
+    try {
+      await _pushRegistrationChannel.invokeMethod<void>(
+        'registerForRemoteNotifications',
+      );
+      _logIOSRegistrationStep(
+        'ios_remote_notifications_register_requested',
+        'success',
+        message: 'Native APNs registration requested',
+      );
+    } on MissingPluginException catch (e) {
+      debugPrint(
+        '[PushNotificationService] APNs registration bridge missing: $e',
+      );
+      _logIOSRegistrationStep(
+        'ios_remote_notifications_register_missing_plugin',
+        'error',
+        message: e.toString(),
+      );
+    } catch (e) {
+      debugPrint(
+        '[PushNotificationService] APNs registration request error: $e',
+      );
+      _logIOSRegistrationStep(
+        'ios_remote_notifications_register_error',
+        'error',
+        message: e.toString(),
+      );
+    }
   }
 
   void _onTokenRefresh(String token) {
