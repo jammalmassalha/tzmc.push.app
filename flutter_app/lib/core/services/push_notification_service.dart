@@ -549,18 +549,18 @@ class PushNotificationService {
     final attempt = _tokenRegistrationRetryAttempt;
     _tokenRegistrationRetryTimer = Timer(
       _kTokenRegistrationRetryDelay,
-      () async {
-        debugPrint(
-          '[PushNotificationService] Retrying iOS token registration '
-          '($attempt/$_kTokenRegistrationMaxAttempts)',
-        );
-        try {
+      () {
+        Future<void>(() async {
+          debugPrint(
+            '[PushNotificationService] Retrying iOS token registration '
+            '($attempt/$_kTokenRegistrationMaxAttempts)',
+          );
           await _getAndRegisterToken();
-        } catch (e, st) {
+        }).catchError((Object e, StackTrace st) {
           debugPrint(
             '[PushNotificationService] Token registration retry crashed: $e\n$st',
           );
-        }
+        });
       },
     );
   }
