@@ -114,19 +114,28 @@ function registerFlutterPushRoutes(app, deps = {}) {
             res.status(resolution.status).json({ status: 'error', message: resolution.error })
     });
 
-    function readBody(req) {
-        return (req && req.body && typeof req.body === 'object') ? req.body : {};
-    }
+function readBody(req) {
+    return (req && req.body && typeof req.body === 'object') ? req.body : {};
+}
+
+function readFlutterRegistrationRequest(req) {
+    const body = readBody(req);
+    const username = req.resolvedUser || body.username || body.user;
+    const token = body.fcmToken || body.token;
+    const platform = body.platform || body.deviceType;
+    return {
+        username,
+        token,
+        platform,
+        tokenDebug: buildTokenDebugFields(token)
+    };
+}
 
     app.post(
         ['/flutter/register-fcm', '/notify/flutter/register-fcm'],
         authMiddleware,
         async (req, res) => {
-            const body = readBody(req);
-            const username = req.resolvedUser || body.username || body.user;
-            const token = body.fcmToken || body.token;
-            const platform = body.platform || body.deviceType;
-            const tokenDebug = buildTokenDebugFields(token);
+            const { username, token, platform, tokenDebug } = readFlutterRegistrationRequest(req);
             try {
                 const result = flutterPushService.registerToken({ username, token, platform });
                 const sheetPayload = buildFlutterSheetPayload({
@@ -180,11 +189,7 @@ function registerFlutterPushRoutes(app, deps = {}) {
         ['/flutter/unregister-fcm', '/notify/flutter/unregister-fcm'],
         authMiddleware,
         async (req, res) => {
-            const body = readBody(req);
-            const username = req.resolvedUser || body.username || body.user;
-            const token = body.fcmToken || body.token;
-            const platform = body.platform || body.deviceType;
-            const tokenDebug = buildTokenDebugFields(token);
+            const { username, token, platform, tokenDebug } = readFlutterRegistrationRequest(req);
             try {
                 const result = flutterPushService.unregisterToken({ username, token });
                 const sheetPayload = buildFlutterSheetPayload({
