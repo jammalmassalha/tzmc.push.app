@@ -31,6 +31,8 @@ const List<String> _kHelpdeskAllowedUsers = [
   '0550000001',
   '0505203520',
 ];
+final Set<String> _kHelpdeskAllowedUsersNormalized =
+    _kHelpdeskAllowedUsers.map((value) => value.trim().toLowerCase()).toSet();
 final RegExp _kShuttlePhoneRegex = RegExp(r'05\d{8}');
 
 /// Chat shell screen widget
@@ -450,9 +452,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     }
     final normalizedUser = _normalizeUser(user);
 
-    final canAccessTicketManager = _kHelpdeskAllowedUsers
-        .map(_normalizeUser)
-        .contains(normalizedUser);
+    final canAccessTicketManager =
+        _kHelpdeskAllowedUsersNormalized.contains(normalizedUser);
 
     bool canAccessShuttle = false;
     try {
@@ -462,6 +463,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         canAccessShuttle = _isUserAllowedForShuttle(normalizedUser, employees);
       }
     } catch (_) {
+      debugPrint('[ChatShellScreen] shuttle permission check failed');
       canAccessShuttle = false;
     }
 
