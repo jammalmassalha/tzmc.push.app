@@ -297,20 +297,58 @@ jobs:
           echo "ExportOptions.plist:"
           cat "$RUNNER_TEMP/ExportOptions.plist"
 
-      # ── 8. Build signed IPA ───────────────────────────────────────────────
+      # ── 8. Select Xcode 26 (iOS 26 SDK required by App Store Connect) ────────
+      - name: Select Xcode 26
+        run: |
+          # Locate Xcode 26 installation; fail if not found so the error is clear.
+          XCODE_26=$(find /Applications -maxdepth 1 -name "Xcode_26*.app" 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE_26" ]; then
+            # macOS runners may ship Xcode 26 as the default "Xcode.app" on
+            # images that were published after June 2025.
+            XCODE_CURRENT=$(xcode-select -p | sed 's|/Contents/Developer||')
+            XCODE_MAJOR=$(xcodebuild -version 2>/dev/null | head -1 | awk '{print $2}' | cut -d. -f1)
+            if [ "${XCODE_MAJOR:-0}" -ge 26 ] 2>/dev/null; then
+              echo "Default Xcode is already version ${XCODE_MAJOR} — no switch needed."
+            else
+              echo "::error::Xcode 26 is not installed on this runner (found Xcode ${XCODE_MAJOR:-unknown} at ${XCODE_CURRENT}). Use a macOS runner image that ships with Xcode 26."
+              exit 1
+            fi
+          else
+            sudo xcode-select -s "$XCODE_26/Contents/Developer"
+            echo "Switched to Xcode: $XCODE_26"
+          fi
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      # ── 9. Build signed IPA ───────────────────────────────────────────────
       - name: Build Flutter IPA
         run: |
           # 1. Build the archive without trying to sign it yet
           flutter build ipa --release --no-codesign
 
-          # 2. Now use Xcode to sign and export it using your P12 and Profile
+          # 2. Patch App.framework Info.plist to set MinimumOSVersion.
+          #    Flutter's build tooling may leave this key empty (ITMS-90530 /
+          #    ITMS-90360).  Setting it explicitly to the project's deployment
+          #    target (15.0) satisfies App Store Connect validation.
+          APP_FRAMEWORK_PLIST="build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app/Frameworks/App.framework/Info.plist"
+          if [ -f "$APP_FRAMEWORK_PLIST" ]; then
+            # Delete the key first (no-op if absent), then add with the
+            # correct value — this handles the key being missing OR empty.
+            /usr/libexec/PlistBuddy -c "Delete :MinimumOSVersion" "$APP_FRAMEWORK_PLIST" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string 15.0" "$APP_FRAMEWORK_PLIST"
+            echo "Set MinimumOSVersion=15.0 in App.framework Info.plist"
+          else
+            echo "::warning::App.framework Info.plist not found at expected path — skipping MinimumOSVersion patch."
+          fi
+
+          # 3. Now use Xcode to sign and export it using your P12 and Profile
           xcodebuild -exportArchive \
             -archivePath build/ios/archive/Runner.xcarchive \
             -exportPath build/ios/ipa \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
             -allowProvisioningUpdates
 
-          # 3. Copy to dist folder (same as your previous logic)
+          # 4. Copy to dist folder (same as your previous logic)
           mkdir -p ../dist/ios
           IPA_PATH=$(find build/ios/ipa -name "*.ipa" | head -1)
           if [ -z "$IPA_PATH" ]; then
@@ -319,7 +357,7 @@ jobs:
           fi
           cp "$IPA_PATH" ../dist/ios/tzmc-push-release.ipa
 
-      # ── 9. Upload artifact ────────────────────────────────────────────────
+      # ── 10. Upload artifact ───────────────────────────────────────────────
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
@@ -327,7 +365,7 @@ jobs:
           path: dist/ios/tzmc-push-release.ipa
           retention-days: 30
 
-      # ── 10. Upload to TestFlight (app-store builds only) ──────────────────
+      # ── 11. Upload to TestFlight (app-store builds only) ─────────────────
       - name: Upload to TestFlight
         if: ${{ inputs.distribution_method == 'app-store' }}
         uses: apple-actions/upload-testflight-build@v5
@@ -338,7 +376,7 @@ jobs:
           api-key-id: ${{ secrets.APPSTORE_API_KEY_ID }}
           api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
 
-      # ── 11. Cleanup keychain ──────────────────────────────────────────────
+      # ── 12. Cleanup keychain ──────────────────────────────────────────────
       - name: Clean up keychain
         if: always()
         run: |
