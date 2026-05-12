@@ -39,7 +39,31 @@ fi
 
 echo ""
 echo "1. Getting Flutter dependencies..."
-flutter pub get
+PUB_GET_LOG="$(mktemp)"
+FALLBACK_ANALYZER_APPLIED=0
+cleanup_local_overrides() {
+    if [ "$FALLBACK_ANALYZER_APPLIED" -eq 1 ]; then
+        rm -f pubspec_overrides.yaml
+    fi
+}
+trap cleanup_local_overrides EXIT
+if flutter pub get 2>&1 | tee "$PUB_GET_LOG"; then
+    true
+elif grep -q "_macros from sdk doesn't exist" "$PUB_GET_LOG"; then
+    echo ""
+    echo "⚠️  Detected Dart SDK without _macros support."
+    echo "   Applying local analyzer fallback (6.8.0) for this build script run."
+    cat > pubspec_overrides.yaml <<'EOF'
+dependency_overrides:
+  analyzer: 6.8.0
+EOF
+    FALLBACK_ANALYZER_APPLIED=1
+    flutter pub get
+else
+    rm -f "$PUB_GET_LOG"
+    exit 1
+fi
+rm -f "$PUB_GET_LOG"
 
 echo ""
 echo "2. Running code generation (Drift, JSON serializable, etc.)..."
