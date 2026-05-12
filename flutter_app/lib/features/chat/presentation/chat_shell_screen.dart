@@ -31,6 +31,7 @@ const List<String> _kHelpdeskAllowedUsers = [
   '0550000001',
   '0505203520',
 ];
+final RegExp _kShuttlePhoneRegex = RegExp(r'05\d{8}');
 
 /// Chat shell screen widget
 class ChatShellScreen extends ConsumerStatefulWidget {
@@ -44,12 +45,11 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     with WidgetsBindingObserver {
   MainTab _currentTab = MainTab.chats;
   final _pageController = PageController();
-  bool _canAccessShuttle = true;
+  bool _canAccessShuttle = false;
   bool _canAccessTicketManager = false;
   List<MainTab> _visibleTabs = const [
     MainTab.chats,
     MainTab.groups,
-    MainTab.shuttle,
     MainTab.helpdesk,
     MainTab.settings,
   ];
@@ -58,7 +58,6 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _recomputeVisibleTabs();
     _initializeServices();
     unawaited(_refreshTabPermissions());
   }
@@ -164,10 +163,6 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   @override
   Widget build(BuildContext context) {
     final chatState = ref.watch(chatStoreProvider);
-
-    if (!_visibleTabs.contains(_currentTab)) {
-      _currentTab = _visibleTabs.first;
-    }
 
     return Directionality(
       textDirection: TextDirection.rtl,
@@ -448,6 +443,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         _canAccessShuttle = false;
         _canAccessTicketManager = false;
         _recomputeVisibleTabs();
+        if (!_visibleTabs.contains(_currentTab)) {
+          _currentTab = _visibleTabs.first;
+        }
       });
       _syncPageToCurrentTab();
       return;
@@ -457,14 +455,16 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         .map(_normalizeUser)
         .contains(normalizedUser);
 
-    bool canAccessShuttle = _canAccessShuttle;
+    bool canAccessShuttle = false;
     try {
       final api = ref.read(chatApiServiceProvider);
       final employees = await api.getShuttleEmployees(user!);
       if (employees.isNotEmpty) {
         canAccessShuttle = _isUserAllowedForShuttle(normalizedUser, employees);
       }
-    } catch (_) {}
+    } catch (_) {
+      canAccessShuttle = false;
+    }
 
     if (!mounted) return;
     setState(() {
@@ -495,7 +495,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   String _normalizeUser(String value) => value.trim().toLowerCase();
 
   String _extractShuttlePhone(String value) {
-    final match = RegExp(r'05\d{8}').firstMatch(value);
+    final match = _kShuttlePhoneRegex.firstMatch(value);
     return match?.group(0) ?? '';
   }
 
