@@ -84,11 +84,20 @@ if [ "$PUB_GET_EXIT" -ne 0 ]; then
         cat > pubspec_overrides.yaml <<'EOF'
 dependency_overrides:
   shared_preferences_android: 2.4.2
-  build_runner: 2.4.8
+  # build_runner 2.4.10 is the oldest release that accepts web_socket_channel
+  # >=2.0.0 <4.0.0 (i.e. 3.x), which is required by firebase_messaging.
+  # It still declares dart_style: ^2.0.0 and therefore does NOT call
+  # DartFormatter(languageVersion:), which was only added in 2.4.14.
+  build_runner: 2.4.10
   build_resolvers: 2.4.2
   dart_style: 2.3.6
+  # analyzer 6.4.1 has no dependency on the `macros` package, so it resolves
+  # correctly on Dart SDKs that lack _macros.
   analyzer: 6.4.1
-  web_socket_channel: 2.4.5
+  # retrofit_generator 9.x requires analyzer >=6.9.0 (which needs _macros) or
+  # analyzer ^7.x. Use 8.2.0 which accepts analyzer >=5.13.0 <7.0.0 and
+  # dart_style ^2.3.0 — both satisfied by the overrides above.
+  retrofit_generator: 8.2.0
 EOF
         FALLBACK_LOG="$(mktemp)"
         set +e
