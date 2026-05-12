@@ -458,12 +458,12 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     bool canAccessShuttle = false;
     try {
       final api = ref.read(chatApiServiceProvider);
-      final employees = await api.getShuttleEmployees(user!);
+      final employees = await api.getShuttleEmployees(user);
       if (employees.isNotEmpty) {
         canAccessShuttle = _isUserAllowedForShuttle(normalizedUser, employees);
       }
-    } catch (_) {
-      debugPrint('[ChatShellScreen] shuttle permission check failed');
+    } catch (e, st) {
+      debugPrint('[ChatShellScreen] shuttle permission check failed: $e\n$st');
       canAccessShuttle = false;
     }
 
