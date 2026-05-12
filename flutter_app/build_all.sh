@@ -104,6 +104,9 @@ dependency_overrides:
   # json_serializable 6.9.x needs analyzer >=6.9.0 and source_gen ^2.0.0.
   # Pin to the last version compatible with analyzer 6.4.1 + source_gen 1.5.0.
   json_serializable: 6.7.1
+  # mockito 5.4.5+ uses analyzer element2 APIs and fails with analyzer 6.4.1.
+  # Keep it on the last release compatible with analyzer <7 and source_gen 1.x.
+  mockito: 5.4.4
   # retrofit_generator 9.x requires analyzer >=6.9.0 (which needs _macros).
   # 8.2.0 accepts analyzer >=5.13.0 <7.0.0 and source_gen ^1.3.0.
   retrofit_generator: 8.2.0
