@@ -90,11 +90,13 @@ dependency_overrides:
   # DartFormatter(languageVersion:), which was only added in 2.4.14.
   build_runner: 2.4.10
   build_resolvers: 2.4.2
-  dart_style: 2.3.6
-  # analyzer 6.8.0 still has no dependency on the `macros` package (introduced
-  # from 6.9.0), so it resolves on Dart SDKs that lack _macros.
-  # Keep this high enough for newer drift_dev internals used during codegen.
-  analyzer: 6.8.0
+  # dart_style 2.3.7 is the minimum required by drift_dev 2.23.0 (>=2.3.7).
+  # Still in the 2.x line — no macros dependency.
+  dart_style: 2.3.7
+  # analyzer >=6.6.0 pulls in the `macros` package (which needs _macros from
+  # the SDK). analyzer 6.4.1 is the highest pre-macros release and satisfies
+  # drift_dev 2.23.0's own constraint of ^6.4.1.
+  analyzer: 6.4.1
   # source_gen 1.5.0 accepts analyzer >=5.2.0 <7.0.0 (satisfies 6.4.1) and
   # has no _macros dependency. All generators below require source_gen ^1.x.
   # source_gen 2.0.0 would need analyzer >=6.9.0 (macros) — unusable here.
@@ -110,6 +112,11 @@ dependency_overrides:
   # freezed_annotation 3.0.0 is an API-identical version bump paired with
   # freezed 3.0.0; downgrading to 2.4.4 is safe for codegen on old SDKs.
   freezed_annotation: 2.4.4
+  # drift_dev 2.23.0 is the last release that declares analyzer: ^6.4.1
+  # (no macros). drift_dev 2.24.0+ jumped to analyzer >=6.11.0 (macros).
+  # drift_dev 2.23.0 requires drift >=2.23.0 <2.24.0, so drift is pinned too.
+  drift_dev: 2.23.0
+  drift: 2.23.0
 EOF
         FALLBACK_LOG="$(mktemp)"
         set +e
