@@ -68,7 +68,7 @@ if [ "$PUB_GET_EXIT" -ne 0 ]; then
     if grep -q "_macros from sdk doesn't exist" "$PUB_GET_LOG"; then
         echo ""
         echo "⚠️  Detected Dart SDK without _macros support."
-        echo "   Applying local analyzer/codegen fallback (analyzer 6.4.1) for this build script run."
+        echo "   Applying local legacy codegen fallback for this build script run."
         if [ -f pubspec_overrides.yaml ]; then
             LOCAL_OVERRIDES_BACKUP="$(mktemp)"
             cp pubspec_overrides.yaml "$LOCAL_OVERRIDES_BACKUP"
@@ -84,10 +84,11 @@ if [ "$PUB_GET_EXIT" -ne 0 ]; then
         cat > pubspec_overrides.yaml <<'EOF'
 dependency_overrides:
   shared_preferences_android: 2.4.2
-  build_runner: 2.4.14
+  build_runner: 2.4.8
   build_resolvers: 2.4.2
   dart_style: 2.3.6
   analyzer: 6.4.1
+  web_socket_channel: 2.4.5
 EOF
         FALLBACK_LOG="$(mktemp)"
         set +e
