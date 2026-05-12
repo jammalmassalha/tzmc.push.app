@@ -94,10 +94,21 @@ dependency_overrides:
   # analyzer 6.4.1 has no dependency on the `macros` package, so it resolves
   # correctly on Dart SDKs that lack _macros.
   analyzer: 6.4.1
-  # retrofit_generator 9.x requires analyzer >=6.9.0 (which needs _macros) or
-  # analyzer ^7.x. Use 8.2.0 which accepts analyzer >=5.13.0 <7.0.0 and
-  # dart_style ^2.3.0 — both satisfied by the overrides above.
+  # source_gen 1.5.0 accepts analyzer >=5.2.0 <7.0.0 (satisfies 6.4.1) and
+  # has no _macros dependency. All generators below require source_gen ^1.x.
+  # source_gen 2.0.0 would need analyzer >=6.9.0 (macros) — unusable here.
+  source_gen: 1.5.0
+  # retrofit_generator 9.x requires analyzer >=6.9.0 (which needs _macros).
+  # 8.2.0 accepts analyzer >=5.13.0 <7.0.0 and source_gen ^1.3.0.
   retrofit_generator: 8.2.0
+  # freezed 3.x requires source_gen ^2.0.0 (needs analyzer >=6.9.0 = macros).
+  # 2.5.2 is the last release with analyzer >=5.13.0 <7.0.0 + source_gen ^1.4.0.
+  # (2.5.3 jumped to analyzer >=6.5.0 which pulls in macros.)
+  freezed: 2.5.2
+  # freezed 2.5.2 requires freezed_annotation ^2.4.1.
+  # freezed_annotation 3.0.0 is an API-identical version bump paired with
+  # freezed 3.0.0; downgrading to 2.4.4 is safe for codegen on old SDKs.
+  freezed_annotation: 2.4.4
 EOF
         FALLBACK_LOG="$(mktemp)"
         set +e
