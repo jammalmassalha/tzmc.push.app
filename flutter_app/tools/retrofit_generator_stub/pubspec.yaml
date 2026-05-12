@@ -1,0 +1,23 @@
+# Local no-op stub for retrofit_generator used during the legacy codegen fallback
+# (build_all.sh) when the host Dart SDK lacks _macros support.
+#
+# Why a stub? This app has NO @RestApi-annotated classes, so retrofit_generator
+# produces no output. However, it is a declared dev-dependency and build_runner
+# will try to import and precompile it.  Every published retrofit_generator
+# version either:
+#   • 8.x — has Dart >=3.7 definite-assignment bugs caused by retrofit 4.3.0
+#             adding Parser.DartMappable (unhandled switch arm → final variable
+#             'mapperCode'/'value' not always assigned; missing returns).
+#   • 9.0.x/9.1.x — requires analyzer ^6.5.0 which itself needs _macros from
+#                    the SDK, and calls getDisplayString() without the
+#                    `withNullability:` named parameter that analyzer 6.4.1 still
+#                    requires — so the precompile fails even with an override.
+#   • 9.2.0+ — requires analyzer >=6.9.0 (macros), unusable here.
+#
+# A package without a build.yaml registers no builders; build_runner will
+# compile a clean entrypoint and only run the builders that are actually needed
+# (Drift in this project).
+name: retrofit_generator
+version: 8.2.1
+environment:
+  sdk: ">=3.0.0 <4.0.0"
