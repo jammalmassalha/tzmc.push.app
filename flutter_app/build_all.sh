@@ -90,14 +90,14 @@ dependency_overrides:
   # DartFormatter(languageVersion:), which was only added in 2.4.14.
   build_runner: 2.4.10
   build_resolvers: 2.4.2
-  # dart_style 2.3.7 is the minimum required by drift_dev 2.23.0 (>=2.3.7).
-  # Still in the 2.x line — no macros dependency.
-  dart_style: 2.3.7
-  # analyzer >=6.6.0 pulls in the `macros` package (which needs _macros from
-  # the SDK). Keep analyzer on 6.5.0: still pre-macros, but new enough for
-  # dart_style 2.3.7 AST APIs used during build_runner precompile.
-  analyzer: 6.5.0
-  # source_gen 1.5.0 accepts analyzer >=5.2.0 <7.0.0 (satisfies 6.5.0) and
+  # dart_style 2.3.6 still works with analyzer 6.4.1 and stays fully
+  # pre-macros. dart_style 2.3.7 raised its analyzer floor to ^6.5.0, which
+  # pulls `macros` / `_macros` on older SDKs and breaks local fallback builds.
+  dart_style: 2.3.6
+  # analyzer 6.4.1 is the latest fully pre-macros analyzer line that resolves
+  # on SDKs without `_macros`.
+  analyzer: 6.4.1
+  # source_gen 1.5.0 accepts analyzer >=5.2.0 <7.0.0 (satisfies 6.4.1) and
   # has no _macros dependency. All generators below require source_gen ^1.x.
   # source_gen 2.0.0 would need analyzer >=6.9.0 (macros) — unusable here.
   source_gen: 1.5.0
@@ -112,11 +112,11 @@ dependency_overrides:
   # freezed_annotation 3.0.0 is an API-identical version bump paired with
   # freezed 3.0.0; downgrading to 2.4.4 is safe for codegen on old SDKs.
   freezed_annotation: 2.4.4
-  # drift_dev 2.23.0 (analyzer: ^6.4.1) works with analyzer 6.5.0 and remains
-  # pre-macros. drift_dev 2.24.0+ jumped to analyzer >=6.11.0 (macros).
-  # drift_dev 2.23.0 requires drift >=2.23.0 <2.24.0, so drift is pinned too.
-  drift_dev: 2.23.0
-  drift: 2.23.0
+  # drift_dev 2.22.0+ requires dart_style ^2.3.7, which in turn requires
+  # analyzer ^6.5.0 (macros). drift_dev 2.21.0 is the newest line that still
+  # accepts dart_style <2.3.7 while remaining compatible with analyzer 6.4.1.
+  drift_dev: 2.21.0
+  drift: 2.21.0
 EOF
         FALLBACK_LOG="$(mktemp)"
         set +e
@@ -126,7 +126,7 @@ EOF
 
         if [ "$FALLBACK_EXIT" -ne 0 ]; then
             rm -f "$FALLBACK_LOG"
-            echo "❌ Could not resolve dependencies with local analyzer fallbacks."
+            echo "❌ Could not resolve dependencies with local legacy fallback overrides."
             echo "   Please upgrade Flutter/Dart to the repository CI version (Flutter 3.27.4 / Dart 3.6.x)."
             exit 1
         fi
