@@ -47,7 +47,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   final _pageController = PageController();
   bool _canAccessShuttle = false;
   bool _canAccessTicketManager = false;
-  List<MainTab> _visibleTabs = const [
+  List<MainTab> _visibleTabs = [
     MainTab.chats,
     MainTab.groups,
     MainTab.helpdesk,
@@ -435,9 +435,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
 
   Future<void> _refreshTabPermissions() async {
     final user = ref.read(currentUserProvider);
-    final normalizedUser = _normalizeUser(user ?? '');
-
-    if (normalizedUser.isEmpty) {
+    if (user == null) {
       if (!mounted) return;
       setState(() {
         _canAccessShuttle = false;
@@ -450,6 +448,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       _syncPageToCurrentTab();
       return;
     }
+    final normalizedUser = _normalizeUser(user);
 
     final canAccessTicketManager = _kHelpdeskAllowedUsers
         .map(_normalizeUser)
@@ -504,7 +503,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       if (!mounted || !_pageController.hasClients) return;
       final targetIndex = _visibleTabs.indexOf(_currentTab);
       if (targetIndex < 0) return;
-      final currentPage = _pageController.page?.round() ?? _pageController.initialPage;
+      final currentPage = _pageController.page?.round() ?? 0;
       if (currentPage != targetIndex) {
         _pageController.jumpToPage(targetIndex);
       }
