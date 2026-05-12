@@ -91,9 +91,10 @@ dependency_overrides:
   build_runner: 2.4.10
   build_resolvers: 2.4.2
   dart_style: 2.3.6
-  # analyzer 6.4.1 has no dependency on the `macros` package, so it resolves
-  # correctly on Dart SDKs that lack _macros.
-  analyzer: 6.4.1
+  # analyzer 6.8.0 still has no dependency on the `macros` package (introduced
+  # from 6.9.0), so it resolves on Dart SDKs that lack _macros.
+  # Keep this high enough for newer drift_dev internals used during codegen.
+  analyzer: 6.8.0
   # source_gen 1.5.0 accepts analyzer >=5.2.0 <7.0.0 (satisfies 6.4.1) and
   # has no _macros dependency. All generators below require source_gen ^1.x.
   # source_gen 2.0.0 would need analyzer >=6.9.0 (macros) — unusable here.
