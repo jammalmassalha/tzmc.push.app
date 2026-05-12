@@ -57,6 +57,8 @@
 	<!-- Required by geolocator for share-location feature -->
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>האפליקציה משתמשת במיקום כדי לאפשר לך לשתף את מיקומך בצ׳אט.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>האפליקציה משתמשת במיקום כדי לאפשר לך לשתף את מיקומך בצ׳אט.</string>
 	<!-- Required by image_picker for camera and photo-library access -->
 	<key>NSCameraUsageDescription</key>
 	<string>האפליקציה זקוקה לגישה למצלמה כדי לצלם תמונות לשליחה בצ׳אט.</string>
