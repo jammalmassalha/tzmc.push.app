@@ -107,10 +107,16 @@ dependency_overrides:
   # mockito 5.4.5+ uses analyzer element2 APIs and fails with analyzer 6.4.1.
   # Keep it on the last release compatible with analyzer <7 and source_gen 1.x.
   mockito: 5.4.4
-  # retrofit_generator 9.x requires analyzer >=6.9.0 (which needs _macros).
-  # Keep the 8.2.x line for analyzer 6.4.1/source_gen 1.x fallback builds;
-  # 8.2.1 includes fixes over 8.2.0 for newer Dart precompile checks.
-  retrofit_generator: 8.2.1
+  # retrofit_generator 8.x has Dart 3.7+ definite-assignment bugs in its own
+  # source (Final variable 'mapperCode'/'value' unassigned, missing returns in
+  # _missingToJson/_missingSerialize) that cause build-script precompile failure
+  # on Dart >=3.7 SDKs. 9.1.5 is the last 9.1.x release before analyzer was
+  # bumped to >=6.9.0 (which would require _macros); its pubspec says
+  # analyzer ^6.5.0 but dependency_overrides bypass that constraint so our
+  # pinned analyzer 6.4.1 is still used — 9.1.5 only calls classic
+  # ClassElement/MethodElement APIs available in 6.4.x.
+  # source_gen ^1.5.0 and dart_style ^2.3.0 are both satisfied by our pins.
+  retrofit_generator: 9.1.5
   # freezed 3.x requires source_gen ^2.0.0 (needs analyzer >=6.9.0 = macros).
   # 2.5.2 is the last release with analyzer >=5.13.0 <7.0.0 + source_gen ^1.4.0.
   # (2.5.3 jumped to analyzer >=6.5.0 which pulls in macros.)
