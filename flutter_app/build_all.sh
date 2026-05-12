@@ -101,6 +101,9 @@ dependency_overrides:
   # has no _macros dependency. All generators below require source_gen ^1.x.
   # source_gen 2.0.0 would need analyzer >=6.9.0 (macros) — unusable here.
   source_gen: 1.5.0
+  # json_serializable 6.9.x needs analyzer >=6.9.0 and source_gen ^2.0.0.
+  # Pin to the last line compatible with analyzer 6.4.1 + source_gen 1.5.0.
+  json_serializable: 6.7.1
   # retrofit_generator 9.x requires analyzer >=6.9.0 (which needs _macros).
   # 8.2.0 accepts analyzer >=5.13.0 <7.0.0 and source_gen ^1.3.0.
   retrofit_generator: 8.2.0
