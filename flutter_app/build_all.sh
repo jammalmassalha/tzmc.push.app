@@ -108,8 +108,9 @@ dependency_overrides:
   # Keep it on the last release compatible with analyzer <7 and source_gen 1.x.
   mockito: 5.4.4
   # retrofit_generator 9.x requires analyzer >=6.9.0 (which needs _macros).
-  # 8.2.0 accepts analyzer >=5.13.0 <7.0.0 and source_gen ^1.3.0.
-  retrofit_generator: 8.2.0
+  # Keep the 8.2.x line for analyzer 6.4.1/source_gen 1.x fallback builds;
+  # 8.2.1 includes fixes over 8.2.0 for newer Dart precompile checks.
+  retrofit_generator: 8.2.1
   # freezed 3.x requires source_gen ^2.0.0 (needs analyzer >=6.9.0 = macros).
   # 2.5.2 is the last release with analyzer >=5.13.0 <7.0.0 + source_gen ^1.4.0.
   # (2.5.3 jumped to analyzer >=6.5.0 which pulls in macros.)
