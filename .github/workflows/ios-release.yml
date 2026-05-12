@@ -33,6 +33,21 @@ name: iOS Release Build
 #        base64 -w0 GoogleService-Info.plist               # Linux
 #      Without this secret push notifications will be silently disabled.
 #
+#  APPSTORE_ISSUER_ID   (required only when distribution_method = app-store)
+#      App Store Connect API key Issuer ID (UUID).
+#      Found at https://appstoreconnect.apple.com/access/integrations/api
+#      → "Keys" tab → "Issuer ID" shown at the top of the page.
+#
+#  APPSTORE_API_KEY_ID   (required only when distribution_method = app-store)
+#      The Key ID for the App Store Connect API key you created.
+#      Shown in the "Keys" table on the same page as the Issuer ID.
+#
+#  APPSTORE_API_PRIVATE_KEY   (required only when distribution_method = app-store)
+#      The full PKCS8 private key content (the .p8 file you downloaded when
+#      you created the API key).  Paste the entire file content, including the
+#      -----BEGIN PRIVATE KEY----- / -----END PRIVATE KEY----- lines.
+#      ⚠️  Apple lets you download it only ONCE — store it safely.
+#
 # ─── HOW TO TRIGGER ─────────────────────────────────────────────────────────
 #
 #  GitHub → Actions → "iOS Release Build" → "Run workflow"
@@ -42,10 +57,9 @@ name: iOS Release Build
 #
 #  The signed .ipa is uploaded as a GitHub Actions artifact called
 #  "ios-release-ipa" and kept for 30 days.
-#  Download it and upload to TestFlight / App Store Connect (Transporter app
-#  or `xcrun altool`) from any platform — no Mac required for that step either
-#  if you use the App Store Connect API via `xcrun altool` or tools like
-#  `fastlane deliver`.
+#  When distribution_method is "app-store" and the three APPSTORE_* secrets
+#  are set, the build is also uploaded directly to TestFlight automatically
+#  (no Mac or manual step required).
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -313,7 +327,18 @@ jobs:
           path: dist/ios/tzmc-push-release.ipa
           retention-days: 30
 
-      # ── 10. Cleanup keychain ──────────────────────────────────────────────
+      # ── 10. Upload to TestFlight (app-store builds only) ──────────────────
+      - name: Upload to TestFlight
+        if: ${{ inputs.distribution_method == 'app-store' }}
+        uses: apple-actions/upload-testflight-build@v5
+        with:
+          app-path: dist/ios/tzmc-push-release.ipa
+          app-type: ios
+          issuer-id: ${{ secrets.APPSTORE_ISSUER_ID }}
+          api-key-id: ${{ secrets.APPSTORE_API_KEY_ID }}
+          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+
+      # ── 11. Cleanup keychain ──────────────────────────────────────────────
       - name: Clean up keychain
         if: always()
         run: |
