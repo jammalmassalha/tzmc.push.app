@@ -9,6 +9,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/api/chat_api_service.dart';
 import '../../../core/realtime/realtime_transport_service.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../../core/services/push_notification_service.dart';
@@ -25,6 +26,15 @@ import 'new_chat_dialog.dart';
 /// Main tab enumeration
 enum MainTab { chats, groups, shuttle, helpdesk, ticketManager, settings }
 
+const List<String> _kHelpdeskAllowedUsers = [
+  '0546799693',
+  '0550000001',
+  '0505203520',
+];
+final Set<String> _kHelpdeskAllowedUsersNormalized =
+    _kHelpdeskAllowedUsers.map((value) => value.trim().toLowerCase()).toSet();
+final RegExp _kShuttlePhoneRegex = RegExp(r'05\d{8}');
+
 /// Chat shell screen widget
 class ChatShellScreen extends ConsumerStatefulWidget {
   const ChatShellScreen({super.key});
@@ -37,12 +47,21 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     with WidgetsBindingObserver {
   MainTab _currentTab = MainTab.chats;
   final _pageController = PageController();
+  bool _canAccessShuttle = false;
+  bool _canAccessTicketManager = false;
+  List<MainTab> _visibleTabs = [
+    MainTab.chats,
+    MainTab.groups,
+    MainTab.helpdesk,
+    MainTab.settings,
+  ];
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initializeServices();
+    unawaited(_refreshTabPermissions());
   }
 
   /// Called when the app returns to the foreground.
@@ -55,6 +74,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(_handleAppResumed());
+      unawaited(_refreshTabPermissions());
     }
   }
 
@@ -226,24 +246,19 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
             body: PageView(
               controller: _pageController,
               onPageChanged: (index) {
+                if (index < 0 || index >= _visibleTabs.length) return;
                 setState(() {
-                  _currentTab = MainTab.values[index];
+                  _currentTab = _visibleTabs[index];
                 });
               },
-              children: [
-                _buildChatsTab(),
-                _buildGroupsTab(),
-                _buildShuttleTab(),
-                _buildHelpdeskTab(),
-                _buildTicketManagerTab(),
-                _buildSettingsTab(),
-              ],
+              children: _visibleTabs.map(_buildTabBody).toList(),
             ),
             bottomNavigationBar: BottomNavigationBar(
-              currentIndex: _currentTab.index,
+              currentIndex: _visibleTabs.indexOf(_currentTab),
               onTap: (index) {
+                if (index < 0 || index >= _visibleTabs.length) return;
                 setState(() {
-                  _currentTab = MainTab.values[index];
+                  _currentTab = _visibleTabs[index];
                 });
                 _pageController.animateToPage(
                   index,
@@ -251,38 +266,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
                   curve: Curves.easeInOut,
                 );
               },
-              items: const [
-                BottomNavigationBarItem(
-                  icon: Icon(Icons.chat_bubble_outline),
-                  activeIcon: Icon(Icons.chat_bubble),
-                  label: 'צ\'אטים',
-                ),
-                BottomNavigationBarItem(
-                  icon: Icon(Icons.group_outlined),
-                  activeIcon: Icon(Icons.group),
-                  label: 'קבוצות',
-                ),
-                BottomNavigationBarItem(
-                  icon: Icon(Icons.directions_bus_outlined),
-                  activeIcon: Icon(Icons.directions_bus),
-                  label: 'הסעות',
-                ),
-                BottomNavigationBarItem(
-                  icon: Icon(Icons.support_agent_outlined),
-                  activeIcon: Icon(Icons.support_agent),
-                  label: 'מוקד איחוד',
-                ),
-                BottomNavigationBarItem(
-                  icon: Icon(Icons.manage_accounts_outlined),
-                  activeIcon: Icon(Icons.manage_accounts),
-                  label: 'מנהל קריאות',
-                ),
-                BottomNavigationBarItem(
-                  icon: Icon(Icons.settings_outlined),
-                  activeIcon: Icon(Icons.settings),
-                  label: 'הגדרות',
-                ),
-              ],
+              items: _visibleTabs.map(_buildNavItem).toList(),
             ),
             floatingActionButton: _currentTab == MainTab.chats || _currentTab == MainTab.groups
                 ? FloatingActionButton(
@@ -360,6 +344,64 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     return const ChatListScreen();
   }
 
+  Widget _buildTabBody(MainTab tab) {
+    switch (tab) {
+      case MainTab.chats:
+        return _buildChatsTab();
+      case MainTab.groups:
+        return _buildGroupsTab();
+      case MainTab.shuttle:
+        return _buildShuttleTab();
+      case MainTab.helpdesk:
+        return _buildHelpdeskTab();
+      case MainTab.ticketManager:
+        return _buildTicketManagerTab();
+      case MainTab.settings:
+        return _buildSettingsTab();
+    }
+  }
+
+  BottomNavigationBarItem _buildNavItem(MainTab tab) {
+    switch (tab) {
+      case MainTab.chats:
+        return const BottomNavigationBarItem(
+          icon: Icon(Icons.chat_bubble_outline),
+          activeIcon: Icon(Icons.chat_bubble),
+          label: 'צ\'אטים',
+        );
+      case MainTab.groups:
+        return const BottomNavigationBarItem(
+          icon: Icon(Icons.group_outlined),
+          activeIcon: Icon(Icons.group),
+          label: 'קבוצות',
+        );
+      case MainTab.shuttle:
+        return const BottomNavigationBarItem(
+          icon: Icon(Icons.directions_bus_outlined),
+          activeIcon: Icon(Icons.directions_bus),
+          label: 'הסעות',
+        );
+      case MainTab.helpdesk:
+        return const BottomNavigationBarItem(
+          icon: Icon(Icons.support_agent_outlined),
+          activeIcon: Icon(Icons.support_agent),
+          label: 'מוקד איחוד',
+        );
+      case MainTab.ticketManager:
+        return const BottomNavigationBarItem(
+          icon: Icon(Icons.manage_accounts_outlined),
+          activeIcon: Icon(Icons.manage_accounts),
+          label: 'מנהל קריאות',
+        );
+      case MainTab.settings:
+        return const BottomNavigationBarItem(
+          icon: Icon(Icons.settings_outlined),
+          activeIcon: Icon(Icons.settings),
+          label: 'הגדרות',
+        );
+    }
+  }
+
   Widget _buildGroupsTab() {
     return const GroupListScreen();
   }
@@ -379,6 +421,95 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   Widget _buildSettingsTab() {
     final user = ref.watch(currentUserProvider);
     return _SettingsPlaceholder(user: user);
+  }
+
+  void _recomputeVisibleTabs() {
+    final tabs = <MainTab>[
+      MainTab.chats,
+      MainTab.groups,
+      if (_canAccessShuttle) MainTab.shuttle,
+      MainTab.helpdesk,
+      if (_canAccessTicketManager) MainTab.ticketManager,
+      MainTab.settings,
+    ];
+    _visibleTabs = tabs;
+  }
+
+  Future<void> _refreshTabPermissions() async {
+    final user = ref.read(currentUserProvider);
+    if (user == null) {
+      if (!mounted) return;
+      setState(() {
+        _canAccessShuttle = false;
+        _canAccessTicketManager = false;
+        _recomputeVisibleTabs();
+        if (!_visibleTabs.contains(_currentTab)) {
+          _currentTab = _visibleTabs.first;
+        }
+      });
+      _syncPageToCurrentTab();
+      return;
+    }
+    final normalizedUser = _normalizeUser(user);
+
+    final canAccessTicketManager =
+        _kHelpdeskAllowedUsersNormalized.contains(normalizedUser);
+
+    bool canAccessShuttle = false;
+    try {
+      final api = ref.read(chatApiServiceProvider);
+      final employees = await api.getShuttleEmployees(user);
+      if (employees.isNotEmpty) {
+        canAccessShuttle = _isUserAllowedForShuttle(normalizedUser, employees);
+      }
+    } catch (e, st) {
+      debugPrint('[ChatShellScreen] shuttle permission check failed: $e\n$st');
+      canAccessShuttle = false;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _canAccessShuttle = canAccessShuttle;
+      _canAccessTicketManager = canAccessTicketManager;
+      _recomputeVisibleTabs();
+      if (!_visibleTabs.contains(_currentTab)) {
+        _currentTab = _visibleTabs.first;
+      }
+    });
+    _syncPageToCurrentTab();
+  }
+
+  bool _isUserAllowedForShuttle(String normalizedUser, List<String> employees) {
+    final userPhone = _extractShuttlePhone(normalizedUser);
+    for (final entry in employees) {
+      final normalizedEntry = _normalizeUser(entry);
+      if (normalizedEntry == normalizedUser) {
+        return true;
+      }
+      if (userPhone.isNotEmpty && _extractShuttlePhone(normalizedEntry) == userPhone) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  String _normalizeUser(String value) => value.trim().toLowerCase();
+
+  String _extractShuttlePhone(String value) {
+    final match = _kShuttlePhoneRegex.firstMatch(value);
+    return match?.group(0) ?? '';
+  }
+
+  void _syncPageToCurrentTab() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_pageController.hasClients) return;
+      final targetIndex = _visibleTabs.indexOf(_currentTab);
+      if (targetIndex < 0) return;
+      final currentPage = _pageController.page?.round() ?? 0;
+      if (currentPage != targetIndex) {
+        _pageController.jumpToPage(targetIndex);
+      }
+    });
   }
 
   String _getTabTitle(MainTab tab) {

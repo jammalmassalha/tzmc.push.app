@@ -39,7 +39,104 @@ fi
 
 echo ""
 echo "1. Getting Flutter dependencies..."
-flutter pub get
+PUB_GET_LOG="$(mktemp)"
+FALLBACK_ANALYZER_APPLIED=0
+LOCAL_OVERRIDES_BACKUP=""
+LOCAL_LOCKFILE_BACKUP=""
+cleanup_local_overrides() {
+    if [ "$FALLBACK_ANALYZER_APPLIED" -eq 1 ]; then
+        if [ -n "$LOCAL_LOCKFILE_BACKUP" ] && [ -f "$LOCAL_LOCKFILE_BACKUP" ]; then
+            mv "$LOCAL_LOCKFILE_BACKUP" pubspec.lock
+        else
+            rm -f pubspec.lock
+        fi
+        if [ -n "$LOCAL_OVERRIDES_BACKUP" ] && [ -f "$LOCAL_OVERRIDES_BACKUP" ]; then
+            mv "$LOCAL_OVERRIDES_BACKUP" pubspec_overrides.yaml
+        else
+            rm -f pubspec_overrides.yaml
+        fi
+    fi
+}
+trap cleanup_local_overrides EXIT
+
+set +e
+flutter pub get 2>&1 | tee "$PUB_GET_LOG"
+PUB_GET_EXIT=${PIPESTATUS[0]}
+set -e
+
+if [ "$PUB_GET_EXIT" -ne 0 ]; then
+    if grep -q "_macros from sdk doesn't exist" "$PUB_GET_LOG"; then
+        echo ""
+        echo "⚠️  Detected Dart SDK without _macros support."
+        echo "   Applying local legacy codegen fallback for this build script run."
+        if [ -f pubspec_overrides.yaml ]; then
+            LOCAL_OVERRIDES_BACKUP="$(mktemp)"
+            cp pubspec_overrides.yaml "$LOCAL_OVERRIDES_BACKUP"
+        fi
+        if [ -f pubspec.lock ]; then
+            LOCAL_LOCKFILE_BACKUP="$(mktemp)"
+            cp pubspec.lock "$LOCAL_LOCKFILE_BACKUP"
+        fi
+        FALLBACK_ANALYZER_APPLIED=1
+        echo "   Cleaning local resolution artifacts before fallback pub get..."
+        rm -rf .dart_tool/build
+        rm -f .dart_tool/package_config.json .dart_tool/package_config_subset .dart_tool/version pubspec.lock
+        cat > pubspec_overrides.yaml <<'EOF'
+dependency_overrides:
+  shared_preferences_android: 2.4.2
+  # build_runner 2.4.10 is the oldest release that accepts web_socket_channel
+  # >=2.0.0 <4.0.0 (i.e. 3.x), which is required by firebase_messaging.
+  # It still declares dart_style: ^2.0.0 and therefore does NOT call
+  # DartFormatter(languageVersion:), which was only added in 2.4.14.
+  build_runner: 2.4.10
+  build_resolvers: 2.4.2
+  # dart_style 2.3.6 still works with analyzer 6.4.1 and stays fully
+  # pre-macros. dart_style 2.3.7 raised its analyzer floor to ^6.5.0, which
+  # pulls `macros` / `_macros` on older SDKs and breaks local fallback builds.
+  dart_style: 2.3.6
+  # analyzer 6.4.1 is the latest fully pre-macros analyzer line that resolves
+  # on SDKs without `_macros`.
+  analyzer: 6.4.1
+  # source_gen 1.5.0 accepts analyzer >=5.2.0 <7.0.0 (satisfies 6.4.1) and
+  # has no _macros dependency. All generators below require source_gen ^1.x.
+  # source_gen 2.0.0 would need analyzer >=6.9.0 (macros) — unusable here.
+  source_gen: 1.5.0
+  # retrofit_generator 9.x requires analyzer >=6.9.0 (which needs _macros).
+  # 8.2.0 accepts analyzer >=5.13.0 <7.0.0 and source_gen ^1.3.0.
+  retrofit_generator: 8.2.0
+  # freezed 3.x requires source_gen ^2.0.0 (needs analyzer >=6.9.0 = macros).
+  # 2.5.2 is the last release with analyzer >=5.13.0 <7.0.0 + source_gen ^1.4.0.
+  # (2.5.3 jumped to analyzer >=6.5.0 which pulls in macros.)
+  freezed: 2.5.2
+  # freezed 2.5.2 requires freezed_annotation ^2.4.1.
+  # freezed_annotation 3.0.0 is an API-identical version bump paired with
+  # freezed 3.0.0; downgrading to 2.4.4 is safe for codegen on old SDKs.
+  freezed_annotation: 2.4.4
+  # drift_dev 2.22.0+ requires dart_style ^2.3.7, which in turn requires
+  # analyzer ^6.5.0 (macros). drift_dev 2.21.0 is the newest line that still
+  # accepts dart_style <2.3.7 while remaining compatible with analyzer 6.4.1.
+  drift_dev: 2.21.0
+  drift: 2.21.0
+EOF
+        FALLBACK_LOG="$(mktemp)"
+        set +e
+        flutter pub get 2>&1 | tee "$FALLBACK_LOG"
+        FALLBACK_EXIT=${PIPESTATUS[0]}
+        set -e
+
+        if [ "$FALLBACK_EXIT" -ne 0 ]; then
+            rm -f "$FALLBACK_LOG"
+            echo "❌ Could not resolve dependencies with local legacy fallback overrides."
+            echo "   Please upgrade Flutter/Dart to the repository CI version (Flutter 3.27.4 / Dart 3.6.x)."
+            exit 1
+        fi
+        rm -f "$FALLBACK_LOG"
+    else
+        rm -f "$PUB_GET_LOG"
+        exit 1
+    fi
+fi
+rm -f "$PUB_GET_LOG"
 
 echo ""
 echo "2. Running code generation (Drift, JSON serializable, etc.)..."

@@ -51,6 +51,7 @@ const List<_HelpdeskDepartmentIconOption> _kHelpdeskDepartmentIconOptions = [
   _HelpdeskDepartmentIconOption('security', 'אבטחה', Icons.security),
   _HelpdeskDepartmentIconOption('apartment', 'כללי', Icons.apartment),
 ];
+final RegExp _kMaterialIconLigaturePattern = RegExp(r'^[a-z0-9_]+$');
 
 IconData? _departmentIconDataFromKey(String? iconKey) {
   final key = (iconKey ?? '').trim();
@@ -68,6 +69,16 @@ Widget _buildDepartmentIcon(String? iconKey, {double size = 22}) {
   }
   final text = (iconKey ?? '').trim();
   if (text.isNotEmpty) {
+    if (_kMaterialIconLigaturePattern.hasMatch(text)) {
+      return Text(
+        text,
+        style: TextStyle(
+          fontFamily: 'MaterialIcons',
+          fontSize: size,
+          height: 1,
+        ),
+      );
+    }
     return Text(text, style: TextStyle(fontSize: size));
   }
   return Icon(Icons.apartment, size: size);
