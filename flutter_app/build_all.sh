@@ -42,8 +42,14 @@ echo "1. Getting Flutter dependencies..."
 PUB_GET_LOG="$(mktemp)"
 FALLBACK_ANALYZER_APPLIED=0
 LOCAL_OVERRIDES_BACKUP=""
+LOCAL_LOCKFILE_BACKUP=""
 cleanup_local_overrides() {
     if [ "$FALLBACK_ANALYZER_APPLIED" -eq 1 ]; then
+        if [ -n "$LOCAL_LOCKFILE_BACKUP" ] && [ -f "$LOCAL_LOCKFILE_BACKUP" ]; then
+            mv "$LOCAL_LOCKFILE_BACKUP" pubspec.lock
+        else
+            rm -f pubspec.lock
+        fi
         if [ -n "$LOCAL_OVERRIDES_BACKUP" ] && [ -f "$LOCAL_OVERRIDES_BACKUP" ]; then
             mv "$LOCAL_OVERRIDES_BACKUP" pubspec_overrides.yaml
         else
@@ -58,55 +64,48 @@ flutter pub get 2>&1 | tee "$PUB_GET_LOG"
 PUB_GET_EXIT=${PIPESTATUS[0]}
 set -e
 
-if [ "$PUB_GET_EXIT" -eq 0 ]; then
-    true
-elif grep -q "_macros from sdk doesn't exist" "$PUB_GET_LOG"; then
-    echo ""
-    echo "⚠️  Detected Dart SDK without _macros support."
-    echo "   Applying local analyzer fallback (<6.6.0) for this build script run."
-    if [ -f pubspec_overrides.yaml ]; then
-        LOCAL_OVERRIDES_BACKUP="$(mktemp)"
-        cp pubspec_overrides.yaml "$LOCAL_OVERRIDES_BACKUP"
-    fi
-    FALLBACK_ANALYZER_APPLIED=1
-
-    FALLBACK_WORKED=0
-    for ANALYZER_FALLBACK_VERSION in 6.5.0 6.4.1; do
-        echo "   -> Trying analyzer ${ANALYZER_FALLBACK_VERSION}"
-        cat > pubspec_overrides.yaml <<EOF
+if [ "$PUB_GET_EXIT" -ne 0 ]; then
+    if grep -q "_macros from sdk doesn't exist" "$PUB_GET_LOG"; then
+        echo ""
+        echo "⚠️  Detected Dart SDK without _macros support."
+        echo "   Applying local analyzer/codegen fallback (analyzer 6.4.1) for this build script run."
+        if [ -f pubspec_overrides.yaml ]; then
+            LOCAL_OVERRIDES_BACKUP="$(mktemp)"
+            cp pubspec_overrides.yaml "$LOCAL_OVERRIDES_BACKUP"
+        fi
+        if [ -f pubspec.lock ]; then
+            LOCAL_LOCKFILE_BACKUP="$(mktemp)"
+            cp pubspec.lock "$LOCAL_LOCKFILE_BACKUP"
+        fi
+        FALLBACK_ANALYZER_APPLIED=1
+        echo "   Cleaning local resolution artifacts before fallback pub get..."
+        rm -rf .dart_tool/build
+        rm -f .dart_tool/package_config.json .dart_tool/package_config_subset .dart_tool/version pubspec.lock
+        cat > pubspec_overrides.yaml <<'EOF'
 dependency_overrides:
   shared_preferences_android: 2.4.2
   build_runner: 2.4.14
-  analyzer: ${ANALYZER_FALLBACK_VERSION}
+  build_resolvers: 2.4.2
+  dart_style: 2.3.6
+  analyzer: 6.4.1
 EOF
-
         FALLBACK_LOG="$(mktemp)"
         set +e
         flutter pub get 2>&1 | tee "$FALLBACK_LOG"
         FALLBACK_EXIT=${PIPESTATUS[0]}
         set -e
 
-        if [ "$FALLBACK_EXIT" -eq 0 ]; then
-            FALLBACK_WORKED=1
+        if [ "$FALLBACK_EXIT" -ne 0 ]; then
             rm -f "$FALLBACK_LOG"
-            break
-        fi
-
-        if ! grep -q "_macros from sdk doesn't exist" "$FALLBACK_LOG"; then
-            rm -f "$FALLBACK_LOG"
-            exit "$FALLBACK_EXIT"
+            echo "❌ Could not resolve dependencies with local analyzer fallbacks."
+            echo "   Please upgrade Flutter/Dart to the repository CI version (Flutter 3.27.4 / Dart 3.6.x)."
+            exit 1
         fi
         rm -f "$FALLBACK_LOG"
-    done
-
-    if [ "$FALLBACK_WORKED" -ne 1 ]; then
-        echo "❌ Could not resolve dependencies with local analyzer fallbacks."
-        echo "   Please upgrade Flutter/Dart to the repository CI version (Flutter 3.27.4 / Dart 3.6.x)."
+    else
+        rm -f "$PUB_GET_LOG"
         exit 1
     fi
-else
-    rm -f "$PUB_GET_LOG"
-    exit 1
 fi
 rm -f "$PUB_GET_LOG"
 
