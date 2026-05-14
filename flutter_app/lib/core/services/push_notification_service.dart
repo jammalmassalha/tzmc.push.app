@@ -761,22 +761,41 @@ class PushNotificationService {
       try {
         apnsToken = await _messaging!.getAPNSToken();
       } on FirebaseException catch (e) {
-        final detail =
-            'Firebase error ${e.plugin}/${e.code}: ${e.message ?? e.toString()}';
-        debugPrint('[PushNotificationService] getAPNSToken FirebaseException: $detail');
-        _logIOSRegistrationStep(
-          'ios_apns_gettoken_firebase_error',
-          'error',
-          message: 'getAPNSToken() on attempt $attemptNumber: $detail',
-          fullResponse: jsonEncode({
-            'plugin': e.plugin,
-            'code': e.code,
-            'message': e.message ?? e.toString(),
-            'attempt': attemptNumber,
-          }),
-        );
-        // Treat a Firebase error on one poll the same as a null — keep retrying
-        // in case it is transient.
+        // `apns-token-not-set` means the OS hasn't provided an APNs token yet;
+        // this is a normal transient condition early in the polling loop and
+        // should be treated the same as a null return (keep retrying silently).
+        // Any other Firebase error is unexpected and logged as an error.
+        if (e.code == 'apns-token-not-set') {
+          debugPrint(
+            '[PushNotificationService] getAPNSToken: APNs token not yet available '
+            '(attempt $attemptNumber/${_kAPNSTokenMaxAttempts}) — will retry.',
+          );
+          _logIOSRegistrationStep(
+            'ios_apns_gettoken_not_set',
+            'retry',
+            message: 'APNs token not yet available on attempt $attemptNumber',
+            fullResponse: jsonEncode({
+              'code': e.code,
+              'attempt': attemptNumber,
+            }),
+          );
+        } else {
+          final detail =
+              'Firebase error ${e.plugin}/${e.code}: ${e.message ?? e.toString()}';
+          debugPrint('[PushNotificationService] getAPNSToken FirebaseException: $detail');
+          _logIOSRegistrationStep(
+            'ios_apns_gettoken_firebase_error',
+            'error',
+            message: 'getAPNSToken() on attempt $attemptNumber: $detail',
+            fullResponse: jsonEncode({
+              'plugin': e.plugin,
+              'code': e.code,
+              'message': e.message ?? e.toString(),
+              'attempt': attemptNumber,
+            }),
+          );
+        }
+        // In both cases treat as null — keep retrying in case it is transient.
       } catch (e) {
         debugPrint('[PushNotificationService] getAPNSToken error on attempt $attemptNumber: $e');
         _logIOSRegistrationStep(
