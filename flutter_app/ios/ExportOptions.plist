@@ -3,13 +3,15 @@
 <plist version="1.0">
 <dict>
     <key>method</key>
-    <string>app-store</string> <key>teamID</key>
+    <string>app-store</string>
+    <key>teamID</key>
     <string>QJ9U486937</string>
     <key>signingStyle</key>
     <string>manual</string>
     <key>provisioningProfiles</key>
     <dict>
         <key>co.il.tzmc.tzmcPush</key>
-        <string>TZMC_App_Store_Profile</string> </dict>
+        <string>TZMC_App_Store_Profile_TestFlight</string>
+    </dict>
 </dict>
 </plist>
