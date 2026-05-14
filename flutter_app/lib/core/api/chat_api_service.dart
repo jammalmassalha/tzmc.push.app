@@ -1284,6 +1284,7 @@ class ChatApiService {
     String? platform,
     String? message,
     int? tokenLength,
+    String? fullResponse,
   }) async {
     final payload = <String, dynamic>{
       'action': action,
@@ -1295,6 +1296,8 @@ class ChatApiService {
         'platform': _normalizeRegisterDevicePlatform(platform),
       if (message != null && message.trim().isNotEmpty) 'message': message.trim(),
       if (tokenLength != null && tokenLength > 0) 'tokenLength': tokenLength,
+      if (fullResponse != null && fullResponse.trim().isNotEmpty)
+        'fullResponse': fullResponse.trim(),
     };
 
     try {
