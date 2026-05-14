@@ -2,10 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- APNs environment.  "development" is used for debug/simulator builds.
-	     When exporting a distribution IPA the signing profile overwrites this
-	     value with "production" automatically. -->
+	<!-- APNs environment.  "production" is required for TestFlight and App
+	     Store builds.  Debug/simulator builds still work because iOS allows
+	     the production entitlement in all environments; only the reverse
+	     (development entitlement in a distribution build) breaks APNs. -->
 	<key>aps-environment</key>
-	<string>development</string>
+	<string>production</string>
 </dict>
 </plist>
