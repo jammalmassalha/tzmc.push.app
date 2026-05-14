@@ -142,6 +142,22 @@ class PushNotificationService {
         await _initializeLocalNotifications();
       }
 
+      // Subscribe to token refresh BEFORE starting the initial registration
+      // flow. The APNs-to-FCM handshake can complete at any point during the
+      // polling window; if the listener isn't set up yet, the onTokenRefresh
+      // event is silently dropped and no token ever gets registered.
+      _tokenRefreshSubscription = _messaging!.onTokenRefresh.listen(
+        _onTokenRefresh,
+        onError: (Object err) {
+          debugPrint('[PushNotificationService] onTokenRefresh error: $err');
+          _logIOSRegistrationStep(
+            'ios_fcm_token_refresh_error',
+            'error',
+            message: err.toString(),
+          );
+        },
+      );
+
       // If the user has already granted (or provisionally granted)
       // notification permission in a previous session, register the device
       // token now without showing any dialog. The OS prompt is handled
@@ -150,9 +166,6 @@ class PushNotificationService {
       if (_isAuthorized(settings.authorizationStatus)) {
         await _getAndRegisterToken();
       }
-
-      // Listen for token refresh
-      _tokenRefreshSubscription = _messaging!.onTokenRefresh.listen(_onTokenRefresh);
 
       // Listen for messages
       _messageSubscription = FirebaseMessaging.onMessage.listen(_onMessage);
