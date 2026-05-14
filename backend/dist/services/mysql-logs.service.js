@@ -200,6 +200,7 @@ class MysqlLogsService {
     messageActivitiesTableReady = false;
     serverStateTableReady = false;
     flutterPushRegistrationDebugTableReady = false;
+    flutterPushRegistrationDebugActionColumnWidthReady = false;
     constructor(config) {
         this.tableName = normalizeTableName(config.table);
         // 11 columns / 11 parameters — keep in sync with insertLog() and insertLogsBulk()
@@ -862,7 +863,7 @@ class MysqlLogsService {
         CREATE TABLE IF NOT EXISTS \`FlutterPushRegistrationDebug\` (
           \`Id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
           \`CreatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP,
-          \`Action\` VARCHAR(32) NOT NULL,
+          \`Action\` VARCHAR(64) NOT NULL,
           \`Username\` VARCHAR(100) DEFAULT NULL,
           \`Platform\` VARCHAR(50) DEFAULT NULL,
           \`TokenHash\` CHAR(64) DEFAULT NULL,
@@ -892,8 +893,26 @@ class MysqlLogsService {
             console.warn('[MYSQL] ensureFlutterPushRegistrationDebugTable warning:', message);
         }
     }
+    async ensureFlutterPushRegistrationDebugActionColumnWidth() {
+        if (this.flutterPushRegistrationDebugActionColumnWidthReady)
+            return;
+        try {
+            // Widen Action from VARCHAR(32) to VARCHAR(64) for existing tables.
+            // Action strings like ios_remote_notifications_register_requested (44 chars)
+            // were being silently truncated or dropped in strict MySQL mode.
+            // This ALTER is idempotent — running it on a fresh table (already VARCHAR(64))
+            // is a no-op that completes in milliseconds.
+            await this.pool.execute(`ALTER TABLE \`FlutterPushRegistrationDebug\` MODIFY COLUMN \`Action\` VARCHAR(64) NOT NULL`);
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.warn('[MYSQL] ensureFlutterPushRegistrationDebugActionColumnWidth warning:', message, '— Action strings longer than 32 chars may be silently truncated by MySQL.');
+        }
+        this.flutterPushRegistrationDebugActionColumnWidthReady = true;
+    }
     async insertFlutterPushRegistrationDebugEvent(event) {
         await this.ensureFlutterPushRegistrationDebugTable();
+        await this.ensureFlutterPushRegistrationDebugActionColumnWidth();
         try {
             const tokenLength = Number(event.tokenLength);
             const tokenCountForUser = Number(event.tokenCountForUser);

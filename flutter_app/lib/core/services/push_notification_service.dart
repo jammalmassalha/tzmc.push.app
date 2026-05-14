@@ -549,14 +549,24 @@ class PushNotificationService {
         );
         final apnsToken = await _waitForAPNSToken();
         if (apnsToken == null) {
-          debugPrint('[PushNotificationService] APNs token not available yet');
+          debugPrint(
+            '[PushNotificationService] APNs token not available after '
+            '$_kAPNSTokenMaxAttempts attempts — falling through to getToken(); '
+            'Firebase handles APNs exchange internally.',
+          );
           _logIOSRegistrationStep(
             'ios_apns_token_unavailable',
             'retry',
-            message: 'APNs token not available after $_kAPNSTokenMaxAttempts attempts',
+            message:
+                'APNs token not available after $_kAPNSTokenMaxAttempts attempts; '
+                'attempting getToken() directly',
           );
-          _scheduleTokenRegistrationRetry();
-          return;
+          // Do NOT return here. Firebase Messaging's getToken() on iOS handles
+          // the APNs token exchange internally and can succeed even when
+          // getAPNSToken() returns null (e.g. on first launch while APNs is
+          // still completing its registration round-trip with Apple's servers).
+          // If getToken() also returns null, the null-token branch below
+          // schedules a retry automatically.
         } else {
           _logIOSRegistrationStep(
             'ios_apns_token_available',
