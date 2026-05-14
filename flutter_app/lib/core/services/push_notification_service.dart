@@ -110,6 +110,9 @@ class PushNotificationService {
   String? _pendingToken;
   Timer? _tokenRegistrationRetryTimer;
   int _tokenRegistrationRetryAttempt = 0;
+  // Single-flight guard: prevents two concurrent _getAndRegisterToken() calls
+  // from spawning interleaved APNs polling loops.
+  bool _getAndRegisterTokenInProgress = false;
   StreamSubscription? _tokenRefreshSubscription;
   StreamSubscription? _messageSubscription;
 
@@ -457,6 +460,15 @@ class PushNotificationService {
       if (_isAuthorized(authorizationStatus)) {
         await _getAndRegisterToken();
       }
+    } on FirebaseException catch (e) {
+      final detail =
+          'Firebase error ${e.plugin}/${e.code}: ${e.message ?? e.toString()}';
+      debugPrint('[PushNotificationService] requestPermission FirebaseException: $detail');
+      _logIOSRegistrationStep(
+        'ios_permission_firebase_error',
+        'error',
+        message: detail,
+      );
     } catch (e) {
       debugPrint('[PushNotificationService] requestPermission error: $e');
       _logIOSRegistrationStep(
@@ -529,12 +541,29 @@ class PushNotificationService {
   }
 
   Future<void> _getAndRegisterToken() async {
-    _logIOSRegistrationStep(
-      'ios_registration_start',
-      'start',
-      message: 'Starting iOS push registration flow',
-    );
+    // Single-flight guard: if a registration is already in progress, skip.
+    // This prevents parallel APNs polling loops when multiple callers
+    // (initialize, ensurePermissionAndRegister, registerPendingTokenForUser)
+    // race on first launch.
+    if (_getAndRegisterTokenInProgress) {
+      debugPrint(
+        '[PushNotificationService] _getAndRegisterToken already in progress, skipping',
+      );
+      _logIOSRegistrationStep(
+        'ios_registration_skipped',
+        'info',
+        message: 'Registration already in progress; duplicate call skipped',
+      );
+      return;
+    }
+    _getAndRegisterTokenInProgress = true;
     try {
+      _logIOSRegistrationStep(
+        'ios_registration_start',
+        'start',
+        message: 'Starting iOS push registration flow',
+      );
+
       String? token;
 
       if (_isIOSPlatform()) {
@@ -599,7 +628,23 @@ class PushNotificationService {
           'start',
           message: 'Requesting Firebase Messaging token',
         );
-        token = await _messaging!.getToken();
+        try {
+          token = await _messaging!.getToken();
+        } on FirebaseException catch (e) {
+          // Surface the Firebase error code so misconfiguration (wrong APNs
+          // key, wrong bundle-ID, sandbox/production mismatch, etc.) is
+          // visible in the backend debug log.
+          final detail =
+              'Firebase error ${e.plugin}/${e.code}: ${e.message ?? e.toString()}';
+          debugPrint('[PushNotificationService] getToken FirebaseException: $detail');
+          _logIOSRegistrationStep(
+            'ios_fcm_token_firebase_error',
+            'error',
+            message: detail,
+          );
+          _scheduleTokenRegistrationRetry();
+          return;
+        }
       }
 
       if (token != null) {
@@ -626,6 +671,8 @@ class PushNotificationService {
         message: e.toString(),
       );
       _scheduleTokenRegistrationRetry();
+    } finally {
+      _getAndRegisterTokenInProgress = false;
     }
   }
 
@@ -687,7 +734,28 @@ class PushNotificationService {
     for (var attemptNumber = 1;
         attemptNumber <= _kAPNSTokenMaxAttempts;
         attemptNumber += 1) {
-      final apnsToken = await _messaging!.getAPNSToken();
+      String? apnsToken;
+      try {
+        apnsToken = await _messaging!.getAPNSToken();
+      } on FirebaseException catch (e) {
+        final detail =
+            'Firebase error ${e.plugin}/${e.code}: ${e.message ?? e.toString()}';
+        debugPrint('[PushNotificationService] getAPNSToken FirebaseException: $detail');
+        _logIOSRegistrationStep(
+          'ios_apns_gettoken_firebase_error',
+          'error',
+          message: 'getAPNSToken() on attempt $attemptNumber: $detail',
+        );
+        // Treat a Firebase error on one poll the same as a null — keep retrying
+        // in case it is transient.
+      } catch (e) {
+        debugPrint('[PushNotificationService] getAPNSToken error on attempt $attemptNumber: $e');
+        _logIOSRegistrationStep(
+          'ios_apns_gettoken_error',
+          'error',
+          message: 'getAPNSToken() on attempt $attemptNumber: $e',
+        );
+      }
       if (apnsToken != null) {
         _logIOSRegistrationStep(
           'ios_apns_token_attempt',
