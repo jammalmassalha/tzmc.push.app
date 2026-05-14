@@ -457,10 +457,10 @@ class PushNotificationService {
         _isAuthorized(authorizationStatus) ? 'success' : 'denied',
         message: 'Permission status: $authorizationStatus',
         fullResponse: jsonEncode({
-          'authorizationStatus': authorizationStatus.toString(),
-          'alert': settings.alert.toString(),
-          'badge': settings.badge.toString(),
-          'sound': settings.sound.toString(),
+          'authorizationStatus': authorizationStatus.name,
+          'alert': settings.alert.name,
+          'badge': settings.badge.name,
+          'sound': settings.sound.name,
         }),
       );
       if (_isAuthorized(authorizationStatus)) {
