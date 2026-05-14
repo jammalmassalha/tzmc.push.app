@@ -101,9 +101,25 @@ dependency_overrides:
   # has no _macros dependency. All generators below require source_gen ^1.x.
   # source_gen 2.0.0 would need analyzer >=6.9.0 (macros) — unusable here.
   source_gen: 1.5.0
-  # retrofit_generator 9.x requires analyzer >=6.9.0 (which needs _macros).
-  # 8.2.0 accepts analyzer >=5.13.0 <7.0.0 and source_gen ^1.3.0.
-  retrofit_generator: 8.2.0
+  # json_serializable 6.9.x needs analyzer >=6.9.0 and source_gen ^2.0.0.
+  # Pin to the last version compatible with analyzer 6.4.1 + source_gen 1.5.0.
+  json_serializable: 6.7.1
+  # mockito 5.4.5+ uses analyzer element2 APIs and fails with analyzer 6.4.1.
+  # Keep it on the last release compatible with analyzer <7 and source_gen 1.x.
+  mockito: 5.4.4
+  # No published retrofit_generator works on Dart >=3.7 + analyzer 6.4.1:
+  #   • 8.x: retrofit 4.3.0 added Parser.DartMappable, making 8.x switch
+  #           statements non-exhaustive → Dart definite-assignment errors
+  #           (final ‘mapperCode’/‘value’ unassigned; missing returns).
+  #   • 9.0.x/9.1.x: require analyzer ^6.5.0 which itself needs _macros, and
+  #                   call getDisplayString() without withNullability: (removed
+  #                   in 6.5.0) so they break against our pinned 6.4.1.
+  #   • 9.2.0+: require analyzer >=6.9.0 (macros) — unusable here.
+  # This app has NO @RestApi classes, so retrofit_generator generates nothing.
+  # Use a local no-op stub (no build.yaml → no builders registered) so that
+  # build_runner's precompile succeeds and only Drift codegen runs.
+  retrofit_generator:
+    path: ./tools/retrofit_generator_stub
   # freezed 3.x requires source_gen ^2.0.0 (needs analyzer >=6.9.0 = macros).
   # 2.5.2 is the last release with analyzer >=5.13.0 <7.0.0 + source_gen ^1.4.0.
   # (2.5.3 jumped to analyzer >=6.5.0 which pulls in macros.)
