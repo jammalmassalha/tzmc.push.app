@@ -604,24 +604,28 @@ class PushNotificationService {
         );
         final apnsToken = await _waitForAPNSToken();
         if (apnsToken == null) {
+          // APNs token is not yet available after all polling attempts.
+          // Calling getToken() at this point would throw
+          // `firebase_messaging/apns-token-not-set`, which is both noisy and
+          // misleading — it doesn't mean registration will never succeed.
+          //
+          // The `onTokenRefresh` stream (subscribed before this call in
+          // `initialize()`) will fire the moment Firebase completes the
+          // APNs-to-FCM handshake; `_onTokenRefresh` → `_registerDeviceToken`
+          // will then register the token automatically. We just need to stop
+          // here and let iOS/Firebase finish the handshake in its own time.
           debugPrint(
-            '[PushNotificationService] APNs token not available after '
-            '$_kAPNSTokenMaxAttempts attempts — falling through to getToken(); '
-            'Firebase handles APNs exchange internally.',
+            '[PushNotificationService] APNs token not yet available after '
+            '$_kAPNSTokenMaxAttempts attempts — waiting for onTokenRefresh stream.',
           );
           _logIOSRegistrationStep(
             'ios_apns_token_unavailable',
-            'retry',
+            'waiting',
             message:
                 'APNs token not available after $_kAPNSTokenMaxAttempts attempts; '
-                'attempting getToken() directly',
+                'awaiting onTokenRefresh stream delivery',
           );
-          // Do NOT return here. Firebase Messaging's getToken() on iOS handles
-          // the APNs token exchange internally and can succeed even when
-          // getAPNSToken() returns null (e.g. on first launch while APNs is
-          // still completing its registration round-trip with Apple's servers).
-          // If getToken() also returns null, the null-token branch below
-          // schedules a retry automatically.
+          return;
         } else {
           _logIOSRegistrationStep(
             'ios_apns_token_available',
