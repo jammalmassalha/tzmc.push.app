@@ -625,6 +625,11 @@ class PushNotificationService {
                 'APNs token not available after $_kAPNSTokenMaxAttempts attempts; '
                 'awaiting onTokenRefresh stream delivery',
           );
+          // Schedule a retry so we don't rely solely on onTokenRefresh.
+          // If APNs is just slow (e.g. transient network issue), the retry
+          // will pick up the token once it arrives without requiring a new
+          // foreground lifecycle event.
+          _scheduleTokenRegistrationRetry();
           return;
         } else {
           _logIOSRegistrationStep(
