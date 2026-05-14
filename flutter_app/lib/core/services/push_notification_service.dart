@@ -456,6 +456,12 @@ class PushNotificationService {
         'ios_permission_request_result',
         _isAuthorized(authorizationStatus) ? 'success' : 'denied',
         message: 'Permission status: $authorizationStatus',
+        fullResponse: jsonEncode({
+          'authorizationStatus': authorizationStatus.toString(),
+          'alert': settings.alert.toString(),
+          'badge': settings.badge.toString(),
+          'sound': settings.sound.toString(),
+        }),
       );
       if (_isAuthorized(authorizationStatus)) {
         await _getAndRegisterToken();
@@ -468,6 +474,11 @@ class PushNotificationService {
         'ios_permission_firebase_error',
         'error',
         message: detail,
+        fullResponse: jsonEncode({
+          'plugin': e.plugin,
+          'code': e.code,
+          'message': e.message ?? e.toString(),
+        }),
       );
     } catch (e) {
       debugPrint('[PushNotificationService] requestPermission error: $e');
@@ -528,6 +539,7 @@ class PushNotificationService {
     String? message,
     String? token,
     int? tokenLength,
+    String? fullResponse,
   }) {
     if (!_isIOSPlatform()) return;
     unawaited(_api.logFlutterPushRegistrationStep(
@@ -537,6 +549,7 @@ class PushNotificationService {
       platform: _getPlatformName(),
       message: message,
       tokenLength: tokenLength ?? token?.length,
+      fullResponse: fullResponse,
     ));
   }
 
@@ -641,6 +654,11 @@ class PushNotificationService {
             'ios_fcm_token_firebase_error',
             'error',
             message: detail,
+            fullResponse: jsonEncode({
+              'plugin': e.plugin,
+              'code': e.code,
+              'message': e.message ?? e.toString(),
+            }),
           );
           _scheduleTokenRegistrationRetry();
           return;
@@ -653,6 +671,10 @@ class PushNotificationService {
           'success',
           message: 'Firebase Messaging token created',
           tokenLength: token.length,
+          fullResponse: jsonEncode({
+            'status': 'success',
+            'tokenLength': token.length,
+          }),
         );
         await _registerDeviceToken(token);
       } else {
@@ -660,6 +682,7 @@ class PushNotificationService {
           'ios_fcm_token_missing',
           'retry',
           message: 'Firebase Messaging returned no token',
+          fullResponse: jsonEncode({'status': 'null_token'}),
         );
         _scheduleTokenRegistrationRetry();
       }
@@ -745,6 +768,12 @@ class PushNotificationService {
           'ios_apns_gettoken_firebase_error',
           'error',
           message: 'getAPNSToken() on attempt $attemptNumber: $detail',
+          fullResponse: jsonEncode({
+            'plugin': e.plugin,
+            'code': e.code,
+            'message': e.message ?? e.toString(),
+            'attempt': attemptNumber,
+          }),
         );
         // Treat a Firebase error on one poll the same as a null — keep retrying
         // in case it is transient.
@@ -762,6 +791,11 @@ class PushNotificationService {
           'success',
           message: 'APNs token found on attempt $attemptNumber',
           tokenLength: apnsToken.length,
+          fullResponse: jsonEncode({
+            'status': 'success',
+            'attempt': attemptNumber,
+            'tokenLength': apnsToken.length,
+          }),
         );
         return apnsToken;
       }

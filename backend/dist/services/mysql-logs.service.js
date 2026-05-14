@@ -201,6 +201,7 @@ class MysqlLogsService {
     serverStateTableReady = false;
     flutterPushRegistrationDebugTableReady = false;
     flutterPushRegistrationDebugActionColumnWidthReady = false;
+    flutterPushRegistrationDebugFullResponseColumnReady = false;
     constructor(config) {
         this.tableName = normalizeTableName(config.table);
         // 11 columns / 11 parameters — keep in sync with insertLog() and insertLogsBulk()
@@ -910,15 +911,34 @@ class MysqlLogsService {
         }
         this.flutterPushRegistrationDebugActionColumnWidthReady = true;
     }
+    async ensureFlutterPushRegistrationDebugFullResponseColumn() {
+        if (this.flutterPushRegistrationDebugFullResponseColumnReady)
+            return;
+        try {
+            // Add FullResponse column to existing tables. IF NOT EXISTS is
+            // supported in MySQL 8.0+; on older versions the ALTER will throw
+            // "Duplicate column name" which we silently ignore below.
+            await this.pool.execute(`ALTER TABLE \`FlutterPushRegistrationDebug\` ADD COLUMN IF NOT EXISTS \`FullResponse\` TEXT DEFAULT NULL`);
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            // Tolerate "Duplicate column name" on MySQL < 8.0 (column already exists).
+            if (!message.toLowerCase().includes('duplicate column')) {
+                console.warn('[MYSQL] ensureFlutterPushRegistrationDebugFullResponseColumn warning:', message);
+            }
+        }
+        this.flutterPushRegistrationDebugFullResponseColumnReady = true;
+    }
     async insertFlutterPushRegistrationDebugEvent(event) {
         await this.ensureFlutterPushRegistrationDebugTable();
         await this.ensureFlutterPushRegistrationDebugActionColumnWidth();
+        await this.ensureFlutterPushRegistrationDebugFullResponseColumn();
         try {
             const tokenLength = Number(event.tokenLength);
             const tokenCountForUser = Number(event.tokenCountForUser);
             await this.pool.execute(`INSERT INTO \`FlutterPushRegistrationDebug\`
-           (\`Action\`, \`Username\`, \`Platform\`, \`TokenHash\`, \`TokenPreview\`, \`TokenLength\`, \`Status\`, \`Message\`, \`SheetColumn\`, \`TokenCountForUser\`, \`Removed\`, \`RequestIp\`, \`UserAgent\`, \`RoutePath\`)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+           (\`Action\`, \`Username\`, \`Platform\`, \`TokenHash\`, \`TokenPreview\`, \`TokenLength\`, \`Status\`, \`Message\`, \`FullResponse\`, \`SheetColumn\`, \`TokenCountForUser\`, \`Removed\`, \`RequestIp\`, \`UserAgent\`, \`RoutePath\`)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
                 toTrimmedString(event.action) || 'unknown',
                 toTrimmedString(event.username) || null,
                 toTrimmedString(event.platform) || null,
@@ -927,6 +947,7 @@ class MysqlLogsService {
                 Number.isFinite(tokenLength) && tokenLength >= 0 ? Math.floor(tokenLength) : null,
                 toTrimmedString(event.status) || 'unknown',
                 toTrimmedString(event.message).slice(0, 512) || null,
+                toTrimmedString(event.fullResponse) || null,
                 toTrimmedString(event.sheetColumn) || null,
                 Number.isFinite(tokenCountForUser) && tokenCountForUser >= 0 ? Math.floor(tokenCountForUser) : null,
                 event.removed === null || event.removed === undefined ? null : (event.removed ? 1 : 0),
