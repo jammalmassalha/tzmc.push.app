@@ -66,5 +66,11 @@
 	<string>האפליקציה זקוקה לגישה לגלריה כדי לשלוח תמונות בצ׳אט.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>האפליקציה זקוקה לגישה לגלריה כדי לשמור תמונות.</string>
+	<!-- Declare no non-exempt encryption to skip App Store export-compliance
+	     review and suppress the TestFlight prompt. The app uses only standard
+	     HTTPS (via Dio/TLS) and Firebase SDK encryption, which Apple classifies
+	     as exempt from EAR export regulations. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 </dict>
 </plist>
