@@ -399,7 +399,9 @@ jobs:
           #    --no-codesign (which produces an unsigned archive that
           #    xcodebuild -exportArchive cannot re-sign, causing the
           #    "App.framework does not support provisioning profiles" error).
-          printf '\n# CI signing overrides — injected at build time\nDEVELOPMENT_TEAM=%s\nCODE_SIGN_STYLE=Manual\nPROVISIONING_PROFILE_SPECIFIER=%s\nPROVISIONING_PROFILE=%s\nCODE_SIGN_IDENTITY=Apple Distribution\n' \
+          # xcconfig syntax uses // for comments; # is an unsupported preprocessor
+          # directive that causes "Error (Xcode): unsupported preprocessor directive".
+          printf '\n// CI signing overrides — injected at build time\nDEVELOPMENT_TEAM=%s\nCODE_SIGN_STYLE=Manual\nPROVISIONING_PROFILE_SPECIFIER=%s\nPROVISIONING_PROFILE=%s\nCODE_SIGN_IDENTITY=Apple Distribution\n' \
             "${APPLE_TEAM_ID}" "${PROFILE_UUID}" "${PROFILE_UUID}" \
             >> ios/Flutter/Release.xcconfig
 
