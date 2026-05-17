@@ -148,7 +148,8 @@ function readFlutterRegistrationDebugRequest(req) {
         tokenPreview: body.tokenPreview || null,
         tokenLength: body.tokenLength ?? null,
         status: body.status || 'info',
-        message: body.message || body.detail || null
+        message: body.message || body.detail || null,
+        fullResponse: body.fullResponse || null
     };
 }
 

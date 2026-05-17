@@ -54,6 +54,7 @@ export interface FlutterPushRegistrationDebugEvent {
   tokenLength?: number | null;
   status: string;
   message?: string | null;
+  fullResponse?: string | null;
   sheetColumn?: string | null;
   tokenCountForUser?: number | null;
   removed?: boolean | null;
@@ -301,6 +302,8 @@ export class MysqlLogsService {
   private messageActivitiesTableReady = false;
   private serverStateTableReady = false;
   private flutterPushRegistrationDebugTableReady = false;
+  private flutterPushRegistrationDebugActionColumnWidthReady = false;
+  private flutterPushRegistrationDebugFullResponseColumnReady = false;
 
   constructor(config: MysqlLogsConfig) {
     this.tableName = normalizeTableName(config.table);
@@ -1035,7 +1038,7 @@ export class MysqlLogsService {
         CREATE TABLE IF NOT EXISTS \`FlutterPushRegistrationDebug\` (
           \`Id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
           \`CreatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP,
-          \`Action\` VARCHAR(32) NOT NULL,
+          \`Action\` VARCHAR(64) NOT NULL,
           \`Username\` VARCHAR(100) DEFAULT NULL,
           \`Platform\` VARCHAR(50) DEFAULT NULL,
           \`TokenHash\` CHAR(64) DEFAULT NULL,
@@ -1065,15 +1068,58 @@ export class MysqlLogsService {
     }
   }
 
+  private async ensureFlutterPushRegistrationDebugActionColumnWidth(): Promise<void> {
+    if (this.flutterPushRegistrationDebugActionColumnWidthReady) return;
+    try {
+      // Widen Action from VARCHAR(32) to VARCHAR(64) for existing tables.
+      // Action strings like ios_remote_notifications_register_requested (44 chars)
+      // were being silently truncated or dropped in strict MySQL mode.
+      // This ALTER is idempotent — running it on a fresh table (already VARCHAR(64))
+      // is a no-op that completes in milliseconds.
+      await this.pool.execute(
+        `ALTER TABLE \`FlutterPushRegistrationDebug\` MODIFY COLUMN \`Action\` VARCHAR(64) NOT NULL`
+      );
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.warn(
+        '[MYSQL] ensureFlutterPushRegistrationDebugActionColumnWidth warning:',
+        message,
+        '— Action strings longer than 32 chars may be silently truncated by MySQL.'
+      );
+    }
+    this.flutterPushRegistrationDebugActionColumnWidthReady = true;
+  }
+
+  private async ensureFlutterPushRegistrationDebugFullResponseColumn(): Promise<void> {
+    if (this.flutterPushRegistrationDebugFullResponseColumnReady) return;
+    try {
+      // Add FullResponse column to existing tables. IF NOT EXISTS is
+      // supported in MySQL 8.0+; on older versions the ALTER will throw
+      // "Duplicate column name" which we silently ignore below.
+      await this.pool.execute(
+        `ALTER TABLE \`FlutterPushRegistrationDebug\` ADD COLUMN IF NOT EXISTS \`FullResponse\` TEXT DEFAULT NULL`
+      );
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      // Tolerate "Duplicate column name" on MySQL < 8.0 (column already exists).
+      if (!message.toLowerCase().includes('duplicate column')) {
+        console.warn('[MYSQL] ensureFlutterPushRegistrationDebugFullResponseColumn warning:', message);
+      }
+    }
+    this.flutterPushRegistrationDebugFullResponseColumnReady = true;
+  }
+
   async insertFlutterPushRegistrationDebugEvent(event: FlutterPushRegistrationDebugEvent): Promise<void> {
     await this.ensureFlutterPushRegistrationDebugTable();
+    await this.ensureFlutterPushRegistrationDebugActionColumnWidth();
+    await this.ensureFlutterPushRegistrationDebugFullResponseColumn();
     try {
       const tokenLength = Number(event.tokenLength);
       const tokenCountForUser = Number(event.tokenCountForUser);
       await this.pool.execute(
         `INSERT INTO \`FlutterPushRegistrationDebug\`
-           (\`Action\`, \`Username\`, \`Platform\`, \`TokenHash\`, \`TokenPreview\`, \`TokenLength\`, \`Status\`, \`Message\`, \`SheetColumn\`, \`TokenCountForUser\`, \`Removed\`, \`RequestIp\`, \`UserAgent\`, \`RoutePath\`)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (\`Action\`, \`Username\`, \`Platform\`, \`TokenHash\`, \`TokenPreview\`, \`TokenLength\`, \`Status\`, \`Message\`, \`FullResponse\`, \`SheetColumn\`, \`TokenCountForUser\`, \`Removed\`, \`RequestIp\`, \`UserAgent\`, \`RoutePath\`)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           toTrimmedString(event.action) || 'unknown',
           toTrimmedString(event.username) || null,
@@ -1083,6 +1129,7 @@ export class MysqlLogsService {
           Number.isFinite(tokenLength) && tokenLength >= 0 ? Math.floor(tokenLength) : null,
           toTrimmedString(event.status) || 'unknown',
           toTrimmedString(event.message).slice(0, 512) || null,
+          toTrimmedString(event.fullResponse) || null,
           toTrimmedString(event.sheetColumn) || null,
           Number.isFinite(tokenCountForUser) && tokenCountForUser >= 0 ? Math.floor(tokenCountForUser) : null,
           event.removed === null || event.removed === undefined ? null : (event.removed ? 1 : 0),
