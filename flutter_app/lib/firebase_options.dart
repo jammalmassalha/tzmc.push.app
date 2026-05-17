@@ -59,12 +59,16 @@ class DefaultFirebaseOptions {
     storageBucket: 'tzmc-notifications.firebasestorage.app',
   );
 
-  /// iOS app — placeholder. Replace `iosBundleId` and `appId` once the
-  /// iOS Firebase app has been registered and `GoogleService-Info.plist`
-  /// has been generated.
+  /// iOS app — values mirror `flutter_app/GoogleService-Info.plist`
+  /// (Firebase console → Project settings → Your apps → iOS app
+  /// `co.il.tzmc.tzmcPush`). Both `apiKey` and `appId` MUST be the
+  /// iOS-specific ones: reusing the Android values causes Firebase to
+  /// initialise against the wrong app on iOS, which silently breaks the
+  /// APNs↔FCM token handshake and prevents push notifications from being
+  /// delivered to the device.
   static const FirebaseOptions ios = FirebaseOptions(
-    apiKey: 'AIzaSyBox1xwugoj-E0dtDdvYDVy_TLJxNJ7SLU',
-    appId: '1:917008922776:ios:088fe0f07d02f97ef0f8ed',
+    apiKey: 'AIzaSyCGz8PwvISUzBP_fa7hMCEvVyMLvH3vJ2k',
+    appId: '1:917008922776:ios:3a37dd251f7bcb21f0f8ed',
     messagingSenderId: '917008922776',
     projectId: 'tzmc-notifications',
     storageBucket: 'tzmc-notifications.firebasestorage.app',
