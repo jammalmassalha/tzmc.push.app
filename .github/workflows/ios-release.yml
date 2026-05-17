@@ -69,7 +69,7 @@ on:
       distribution_method:
         description: 'Distribution method'
         required: true
-        default: 'ad-hoc'
+        default: 'app-store'
         type: choice
         options:
           - app-store
@@ -183,23 +183,94 @@ jobs:
           fi
 
           PROFILE_PATH="$RUNNER_TEMP/profile.mobileprovision"
+          PROFILE_PLIST="$RUNNER_TEMP/profile.plist"
           echo "$PROFILE_BASE64" | base64 --decode > "$PROFILE_PATH"
+          security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
 
           # Extract the UUID so Xcode can find it by UUID in the profiles dir
           PROFILE_UUID=$(
-            security cms -D -i "$PROFILE_PATH" 2>/dev/null \
-              | plutil -extract UUID raw - 2>/dev/null \
+            plutil -extract UUID raw -o - "$PROFILE_PLIST" 2>/dev/null \
               || /usr/libexec/PlistBuddy \
-                   -c "Print :UUID" \
-                   /dev/stdin <<< "$(security cms -D -i "$PROFILE_PATH")"
+                    -c "Print :UUID" \
+                    "$PROFILE_PLIST"
           )
+          PROFILE_NAME=$(
+            plutil -extract Name raw -o - "$PROFILE_PLIST" 2>/dev/null \
+              || /usr/libexec/PlistBuddy -c "Print :Name" "$PROFILE_PLIST"
+          )
+          GET_TASK_ALLOW=$(
+            plutil -extract Entitlements.get-task-allow raw -o - "$PROFILE_PLIST" 2>/dev/null \
+              || /usr/libexec/PlistBuddy -c "Print :Entitlements:get-task-allow" "$PROFILE_PLIST" 2>/dev/null \
+              || echo "false"
+          )
+          PROVISIONS_ALL_DEVICES=$(
+            plutil -extract ProvisionsAllDevices raw -o - "$PROFILE_PLIST" 2>/dev/null \
+              || /usr/libexec/PlistBuddy -c "Print :ProvisionsAllDevices" "$PROFILE_PLIST" 2>/dev/null \
+              || echo "false"
+          )
+          if /usr/libexec/PlistBuddy -c "Print :ProvisionedDevices:0" "$PROFILE_PLIST" >/dev/null 2>&1; then
+            HAS_PROVISIONED_DEVICES=true
+          else
+            HAS_PROVISIONED_DEVICES=false
+          fi
+
+          if [ "$PROVISIONS_ALL_DEVICES" = "true" ]; then
+            PROFILE_KIND="enterprise"
+            PROFILE_EXPORT_METHOD="enterprise"
+          elif [ "$HAS_PROVISIONED_DEVICES" = "true" ] && [ "$GET_TASK_ALLOW" = "true" ]; then
+            PROFILE_KIND="development"
+            PROFILE_EXPORT_METHOD="development"
+          elif [ "$HAS_PROVISIONED_DEVICES" = "true" ]; then
+            PROFILE_KIND="ad-hoc"
+            # Xcode 26 deprecated the old "ad-hoc" export method name.
+            PROFILE_EXPORT_METHOD="release-testing"
+          else
+            PROFILE_KIND="app-store"
+            PROFILE_EXPORT_METHOD="app-store"
+          fi
 
           mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
           cp "$PROFILE_PATH" \
             "$HOME/Library/MobileDevice/Provisioning Profiles/${PROFILE_UUID}.mobileprovision"
 
           echo "PROFILE_UUID=$PROFILE_UUID" >> "$GITHUB_ENV"
+          echo "PROFILE_NAME=$PROFILE_NAME" >> "$GITHUB_ENV"
+          echo "PROFILE_KIND=$PROFILE_KIND" >> "$GITHUB_ENV"
+          echo "PROFILE_EXPORT_METHOD=$PROFILE_EXPORT_METHOD" >> "$GITHUB_ENV"
           echo "Installed profile UUID: $PROFILE_UUID"
+          echo "Installed profile name: $PROFILE_NAME"
+          echo "Detected provisioning profile type: $PROFILE_KIND"
+
+      - name: Validate selected distribution method against provisioning profile
+        env:
+          SELECTED_METHOD: ${{ inputs.distribution_method }}
+        run: |
+          case "$SELECTED_METHOD" in
+            app-store)
+              EXPECTED_PROFILE_KIND="app-store"
+              EXPECTED_EXPORT_METHOD="app-store"
+              ;;
+            ad-hoc)
+              EXPECTED_PROFILE_KIND="ad-hoc"
+              EXPECTED_EXPORT_METHOD="release-testing"
+              ;;
+            development)
+              EXPECTED_PROFILE_KIND="development"
+              EXPECTED_EXPORT_METHOD="development"
+              ;;
+            *)
+              echo "::error::Unsupported distribution_method '$SELECTED_METHOD'."
+              exit 1
+              ;;
+          esac
+
+          if [ "${PROFILE_EXPORT_METHOD:-}" != "$EXPECTED_EXPORT_METHOD" ]; then
+            echo "::error::Selected distribution_method '$SELECTED_METHOD' expects a $EXPECTED_PROFILE_KIND provisioning profile, but MOBILEPROVISION_BASE64 contains '$PROFILE_KIND' profile '$PROFILE_NAME'."
+            echo "::notice::Use distribution_method='app-store' for TestFlight/App Store profiles, 'ad-hoc' for Ad Hoc device builds, and 'development' for development profiles."
+            exit 1
+          fi
+
+          echo "distribution_method '$SELECTED_METHOD' matches provisioning profile '$PROFILE_NAME' ($PROFILE_KIND)."
 
       # ── 5. Flutter dependencies & code generation ─────────────────────────
       - name: Get Flutter dependencies
@@ -261,7 +332,6 @@ jobs:
       - name: Generate ExportOptions.plist
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          METHOD: ${{ inputs.distribution_method }}
         run: |
           if [ -z "${APPLE_TEAM_ID:-}" ]; then
             echo "::error::APPLE_TEAM_ID secret is not set."
@@ -274,7 +344,7 @@ jobs:
           <plist version="1.0">
           <dict>
             <key>method</key>
-            <string>${METHOD}</string>
+            <string>${PROFILE_EXPORT_METHOD}</string>
             <key>teamID</key>
             <string>${APPLE_TEAM_ID}</string>
             <key>signingStyle</key>
