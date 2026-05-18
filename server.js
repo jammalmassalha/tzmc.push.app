@@ -5830,7 +5830,8 @@ const flutterPushService = createFlutterPushService({
     stateDir,
     notificationService,
     fcmSender,
-    normalizeUserKey
+    normalizeUserKey,
+    unreadCounts
 });
 flutterPushService.loadFromDisk().catch((err) =>
     console.warn('[FLUTTER-FCM] Initial load failed:', err && err.message ? err.message : err)

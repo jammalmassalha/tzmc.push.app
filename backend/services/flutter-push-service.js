@@ -50,6 +50,7 @@ function createFlutterPushService(options = {}) {
         notificationService,
         fcmSender,
         normalizeUserKey,
+        unreadCounts,
         logger
     } = options;
 
@@ -317,6 +318,13 @@ function createFlutterPushService(options = {}) {
             ...compactCustomData
         };
 
+        // Include the badge count (unread message count for this user) so that
+        // the iOS home-screen icon badge is updated via `aps.badge`.  The value
+        // is passed in by dispatchToUsers after computing it from unreadCounts.
+        if (options && options.badgeCount != null && !options.skipBadge) {
+            payloadData.badgeCount = options.badgeCount;
+        }
+
         const includeNotification = !(
             payloadData.skipNotification === true ||
             payloadData.skipNotification === 'true' ||
@@ -341,10 +349,26 @@ function createFlutterPushService(options = {}) {
             const recipients = getTokensForUsers(targetUsers);
             if (!recipients.length) return { delivered: 0, failed: 0, pruned: 0 };
 
-            const payloadString = buildPayloadStringForMessage(message, {
-                sender,
-                messageId: options && options.messageId
-            });
+            // Pre-compute badge counts per user so iOS home-screen badges are
+            // updated correctly.  We read (unreadCounts[user] || 0) + 1 — the
+            // same value NotificationService will later store — without mutating
+            // the shared object here, because NotificationService handles the
+            // authoritative increment through the web-push pipeline.
+            // Each user may have multiple tokens (multiple devices); the badge
+            // count is computed once per user and applied to every token send,
+            // which is correct — all devices for the same user should show the
+            // same badge number.
+            const skipBadge = Boolean(options && options.skipBadge);
+            const badgeCountByUser = new Map();
+            if (!skipBadge && unreadCounts && typeof unreadCounts === 'object') {
+                const seenUsers = new Set();
+                for (const recipient of recipients) {
+                    const userKey = userKeyFn(recipient.username);
+                    if (!userKey || seenUsers.has(userKey)) continue;
+                    seenUsers.add(userKey);
+                    badgeCountByUser.set(userKey, (unreadCounts[userKey] || 0) + 1);
+                }
+            }
 
             let delivered = 0;
             let failed = 0;
@@ -352,6 +376,14 @@ function createFlutterPushService(options = {}) {
 
             await Promise.all(
                 recipients.map(async (recipient) => {
+                    const userKey = userKeyFn(recipient.username);
+                    const badgeCount = badgeCountByUser.get(userKey);
+                    const payloadString = buildPayloadStringForMessage(message, {
+                        sender,
+                        messageId: options && options.messageId,
+                        badgeCount,
+                        skipBadge
+                    });
                     const subscription = {
                         endpoint: `fcm:${recipient.token}`,
                         fcmToken: recipient.token,
