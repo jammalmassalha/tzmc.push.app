@@ -907,6 +907,9 @@ String _extractSaveFilename(String url) {
     final decoded = Uri.decodeComponent(segment);
     if (decoded.isNotEmpty) return decoded;
   } catch (_) {}
+  // Fallback when the URL has no recognisable path segments (e.g. query-only
+  // URLs or malformed URIs). Using the current timestamp avoids filename
+  // collisions between concurrent downloads.
   return 'file_${DateTime.now().millisecondsSinceEpoch}';
 }
 
@@ -941,7 +944,8 @@ Future<void> _saveFileToDevice(BuildContext context, String url) async {
     );
 
     if (response.statusCode != 200 || response.data == null) {
-      showTopToastOnOverlay(overlay, 'שגיאה בהורדת הקובץ');
+      showTopToastOnOverlay(
+          overlay, 'שגיאה בהורדת הקובץ (${response.statusCode ?? "?"})');
       return;
     }
 
@@ -952,7 +956,8 @@ Future<void> _saveFileToDevice(BuildContext context, String url) async {
     await file.writeAsBytes(bytes, flush: true);
 
     showTopToastOnOverlay(overlay, 'נשמר: $filename');
-  } catch (_) {
+  } catch (e) {
+    debugPrint('_saveFileToDevice error: $e');
     showTopToastOnOverlay(overlay, 'שגיאה בשמירת הקובץ');
   }
 }
