@@ -67,9 +67,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   /// Called when the app returns to the foreground.
   ///
   /// Pulls any messages that arrived while the app was backgrounded so the
-  /// chat is up-to-date.  The OS notification tray is not cleared — those
-  /// notifications stay visible until the user dismisses them — but the
-  /// app-icon badge is reset to zero so it does not show a stale count.
+  /// chat is up-to-date.  All pending notifications are cleared from the OS
+  /// notification tray and the app-icon badge is reset to zero.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
