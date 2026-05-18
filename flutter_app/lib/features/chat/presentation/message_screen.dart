@@ -293,6 +293,22 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                   ),
                 ),
                 actions: [
+                  if (!chatInfo.isGroup)
+                    Builder(builder: (context) {
+                      final contact = state.contacts[widget.chatId];
+                      final phone = contact?.phone?.trim() ?? '';
+                      if (phone.isEmpty) return const SizedBox.shrink();
+                      return IconButton(
+                        icon: const Icon(Icons.call),
+                        tooltip: 'התקשר',
+                        onPressed: () async {
+                          final uri = Uri(scheme: 'tel', path: phone);
+                          if (await canLaunchUrl(uri)) {
+                            await launchUrl(uri);
+                          }
+                        },
+                      );
+                    }),
                   IconButton(
                     icon: const Icon(Icons.search),
                     tooltip: 'חיפוש',
