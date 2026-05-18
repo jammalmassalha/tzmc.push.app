@@ -2108,11 +2108,29 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       clearCurrentChat: chatId == null,
     );
 
-    // Clear unread when opening chat
+    // Clear the local unread badge immediately when opening a chat.
+    // This must happen here — unconditionally — rather than relying solely on
+    // markAsRead(), which has an early-return guard for empty message IDs.
+    // On the first visit the messages may not be loaded into memory yet
+    // (messagesByChat[chatId] == null), so getMessages() returns [] and
+    // markAsRead() exits before resetting the count.  By zeroing the badge
+    // here we ensure it resets on the very first open.
     if (chatId != null && (state.unreadByChat[chatId] ?? 0) > 0) {
+      final newUnread = Map<String, int>.from(state.unreadByChat);
+      newUnread[chatId] = 0;
+      state = state.copyWith(unreadByChat: newUnread);
+
+      // Also persist to DB and send the server read-receipt for any messages
+      // already in memory.  If messages aren't loaded yet the API call is
+      // skipped (markAsRead returns early) but the local count is already 0.
       final messages = getMessages(chatId);
       final messageIds = messages.map((m) => m.messageId).toList();
-      markAsRead(chatId, messageIds);
+      if (messageIds.isNotEmpty) {
+        markAsRead(chatId, messageIds);
+      } else {
+        // Persist the cleared count to DB even without message IDs.
+        _db.clearUnreadCount(chatId).catchError((_) {});
+      }
     }
   }
 

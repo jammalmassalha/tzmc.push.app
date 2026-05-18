@@ -367,36 +367,53 @@ jobs:
           echo "ExportOptions.plist:"
           cat "$RUNNER_TEMP/ExportOptions.plist"
 
-      # ── 8. Select Xcode 26 (iOS 26 SDK required by App Store Connect) ────────
-      - name: Select Xcode 26
+      # ── 8. Select Xcode ──────────────────────────────────────────────────────
+      - name: Select Xcode
         run: |
-          # Locate Xcode 26 installation; fail if not found so the error is clear.
+          # Prefer Xcode 26 when available (iOS 26 SDK); otherwise use the
+          # latest installed Xcode (>= 15 required for Flutter + Firebase).
           XCODE_26=$(find /Applications -maxdepth 1 -name "Xcode_26*.app" 2>/dev/null | sort -V | tail -1)
-          if [ -z "$XCODE_26" ]; then
-            # macOS runners may ship Xcode 26 as the default "Xcode.app" on
-            # images that were published after June 2025.
-            XCODE_CURRENT=$(xcode-select -p | sed 's|/Contents/Developer||')
-            XCODE_MAJOR=$(xcodebuild -version 2>/dev/null | head -1 | awk '{print $2}' | cut -d. -f1)
-            if [ "${XCODE_MAJOR:-0}" -ge 26 ] 2>/dev/null; then
-              echo "Default Xcode is already version ${XCODE_MAJOR} — no switch needed."
-            else
-              echo "::error::Xcode 26 is not installed on this runner (found Xcode ${XCODE_MAJOR:-unknown} at ${XCODE_CURRENT}). Use a macOS runner image that ships with Xcode 26."
-              exit 1
-            fi
-          else
+          if [ -n "$XCODE_26" ]; then
             sudo xcode-select -s "$XCODE_26/Contents/Developer"
-            echo "Switched to Xcode: $XCODE_26"
+            echo "Switched to Xcode 26: $XCODE_26"
           fi
+          XCODE_MAJOR=$(xcodebuild -version 2>/dev/null | head -1 | awk '{print $2}' | cut -d. -f1)
+          if [ "${XCODE_MAJOR:-0}" -lt 15 ] 2>/dev/null; then
+            echo "::error::Xcode 15 or later is required. Found Xcode ${XCODE_MAJOR:-unknown}."
+            exit 1
+          fi
+          echo "Using Xcode ${XCODE_MAJOR}:"
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
       # ── 9. Build signed IPA ───────────────────────────────────────────────
       - name: Build Flutter IPA
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          PROFILE_UUID: ${{ env.PROFILE_UUID }}
         run: |
-          # 1. Build the archive without trying to sign it yet
-          flutter build ipa --release --no-codesign
+          # 1. Inject manual signing settings into Release.xcconfig so that
+          #    xcodebuild signs the archive with the installed P12 + profile.
+          #    Without this, flutter build ipa would either use Automatic signing
+          #    (which contacts Apple servers and fails in CI) or require
+          #    --no-codesign (which produces an unsigned archive that
+          #    xcodebuild -exportArchive cannot re-sign, causing the
+          #    "App.framework does not support provisioning profiles" error).
+          # xcconfig syntax uses // for comments; # is an unsupported preprocessor
+          # directive that causes "Error (Xcode): unsupported preprocessor directive".
+          printf '\n// CI signing overrides — injected at build time\nDEVELOPMENT_TEAM=%s\nCODE_SIGN_STYLE=Manual\nPROVISIONING_PROFILE_SPECIFIER=%s\nPROVISIONING_PROFILE=%s\nCODE_SIGN_IDENTITY=Apple Distribution\n' \
+            "${APPLE_TEAM_ID}" "${PROFILE_UUID}" "${PROFILE_UUID}" \
+            >> ios/Flutter/Release.xcconfig
 
-          # 2. Patch App.framework Info.plist to set MinimumOSVersion.
+          # 2. Build the signed xcarchive. No --no-codesign: the archive must
+          #    be signed before xcodebuild -exportArchive can package the IPA.
+          flutter build ipa --release
+
+          # 3. Restore Release.xcconfig so CI signing settings are not
+          #    accidentally committed or carried across runs.
+          git checkout -- ios/Flutter/Release.xcconfig
+
+          # 4. Patch App.framework Info.plist to set MinimumOSVersion.
           #    Flutter's build tooling may leave this key empty (ITMS-90530 /
           #    ITMS-90360).  Setting it explicitly to the project's deployment
           #    target (15.0) satisfies App Store Connect validation.
@@ -411,14 +428,14 @@ jobs:
             echo "::warning::App.framework Info.plist not found at expected path — skipping MinimumOSVersion patch."
           fi
 
-          # 3. Now use Xcode to sign and export it using your P12 and Profile
+          # 5. Export the signed archive as an IPA using the P12 + profile.
           xcodebuild -exportArchive \
             -archivePath build/ios/archive/Runner.xcarchive \
             -exportPath build/ios/ipa \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
             -allowProvisioningUpdates
 
-          # 4. Copy to dist folder (same as your previous logic)
+          # 6. Copy to dist folder.
           mkdir -p ../dist/ios
           IPA_PATH=$(find build/ios/ipa -name "*.ipa" | head -1)
           if [ -z "$IPA_PATH" ]; then
