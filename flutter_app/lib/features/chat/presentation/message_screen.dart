@@ -1221,7 +1221,7 @@ List<_MessagePart> _parseMessageBody(String body) {
   if (value.isEmpty) return [];
 
   final urlRegex = RegExp(
-    r'(https?://[^\s<>"\']+|/?notify/uploads/[^\s<>"\']+|www\.[^\s<>"\']+|geo:[^\s<>"\']+)',
+    '(https?://[^\\s<>"\']+|/?notify/uploads/[^\\s<>"\']+|www\\.[^\\s<>"\']+|geo:[^\\s<>"\']+)',
     caseSensitive: false,
   );
 
