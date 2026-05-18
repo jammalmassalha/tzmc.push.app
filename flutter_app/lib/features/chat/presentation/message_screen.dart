@@ -4,12 +4,17 @@
 /// replies, and edit/delete status.
 library;
 
+import 'dart:io' show File;
+import 'dart:typed_data' show Uint8List;
 import 'dart:ui' as ui;
 
+import 'package:dio/dio.dart' show Options, ResponseType;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/models/chat_models.dart';
@@ -893,6 +898,65 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
 // Full-screen image viewer (top-level so _MessageBubble can call it)
 // ---------------------------------------------------------------------------
 
+/// Extracts a filename from a URL for use as the saved file name.
+String _extractSaveFilename(String url) {
+  try {
+    final segment = Uri.parse(url)
+        .pathSegments
+        .lastWhere((s) => s.isNotEmpty, orElse: () => '');
+    final decoded = Uri.decodeComponent(segment);
+    if (decoded.isNotEmpty) return decoded;
+  } catch (_) {}
+  return 'file_${DateTime.now().millisecondsSinceEpoch}';
+}
+
+/// Downloads [url] with the authenticated HTTP client and saves the bytes
+/// to the app's documents directory.
+///
+/// On web the file is opened in a new tab instead (no local file system).
+/// The caller should pre-capture any context-sensitive objects before the
+/// `await` if the calling widget may be unmounted during the download.
+Future<void> _saveFileToDevice(BuildContext context, String url) async {
+  if (kIsWeb) {
+    final uri = Uri.tryParse(url);
+    if (uri != null) {
+      try {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } catch (_) {}
+    }
+    return;
+  }
+
+  // Capture overlay and provider container before any async gap so we can
+  // show a toast even if the originating widget was unmounted.
+  final overlay = Overlay.of(context, rootOverlay: true);
+  final container = ProviderScope.containerOf(context, listen: false);
+
+  try {
+    final client = container.read(httpClientProvider);
+    final resolvedUrl = resolveToAbsoluteUrl(url);
+    final response = await client.get<List<int>>(
+      resolvedUrl,
+      options: Options(responseType: ResponseType.bytes),
+    );
+
+    if (response.statusCode != 200 || response.data == null) {
+      showTopToastOnOverlay(overlay, 'שגיאה בהורדת הקובץ');
+      return;
+    }
+
+    final bytes = Uint8List.fromList(response.data!);
+    final dir = await getApplicationDocumentsDirectory();
+    final filename = _extractSaveFilename(url);
+    final file = File('${dir.path}/$filename');
+    await file.writeAsBytes(bytes, flush: true);
+
+    showTopToastOnOverlay(overlay, 'נשמר: $filename');
+  } catch (_) {
+    showTopToastOnOverlay(overlay, 'שגיאה בשמירת הקובץ');
+  }
+}
+
 void _showFullScreenImage(BuildContext context, String imageUrl) {
   final size = MediaQuery.of(context).size;
   showDialog<void>(
@@ -927,6 +991,17 @@ void _showFullScreenImage(BuildContext context, String imageUrl) {
               onPressed: () => Navigator.of(ctx).pop(),
               icon: const Icon(Icons.close, color: Colors.white, size: 28),
               style: IconButton.styleFrom(backgroundColor: Colors.black38),
+            ),
+          ),
+          Positioned(
+            top: MediaQuery.of(ctx).padding.top + 4,
+            left: 4,
+            child: IconButton(
+              onPressed: () => _saveFileToDevice(
+                  ctx, resolveToAbsoluteUrl(imageUrl)),
+              icon: const Icon(Icons.download, color: Colors.white, size: 28),
+              style: IconButton.styleFrom(backgroundColor: Colors.black38),
+              tooltip: 'שמור תמונה',
             ),
           ),
         ],
@@ -1556,6 +1631,19 @@ class _MessageBubble extends StatelessWidget {
                   onDelete!();
                 },
               ),
+            if (message.deletedAt == null &&
+                (message.imageUrl != null || message.fileUrl != null))
+              ListTile(
+                leading: const Icon(Icons.download),
+                title: const Text('שמור במכשיר'),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  _saveFileToDevice(
+                    context,
+                    message.imageUrl ?? message.fileUrl!,
+                  );
+                },
+              ),
           ],
         ),
       ),
@@ -2002,7 +2090,6 @@ class _FileAttachmentButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final icon = _isPdf ? Icons.picture_as_pdf : Icons.attach_file;
     final iconColor = _isPdf ? Colors.red.shade700 : AppColors.primary;
 
@@ -2017,7 +2104,7 @@ class _FileAttachmentButton extends StatelessWidget {
       },
       borderRadius: BorderRadius.circular(8),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        padding: const EdgeInsets.only(left: 10, top: 8, bottom: 8, right: 4),
         decoration: BoxDecoration(
           color: iconColor.withAlpha((255 * 0.1).round()),
           borderRadius: BorderRadius.circular(8),
@@ -2039,6 +2126,15 @@ class _FileAttachmentButton extends StatelessWidget {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
+            ),
+            const SizedBox(width: 4),
+            IconButton(
+              padding: const EdgeInsets.all(4),
+              constraints: const BoxConstraints(),
+              visualDensity: VisualDensity.compact,
+              icon: Icon(Icons.download, color: iconColor, size: 18),
+              tooltip: 'שמור במכשיר',
+              onPressed: () => _saveFileToDevice(context, url),
             ),
           ],
         ),
