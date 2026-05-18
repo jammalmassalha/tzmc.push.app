@@ -816,6 +816,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         if (user != null && user.isNotEmpty) {
           await _pullAllMessagesFromLogs(user: user, since: latestTimestamp);
         }
+        // Explicitly clear any unread counts that may have been accumulated
+        // from realtime messages (socket/SSE) that arrived concurrently during
+        // the batch import.  The batch import itself never increments unreads,
+        // but a socket/SSE delivery that fires between two paginated API calls
+        // goes through _handleIncomingTextMessage which DOES increment unreads.
+        // Clearing here is safe because all those messages are already present
+        // in state from the batch import, so the user is not "missing" any
+        // unread indicator — they will see the new messages in the chat list.
+        state = state.copyWith(unreadByChat: const {});
       } else {
         // Incremental update: use the normal per-message handler so that new
         // messages increment unread counts for the user.
@@ -938,10 +947,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         isInitialized: true,
       );
     } finally {
+      // Safety reset: ensure unread counters are always zero when a full sync
+      // finishes, whether it succeeded or failed.  During the sync the local
+      // state is cleared and repopulated; any realtime deliveries or poll ticks
+      // that fire between async steps can increment unreads for messages that
+      // already belong to the (now-cleared) history.  Resetting here guarantees
+      // the chat list shows a clean slate once the sync completes.
       state = state.copyWith(
         isSyncing: false,
         syncProgressPercent: 0,
         syncProgressLabel: '',
+        unreadByChat: const {},
       );
     }
   }
@@ -2509,6 +2525,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   void _handleConnectionChange(bool connected) {
     if (connected) {
+      // Do not trigger a gap-analysis pull while a full sync is in progress —
+      // the sync itself performs a comprehensive server pull.  Calling
+      // recoverMissedMessages here would race with the sync's cleared state
+      // and could mark historical messages as unread.
+      if (state.isSyncing) return;
       // Recover missed messages when reconnecting
       recoverMissedMessages(force: true);
     }
@@ -2522,6 +2543,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       debugPrint('[ChatStore] Poll tick skipped — transport is ${_transport.transportMode.name}');
       return;
     }
+    // Do not poll during a full sync — the sync performs its own comprehensive
+    // pull and polling with a cleared state would mark historical messages as
+    // unread.
+    if (state.isSyncing) return;
     pullMessages();
   }
 
