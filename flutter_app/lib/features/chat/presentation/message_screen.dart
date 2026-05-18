@@ -19,6 +19,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
+import '../../../core/api/http_client.dart';
 import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
 import '../../../shared/widgets/authenticated_image.dart';
