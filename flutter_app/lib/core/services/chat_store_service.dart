@@ -2420,6 +2420,21 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   }
 
   void _handleReadReceipt(IncomingServerMessage msg) {
+    // Self-read-clear: server tells our OTHER devices that WE just read a chat.
+    // The payload includes chatId to distinguish it from a regular read-receipt
+    // (where the other party read OUR messages).
+    if (msg.chatId != null && msg.chatId!.isNotEmpty) {
+      final chatId = msg.chatId!;
+      if ((state.unreadByChat[chatId] ?? 0) > 0) {
+        final newUnread = Map<String, int>.from(state.unreadByChat);
+        newUnread[chatId] = 0;
+        state = state.copyWith(unreadByChat: newUnread);
+        _db.clearUnreadCount(chatId).catchError((_) {});
+        _schedulePersistence();
+      }
+      return;
+    }
+
     if (msg.messageIds == null || msg.messageIds!.isEmpty) return;
 
     final newMessagesByChat = <String, List<ChatMessage>>{};
