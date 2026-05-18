@@ -209,14 +209,10 @@ export class UploadSecurityService {
   }
 
   buildSafeUploadFilename(file: Partial<UploadedFileDescriptor>): string {
-    const originalName = path.basename(String(file.originalname || '').trim());
-    if (originalName && originalName !== '.' && originalName !== '..') {
-      return originalName;
-    }
     const safeStem = this.sanitizeUploadBaseName(file.originalname || '');
     const extension = this.chooseSafeUploadExtension(file);
-    const uniqueSuffix = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-    return `${safeStem}-${uniqueSuffix}${extension}`;
+    const uniquePrefix = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+    return `${uniquePrefix}-${safeStem}${extension}`;
   }
 
   // ── Public: image format detection ──────────────────────────────────────

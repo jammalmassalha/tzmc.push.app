@@ -196,14 +196,10 @@ class UploadSecurityService {
         return sanitized || 'upload';
     }
     buildSafeUploadFilename(file) {
-        const originalName = node_path_1.default.basename(String(file.originalname || '').trim());
-        if (originalName && originalName !== '.' && originalName !== '..') {
-            return originalName;
-        }
         const safeStem = this.sanitizeUploadBaseName(file.originalname || '');
         const extension = this.chooseSafeUploadExtension(file);
-        const uniqueSuffix = `${Date.now()}-${node_crypto_1.default.randomBytes(4).toString('hex')}`;
-        return `${safeStem}-${uniqueSuffix}${extension}`;
+        const uniquePrefix = `${Date.now()}-${node_crypto_1.default.randomBytes(4).toString('hex')}`;
+        return `${uniquePrefix}-${safeStem}${extension}`;
     }
     // ── Public: image format detection ──────────────────────────────────────
     detectImageFormat(buffer) {
