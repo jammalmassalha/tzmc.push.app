@@ -1042,23 +1042,31 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _ensureGroupsFromImportedLogs(normalized);
 
     // ── 5. Apply messages ───────────────────────────────────────────────────
-    // Action messages are dispatched through the regular handler (small count).
     // Text messages are applied in a single batch state update — no unread
     // increment (mirrors Angular's `applyIncomingMessagesBatch` with
     // `incrementUnread: false`).
+    // Action messages (reaction, edit-action, delete-action, …) are collected
+    // separately and dispatched AFTER the text messages are in state, so that
+    // _applyReactionToState / _applyEditToState can find their target messages.
     final textMessages = <ChatMessage>[];
+    final actionMessages = <IncomingServerMessage>[];
 
     for (final msg in normalized) {
       final type = (msg.type ?? '').trim().toLowerCase();
       if (actionTypes.contains(type)) {
-        _handleServerMessage(msg); // delete / edit / reaction / group-update
+        actionMessages.add(msg);
       } else {
         final chatMsg = _buildChatMessageFromServer(msg);
         if (chatMsg != null) textMessages.add(chatMsg);
       }
     }
 
+    // Apply text messages first so the target messages exist in state before
+    // reactions (and edits/deletes) are applied.
     _applyMessagesBatch(textMessages);
+    for (final msg in actionMessages) {
+      _handleServerMessage(msg); // delete / edit / reaction / group-update
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1994,6 +2002,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       newMessagesByChat[entry.key] = chatMessages;
     }
     state = state.copyWith(messagesByChat: newMessagesByChat);
+    _schedulePersistence();
   }
 
   // ---------------------------------------------------------------------------
@@ -2411,6 +2420,21 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   }
 
   void _handleReadReceipt(IncomingServerMessage msg) {
+    // Self-read-clear: server tells our OTHER devices that WE just read a chat.
+    // The payload includes chatId to distinguish it from a regular read-receipt
+    // (where the other party read OUR messages).
+    if (msg.chatId != null && msg.chatId!.isNotEmpty) {
+      final chatId = msg.chatId!;
+      if ((state.unreadByChat[chatId] ?? 0) > 0) {
+        final newUnread = Map<String, int>.from(state.unreadByChat);
+        newUnread[chatId] = 0;
+        state = state.copyWith(unreadByChat: newUnread);
+        _db.clearUnreadCount(chatId).catchError((_) {});
+        _schedulePersistence();
+      }
+      return;
+    }
+
     if (msg.messageIds == null || msg.messageIds!.isEmpty) return;
 
     final newMessagesByChat = <String, List<ChatMessage>>{};

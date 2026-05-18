@@ -5830,7 +5830,8 @@ const flutterPushService = createFlutterPushService({
     stateDir,
     notificationService,
     fcmSender,
-    normalizeUserKey
+    normalizeUserKey,
+    unreadCounts
 });
 flutterPushService.loadFromDisk().catch((err) =>
     console.warn('[FLUTTER-FCM] Initial load failed:', err && err.message ? err.message : err)
@@ -6585,6 +6586,33 @@ app.post(
         });
 
         const result = await sendPushNotificationToUser(normalizedSender, payload, normalizedReader, { skipBadge: true });
+
+        // Notify the reader's OWN other devices so they clear their unread
+        // count for this chat (cross-device read sync).
+        // The payload includes `chatId` so the Flutter app can distinguish a
+        // "self-read-clear" event from a regular "sender was read" receipt.
+        await addToQueue(normalizedReader, {
+            type: 'read-receipt',
+            chatId: normalizedSender,
+            messageIds: uniqueMessageIds,
+            readAt: effectiveReadAt,
+            sender: normalizedSender,
+            timestamp: Date.now()
+        });
+        void sendPushNotificationToUser(normalizedReader, {
+            title: '',
+            body: { shortText: '', longText: '' },
+            data: {
+                type: 'read-receipt',
+                chatId: normalizedSender,
+                messageIds: uniqueMessageIds,
+                readAt: effectiveReadAt,
+                sender: normalizedSender
+            }
+        }, normalizedSender, { skipBadge: true }).catch((err) => {
+            console.warn('[SELF-READ-CLEAR] Push to reader\'s own devices failed:', err && err.message ? err.message : err);
+        });
+
         res.json({ status: 'ok', details: result });
     } catch (err) {
         console.error('[READ RECEIPT] Failed:', err.message);

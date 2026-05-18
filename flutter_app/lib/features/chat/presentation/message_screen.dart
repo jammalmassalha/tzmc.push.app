@@ -4,16 +4,22 @@
 /// replies, and edit/delete status.
 library;
 
+import 'dart:io' show File;
+import 'dart:typed_data' show Uint8List;
 import 'dart:ui' as ui;
 
+import 'package:dio/dio.dart' show Options, ResponseType;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
+import '../../../core/api/http_client.dart';
 import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
 import '../../../shared/widgets/authenticated_image.dart';
@@ -287,6 +293,22 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                   ),
                 ),
                 actions: [
+                  if (!chatInfo.isGroup)
+                    Builder(builder: (context) {
+                      final contact = state.contacts[widget.chatId];
+                      final phone = contact?.phone?.trim() ?? '';
+                      if (phone.isEmpty) return const SizedBox.shrink();
+                      return IconButton(
+                        icon: const Icon(Icons.call),
+                        tooltip: 'התקשר',
+                        onPressed: () async {
+                          final uri = Uri(scheme: 'tel', path: phone);
+                          if (await canLaunchUrl(uri)) {
+                            await launchUrl(uri);
+                          }
+                        },
+                      );
+                    }),
                   IconButton(
                     icon: const Icon(Icons.search),
                     tooltip: 'חיפוש',
@@ -893,6 +915,70 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
 // Full-screen image viewer (top-level so _MessageBubble can call it)
 // ---------------------------------------------------------------------------
 
+/// Extracts a filename from a URL for use as the saved file name.
+String _extractSaveFilename(String url) {
+  try {
+    final segment = Uri.parse(url)
+        .pathSegments
+        .lastWhere((s) => s.isNotEmpty, orElse: () => '');
+    final decoded = Uri.decodeComponent(segment);
+    if (decoded.isNotEmpty) return decoded;
+  } catch (_) {}
+  // Fallback when the URL has no recognisable path segments (e.g. query-only
+  // URLs or malformed URIs). Using the current timestamp avoids filename
+  // collisions between concurrent downloads.
+  return 'file_${DateTime.now().millisecondsSinceEpoch}';
+}
+
+/// Downloads [url] with the authenticated HTTP client and saves the bytes
+/// to the app's documents directory.
+///
+/// On web the file is opened in a new tab instead (no local file system).
+/// The caller should pre-capture any context-sensitive objects before the
+/// `await` if the calling widget may be unmounted during the download.
+Future<void> _saveFileToDevice(BuildContext context, String url) async {
+  if (kIsWeb) {
+    final uri = Uri.tryParse(url);
+    if (uri != null) {
+      try {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } catch (_) {}
+    }
+    return;
+  }
+
+  // Capture overlay and provider container before any async gap so we can
+  // show a toast even if the originating widget was unmounted.
+  final overlay = Overlay.of(context, rootOverlay: true);
+  final container = ProviderScope.containerOf(context, listen: false);
+
+  try {
+    final client = container.read(httpClientProvider);
+    final resolvedUrl = resolveToAbsoluteUrl(url);
+    final response = await client.get<List<int>>(
+      resolvedUrl,
+      options: Options(responseType: ResponseType.bytes),
+    );
+
+    if (response.statusCode != 200 || response.data == null) {
+      showTopToastOnOverlay(
+          overlay, 'שגיאה בהורדת הקובץ (${response.statusCode ?? "?"})');
+      return;
+    }
+
+    final bytes = Uint8List.fromList(response.data!);
+    final dir = await getApplicationDocumentsDirectory();
+    final filename = _extractSaveFilename(url);
+    final file = File('${dir.path}/$filename');
+    await file.writeAsBytes(bytes, flush: true);
+
+    showTopToastOnOverlay(overlay, 'נשמר: $filename');
+  } catch (e) {
+    debugPrint('_saveFileToDevice error: $e');
+    showTopToastOnOverlay(overlay, 'שגיאה בשמירת הקובץ');
+  }
+}
+
 void _showFullScreenImage(BuildContext context, String imageUrl) {
   final size = MediaQuery.of(context).size;
   showDialog<void>(
@@ -929,10 +1015,272 @@ void _showFullScreenImage(BuildContext context, String imageUrl) {
               style: IconButton.styleFrom(backgroundColor: Colors.black38),
             ),
           ),
+          Positioned(
+            top: MediaQuery.of(ctx).padding.top + 4,
+            left: 4,
+            child: IconButton(
+              onPressed: () => _saveFileToDevice(
+                  ctx, resolveToAbsoluteUrl(imageUrl)),
+              icon: const Icon(Icons.download, color: Colors.white, size: 28),
+              style: IconButton.styleFrom(backgroundColor: Colors.black38),
+              tooltip: 'שמור תמונה',
+            ),
+          ),
         ],
       ),
     ),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Message body part types
+// ---------------------------------------------------------------------------
+
+sealed class _MessagePart {}
+
+class _TextPart extends _MessagePart {
+  final String text;
+  _TextPart(this.text);
+}
+
+class _PhonePart extends _MessagePart {
+  final String display;
+  final String phone;
+  _PhonePart({required this.display, required this.phone});
+}
+
+class _ImagePart extends _MessagePart {
+  final String url;
+  _ImagePart(this.url);
+}
+
+class _FilePart extends _MessagePart {
+  final String url;
+  _FilePart(this.url);
+}
+
+class _LinkPart extends _MessagePart {
+  final String url;
+  _LinkPart(this.url);
+}
+
+class _LocationPart extends _MessagePart {
+  final String url;
+  _LocationPart(this.url);
+}
+
+// ---------------------------------------------------------------------------
+// Message body parser functions
+// ---------------------------------------------------------------------------
+
+/// Normalises a raw URL extracted from a message body.
+String _normalizeMessageUrl(String url) {
+  var value = url.trim();
+  if (value.isEmpty) return '';
+
+  // geo: URI → convert to Google Maps web URL for cross-platform support.
+  if (RegExp(r'^geo:', caseSensitive: false).hasMatch(value)) {
+    final coords = value.substring(4).split(',');
+    if (coords.length >= 2) {
+      final lat = coords[0].trim().split(';').first;
+      final lon = coords[1].trim().split(';').first;
+      return 'https://www.google.com/maps?q=$lat,$lon';
+    }
+    return value;
+  }
+
+  if (RegExp(r'^www\.', caseSensitive: false).hasMatch(value)) {
+    value = 'https://$value';
+  } else if (RegExp(r'^/?notify/uploads/', caseSensitive: false)
+      .hasMatch(value)) {
+    value = value.startsWith('/') ? value : '/$value';
+  }
+
+  // Strip trailing slash after a known file extension (e.g. ".pdf/").
+  value = value.replaceAllMapped(
+    RegExp(
+      r'(\.(?:pdf|doc|docx|xls|xlsx|ppt|pptx|txt|csv|zip|rar|7z|jpeg|jpg|png|gif|webp))/(?=$|[?#])',
+      caseSensitive: false,
+    ),
+    (m) => m.group(1)!,
+  );
+
+  return value;
+}
+
+bool _isImageUrl(String url) =>
+    RegExp(r'\.(jpeg|jpg|png|gif|webp)(\?|$)', caseSensitive: false)
+        .hasMatch(url);
+
+bool _isFileUrl(String url) =>
+    RegExp(r'\.(pdf|doc|docx)(\?|$)', caseSensitive: false).hasMatch(url);
+
+bool _isLocationUrl(String url) {
+  final lower = url.toLowerCase();
+  return lower.contains('maps.google.com') ||
+      lower.contains('google.com/maps') ||
+      lower.contains('maps.app.goo.gl') ||
+      lower.startsWith('geo:');
+}
+
+/// Strips trailing punctuation characters from a URL.
+({String cleanUrl, String trailingText}) _stripTrailingPunctuationUrl(
+    String url) {
+  var clean = url;
+  var trailing = '';
+  while (clean.isNotEmpty && '),.!?;:'.contains(clean[clean.length - 1])) {
+    trailing = '${clean[clean.length - 1]}$trailing';
+    clean = clean.substring(0, clean.length - 1);
+  }
+  return (cleanUrl: clean, trailingText: trailing);
+}
+
+/// Strips trailing punctuation characters from a phone number.
+({String cleanPhone, String trailingText}) _stripTrailingPhonePunctuation(
+    String phone) {
+  var clean = phone;
+  var trailing = '';
+  while (clean.isNotEmpty && '),.!?;:'.contains(clean[clean.length - 1])) {
+    trailing = '${clean[clean.length - 1]}$trailing';
+    clean = clean.substring(0, clean.length - 1);
+  }
+  return (cleanPhone: clean, trailingText: trailing);
+}
+
+/// Validates and normalises a phone number for use with tel: URIs.
+/// Returns an empty string if [value] is not a recognised Israeli number.
+String _normalizePhoneForAction(String value) {
+  final src = value.trim().replaceAll(RegExp(r'\s+'), '');
+  if (src.isEmpty) return '';
+  if (RegExp(r'^05\d{8}$').hasMatch(src)) return src;
+  if (RegExp(r'^\+9725\d{8}$').hasMatch(src)) return src;
+  if (RegExp(r'^\+97205\d{8}$').hasMatch(src)) return src;
+  return '';
+}
+
+/// Appends [_TextPart], [_PhonePart], and [_LocationPart] items derived from
+/// plain text that contains no URL tokens.
+///
+/// Mirrors Angular's `appendTextAndPhoneParts` with the addition of GPS
+/// coordinate detection (requires at least 4 decimal digits to avoid false positives).
+void _appendTextAndPhoneParts(List<_MessagePart> parts, String text) {
+  if (text.isEmpty) return;
+
+  // Combined regex: group 1 = GPS coords, group 0 (no group 1) = phone.
+  // Coordinate pattern requires at least 4 decimal digits to avoid false positives.
+  final combined = RegExp(
+    r'(-?\d{1,2}\.\d{4,}\s*,\s*-?\d{1,3}\.\d{4,})|(?:\+97205\d{8}|\+9725\d{8}|05\d{8})',
+  );
+
+  int lastIndex = 0;
+  for (final match in combined.allMatches(text)) {
+    final start = match.start;
+    final rawMatch = match.group(0)!;
+
+    if (start > lastIndex) {
+      parts.add(_TextPart(text.substring(lastIndex, start)));
+    }
+
+    if (match.group(1) != null) {
+      // GPS coordinate pair — convert to Google Maps URL.
+      final subParts = rawMatch.split(RegExp(r'\s*,\s*'));
+      if (subParts.length >= 2) {
+        parts.add(_LocationPart(
+            'https://www.google.com/maps?q=${subParts[0].trim()},${subParts[1].trim()}'));
+      } else {
+        parts.add(_TextPart(rawMatch));
+      }
+    } else {
+      // Phone number — validate word boundaries and normalise.
+      final prevChar = start > 0 ? text[start - 1] : '';
+      final nextChar = start + rawMatch.length < text.length
+          ? text[start + rawMatch.length]
+          : '';
+      final validBefore =
+          prevChar.isEmpty || !RegExp(r'[0-9+]').hasMatch(prevChar);
+      final validAfter =
+          nextChar.isEmpty || !RegExp(r'[0-9]').hasMatch(nextChar);
+
+      if (!validBefore || !validAfter) {
+        parts.add(_TextPart(rawMatch));
+        lastIndex = start + rawMatch.length;
+        continue;
+      }
+
+      final (:cleanPhone, :trailingText) =
+          _stripTrailingPhonePunctuation(rawMatch);
+      final normalized = _normalizePhoneForAction(cleanPhone);
+      if (normalized.isNotEmpty) {
+        parts.add(_PhonePart(display: cleanPhone, phone: normalized));
+      } else {
+        parts.add(_TextPart(cleanPhone));
+      }
+      if (trailingText.isNotEmpty) {
+        parts.add(_TextPart(trailingText));
+      }
+    }
+
+    lastIndex = start + rawMatch.length;
+  }
+
+  if (lastIndex < text.length) {
+    parts.add(_TextPart(text.substring(lastIndex)));
+  }
+}
+
+/// Parses [body] into a list of typed render parts.
+///
+/// Mirrors the Angular `parseMessageBody` logic with the addition of
+/// `geo:` URI and bare GPS-coordinate support.
+List<_MessagePart> _parseMessageBody(String body) {
+  final value = body.trim();
+  if (value.isEmpty) return [];
+
+  final urlRegex = RegExp(
+    '(https?://[^\\s<>"\']+|/?notify/uploads/[^\\s<>"\']+|www\\.[^\\s<>"\']+|geo:[^\\s<>"\']+)',
+    caseSensitive: false,
+  );
+
+  final parts = <_MessagePart>[];
+  int lastIndex = 0;
+
+  for (final match in urlRegex.allMatches(value)) {
+    final start = match.start;
+    final rawMatch = match.group(0)!;
+
+    if (start > lastIndex) {
+      _appendTextAndPhoneParts(parts, value.substring(lastIndex, start));
+    }
+
+    final (:cleanUrl, :trailingText) = _stripTrailingPunctuationUrl(rawMatch);
+    final normalizedUrl = _normalizeMessageUrl(cleanUrl);
+
+    if (_isImageUrl(normalizedUrl)) {
+      parts.add(_ImagePart(normalizedUrl));
+    } else if (_isLocationUrl(normalizedUrl)) {
+      parts.add(_LocationPart(normalizedUrl));
+    } else if (_isFileUrl(normalizedUrl)) {
+      parts.add(_FilePart(normalizedUrl));
+    } else {
+      parts.add(_LinkPart(normalizedUrl));
+    }
+
+    if (trailingText.isNotEmpty) {
+      _appendTextAndPhoneParts(parts, trailingText);
+    }
+
+    lastIndex = start + rawMatch.length;
+  }
+
+  if (lastIndex < value.length) {
+    _appendTextAndPhoneParts(parts, value.substring(lastIndex));
+  }
+
+  if (parts.isEmpty) {
+    _appendTextAndPhoneParts(parts, value);
+  }
+
+  return parts;
 }
 
 // ---------------------------------------------------------------------------
@@ -1305,6 +1653,19 @@ class _MessageBubble extends StatelessWidget {
                   onDelete!();
                 },
               ),
+            if (message.deletedAt == null &&
+                (message.imageUrl != null || message.fileUrl != null))
+              ListTile(
+                leading: const Icon(Icons.download),
+                title: const Text('שמור במכשיר'),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  _saveFileToDevice(
+                    context,
+                    message.imageUrl ?? message.fileUrl!,
+                  );
+                },
+              ),
           ],
         ),
       ),
@@ -1578,14 +1939,7 @@ class _MessageBody extends StatelessWidget {
   const _MessageBody(
       {required this.body, required this.theme, this.searchQuery});
 
-  static final _mapsRegex = RegExp(
-    r'https?://(www\.)?(maps\.google\.com|google\.com/maps|maps\.app\.goo\.gl)[^\s]*',
-    caseSensitive: false,
-  );
-  static final _geoRegex = RegExp(r'geo:\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)', caseSensitive: false);
-  static final _coordsRegex = RegExp(r'(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)');
-
-  /// Build a [TextSpan] with search-term highlights.
+  /// Builds a [TextSpan] with search-term highlights applied to [text].
   InlineSpan _buildHighlightedSpan(String text, TextStyle base) {
     final q = searchQuery;
     if (q == null || q.isEmpty) return TextSpan(text: text, style: base);
@@ -1617,51 +1971,77 @@ class _MessageBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final base = theme.textTheme.bodyMedium ?? const TextStyle();
-    final match = _mapsRegex.firstMatch(body);
-    String? mapUrl;
-    int start = 0;
-    int end = 0;
+    final parts = _parseMessageBody(body);
 
-    if (match != null) {
-      mapUrl = match.group(0)!;
-      start = match.start;
-      end = match.end;
-    } else {
-      final geoMatch = _geoRegex.firstMatch(body);
-      final coordsMatch = geoMatch ?? _coordsRegex.firstMatch(body);
-      if (coordsMatch != null) {
-        final lat = coordsMatch.group(1)!;
-        final lon = coordsMatch.group(2)!;
-        mapUrl = 'https://www.google.com/maps?q=$lat,$lon';
-        start = coordsMatch.start;
-        end = coordsMatch.end;
+    if (parts.isEmpty) return const SizedBox.shrink();
+
+    // Group consecutive inline parts (text / phone) into RichText blocks;
+    // non-inline parts (image, file, link, location) become their own widgets.
+    final widgets = <Widget>[];
+    final inlineSpans = <InlineSpan>[];
+
+    void flushInline() {
+      if (inlineSpans.isNotEmpty) {
+        widgets.add(
+          RichText(text: TextSpan(children: List.of(inlineSpans))),
+        );
+        inlineSpans.clear();
       }
     }
-    if (mapUrl == null) {
-      return RichText(
-        text: TextSpan(children: [_buildHighlightedSpan(body, base)]),
-      );
+
+    for (final part in parts) {
+      switch (part) {
+        case _TextPart(:final text):
+          inlineSpans.add(_buildHighlightedSpan(text, base));
+        case _PhonePart(:final display, :final phone):
+          inlineSpans.add(WidgetSpan(
+            alignment: PlaceholderAlignment.middle,
+            child: _PhoneButton(display: display, phone: phone),
+          ));
+        case _ImagePart(:final url):
+          flushInline();
+          widgets.add(Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: GestureDetector(
+              onTap: () => _showFullScreenImage(context, url),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: AuthenticatedNetworkImage(
+                  url: url,
+                  width: 200,
+                  height: 150,
+                ),
+              ),
+            ),
+          ));
+        case _FilePart(:final url):
+          flushInline();
+          widgets.add(Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: _FileAttachmentButton(url: resolveToAbsoluteUrl(url)),
+          ));
+        case _LinkPart(:final url):
+          flushInline();
+          widgets.add(Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: _LinkButton(url: resolveToAbsoluteUrl(url)),
+          ));
+        case _LocationPart(:final url):
+          flushInline();
+          widgets.add(Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: _LocationButton(url: url),
+          ));
+      }
     }
 
-    // Text before the URL (e.g. "📍 ")
-    final prefix = body.substring(0, start).trimRight();
-    // Text after the URL
-    final suffix = body.substring(end).trimLeft();
+    flushInline();
 
+    if (widgets.length == 1) return widgets.first;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
-      children: [
-        if (prefix.isNotEmpty)
-          RichText(
-              text: TextSpan(
-                  children: [_buildHighlightedSpan(prefix, base)])),
-        _LocationButton(url: mapUrl),
-        if (suffix.isNotEmpty)
-          RichText(
-              text: TextSpan(
-                  children: [_buildHighlightedSpan(suffix, base)])),
-      ],
+      children: widgets,
     );
   }
 }
@@ -1732,7 +2112,6 @@ class _FileAttachmentButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final icon = _isPdf ? Icons.picture_as_pdf : Icons.attach_file;
     final iconColor = _isPdf ? Colors.red.shade700 : AppColors.primary;
 
@@ -1747,7 +2126,7 @@ class _FileAttachmentButton extends StatelessWidget {
       },
       borderRadius: BorderRadius.circular(8),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        padding: const EdgeInsets.only(left: 10, top: 8, bottom: 8, right: 4),
         decoration: BoxDecoration(
           color: iconColor.withAlpha((255 * 0.1).round()),
           borderRadius: BorderRadius.circular(8),
@@ -1768,6 +2147,158 @@ class _FileAttachmentButton extends StatelessWidget {
                 ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const SizedBox(width: 4),
+            IconButton(
+              padding: const EdgeInsets.all(4),
+              constraints: const BoxConstraints(),
+              visualDensity: VisualDensity.compact,
+              icon: Icon(Icons.download, color: iconColor, size: 18),
+              tooltip: 'שמור במכשיר',
+              onPressed: () => _saveFileToDevice(context, url),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Phone button (inline in message body)
+// ---------------------------------------------------------------------------
+
+/// A compact tappable widget that represents a phone number in the message body.
+/// Tapping shows a bottom sheet with "copy" and "call" actions, mirroring the
+/// Angular `openPhoneActions` flow.
+class _PhoneButton extends StatelessWidget {
+  final String display;
+  final String phone;
+
+  const _PhoneButton({required this.display, required this.phone});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: () => _showPhoneActions(context),
+      borderRadius: BorderRadius.circular(6),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: AppColors.primary.withAlpha((255 * 0.1).round()),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(
+              color: AppColors.primary.withAlpha((255 * 0.3).round())),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.phone, size: 14, color: AppColors.primary),
+            const SizedBox(width: 4),
+            Text(
+              display,
+              style: TextStyle(
+                color: AppColors.primary,
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showPhoneActions(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                display,
+                style: const TextStyle(
+                    fontSize: 18, fontWeight: FontWeight.bold),
+                textDirection: ui.TextDirection.ltr,
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.copy),
+              title: const Text('העתק מספר'),
+              onTap: () async {
+                Navigator.of(ctx).pop();
+                await Clipboard.setData(ClipboardData(text: phone));
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.phone, color: AppColors.primary),
+              title: Text(
+                'חייג עכשיו',
+                style: TextStyle(color: AppColors.primary),
+              ),
+              onTap: () async {
+                Navigator.of(ctx).pop();
+                final uri = Uri(scheme: 'tel', path: phone);
+                try {
+                  await launchUrl(uri);
+                } catch (_) {}
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Link button (inline in message body)
+// ---------------------------------------------------------------------------
+
+/// A tappable button that opens a generic URL in an external application,
+/// mirroring Angular's `link` part rendering.
+class _LinkButton extends StatelessWidget {
+  final String url;
+
+  const _LinkButton({required this.url});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: () async {
+        final uri = Uri.tryParse(url);
+        if (uri != null) {
+          try {
+            await launchUrl(uri, mode: LaunchMode.externalApplication);
+          } catch (_) {}
+        }
+      },
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: AppColors.primary.withAlpha((255 * 0.1).round()),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+              color: AppColors.primary.withAlpha((255 * 0.3).round())),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.link, color: AppColors.primary, size: 20),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                'לחץ כאן לפתיחת קובץ/קישור',
+                style: TextStyle(
+                  color: AppColors.primary,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
           ],
