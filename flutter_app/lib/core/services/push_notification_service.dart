@@ -1108,15 +1108,27 @@ class PushNotificationService {
       groupAlertBehavior: GroupAlertBehavior.children,
     );
 
-    const iosDetails = DarwinNotificationDetails(
+    // Use the server-computed badge count from the FCM data payload so the
+    // iOS app-icon badge is updated whenever a foreground notification arrives.
+    // The background case is handled automatically by the APNs `badge` field
+    // the server sets in the native APNs envelope.  Without an explicit
+    // badgeNumber here, `presentBadge: true` alone has no effect on the count.
+    // null is intentional when badgeCount is absent: iOS preserves the current
+    // badge rather than resetting it to 0.
+    final badgeNumber = int.tryParse(
+      message.data['badgeCount']?.toString() ?? '',
+    );
+
+    final iosDetails = DarwinNotificationDetails(
       presentAlert: true,
       presentBadge: true,
       presentSound: true,
       // Groups related notifications in iOS Notification Center.
       threadIdentifier: _kNotificationGroupKey,
+      badgeNumber: badgeNumber,
     );
 
-    const details = NotificationDetails(
+    final details = NotificationDetails(
       android: androidDetails,
       iOS: iosDetails,
     );
