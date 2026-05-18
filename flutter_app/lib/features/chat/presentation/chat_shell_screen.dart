@@ -67,9 +67,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   /// Called when the app returns to the foreground.
   ///
   /// Pulls any messages that arrived while the app was backgrounded so the
-  /// chat is up-to-date.  The OS notification tray and app-icon badge are
-  /// intentionally **not** cleared here — notifications stay visible on the
-  /// device until the user dismisses them manually.
+  /// chat is up-to-date.  All pending notifications are cleared from the OS
+  /// notification tray and the app-icon badge is reset to zero.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
@@ -105,6 +104,13 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
           '[ChatShellScreen] push token registration on resume failed: $e\n$st',
         );
       }
+
+      // Reset the app-icon badge now that the user has opened the app.
+      try {
+        await ref.read(pushNotificationServiceProvider).resetBadge();
+      } catch (e, st) {
+        debugPrint('[ChatShellScreen] resetBadge on resume failed: $e\n$st');
+      }
     }
   }
 
@@ -116,9 +122,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     final transport = ref.read(realtimeTransportServiceProvider);
     transport.connect(user, isNetworkReachable: () => true);
 
-    // Kick off chat store initialization.  The OS notification tray and
-    // app-icon badge are intentionally not cleared here — notifications
-    // stay visible on the device until the user dismisses them manually.
+    // Kick off chat store initialization.
     unawaited(_initializeChatStore(user));
 
     // Initialize push notifications and request permission independently of
@@ -128,14 +132,18 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     unawaited(_initializePushNotifications());
   }
 
-  /// Initializes the chat store.  Notification tray / app-icon badge
-  /// clearing was removed — notifications stay visible until the user
-  /// dismisses them manually.
+  /// Initializes the chat store and resets the app-icon badge.
   Future<void> _initializeChatStore(String user) async {
     try {
       await ref.read(chatStoreProvider.notifier).initialize(user);
     } catch (e, st) {
       debugPrint('[ChatShellScreen] chatStore.initialize error: $e\n$st');
+    }
+    // Reset the app-icon badge on cold start now that the user is in the app.
+    try {
+      await ref.read(pushNotificationServiceProvider).resetBadge();
+    } catch (e, st) {
+      debugPrint('[ChatShellScreen] resetBadge on startup failed: $e\n$st');
     }
   }
 

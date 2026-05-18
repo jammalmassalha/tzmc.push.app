@@ -1274,10 +1274,52 @@ class PushNotificationService {
     );
   }
 
-  // NOTE: resetBadge() and clearLocalNotifications() were intentionally
-  // removed.  The app no longer wipes the OS notification tray or the
-  // app-icon badge — notifications stay visible on the device until the
-  // user dismisses them manually.
+  /// Reset the app-icon badge to zero and dismiss all pending notifications
+  /// from the device notification shade.
+  ///
+  /// On iOS this calls the native [UIApplication.applicationIconBadgeNumber]
+  /// setter via the push registration channel, which clears the badge number.
+  /// On Android, dismissing all notifications via [cancelAll] implicitly
+  /// removes the badge on launchers that support notification-based badges
+  /// (behavior varies by device/launcher).
+  /// On both platforms all displayed notifications are removed from the
+  /// notification shade via [FlutterLocalNotificationsPlugin.cancelAll].
+  /// In both cases the server badge counter is reset so subsequent push
+  /// notifications resume from 1.
+  Future<void> resetBadge() async {
+    if (kIsWeb) return;
+
+    // Dismiss all displayed notifications from the system notification shade
+    // on both Android and iOS so the user sees a clean tray after opening the
+    // app.
+    if (_localNotifications != null) {
+      try {
+        await _localNotifications!.cancelAll();
+      } catch (e) {
+        debugPrint('[PushNotificationService] cancelAll notifications error: $e');
+      }
+    }
+
+    // iOS: clear the app-icon badge via native channel.
+    if (_isIOSPlatform()) {
+      try {
+        await _pushRegistrationChannel.invokeMethod<void>('resetBadge');
+      } catch (e) {
+        debugPrint('[PushNotificationService] resetBadge native error: $e');
+      }
+    }
+
+    // Reset the server-side badge count so the next push notification
+    // arrives with badge number 1 instead of continuing from the old count.
+    try {
+      final username = _ref.read(currentUserProvider);
+      if (username != null && username.trim().isNotEmpty) {
+        await _api.resetServerBadge(username);
+      }
+    } catch (e) {
+      debugPrint('[PushNotificationService] resetBadge server error: $e');
+    }
+  }
 
   /// Unregister device token (on logout)
   Future<void> unregisterToken() async {

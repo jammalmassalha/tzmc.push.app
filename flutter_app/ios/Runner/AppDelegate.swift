@@ -22,6 +22,18 @@ import UIKit
         binaryMessenger: controller.binaryMessenger
       )
       pushRegistrationChannel.setMethodCallHandler { call, result in
+        if call.method == "resetBadge" {
+          let resetBadge = {
+            UIApplication.shared.applicationIconBadgeNumber = 0
+            result(nil)
+          }
+          if Thread.isMainThread {
+            resetBadge()
+          } else {
+            DispatchQueue.main.async(execute: resetBadge)
+          }
+          return
+        }
         guard call.method == "registerForRemoteNotifications" else {
           result(FlutterMethodNotImplemented)
           return
