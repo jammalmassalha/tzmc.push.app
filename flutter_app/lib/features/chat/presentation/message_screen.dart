@@ -1065,12 +1065,12 @@ String _normalizePhoneForAction(String value) {
 /// plain text that contains no URL tokens.
 ///
 /// Mirrors Angular's `appendTextAndPhoneParts` with the addition of GPS
-/// coordinate detection (requires ≥ 4 decimal digits to avoid false positives).
+/// coordinate detection (requires at least 4 decimal digits to avoid false positives).
 void _appendTextAndPhoneParts(List<_MessagePart> parts, String text) {
   if (text.isEmpty) return;
 
   // Combined regex: group 1 = GPS coords, group 0 (no group 1) = phone.
-  // Coordinate pattern requires ≥4 decimal digits to avoid false positives.
+  // Coordinate pattern requires at least 4 decimal digits to avoid false positives.
   final combined = RegExp(
     r'(-?\d{1,2}\.\d{4,}\s*,\s*-?\d{1,3}\.\d{4,})|(?:\+97205\d{8}|\+9725\d{8}|05\d{8})',
   );
