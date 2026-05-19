@@ -89,9 +89,13 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       unawaited(
-        ref.read(pushNotificationServiceProvider).resetBadge().catchError((e, st) {
-          debugPrint('[MessageScreen] resetBadge on open failed: $e\n$st');
-        }),
+        () async {
+          try {
+            await ref.read(pushNotificationServiceProvider).resetBadge();
+          } catch (e, st) {
+            debugPrint('[MessageScreen] resetBadge on open failed: $e\n$st');
+          }
+        }(),
       );
     });
     final unread = widget.initialUnreadCount;
