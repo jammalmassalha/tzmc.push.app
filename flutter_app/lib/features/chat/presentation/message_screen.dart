@@ -44,6 +44,7 @@ class MessageScreen extends ConsumerStatefulWidget {
 
 class _MessageScreenState extends ConsumerState<MessageScreen> {
   late final ChatStoreNotifier _chatStore;
+  bool _didCacheChatStore = false;
   late final ScrollController _scrollController;
   MessageReference? _replyTo;
   ChatMessage? _editingMessage;
@@ -93,7 +94,6 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   @override
   void initState() {
     super.initState();
-    _chatStore = ref.read(chatStoreProvider.notifier);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _resetBadgeOnOpen();
     });
@@ -118,6 +118,14 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
 
     // Seed the floating date badge on first layout.
     WidgetsBinding.instance.addPostFrameCallback((_) => _updateStickyDate());
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_didCacheChatStore) return;
+    _chatStore = ref.read(chatStoreProvider.notifier);
+    _didCacheChatStore = true;
   }
 
   /// Updates [_showScrollButton] and [_stickyDate] whenever the scroll
