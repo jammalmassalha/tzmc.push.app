@@ -19,6 +19,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
+import '../../../core/services/push_notification_service.dart';
 import '../../../core/api/http_client.dart';
 import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
@@ -84,6 +85,12 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ref.read(pushNotificationServiceProvider).resetBadge().catchError((e, st) {
+        debugPrint('[MessageScreen] resetBadge on open failed: $e\n$st');
+      });
+    });
     final unread = widget.initialUnreadCount;
     // Start the scroll near the boundary so the divider is in the initial
     // render window and `ensureVisible` can work on it.
