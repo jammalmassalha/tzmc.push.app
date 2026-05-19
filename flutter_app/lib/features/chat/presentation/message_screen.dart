@@ -3,8 +3,6 @@
 /// Shows message bubbles with support for text, images, reactions,
 /// replies, and edit/delete status.
 library;
-
-import 'dart:async';
 import 'dart:io' show File;
 import 'dart:typed_data' show Uint8List;
 import 'dart:ui' as ui;
@@ -95,7 +93,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_resetBadgeOnOpen());
+      _resetBadgeOnOpen();
     });
     final unread = widget.initialUnreadCount;
     // Start the scroll near the boundary so the divider is in the initial

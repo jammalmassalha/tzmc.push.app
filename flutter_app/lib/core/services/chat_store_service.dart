@@ -2617,7 +2617,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       if (json == null || json.isEmpty) return;
       final decoded = jsonDecode(json);
       if (decoded is! Map) return;
-      late final Map<String, dynamic> pending;
+      Map<String, dynamic> pending;
       try {
         pending = Map<String, dynamic>.from(decoded);
       } catch (_) {
