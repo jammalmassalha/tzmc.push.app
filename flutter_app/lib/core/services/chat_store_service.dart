@@ -353,6 +353,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       if (tray.isNotEmpty) {
         final merged = Map<String, int>.from(state.unreadByChat);
         for (final entry in tray.entries) {
+          // Skip the currently open chat — the user is already viewing it so
+          // the tray count would incorrectly re-show the badge after they exit.
+          if (entry.key == state.currentChatId) continue;
           final existing = merged[entry.key] ?? 0;
           if (entry.value > existing) {
             merged[entry.key] = entry.value;
@@ -2116,6 +2119,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // Non-fatal – the in-memory count is already correct.
     }
 
+    // Remove this chat from the FCM "pending tray" so that a stale
+    // background-notification count cannot re-show the badge on the next
+    // cold start.  The tray is written by firebaseMessagingBackgroundHandler
+    // while the app is not running; without this call the badge would
+    // re-appear after the user reads the messages and restarts the app.
+    unawaited(_clearChatFromPendingTray(chatId));
+
     try {
       await _api.markMessagesAsRead(chatId, messageIds, _currentUser ?? '');
     } catch (e) {
@@ -2155,6 +2165,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       } else {
         // Persist the cleared count to DB even without message IDs.
         _db.clearUnreadCount(chatId).catchError((_) {});
+        // Also clear the FCM pending tray so the badge is not re-shown on
+        // the next cold start when messages haven't been loaded yet.
+        _clearChatFromPendingTray(chatId).catchError((_) {});
       }
     }
   }
@@ -2586,6 +2599,33 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     } catch (e) {
       debugPrint('[ChatStore] Failed to read pending tray: $e');
       return {};
+    }
+  }
+
+  /// Removes [chatId] from the FCM "pending chat updates" tray in
+  /// SharedPreferences.
+  ///
+  /// Called by [markAsRead] and [setCurrentChat] so that when the user reads
+  /// a chat, any background-notification count stored for that chat is cleared
+  /// immediately.  Without this call the count would persist to the next cold
+  /// start and incorrectly re-set the badge for already-read messages.
+  Future<void> _clearChatFromPendingTray(String chatId) async {
+    if (kIsWeb) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final json = prefs.getString(kPendingChatUpdatesKey);
+      if (json == null || json.isEmpty) return;
+      final Map<String, dynamic> pending =
+          jsonDecode(json) as Map<String, dynamic>;
+      if (!pending.containsKey(chatId)) return;
+      pending.remove(chatId);
+      if (pending.isEmpty) {
+        await prefs.remove(kPendingChatUpdatesKey);
+      } else {
+        await prefs.setString(kPendingChatUpdatesKey, jsonEncode(pending));
+      }
+    } catch (_) {
+      // Non-fatal – the in-memory badge is already correct.
     }
   }
 
