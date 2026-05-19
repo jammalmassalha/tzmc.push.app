@@ -94,9 +94,6 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _resetBadgeOnOpen();
-    });
     final unread = widget.initialUnreadCount;
     // Start the scroll near the boundary so the divider is in the initial
     // render window and `ensureVisible` can work on it.
@@ -126,6 +123,9 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     if (_didCacheChatStore) return;
     _chatStore = ref.read(chatStoreProvider.notifier);
     _didCacheChatStore = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _resetBadgeOnOpen();
+    });
   }
 
   /// Updates [_showScrollButton] and [_stickyDate] whenever the scroll

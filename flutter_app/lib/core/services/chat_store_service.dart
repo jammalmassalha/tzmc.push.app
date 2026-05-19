@@ -2617,13 +2617,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       if (json == null || json.isEmpty) return;
       final decoded = jsonDecode(json);
       if (decoded is! Map<String, dynamic>) return;
-      final pending = decoded;
-      if (!pending.containsKey(chatId)) return;
-      pending.remove(chatId);
-      if (pending.isEmpty) {
+      if (!decoded.containsKey(chatId)) return;
+      decoded.remove(chatId);
+      if (decoded.isEmpty) {
         await prefs.remove(kPendingChatUpdatesKey);
       } else {
-        await prefs.setString(kPendingChatUpdatesKey, jsonEncode(pending));
+        await prefs.setString(kPendingChatUpdatesKey, jsonEncode(decoded));
       }
     } catch (e) {
       debugPrint('[ChatStore] Failed to clear pending tray for $chatId: $e');
