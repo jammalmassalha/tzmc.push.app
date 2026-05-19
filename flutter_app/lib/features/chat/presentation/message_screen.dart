@@ -43,8 +43,7 @@ class MessageScreen extends ConsumerStatefulWidget {
 }
 
 class _MessageScreenState extends ConsumerState<MessageScreen> {
-  late final ChatStoreNotifier _chatStore;
-  bool _didCacheChatStore = false;
+  ChatStoreNotifier? _chatStore;
   late final ScrollController _scrollController;
   MessageReference? _replyTo;
   ChatMessage? _editingMessage;
@@ -120,9 +119,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (_didCacheChatStore) return;
+    if (_chatStore != null) return;
     _chatStore = ref.read(chatStoreProvider.notifier);
-    _didCacheChatStore = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _resetBadgeOnOpen();
     });
@@ -201,7 +199,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     // correctly increment the unread badge after the user leaves.
     // This covers the system-back-button path where the AppBar handler
     // is not invoked.
-    _chatStore.setCurrentChat(null);
+    _chatStore?.setCurrentChat(null);
     super.dispose();
   }
 
