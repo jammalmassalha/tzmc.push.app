@@ -95,7 +95,6 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
       unawaited(_resetBadgeOnOpen());
     });
     final unread = widget.initialUnreadCount;
