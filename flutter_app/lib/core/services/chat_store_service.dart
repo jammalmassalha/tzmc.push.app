@@ -2628,8 +2628,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       } else {
         await prefs.setString(kPendingChatUpdatesKey, jsonEncode(pending));
       }
-    } catch (_) {
-      // Non-fatal – the in-memory badge is already correct.
+    } catch (e) {
+      debugPrint('[ChatStore] Failed to clear pending tray for $chatId: $e');
     }
   }
 
