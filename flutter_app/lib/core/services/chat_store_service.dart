@@ -2124,7 +2124,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // cold start.  The tray is written by firebaseMessagingBackgroundHandler
     // while the app is not running; without this call the badge would
     // re-appear after the user reads the messages and restarts the app.
-    unawaited(_clearChatFromPendingTray(chatId));
+    unawaited(_clearChatFromPendingTray(chatId).catchError((e) {
+      debugPrint('[ChatStore] Failed to clear pending tray for $chatId: $e');
+    }));
 
     try {
       await _api.markMessagesAsRead(chatId, messageIds, _currentUser ?? '');
@@ -2167,7 +2169,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         _db.clearUnreadCount(chatId).catchError((_) {});
         // Also clear the FCM pending tray so the badge is not re-shown on
         // the next cold start when messages haven't been loaded yet.
-        _clearChatFromPendingTray(chatId).catchError((_) {});
+        _clearChatFromPendingTray(chatId).catchError((e) {
+          debugPrint('[ChatStore] Failed to clear pending tray for $chatId: $e');
+        });
       }
     }
   }
