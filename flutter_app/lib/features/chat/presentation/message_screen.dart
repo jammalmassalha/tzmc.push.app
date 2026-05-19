@@ -83,20 +83,20 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   /// when there are unread messages and for the floating date calculation.
   static const double _estimatedItemHeight = 72.0;
 
+  Future<void> _resetBadgeOnOpen() async {
+    try {
+      await ref.read(pushNotificationServiceProvider).resetBadge();
+    } catch (e, st) {
+      debugPrint('[MessageScreen] resetBadge on open failed: $e\n$st');
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      unawaited(
-        () async {
-          try {
-            await ref.read(pushNotificationServiceProvider).resetBadge();
-          } catch (e, st) {
-            debugPrint('[MessageScreen] resetBadge on open failed: $e\n$st');
-          }
-        }(),
-      );
+      unawaited(_resetBadgeOnOpen());
     });
     final unread = widget.initialUnreadCount;
     // Start the scroll near the boundary so the divider is in the initial

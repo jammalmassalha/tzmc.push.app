@@ -2615,8 +2615,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       final prefs = await SharedPreferences.getInstance();
       final json = prefs.getString(kPendingChatUpdatesKey);
       if (json == null || json.isEmpty) return;
-      final Map<String, dynamic> pending =
-          jsonDecode(json) as Map<String, dynamic>;
+      final decoded = jsonDecode(json);
+      if (decoded is! Map) return;
+      final pending = Map<String, dynamic>.from(decoded);
       if (!pending.containsKey(chatId)) return;
       pending.remove(chatId);
       if (pending.isEmpty) {
