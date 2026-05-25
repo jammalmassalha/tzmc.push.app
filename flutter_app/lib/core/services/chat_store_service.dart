@@ -2177,13 +2177,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     ///
     /// This is a local-delete action (client-side only): it removes the chat's
     /// messages and unread counter from the current device state.
-    Future<void> deleteChat(String chatId) async {
+    Future<bool> deleteChat(String chatId) async {
       final normalized = chatId.trim();
-      if (normalized.isEmpty) return;
+      if (normalized.isEmpty) return false;
 
       final newMessagesByChat = Map<String, List<ChatMessage>>.from(state.messagesByChat);
       final hadChat = newMessagesByChat.remove(normalized) != null;
-      if (!hadChat) return;
+      if (!hadChat) return false;
 
       final newUnread = Map<String, int>.from(state.unreadByChat);
       newUnread.remove(normalized);
@@ -2200,6 +2200,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
       unawaited(_clearChatFromPendingTray(normalized));
       _schedulePersistence();
+      return true;
     }
   }
 

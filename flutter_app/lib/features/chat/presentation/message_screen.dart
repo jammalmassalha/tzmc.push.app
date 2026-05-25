@@ -43,7 +43,6 @@ class MessageScreen extends ConsumerStatefulWidget {
 }
 
 class _MessageScreenState extends ConsumerState<MessageScreen> {
-  ChatStoreNotifier? _chatStore;
   late final ScrollController _scrollController;
   MessageReference? _replyTo;
   ChatMessage? _editingMessage;
@@ -116,16 +115,11 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
 
     // Seed the floating date badge on first layout.
     WidgetsBinding.instance.addPostFrameCallback((_) => _updateStickyDate());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _resetBadgeOnOpen());
   }
 
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (_chatStore != null) return;
-    _chatStore = ref.read(chatStoreProvider.notifier);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _resetBadgeOnOpen();
-    });
+  void _clearCurrentChatSelection() {
+    ref.read(chatStoreProvider.notifier).setCurrentChat(null);
   }
 
   /// Updates [_showScrollButton] and [_stickyDate] whenever the scroll
@@ -218,7 +212,6 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     // correctly increment the unread badge after the user leaves.
     // This covers the system-back-button path where the AppBar handler
     // is not invoked.
-    _chatStore?.setCurrentChat(null);
     super.dispose();
   }
 
@@ -244,7 +237,12 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
 
     return Directionality(
       textDirection: ui.TextDirection.rtl,
-      child: Scaffold(
+      child: WillPopScope(
+        onWillPop: () async {
+          _clearCurrentChatSelection();
+          return true;
+        },
+        child: Scaffold(
         appBar: _searchActive
             ? AppBar(
                 leading: IconButton(
@@ -279,7 +277,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                 leading: IconButton(
                   icon: const Icon(Icons.arrow_back),
                   onPressed: () {
-                    ref.read(chatStoreProvider.notifier).setCurrentChat(null);
+                    _clearCurrentChatSelection();
                     Navigator.of(context).pop();
                   },
                 ),
@@ -664,6 +662,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
               ),
           ],
         ),
+        ),
       ),
     );
   }
@@ -846,10 +845,14 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       ),
     );
     if (confirmed != true || !mounted) return;
-    await ref.read(chatStoreProvider.notifier).deleteChat(widget.chatId);
+    final deleted = await ref.read(chatStoreProvider.notifier).deleteChat(widget.chatId);
     if (!mounted) return;
-    Navigator.of(context).pop();
-    showTopToast(context, 'השיחה נמחקה');
+    if (deleted) {
+      Navigator.of(context).pop();
+      showTopToast(context, 'השיחה נמחקה');
+    } else {
+      showTopToast(context, 'לא נמצאה שיחה למחיקה');
+    }
   }
 
   Future<void> _showGroupSenderActions({
@@ -858,9 +861,12 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   }) async {
     final normalizedSender = senderId.trim();
     if (normalizedSender.isEmpty) return;
-    if (normalizedSender.toLowerCase() == widget.chatId.trim().toLowerCase()) return;
-    if (normalizedSender.toLowerCase() ==
-        (ref.read(chatStoreProvider.notifier).currentUser ?? '').toLowerCase()) {
+    final normalizedSenderLower = normalizedSender.toLowerCase();
+    final currentChatLower = widget.chatId.trim().toLowerCase();
+    final currentUserLower =
+        (ref.read(chatStoreProvider.notifier).currentUser ?? '').toLowerCase();
+    if (normalizedSenderLower == currentChatLower) return;
+    if (normalizedSenderLower == currentUserLower) {
       return;
     }
 
