@@ -89,6 +89,14 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     } catch (e, st) {
       debugPrint('[MessageScreen] resetBadge on open failed: $e\n$st');
     }
+
+    GlobalKey _keyForMessage(String messageId) {
+      final existing = _messageItemKeys[messageId];
+      if (existing != null) return existing;
+      final created = GlobalKey(debugLabel: 'message_$messageId');
+      _messageItemKeys[messageId] = created;
+      return created;
+    }
   }
 
   @override
@@ -510,10 +518,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                          }
 
                          return KeyedSubtree(
-                           key: _messageItemKeys.putIfAbsent(
-                             message.id,
-                             () => GlobalKey(debugLabel: 'message_${message.id}'),
-                           ),
+                           key: _keyForMessage(message.id),
                            child: Column(
                            children: [
                              if (showDateHeader)
@@ -852,7 +857,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       Navigator.of(context).pop();
       showTopToast(context, 'השיחה נמחקה');
     } else {
-      showTopToast(context, 'לא נמצאה שיחה למחיקה');
+      showTopToast(context, 'לא ניתן למחוק את השיחה');
     }
   }
 

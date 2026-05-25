@@ -147,7 +147,7 @@ class ChatListScreen extends ConsumerWidget {
     if (confirmed != true || !context.mounted) return;
     final deleted = await ref.read(chatStoreProvider.notifier).deleteChat(item.id);
     if (context.mounted) {
-      showTopToast(context, deleted ? 'השיחה נמחקה' : 'לא נמצאה שיחה למחיקה');
+      showTopToast(context, deleted ? 'השיחה נמחקה' : 'לא ניתן למחוק את השיחה');
     }
   }
 }

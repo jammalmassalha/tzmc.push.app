@@ -2200,7 +2200,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         clearCurrentChat: state.currentChatId == normalized,
       );
 
-      unawaited(_clearChatFromPendingTray(normalized));
+      await _clearChatFromPendingTray(normalized);
       _schedulePersistence();
       return true;
     }
