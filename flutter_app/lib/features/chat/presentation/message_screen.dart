@@ -70,7 +70,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   /// Latest snapshot of the visible message list, kept in sync inside [build]
   /// so the scroll listener can compute the floating date without BuildContext.
   List<ChatMessage> _currentMessages = [];
-  final GlobalKey _messagesListKey = GlobalKey();
+  final GlobalKey _messagesListKey = GlobalKey(debugLabel: 'messagesList');
   final Map<String, GlobalKey> _messageItemKeys = <String, GlobalKey>{};
 
   /// Key placed on the "unread messages" divider so we can scroll to it
@@ -512,7 +512,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                          return KeyedSubtree(
                            key: _messageItemKeys.putIfAbsent(
                              message.id,
-                             GlobalKey.new,
+                             () => GlobalKey(debugLabel: 'message_${message.id}'),
                            ),
                            child: Column(
                            children: [
@@ -902,7 +902,13 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                 Navigator.of(ctx).pop();
                 final chatId =
                     ref.read(chatStoreProvider.notifier).startDirectChat(normalizedSender);
-                if (chatId.isEmpty || !mounted) return;
+                if (chatId.isEmpty) {
+                  if (mounted) {
+                    showTopToast(context, 'לא ניתן לפתוח שיחה פרטית');
+                  }
+                  return;
+                }
+                if (!mounted) return;
                 final unread = ref.read(chatStoreProvider).unreadByChat[chatId] ?? 0;
                 Navigator.of(context).push(
                   MaterialPageRoute(

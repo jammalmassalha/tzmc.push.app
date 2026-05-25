@@ -2177,6 +2177,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     ///
     /// This is a local-delete action (client-side only): it removes the chat's
     /// messages and unread counter from the current device state.
+    /// Returns true when the chat existed and was removed; false otherwise.
     Future<bool> deleteChat(String chatId) async {
       final normalized = chatId.trim();
       if (normalized.isEmpty) return false;
