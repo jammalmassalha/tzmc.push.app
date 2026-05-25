@@ -2195,6 +2195,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         messagesByChat: newMessagesByChat,
         unreadByChat: newUnread,
         groups: newGroups,
+        // Clear the current selection when deleting the chat that is open now.
         clearCurrentChat: state.currentChatId == normalized,
       );
 

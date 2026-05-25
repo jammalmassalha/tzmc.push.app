@@ -208,10 +208,11 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     _scrollController.dispose();
     _searchController.dispose();
     _searchFocus.dispose();
-    // Clear the current-chat marker so that new messages for this chat
-    // correctly increment the unread badge after the user leaves.
-    // This covers the system-back-button path where the AppBar handler
-    // is not invoked.
+    // Best-effort cleanup for replacement/disposal paths that don't invoke
+    // the pop callbacks.
+    try {
+      _clearCurrentChatSelection();
+    } catch (_) {}
     super.dispose();
   }
 
