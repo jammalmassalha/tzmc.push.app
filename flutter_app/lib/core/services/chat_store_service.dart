@@ -142,6 +142,7 @@ class ChatState {
         id: chatId,
         title: contact?.displayName ?? chatId,
         info: contact?.info,
+        phone: contact?.phone,
         subtitle: _getMessagePreview(lastMessage),
         lastTimestamp: lastMessage.timestamp,
         unread: unreadByChat[chatId] ?? 0,
@@ -162,6 +163,7 @@ class ChatState {
         id: group.id,
         title: group.name,
         info: '${group.members.length} חברים',
+        phone: null,
         subtitle: _getMessagePreview(lastMessage),
         lastTimestamp: lastMessage.timestamp,
         unread: unreadByChat[group.id] ?? 0,
@@ -2169,6 +2171,35 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // the next cold start when messages haven't been loaded yet.
         unawaited(_clearChatFromPendingTray(chatId));
       }
+    }
+
+    /// Remove a chat locally from the dashboard list and persisted store.
+    ///
+    /// This is a local-delete action (client-side only): it removes the chat's
+    /// messages and unread counter from the current device state.
+    Future<void> deleteChat(String chatId) async {
+      final normalized = chatId.trim();
+      if (normalized.isEmpty) return;
+
+      final newMessagesByChat = Map<String, List<ChatMessage>>.from(state.messagesByChat);
+      final hadChat = newMessagesByChat.remove(normalized) != null;
+      if (!hadChat) return;
+
+      final newUnread = Map<String, int>.from(state.unreadByChat);
+      newUnread.remove(normalized);
+
+      final newGroups = Map<String, ChatGroup>.from(state.groups);
+      newGroups.remove(normalized);
+
+      state = state.copyWith(
+        messagesByChat: newMessagesByChat,
+        unreadByChat: newUnread,
+        groups: newGroups,
+        clearCurrentChat: state.currentChatId == normalized,
+      );
+
+      unawaited(_clearChatFromPendingTray(normalized));
+      _schedulePersistence();
     }
   }
 

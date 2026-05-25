@@ -71,6 +71,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   /// Latest snapshot of the visible message list, kept in sync inside [build]
   /// so the scroll listener can compute the floating date without BuildContext.
   List<ChatMessage> _currentMessages = [];
+  final GlobalKey _messagesListKey = GlobalKey();
+  final Map<String, GlobalKey> _messageItemKeys = <String, GlobalKey>{};
 
   /// Key placed on the "unread messages" divider so we can scroll to it
   /// precisely once the list has been laid out.
@@ -141,25 +143,42 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   }
 
   /// Computes and stores the floating date label for the topmost visible
-  /// message.  In a `reverse: true` ListView the topmost visible item has a
-  /// reversed-list index of ≈ (offset + viewportHeight) / estimatedItemHeight.
+  /// message using actual rendered message positions.
   void _updateStickyDate() {
     // No need to update while search is active — the badge is hidden.
     if (_searchActive) return;
-    if (!_scrollController.hasClients || _currentMessages.isEmpty) {
+    if (_currentMessages.isEmpty) {
       if (_stickyDate != null) setState(() => _stickyDate = null);
       return;
     }
-    final position = _scrollController.position;
-    final offset = position.pixels;
-    final viewport = position.viewportDimension;
 
-    // Approximate reversed-list index of the message at the top of the viewport.
-    final topReversedIdx =
-        ((offset + viewport) / _estimatedItemHeight).floor()
-            .clamp(0, _currentMessages.length - 1);
+    final listContext = _messagesListKey.currentContext;
+    final listObject = listContext?.findRenderObject();
+    if (listObject is! RenderBox) return;
 
-    final date = _formatStickyDate(_currentMessages[topReversedIdx].timestamp);
+    final listTop = listObject.localToGlobal(Offset.zero).dy;
+    final listBottom = listTop + listObject.size.height;
+    ChatMessage? topVisibleMessage;
+    double? topVisibleDy;
+
+    for (final message in _currentMessages) {
+      final key = _messageItemKeys[message.id];
+      final ctx = key?.currentContext;
+      final object = ctx?.findRenderObject();
+      if (object is! RenderBox) continue;
+
+      final top = object.localToGlobal(Offset.zero).dy;
+      final bottom = top + object.size.height;
+      if (bottom <= listTop || top >= listBottom) continue;
+
+      if (topVisibleDy == null || top < topVisibleDy) {
+        topVisibleDy = top;
+        topVisibleMessage = message;
+      }
+    }
+
+    if (topVisibleMessage == null) return;
+    final date = _formatStickyDate(topVisibleMessage.timestamp);
     if (date != _stickyDate) {
       setState(() => _stickyDate = date);
     }
@@ -220,6 +239,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     // Keep _currentMessages in sync so the scroll listener can access the
     // latest message list for floating-date computation.
     _currentMessages = messages;
+    final visibleMessageIds = messages.map((m) => m.id).toSet();
+    _messageItemKeys.removeWhere((id, _) => !visibleMessageIds.contains(id));
 
     return Directionality(
       textDirection: ui.TextDirection.rtl,
@@ -341,18 +362,52 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                   PopupMenuButton<String>(
                     icon: const Icon(Icons.more_vert),
                     onSelected: _handleMenuAction,
-                    itemBuilder: (context) => [
-                      const PopupMenuItem(
-                        value: 'info',
-                        child: Row(
-                          children: [
-                            Icon(Icons.info_outline, size: 20),
-                            SizedBox(width: 12),
-                            Text('פרטים'),
-                          ],
+                    itemBuilder: (context) {
+                      final phone =
+                          state.contacts[widget.chatId]?.phone?.trim() ?? '';
+                      return [
+                        const PopupMenuItem(
+                          value: 'info',
+                          child: Row(
+                            children: [
+                              Icon(Icons.info_outline, size: 20),
+                              SizedBox(width: 12),
+                              Text('פרטים'),
+                            ],
+                          ),
                         ),
-                      ),
-                    ],
+                        if (!chatInfo.isGroup && phone.isNotEmpty)
+                          const PopupMenuItem(
+                            value: 'call',
+                            child: Row(
+                              children: [
+                                Icon(Icons.call_outlined, size: 20),
+                                SizedBox(width: 12),
+                                Text('התקשר'),
+                              ],
+                            ),
+                          ),
+                        PopupMenuItem(
+                          value: 'delete_chat',
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.delete_outline,
+                                size: 20,
+                                color: Theme.of(context).colorScheme.error,
+                              ),
+                              const SizedBox(width: 12),
+                              Text(
+                                'מחק שיחה',
+                                style: TextStyle(
+                                  color: Theme.of(context).colorScheme.error,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ];
+                    },
                   ),
                 ],
               ),
@@ -368,6 +423,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                        ? _buildSearchEmpty(context)
                        : _buildEmptyState(context))
                    : ListView.builder(
+                       key: _messagesListKey,
                        controller: _scrollController,
                        reverse: true,
                        padding: const EdgeInsets.symmetric(
@@ -454,7 +510,12 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                            }
                          }
 
-                         return Column(
+                         return KeyedSubtree(
+                           key: _messageItemKeys.putIfAbsent(
+                             message.id,
+                             GlobalKey.new,
+                           ),
+                           child: Column(
                            children: [
                              if (showDateHeader)
                                _buildDateHeader(context, message.timestamp),
@@ -462,6 +523,10 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                                message: message,
                                isGroup: messageIsFromGroup,
                                resolvedSenderLabel: resolvedSenderLabel,
+                               onSenderTap: () => _showGroupSenderActions(
+                                 senderId: message.sender,
+                                 senderLabel: resolvedSenderLabel ?? message.sender,
+                               ),
                                searchQuery:
                                    _searchActive ? _searchQuery : null,
                                onReply: () => setState(
@@ -488,6 +553,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                                onForward: () => _handleForward(message),
                              ),
                            ],
+                           ),
                          );
                        },
                      ),
@@ -732,7 +798,117 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       case 'info':
         _showChatInfo();
         break;
+      case 'call':
+        _callCurrentChatUser();
+        break;
+      case 'delete_chat':
+        _confirmDeleteCurrentChat();
+        break;
     }
+  }
+
+  Future<void> _callCurrentChatUser() async {
+    final phone = ref.read(chatStoreProvider).contacts[widget.chatId]?.phone?.trim() ?? '';
+    if (phone.isEmpty) return;
+    final uri = Uri(scheme: 'tel', path: phone);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri);
+      return;
+    }
+    if (mounted) {
+      showTopToast(context, 'לא ניתן להתחיל שיחה');
+    }
+  }
+
+  Future<void> _confirmDeleteCurrentChat() async {
+    final chatInfo = _getChatInfo(ref.read(chatStoreProvider));
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('מחיקת שיחה', textDirection: ui.TextDirection.rtl),
+        content: Text(
+          'האם למחוק את השיחה עם "${chatInfo.title}"?',
+          textDirection: ui.TextDirection.rtl,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('ביטול'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(
+              'מחק',
+              style: TextStyle(color: Theme.of(ctx).colorScheme.error),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await ref.read(chatStoreProvider.notifier).deleteChat(widget.chatId);
+    if (!mounted) return;
+    Navigator.of(context).pop();
+    showTopToast(context, 'השיחה נמחקה');
+  }
+
+  Future<void> _showGroupSenderActions({
+    required String senderId,
+    required String senderLabel,
+  }) async {
+    final normalizedSender = senderId.trim();
+    if (normalizedSender.isEmpty) return;
+    if (normalizedSender.toLowerCase() == widget.chatId.trim().toLowerCase()) return;
+    if (normalizedSender.toLowerCase() ==
+        (ref.read(chatStoreProvider.notifier).currentUser ?? '').toLowerCase()) {
+      return;
+    }
+
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                senderLabel,
+                style: Theme.of(ctx).textTheme.titleMedium,
+                textDirection: ui.TextDirection.rtl,
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.person_outline),
+              title: const Text('הצג פרופיל'),
+              onTap: () {
+                Navigator.of(ctx).pop();
+                if (mounted) {
+                  showTopToast(context, 'פרופיל משתמש - בקרוב');
+                }
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.chat_bubble_outline),
+              title: const Text('שלח הודעה פרטית'),
+              onTap: () {
+                Navigator.of(ctx).pop();
+                final chatId =
+                    ref.read(chatStoreProvider.notifier).startDirectChat(normalizedSender);
+                if (chatId.isEmpty || !mounted) return;
+                final unread = ref.read(chatStoreProvider).unreadByChat[chatId] ?? 0;
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        MessageScreen(chatId: chatId, initialUnreadCount: unread),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _showChatInfo() {
@@ -1315,6 +1491,7 @@ class _MessageBubble extends StatelessWidget {
   final ChatMessage message;
   final bool isGroup;
   final String? resolvedSenderLabel;
+  final VoidCallback? onSenderTap;
   final String? searchQuery;
   final VoidCallback onReply;
   final void Function(String emoji) onReact;
@@ -1327,6 +1504,7 @@ class _MessageBubble extends StatelessWidget {
     required this.message,
     required this.isGroup,
     this.resolvedSenderLabel,
+    this.onSenderTap,
     this.searchQuery,
     required this.onReply,
     required this.onReact,
@@ -1380,12 +1558,19 @@ class _MessageBubble extends StatelessWidget {
                         resolvedSenderLabel!.isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 4),
-                        child: Text(
-                          resolvedSenderLabel!,
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            color: _getSenderColor(message.sender),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(4),
+                          onTap: onSenderTap,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
+                            child: Text(
+                              resolvedSenderLabel!,
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: _getSenderColor(message.sender),
+                              ),
+                            ),
                           ),
                         ),
                       ),

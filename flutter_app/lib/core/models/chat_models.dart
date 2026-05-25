@@ -441,6 +441,7 @@ class ChatListItem extends Equatable {
   final String id;
   final String title;
   final String? info;
+  final String? phone;
   final String subtitle;
   final int lastTimestamp;
   final int unread;
@@ -452,6 +453,7 @@ class ChatListItem extends Equatable {
     required this.id,
     required this.title,
     this.info,
+    this.phone,
     required this.subtitle,
     required this.lastTimestamp,
     required this.unread,
@@ -461,7 +463,7 @@ class ChatListItem extends Equatable {
   });
 
   @override
-  List<Object?> get props => [id, title, info, subtitle, lastTimestamp, unread, isGroup, pinned, avatarUrl];
+  List<Object?> get props => [id, title, info, phone, subtitle, lastTimestamp, unread, isGroup, pinned, avatarUrl];
 }
 
 /// Incoming server message (raw message from API)
