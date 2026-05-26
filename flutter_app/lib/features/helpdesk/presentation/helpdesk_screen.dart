@@ -18,6 +18,7 @@ import '../../../core/api/chat_api_service.dart';
 import '../../../core/models/helpdesk_models.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../../core/utils/xfile.dart' as xfile;
+import '../../../shared/widgets/authenticated_image.dart';
 import '../../auth/presentation/auth_state.dart';
 import '../../../core/utils/toast_utils.dart';
 
@@ -2395,16 +2396,7 @@ class _NoteItem extends StatelessWidget {
           if (note.attachmentUrl != null &&
               note.attachmentUrl!.isNotEmpty) ...[
             const SizedBox(height: 4),
-            Row(children: [
-              Icon(Icons.attach_file,
-                  size: 14, color: theme.colorScheme.primary),
-              const SizedBox(width: 4),
-              Text('קובץ מצורף',
-                  style: TextStyle(
-                      color: theme.colorScheme.primary,
-                      fontSize: 12,
-                      decoration: TextDecoration.underline)),
-            ]),
+            _AttachmentRow(url: note.attachmentUrl!),
           ],
         ],
       ),
@@ -2431,9 +2423,10 @@ class _AttachmentRow extends StatelessWidget {
   }
 
   Future<void> _open(BuildContext context) async {
-    final uri = Uri.tryParse(url);
+    final resolvedUrl = resolveToAbsoluteUrl(url);
+    final uri = Uri.tryParse(resolvedUrl);
     if (uri == null) return;
-    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+    if (!await launchUrl(uri, mode: LaunchMode.platformDefault)) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('לא ניתן לפתוח את הקובץ')),
@@ -2465,7 +2458,7 @@ class _AttachmentRow extends StatelessWidget {
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(8),
                       child: Image.network(
-                        url,
+                        resolveToAbsoluteUrl(url),
                         height: 160,
                         width: double.infinity,
                         fit: BoxFit.cover,
