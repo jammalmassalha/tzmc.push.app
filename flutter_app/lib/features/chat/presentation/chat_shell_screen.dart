@@ -182,6 +182,26 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
             appBar: AppBar(
               title: Text(_getTabTitle(_currentTab)),
               actions: [
+                if (_currentTab == MainTab.chats || _currentTab == MainTab.groups)
+                  Padding(
+                    padding: const EdgeInsetsDirectional.only(end: 4),
+                    child: Semantics(
+                      button: true,
+                      label: _currentTab == MainTab.groups
+                          ? 'פתח אפשרויות ליצירת קבוצה חדשה'
+                          : 'פתח אפשרויות להתחלת שיחה חדשה',
+                      child: IconButton(
+                        tooltip:
+                            _currentTab == MainTab.groups ? 'קבוצה חדשה' : 'שיחה חדשה',
+                        onPressed: _handleNewChat,
+                        icon: Icon(
+                          _currentTab == MainTab.groups
+                              ? Icons.group_add_outlined
+                              : Icons.chat_bubble_outline,
+                        ),
+                      ),
+                    ),
+                  ),
                 // Connection status indicator
                 Consumer(
                   builder: (context, ref, _) {
@@ -276,12 +296,6 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
               },
               items: _visibleTabs.map(_buildNavItem).toList(),
             ),
-            floatingActionButton: _currentTab == MainTab.chats || _currentTab == MainTab.groups
-                ? FloatingActionButton(
-                    onPressed: _handleNewChat,
-                    child: const Icon(Icons.add),
-                  )
-                : null,
           ),
 
           // Full-sync progress overlay — mirrors Angular's sync-loader-backdrop.

@@ -54,6 +54,13 @@ const int _kGroupSenderPrefixMaxLength = 80;
 /// pull completes — and so any messages missed by the pull are still counted.
 const String kPendingChatUpdatesKey = 'tzmc_pending_chat_updates_v1';
 
+/// SharedPreferences key for locally deleted chats.
+///
+/// Stores a JSON object of `{ chatId: deletedAtEpochMs }` so a locally deleted
+/// chat stays hidden across app restarts and full syncs until newer messages
+/// arrive after the stored delete timestamp.
+const String kDeletedChatsKey = 'tzmc_deleted_chats_v1';
+
 // ---------------------------------------------------------------------------
 // Chat State
 // ---------------------------------------------------------------------------
@@ -64,6 +71,7 @@ class ChatState {
   final Map<String, ChatGroup> groups;
   final Map<String, List<ChatMessage>> messagesByChat;
   final Map<String, int> unreadByChat;
+  final Map<String, int> deletedChats;
   final String? currentChatId;
   final bool isLoading;
   final bool isInitialized;
@@ -82,6 +90,7 @@ class ChatState {
     this.groups = const {},
     this.messagesByChat = const {},
     this.unreadByChat = const {},
+    this.deletedChats = const {},
     this.currentChatId,
     this.isLoading = false,
     this.isInitialized = false,
@@ -96,6 +105,7 @@ class ChatState {
     Map<String, ChatGroup>? groups,
     Map<String, List<ChatMessage>>? messagesByChat,
     Map<String, int>? unreadByChat,
+    Map<String, int>? deletedChats,
     String? currentChatId,
     bool? isLoading,
     bool? isInitialized,
@@ -110,6 +120,7 @@ class ChatState {
       groups: groups ?? this.groups,
       messagesByChat: messagesByChat ?? this.messagesByChat,
       unreadByChat: unreadByChat ?? this.unreadByChat,
+      deletedChats: deletedChats ?? this.deletedChats,
       currentChatId: clearCurrentChat ? null : (currentChatId ?? this.currentChatId),
       isLoading: isLoading ?? this.isLoading,
       isInitialized: isInitialized ?? this.isInitialized,
@@ -278,6 +289,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     state = state.copyWith(isLoading: true);
 
     try {
+      final deletedChats = await _readDeletedChats();
+      state = state.copyWith(deletedChats: deletedChats);
+
       // 1. Restore from local database (best-effort).
       //
       // On Flutter web the legacy sql.js engine may not initialise correctly
@@ -297,8 +311,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         state = state.copyWith(
           contacts: Map.fromEntries(persisted.contacts.map((c) => MapEntry(c.username, c))),
           groups: Map.fromEntries(persisted.groups.map((g) => MapEntry(g.id, g))),
-          messagesByChat: _groupMessagesByChat(persisted.messages),
+          messagesByChat: _filterDeletedChatMessages(
+            _groupMessagesByChat(persisted.messages),
+            deletedChats,
+          ),
           unreadByChat: const {},
+          deletedChats: deletedChats,
         );
       } catch (dbError) {
         debugPrint('[ChatStore] DB restore failed, trying web storage fallback: $dbError');
@@ -311,8 +329,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
               state = state.copyWith(
                 contacts: Map.fromEntries(webPersisted.contacts.map((c) => MapEntry(c.username, c))),
                 groups: Map.fromEntries(webPersisted.groups.map((g) => MapEntry(g.id, g))),
-                messagesByChat: _groupMessagesByChat(webPersisted.messages),
+                messagesByChat: _filterDeletedChatMessages(
+                  _groupMessagesByChat(webPersisted.messages),
+                  deletedChats,
+                ),
                 unreadByChat: const {},
+                deletedChats: deletedChats,
               );
               debugPrint('[ChatStore] Restored state from web storage (${webPersisted.messages.length} messages)');
             }
@@ -398,6 +420,29 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       result[chatId]!.sort((a, b) => b.timestamp.compareTo(a.timestamp));
     }
     return result;
+  }
+
+  Map<String, List<ChatMessage>> _filterDeletedChatMessages(
+    Map<String, List<ChatMessage>> messagesByChat,
+    Map<String, int> deletedChats,
+  ) {
+    if (messagesByChat.isEmpty || deletedChats.isEmpty) return messagesByChat;
+
+    final filtered = <String, List<ChatMessage>>{};
+    for (final entry in messagesByChat.entries) {
+      final deletedAt = deletedChats[entry.key];
+      if (deletedAt == null) {
+        filtered[entry.key] = entry.value;
+        continue;
+      }
+
+      final kept = entry.value.where((message) => message.timestamp > deletedAt).toList();
+      if (kept.isNotEmpty) {
+        kept.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+        filtered[entry.key] = kept;
+      }
+    }
+    return filtered;
   }
 
   // ---------------------------------------------------------------------------
@@ -1277,6 +1322,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     for (final message in messages) {
       final chatId = message.chatId;
+      final deletedAt = state.deletedChats[chatId];
+      if (deletedAt != null && message.timestamp <= deletedAt) {
+        continue;
+      }
       final chatMessages =
           List<ChatMessage>.from(newMessagesByChat[chatId] ?? const <ChatMessage>[]);
 
@@ -1630,6 +1679,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// read it, so re-incrementing the badge would be incorrect.
   bool _applyIncomingMessage(ChatMessage message) {
     final chatId = message.chatId;
+    final deletedAt = state.deletedChats[chatId];
+    if (deletedAt != null && message.timestamp <= deletedAt) {
+      return false;
+    }
     final newMessagesByChat = Map<String, List<ChatMessage>>.from(state.messagesByChat);
     final chatMessages = List<ChatMessage>.from(newMessagesByChat[chatId] ?? []);
 
@@ -2184,6 +2237,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final normalized = chatId.trim();
     if (normalized.isEmpty) return false;
 
+    final existingMessages = state.messagesByChat[normalized] ?? const <ChatMessage>[];
     final newMessagesByChat = Map<String, List<ChatMessage>>.from(state.messagesByChat);
     final hadChat = newMessagesByChat.remove(normalized) != null;
     if (!hadChat) return false;
@@ -2194,15 +2248,27 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final newGroups = Map<String, ChatGroup>.from(state.groups);
     newGroups.remove(normalized);
 
+    final newDeletedChats = Map<String, int>.from(state.deletedChats);
+    int deletedAt = 0;
+    for (final message in existingMessages) {
+      if (message.timestamp > deletedAt) {
+        deletedAt = message.timestamp;
+      }
+    }
+    if (deletedAt == 0) deletedAt = DateTime.now().millisecondsSinceEpoch;
+    newDeletedChats[normalized] = deletedAt;
+
     state = state.copyWith(
       messagesByChat: newMessagesByChat,
       unreadByChat: newUnread,
       groups: newGroups,
+      deletedChats: newDeletedChats,
       // Clear the current selection when deleting the chat that is open now.
       clearCurrentChat: state.currentChatId == normalized,
     );
 
     await _clearChatFromPendingTray(normalized);
+    await _writeDeletedChats(newDeletedChats);
     _schedulePersistence();
     return true;
   }
@@ -2696,9 +2762,45 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           await WebChatStorage.persistState(snapshot);
         }
       }
+      await _writeDeletedChats(state.deletedChats);
     } catch (_) {
       // Persistence failure is non-fatal – data remains available in memory
       // for the current session and will be retried on the next trigger.
+    }
+  }
+
+  Future<Map<String, int>> _readDeletedChats() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final json = prefs.getString(kDeletedChatsKey);
+      if (json == null || json.trim().isEmpty) return const {};
+      final decoded = jsonDecode(json);
+      if (decoded is! Map) return const {};
+
+      final result = <String, int>{};
+      decoded.forEach((key, value) {
+        final chatId = key.toString().trim();
+        final deletedAt = value is int ? value : int.tryParse(value.toString());
+        if (chatId.isNotEmpty && deletedAt != null && deletedAt > 0) {
+          result[chatId] = deletedAt;
+        }
+      });
+      return result;
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  Future<void> _writeDeletedChats(Map<String, int> deletedChats) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (deletedChats.isEmpty) {
+        await prefs.remove(kDeletedChatsKey);
+        return;
+      }
+      await prefs.setString(kDeletedChatsKey, jsonEncode(deletedChats));
+    } catch (_) {
+      // Best-effort local persistence; in-memory state remains authoritative.
     }
   }
 
@@ -2740,6 +2842,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     if (kIsWeb) {
       await WebChatStorage.clear();
     }
+    await _writeDeletedChats(const {});
     state = const ChatState();
   }
 }
