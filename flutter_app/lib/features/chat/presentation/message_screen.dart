@@ -89,14 +89,14 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     } catch (e, st) {
       debugPrint('[MessageScreen] resetBadge on open failed: $e\n$st');
     }
+  }
 
-    GlobalKey _keyForMessage(String messageId) {
-      final existing = _messageItemKeys[messageId];
-      if (existing != null) return existing;
-      final created = GlobalKey(debugLabel: 'message_$messageId');
-      _messageItemKeys[messageId] = created;
-      return created;
-    }
+  GlobalKey _keyForMessage(String messageId) {
+    final existing = _messageItemKeys[messageId];
+    if (existing != null) return existing;
+    final created = GlobalKey(debugLabel: 'message_$messageId');
+    _messageItemKeys[messageId] = created;
+    return created;
   }
 
   @override
