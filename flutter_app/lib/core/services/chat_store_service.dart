@@ -2237,6 +2237,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final normalized = chatId.trim();
     if (normalized.isEmpty) return false;
 
+    final existingMessages = state.messagesByChat[normalized] ?? const <ChatMessage>[];
     final newMessagesByChat = Map<String, List<ChatMessage>>.from(state.messagesByChat);
     final hadChat = newMessagesByChat.remove(normalized) != null;
     if (!hadChat) return false;
@@ -2248,7 +2249,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     newGroups.remove(normalized);
 
     final newDeletedChats = Map<String, int>.from(state.deletedChats);
-    newDeletedChats[normalized] = DateTime.now().millisecondsSinceEpoch;
+    var deletedAt = DateTime.now().millisecondsSinceEpoch;
+    for (final message in existingMessages) {
+      if (message.timestamp > deletedAt) {
+        deletedAt = message.timestamp;
+      }
+    }
+    newDeletedChats[normalized] = deletedAt;
 
     state = state.copyWith(
       messagesByChat: newMessagesByChat,
