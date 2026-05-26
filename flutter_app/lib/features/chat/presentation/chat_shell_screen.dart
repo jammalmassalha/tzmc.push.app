@@ -288,9 +288,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
             colors: [
-              Color(0xFF0B141A),
-              Color(0xFFE9EDEF),
-              Color(0xFFE9EDEF),
+              AppColors.primaryDark,
+              AppColors.background,
+              AppColors.background,
             ],
             stops: [0, 0.18, 1],
           ),
@@ -316,7 +316,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
                 child: Row(
                   children: [
                     _buildDesktopNavigationRail(),
-                    Container(width: 1, color: const Color(0xFFD1D7DB)),
+                    Container(width: 1, color: AppColors.divider),
                     Expanded(
                       child: _isChatSplitTab(_currentTab)
                           ? _buildDesktopChatLayout(chatState)
@@ -431,8 +431,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       minWidth: 84,
       selectedIndex: _visibleTabs.indexOf(_currentTab),
       groupAlignment: -1,
-      backgroundColor: const Color(0xFFF7F9FA),
-      indicatorColor: const Color(0xFFD9FDD3),
+      backgroundColor: AppColors.background,
+      indicatorColor: AppColors.primaryLight.withAlpha(60),
       leading: Padding(
         padding: const EdgeInsets.only(top: 12),
         child: Column(
@@ -441,7 +441,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
               width: 44,
               height: 44,
               decoration: BoxDecoration(
-                color: const Color(0xFF25D366),
+                color: AppColors.primary,
                 borderRadius: BorderRadius.circular(14),
               ),
               child: IconButton(
@@ -520,7 +520,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         SizedBox(
           width: 420,
           child: Container(
-            color: const Color(0xFFF8FAFB),
+            color: AppColors.background,
             child: Column(
               children: [
                 _buildDesktopPaneHeader(),
@@ -529,7 +529,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
             ),
           ),
         ),
-        Container(width: 1, color: const Color(0xFFD1D7DB)),
+        Container(width: 1, color: AppColors.divider),
         Expanded(
           child: currentChatId == null
               ? _buildDesktopConversationPlaceholder()
@@ -548,9 +548,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
       decoration: const BoxDecoration(
-        color: Color(0xFFF0F2F5),
+        color: AppColors.background,
         border: Border(
-          bottom: BorderSide(color: Color(0xFFD1D7DB)),
+          bottom: BorderSide(color: AppColors.divider),
         ),
       ),
       child: Column(
@@ -561,17 +561,17 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
             style: const TextStyle(
               fontSize: 20,
               fontWeight: FontWeight.w700,
-              color: Color(0xFF111B21),
+              color: AppColors.textPrimary,
             ),
           ),
           const SizedBox(height: 6),
           Text(
             _currentTab == MainTab.groups
                 ? 'בחר קבוצה כדי להמשיך את השיחה'
-                : 'בחר שיחה כדי להמשיך כמו ב-WhatsApp Web',
+                : 'בחר שיחה כדי לפתוח את חלון ההודעות',
             style: const TextStyle(
               fontSize: 13,
-              color: Color(0xFF667781),
+              color: AppColors.textSecondary,
             ),
           ),
         ],
@@ -598,7 +598,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
 
   Widget _buildDesktopContentCard(Widget child) {
     return Container(
-      color: const Color(0xFFE9EDEF),
+      color: AppColors.background,
       padding: const EdgeInsets.all(20),
       child: Container(
         clipBehavior: Clip.antiAlias,
@@ -613,7 +613,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
 
   Widget _buildDesktopConversationPlaceholder() {
     return Container(
-      color: const Color(0xFFE9EDEF),
+      color: AppColors.background,
       child: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -635,16 +635,16 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
               child: const Icon(
                 Icons.forum_outlined,
                 size: 68,
-                color: Color(0xFF8696A0),
+                color: AppColors.textSecondary,
               ),
             ),
             const SizedBox(height: 24),
             const Text(
-              'WhatsApp Web style workspace',
+              'ברוכים הבאים',
               style: TextStyle(
                 fontSize: 28,
                 fontWeight: FontWeight.w700,
-                color: Color(0xFF111B21),
+                color: AppColors.textPrimary,
               ),
             ),
             const SizedBox(height: 10),
@@ -652,7 +652,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
               'בחר שיחה מהרשימה כדי לפתוח את חלון ההודעות',
               style: TextStyle(
                 fontSize: 15,
-                color: Color(0xFF667781),
+                color: AppColors.textSecondary,
               ),
             ),
           ],

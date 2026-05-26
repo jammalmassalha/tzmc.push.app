@@ -15,9 +15,9 @@ import '../../../shared/theme/app_theme.dart';
 import '../../../shared/widgets/authenticated_image.dart';
 import 'message_screen.dart';
 
-const Color _kSelectedChatTileColor = Color(0xFFE9F5F1);
-const Color _kHoverChatTileColor = Color(0xFFF5F6F6);
-const Color _kPressedChatTileColor = Color(0xFFE9EEF0);
+const Color _kSelectedChatTileColor = Color(0xFFE3F2FD); // blue-50 tint matching AppColors.primary
+const Color _kHoverChatTileColor = AppColors.background;   // #F5F5F5
+const Color _kPressedChatTileColor = AppColors.divider;    // #E0E0E0
 
 /// Chat list widget
 class ChatListScreen extends ConsumerWidget {

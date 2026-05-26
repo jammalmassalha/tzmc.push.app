@@ -170,11 +170,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
 
   void _handleExit() {
     if (widget.embedded) {
-      if (widget.onExit != null) {
-        widget.onExit!.call();
-      } else {
-        _clearCurrentChatSelection();
-      }
+      widget.onExit?.call();
+      if (widget.onExit == null) _clearCurrentChatSelection();
       return;
     }
     _clearCurrentChatSelection();
@@ -915,11 +912,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     if (!mounted) return;
     if (deleted) {
       if (widget.embedded) {
-        if (widget.onExit != null) {
-          widget.onExit!.call();
-        } else {
-          _clearCurrentChatSelection();
-        }
+        widget.onExit?.call();
+        if (widget.onExit == null) _clearCurrentChatSelection();
       } else {
         Navigator.of(context).pop();
       }
