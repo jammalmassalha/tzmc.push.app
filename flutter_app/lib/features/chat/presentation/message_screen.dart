@@ -82,6 +82,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   /// vertical padding.  Used both for estimating the initial scroll offset
   /// when there are unread messages and for the floating date calculation.
   static const double _estimatedItemHeight = 72.0;
+  bool _stickyDateRefreshScheduled = false;
 
   Future<void> _resetBadgeOnOpen() async {
     try {
@@ -97,6 +98,33 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     final created = GlobalKey(debugLabel: 'message_$messageId');
     _messageItemKeys[messageId] = created;
     return created;
+  }
+
+  Contact? _findContact(ChatState state, String value) {
+    final normalized = value.trim().toLowerCase();
+    if (normalized.isEmpty) return null;
+    for (final entry in state.contacts.entries) {
+      final contact = entry.value;
+      if (entry.key.trim().toLowerCase() == normalized ||
+          contact.username.trim().toLowerCase() == normalized ||
+          (contact.phone?.trim().toLowerCase() == normalized) ||
+          contact.displayName.trim().toLowerCase() == normalized) {
+        return contact;
+      }
+    }
+    return null;
+  }
+
+  Contact? _findCurrentChatContact(ChatState state) => _findContact(state, widget.chatId);
+
+  void _scheduleStickyDateRefresh() {
+    if (_stickyDateRefreshScheduled) return;
+    _stickyDateRefreshScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _stickyDateRefreshScheduled = false;
+      if (!mounted) return;
+      _updateStickyDate();
+    });
   }
 
   @override
@@ -122,7 +150,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     }
 
     // Seed the floating date badge on first layout.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _updateStickyDate());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scheduleStickyDateRefresh());
     WidgetsBinding.instance.addPostFrameCallback((_) => _resetBadgeOnOpen());
   }
 
@@ -208,6 +236,10 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       duration: const Duration(milliseconds: 300),
       curve: Curves.easeOut,
     );
+    Future<void>.delayed(
+      const Duration(milliseconds: 350),
+      _scheduleStickyDateRefresh,
+    );
   }
 
   @override
@@ -243,6 +275,9 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     _currentMessages = messages;
     final visibleMessageIds = messages.map((m) => m.id).toSet();
     _messageItemKeys.removeWhere((id, _) => !visibleMessageIds.contains(id));
+    if (!_searchActive && messages.isNotEmpty) {
+      _scheduleStickyDateRefresh();
+    }
 
     return Directionality(
       textDirection: ui.TextDirection.rtl,
@@ -347,7 +382,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                 actions: [
                   if (!chatInfo.isGroup)
                     Builder(builder: (context) {
-                      final contact = state.contacts[widget.chatId];
+                      final contact = _findCurrentChatContact(state);
                       final phone = contact?.phone?.trim() ?? '';
                       if (phone.isEmpty) return const SizedBox.shrink();
                       return IconButton(
@@ -371,7 +406,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                     onSelected: _handleMenuAction,
                     itemBuilder: (context) {
                       final phone =
-                          state.contacts[widget.chatId]?.phone?.trim() ?? '';
+                          _findCurrentChatContact(state)?.phone?.trim() ?? '';
                       return [
                         const PopupMenuItem(
                           value: 'info',
@@ -496,21 +531,15 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                            // groupSenderName — try resolving it against the
                            // local contact list so the receiver sees a real
                            // display name instead of a phone number.
-                           final fromNameContact = fromName.isNotEmpty
-                               ? (state.contacts[fromName]?.displayName ??
-                                   state.contacts[fromName.toLowerCase()]
-                                       ?.displayName)
-                               : null;
-                           final fromContact = (state.contacts[senderId]
-                                       ?.displayName ??
-                                   '')
-                               .trim();
-                           if ((fromNameContact ?? '').isNotEmpty) {
-                             resolvedSenderLabel = fromNameContact;
+                           final fromNameContact =
+                               fromName.isNotEmpty ? _findContact(state, fromName) : null;
+                           final fromContact = _findContact(state, senderId);
+                           if ((fromNameContact?.displayName ?? '').isNotEmpty) {
+                             resolvedSenderLabel = fromNameContact!.displayName;
                            } else if (fromName.isNotEmpty) {
                              resolvedSenderLabel = fromName;
-                           } else if (fromContact.isNotEmpty) {
-                             resolvedSenderLabel = fromContact;
+                           } else if ((fromContact?.displayName ?? '').isNotEmpty) {
+                             resolvedSenderLabel = fromContact!.displayName;
                            } else if (!senderIsGroupId &&
                                senderId.isNotEmpty) {
                              resolvedSenderLabel = senderId;
@@ -684,7 +713,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       );
     }
 
-    final contact = state.contacts[widget.chatId];
+    final contact = _findCurrentChatContact(state);
     return (
       title: contact?.displayName ?? widget.chatId,
       subtitle: contact?.info,
@@ -813,7 +842,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   }
 
   Future<void> _callCurrentChatUser() async {
-    final phone = ref.read(chatStoreProvider).contacts[widget.chatId]?.phone?.trim() ?? '';
+    final phone = _findCurrentChatContact(ref.read(chatStoreProvider))?.phone?.trim() ?? '';
     if (phone.isEmpty) return;
     final uri = Uri(scheme: 'tel', path: phone);
     if (await canLaunchUrl(uri)) {
@@ -865,16 +894,24 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     required String senderId,
     required String senderLabel,
   }) async {
-    final normalizedSender = senderId.trim();
-    if (normalizedSender.isEmpty) return;
+    final state = ref.read(chatStoreProvider);
+    final senderContact =
+        _findContact(state, senderId) ?? _findContact(state, senderLabel);
+    final normalizedSender = (senderContact?.username ?? senderId).trim();
+    if (normalizedSender.isEmpty && senderContact == null) return;
     final normalizedSenderLower = normalizedSender.toLowerCase();
     final currentChatLower = widget.chatId.trim().toLowerCase();
     final currentUserLower =
         (ref.read(chatStoreProvider.notifier).currentUser ?? '').toLowerCase();
-    if (normalizedSenderLower == currentChatLower) return;
+    if (normalizedSenderLower == currentChatLower && senderContact == null) return;
     if (normalizedSenderLower == currentUserLower) {
       return;
     }
+    final senderPhone = senderContact?.phone?.trim() ?? '';
+    final senderDisplayLabel =
+        senderContact?.displayName.trim().isNotEmpty == true
+            ? senderContact!.displayName
+            : senderLabel;
 
     await showModalBottomSheet<void>(
       context: context,
@@ -885,21 +922,33 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
             Padding(
               padding: const EdgeInsets.all(16),
               child: Text(
-                senderLabel,
+                senderDisplayLabel,
                 style: Theme.of(ctx).textTheme.titleMedium,
                 textDirection: ui.TextDirection.rtl,
               ),
             ),
             ListTile(
               leading: const Icon(Icons.person_outline),
-              title: const Text('הצג פרופיל'),
+              title: const Text('הצג פרטים'),
               onTap: () {
                 Navigator.of(ctx).pop();
-                if (mounted) {
-                  showTopToast(context, 'פרופיל משתמש - בקרוב');
-                }
+                _showSenderDetails(senderContact, senderDisplayLabel);
               },
             ),
+            if (senderPhone.isNotEmpty)
+              ListTile(
+                leading: const Icon(Icons.call_outlined),
+                title: const Text('התקשר'),
+                onTap: () async {
+                  Navigator.of(ctx).pop();
+                  final uri = Uri(scheme: 'tel', path: senderPhone);
+                  if (await canLaunchUrl(uri)) {
+                    await launchUrl(uri);
+                  } else if (mounted) {
+                    showTopToast(context, 'לא ניתן להתחיל שיחה');
+                  }
+                },
+              ),
             ListTile(
               leading: const Icon(Icons.chat_bubble_outline),
               title: const Text('שלח הודעה פרטית'),
@@ -925,6 +974,42 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  void _showSenderDetails(Contact? contact, String fallbackLabel) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(
+          contact?.displayName ?? fallbackLabel,
+          textDirection: ui.TextDirection.rtl,
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if ((contact?.info ?? '').trim().isNotEmpty)
+              Text(
+                contact!.info!,
+                textDirection: ui.TextDirection.rtl,
+              ),
+            if ((contact?.phone ?? '').trim().isNotEmpty) ...[
+              if ((contact?.info ?? '').trim().isNotEmpty) const SizedBox(height: 8),
+              Text(
+                contact!.phone!,
+                textDirection: ui.TextDirection.rtl,
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('סגור'),
+          ),
+        ],
       ),
     );
   }
@@ -1124,7 +1209,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
         0,
         duration: const Duration(milliseconds: 300),
         curve: Curves.easeOut,
-      );
+      ).whenComplete(_scheduleStickyDateRefresh);
     }
   }
 }

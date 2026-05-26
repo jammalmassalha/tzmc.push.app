@@ -19,10 +19,26 @@ import 'message_screen.dart';
 class ChatListScreen extends ConsumerWidget {
   const ChatListScreen({super.key});
 
+  Contact? _findContact(ChatState state, String value) {
+    final normalized = value.trim().toLowerCase();
+    if (normalized.isEmpty) return null;
+    for (final entry in state.contacts.entries) {
+      final contact = entry.value;
+      if (entry.key.trim().toLowerCase() == normalized ||
+          contact.username.trim().toLowerCase() == normalized ||
+          (contact.phone?.trim().toLowerCase() == normalized) ||
+          contact.displayName.trim().toLowerCase() == normalized) {
+        return contact;
+      }
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final chatItems = ref.watch(chatListItemsProvider);
-    final isLoading = ref.watch(chatStoreProvider.select((s) => s.isLoading));
+    final state = ref.watch(chatStoreProvider);
+    final chatItems = state.chatListItems;
+    final isLoading = state.isLoading;
 
     // While the store is initializing (fetching contacts + recovering messages),
     // show a spinner rather than the "no chats yet" empty state so the user
@@ -86,11 +102,13 @@ class ChatListScreen extends ConsumerWidget {
         itemCount: chatItems.length,
         itemBuilder: (context, index) {
           final item = chatItems[index];
+          final contact = item.isGroup ? null : _findContact(state, item.id);
+          final phone = (item.phone ?? contact?.phone ?? '').trim();
           return _ChatListTile(
             item: item,
             onTap: () => _openChat(context, ref, item),
-            onCall: item.phone != null && item.phone!.trim().isNotEmpty
-                ? () => _callUser(context, item.phone!)
+            onCall: phone.isNotEmpty
+                ? () => _callUser(context, phone)
                 : null,
             onDelete: () => _deleteChat(context, ref, item),
           );
