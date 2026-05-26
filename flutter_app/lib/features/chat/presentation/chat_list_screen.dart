@@ -6,9 +6,11 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
+import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
 import '../../../shared/widgets/authenticated_image.dart';
 import 'message_screen.dart';
@@ -87,6 +89,10 @@ class ChatListScreen extends ConsumerWidget {
           return _ChatListTile(
             item: item,
             onTap: () => _openChat(context, ref, item),
+            onCall: item.phone != null && item.phone!.trim().isNotEmpty
+                ? () => _callUser(context, item.phone!)
+                : null,
+            onDelete: () => _deleteChat(context, ref, item),
           );
         },
       ),
@@ -102,16 +108,62 @@ class ChatListScreen extends ConsumerWidget {
       ),
     );
   }
+
+  Future<void> _callUser(BuildContext context, String phone) async {
+    final uri = Uri(scheme: 'tel', path: phone.trim());
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri);
+      return;
+    }
+    if (context.mounted) {
+      showTopToast(context, 'לא ניתן להתחיל שיחה');
+    }
+  }
+
+  Future<void> _deleteChat(BuildContext context, WidgetRef ref, ChatListItem item) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('מחיקת שיחה', textDirection: TextDirection.rtl),
+        content: Text(
+          'האם למחוק את השיחה עם "${item.title}"?',
+          textDirection: TextDirection.rtl,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('ביטול'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(
+              'מחק',
+              style: TextStyle(color: Theme.of(ctx).colorScheme.error),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    final deleted = await ref.read(chatStoreProvider.notifier).deleteChat(item.id);
+    if (context.mounted) {
+      showTopToast(context, deleted ? 'השיחה נמחקה' : 'לא ניתן למחוק את השיחה');
+    }
+  }
 }
 
 /// Individual chat list tile
 class _ChatListTile extends StatelessWidget {
   final ChatListItem item;
   final VoidCallback onTap;
+  final VoidCallback? onCall;
+  final VoidCallback? onDelete;
 
   const _ChatListTile({
     required this.item,
     required this.onTap,
+    this.onCall,
+    this.onDelete,
   });
 
   @override
@@ -190,6 +242,53 @@ class _ChatListTile extends StatelessWidget {
                 ],
               ),
             ),
+            if (onCall != null || onDelete != null)
+              PopupMenuButton<String>(
+                icon: const Icon(Icons.more_vert),
+                onSelected: (value) {
+                  switch (value) {
+                    case 'call':
+                      onCall?.call();
+                      break;
+                    case 'delete':
+                      onDelete?.call();
+                      break;
+                  }
+                },
+                itemBuilder: (context) => [
+                  if (onCall != null)
+                    const PopupMenuItem(
+                      value: 'call',
+                      child: Row(
+                        children: [
+                          Icon(Icons.call, size: 20),
+                          SizedBox(width: 12),
+                          Text('התקשר'),
+                        ],
+                      ),
+                    ),
+                  if (onDelete != null)
+                    PopupMenuItem(
+                      value: 'delete',
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.delete_outline,
+                            size: 20,
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            'מחק שיחה',
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.error,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
           ],
         ),
       ),

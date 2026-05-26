@@ -1,11 +1,32 @@
 import Flutter
 import FirebaseMessaging
 import UIKit
+import UserNotifications
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
   // Must match _kPushRegistrationChannelName in push_notification_service.dart.
   private let pushRegistrationChannelName = "flutter_push_registration"
+
+  private func clearBadgeAndDeliveredNotifications(completion: (() -> Void)? = nil) {
+    let clearBadge = {
+      UIApplication.shared.applicationIconBadgeNumber = 0
+      let center = UNUserNotificationCenter.current()
+      center.removeAllDeliveredNotifications()
+      if #available(iOS 16.0, *) {
+        center.setBadgeCount(0) { _ in
+          completion?()
+        }
+      } else {
+        completion?()
+      }
+    }
+    if Thread.isMainThread {
+      clearBadge()
+    } else {
+      DispatchQueue.main.async(execute: clearBadge)
+    }
+  }
 
   override func application(
     _ application: UIApplication,
@@ -23,14 +44,8 @@ import UIKit
       )
       pushRegistrationChannel.setMethodCallHandler { call, result in
         if call.method == "resetBadge" {
-          let resetBadge = {
-            UIApplication.shared.applicationIconBadgeNumber = 0
+          self.clearBadgeAndDeliveredNotifications {
             result(nil)
-          }
-          if Thread.isMainThread {
-            resetBadge()
-          } else {
-            DispatchQueue.main.async(execute: resetBadge)
           }
           return
         }
@@ -53,6 +68,11 @@ import UIKit
       }
     }
     return didFinishLaunching
+  }
+
+  override func applicationDidBecomeActive(_ application: UIApplication) {
+    super.applicationDidBecomeActive(application)
+    clearBadgeAndDeliveredNotifications()
   }
 
   override func application(
