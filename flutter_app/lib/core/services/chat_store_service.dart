@@ -2173,37 +2173,38 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       }
     }
 
-    /// Remove a chat locally from the dashboard list and persisted store.
-    ///
-    /// This is a local-delete action (client-side only): it removes the chat's
-    /// messages and unread counter from the current device state.
-    /// Returns true when the chat existed and was removed; false otherwise.
-    Future<bool> deleteChat(String chatId) async {
-      final normalized = chatId.trim();
-      if (normalized.isEmpty) return false;
+  }
 
-      final newMessagesByChat = Map<String, List<ChatMessage>>.from(state.messagesByChat);
-      final hadChat = newMessagesByChat.remove(normalized) != null;
-      if (!hadChat) return false;
+  /// Remove a chat locally from the dashboard list and persisted store.
+  ///
+  /// This is a local-delete action (client-side only): it removes the chat's
+  /// messages and unread counter from the current device state.
+  /// Returns true when the chat existed and was removed; false otherwise.
+  Future<bool> deleteChat(String chatId) async {
+    final normalized = chatId.trim();
+    if (normalized.isEmpty) return false;
 
-      final newUnread = Map<String, int>.from(state.unreadByChat);
-      newUnread.remove(normalized);
+    final newMessagesByChat = Map<String, List<ChatMessage>>.from(state.messagesByChat);
+    final hadChat = newMessagesByChat.remove(normalized) != null;
+    if (!hadChat) return false;
 
-      final newGroups = Map<String, ChatGroup>.from(state.groups);
-      newGroups.remove(normalized);
+    final newUnread = Map<String, int>.from(state.unreadByChat);
+    newUnread.remove(normalized);
 
-      state = state.copyWith(
-        messagesByChat: newMessagesByChat,
-        unreadByChat: newUnread,
-        groups: newGroups,
-        // Clear the current selection when deleting the chat that is open now.
-        clearCurrentChat: state.currentChatId == normalized,
-      );
+    final newGroups = Map<String, ChatGroup>.from(state.groups);
+    newGroups.remove(normalized);
 
-      await _clearChatFromPendingTray(normalized);
-      _schedulePersistence();
-      return true;
-    }
+    state = state.copyWith(
+      messagesByChat: newMessagesByChat,
+      unreadByChat: newUnread,
+      groups: newGroups,
+      // Clear the current selection when deleting the chat that is open now.
+      clearCurrentChat: state.currentChatId == normalized,
+    );
+
+    await _clearChatFromPendingTray(normalized);
+    _schedulePersistence();
+    return true;
   }
 
   // ---------------------------------------------------------------------------
