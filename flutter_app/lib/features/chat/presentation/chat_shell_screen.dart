@@ -196,7 +196,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
                           icon: Icon(
                             _currentTab == MainTab.groups
                                 ? Icons.group_add_outlined
-                                : Icons.chat_add_on,
+                                : Icons.add_comment_outlined,
                           ),
                         ),
                       ),
