@@ -2426,13 +2426,54 @@ class _AttachmentRow extends StatelessWidget {
     final resolvedUrl = resolveToAbsoluteUrl(url);
     final uri = Uri.tryParse(resolvedUrl);
     if (uri == null) return;
-    if (!await launchUrl(uri, mode: LaunchMode.platformDefault)) {
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('לא ניתן לפתוח את הקובץ')),
         );
       }
     }
+  }
+
+  void _showImagePreview(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      barrierColor: Colors.black87,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: EdgeInsets.zero,
+        child: Stack(
+          children: [
+            GestureDetector(
+              onTap: () => Navigator.of(ctx).pop(),
+              child: const SizedBox.expand(),
+            ),
+            Center(
+              child: InteractiveViewer(
+                maxScale: 4,
+                child: AuthenticatedNetworkImage(
+                  url: url,
+                  width: size.width,
+                  height: size.height * 0.85,
+                  fit: BoxFit.contain,
+                ),
+              ),
+            ),
+            Positioned(
+              top: MediaQuery.of(ctx).padding.top + 4,
+              right: 4,
+              child: IconButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                icon: const Icon(Icons.close, color: Colors.white, size: 28),
+                style: IconButton.styleFrom(backgroundColor: Colors.black38),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -2454,40 +2495,14 @@ class _AttachmentRow extends StatelessWidget {
           Expanded(
             child: _isImage
                 ? GestureDetector(
-                    onTap: () => _open(context),
+                    onTap: () => _showImagePreview(context),
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(8),
-                      child: Image.network(
-                        resolveToAbsoluteUrl(url),
+                      child: AuthenticatedNetworkImage(
+                        url: url,
                         height: 160,
                         width: double.infinity,
                         fit: BoxFit.cover,
-                        loadingBuilder: (context, child, progress) {
-                          if (progress == null) return child;
-                          return SizedBox(
-                            height: 160,
-                            child: Center(
-                              child: CircularProgressIndicator(
-                                value: progress.expectedTotalBytes != null
-                                    ? progress.cumulativeBytesLoaded /
-                                        progress.expectedTotalBytes!
-                                    : null,
-                              ),
-                            ),
-                          );
-                        },
-                        errorBuilder: (_, __, ___) => GestureDetector(
-                          onTap: () => _open(context),
-                          child: Row(children: [
-                            Icon(Icons.broken_image,
-                                color: theme.colorScheme.primary),
-                            const SizedBox(width: 4),
-                            Text('פתח קובץ',
-                                style: TextStyle(
-                                    color: theme.colorScheme.primary,
-                                    decoration: TextDecoration.underline)),
-                          ]),
-                        ),
                       ),
                     ),
                   )
