@@ -901,9 +901,9 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     final state = ref.read(chatStoreProvider);
     final senderContact =
         _findContact(state, senderId) ?? _findContact(state, senderLabel);
-    final normalizedSender = (senderContact?.username ?? '').trim().isNotEmpty
-        ? senderContact!.username.trim()
-        : senderId.trim();
+    final contactUsername = senderContact?.username.trim() ?? '';
+    final normalizedSender =
+        contactUsername.isNotEmpty ? contactUsername : senderId.trim();
     final senderPhone = senderContact?.phone?.trim() ?? '';
     final senderDisplayLabel =
         senderContact?.displayName.trim().isNotEmpty == true
@@ -918,6 +918,9 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     final currentChatLower = widget.chatId.trim().toLowerCase();
     final currentUserLower =
         (ref.read(chatStoreProvider.notifier).currentUser ?? '').toLowerCase();
+    // Some group records store `sender == currentChatId` (the group id). When we
+    // successfully resolved a real contact from the sender label, keep going so
+    // the action sheet still opens for that person.
     if (normalizedSenderLower == currentChatLower && senderContact == null) return;
     if (normalizedSenderLower == currentUserLower) {
       return;
@@ -989,6 +992,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   }
 
   void _showSenderDetails(Contact? contact, String fallbackLabel) {
+    final info = contact?.info?.trim() ?? '';
+    final phone = contact?.phone?.trim() ?? '';
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -1000,15 +1005,15 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if ((contact?.info ?? '').trim().isNotEmpty)
+            if (info.isNotEmpty)
               Text(
-                contact!.info!,
+                info,
                 textDirection: ui.TextDirection.rtl,
               ),
-            if ((contact?.phone ?? '').trim().isNotEmpty) ...[
-              if ((contact?.info ?? '').trim().isNotEmpty) const SizedBox(height: 8),
+            if (phone.isNotEmpty) ...[
+              if (info.isNotEmpty) const SizedBox(height: 8),
               Text(
-                contact!.phone!,
+                phone,
                 textDirection: ui.TextDirection.rtl,
               ),
             ],
