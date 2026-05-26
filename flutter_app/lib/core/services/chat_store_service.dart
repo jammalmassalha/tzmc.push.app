@@ -2249,12 +2249,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     newGroups.remove(normalized);
 
     final newDeletedChats = Map<String, int>.from(state.deletedChats);
-    var deletedAt = DateTime.now().millisecondsSinceEpoch;
+    var deletedAt = 0;
     for (final message in existingMessages) {
       if (message.timestamp > deletedAt) {
         deletedAt = message.timestamp;
       }
     }
+    if (deletedAt <= 0) deletedAt = DateTime.now().millisecondsSinceEpoch;
     newDeletedChats[normalized] = deletedAt;
 
     state = state.copyWith(
