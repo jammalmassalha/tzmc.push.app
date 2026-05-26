@@ -36,6 +36,39 @@
 
   <title>מרכז רפואי צפון</title>
   <link rel="manifest" href="manifest.json">
+  <style>
+    html,
+    body {
+      height: 100%;
+    }
+
+    body {
+      margin: 0;
+      overflow: hidden;
+      background:
+        linear-gradient(180deg, #0b141a 0, #0b141a 18vh, #e9edef 18vh, #e9edef 100%);
+      color: #111b21;
+      font-family: 'Heebo', 'Segoe UI', sans-serif;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 18vh 0 0;
+      pointer-events: none;
+      opacity: 0.05;
+      background-image:
+        radial-gradient(circle at 25px 25px, #86a3b8 2px, transparent 0),
+        radial-gradient(circle at 75px 75px, #86a3b8 2px, transparent 0);
+      background-size: 100px 100px;
+    }
+
+    flutter-view,
+    #flt-glass-pane,
+    #flt-scene-host {
+      background: transparent !important;
+    }
+  </style>
 
   <!--
     PWA Service Worker Update Detection

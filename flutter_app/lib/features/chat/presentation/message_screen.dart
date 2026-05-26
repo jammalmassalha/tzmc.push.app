@@ -35,8 +35,16 @@ class MessageScreen extends ConsumerStatefulWidget {
   /// is visible at the bottom of the viewport, allowing the user to
   /// start reading from where they left off.
   final int initialUnreadCount;
+  final bool embedded;
+  final VoidCallback? onExit;
 
-  const MessageScreen({super.key, required this.chatId, this.initialUnreadCount = 0});
+  const MessageScreen({
+    super.key,
+    required this.chatId,
+    this.initialUnreadCount = 0,
+    this.embedded = false,
+    this.onExit,
+  });
 
   @override
   ConsumerState<MessageScreen> createState() => _MessageScreenState();
@@ -160,6 +168,19 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     ref.read(chatStoreProvider.notifier).setCurrentChat(null);
   }
 
+  void _handleExit() {
+    if (widget.embedded) {
+      if (widget.onExit != null) {
+        widget.onExit!.call();
+      } else {
+        _clearCurrentChatSelection();
+      }
+      return;
+    }
+    _clearCurrentChatSelection();
+    Navigator.of(context).pop();
+  }
+
   /// Updates [_showScrollButton] and [_stickyDate] whenever the scroll
   /// position changes.
   /// Because the list is `reverse: true`, offset 0 is the bottom (newest
@@ -255,7 +276,9 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     // Best-effort cleanup for replacement/disposal paths that don't invoke
     // the pop callbacks.
     try {
-      _clearCurrentChatSelection();
+      if (!widget.embedded) {
+        _clearCurrentChatSelection();
+      }
     } catch (_) {}
     super.dispose();
   }
@@ -287,7 +310,9 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       textDirection: ui.TextDirection.rtl,
       child: WillPopScope(
         onWillPop: () async {
-          _clearCurrentChatSelection();
+          if (!widget.embedded) {
+            _clearCurrentChatSelection();
+          }
           return true;
         },
         child: Scaffold(
@@ -324,10 +349,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
             : AppBar(
                 leading: IconButton(
                   icon: const Icon(Icons.arrow_back),
-                  onPressed: () {
-                    _clearCurrentChatSelection();
-                    Navigator.of(context).pop();
-                  },
+                  onPressed: _handleExit,
                 ),
                 title: GestureDetector(
                   onTap: chatInfo.isGroup
@@ -892,7 +914,15 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     final deleted = await ref.read(chatStoreProvider.notifier).deleteChat(widget.chatId);
     if (!mounted) return;
     if (deleted) {
-      Navigator.of(context).pop();
+      if (widget.embedded) {
+        if (widget.onExit != null) {
+          widget.onExit!.call();
+        } else {
+          _clearCurrentChatSelection();
+        }
+      } else {
+        Navigator.of(context).pop();
+      }
       showTopToast(context, 'השיחה נמחקה');
     } else {
       showTopToast(context, 'לא ניתן למחוק את השיחה');

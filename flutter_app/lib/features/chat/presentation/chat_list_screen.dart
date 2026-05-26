@@ -17,7 +17,14 @@ import 'message_screen.dart';
 
 /// Chat list widget
 class ChatListScreen extends ConsumerWidget {
-  const ChatListScreen({super.key});
+  final ValueChanged<ChatListItem>? onChatSelected;
+  final String? selectedChatId;
+
+  const ChatListScreen({
+    super.key,
+    this.onChatSelected,
+    this.selectedChatId,
+  });
 
   Contact? _findContact(ChatState state, String value) {
     final normalized = value.trim().toLowerCase();
@@ -106,6 +113,7 @@ class ChatListScreen extends ConsumerWidget {
           final phone = (item.phone ?? contact?.phone ?? '').trim();
           return _ChatListTile(
             item: item,
+            isSelected: selectedChatId == item.id,
             onTap: () => _openChat(context, ref, item),
             onCall: phone.isNotEmpty
                 ? () => _callUser(context, phone)
@@ -120,6 +128,10 @@ class ChatListScreen extends ConsumerWidget {
   void _openChat(BuildContext context, WidgetRef ref, ChatListItem item) {
     final unreadCount = item.unread;
     ref.read(chatStoreProvider.notifier).setCurrentChat(item.id);
+    if (onChatSelected != null) {
+      onChatSelected!(item);
+      return;
+    }
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => MessageScreen(chatId: item.id, initialUnreadCount: unreadCount),
@@ -173,12 +185,14 @@ class ChatListScreen extends ConsumerWidget {
 /// Individual chat list tile
 class _ChatListTile extends StatelessWidget {
   final ChatListItem item;
+  final bool isSelected;
   final VoidCallback onTap;
   final VoidCallback? onCall;
   final VoidCallback? onDelete;
 
   const _ChatListTile({
     required this.item,
+    required this.isSelected,
     required this.onTap,
     this.onCall,
     this.onDelete,
@@ -187,12 +201,19 @@ class _ChatListTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final Color selectedColor = const Color(0xFFE9F5F1);
+    final Color hoverColor = const Color(0xFFF5F6F6);
 
     return InkWell(
       onTap: onTap,
-      child: Container(
+      borderRadius: BorderRadius.circular(14),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
+          color: isSelected ? selectedColor : Colors.transparent,
+          borderRadius: BorderRadius.circular(14),
           border: Border(
             bottom: BorderSide(
               color: theme.dividerColor.withAlpha((255 * 0.3).round()),
@@ -310,6 +331,16 @@ class _ChatListTile extends StatelessWidget {
           ],
         ),
       ),
+      onHover: (_) {},
+      overlayColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.pressed)) {
+          return hoverColor.withAlpha(180);
+        }
+        if (states.contains(WidgetState.hovered)) {
+          return hoverColor;
+        }
+        return null;
+      }),
     );
   }
 
@@ -382,7 +413,14 @@ class _ChatListTile extends StatelessWidget {
 
 /// Groups list widget (similar to chat list but shows only groups)
 class GroupListScreen extends ConsumerWidget {
-  const GroupListScreen({super.key});
+  final void Function(ChatGroup group, int unread)? onGroupSelected;
+  final String? selectedChatId;
+
+  const GroupListScreen({
+    super.key,
+    this.onGroupSelected,
+    this.selectedChatId,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -442,6 +480,7 @@ class GroupListScreen extends ConsumerWidget {
             group: group,
             unread: state.unreadByChat[group.id] ?? 0,
             lastMessage: (state.messagesByChat[group.id] ?? []).firstOrNull,
+            isSelected: selectedChatId == group.id,
             onTap: () => _openGroup(context, ref, group),
           );
         },
@@ -452,6 +491,10 @@ class GroupListScreen extends ConsumerWidget {
   void _openGroup(BuildContext context, WidgetRef ref, ChatGroup group) {
     final unreadCount = ref.read(chatStoreProvider).unreadByChat[group.id] ?? 0;
     ref.read(chatStoreProvider.notifier).setCurrentChat(group.id);
+    if (onGroupSelected != null) {
+      onGroupSelected!(group, unreadCount);
+      return;
+    }
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => MessageScreen(chatId: group.id, initialUnreadCount: unreadCount),
@@ -465,12 +508,14 @@ class _GroupListTile extends StatelessWidget {
   final ChatGroup group;
   final int unread;
   final ChatMessage? lastMessage;
+  final bool isSelected;
   final VoidCallback onTap;
 
   const _GroupListTile({
     required this.group,
     required this.unread,
     required this.lastMessage,
+    required this.isSelected,
     required this.onTap,
   });
 
@@ -480,9 +525,23 @@ class _GroupListTile extends StatelessWidget {
 
     return InkWell(
       onTap: onTap,
-      child: Container(
+      borderRadius: BorderRadius.circular(14),
+      overlayColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.hovered)) {
+          return const Color(0xFFF5F6F6);
+        }
+        if (states.contains(WidgetState.pressed)) {
+          return const Color(0xFFE9EEF0);
+        }
+        return null;
+      }),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFFE9F5F1) : Colors.transparent,
+          borderRadius: BorderRadius.circular(14),
           border: Border(
             bottom: BorderSide(
               color: theme.dividerColor.withAlpha((255 * 0.3).round()),
