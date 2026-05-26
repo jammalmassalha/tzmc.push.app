@@ -82,6 +82,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   /// vertical padding.  Used both for estimating the initial scroll offset
   /// when there are unread messages and for the floating date calculation.
   static const double _estimatedItemHeight = 72.0;
+  static const Duration _stickyDateRefreshDelay =
+      Duration(milliseconds: 350);
   bool _stickyDateRefreshScheduled = false;
 
   Future<void> _resetBadgeOnOpen() async {
@@ -237,7 +239,9 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       curve: Curves.easeOut,
     );
     Future<void>.delayed(
-      const Duration(milliseconds: 350),
+      // Wait slightly longer than the ensureVisible animation (300ms) so the
+      // final rendered positions are stable before recomputing the badge date.
+      _stickyDateRefreshDelay,
       _scheduleStickyDateRefresh,
     );
   }
@@ -897,8 +901,19 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     final state = ref.read(chatStoreProvider);
     final senderContact =
         _findContact(state, senderId) ?? _findContact(state, senderLabel);
-    final normalizedSender = (senderContact?.username ?? senderId).trim();
-    if (normalizedSender.isEmpty && senderContact == null) return;
+    final normalizedSender = (senderContact?.username ?? '').trim().isNotEmpty
+        ? senderContact!.username.trim()
+        : senderId.trim();
+    final senderPhone = senderContact?.phone?.trim() ?? '';
+    final senderDisplayLabel =
+        senderContact?.displayName.trim().isNotEmpty == true
+            ? senderContact!.displayName
+            : senderLabel;
+    if (normalizedSender.isEmpty &&
+        senderPhone.isEmpty &&
+        senderDisplayLabel.trim().isEmpty) {
+      return;
+    }
     final normalizedSenderLower = normalizedSender.toLowerCase();
     final currentChatLower = widget.chatId.trim().toLowerCase();
     final currentUserLower =
@@ -907,11 +922,6 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     if (normalizedSenderLower == currentUserLower) {
       return;
     }
-    final senderPhone = senderContact?.phone?.trim() ?? '';
-    final senderDisplayLabel =
-        senderContact?.displayName.trim().isNotEmpty == true
-            ? senderContact!.displayName
-            : senderLabel;
 
     await showModalBottomSheet<void>(
       context: context,
