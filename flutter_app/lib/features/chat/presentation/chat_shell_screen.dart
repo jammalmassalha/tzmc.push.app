@@ -181,27 +181,28 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
           Scaffold(
             appBar: AppBar(
               title: Text(_getTabTitle(_currentTab)),
-              actions: [
-                if (_currentTab == MainTab.chats || _currentTab == MainTab.groups)
-                  Padding(
-                    padding: const EdgeInsetsDirectional.only(end: 4),
-                    child: Semantics(
-                      button: true,
-                      label: _currentTab == MainTab.groups
-                          ? 'פתח אפשרויות ליצירת קבוצה חדשה'
-                          : 'פתח אפשרויות להתחלת שיחה חדשה',
-                      child: IconButton(
-                        tooltip:
-                            _currentTab == MainTab.groups ? 'קבוצה חדשה' : 'שיחה חדשה',
-                        onPressed: _handleNewChat,
-                        icon: Icon(
-                          _currentTab == MainTab.groups
-                              ? Icons.group_add_outlined
-                              : Icons.chat_bubble_outline,
+              leading: (_currentTab == MainTab.chats || _currentTab == MainTab.groups)
+                  ? Padding(
+                      padding: const EdgeInsetsDirectional.only(start: 4),
+                      child: Semantics(
+                        button: true,
+                        label: _currentTab == MainTab.groups
+                            ? 'פתח אפשרויות ליצירת קבוצה חדשה'
+                            : 'פתח אפשרויות להתחלת שיחה חדשה',
+                        child: IconButton(
+                          tooltip:
+                              _currentTab == MainTab.groups ? 'קבוצה חדשה' : 'שיחה חדשה',
+                          onPressed: _handleNewChat,
+                          icon: Icon(
+                            _currentTab == MainTab.groups
+                                ? Icons.group_add_outlined
+                                : Icons.chat_add_on,
+                          ),
                         ),
                       ),
-                    ),
-                  ),
+                    )
+                  : null,
+              actions: [
                 // Connection status indicator
                 Consumer(
                   builder: (context, ref, _) {

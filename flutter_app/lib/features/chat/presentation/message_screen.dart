@@ -387,8 +387,9 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                   if (!chatInfo.isGroup)
                     Builder(builder: (context) {
                       final contact = _findCurrentChatContact(state);
-                      final phone = contact?.phone?.trim() ?? '';
-                      if (phone.isEmpty) return const SizedBox.shrink();
+                      final phone = (contact?.phone?.trim().isNotEmpty == true
+                              ? contact!.phone!.trim()
+                              : widget.chatId.trim());
                       return IconButton(
                         icon: const Icon(Icons.call),
                         tooltip: 'התקשר',
@@ -409,8 +410,10 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                     icon: const Icon(Icons.more_vert),
                     onSelected: _handleMenuAction,
                     itemBuilder: (context) {
-                      final phone =
-                          _findCurrentChatContact(state)?.phone?.trim() ?? '';
+                      final contact = _findCurrentChatContact(state);
+                      final phone = contact?.phone?.trim().isNotEmpty == true
+                          ? contact!.phone!.trim()
+                          : widget.chatId.trim();
                       return [
                         const PopupMenuItem(
                           value: 'info',
@@ -422,7 +425,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                             ],
                           ),
                         ),
-                        if (!chatInfo.isGroup && phone.isNotEmpty)
+                        if (!chatInfo.isGroup)
                           const PopupMenuItem(
                             value: 'call',
                             child: Row(
@@ -846,8 +849,10 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   }
 
   Future<void> _callCurrentChatUser() async {
-    final phone = _findCurrentChatContact(ref.read(chatStoreProvider))?.phone?.trim() ?? '';
-    if (phone.isEmpty) return;
+    final contact = _findCurrentChatContact(ref.read(chatStoreProvider));
+    final phone = contact?.phone?.trim().isNotEmpty == true
+        ? contact!.phone!.trim()
+        : widget.chatId.trim();
     final uri = Uri(scheme: 'tel', path: phone);
     if (await canLaunchUrl(uri)) {
       await launchUrl(uri);
