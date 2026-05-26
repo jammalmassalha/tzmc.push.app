@@ -84,7 +84,7 @@ class ChatListScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              'התחל שיחה חדשה עם הכפתור למטה',
+              'התחל שיחה חדשה מהאייקון בסרגל העליון',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.4).round()),
                   ),
