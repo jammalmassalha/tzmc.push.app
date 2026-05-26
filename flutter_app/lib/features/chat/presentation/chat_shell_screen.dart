@@ -187,7 +187,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
                     padding: const EdgeInsetsDirectional.only(end: 4),
                     child: Semantics(
                       button: true,
-                      label: _currentTab == MainTab.groups ? 'צור קבוצה חדשה' : 'התחל שיחה חדשה',
+                      label: _currentTab == MainTab.groups
+                          ? 'פתח אפשרויות ליצירת קבוצה חדשה'
+                          : 'פתח אפשרויות להתחלת שיחה חדשה',
                       child: IconButton(
                         tooltip:
                             _currentTab == MainTab.groups ? 'קבוצה חדשה' : 'שיחה חדשה',
