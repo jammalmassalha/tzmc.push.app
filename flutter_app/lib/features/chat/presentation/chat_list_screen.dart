@@ -15,6 +15,10 @@ import '../../../shared/theme/app_theme.dart';
 import '../../../shared/widgets/authenticated_image.dart';
 import 'message_screen.dart';
 
+const Color _kSelectedChatTileColor = Color(0xFFE9F5F1);
+const Color _kHoverChatTileColor = Color(0xFFF5F6F6);
+const Color _kPressedChatTileColor = Color(0xFFE9EEF0);
+
 /// Chat list widget
 class ChatListScreen extends ConsumerWidget {
   final ValueChanged<ChatListItem>? onChatSelected;
@@ -201,8 +205,6 @@ class _ChatListTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final Color selectedColor = const Color(0xFFE9F5F1);
-    final Color hoverColor = const Color(0xFFF5F6F6);
 
     return InkWell(
       onTap: onTap,
@@ -212,7 +214,7 @@ class _ChatListTile extends StatelessWidget {
         margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
-          color: isSelected ? selectedColor : Colors.transparent,
+          color: isSelected ? _kSelectedChatTileColor : Colors.transparent,
           borderRadius: BorderRadius.circular(14),
           border: Border(
             bottom: BorderSide(
@@ -331,13 +333,12 @@ class _ChatListTile extends StatelessWidget {
           ],
         ),
       ),
-      onHover: (_) {},
       overlayColor: WidgetStateProperty.resolveWith((states) {
         if (states.contains(WidgetState.pressed)) {
-          return hoverColor.withAlpha(180);
+          return _kPressedChatTileColor;
         }
         if (states.contains(WidgetState.hovered)) {
-          return hoverColor;
+          return _kHoverChatTileColor;
         }
         return null;
       }),
@@ -528,10 +529,10 @@ class _GroupListTile extends StatelessWidget {
       borderRadius: BorderRadius.circular(14),
       overlayColor: WidgetStateProperty.resolveWith((states) {
         if (states.contains(WidgetState.hovered)) {
-          return const Color(0xFFF5F6F6);
+          return _kHoverChatTileColor;
         }
         if (states.contains(WidgetState.pressed)) {
-          return const Color(0xFFE9EEF0);
+          return _kPressedChatTileColor;
         }
         return null;
       }),
@@ -540,7 +541,7 @@ class _GroupListTile extends StatelessWidget {
         margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
-          color: isSelected ? const Color(0xFFE9F5F1) : Colors.transparent,
+          color: isSelected ? _kSelectedChatTileColor : Colors.transparent,
           borderRadius: BorderRadius.circular(14),
           border: Border(
             bottom: BorderSide(
