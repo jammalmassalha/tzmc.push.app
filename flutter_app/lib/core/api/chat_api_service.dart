@@ -1617,7 +1617,7 @@ class ChatApiService {
     );
     if (!response.isSuccessful) {
       final body = response.data;
-      final msg = body is Map ? (body['error'] ?? body['message'] ?? 'שגיאה') : 'שגיאה';
+      final msg = body?['error'] ?? body?['message'] ?? 'שגיאה';
       return (verified: false, message: msg.toString());
     }
     final data = response.data ?? {};
@@ -1635,7 +1635,7 @@ class ChatApiService {
     );
     if (!response.isSuccessful) {
       final body = response.data;
-      final msg = body is Map ? (body['error'] ?? body['message'] ?? 'שגיאה בשמירת הבקשה') : 'שגיאה בשמירת הבקשה';
+      final msg = body?['error'] ?? body?['message'] ?? 'שגיאה בשמירת הבקשה';
       throw ApiException(msg.toString());
     }
     final data = response.data ?? {};
