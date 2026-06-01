@@ -49,7 +49,7 @@ class _PasswordResetBotScreenState
   bool _isLoading = false;
   Timer? _pollTimer;
   int _pollCount = 0;
-  static const int _maxPollAttempts = 60; // ~5 minutes at 5s intervals
+  static const int _maxPollAttempts = 60; // 60 attempts × 5 seconds = 5 minutes
 
   @override
   void dispose() {
