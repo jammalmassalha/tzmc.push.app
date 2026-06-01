@@ -138,6 +138,15 @@ class _PasswordResetBotScreenState
           _isLoading = false;
         });
         _addMessage('מה תהיה הסיסמה החדשה שלך?', isBot: true);
+        _addMessage(
+          'הסיסמה חייבת לכלול:\n'
+          '• לפחות 8 תווים\n'
+          '• לפחות אות גדולה אחת (A-Z)\n'
+          '• לפחות אות קטנה אחת (a-z)\n'
+          '• לפחות ספרה אחת (0-9)\n'
+          '• לפחות תו מיוחד אחד (!, @, #, \$, % וכד\')',
+          isBot: true,
+        );
       } else {
         setState(() => _isLoading = false);
         _addMessage(
@@ -152,11 +161,45 @@ class _PasswordResetBotScreenState
     }
   }
 
+  /// Returns a list of Hebrew error messages for every unmet password rule.
+  /// An empty list means the password is valid.
+  List<String> _validatePassword(String password) {
+    final errors = <String>[];
+    if (password.length < 8) {
+      errors.add('• הסיסמה קצרה מדי – נדרשים לפחות 8 תווים');
+    }
+    if (!password.contains(RegExp(r'[A-Z]'))) {
+      errors.add('• חסרה לפחות אות גדולה אחת (A-Z)');
+    }
+    if (!password.contains(RegExp(r'[a-z]'))) {
+      errors.add('• חסרה לפחות אות קטנה אחת (a-z)');
+    }
+    if (!password.contains(RegExp(r'[0-9]'))) {
+      errors.add('• חסרה לפחות ספרה אחת (0-9)');
+    }
+    if (!password.contains(RegExp(r'[!@#$%^&*()_+\-=\[\]{}|;:,.<>?/~`\\"\'']'))) {
+      errors.add('• חסר לפחות תו מיוחד אחד (!, @, #, \$, % וכד\')');
+    }
+    return errors;
+  }
+
   Future<void> _onSubmitPassword() async {
     final password = _inputCtrl.text.trim();
     if (password.isEmpty) return;
     final user = _currentUser;
     if (user == null) return;
+
+    // Validate password requirements before submitting
+    final errors = _validatePassword(password);
+    if (errors.isNotEmpty) {
+      _addMessage('••••••••', isBot: false);
+      _inputCtrl.clear();
+      _addMessage(
+        'הסיסמה אינה עומדת בדרישות. יש לתקן את הבאים:\n${errors.join('\n')}',
+        isBot: true,
+      );
+      return;
+    }
 
     _addMessage('••••••••', isBot: false);
     _inputCtrl.clear();
