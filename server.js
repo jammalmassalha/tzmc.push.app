@@ -6622,6 +6622,28 @@ app.post(
 
 // --- PASSWORD RESET BOT ROUTES ---
 const resetPasswordRateLimitStore = new Map();
+const resetPasswordPreAuthRateLimitStore = new Map();
+
+function rateLimitPasswordResetRoute(scope, maxAttempts, windowMs) {
+    return (req, res, next) => {
+        const requestUser = normalizeUserCandidate(
+            (req && req.body && req.body.user) ||
+            (req && req.query && req.query.user) ||
+            ''
+        );
+        const rateKey = requestUser || `${scope}:${getClientIpAddress(req)}`;
+        const rateCheck = consumeRateLimitEntry(
+            resetPasswordPreAuthRateLimitStore,
+            `${scope}:${rateKey}`,
+            maxAttempts,
+            windowMs
+        );
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `נסה שוב בעוד ${rateCheck.retryAfterSeconds} שניות` });
+        }
+        return next();
+    };
+}
 
 function requirePasswordResetAppSession(req, res, next) {
     const requestPath = String(req.path || '').trim();
@@ -6637,6 +6659,7 @@ function requirePasswordResetAppSession(req, res, next) {
 
 app.post(
     ['/reset-password/verify-year', '/notify/reset-password/verify-year'],
+    rateLimitPasswordResetRoute('verify-preauth', 10, 60 * 1000),
     requirePasswordResetAppSession,
     requireAuthorizedUser({
         required: true,
@@ -6690,6 +6713,7 @@ app.post(
 
 app.post(
     ['/reset-password/submit', '/notify/reset-password/submit'],
+    rateLimitPasswordResetRoute('submit-preauth', 6, 60 * 1000),
     requirePasswordResetAppSession,
     requireAuthorizedUser({
         required: true,
@@ -6743,6 +6767,7 @@ app.post(
 
 app.get(
     ['/reset-password/status', '/notify/reset-password/status'],
+    rateLimitPasswordResetRoute('status-preauth', 60, 60 * 1000),
     requirePasswordResetAppSession,
     requireAuthorizedUser({
         required: true,

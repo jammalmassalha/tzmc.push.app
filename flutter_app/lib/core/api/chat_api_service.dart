@@ -1671,7 +1671,11 @@ class ChatApiService {
     }
   }
 
-  /// Submit a Windows password reset request
+  /// Submit a Windows password reset request.
+  ///
+  /// Returns the optional server `requestId` when one is included in the
+  /// response. Some successful responses omit it, so callers must treat `null`
+  /// as a valid success case and continue polling for completion.
   Future<String?> submitPasswordReset(String user, String password) async {
     try {
       final response = await _client.post<dynamic>(
