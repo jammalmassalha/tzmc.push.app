@@ -6,6 +6,7 @@ library;
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -34,6 +35,7 @@ const List<String> _kHelpdeskAllowedUsers = [
 final Set<String> _kHelpdeskAllowedUsersNormalized =
     _kHelpdeskAllowedUsers.map((value) => value.trim().toLowerCase()).toSet();
 final RegExp _kShuttlePhoneRegex = RegExp(r'05\d{8}');
+const double _kDesktopShellBreakpoint = 1100;
 
 /// Chat shell screen widget
 class ChatShellScreen extends ConsumerStatefulWidget {
@@ -173,131 +175,14 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   @override
   Widget build(BuildContext context) {
     final chatState = ref.watch(chatStoreProvider);
+    final isDesktopWeb =
+        kIsWeb && MediaQuery.sizeOf(context).width >= _kDesktopShellBreakpoint;
 
     return Directionality(
       textDirection: TextDirection.rtl,
       child: Stack(
         children: [
-          Scaffold(
-            appBar: AppBar(
-              title: Text(_getTabTitle(_currentTab)),
-              leading: (_currentTab == MainTab.chats || _currentTab == MainTab.groups)
-                  ? Padding(
-                      padding: const EdgeInsetsDirectional.only(start: 4),
-                      child: Semantics(
-                        button: true,
-                        label: _currentTab == MainTab.groups
-                            ? 'פתח אפשרויות ליצירת קבוצה חדשה'
-                            : 'פתח אפשרויות להתחלת שיחה חדשה',
-                        child: IconButton(
-                          tooltip:
-                              _currentTab == MainTab.groups ? 'קבוצה חדשה' : 'שיחה חדשה',
-                          onPressed: _handleNewChat,
-                          icon: Icon(
-                            _currentTab == MainTab.groups
-                                ? Icons.group_add_outlined
-                                : Icons.add_comment_outlined,
-                          ),
-                        ),
-                      ),
-                    )
-                  : null,
-              actions: [
-                // Connection status indicator
-                Consumer(
-                  builder: (context, ref, _) {
-                    final transport = ref.watch(realtimeTransportServiceProvider);
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      child: Tooltip(
-                        message: transport.transportLabel,
-                        child: Icon(
-                          _getConnectionIcon(transport.transportMode),
-                          size: 20,
-                          color: _getConnectionColor(transport.transportMode),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-                // Settings menu
-                PopupMenuButton<String>(
-                  icon: const Icon(Icons.more_vert),
-                  onSelected: (value) {
-                    switch (value) {
-                      case 'logout':
-                        _handleLogout();
-                        break;
-                      case 'refresh':
-                        _handleRefresh();
-                        break;
-                      case 'fullsync':
-                        _handleFullSync();
-                        break;
-                    }
-                  },
-                  itemBuilder: (context) => [
-                    PopupMenuItem(
-                      value: 'refresh',
-                      child: Row(
-                        children: [
-                          const Icon(Icons.refresh, size: 20),
-                          const SizedBox(width: 12),
-                          const Text('רענון'),
-                        ],
-                      ),
-                    ),
-                    PopupMenuItem(
-                      value: 'fullsync',
-                      child: Row(
-                        children: [
-                          const Icon(Icons.sync, size: 20),
-                          const SizedBox(width: 12),
-                          const Text('סנכרון הודעות'),
-                        ],
-                      ),
-                    ),
-                    const PopupMenuDivider(),
-                    PopupMenuItem(
-                      value: 'logout',
-                      child: Row(
-                        children: [
-                          Icon(Icons.logout, size: 20, color: Theme.of(context).colorScheme.error),
-                          const SizedBox(width: 12),
-                          Text('התנתקות', style: TextStyle(color: Theme.of(context).colorScheme.error)),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-            body: PageView(
-              controller: _pageController,
-              onPageChanged: (index) {
-                if (index < 0 || index >= _visibleTabs.length) return;
-                setState(() {
-                  _currentTab = _visibleTabs[index];
-                });
-              },
-              children: _visibleTabs.map(_buildTabBody).toList(),
-            ),
-            bottomNavigationBar: BottomNavigationBar(
-              currentIndex: _visibleTabs.indexOf(_currentTab),
-              onTap: (index) {
-                if (index < 0 || index >= _visibleTabs.length) return;
-                setState(() {
-                  _currentTab = _visibleTabs[index];
-                });
-                _pageController.animateToPage(
-                  index,
-                  duration: const Duration(milliseconds: 300),
-                  curve: Curves.easeInOut,
-                );
-              },
-              items: _visibleTabs.map(_buildNavItem).toList(),
-            ),
-          ),
+          isDesktopWeb ? _buildDesktopScaffold(chatState) : _buildMobileScaffold(),
 
           // Full-sync progress overlay — mirrors Angular's sync-loader-backdrop.
           if (chatState.isSyncing)
@@ -359,6 +244,419 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
               ),
             ),
         ],
+      ),
+    );
+  }
+
+  Scaffold _buildMobileScaffold() {
+    return Scaffold(
+      appBar: _buildAppBar(),
+      body: PageView(
+        controller: _pageController,
+        onPageChanged: (index) {
+          if (index < 0 || index >= _visibleTabs.length) return;
+          setState(() {
+            _currentTab = _visibleTabs[index];
+          });
+        },
+        children: _visibleTabs.map(_buildTabBody).toList(),
+      ),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _visibleTabs.indexOf(_currentTab),
+        onTap: (index) {
+          if (index < 0 || index >= _visibleTabs.length) return;
+          setState(() {
+            _currentTab = _visibleTabs[index];
+          });
+          _pageController.animateToPage(
+            index,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+          );
+        },
+        items: _visibleTabs.map(_buildNavItem).toList(),
+      ),
+    );
+  }
+
+  Scaffold _buildDesktopScaffold(ChatState chatState) {
+    return Scaffold(
+      appBar: _buildAppBar(),
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              AppColors.primaryDark,
+              AppColors.background,
+              AppColors.background,
+            ],
+            stops: [0, 0.18, 1],
+          ),
+        ),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 1580),
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Container(
+                clipBehavior: Clip.antiAlias,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(22),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withAlpha(28),
+                      blurRadius: 32,
+                      offset: const Offset(0, 14),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    _buildDesktopNavigationRail(),
+                    Container(width: 1, color: AppColors.divider),
+                    Expanded(
+                      child: _isChatSplitTab(_currentTab)
+                          ? _buildDesktopChatLayout(chatState)
+                          : _buildDesktopContentCard(_buildTabBody(_currentTab)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  PreferredSizeWidget _buildAppBar() {
+    return AppBar(
+      title: Text(_getTabTitle(_currentTab)),
+      leading: (_currentTab == MainTab.chats || _currentTab == MainTab.groups)
+          ? Padding(
+              padding: const EdgeInsetsDirectional.only(start: 4),
+              child: Semantics(
+                button: true,
+                label: _currentTab == MainTab.groups
+                    ? 'פתח אפשרויות ליצירת קבוצה חדשה'
+                    : 'פתח אפשרויות להתחלת שיחה חדשה',
+                child: IconButton(
+                  tooltip: _currentTab == MainTab.groups ? 'קבוצה חדשה' : 'שיחה חדשה',
+                  onPressed: _handleNewChat,
+                  icon: Icon(
+                    _currentTab == MainTab.groups
+                        ? Icons.group_add_outlined
+                        : Icons.add_comment_outlined,
+                  ),
+                ),
+              ),
+            )
+          : null,
+      actions: [
+        Consumer(
+          builder: (context, ref, _) {
+            final transport = ref.watch(realtimeTransportServiceProvider);
+            return Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Tooltip(
+                message: transport.transportLabel,
+                child: Icon(
+                  _getConnectionIcon(transport.transportMode),
+                  size: 20,
+                  color: _getConnectionColor(transport.transportMode),
+                ),
+              ),
+            );
+          },
+        ),
+        PopupMenuButton<String>(
+          icon: const Icon(Icons.more_vert),
+          onSelected: (value) {
+            switch (value) {
+              case 'logout':
+                _handleLogout();
+                break;
+              case 'refresh':
+                _handleRefresh();
+                break;
+              case 'fullsync':
+                _handleFullSync();
+                break;
+            }
+          },
+          itemBuilder: (context) => [
+            PopupMenuItem(
+              value: 'refresh',
+              child: Row(
+                children: [
+                  const Icon(Icons.refresh, size: 20),
+                  const SizedBox(width: 12),
+                  const Text('רענון'),
+                ],
+              ),
+            ),
+            PopupMenuItem(
+              value: 'fullsync',
+              child: Row(
+                children: [
+                  const Icon(Icons.sync, size: 20),
+                  const SizedBox(width: 12),
+                  const Text('סנכרון הודעות'),
+                ],
+              ),
+            ),
+            const PopupMenuDivider(),
+            PopupMenuItem(
+              value: 'logout',
+              child: Row(
+                children: [
+                  Icon(Icons.logout, size: 20, color: Theme.of(context).colorScheme.error),
+                  const SizedBox(width: 12),
+                  Text('התנתקות', style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDesktopNavigationRail() {
+    return NavigationRail(
+      extended: false,
+      minWidth: 84,
+      selectedIndex: _visibleTabs.indexOf(_currentTab),
+      groupAlignment: -1,
+      backgroundColor: AppColors.background,
+      indicatorColor: AppColors.primaryLight.withAlpha(60),
+      leading: Padding(
+        padding: const EdgeInsets.only(top: 12),
+        child: Column(
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: AppColors.primary,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: IconButton(
+                tooltip: 'שיחה חדשה',
+                onPressed: (_currentTab == MainTab.chats || _currentTab == MainTab.groups)
+                    ? _handleNewChat
+                    : null,
+                icon: const Icon(Icons.add_comment_outlined, color: Colors.white),
+              ),
+            ),
+            const SizedBox(height: 18),
+          ],
+        ),
+      ),
+      onDestinationSelected: (index) {
+        if (index < 0 || index >= _visibleTabs.length) return;
+        setState(() {
+          _currentTab = _visibleTabs[index];
+        });
+        _syncPageToCurrentTab();
+      },
+      destinations: _visibleTabs
+          .map(
+            (tab) => NavigationRailDestination(
+              icon: Icon(_navIcon(tab)),
+              selectedIcon: Icon(_navActiveIcon(tab)),
+              label: Text(_buildNavItem(tab).label ?? _getTabTitle(tab)),
+            ),
+          )
+          .toList(),
+    );
+  }
+
+  bool _isChatSplitTab(MainTab tab) =>
+      tab == MainTab.chats || tab == MainTab.groups;
+
+  IconData _navIcon(MainTab tab) {
+    switch (tab) {
+      case MainTab.chats:
+        return Icons.chat_bubble_outline;
+      case MainTab.groups:
+        return Icons.group_outlined;
+      case MainTab.shuttle:
+        return Icons.directions_bus_outlined;
+      case MainTab.helpdesk:
+        return Icons.support_agent_outlined;
+      case MainTab.ticketManager:
+        return Icons.manage_accounts_outlined;
+      case MainTab.settings:
+        return Icons.settings_outlined;
+    }
+  }
+
+  IconData _navActiveIcon(MainTab tab) {
+    switch (tab) {
+      case MainTab.chats:
+        return Icons.chat_bubble;
+      case MainTab.groups:
+        return Icons.group;
+      case MainTab.shuttle:
+        return Icons.directions_bus;
+      case MainTab.helpdesk:
+        return Icons.support_agent;
+      case MainTab.ticketManager:
+        return Icons.manage_accounts;
+      case MainTab.settings:
+        return Icons.settings;
+    }
+  }
+
+  Widget _buildDesktopChatLayout(ChatState chatState) {
+    final currentChatId = chatState.currentChatId;
+
+    return Row(
+      children: [
+        SizedBox(
+          width: 420,
+          child: Container(
+            color: AppColors.background,
+            child: Column(
+              children: [
+                _buildDesktopPaneHeader(),
+                Expanded(child: _buildDesktopListPane(currentChatId)),
+              ],
+            ),
+          ),
+        ),
+        Container(width: 1, color: AppColors.divider),
+        Expanded(
+          child: currentChatId == null
+              ? _buildDesktopConversationPlaceholder()
+              : MessageScreen(
+                  chatId: currentChatId,
+                  embedded: true,
+                  onExit: () => ref.read(chatStoreProvider.notifier).setCurrentChat(null),
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDesktopPaneHeader() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+      decoration: const BoxDecoration(
+        color: AppColors.background,
+        border: Border(
+          bottom: BorderSide(color: AppColors.divider),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _getTabTitle(_currentTab),
+            style: const TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            _currentTab == MainTab.groups
+                ? 'בחר קבוצה כדי להמשיך את השיחה'
+                : 'בחר שיחה כדי לפתוח את חלון ההודעות',
+            style: const TextStyle(
+              fontSize: 13,
+              color: AppColors.textSecondary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDesktopListPane(String? currentChatId) {
+    switch (_currentTab) {
+      case MainTab.chats:
+        return ChatListScreen(
+          selectedChatId: currentChatId,
+          onChatSelected: (_) {},
+        );
+      case MainTab.groups:
+        return GroupListScreen(
+          selectedChatId: currentChatId,
+          onGroupSelected: (_, __) {},
+        );
+      default:
+        return _buildTabBody(_currentTab);
+    }
+  }
+
+  Widget _buildDesktopContentCard(Widget child) {
+    return Container(
+      color: AppColors.background,
+      padding: const EdgeInsets.all(20),
+      child: Container(
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(18),
+        ),
+        child: child,
+      ),
+    );
+  }
+
+  Widget _buildDesktopConversationPlaceholder() {
+    return Container(
+      color: AppColors.background,
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 132,
+              height: 132,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(30),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withAlpha(18),
+                    blurRadius: 24,
+                    offset: const Offset(0, 10),
+                  ),
+                ],
+              ),
+              child: const Icon(
+                Icons.forum_outlined,
+                size: 68,
+                color: AppColors.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              'ברוכים הבאים',
+              style: TextStyle(
+                fontSize: 28,
+                fontWeight: FontWeight.w700,
+                color: AppColors.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'בחר שיחה מהרשימה כדי לפתוח את חלון ההודעות',
+              style: TextStyle(
+                fontSize: 15,
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
