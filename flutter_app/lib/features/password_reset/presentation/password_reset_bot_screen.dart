@@ -225,6 +225,9 @@ class _PasswordResetBotScreenState
       _addMessage('הבקשה בטיפול, אנא המתן...', isBot: true);
 
       final api = ref.read(chatApiServiceProvider);
+      // Success is defined by the submit request completing without an API
+      // error; some server responses intentionally omit a requestId, and the
+      // follow-up status polling is keyed by the authenticated user.
       await api.submitPasswordReset(user, password);
       if (!mounted) return;
       setState(() => _isLoading = false);
