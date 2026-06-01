@@ -16,6 +16,7 @@ import '../../../core/services/chat_store_service.dart';
 import '../../../core/services/push_notification_service.dart';
 import '../../auth/presentation/auth_state.dart';
 import '../../helpdesk/presentation/helpdesk_screen.dart';
+import '../../password_reset/presentation/password_reset_bot_screen.dart';
 import '../../shuttle/presentation/shuttle_screen.dart';
 import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
@@ -25,7 +26,7 @@ import 'message_screen.dart';
 import 'new_chat_dialog.dart';
 
 /// Main tab enumeration
-enum MainTab { chats, groups, shuttle, helpdesk, ticketManager, settings }
+enum MainTab { chats, groups, shuttle, helpdesk, ticketManager, passwordReset, settings }
 
 const List<String> _kHelpdeskAllowedUsers = [
   '0546799693',
@@ -490,6 +491,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         return Icons.support_agent_outlined;
       case MainTab.ticketManager:
         return Icons.manage_accounts_outlined;
+      case MainTab.passwordReset:
+        return Icons.lock_reset_outlined;
       case MainTab.settings:
         return Icons.settings_outlined;
     }
@@ -507,6 +510,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         return Icons.support_agent;
       case MainTab.ticketManager:
         return Icons.manage_accounts;
+      case MainTab.passwordReset:
+        return Icons.lock_reset;
       case MainTab.settings:
         return Icons.settings;
     }
@@ -677,6 +682,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         return _buildHelpdeskTab();
       case MainTab.ticketManager:
         return _buildTicketManagerTab();
+      case MainTab.passwordReset:
+        return _buildPasswordResetTab();
       case MainTab.settings:
         return _buildSettingsTab();
     }
@@ -714,6 +721,12 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
           activeIcon: Icon(Icons.manage_accounts),
           label: 'מנהל קריאות',
         );
+      case MainTab.passwordReset:
+        return const BottomNavigationBarItem(
+          icon: Icon(Icons.lock_reset_outlined),
+          activeIcon: Icon(Icons.lock_reset),
+          label: 'איפוס סיסמה',
+        );
       case MainTab.settings:
         return const BottomNavigationBarItem(
           icon: Icon(Icons.settings_outlined),
@@ -739,6 +752,10 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     return const TicketManagerScreen();
   }
 
+  Widget _buildPasswordResetTab() {
+    return const PasswordResetBotScreen();
+  }
+
   Widget _buildSettingsTab() {
     final user = ref.watch(currentUserProvider);
     return _SettingsPlaceholder(user: user);
@@ -751,6 +768,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       if (_canAccessShuttle) MainTab.shuttle,
       MainTab.helpdesk,
       if (_canAccessTicketManager) MainTab.ticketManager,
+      if (!kIsWeb) MainTab.passwordReset,
       MainTab.settings,
     ];
     _visibleTabs = tabs;
@@ -845,6 +863,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         return 'מוקד איחוד';
       case MainTab.ticketManager:
         return 'מנהל קריאות';
+      case MainTab.passwordReset:
+        return 'איפוס סיסמת Windows';
       case MainTab.settings:
         return 'הגדרות';
     }

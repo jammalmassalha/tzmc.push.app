@@ -1600,6 +1600,63 @@ class ChatApiService {
     );
     await sendReadReceipt(payload);
   }
+
+  // ---------------------------------------------------------------------------
+  // Password Reset Bot
+  // ---------------------------------------------------------------------------
+
+  /// Verify user's birth year against the Subscribe sheet (column N)
+  Future<({bool verified, String message})> verifyBirthYear(
+    String user,
+    String birthYear,
+  ) async {
+    final response = await _client.post<Map<String, dynamic>>(
+      ApiEndpoints.resetPasswordVerifyYear,
+      data: {'user': user, 'birthYear': birthYear},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 15)),
+    );
+    if (!response.isSuccessful) {
+      final body = response.data;
+      final msg = body is Map ? (body['error'] ?? body['message'] ?? 'שגיאה') : 'שגיאה';
+      return (verified: false, message: msg.toString());
+    }
+    final data = response.data ?? {};
+    final verified = data['verified'] == true;
+    final message = (data['message'] ?? (verified ? '' : 'שנת הלידה שגויה')).toString();
+    return (verified: verified, message: message);
+  }
+
+  /// Submit a Windows password reset request
+  Future<String?> submitPasswordReset(String user, String password) async {
+    final response = await _client.post<Map<String, dynamic>>(
+      ApiEndpoints.resetPasswordSubmit,
+      data: {'user': user, 'password': password},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 15)),
+    );
+    if (!response.isSuccessful) {
+      final body = response.data;
+      final msg = body is Map ? (body['error'] ?? body['message'] ?? 'שגיאה בשמירת הבקשה') : 'שגיאה בשמירת הבקשה';
+      throw ApiException(msg.toString());
+    }
+    final data = response.data ?? {};
+    return data['requestId']?.toString();
+  }
+
+  /// Poll for the server response to a password reset request
+  /// Returns null when still pending, or the response string when complete
+  Future<String?> getPasswordResetStatus(String user) async {
+    final response = await _client.get<Map<String, dynamic>>(
+      ApiEndpoints.resetPasswordStatus,
+      queryParameters: {'user': user},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 15)),
+    );
+    if (!response.isSuccessful) return null;
+    final data = response.data ?? {};
+    final responseValue = data['response'];
+    if (responseValue == null) return null;
+    final str = responseValue.toString().trim();
+    return str.isEmpty ? null : str;
+  }
 }
 
 /// Base API exception

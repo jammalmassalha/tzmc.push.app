@@ -101,6 +101,11 @@ class ApiEndpoints {
   static const String helpdeskDepartments = '/helpdesk/departments';
   static const String helpdeskDepartmentsActive = '/helpdesk/departments/active';
   static const String helpdeskDepartmentsTicketForm = '/helpdesk/departments';
+
+  // Password Reset Bot
+  static const String resetPasswordVerifyYear = '/reset-password/verify-year';
+  static const String resetPasswordSubmit = '/reset-password/submit';
+  static const String resetPasswordStatus = '/reset-password/status';
 }
 
 /// Network timeouts (matching Angular frontend behavior)

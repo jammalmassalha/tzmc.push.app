@@ -6620,6 +6620,132 @@ app.post(
     }
 });
 
+// --- PASSWORD RESET BOT ROUTES ---
+
+app.post(
+    ['/reset-password/verify-year', '/notify/reset-password/verify-year'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        try {
+            const user = req.resolvedUser;
+            const birthYear = String((req.body && req.body.birthYear) || '').trim();
+            if (!user || !birthYear) {
+                return res.status(400).json({ error: 'Missing user or birthYear' });
+            }
+            const response = await fetchWithRetry(
+                GOOGLE_SHEET_URL,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'verify_birth_year',
+                        user,
+                        birthYear,
+                        token: AUTH_CODE_SHEET_TOKEN
+                    })
+                },
+                { timeoutMs: 15000, retries: 1, backoffMs: 500 }
+            );
+            if (!response.ok) {
+                return res.status(502).json({ error: 'Sheet request failed' });
+            }
+            const payload = await response.json();
+            if (payload && payload.result === 'success') {
+                return res.json({ verified: true });
+            }
+            return res.json({ verified: false, message: (payload && payload.message) || 'שנת הלידה שגויה' });
+        } catch (e) {
+            console.error('[RESET-PASSWORD/VERIFY-YEAR]', e);
+            res.status(500).json({ error: e.message });
+        }
+    }
+);
+
+app.post(
+    ['/reset-password/submit', '/notify/reset-password/submit'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        try {
+            const user = req.resolvedUser;
+            const password = String((req.body && req.body.password) || '').trim();
+            if (!user || !password) {
+                return res.status(400).json({ error: 'Missing user or password' });
+            }
+            const response = await fetchWithRetry(
+                GOOGLE_SHEET_URL,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'submit_password_reset',
+                        user,
+                        password,
+                        token: AUTH_CODE_SHEET_TOKEN
+                    })
+                },
+                { timeoutMs: 15000, retries: 1, backoffMs: 500 }
+            );
+            if (!response.ok) {
+                return res.status(502).json({ error: 'Sheet request failed' });
+            }
+            const payload = await response.json();
+            if (payload && payload.result === 'success') {
+                return res.json({ requestId: payload.requestId || null });
+            }
+            return res.status(500).json({ error: (payload && payload.message) || 'שגיאה בשמירת הבקשה' });
+        } catch (e) {
+            console.error('[RESET-PASSWORD/SUBMIT]', e);
+            res.status(500).json({ error: e.message });
+        }
+    }
+);
+
+app.get(
+    ['/reset-password/status', '/notify/reset-password/status'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        try {
+            const user = req.resolvedUser;
+            if (!user) {
+                return res.status(401).json({ error: 'Unauthorized' });
+            }
+            const response = await fetchWithRetry(
+                GOOGLE_SHEET_URL,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'get_password_reset_status',
+                        user,
+                        token: AUTH_CODE_SHEET_TOKEN
+                    })
+                },
+                { timeoutMs: 15000, retries: 1, backoffMs: 500 }
+            );
+            if (!response.ok) {
+                return res.status(502).json({ error: 'Sheet request failed' });
+            }
+            const payload = await response.json();
+            return res.json({ response: (payload && payload.response) || null });
+        } catch (e) {
+            console.error('[RESET-PASSWORD/STATUS]', e);
+            res.status(500).json({ error: e.message });
+        }
+    }
+);
+
 app.post('/notify', async (req, res) => {
     try {
         const { targetUser, title, shortText, longText, senderuser, imageUrl } = req.body;
