@@ -4,6 +4,9 @@
 /// messages, and other chat-related operations.
 library;
 
+import 'dart:async';
+
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../config/app_config.dart';
@@ -1610,36 +1613,76 @@ class ChatApiService {
     String user,
     String birthYear,
   ) async {
-    final response = await _client.post<Map<String, dynamic>>(
-      ApiEndpoints.resetPasswordVerifyYear,
-      data: {'user': user, 'birthYear': birthYear},
-      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 15)),
-    );
-    if (!response.isSuccessful) {
-      final body = response.data;
-      final msg = body?['error'] ?? body?['message'] ?? 'שגיאה';
-      return (verified: false, message: msg.toString());
+    try {
+      final response = await _client.post<Map<String, dynamic>>(
+        ApiEndpoints.resetPasswordVerifyYear,
+        data: {'user': user, 'birthYear': birthYear},
+        options: Options(
+          receiveTimeout: NetworkTimeouts.resetPasswordTimeout,
+          sendTimeout: NetworkTimeouts.resetPasswordTimeout,
+        ),
+        retryOptions: const RetryOptions(
+          retries: 1,
+          timeout: NetworkTimeouts.resetPasswordTimeout,
+        ),
+      );
+      if (!response.isSuccessful) {
+        final body = response.data;
+        final msg = body?['error'] ?? body?['message'] ?? 'שגיאה';
+        return (verified: false, message: msg.toString());
+      }
+      final data = response.data ?? {};
+      final verified = data['verified'] == true;
+      final message = (data['message'] ?? (verified ? '' : 'שנת הלידה שגויה')).toString();
+      return (verified: verified, message: message);
+    } on ApiException {
+      rethrow;
+    } on DioException catch (e) {
+      final msg = (e.type == DioExceptionType.receiveTimeout ||
+              e.type == DioExceptionType.connectionTimeout ||
+              e.type == DioExceptionType.sendTimeout)
+          ? 'הבקשה לא הושלמה בזמן, נסה שנית.'
+          : 'שגיאת חיבור לשרת, בדוק את החיבור לאינטרנט ונסה שנית.';
+      throw ApiException(msg);
+    } on TimeoutException {
+      throw ApiException('הבקשה לא הושלמה בזמן, נסה שנית.');
     }
-    final data = response.data ?? {};
-    final verified = data['verified'] == true;
-    final message = (data['message'] ?? (verified ? '' : 'שנת הלידה שגויה')).toString();
-    return (verified: verified, message: message);
   }
 
   /// Submit a Windows password reset request
   Future<String?> submitPasswordReset(String user, String password) async {
-    final response = await _client.post<Map<String, dynamic>>(
-      ApiEndpoints.resetPasswordSubmit,
-      data: {'user': user, 'password': password},
-      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 15)),
-    );
-    if (!response.isSuccessful) {
-      final body = response.data;
-      final msg = body?['error'] ?? body?['message'] ?? 'שגיאה בשמירת הבקשה';
-      throw ApiException(msg.toString());
+    try {
+      final response = await _client.post<Map<String, dynamic>>(
+        ApiEndpoints.resetPasswordSubmit,
+        data: {'user': user, 'password': password},
+        options: Options(
+          receiveTimeout: NetworkTimeouts.resetPasswordTimeout,
+          sendTimeout: NetworkTimeouts.resetPasswordTimeout,
+        ),
+        retryOptions: const RetryOptions(
+          retries: 1,
+          timeout: NetworkTimeouts.resetPasswordTimeout,
+        ),
+      );
+      if (!response.isSuccessful) {
+        final body = response.data;
+        final msg = body?['error'] ?? body?['message'] ?? 'שגיאה בשמירת הבקשה';
+        throw ApiException(msg.toString());
+      }
+      final data = response.data ?? {};
+      return data['requestId']?.toString();
+    } on ApiException {
+      rethrow;
+    } on DioException catch (e) {
+      final msg = (e.type == DioExceptionType.receiveTimeout ||
+              e.type == DioExceptionType.connectionTimeout ||
+              e.type == DioExceptionType.sendTimeout)
+          ? 'הבקשה לא הושלמה בזמן, נסה שנית.'
+          : 'שגיאת חיבור לשרת, בדוק את החיבור לאינטרנט ונסה שנית.';
+      throw ApiException(msg);
+    } on TimeoutException {
+      throw ApiException('הבקשה לא הושלמה בזמן, נסה שנית.');
     }
-    final data = response.data ?? {};
-    return data['requestId']?.toString();
   }
 
   /// Poll for the server response to a password reset request
