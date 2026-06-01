@@ -6623,8 +6623,21 @@ app.post(
 // --- PASSWORD RESET BOT ROUTES ---
 const resetPasswordRateLimitStore = new Map();
 
+function requirePasswordResetAppSession(req, res, next) {
+    const requestPath = String(req.path || '').trim();
+    if (!requestPath.startsWith('/notify/reset-password/')) {
+        return next();
+    }
+    const sessionUser = normalizeUserCandidate(req && req.authUser);
+    if (!sessionUser) {
+        return res.status(401).json({ error: 'Authentication required' });
+    }
+    return next();
+}
+
 app.post(
     ['/reset-password/verify-year', '/notify/reset-password/verify-year'],
+    requirePasswordResetAppSession,
     requireAuthorizedUser({
         required: true,
         candidateKeys: ['user'],
@@ -6677,6 +6690,7 @@ app.post(
 
 app.post(
     ['/reset-password/submit', '/notify/reset-password/submit'],
+    requirePasswordResetAppSession,
     requireAuthorizedUser({
         required: true,
         candidateKeys: ['user'],
@@ -6729,6 +6743,7 @@ app.post(
 
 app.get(
     ['/reset-password/status', '/notify/reset-password/status'],
+    requirePasswordResetAppSession,
     requireAuthorizedUser({
         required: true,
         candidateKeys: ['user'],

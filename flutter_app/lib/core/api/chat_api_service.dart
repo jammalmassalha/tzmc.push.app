@@ -30,6 +30,28 @@ class ChatApiService {
 
   ChatApiService(this._client);
 
+  Map<String, dynamic> _coerceJsonMap(dynamic value) {
+    if (value is Map<String, dynamic>) {
+      return value;
+    }
+    if (value is Map) {
+      return value.map(
+        (key, val) => MapEntry(key.toString(), val),
+      );
+    }
+    return const <String, dynamic>{};
+  }
+
+  String _extractErrorMessage(dynamic body, String fallback) {
+    if (body is String && body.trim().isNotEmpty) {
+      return body.trim();
+    }
+    final map = _coerceJsonMap(body);
+    final message = map['error'] ?? map['message'];
+    final normalized = message?.toString().trim() ?? '';
+    return normalized.isNotEmpty ? normalized : fallback;
+  }
+
   // ---------------------------------------------------------------------------
   // Authentication
   // ---------------------------------------------------------------------------
@@ -1652,7 +1674,7 @@ class ChatApiService {
   /// Submit a Windows password reset request
   Future<String?> submitPasswordReset(String user, String password) async {
     try {
-      final response = await _client.post<Map<String, dynamic>>(
+      final response = await _client.post<dynamic>(
         ApiEndpoints.resetPasswordSubmit,
         data: {'user': user, 'password': password},
         options: Options(
@@ -1665,11 +1687,11 @@ class ChatApiService {
         ),
       );
       if (!response.isSuccessful) {
-        final body = response.data;
-        final msg = body?['error'] ?? body?['message'] ?? 'שגיאה בשמירת הבקשה';
-        throw ApiException(msg.toString());
+        throw ApiException(
+          _extractErrorMessage(response.data, 'שגיאה בשמירת הבקשה'),
+        );
       }
-      final data = response.data ?? {};
+      final data = _coerceJsonMap(response.data);
       return data['requestId']?.toString();
     } on ApiException {
       rethrow;

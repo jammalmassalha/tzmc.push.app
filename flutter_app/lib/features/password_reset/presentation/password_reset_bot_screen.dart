@@ -225,11 +225,8 @@ class _PasswordResetBotScreenState
       _addMessage('הבקשה בטיפול, אנא המתן...', isBot: true);
 
       final api = ref.read(chatApiServiceProvider);
-      final requestId = await api.submitPasswordReset(user, password);
+      await api.submitPasswordReset(user, password);
       if (!mounted) return;
-      if (requestId == null || requestId.trim().isEmpty) {
-        throw ApiException('לא התקבל אישור מהשרת. נסה שנית.');
-      }
       setState(() => _isLoading = false);
       _startPolling(user);
     } on ApiException catch (e) {
