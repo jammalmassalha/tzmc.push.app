@@ -56,7 +56,6 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     MainTab.chats,
     MainTab.groups,
     MainTab.helpdesk,
-    MainTab.settings,
   ];
 
   @override
@@ -386,6 +385,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
               case 'fullsync':
                 _handleFullSync();
                 break;
+              case 'settings':
+                _handleOpenSettings();
+                break;
             }
           },
           itemBuilder: (context) => [
@@ -406,6 +408,16 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
                   const Icon(Icons.sync, size: 20),
                   const SizedBox(width: 12),
                   const Text('סנכרון הודעות'),
+                ],
+              ),
+            ),
+            PopupMenuItem(
+              value: 'settings',
+              child: Row(
+                children: [
+                  const Icon(Icons.settings_outlined, size: 20),
+                  const SizedBox(width: 12),
+                  const Text('הגדרות'),
                 ],
               ),
             ),
@@ -769,7 +781,6 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       MainTab.helpdesk,
       if (_canAccessTicketManager) MainTab.ticketManager,
       if (!kIsWeb) MainTab.passwordReset,
-      MainTab.settings,
     ];
     _visibleTabs = tabs;
   }
@@ -927,6 +938,20 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
           ),
         );
       },
+    );
+  }
+
+  void _handleOpenSettings() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (context) => Directionality(
+          textDirection: TextDirection.rtl,
+          child: Scaffold(
+            appBar: AppBar(title: const Text('הגדרות')),
+            body: _SettingsPlaceholder(user: ref.read(currentUserProvider)),
+          ),
+        ),
+      ),
     );
   }
 

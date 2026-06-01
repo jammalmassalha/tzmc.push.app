@@ -118,10 +118,17 @@ class _PasswordResetBotScreenState
   }
 
   Future<void> _onSubmitBirthYear() async {
+    FocusScope.of(context).unfocus();
     final year = _inputCtrl.text.trim();
-    if (year.isEmpty) return;
+    if (year.isEmpty) {
+      _addMessage('יש להזין שנת לידה לפני השליחה.', isBot: true);
+      return;
+    }
     final user = _currentUser;
-    if (user == null) return;
+    if (user == null) {
+      _addMessage('פג תוקף ההתחברות. נא להתחבר מחדש ולנסות שוב.', isBot: true);
+      return;
+    }
 
     _addMessage(year, isBot: false);
     _inputCtrl.clear();
@@ -184,37 +191,54 @@ class _PasswordResetBotScreenState
   }
 
   Future<void> _onSubmitPassword() async {
+    FocusScope.of(context).unfocus();
     final password = _inputCtrl.text.trim();
-    if (password.isEmpty) return;
+    if (password.isEmpty) {
+      _addMessage('יש להזין סיסמה חדשה לפני השליחה.', isBot: true);
+      return;
+    }
     final user = _currentUser;
-    if (user == null) return;
-
-    // Validate password requirements before submitting
-    final errors = _validatePassword(password);
-    if (errors.isNotEmpty) {
-      _addMessage('••••••••', isBot: false);
-      _inputCtrl.clear();
-      _addMessage(
-        'הסיסמה אינה עומדת בדרישות. יש לתקן את הבאים:\n${errors.join('\n')}',
-        isBot: true,
-      );
+    if (user == null) {
+      _addMessage('פג תוקף ההתחברות. נא להתחבר מחדש ולנסות שוב.', isBot: true);
       return;
     }
 
-    _addMessage('••••••••', isBot: false);
-    _inputCtrl.clear();
-    setState(() {
-      _step = _BotStep.polling;
-      _isLoading = true;
-    });
-    _addMessage('הבקשה בטיפול, אנא המתן...', isBot: true);
-
     try {
+      // Validate password requirements before submitting
+      final errors = _validatePassword(password);
+      if (errors.isNotEmpty) {
+        _addMessage('••••••••', isBot: false);
+        _inputCtrl.clear();
+        _addMessage(
+          'הסיסמה אינה עומדת בדרישות. יש לתקן את הבאים:\n${errors.join('\n')}',
+          isBot: true,
+        );
+        return;
+      }
+
+      _addMessage('••••••••', isBot: false);
+      _inputCtrl.clear();
+      setState(() {
+        _step = _BotStep.polling;
+        _isLoading = true;
+      });
+      _addMessage('הבקשה בטיפול, אנא המתן...', isBot: true);
+
       final api = ref.read(chatApiServiceProvider);
-      await api.submitPasswordReset(user, password);
+      final requestId = await api.submitPasswordReset(user, password);
       if (!mounted) return;
+      if (requestId == null || requestId.trim().isEmpty) {
+        throw ApiException('לא התקבל אישור מהשרת. נסה שנית.');
+      }
       setState(() => _isLoading = false);
       _startPolling(user);
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _step = _BotStep.enterPassword;
+        _isLoading = false;
+      });
+      _addMessage(e.message, isBot: true);
     } catch (e) {
       if (!mounted) return;
       setState(() {
