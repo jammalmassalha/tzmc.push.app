@@ -207,7 +207,7 @@ class _PasswordResetBotScreenState
       // Validate password requirements before submitting
       final errors = _validatePassword(password);
       if (errors.isNotEmpty) {
-        _addMessage('••••••••', isBot: false);
+        _addMessage(password, isBot: false);
         _inputCtrl.clear();
         _addMessage(
           'הסיסמה אינה עומדת בדרישות. יש לתקן את הבאים:\n${errors.join('\n')}',
@@ -216,7 +216,7 @@ class _PasswordResetBotScreenState
         return;
       }
 
-      _addMessage('••••••••', isBot: false);
+      _addMessage(password, isBot: false);
       _inputCtrl.clear();
       setState(() {
         _step = _BotStep.polling;
@@ -413,7 +413,6 @@ class _PasswordResetBotScreenState
             ),
             if (_step == _BotStep.enterPassword) _buildTextInput(
               hint: 'הזן סיסמה חדשה',
-              obscureText: true,
               onSubmit: _onSubmitPassword,
             ),
             if (_step == _BotStep.polling) _buildPollingIndicator(),
