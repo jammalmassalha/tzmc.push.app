@@ -6624,57 +6624,64 @@ app.post(
 const resetPasswordRateLimitStore = new Map();
 const resetPasswordPreAuthRateLimitStore = new Map();
 
-function rateLimitPasswordResetRoute(scope, maxAttempts, windowMs) {
+function authorizePasswordResetRequest(scope, preAuthMaxAttempts, userMaxAttempts, windowMs) {
     return (req, res, next) => {
         const requestUser = normalizeUserCandidate(
             (req && req.body && req.body.user) ||
             (req && req.query && req.query.user) ||
             ''
         );
-        const rateKey = requestUser || `${scope}:${getClientIpAddress(req)}`;
-        const rateCheck = consumeRateLimitEntry(
+        const preAuthRateCheck = consumeRateLimitEntry(
             resetPasswordPreAuthRateLimitStore,
-            `${scope}:${rateKey}`,
-            maxAttempts,
+            `${scope}:${requestUser || getClientIpAddress(req)}`,
+            preAuthMaxAttempts,
             windowMs
         );
-        if (!rateCheck.allowed) {
-            return res.status(429).json({ error: `נסה שוב בעוד ${rateCheck.retryAfterSeconds} שניות` });
+        if (!preAuthRateCheck.allowed) {
+            return res.status(429).json({ error: `נסה שוב בעוד ${preAuthRateCheck.retryAfterSeconds} שניות` });
+        }
+
+        const requestPath = String(req.path || '').trim();
+        if (requestPath.startsWith('/notify/reset-password/')) {
+            const sessionUser = normalizeUserCandidate(req && req.authUser);
+            if (!sessionUser) {
+                return res.status(401).json({ error: 'Authentication required' });
+            }
+        }
+
+        const resolution = req.resolveAuthorizedUserFromRequest({
+            required: true,
+            candidateKeys: ['user']
+        });
+        req.authorizedUserResolution = resolution;
+        req.authorizedUser = resolution && !resolution.error
+            ? normalizeUserCandidate(resolution.user)
+            : '';
+        req.resolvedUser = req.authorizedUser;
+
+        if (resolution && resolution.error) {
+            return res.status(resolution.status || 400).json({ error: resolution.error });
+        }
+
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+        const userRateCheck = consumeRateLimitEntry(
+            resetPasswordRateLimitStore,
+            `${user}:${scope}`,
+            userMaxAttempts,
+            windowMs
+        );
+        if (!userRateCheck.allowed) {
+            return res.status(429).json({ error: `נסה שוב בעוד ${userRateCheck.retryAfterSeconds} שניות` });
         }
         return next();
     };
 }
 
-function requirePasswordResetAppSession(req, res, next) {
-    const requestPath = String(req.path || '').trim();
-    if (!requestPath.startsWith('/notify/reset-password/')) {
-        return next();
-    }
-    const sessionUser = normalizeUserCandidate(req && req.authUser);
-    if (!sessionUser) {
-        return res.status(401).json({ error: 'Authentication required' });
-    }
-    return next();
-}
-
 app.post(
     ['/reset-password/verify-year', '/notify/reset-password/verify-year'],
-    rateLimitPasswordResetRoute('verify-preauth', 10, 60 * 1000),
-    requirePasswordResetAppSession,
-    requireAuthorizedUser({
-        required: true,
-        candidateKeys: ['user'],
-        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
-    }),
-    (req, res, next) => {
-        const user = normalizeUserKey(req.resolvedUser || '');
-        if (!user) return res.status(401).json({ error: 'Unauthorized' });
-        const rateCheck = consumeRateLimitEntry(resetPasswordRateLimitStore, user + ':verify', 5, 60 * 1000);
-        if (!rateCheck.allowed) {
-            return res.status(429).json({ error: `נסה שוב בעוד ${rateCheck.retryAfterSeconds} שניות` });
-        }
-        next();
-    },
+    authorizePasswordResetRequest('verify', 10, 5, 60 * 1000),
     async (req, res) => {
         try {
             const user = req.resolvedUser;
@@ -6713,22 +6720,7 @@ app.post(
 
 app.post(
     ['/reset-password/submit', '/notify/reset-password/submit'],
-    rateLimitPasswordResetRoute('submit-preauth', 6, 60 * 1000),
-    requirePasswordResetAppSession,
-    requireAuthorizedUser({
-        required: true,
-        candidateKeys: ['user'],
-        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
-    }),
-    (req, res, next) => {
-        const user = normalizeUserKey(req.resolvedUser || '');
-        if (!user) return res.status(401).json({ error: 'Unauthorized' });
-        const rateCheck = consumeRateLimitEntry(resetPasswordRateLimitStore, user + ':submit', 3, 60 * 1000);
-        if (!rateCheck.allowed) {
-            return res.status(429).json({ error: `נסה שוב בעוד ${rateCheck.retryAfterSeconds} שניות` });
-        }
-        next();
-    },
+    authorizePasswordResetRequest('submit', 6, 3, 60 * 1000),
     async (req, res) => {
         try {
             const user = req.resolvedUser;
@@ -6767,23 +6759,7 @@ app.post(
 
 app.get(
     ['/reset-password/status', '/notify/reset-password/status'],
-    rateLimitPasswordResetRoute('status-preauth', 60, 60 * 1000),
-    requirePasswordResetAppSession,
-    requireAuthorizedUser({
-        required: true,
-        candidateKeys: ['user'],
-        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
-    }),
-    (req, res, next) => {
-        const user = normalizeUserKey(req.resolvedUser || '');
-        if (!user) return res.status(401).json({ error: 'Unauthorized' });
-        // Allow frequent polling: 30 requests per minute per user
-        const rateCheck = consumeRateLimitEntry(resetPasswordRateLimitStore, user + ':status', 30, 60 * 1000);
-        if (!rateCheck.allowed) {
-            return res.status(429).json({ error: `נסה שוב בעוד ${rateCheck.retryAfterSeconds} שניות` });
-        }
-        next();
-    },
+    authorizePasswordResetRequest('status', 60, 30, 60 * 1000),
     async (req, res) => {
         try {
             const user = req.resolvedUser;
