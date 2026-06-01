@@ -6621,6 +6621,7 @@ app.post(
 });
 
 // --- PASSWORD RESET BOT ROUTES ---
+const resetPasswordRateLimitStore = new Map();
 
 app.post(
     ['/reset-password/verify-year', '/notify/reset-password/verify-year'],
@@ -6629,6 +6630,15 @@ app.post(
         candidateKeys: ['user'],
         onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
     }),
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user) return res.status(401).json({ error: 'Unauthorized' });
+        const rateCheck = consumeRateLimitEntry(resetPasswordRateLimitStore, user + ':verify', 5, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `נסה שוב בעוד ${rateCheck.retryAfterSeconds} שניות` });
+        }
+        next();
+    },
     async (req, res) => {
         try {
             const user = req.resolvedUser;
@@ -6672,6 +6682,15 @@ app.post(
         candidateKeys: ['user'],
         onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
     }),
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user) return res.status(401).json({ error: 'Unauthorized' });
+        const rateCheck = consumeRateLimitEntry(resetPasswordRateLimitStore, user + ':submit', 3, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `נסה שוב בעוד ${rateCheck.retryAfterSeconds} שניות` });
+        }
+        next();
+    },
     async (req, res) => {
         try {
             const user = req.resolvedUser;
@@ -6715,6 +6734,16 @@ app.get(
         candidateKeys: ['user'],
         onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
     }),
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user) return res.status(401).json({ error: 'Unauthorized' });
+        // Allow frequent polling: 30 requests per minute per user
+        const rateCheck = consumeRateLimitEntry(resetPasswordRateLimitStore, user + ':status', 30, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `נסה שוב בעוד ${rateCheck.retryAfterSeconds} שניות` });
+        }
+        next();
+    },
     async (req, res) => {
         try {
             const user = req.resolvedUser;

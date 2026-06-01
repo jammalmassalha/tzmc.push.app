@@ -48,6 +48,8 @@ class _PasswordResetBotScreenState
   final ScrollController _scrollCtrl = ScrollController();
   bool _isLoading = false;
   Timer? _pollTimer;
+  int _pollCount = 0;
+  static const int _maxPollAttempts = 60; // ~5 minutes at 5s intervals
 
   @override
   void dispose() {
@@ -84,6 +86,7 @@ class _PasswordResetBotScreenState
       _messages.clear();
       _inputCtrl.clear();
       _isLoading = false;
+      _pollCount = 0;
     });
   }
 
@@ -180,8 +183,21 @@ class _PasswordResetBotScreenState
   }
 
   void _startPolling(String user) {
+    _pollCount = 0;
     _pollTimer?.cancel();
     _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+      _pollCount++;
+      if (_pollCount > _maxPollAttempts) {
+        _pollTimer?.cancel();
+        _pollTimer = null;
+        if (!mounted) return;
+        setState(() => _step = _BotStep.done);
+        _addMessage(
+          'לא התקבלה תגובה מהשרת בזמן הצפוי. אנא פנה למחלקת מחשוב.',
+          isBot: true,
+        );
+        return;
+      }
       try {
         final api = ref.read(chatApiServiceProvider);
         final response = await api.getPasswordResetStatus(user);
