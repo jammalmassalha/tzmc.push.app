@@ -413,6 +413,8 @@ class _PasswordResetBotScreenState
             ),
             if (_step == _BotStep.enterPassword) _buildTextInput(
               hint: 'הזן סיסמה חדשה',
+              textDirection: TextDirection.ltr,
+              textAlign: TextAlign.left,
               onSubmit: _onSubmitPassword,
             ),
             if (_step == _BotStep.polling) _buildPollingIndicator(),
@@ -478,6 +480,8 @@ class _PasswordResetBotScreenState
     required String hint,
     bool obscureText = false,
     TextInputType keyboardType = TextInputType.text,
+    TextDirection? textDirection,
+    TextAlign textAlign = TextAlign.start,
     required VoidCallback onSubmit,
   }) {
     return Padding(
@@ -489,6 +493,8 @@ class _PasswordResetBotScreenState
               controller: _inputCtrl,
               obscureText: obscureText,
               keyboardType: keyboardType,
+              textDirection: textDirection,
+              textAlign: textAlign,
               textInputAction: TextInputAction.send,
               enabled: !_isLoading,
               onSubmitted: (_) => onSubmit(),
