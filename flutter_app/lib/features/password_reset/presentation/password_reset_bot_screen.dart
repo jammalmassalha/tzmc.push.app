@@ -52,7 +52,7 @@ class _PasswordResetBotScreenState
   int _pollCount = 0;
   static const int _maxPollAttempts = 60; // 60 attempts × 5 seconds = 5 minutes
   static final RegExp _specialCharPattern = RegExp(
-    r'[!@#$%^&*()_+\-=\[\]{}|;:,.<>?/~`"\'\\]',
+    r"""[!@#$%^&*()_+\-=\[\]{}|;:,.<>?/~`"'\\]""",
   );
 
   @override
