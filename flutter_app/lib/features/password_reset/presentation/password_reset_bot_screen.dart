@@ -51,6 +51,9 @@ class _PasswordResetBotScreenState
   Timer? _pollTimer;
   int _pollCount = 0;
   static const int _maxPollAttempts = 60; // 60 attempts × 5 seconds = 5 minutes
+  static final RegExp _specialCharPattern = RegExp(
+    r'[!@#$%^&*()_+\-=\[\]{}|;:,.<>?/~`"\'\\]',
+  );
 
   @override
   void dispose() {
@@ -179,7 +182,7 @@ class _PasswordResetBotScreenState
       (label: 'לפחות אות גדולה אחת (A-Z)', passed: password.contains(RegExp(r'[A-Z]'))),
       (label: 'לפחות אות קטנה אחת (a-z)', passed: password.contains(RegExp(r'[a-z]'))),
       (label: 'לפחות ספרה אחת (0-9)', passed: password.contains(RegExp(r'[0-9]'))),
-      (label: 'לפחות תו מיוחד אחד (!, @, #, \$, % וכד\')', passed: password.contains(RegExp(r'[^A-Za-z0-9]'))),
+      (label: 'לפחות תו מיוחד אחד (!, @, #, \$, % וכד\')', passed: password.contains(_specialCharPattern)),
     ];
   }
 
@@ -206,7 +209,7 @@ class _PasswordResetBotScreenState
     // Validate password requirements before submitting
     final errors = _validatePassword(password);
     if (errors.isNotEmpty) {
-      _addMessage(password, isBot: false);
+      _addMessage('הוזנה סיסמה חדשה', isBot: false);
       _inputCtrl.clear();
       setState(() => _lastSubmitError = 'הסיסמה אינה עומדת בדרישות.');
       _addMessage(
@@ -217,7 +220,7 @@ class _PasswordResetBotScreenState
     }
 
     try {
-      _addMessage(password, isBot: false);
+      _addMessage('הוזנה סיסמה חדשה', isBot: false);
       _inputCtrl.clear();
       setState(() {
         _step = _BotStep.polling;
