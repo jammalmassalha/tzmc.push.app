@@ -47,6 +47,7 @@ class _PasswordResetBotScreenState
   final TextEditingController _inputCtrl = TextEditingController();
   final ScrollController _scrollCtrl = ScrollController();
   bool _isLoading = false;
+  String? _lastSubmitError;
   Timer? _pollTimer;
   int _pollCount = 0;
   static const int _maxPollAttempts = 60; // 60 attempts × 5 seconds = 5 minutes
@@ -86,6 +87,7 @@ class _PasswordResetBotScreenState
       _messages.clear();
       _inputCtrl.clear();
       _isLoading = false;
+      _lastSubmitError = null;
       _pollCount = 0;
     });
   }
@@ -143,6 +145,7 @@ class _PasswordResetBotScreenState
         setState(() {
           _step = _BotStep.enterPassword;
           _isLoading = false;
+          _lastSubmitError = null;
         });
         _addMessage('מה תהיה הסיסמה החדשה שלך?', isBot: true);
         _addMessage(
@@ -170,24 +173,21 @@ class _PasswordResetBotScreenState
 
   /// Returns a list of Hebrew error messages for every unmet password rule.
   /// An empty list means the password is valid.
+  List<({String label, bool passed})> _passwordChecks(String password) {
+    return [
+      (label: 'לפחות 8 תווים', passed: password.length >= 8),
+      (label: 'לפחות אות גדולה אחת (A-Z)', passed: password.contains(RegExp(r'[A-Z]'))),
+      (label: 'לפחות אות קטנה אחת (a-z)', passed: password.contains(RegExp(r'[a-z]'))),
+      (label: 'לפחות ספרה אחת (0-9)', passed: password.contains(RegExp(r'[0-9]'))),
+      (label: 'לפחות תו מיוחד אחד (!, @, #, \$, % וכד\')', passed: password.contains(RegExp(r'[^A-Za-z0-9]'))),
+    ];
+  }
+
   List<String> _validatePassword(String password) {
-    final errors = <String>[];
-    if (password.length < 8) {
-      errors.add('• הסיסמה קצרה מדי – נדרשים לפחות 8 תווים');
-    }
-    if (!password.contains(RegExp(r'[A-Z]'))) {
-      errors.add('• חסרה לפחות אות גדולה אחת (A-Z)');
-    }
-    if (!password.contains(RegExp(r'[a-z]'))) {
-      errors.add('• חסרה לפחות אות קטנה אחת (a-z)');
-    }
-    if (!password.contains(RegExp(r'[0-9]'))) {
-      errors.add('• חסרה לפחות ספרה אחת (0-9)');
-    }
-    if (!password.contains(RegExp(r'[!@#$%^&*()_+\-=\[\]{}|;:,.<>?/~`\\"\'']'))) {
-      errors.add('• חסר לפחות תו מיוחד אחד (!, @, #, \$, % וכד\')');
-    }
-    return errors;
+    return _passwordChecks(password)
+        .where((rule) => !rule.passed)
+        .map((rule) => '• חסר: ${rule.label}')
+        .toList();
   }
 
   Future<void> _onSubmitPassword() async {
@@ -203,24 +203,26 @@ class _PasswordResetBotScreenState
       return;
     }
 
-    try {
-      // Validate password requirements before submitting
-      final errors = _validatePassword(password);
-      if (errors.isNotEmpty) {
-        _addMessage(password, isBot: false);
-        _inputCtrl.clear();
-        _addMessage(
-          'הסיסמה אינה עומדת בדרישות. יש לתקן את הבאים:\n${errors.join('\n')}',
-          isBot: true,
-        );
-        return;
-      }
+    // Validate password requirements before submitting
+    final errors = _validatePassword(password);
+    if (errors.isNotEmpty) {
+      _addMessage(password, isBot: false);
+      _inputCtrl.clear();
+      setState(() => _lastSubmitError = 'הסיסמה אינה עומדת בדרישות.');
+      _addMessage(
+        'הסיסמה אינה עומדת בדרישות. יש לתקן את הבאים:\n${errors.join('\n')}',
+        isBot: true,
+      );
+      return;
+    }
 
+    try {
       _addMessage(password, isBot: false);
       _inputCtrl.clear();
       setState(() {
         _step = _BotStep.polling;
         _isLoading = true;
+        _lastSubmitError = null;
       });
       _addMessage('הבקשה בטיפול, אנא המתן...', isBot: true);
 
@@ -237,6 +239,7 @@ class _PasswordResetBotScreenState
       setState(() {
         _step = _BotStep.enterPassword;
         _isLoading = false;
+        _lastSubmitError = e.message;
       });
       _addMessage(e.message, isBot: true);
     } catch (e) {
@@ -244,8 +247,9 @@ class _PasswordResetBotScreenState
       setState(() {
         _step = _BotStep.enterPassword;
         _isLoading = false;
+        _lastSubmitError = e.toString();
       });
-      _addMessage('שגיאה בשליחת הבקשה, נסה שנית.', isBot: true);
+      _addMessage('שגיאה בשליחת הבקשה: $e', isBot: true);
     }
   }
 
@@ -416,7 +420,9 @@ class _PasswordResetBotScreenState
               textDirection: TextDirection.ltr,
               textAlign: TextAlign.left,
               onSubmit: _onSubmitPassword,
+              onChanged: (_) => setState(() => _lastSubmitError = null),
             ),
+            if (_step == _BotStep.enterPassword) _buildPasswordRequirements(),
             if (_step == _BotStep.polling) _buildPollingIndicator(),
             if (_step == _BotStep.done) _buildRestartButton(),
           ],
@@ -483,6 +489,7 @@ class _PasswordResetBotScreenState
     TextDirection? textDirection,
     TextAlign textAlign = TextAlign.start,
     required VoidCallback onSubmit,
+    ValueChanged<String>? onChanged,
   }) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
@@ -498,6 +505,7 @@ class _PasswordResetBotScreenState
               textInputAction: TextInputAction.send,
               enabled: !_isLoading,
               onSubmitted: (_) => onSubmit(),
+              onChanged: onChanged,
               decoration: InputDecoration(
                 hintText: hint,
                 contentPadding: const EdgeInsets.symmetric(
@@ -520,12 +528,61 @@ class _PasswordResetBotScreenState
                 )
               : IconButton(
                   onPressed: onSubmit,
+                  tooltip: _buildSendTooltipMessage(),
                   icon: const Icon(Icons.send),
                   color: AppColors.primary,
                 ),
         ],
       ),
     );
+  }
+
+  Widget _buildPasswordRequirements() {
+    final checks = _passwordChecks(_inputCtrl.text);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final check in checks)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Row(
+                children: [
+                  Icon(
+                    check.passed ? Icons.check_circle : Icons.cancel,
+                    size: 16,
+                    color: check.passed ? Colors.green : Colors.red,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      check.label,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: check.passed ? Colors.green : AppColors.textSecondary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _buildSendTooltipMessage() {
+    if (_lastSubmitError != null && _lastSubmitError!.trim().isNotEmpty) {
+      return _lastSubmitError!;
+    }
+    if (_step == _BotStep.enterPassword) {
+      final missing = _validatePassword(_inputCtrl.text.trim());
+      if (missing.isNotEmpty) {
+        return 'לפני השליחה יש להשלים:\n${missing.join('\n')}';
+      }
+    }
+    return 'שליחה';
   }
 
   Widget _buildPollingIndicator() {
