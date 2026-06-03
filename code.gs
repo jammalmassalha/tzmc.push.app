@@ -1291,12 +1291,10 @@ function doPost(e) {
       // Read all rows and find the most recent row for this user
       var gsValues = getRangeValues(gsSheet, 2, 1, gsLastRow - 1, 4);
       var gsLatestRow = null;
-      var gsLatestRowIndex = 0;
       for (var gi = gsValues.length - 1; gi >= 0; gi--) {
         var gsRowUser = normalizePhone(String(gsValues[gi][1] || '').replace(/^'/, '').trim());
         if (gsRowUser === gsUser) {
           gsLatestRow = gsValues[gi];
-          gsLatestRowIndex = gi + 2; // +2 because data starts at row 2
           break;
         }
       }
@@ -1304,14 +1302,45 @@ function doPost(e) {
         return createJSON({ result: 'success', response: null });
       }
       var gsResponse = String(gsLatestRow[3] || '').trim();
-      if (gsResponse && gsLatestRowIndex > 1) {
-        try {
-          gsSheet.deleteRow(gsLatestRowIndex);
-        } catch (deleteErr) {
-          Logger.log('Failed deleting ResetPassword row ' + gsLatestRowIndex + ': ' + deleteErr);
+      return createJSON({ result: 'success', response: gsResponse || null });
+    }
+
+    // ======================================================
+    // 8b. DELETE PASSWORD RESET STATUS ROW (Sheet: ResetPassword)
+    // ======================================================
+    if (data.action === 'delete_password_reset_status') {
+      var drUser = normalizePhone(String(data.user || '').trim());
+      if (!drUser) {
+        return createJSON({ result: 'error', message: 'Missing user' });
+      }
+      var drSheet = spreadsheet.getSheetByName('ResetPassword');
+      if (!drSheet) {
+        return createJSON({ result: 'success', deleted: false });
+      }
+      var drLastRow = getLastDataRow(drSheet);
+      if (!drLastRow) {
+        return createJSON({ result: 'success', deleted: false });
+      }
+      var drValues = getRangeValues(drSheet, 2, 1, drLastRow - 1, 4);
+      var drRowIndex = 0;
+      for (var di = drValues.length - 1; di >= 0; di--) {
+        var drRowUser = normalizePhone(String(drValues[di][1] || '').replace(/^'/, '').trim());
+        var drResponse = String(drValues[di][3] || '').trim();
+        if (drRowUser === drUser && drResponse) {
+          drRowIndex = di + 2; // +2 because data starts at row 2
+          break;
         }
       }
-      return createJSON({ result: 'success', response: gsResponse || null });
+      if (drRowIndex < 2) {
+        return createJSON({ result: 'success', deleted: false });
+      }
+      try {
+        drSheet.deleteRow(drRowIndex);
+      } catch (deleteErr) {
+        Logger.log('Failed deleting ResetPassword row ' + drRowIndex + ': ' + deleteErr);
+        return createJSON({ result: 'error', message: 'Failed deleting row' });
+      }
+      return createJSON({ result: 'success', deleted: true, rowId: drRowIndex });
     }
 
     // ======================================================

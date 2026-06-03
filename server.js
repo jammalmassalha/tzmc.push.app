@@ -6783,7 +6783,35 @@ app.get(
                 return res.status(502).json({ error: 'Sheet request failed' });
             }
             const payload = await response.json();
-            return res.json({ response: (payload && payload.response) || null });
+            const resetResponse = (payload && payload.response) || null;
+            if (resetResponse && String(resetResponse).trim()) {
+                try {
+                    const deleteResponse = await fetchWithRetry(
+                        GOOGLE_SHEET_URL,
+                        {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                action: 'delete_password_reset_status',
+                                user,
+                                token: AUTH_CODE_SHEET_TOKEN
+                            })
+                        },
+                        { timeoutMs: 15000, retries: 1, backoffMs: 500 }
+                    );
+                    if (!deleteResponse.ok) {
+                        console.warn('[RESET-PASSWORD/STATUS] Delete row request failed with status:', deleteResponse.status);
+                    } else {
+                        const deletePayload = await deleteResponse.json().catch(() => null);
+                        if (!deletePayload || deletePayload.result !== 'success') {
+                            console.warn('[RESET-PASSWORD/STATUS] Delete row payload was not successful:', deletePayload);
+                        }
+                    }
+                } catch (deleteErr) {
+                    console.warn('[RESET-PASSWORD/STATUS] Delete row call failed:', deleteErr && deleteErr.message ? deleteErr.message : deleteErr);
+                }
+            }
+            return res.json({ response: resetResponse });
         } catch (e) {
             console.error('[RESET-PASSWORD/STATUS]', e);
             res.status(500).json({ error: e.message });
