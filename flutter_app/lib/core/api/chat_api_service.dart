@@ -1727,29 +1727,6 @@ class ChatApiService {
     return str.isEmpty ? null : str;
   }
 
-  /// Check whether the current user can use reset-password-by-username flow.
-  Future<bool> canResetPasswordByUsername(String user) async {
-    final normalizedUser = user.trim();
-    if (normalizedUser.isEmpty) return false;
-    try {
-      final response = await _client.get<Map<String, dynamic>>(
-        ApiEndpoints.resetPasswordByUsernameAccess,
-        queryParameters: {'user': normalizedUser},
-        retryOptions: const RetryOptions(
-          retries: 1,
-          timeout: NetworkTimeouts.resetPasswordTimeout,
-        ),
-      );
-      if (!response.isSuccessful) {
-        return false;
-      }
-      final data = response.data ?? {};
-      return data['allowed'] == true;
-    } catch (_) {
-      return false;
-    }
-  }
-
   /// Start reset-password-by-username request; returns sheet row id.
   Future<int> startResetPasswordByUsername(String userRequested, String forUserName) async {
     final response = await _client.post<Map<String, dynamic>>(

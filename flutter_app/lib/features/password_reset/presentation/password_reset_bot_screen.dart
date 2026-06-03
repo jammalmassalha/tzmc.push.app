@@ -10,6 +10,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/api/chat_api_service.dart';
+import '../../../core/models/chat_models.dart';
+import '../../../core/services/chat_store_service.dart';
 import '../../../features/auth/presentation/auth_state.dart';
 import '../../../shared/theme/app_theme.dart';
 
@@ -64,22 +66,13 @@ class _PasswordResetBotScreenState
   String? _lastSubmitError;
   Timer? _pollTimer;
   int _pollCount = 0;
-  bool _canResetByUsername = false;
-  bool _isCheckingByUsernameAccess = false;
   _ResetByUsernameRequest? _activeResetByUsernameRequest;
   String? _verifiedSmsCode;
   static const int _maxPollAttempts = 60; // 60 attempts × 5 seconds = 5 minutes
+  static const String _departmentInfoSystems = 'מערכות מידע';
   static final RegExp _specialCharPattern = RegExp(
     r"""[!@#$%^&*()_+\-=\[\]{}|;:,.<>?/~`"'\\]""",
   );
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _loadResetByUsernameAccess();
-    });
-  }
 
   @override
   void dispose() {
@@ -125,6 +118,37 @@ class _PasswordResetBotScreenState
 
   String? get _currentUser => ref.read(currentUserProvider);
 
+  bool get _canResetByUsernameFromCurrentUserInfo {
+    final user = (_currentUser ?? '').trim().toLowerCase();
+    if (user.isEmpty) return false;
+
+    final contacts = ref.watch(
+      chatStoreProvider.select((state) => state.contacts),
+    );
+
+    Contact? currentUserContact;
+    for (final entry in contacts.entries) {
+      if (entry.key.trim().toLowerCase() == user) {
+        currentUserContact = entry.value;
+        break;
+      }
+    }
+
+    if (currentUserContact == null) return false;
+
+    final details = [
+      currentUserContact.info?.trim() ?? '',
+      currentUserContact.displayName.trim(),
+    ]
+        .where((part) => part.isNotEmpty)
+        .join(' ');
+
+    if (details.isEmpty) return false;
+
+    final normalizedDetails = details.replaceAll(RegExp(r"[\[\]'\"]"), '');
+    return normalizedDetails.contains(_departmentInfoSystems);
+  }
+
   // ---------------------------------------------------------------------------
   // Flow handlers
   // ---------------------------------------------------------------------------
@@ -136,24 +160,6 @@ class _PasswordResetBotScreenState
       'האם אתה בטוח שברצונך לאפס את סיסמת Windows שלך?',
       isBot: true,
     );
-  }
-
-  Future<void> _loadResetByUsernameAccess() async {
-    final user = _currentUser;
-    if (user == null) return;
-    setState(() => _isCheckingByUsernameAccess = true);
-    try {
-      final api = ref.read(chatApiServiceProvider);
-      final allowed = await api.canResetPasswordByUsername(user);
-      if (!mounted) return;
-      setState(() {
-        _canResetByUsername = allowed;
-        _isCheckingByUsernameAccess = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _isCheckingByUsernameAccess = false);
-    }
   }
 
   void _onStartResetByUsernamePressed() {
@@ -730,16 +736,7 @@ class _PasswordResetBotScreenState
               ),
             ),
           ),
-          if (_isCheckingByUsernameAccess)
-            const Padding(
-              padding: EdgeInsets.only(top: 12),
-              child: SizedBox(
-                width: 22,
-                height: 22,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            ),
-          if (_canResetByUsername)
+          if (_canResetByUsernameFromCurrentUserInfo)
             Padding(
               padding: const EdgeInsets.only(top: 12),
               child: SizedBox(

@@ -6687,31 +6687,6 @@ function parseResetByUsernameRequestId(rawValue) {
     return parsed;
 }
 
-async function ensureResetPasswordByUsernameAccess(user) {
-    const response = await fetchWithRetry(
-        GOOGLE_SHEET_URL,
-        {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                action: 'can_reset_password_by_username',
-                user,
-                token: AUTH_CODE_SHEET_TOKEN
-            })
-        },
-        { timeoutMs: 15000, retries: 1, backoffMs: 500 }
-    );
-    if (!response.ok) {
-        throw new Error('Sheet request failed');
-    }
-    const payload = await response.json();
-    const isAllowed = payload && payload.result === 'success' && payload.allowed === true;
-    return {
-        allowed: isAllowed,
-        message: (payload && payload.message) || 'אין הרשאה לפעולה זו'
-    };
-}
-
 app.post(
     ['/reset-password/verify-year', '/notify/reset-password/verify-year'],
     authorizePasswordResetRequest('verify', 10, 5, 60 * 1000),
@@ -6852,24 +6827,6 @@ app.get(
     }
 );
 
-app.get(
-    ['/reset-password/by-username/access', '/notify/reset-password/by-username/access'],
-    authorizePasswordResetRequest('by-username-access', 20, 10, 60 * 1000),
-    async (req, res) => {
-        try {
-            const user = req.resolvedUser;
-            if (!user) {
-                return res.status(401).json({ error: 'Unauthorized' });
-            }
-            const access = await ensureResetPasswordByUsernameAccess(user);
-            return res.json({ allowed: access.allowed, message: access.message || '' });
-        } catch (e) {
-            console.error('[RESET-PASSWORD/BY-USERNAME/ACCESS]', e);
-            res.status(500).json({ error: e.message });
-        }
-    }
-);
-
 app.post(
     ['/reset-password/by-username/start', '/notify/reset-password/by-username/start'],
     authorizePasswordResetRequest('by-username-start', 10, 5, 60 * 1000),
@@ -6879,10 +6836,6 @@ app.post(
             const forUserName = String((req.body && req.body.forUserName) || '').trim();
             if (!user || !forUserName) {
                 return res.status(400).json({ error: 'Missing user or forUserName' });
-            }
-            const access = await ensureResetPasswordByUsernameAccess(user);
-            if (!access.allowed) {
-                return res.status(403).json({ error: access.message || 'אין הרשאה לפעולה זו' });
             }
 
             const response = await fetchWithRetry(
@@ -6924,10 +6877,6 @@ app.post(
             const smsUser = String((req.body && req.body.smsUser) || '').trim();
             if (!user || !requestId || !smsUser) {
                 return res.status(400).json({ error: 'Missing user, requestId or smsUser' });
-            }
-            const access = await ensureResetPasswordByUsernameAccess(user);
-            if (!access.allowed) {
-                return res.status(403).json({ error: access.message || 'אין הרשאה לפעולה זו' });
             }
 
             const response = await fetchWithRetry(
@@ -6975,10 +6924,6 @@ app.post(
             if (!user || !requestId || !smsUser || !password) {
                 return res.status(400).json({ error: 'Missing user, requestId, smsUser or password' });
             }
-            const access = await ensureResetPasswordByUsernameAccess(user);
-            if (!access.allowed) {
-                return res.status(403).json({ error: access.message || 'אין הרשאה לפעולה זו' });
-            }
 
             const response = await fetchWithRetry(
                 GOOGLE_SHEET_URL,
@@ -7020,10 +6965,6 @@ app.get(
             const requestId = parseResetByUsernameRequestId(req && req.query && req.query.requestId);
             if (!user || !requestId) {
                 return res.status(400).json({ error: 'Missing user or requestId' });
-            }
-            const access = await ensureResetPasswordByUsernameAccess(user);
-            if (!access.allowed) {
-                return res.status(403).json({ error: access.message || 'אין הרשאה לפעולה זו' });
             }
 
             const response = await fetchWithRetry(

@@ -106,7 +106,6 @@ class ApiEndpoints {
   static const String resetPasswordVerifyYear = '/reset-password/verify-year';
   static const String resetPasswordSubmit = '/reset-password/submit';
   static const String resetPasswordStatus = '/reset-password/status';
-  static const String resetPasswordByUsernameAccess = '/reset-password/by-username/access';
   static const String resetPasswordByUsernameStart = '/reset-password/by-username/start';
   static const String resetPasswordByUsernameVerifySms = '/reset-password/by-username/verify-sms';
   static const String resetPasswordByUsernameSubmit = '/reset-password/by-username/submit';
