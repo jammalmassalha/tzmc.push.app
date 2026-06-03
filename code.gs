@@ -1487,6 +1487,11 @@ function doPost(e) {
         return createJSON({ result: 'success', verified: false, message: 'קוד ה-SMS עדיין לא התקבל במערכת' });
       }
       var isSmsValid = String(vsStoredSms).trim() === vsSmsUser;
+      if (isSmsValid) {
+        // Clear stale backend response so post-SMS flow can continue
+        // and wait for the final password-reset completion message.
+        vsSheet.getRange(vsRequestId, 6).setValue('');
+      }
       return createJSON({
         result: 'success',
         verified: isSmsValid,
