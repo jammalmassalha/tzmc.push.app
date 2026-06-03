@@ -4,6 +4,9 @@
 /// messages, and other chat-related operations.
 library;
 
+import 'dart:async';
+
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../config/app_config.dart';
@@ -26,6 +29,28 @@ class ChatApiService {
   final HttpClient _client;
 
   ChatApiService(this._client);
+
+  Map<String, dynamic> _coerceJsonMap(dynamic value) {
+    if (value is Map<String, dynamic>) {
+      return value;
+    }
+    if (value is Map) {
+      return value.map(
+        (key, val) => MapEntry(key.toString(), val),
+      );
+    }
+    return const <String, dynamic>{};
+  }
+
+  String _extractErrorMessage(dynamic body, String fallback) {
+    if (body is String && body.trim().isNotEmpty) {
+      return body.trim();
+    }
+    final map = _coerceJsonMap(body);
+    final message = map['error'] ?? map['message'];
+    final normalized = message?.toString().trim() ?? '';
+    return normalized.isNotEmpty ? normalized : fallback;
+  }
 
   // ---------------------------------------------------------------------------
   // Authentication
@@ -1599,6 +1624,107 @@ class ChatApiService {
       readAt: DateTime.now().millisecondsSinceEpoch,
     );
     await sendReadReceipt(payload);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Password Reset Bot
+  // ---------------------------------------------------------------------------
+
+  /// Verify user's birth year against the Subscribe sheet (column N)
+  Future<({bool verified, String message})> verifyBirthYear(
+    String user,
+    String birthYear,
+  ) async {
+    try {
+      final response = await _client.post<Map<String, dynamic>>(
+        ApiEndpoints.resetPasswordVerifyYear,
+        data: {'user': user, 'birthYear': birthYear},
+        options: Options(
+          receiveTimeout: NetworkTimeouts.resetPasswordTimeout,
+          sendTimeout: NetworkTimeouts.resetPasswordTimeout,
+        ),
+        retryOptions: const RetryOptions(
+          retries: 1,
+          timeout: NetworkTimeouts.resetPasswordTimeout,
+        ),
+      );
+      if (!response.isSuccessful) {
+        final body = response.data;
+        final msg = body?['error'] ?? body?['message'] ?? 'שגיאה';
+        return (verified: false, message: msg.toString());
+      }
+      final data = response.data ?? {};
+      final verified = data['verified'] == true;
+      final message = (data['message'] ?? (verified ? '' : 'שנת הלידה שגויה')).toString();
+      return (verified: verified, message: message);
+    } on ApiException {
+      rethrow;
+    } on DioException catch (e) {
+      final msg = (e.type == DioExceptionType.receiveTimeout ||
+              e.type == DioExceptionType.connectionTimeout ||
+              e.type == DioExceptionType.sendTimeout)
+          ? 'הבקשה לא הושלמה בזמן, נסה שנית.'
+          : 'שגיאת חיבור לשרת, בדוק את החיבור לאינטרנט ונסה שנית.';
+      throw ApiException(msg);
+    } on TimeoutException {
+      throw ApiException('הבקשה לא הושלמה בזמן, נסה שנית.');
+    }
+  }
+
+  /// Submit a Windows password reset request.
+  ///
+  /// Returns the optional server `requestId` when one is included in the
+  /// response. Some successful responses omit it, so callers must treat `null`
+  /// as a valid success case and continue polling for completion.
+  Future<String?> submitPasswordReset(String user, String password) async {
+    try {
+      final response = await _client.post<dynamic>(
+        ApiEndpoints.resetPasswordSubmit,
+        data: {'user': user, 'password': password},
+        options: Options(
+          receiveTimeout: NetworkTimeouts.resetPasswordTimeout,
+          sendTimeout: NetworkTimeouts.resetPasswordTimeout,
+        ),
+        retryOptions: const RetryOptions(
+          retries: 1,
+          timeout: NetworkTimeouts.resetPasswordTimeout,
+        ),
+      );
+      if (!response.isSuccessful) {
+        throw ApiException(
+          _extractErrorMessage(response.data, 'שגיאה בשמירת הבקשה'),
+        );
+      }
+      final data = _coerceJsonMap(response.data);
+      return data['requestId']?.toString();
+    } on ApiException {
+      rethrow;
+    } on DioException catch (e) {
+      final msg = (e.type == DioExceptionType.receiveTimeout ||
+              e.type == DioExceptionType.connectionTimeout ||
+              e.type == DioExceptionType.sendTimeout)
+          ? 'הבקשה לא הושלמה בזמן, נסה שנית.'
+          : 'שגיאת חיבור לשרת, בדוק את החיבור לאינטרנט ונסה שנית.';
+      throw ApiException(msg);
+    } on TimeoutException {
+      throw ApiException('הבקשה לא הושלמה בזמן, נסה שנית.');
+    }
+  }
+
+  /// Poll for the server response to a password reset request
+  /// Returns null when still pending, or the response string when complete
+  Future<String?> getPasswordResetStatus(String user) async {
+    final response = await _client.get<Map<String, dynamic>>(
+      ApiEndpoints.resetPasswordStatus,
+      queryParameters: {'user': user},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 15)),
+    );
+    if (!response.isSuccessful) return null;
+    final data = response.data ?? {};
+    final responseValue = data['response'];
+    if (responseValue == null) return null;
+    final str = responseValue.toString().trim();
+    return str.isEmpty ? null : str;
   }
 }
 

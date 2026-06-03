@@ -1224,7 +1224,127 @@ function doPost(e) {
     }
 
     // ======================================================
-    // 6. FLUTTER APP CONNECTION (column L = mobile, M = web)
+    // 6. VERIFY BIRTH YEAR (Subscribe sheet column N)
+    // ======================================================
+    if (data.action === 'verify_birth_year') {
+      var vyUser = normalizePhone(String(data.user || '').trim());
+      var vyYear = String(data.birthYear || '').trim();
+      if (!vyUser || !vyYear) {
+        return createJSON({ result: 'error', message: 'Missing user or birthYear' });
+      }
+      var vySheet = spreadsheet.getSheetByName('Subscribe');
+      if (!vySheet) {
+        return createJSON({ result: 'error', message: 'Sheet Subscribe not found' });
+      }
+      var vyRow = findUserRow(vySheet, vyUser);
+      if (!vyRow) {
+        return createJSON({ result: 'error', message: 'המשתמש לא נמצא במערכת' });
+      }
+      var vyBirthRaw = String(vySheet.getRange(vyRow, 14).getValue() || '').trim();
+      // Strip leading apostrophe if present
+      if (vyBirthRaw.charAt(0) === "'") vyBirthRaw = vyBirthRaw.substring(1);
+      if (!vyBirthRaw) {
+        return createJSON({ result: 'error', message: 'שנת הלידה לא מוגדרת במערכת עבור משתמש זה' });
+      }
+      if (vyBirthRaw !== vyYear) {
+        return createJSON({ result: 'error', message: 'שנת הלידה שגויה, נסה שנית' });
+      }
+      return createJSON({ result: 'success' });
+    }
+
+    // ======================================================
+    // 7. SUBMIT PASSWORD RESET REQUEST (Sheet: ResetPassword)
+    // ======================================================
+    if (data.action === 'submit_password_reset') {
+      var prUser = normalizePhone(String(data.user || '').trim());
+      var prPassword = String(data.password || '').trim();
+      if (!prUser || !prPassword) {
+        return createJSON({ result: 'error', message: 'Missing user or password' });
+      }
+      var prSheet = spreadsheet.getSheetByName('ResetPassword');
+      if (!prSheet) {
+        prSheet = spreadsheet.insertSheet('ResetPassword');
+        prSheet.appendRow(['DateTime', 'UserRequest', 'UserPassword', 'MessageResponseFromServer']);
+      }
+      var prDateTime = new Date();
+      prSheet.appendRow([prDateTime, prUser, prPassword, '']);
+      var prRowId = prSheet.getLastRow();
+      return createJSON({ result: 'success', requestId: prRowId });
+    }
+
+    // ======================================================
+    // 8. GET PASSWORD RESET STATUS (Sheet: ResetPassword)
+    // ======================================================
+    if (data.action === 'get_password_reset_status') {
+      var gsUser = normalizePhone(String(data.user || '').trim());
+      if (!gsUser) {
+        return createJSON({ result: 'error', message: 'Missing user' });
+      }
+      var gsSheet = spreadsheet.getSheetByName('ResetPassword');
+      if (!gsSheet) {
+        return createJSON({ result: 'success', response: null });
+      }
+      var gsLastRow = getLastDataRow(gsSheet);
+      if (!gsLastRow) {
+        return createJSON({ result: 'success', response: null });
+      }
+      // Read all rows and find the most recent row for this user
+      var gsValues = getRangeValues(gsSheet, 2, 1, gsLastRow - 1, 4);
+      var gsLatestRow = null;
+      for (var gi = gsValues.length - 1; gi >= 0; gi--) {
+        var gsRowUser = normalizePhone(String(gsValues[gi][1] || '').replace(/^'/, '').trim());
+        if (gsRowUser === gsUser) {
+          gsLatestRow = gsValues[gi];
+          break;
+        }
+      }
+      if (!gsLatestRow) {
+        return createJSON({ result: 'success', response: null });
+      }
+      var gsResponse = String(gsLatestRow[3] || '').trim();
+      return createJSON({ result: 'success', response: gsResponse || null });
+    }
+
+    // ======================================================
+    // 8b. DELETE PASSWORD RESET STATUS ROW (Sheet: ResetPassword)
+    // ======================================================
+    if (data.action === 'delete_password_reset_status') {
+      var drUser = normalizePhone(String(data.user || '').trim());
+      if (!drUser) {
+        return createJSON({ result: 'error', message: 'Missing user' });
+      }
+      var drSheet = spreadsheet.getSheetByName('ResetPassword');
+      if (!drSheet) {
+        return createJSON({ result: 'success', deleted: false });
+      }
+      var drLastRow = getLastDataRow(drSheet);
+      if (!drLastRow) {
+        return createJSON({ result: 'success', deleted: false });
+      }
+      var drValues = getRangeValues(drSheet, 2, 1, drLastRow - 1, 4);
+      var drRowIndex = 0;
+      for (var di = drValues.length - 1; di >= 0; di--) {
+        var drRowUser = normalizePhone(String(drValues[di][1] || '').replace(/^'/, '').trim());
+        var drResponse = String(drValues[di][3] || '').trim();
+        if (drRowUser === drUser && drResponse) {
+          drRowIndex = di + 2; // +2 because data starts at row 2
+          break;
+        }
+      }
+      if (drRowIndex < 2) {
+        return createJSON({ result: 'success', deleted: false });
+      }
+      try {
+        drSheet.deleteRow(drRowIndex);
+      } catch (deleteErr) {
+        Logger.log('Failed deleting ResetPassword row ' + drRowIndex + ': ' + deleteErr);
+        return createJSON({ result: 'error', message: 'Failed deleting row' });
+      }
+      return createJSON({ result: 'success', deleted: true, rowId: drRowIndex });
+    }
+
+    // ======================================================
+    // 9. FLUTTER APP CONNECTION (column L = mobile, M = web)
     // ======================================================
     // Triggered by the backend `/flutter/register-fcm` and
     // `/flutter/unregister-fcm` routes which POST a payload tagged with

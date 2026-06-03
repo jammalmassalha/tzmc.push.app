@@ -101,6 +101,11 @@ class ApiEndpoints {
   static const String helpdeskDepartments = '/helpdesk/departments';
   static const String helpdeskDepartmentsActive = '/helpdesk/departments/active';
   static const String helpdeskDepartmentsTicketForm = '/helpdesk/departments';
+
+  // Password Reset Bot
+  static const String resetPasswordVerifyYear = '/reset-password/verify-year';
+  static const String resetPasswordSubmit = '/reset-password/submit';
+  static const String resetPasswordStatus = '/reset-password/status';
 }
 
 /// Network timeouts (matching Angular frontend behavior)
@@ -121,6 +126,11 @@ class NetworkTimeouts {
 
   /// Shuttle orders timeout (Apps Script can be slow)
   static const Duration shuttleTimeout = Duration(seconds: 65);
+
+  /// Password-reset submit/verify timeout.
+  /// The server proxies to Google Sheets with its own 15 s × 2 retries (≈ 30 s
+  /// worst-case), so give the Flutter client enough headroom.
+  static const Duration resetPasswordTimeout = Duration(seconds: 45);
 
   /// Default retry backoff
   static const Duration retryBackoff = Duration(milliseconds: 450);
