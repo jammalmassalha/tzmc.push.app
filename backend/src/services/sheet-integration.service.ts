@@ -87,7 +87,7 @@ export class SheetIntegrationService {
 
 export function createSheetIntegrationServiceFromEnv(env: NodeJS.ProcessEnv = process.env): SheetIntegrationService {
   const googleSheetUrl = toTrimmedString(env.GOOGLE_SHEET_URL)
-    || 'https://script.google.com/macros/s/AKfycbynyu9cYQ530zfGopndYLr_3NOf7bWJjTCBfAjhf4g9nSkfG49udaEZVncZNtPU_1UFDQ/exec';
+    || 'https://script.google.com/macros/s/AKfycbyDM6HvXSysUKJ3plBD5I2d0qy8UgTHE4J0fT_Q9k-NaHVGOSBb_PhJFRaroFIRLNuDlw/exec';
   const logsBackupSheetUrl = toTrimmedString(env.LOGS_BACKUP_SHEET_URL)
     || 'https://script.google.com/macros/s/AKfycbzRY5tW5HmxUn1_RjJ4gbrfCBtNNtWXGtQ4us0bZUJo5aYPF5NIQSffIxXYIN-5bzovvg/exec';
   const shuttleUserOrdersUrl = toTrimmedString(env.SHUTTLE_USER_ORDERS_URL)
