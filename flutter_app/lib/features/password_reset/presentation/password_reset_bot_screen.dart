@@ -747,7 +747,7 @@ class _PasswordResetBotScreenState
                 child: OutlinedButton.icon(
                   onPressed: _onStartResetByUsernamePressed,
                   icon: const Icon(Icons.person_search_outlined),
-                  label: const Text('reset password by username'),
+                  label: const Text('איפוס סיסמה לפי שם משתמש'),
                   style: OutlinedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 14),
                   ),
