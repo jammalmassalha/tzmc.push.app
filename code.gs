@@ -1291,10 +1291,12 @@ function doPost(e) {
       // Read all rows and find the most recent row for this user
       var gsValues = getRangeValues(gsSheet, 2, 1, gsLastRow - 1, 4);
       var gsLatestRow = null;
+      var gsLatestRowIndex = 0;
       for (var gi = gsValues.length - 1; gi >= 0; gi--) {
         var gsRowUser = normalizePhone(String(gsValues[gi][1] || '').replace(/^'/, '').trim());
         if (gsRowUser === gsUser) {
           gsLatestRow = gsValues[gi];
+          gsLatestRowIndex = gi + 2; // +2 because data starts at row 2
           break;
         }
       }
@@ -1302,6 +1304,13 @@ function doPost(e) {
         return createJSON({ result: 'success', response: null });
       }
       var gsResponse = String(gsLatestRow[3] || '').trim();
+      if (gsResponse && gsLatestRowIndex > 1) {
+        try {
+          gsSheet.deleteRow(gsLatestRowIndex);
+        } catch (deleteErr) {
+          Logger.log('Failed deleting ResetPassword row ' + gsLatestRowIndex + ': ' + deleteErr);
+        }
+      }
       return createJSON({ result: 'success', response: gsResponse || null });
     }
 
