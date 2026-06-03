@@ -76,6 +76,94 @@ function findUserRow(sheet, username) {
   return match ? match.getRow() : null;
 }
 
+function normalizeLookupUser(value) {
+  var text = String(value || '').trim();
+  if (text.charAt(0) === "'") text = text.substring(1);
+  if (!text) return '';
+  if (/^\d+$/.test(text)) return normalizePhone(text);
+  return text.toLowerCase();
+}
+
+function findHeaderIndex(headers, aliases) {
+  for (var hi = 0; hi < headers.length; hi++) {
+    var headerText = String(headers[hi] || '').trim().toLowerCase();
+    if (!headerText) continue;
+    for (var ai = 0; ai < aliases.length; ai++) {
+      if (headerText.indexOf(String(aliases[ai]).toLowerCase()) !== -1) {
+        return hi;
+      }
+    }
+  }
+  return -1;
+}
+
+function resolveUserDepartment(spreadsheet, rawUser) {
+  var normalizedUser = normalizeLookupUser(rawUser);
+  if (!normalizedUser) return '';
+
+  var sheetNames = ['EP_Employees', 'BotSubscribe', 'Subscribe'];
+  for (var si = 0; si < sheetNames.length; si++) {
+    var sheet = spreadsheet.getSheetByName(sheetNames[si]);
+    if (!sheet) continue;
+
+    var lastRow = sheet.getLastRow();
+    var lastCol = sheet.getLastColumn();
+    if (lastRow < 2 || lastCol < 1) continue;
+
+    var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    var departmentCol = findHeaderIndex(headers, ['department', 'depart', 'מחלק']);
+    if (departmentCol < 0) continue;
+
+    var userCols = [];
+    for (var ci = 0; ci < headers.length; ci++) {
+      var headerText = String(headers[ci] || '').trim().toLowerCase();
+      if (!headerText) continue;
+      if (
+        headerText.indexOf('user') !== -1 ||
+        headerText.indexOf('phone') !== -1 ||
+        headerText.indexOf('tel') !== -1 ||
+        headerText.indexOf('מספר') !== -1
+      ) {
+        userCols.push(ci);
+      }
+    }
+    if (!userCols.length && lastCol >= 2) {
+      userCols = [1];
+    }
+    if (!userCols.length) {
+      userCols = [0];
+    }
+
+    var values = getRangeValues(sheet, 2, 1, lastRow - 1, lastCol);
+    for (var ri = 0; ri < values.length; ri++) {
+      var row = values[ri];
+      var isMatch = false;
+      for (var ui = 0; ui < userCols.length; ui++) {
+        var candidate = normalizeLookupUser(row[userCols[ui]]);
+        if (candidate && candidate === normalizedUser) {
+          isMatch = true;
+          break;
+        }
+      }
+      if (!isMatch) continue;
+
+      var department = String(row[departmentCol] || '').trim();
+      if (department) return department;
+    }
+  }
+
+  return '';
+}
+
+function ensureResetPasswordByUserNameSheet(spreadsheet) {
+  var sheet = spreadsheet.getSheetByName('ResetPasswordByUserName');
+  if (!sheet) {
+    sheet = spreadsheet.insertSheet('ResetPasswordByUserName');
+    sheet.appendRow(['DateTime', 'UserRequested', 'ForUserName', 'SmsUser', 'UserPassword', 'MessageResponseFromServer']);
+  }
+  return sheet;
+}
+
 function normalizeLoginCode(value) {
   var text = String(value || '').replace(/\D/g, '').trim();
   if (text.length !== 6) return '';
@@ -1341,6 +1429,148 @@ function doPost(e) {
         return createJSON({ result: 'error', message: 'Failed deleting row' });
       }
       return createJSON({ result: 'success', deleted: true, rowId: drRowIndex });
+    }
+
+    // ======================================================
+    // 8c. CAN RESET PASSWORD BY USERNAME (Department guard)
+    // ======================================================
+    if (data.action === 'can_reset_password_by_username') {
+      var guardUser = normalizePhone(String(data.user || '').trim());
+      if (!guardUser) {
+        return createJSON({ result: 'error', message: 'Missing user' });
+      }
+      var guardDepartment = String(resolveUserDepartment(spreadsheet, guardUser) || '').trim();
+      var isAllowedByDepartment = guardDepartment === 'מערכות מידע';
+      return createJSON({
+        result: 'success',
+        allowed: isAllowedByDepartment,
+        department: guardDepartment || '',
+        message: isAllowedByDepartment ? '' : 'הפעולה זמינה רק למחלקת מערכות מידע'
+      });
+    }
+
+    // ======================================================
+    // 8d. SUBMIT RESET REQUEST BY USERNAME (Sheet: ResetPasswordByUserName)
+    // ======================================================
+    if (data.action === 'submit_password_reset_by_username') {
+      var rbuUser = normalizePhone(String(data.user || '').trim());
+      var rbuForUserName = String(data.forUserName || '').trim();
+      if (!rbuUser || !rbuForUserName) {
+        return createJSON({ result: 'error', message: 'Missing user or forUserName' });
+      }
+      var rbuSheet = ensureResetPasswordByUserNameSheet(spreadsheet);
+      rbuSheet.appendRow([new Date(), rbuUser, rbuForUserName, '', '', '']);
+      return createJSON({ result: 'success', requestId: rbuSheet.getLastRow() });
+    }
+
+    // ======================================================
+    // 8e. VERIFY SMS FOR RESET BY USERNAME
+    // ======================================================
+    if (data.action === 'verify_password_reset_by_username_sms') {
+      var vsUser = normalizePhone(String(data.user || '').trim());
+      var vsRequestId = parseInt(String(data.requestId || '').trim(), 10);
+      var vsSmsUser = String(data.smsUser || '').trim();
+      if (!vsUser || !vsRequestId || !vsSmsUser) {
+        return createJSON({ result: 'error', message: 'Missing user, requestId or smsUser' });
+      }
+      var vsSheet = spreadsheet.getSheetByName('ResetPasswordByUserName');
+      if (!vsSheet || vsRequestId < 2 || vsRequestId > vsSheet.getLastRow()) {
+        return createJSON({ result: 'error', message: 'הבקשה לא נמצאה' });
+      }
+      var vsRow = vsSheet.getRange(vsRequestId, 1, 1, 6).getValues()[0];
+      var vsRequestedUser = normalizePhone(String(vsRow[1] || '').replace(/^'/, '').trim());
+      if (vsRequestedUser !== vsUser) {
+        return createJSON({ result: 'error', message: 'אין הרשאה לבקשה זו' });
+      }
+      var vsStoredSms = String(vsRow[3] || '').trim();
+      if (!vsStoredSms) {
+        return createJSON({ result: 'success', verified: false, message: 'קוד ה-SMS עדיין לא התקבל במערכת' });
+      }
+      var isSmsValid = String(vsStoredSms).trim() === vsSmsUser;
+      return createJSON({
+        result: 'success',
+        verified: isSmsValid,
+        message: isSmsValid ? '' : 'קוד ה-SMS שגוי'
+      });
+    }
+
+    // ======================================================
+    // 8f. SUBMIT PASSWORD FOR RESET BY USERNAME
+    // ======================================================
+    if (data.action === 'submit_password_reset_by_username_password') {
+      var spUser = normalizePhone(String(data.user || '').trim());
+      var spRequestId = parseInt(String(data.requestId || '').trim(), 10);
+      var spSmsUser = String(data.smsUser || '').trim();
+      var spPassword = String(data.password || '').trim();
+      if (!spUser || !spRequestId || !spSmsUser || !spPassword) {
+        return createJSON({ result: 'error', message: 'Missing user, requestId, smsUser or password' });
+      }
+      var spSheet = spreadsheet.getSheetByName('ResetPasswordByUserName');
+      if (!spSheet || spRequestId < 2 || spRequestId > spSheet.getLastRow()) {
+        return createJSON({ result: 'error', message: 'הבקשה לא נמצאה' });
+      }
+      var spRow = spSheet.getRange(spRequestId, 1, 1, 6).getValues()[0];
+      var spRequestedUser = normalizePhone(String(spRow[1] || '').replace(/^'/, '').trim());
+      if (spRequestedUser !== spUser) {
+        return createJSON({ result: 'error', message: 'אין הרשאה לבקשה זו' });
+      }
+      var spStoredSms = String(spRow[3] || '').trim();
+      if (!spStoredSms) {
+        return createJSON({ result: 'error', message: 'קוד ה-SMS עדיין לא התקבל במערכת' });
+      }
+      if (String(spStoredSms).trim() !== spSmsUser) {
+        return createJSON({ result: 'error', message: 'קוד ה-SMS שגוי' });
+      }
+      spSheet.getRange(spRequestId, 5).setValue(spPassword); // UserPassword
+      return createJSON({ result: 'success', requestId: spRequestId });
+    }
+
+    // ======================================================
+    // 8g. GET RESET BY USERNAME STATUS
+    // ======================================================
+    if (data.action === 'get_password_reset_by_username_status') {
+      var gsbuUser = normalizePhone(String(data.user || '').trim());
+      var gsbuRequestId = parseInt(String(data.requestId || '').trim(), 10);
+      if (!gsbuUser || !gsbuRequestId) {
+        return createJSON({ result: 'error', message: 'Missing user or requestId' });
+      }
+      var gsbuSheet = spreadsheet.getSheetByName('ResetPasswordByUserName');
+      if (!gsbuSheet || gsbuRequestId < 2 || gsbuRequestId > gsbuSheet.getLastRow()) {
+        return createJSON({ result: 'success', response: null });
+      }
+      var gsbuRow = gsbuSheet.getRange(gsbuRequestId, 1, 1, 6).getValues()[0];
+      var gsbuRequestedUser = normalizePhone(String(gsbuRow[1] || '').replace(/^'/, '').trim());
+      if (gsbuRequestedUser !== gsbuUser) {
+        return createJSON({ result: 'error', message: 'אין הרשאה לבקשה זו' });
+      }
+      var gsbuResponse = String(gsbuRow[5] || '').trim();
+      return createJSON({ result: 'success', response: gsbuResponse || null });
+    }
+
+    // ======================================================
+    // 8h. DELETE RESET BY USERNAME STATUS ROW
+    // ======================================================
+    if (data.action === 'delete_password_reset_by_username_status') {
+      var dsUser = normalizePhone(String(data.user || '').trim());
+      var dsRequestId = parseInt(String(data.requestId || '').trim(), 10);
+      if (!dsUser || !dsRequestId) {
+        return createJSON({ result: 'error', message: 'Missing user or requestId' });
+      }
+      var dsSheet = spreadsheet.getSheetByName('ResetPasswordByUserName');
+      if (!dsSheet || dsRequestId < 2 || dsRequestId > dsSheet.getLastRow()) {
+        return createJSON({ result: 'success', deleted: false });
+      }
+      var dsRow = dsSheet.getRange(dsRequestId, 1, 1, 6).getValues()[0];
+      var dsRequestedUser = normalizePhone(String(dsRow[1] || '').replace(/^'/, '').trim());
+      var dsResponse = String(dsRow[5] || '').trim();
+      if (dsRequestedUser !== dsUser) {
+        return createJSON({ result: 'error', message: 'אין הרשאה לבקשה זו' });
+      }
+      if (!dsResponse) {
+        return createJSON({ result: 'success', deleted: false });
+      }
+      dsSheet.deleteRow(dsRequestId);
+      return createJSON({ result: 'success', deleted: true, rowId: dsRequestId });
     }
 
     // ======================================================

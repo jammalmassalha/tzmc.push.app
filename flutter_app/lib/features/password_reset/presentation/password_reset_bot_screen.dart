@@ -18,8 +18,12 @@ enum _BotStep {
   idle,
   confirmReset,
   enterBirthYear,
+  enterTargetUsername,
+  enterTargetSms,
   enterPassword,
+  enterTargetPassword,
   polling,
+  pollingByUsername,
   done,
 }
 
@@ -29,6 +33,16 @@ class _ChatBubble {
   final bool isBot;
 
   const _ChatBubble({required this.text, required this.isBot});
+}
+
+class _ResetByUsernameRequest {
+  final int requestId;
+  final String forUserName;
+
+  const _ResetByUsernameRequest({
+    required this.requestId,
+    required this.forUserName,
+  });
 }
 
 /// Password reset bot screen widget.
@@ -50,10 +64,22 @@ class _PasswordResetBotScreenState
   String? _lastSubmitError;
   Timer? _pollTimer;
   int _pollCount = 0;
+  bool _canResetByUsername = false;
+  bool _isCheckingByUsernameAccess = false;
+  _ResetByUsernameRequest? _activeResetByUsernameRequest;
+  String? _verifiedSmsCode;
   static const int _maxPollAttempts = 60; // 60 attempts × 5 seconds = 5 minutes
   static final RegExp _specialCharPattern = RegExp(
     r"""[!@#$%^&*()_+\-=\[\]{}|;:,.<>?/~`"'\\]""",
   );
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadResetByUsernameAccess();
+    });
+  }
 
   @override
   void dispose() {
@@ -92,6 +118,8 @@ class _PasswordResetBotScreenState
       _isLoading = false;
       _lastSubmitError = null;
       _pollCount = 0;
+      _activeResetByUsernameRequest = null;
+      _verifiedSmsCode = null;
     });
   }
 
@@ -110,6 +138,34 @@ class _PasswordResetBotScreenState
     );
   }
 
+  Future<void> _loadResetByUsernameAccess() async {
+    final user = _currentUser;
+    if (user == null) return;
+    setState(() => _isCheckingByUsernameAccess = true);
+    try {
+      final api = ref.read(chatApiServiceProvider);
+      final allowed = await api.canResetPasswordByUsername(user);
+      if (!mounted) return;
+      setState(() {
+        _canResetByUsername = allowed;
+        _isCheckingByUsernameAccess = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isCheckingByUsernameAccess = false);
+    }
+  }
+
+  void _onStartResetByUsernamePressed() {
+    setState(() {
+      _step = _BotStep.enterTargetUsername;
+      _activeResetByUsernameRequest = null;
+      _verifiedSmsCode = null;
+    });
+    _addMessage('Reset password by username', isBot: false);
+    _addMessage('אנא הזן את שם המשתמש שעבורו תרצה לאפס סיסמה:', isBot: true);
+  }
+
   void _onConfirmYes() {
     setState(() => _step = _BotStep.enterBirthYear);
     _addMessage('כן', isBot: false);
@@ -120,6 +176,109 @@ class _PasswordResetBotScreenState
     _addMessage('לא', isBot: false);
     _addMessage('בסדר, הפעולה בוטלה. ניתן להתחיל מחדש בכל עת.', isBot: true);
     setState(() => _step = _BotStep.idle);
+  }
+
+  Future<void> _onSubmitTargetUsername() async {
+    FocusScope.of(context).unfocus();
+    final forUserName = _inputCtrl.text.trim();
+    if (forUserName.isEmpty) {
+      _addMessage('יש להזין שם משתמש לפני השליחה.', isBot: true);
+      return;
+    }
+    final user = _currentUser;
+    if (user == null) {
+      _addMessage('פג תוקף ההתחברות. נא להתחבר מחדש ולנסות שוב.', isBot: true);
+      return;
+    }
+
+    _addMessage(forUserName, isBot: false);
+    _inputCtrl.clear();
+    setState(() => _isLoading = true);
+
+    try {
+      final api = ref.read(chatApiServiceProvider);
+      final requestId = await api.startResetPasswordByUsername(user, forUserName);
+      if (!mounted) return;
+      setState(() {
+        _activeResetByUsernameRequest = _ResetByUsernameRequest(
+          requestId: requestId,
+          forUserName: forUserName,
+        );
+        _step = _BotStep.enterTargetSms;
+        _isLoading = false;
+      });
+      _addMessage(
+        'הבקשה נשמרה. לאחר שה-SMS יישלח למשתמש, הזן כאן את קוד ה-SMS שקיבל:',
+        isBot: true,
+      );
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      _addMessage(e.message, isBot: true);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      _addMessage('אירעה שגיאה, נסה שנית.', isBot: true);
+    }
+  }
+
+  Future<void> _onSubmitTargetSms() async {
+    FocusScope.of(context).unfocus();
+    final smsCode = _inputCtrl.text.trim();
+    if (smsCode.isEmpty) {
+      _addMessage('יש להזין קוד SMS לפני השליחה.', isBot: true);
+      return;
+    }
+    final user = _currentUser;
+    final request = _activeResetByUsernameRequest;
+    if (user == null || request == null) {
+      _addMessage('לא נמצאה בקשה פעילה. נא להתחיל מחדש.', isBot: true);
+      _reset();
+      return;
+    }
+
+    _addMessage(smsCode, isBot: false);
+    _inputCtrl.clear();
+    setState(() => _isLoading = true);
+
+    try {
+      final api = ref.read(chatApiServiceProvider);
+      final result = await api.verifyResetPasswordByUsernameSms(
+        user,
+        request.requestId,
+        smsCode,
+      );
+      if (!mounted) return;
+
+      if (result.verified) {
+        setState(() {
+          _verifiedSmsCode = smsCode;
+          _step = _BotStep.enterTargetPassword;
+          _isLoading = false;
+          _lastSubmitError = null;
+        });
+        _addMessage('קוד ה-SMS אומת. הזן את הסיסמה החדשה:', isBot: true);
+        _addMessage(
+          'הסיסמה חייבת לכלול:\n'
+          '• לפחות 8 תווים\n'
+          '• לפחות אות גדולה אחת (A-Z)\n'
+          '• לפחות אות קטנה אחת (a-z)\n'
+          '• לפחות ספרה אחת (0-9)\n'
+          '• לפחות תו מיוחד אחד (!, @, #, \$, % וכד\')',
+          isBot: true,
+        );
+      } else {
+        setState(() => _isLoading = false);
+        _addMessage(
+          result.message.isNotEmpty ? result.message : 'קוד ה-SMS שגוי, נסה שנית.',
+          isBot: true,
+        );
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      _addMessage('אירעה שגיאה, נסה שנית.', isBot: true);
+    }
   }
 
   Future<void> _onSubmitBirthYear() async {
@@ -256,6 +415,73 @@ class _PasswordResetBotScreenState
     }
   }
 
+  Future<void> _onSubmitTargetPassword() async {
+    FocusScope.of(context).unfocus();
+    final password = _inputCtrl.text.trim();
+    if (password.isEmpty) {
+      _addMessage('יש להזין סיסמה חדשה לפני השליחה.', isBot: true);
+      return;
+    }
+    final user = _currentUser;
+    final request = _activeResetByUsernameRequest;
+    final verifiedSmsCode = _verifiedSmsCode;
+    if (user == null || request == null || verifiedSmsCode == null) {
+      _addMessage('לא נמצאה בקשה פעילה. נא להתחיל מחדש.', isBot: true);
+      _reset();
+      return;
+    }
+
+    final errors = _validatePassword(password);
+    if (errors.isNotEmpty) {
+      _addMessage('הוזנה סיסמה חדשה', isBot: false);
+      _inputCtrl.clear();
+      setState(() => _lastSubmitError = 'הסיסמה אינה עומדת בדרישות.');
+      _addMessage(
+        'הסיסמה אינה עומדת בדרישות. יש לתקן את הבאים:\n${errors.join('\n')}',
+        isBot: true,
+      );
+      return;
+    }
+
+    try {
+      _addMessage('הוזנה סיסמה חדשה', isBot: false);
+      _inputCtrl.clear();
+      setState(() {
+        _step = _BotStep.pollingByUsername;
+        _isLoading = true;
+        _lastSubmitError = null;
+      });
+      _addMessage('הבקשה בטיפול, אנא המתן...', isBot: true);
+
+      final api = ref.read(chatApiServiceProvider);
+      await api.submitResetPasswordByUsernamePassword(
+        user,
+        request.requestId,
+        verifiedSmsCode,
+        password,
+      );
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      _startByUsernamePolling(user, request.requestId);
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _step = _BotStep.enterTargetPassword;
+        _isLoading = false;
+        _lastSubmitError = e.message;
+      });
+      _addMessage(e.message, isBot: true);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _step = _BotStep.enterTargetPassword;
+        _isLoading = false;
+        _lastSubmitError = e.toString();
+      });
+      _addMessage('שגיאה בשליחת הבקשה: $e', isBot: true);
+    }
+  }
+
   void _startPolling(String user) {
     _pollCount = 0;
     _pollTimer?.cancel();
@@ -275,6 +501,38 @@ class _PasswordResetBotScreenState
       try {
         final api = ref.read(chatApiServiceProvider);
         final response = await api.getPasswordResetStatus(user);
+        if (!mounted) return;
+        if (response != null && response.isNotEmpty) {
+          _pollTimer?.cancel();
+          _pollTimer = null;
+          setState(() => _step = _BotStep.done);
+          _addMessage(response, isBot: true);
+        }
+      } catch (_) {
+        // Keep polling silently
+      }
+    });
+  }
+
+  void _startByUsernamePolling(String user, int requestId) {
+    _pollCount = 0;
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+      _pollCount++;
+      if (_pollCount > _maxPollAttempts) {
+        _pollTimer?.cancel();
+        _pollTimer = null;
+        if (!mounted) return;
+        setState(() => _step = _BotStep.done);
+        _addMessage(
+          'לא התקבלה תגובה מהשרת בזמן הצפוי. אנא פנה למחלקת מחשוב.',
+          isBot: true,
+        );
+        return;
+      }
+      try {
+        final api = ref.read(chatApiServiceProvider);
+        final response = await api.getResetPasswordByUsernameStatus(user, requestId);
         if (!mounted) return;
         if (response != null && response.isNotEmpty) {
           _pollTimer?.cancel();
@@ -418,6 +676,15 @@ class _PasswordResetBotScreenState
               keyboardType: TextInputType.number,
               onSubmit: _onSubmitBirthYear,
             ),
+            if (_step == _BotStep.enterTargetUsername) _buildTextInput(
+              hint: 'שם משתמש',
+              onSubmit: _onSubmitTargetUsername,
+            ),
+            if (_step == _BotStep.enterTargetSms) _buildTextInput(
+              hint: 'קוד SMS',
+              keyboardType: TextInputType.number,
+              onSubmit: _onSubmitTargetSms,
+            ),
             if (_step == _BotStep.enterPassword) _buildTextInput(
               hint: 'הזן סיסמה חדשה',
               textDirection: TextDirection.ltr,
@@ -425,8 +692,17 @@ class _PasswordResetBotScreenState
               onSubmit: _onSubmitPassword,
               onChanged: (_) => setState(() => _lastSubmitError = null),
             ),
-            if (_step == _BotStep.enterPassword) _buildPasswordRequirements(),
+            if (_step == _BotStep.enterTargetPassword) _buildTextInput(
+              hint: 'הזן סיסמה חדשה',
+              textDirection: TextDirection.ltr,
+              textAlign: TextAlign.left,
+              onSubmit: _onSubmitTargetPassword,
+              onChanged: (_) => setState(() => _lastSubmitError = null),
+            ),
+            if (_step == _BotStep.enterPassword || _step == _BotStep.enterTargetPassword)
+              _buildPasswordRequirements(),
             if (_step == _BotStep.polling) _buildPollingIndicator(),
+            if (_step == _BotStep.pollingByUsername) _buildPollingIndicator(),
             if (_step == _BotStep.done) _buildRestartButton(),
           ],
         ),
@@ -437,20 +713,48 @@ class _PasswordResetBotScreenState
   Widget _buildStartButton() {
     return Padding(
       padding: const EdgeInsets.all(16),
-      child: SizedBox(
-        width: double.infinity,
-        child: ElevatedButton.icon(
-          onPressed: _onStartPressed,
-          icon: const Icon(Icons.lock_reset_outlined),
-          label: const Text('התחל איפוס סיסמת Windows'),
-          style: ElevatedButton.styleFrom(
-            padding: const EdgeInsets.symmetric(vertical: 14),
-            textStyle: const TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
+      child: Column(
+        children: [
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: _onStartPressed,
+              icon: const Icon(Icons.lock_reset_outlined),
+              label: const Text('התחל איפוס סיסמת Windows'),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                textStyle: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ),
           ),
-        ),
+          if (_isCheckingByUsernameAccess)
+            const Padding(
+              padding: EdgeInsets.only(top: 12),
+              child: SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          if (_canResetByUsername)
+            Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _onStartResetByUsernamePressed,
+                  icon: const Icon(Icons.person_search_outlined),
+                  label: const Text('reset password by username'),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -579,7 +883,7 @@ class _PasswordResetBotScreenState
     if (_lastSubmitError != null && _lastSubmitError!.trim().isNotEmpty) {
       return _lastSubmitError!;
     }
-    if (_step == _BotStep.enterPassword) {
+    if (_step == _BotStep.enterPassword || _step == _BotStep.enterTargetPassword) {
       final missing = _validatePassword(_inputCtrl.text.trim());
       if (missing.isNotEmpty) {
         return 'לפני השליחה יש להשלים:\n${missing.join('\n')}';
