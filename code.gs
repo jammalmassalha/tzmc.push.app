@@ -1488,7 +1488,7 @@ function doPost(e) {
       }
       var isSmsValid = String(vsStoredSms).trim() === vsSmsUser;
       if (isSmsValid) {
-        // Clear stale backend response so post-SMS flow can continue
+        // Clear stale MessageResponseFromServer so post-SMS flow can continue
         // and wait for the final password-reset completion message.
         vsSheet.getRange(vsRequestId, 6).setValue('');
       }
