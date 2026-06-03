@@ -145,7 +145,7 @@ class _PasswordResetBotScreenState
 
     if (details.isEmpty) return false;
 
-    final normalizedDetails = details.replaceAll(RegExp(r"[\[\]'\"]"), '');
+    final normalizedDetails = details.replaceAll(RegExp(r"""[\[\]'"]"""), '');
     return normalizedDetails.contains(_departmentInfoSystems);
   }
 
