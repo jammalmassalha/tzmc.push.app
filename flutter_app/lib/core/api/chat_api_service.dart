@@ -1726,6 +1726,118 @@ class ChatApiService {
     final str = responseValue.toString().trim();
     return str.isEmpty ? null : str;
   }
+
+  /// Start reset-password-by-username request; returns sheet row id.
+  Future<int> startResetPasswordByUsername(String userRequested, String forUserName) async {
+    final response = await _client.post<Map<String, dynamic>>(
+      ApiEndpoints.resetPasswordByUsernameStart,
+      data: {'user': userRequested, 'forUserName': forUserName},
+      options: Options(
+        receiveTimeout: NetworkTimeouts.resetPasswordTimeout,
+        sendTimeout: NetworkTimeouts.resetPasswordTimeout,
+      ),
+      retryOptions: const RetryOptions(
+        retries: 1,
+        timeout: NetworkTimeouts.resetPasswordTimeout,
+      ),
+    );
+
+    if (!response.isSuccessful) {
+      throw ApiException(_extractErrorMessage(response.data, 'שגיאה בשמירת הבקשה'));
+    }
+
+    final data = response.data ?? {};
+    final requestId = (data['requestId'] as num?)?.toInt() ??
+        int.tryParse('${data['requestId'] ?? ''}') ??
+        0;
+    if (requestId < 2) {
+      throw ApiException('התקבלה תגובה לא תקינה מהשרת');
+    }
+    return requestId;
+  }
+
+  /// Verify SMS code for an existing reset-password-by-username request.
+  Future<({bool verified, String message})> verifyResetPasswordByUsernameSms(
+    String userRequested,
+    int requestId,
+    String smsUser,
+  ) async {
+    final response = await _client.post<Map<String, dynamic>>(
+      ApiEndpoints.resetPasswordByUsernameVerifySms,
+      data: {
+        'user': userRequested,
+        'requestId': requestId,
+        'smsUser': smsUser,
+      },
+      options: Options(
+        receiveTimeout: NetworkTimeouts.resetPasswordTimeout,
+        sendTimeout: NetworkTimeouts.resetPasswordTimeout,
+      ),
+      retryOptions: const RetryOptions(
+        retries: 1,
+        timeout: NetworkTimeouts.resetPasswordTimeout,
+      ),
+    );
+
+    final data = response.data ?? {};
+    if (!response.isSuccessful) {
+      return (
+        verified: false,
+        message: _extractErrorMessage(data, 'שגיאה באימות קוד ה-SMS'),
+      );
+    }
+
+    final verified = data['verified'] == true;
+    final message = (data['message'] ?? (verified ? '' : 'קוד ה-SMS שגוי')).toString();
+    return (verified: verified, message: message);
+  }
+
+  /// Submit new password for reset-password-by-username flow.
+  Future<void> submitResetPasswordByUsernamePassword(
+    String userRequested,
+    int requestId,
+    String smsUser,
+    String password,
+  ) async {
+    final response = await _client.post<Map<String, dynamic>>(
+      ApiEndpoints.resetPasswordByUsernameSubmit,
+      data: {
+        'user': userRequested,
+        'requestId': requestId,
+        'smsUser': smsUser,
+        'password': password,
+      },
+      options: Options(
+        receiveTimeout: NetworkTimeouts.resetPasswordTimeout,
+        sendTimeout: NetworkTimeouts.resetPasswordTimeout,
+      ),
+      retryOptions: const RetryOptions(
+        retries: 1,
+        timeout: NetworkTimeouts.resetPasswordTimeout,
+      ),
+    );
+
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה בשליחת הסיסמה החדשה'),
+      );
+    }
+  }
+
+  /// Poll for reset-password-by-username response by request id.
+  Future<String?> getResetPasswordByUsernameStatus(String userRequested, int requestId) async {
+    final response = await _client.get<Map<String, dynamic>>(
+      ApiEndpoints.resetPasswordByUsernameStatus,
+      queryParameters: {'user': userRequested, 'requestId': requestId},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 15)),
+    );
+    if (!response.isSuccessful) return null;
+    final data = response.data ?? {};
+    final responseValue = data['response'];
+    if (responseValue == null) return null;
+    final str = responseValue.toString().trim();
+    return str.isEmpty ? null : str;
+  }
 }
 
 /// Base API exception

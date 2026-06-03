@@ -6679,6 +6679,14 @@ function authorizePasswordResetRequest(scope, preAuthMaxAttempts, userMaxAttempt
     };
 }
 
+function parseResetByUsernameRequestId(rawValue) {
+    const parsed = Number.parseInt(String(rawValue ?? '').trim(), 10);
+    if (!Number.isFinite(parsed) || parsed < 2) {
+        return 0;
+    }
+    return parsed;
+}
+
 app.post(
     ['/reset-password/verify-year', '/notify/reset-password/verify-year'],
     authorizePasswordResetRequest('verify', 10, 5, 60 * 1000),
@@ -6814,6 +6822,196 @@ app.get(
             return res.json({ response: resetResponse });
         } catch (e) {
             console.error('[RESET-PASSWORD/STATUS]', e);
+            res.status(500).json({ error: e.message });
+        }
+    }
+);
+
+app.post(
+    ['/reset-password/by-username/start', '/notify/reset-password/by-username/start'],
+    authorizePasswordResetRequest('by-username-start', 10, 5, 60 * 1000),
+    async (req, res) => {
+        try {
+            const user = req.resolvedUser;
+            const forUserName = String((req.body && req.body.forUserName) || '').trim();
+            if (!user || !forUserName) {
+                return res.status(400).json({ error: 'Missing user or forUserName' });
+            }
+
+            const response = await fetchWithRetry(
+                GOOGLE_SHEET_URL,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'submit_password_reset_by_username',
+                        user,
+                        forUserName,
+                        token: AUTH_CODE_SHEET_TOKEN
+                    })
+                },
+                { timeoutMs: 15000, retries: 1, backoffMs: 500 }
+            );
+            if (!response.ok) {
+                return res.status(502).json({ error: 'Sheet request failed' });
+            }
+            const payload = await response.json();
+            if (payload && payload.result === 'success') {
+                return res.json({ requestId: payload.requestId || null });
+            }
+            return res.status(500).json({ error: (payload && payload.message) || 'שגיאה בשמירת הבקשה' });
+        } catch (e) {
+            console.error('[RESET-PASSWORD/BY-USERNAME/START]', e);
+            res.status(500).json({ error: e.message });
+        }
+    }
+);
+
+app.post(
+    ['/reset-password/by-username/verify-sms', '/notify/reset-password/by-username/verify-sms'],
+    authorizePasswordResetRequest('by-username-verify-sms', 20, 10, 60 * 1000),
+    async (req, res) => {
+        try {
+            const user = req.resolvedUser;
+            const requestId = parseResetByUsernameRequestId(req && req.body && req.body.requestId);
+            const smsUser = String((req.body && req.body.smsUser) || '').trim();
+            if (!user || !requestId || !smsUser) {
+                return res.status(400).json({ error: 'Missing user, requestId or smsUser' });
+            }
+
+            const response = await fetchWithRetry(
+                GOOGLE_SHEET_URL,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'verify_password_reset_by_username_sms',
+                        user,
+                        requestId,
+                        smsUser,
+                        token: AUTH_CODE_SHEET_TOKEN
+                    })
+                },
+                { timeoutMs: 15000, retries: 1, backoffMs: 500 }
+            );
+            if (!response.ok) {
+                return res.status(502).json({ error: 'Sheet request failed' });
+            }
+            const payload = await response.json();
+            if (payload && payload.result === 'success') {
+                return res.json({
+                    verified: payload.verified === true,
+                    message: (payload.message || '').toString()
+                });
+            }
+            return res.status(500).json({ error: (payload && payload.message) || 'שגיאה באימות קוד ה-SMS' });
+        } catch (e) {
+            console.error('[RESET-PASSWORD/BY-USERNAME/VERIFY-SMS]', e);
+            res.status(500).json({ error: e.message });
+        }
+    }
+);
+
+app.post(
+    ['/reset-password/by-username/submit', '/notify/reset-password/by-username/submit'],
+    authorizePasswordResetRequest('by-username-submit', 6, 3, 60 * 1000),
+    async (req, res) => {
+        try {
+            const user = req.resolvedUser;
+            const requestId = parseResetByUsernameRequestId(req && req.body && req.body.requestId);
+            const smsUser = String((req.body && req.body.smsUser) || '').trim();
+            const password = String((req.body && req.body.password) || '').trim();
+            if (!user || !requestId || !smsUser || !password) {
+                return res.status(400).json({ error: 'Missing user, requestId, smsUser or password' });
+            }
+
+            const response = await fetchWithRetry(
+                GOOGLE_SHEET_URL,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'submit_password_reset_by_username_password',
+                        user,
+                        requestId,
+                        smsUser,
+                        password,
+                        token: AUTH_CODE_SHEET_TOKEN
+                    })
+                },
+                { timeoutMs: 15000, retries: 1, backoffMs: 500 }
+            );
+            if (!response.ok) {
+                return res.status(502).json({ error: 'Sheet request failed' });
+            }
+            const payload = await response.json();
+            if (payload && payload.result === 'success') {
+                return res.json({ requestId: payload.requestId || requestId });
+            }
+            return res.status(500).json({ error: (payload && payload.message) || 'שגיאה בשמירת הסיסמה החדשה' });
+        } catch (e) {
+            console.error('[RESET-PASSWORD/BY-USERNAME/SUBMIT]', e);
+            res.status(500).json({ error: e.message });
+        }
+    }
+);
+
+app.get(
+    ['/reset-password/by-username/status', '/notify/reset-password/by-username/status'],
+    authorizePasswordResetRequest('by-username-status', 60, 30, 60 * 1000),
+    async (req, res) => {
+        try {
+            const user = req.resolvedUser;
+            const requestId = parseResetByUsernameRequestId(req && req.query && req.query.requestId);
+            if (!user || !requestId) {
+                return res.status(400).json({ error: 'Missing user or requestId' });
+            }
+
+            const response = await fetchWithRetry(
+                GOOGLE_SHEET_URL,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'get_password_reset_by_username_status',
+                        user,
+                        requestId,
+                        token: AUTH_CODE_SHEET_TOKEN
+                    })
+                },
+                { timeoutMs: 15000, retries: 1, backoffMs: 500 }
+            );
+            if (!response.ok) {
+                return res.status(502).json({ error: 'Sheet request failed' });
+            }
+            const payload = await response.json();
+            const resetResponse = (payload && payload.response) || null;
+            if (resetResponse && String(resetResponse).trim()) {
+                try {
+                    await fetchWithRetry(
+                        GOOGLE_SHEET_URL,
+                        {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                action: 'delete_password_reset_by_username_status',
+                                user,
+                                requestId,
+                                token: AUTH_CODE_SHEET_TOKEN
+                            })
+                        },
+                        { timeoutMs: 15000, retries: 1, backoffMs: 500 }
+                    );
+                } catch (deleteErr) {
+                    console.warn(
+                        '[RESET-PASSWORD/BY-USERNAME/STATUS] Delete row call failed:',
+                        deleteErr && deleteErr.message ? deleteErr.message : deleteErr
+                    );
+                }
+            }
+            return res.json({ response: resetResponse });
+        } catch (e) {
+            console.error('[RESET-PASSWORD/BY-USERNAME/STATUS]', e);
             res.status(500).json({ error: e.message });
         }
     }
