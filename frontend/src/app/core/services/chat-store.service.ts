@@ -103,6 +103,11 @@ const SEED_COMMUNITY_GROUPS: readonly CommunityGroupConfig[] = [
     name: 'בדיקה - דוברות',
     staticMembers: ['0546799693', '0550000001', '0547997273', '0505203520'],
     allowedWriters: ['0546799693']
+  },
+  {
+    id: 'אקרדיטציה',
+    name: 'אקרדיטציה',
+    allowedWriters: ['0502798700']
   }
 ];
 const SHUTTLE_DAY_NAMES_BY_LANGUAGE: Record<ShuttleLanguage, readonly string[]> = {
