@@ -646,7 +646,7 @@ const SEED_COMMUNITY_GROUPS = [
     },
     {
         groupId: String(process.env.AKREDITATSIA_GROUP_ID || 'אקרדיטציה').trim() || 'אקרדיטציה',
-        groupName: String(process.env.AKREDITATSIA_GROUP_ID || 'אקרדיטציה').trim() || 'אקרדיטציה',
+        groupName: String(process.env.AKREDITATSIA_GROUP_NAME || process.env.AKREDITATSIA_GROUP_ID || 'אקרדיטציה').trim() || 'אקרדיטציה',
         members: [],
         writers: parseUsernamesInput(process.env.AKREDITATSIA_ALLOWED_WRITERS || '0502798700')
     }
