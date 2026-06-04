@@ -643,6 +643,12 @@ const SEED_COMMUNITY_GROUPS = [
         groupName: String(process.env.DOVRUT_TEST_GROUP_ID || 'בדיקה - דוברות').trim() || 'בדיקה - דוברות',
         members: parseUsernamesInput(process.env.DOVRUT_TEST_GROUP_MEMBERS || '0546799693,0550000001,0547997273,0505203520'),
         writers: parseUsernamesInput(process.env.DOVRUT_TEST_ALLOWED_WRITERS || '0546799693')
+    },
+    {
+        groupId: String(process.env.AKREDITATSIA_GROUP_ID || 'אקרדיטציה').trim() || 'אקרדיטציה',
+        groupName: String(process.env.AKREDITATSIA_GROUP_ID || 'אקרדיטציה').trim() || 'אקרדיטציה',
+        members: [],
+        writers: parseUsernamesInput(process.env.AKREDITATSIA_ALLOWED_WRITERS || '0502798700')
     }
 ];
 
