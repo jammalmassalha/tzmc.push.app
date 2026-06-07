@@ -275,6 +275,29 @@ class ChatApiService {
     }
   }
 
+  /// Get community group configurations — mirrors Angular's getCommunityGroupConfigs().
+  ///
+  /// Returns the server-persisted list of community group configs, falling back
+  /// to an empty list on any error so the caller can use seed defaults.
+  Future<List<CommunityGroupConfig>> getCommunityGroupConfigs() async {
+    try {
+      final response = await _client.get<Map<String, dynamic>>(
+        ApiEndpoints.communityGroupConfigs,
+        retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+      );
+
+      if (!response.isSuccessful) return [];
+
+      final configs = (response.data?['configs'] as List?) ?? [];
+      return configs
+          .map((item) => CommunityGroupConfig.fromJson(item as Map<String, dynamic>))
+          .where((cfg) => cfg.id.isNotEmpty && cfg.name.isNotEmpty)
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Messages
   // ---------------------------------------------------------------------------
@@ -476,11 +499,18 @@ class ChatApiService {
   // ---------------------------------------------------------------------------
 
   /// Upload file (cross-platform)
-  Future<UploadResponse> uploadFile(XFile file, {XFile? thumbnail}) async {
+  Future<UploadResponse> uploadFile(
+    XFile file, {
+    XFile? thumbnail,
+    String? chatId,
+  }) async {
     final response = await _client.uploadFile<Map<String, dynamic>>(
       ApiEndpoints.upload,
       file: file,
       thumbnail: thumbnail,
+      additionalFields: {
+        if (chatId != null && chatId.trim().isNotEmpty) 'chatId': chatId.trim(),
+      },
       retryOptions: const RetryOptions(retries: 2, timeout: NetworkTimeouts.uploadTimeout),
     );
 
@@ -1837,6 +1867,130 @@ class ChatApiService {
     if (responseValue == null) return null;
     final str = responseValue.toString().trim();
     return str.isEmpty ? null : str;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Admin: Community Group Management
+  // ---------------------------------------------------------------------------
+
+  /// List ALL community groups (including disabled) — super-admin only.
+  Future<List<Map<String, dynamic>>> adminListCommunityGroups(String user) async {
+    final response = await _client.get<Map<String, dynamic>>(
+      ApiEndpoints.adminCommunityGroups,
+      queryParameters: {'user': user},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה בטעינת הקבוצות'),
+      );
+    }
+    final data = response.data ?? {};
+    final rawList = data['groups'];
+    if (rawList is! List) return [];
+    return rawList
+        .whereType<Map>()
+        .map((e) => e.map((k, v) => MapEntry(k.toString(), v)))
+        .toList();
+  }
+
+  /// Create a new community group — super-admin only.
+  Future<void> adminCreateCommunityGroup({
+    required String user,
+    required String groupId,
+    required String groupName,
+    required List<String> members,
+    required List<String> writers,
+  }) async {
+    final response = await _client.post<Map<String, dynamic>>(
+      ApiEndpoints.adminCommunityGroups,
+      data: {
+        'user': user,
+        'groupId': groupId,
+        'groupName': groupName,
+        'members': members,
+        'writers': writers,
+      },
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה ביצירת הקבוצה'),
+      );
+    }
+  }
+
+  /// Update an existing community group — super-admin only.
+  Future<void> adminUpdateCommunityGroup({
+    required String user,
+    required String groupId,
+    required String groupName,
+    required List<String> members,
+    required List<String> writers,
+    required bool isEnabled,
+  }) async {
+    final encodedId = Uri.encodeComponent(groupId);
+    final response = await _client.put<Map<String, dynamic>>(
+      '${ApiEndpoints.adminCommunityGroups}/$encodedId',
+      data: {
+        'user': user,
+        'groupName': groupName,
+        'members': members,
+        'writers': writers,
+        'isEnabled': isEnabled,
+      },
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה בעדכון הקבוצה'),
+      );
+    }
+  }
+
+  /// Enable a community group — super-admin only.
+  Future<void> adminEnableCommunityGroup(String user, String groupId) async {
+    final encodedId = Uri.encodeComponent(groupId);
+    final response = await _client.post<Map<String, dynamic>>(
+      '${ApiEndpoints.adminCommunityGroups}/$encodedId/enable',
+      data: {'user': user},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה בהפעלת הקבוצה'),
+      );
+    }
+  }
+
+  /// Disable a community group — super-admin only.
+  Future<void> adminDisableCommunityGroup(String user, String groupId) async {
+    final encodedId = Uri.encodeComponent(groupId);
+    final response = await _client.post<Map<String, dynamic>>(
+      '${ApiEndpoints.adminCommunityGroups}/$encodedId/disable',
+      data: {'user': user},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה בהשבתת הקבוצה'),
+      );
+    }
+  }
+
+  /// Permanently delete a community group — super-admin only.
+  Future<void> adminDeleteCommunityGroup(String user, String groupId) async {
+    final encodedId = Uri.encodeComponent(groupId);
+    final response = await _client.delete<Map<String, dynamic>>(
+      '${ApiEndpoints.adminCommunityGroups}/$encodedId',
+      data: {'user': user},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה במחיקת הקבוצה'),
+      );
+    }
   }
 }
 

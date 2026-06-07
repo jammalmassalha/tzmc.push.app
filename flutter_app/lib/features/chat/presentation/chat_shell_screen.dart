@@ -18,6 +18,7 @@ import '../../auth/presentation/auth_state.dart';
 import '../../helpdesk/presentation/helpdesk_screen.dart';
 import '../../password_reset/presentation/password_reset_bot_screen.dart';
 import '../../shuttle/presentation/shuttle_screen.dart';
+import '../../admin/presentation/admin_groups_screen.dart';
 import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
 import 'chat_list_screen.dart';
@@ -26,7 +27,7 @@ import 'message_screen.dart';
 import 'new_chat_dialog.dart';
 
 /// Main tab enumeration
-enum MainTab { chats, groups, shuttle, helpdesk, ticketManager, passwordReset, settings }
+enum MainTab { chats, groups, shuttle, helpdesk, ticketManager, passwordReset, settings, adminGroups }
 
 const List<String> _kHelpdeskAllowedUsers = [
   '0546799693',
@@ -35,6 +36,12 @@ const List<String> _kHelpdeskAllowedUsers = [
 ];
 final Set<String> _kHelpdeskAllowedUsersNormalized =
     _kHelpdeskAllowedUsers.map((value) => value.trim().toLowerCase()).toSet();
+
+/// Super-admin users who have access to the Admin Groups management tab.
+const List<String> _kSuperAdminUsers = ['0546799693'];
+final Set<String> _kSuperAdminUsersNormalized =
+    _kSuperAdminUsers.map((value) => value.trim().toLowerCase()).toSet();
+
 final RegExp _kShuttlePhoneRegex = RegExp(r'05\d{8}');
 const double _kDesktopShellBreakpoint = 1100;
 
@@ -52,6 +59,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   final _pageController = PageController();
   bool _canAccessShuttle = false;
   bool _canAccessTicketManager = false;
+  bool _canAccessAdminGroups = false;
   List<MainTab> _visibleTabs = [
     MainTab.chats,
     MainTab.groups,
@@ -507,6 +515,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         return Icons.lock_reset_outlined;
       case MainTab.settings:
         return Icons.settings_outlined;
+      case MainTab.adminGroups:
+        return Icons.admin_panel_settings_outlined;
     }
   }
 
@@ -526,6 +536,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         return Icons.lock_reset;
       case MainTab.settings:
         return Icons.settings;
+      case MainTab.adminGroups:
+        return Icons.admin_panel_settings;
     }
   }
 
@@ -698,6 +710,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         return _buildPasswordResetTab();
       case MainTab.settings:
         return _buildSettingsTab();
+      case MainTab.adminGroups:
+        return _buildAdminGroupsTab();
     }
   }
 
@@ -745,6 +759,12 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
           activeIcon: Icon(Icons.settings),
           label: 'הגדרות',
         );
+      case MainTab.adminGroups:
+        return const BottomNavigationBarItem(
+          icon: Icon(Icons.admin_panel_settings_outlined),
+          activeIcon: Icon(Icons.admin_panel_settings),
+          label: 'ניהול קבוצות',
+        );
     }
   }
 
@@ -768,6 +788,10 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     return const PasswordResetBotScreen();
   }
 
+  Widget _buildAdminGroupsTab() {
+    return const AdminGroupsScreen();
+  }
+
   Widget _buildSettingsTab() {
     final user = ref.watch(currentUserProvider);
     return _SettingsPlaceholder(user: user);
@@ -781,6 +805,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       MainTab.helpdesk,
       if (_canAccessTicketManager) MainTab.ticketManager,
       if (!kIsWeb) MainTab.passwordReset,
+      if (_canAccessAdminGroups) MainTab.adminGroups,
     ];
     _visibleTabs = tabs;
   }
@@ -792,6 +817,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       setState(() {
         _canAccessShuttle = false;
         _canAccessTicketManager = false;
+        _canAccessAdminGroups = false;
         _recomputeVisibleTabs();
         if (!_visibleTabs.contains(_currentTab)) {
           _currentTab = _visibleTabs.first;
@@ -804,6 +830,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
 
     final canAccessTicketManager =
         _kHelpdeskAllowedUsersNormalized.contains(normalizedUser);
+
+    final canAccessAdminGroups =
+        _kSuperAdminUsersNormalized.contains(normalizedUser);
 
     bool canAccessShuttle = false;
     try {
@@ -821,6 +850,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     setState(() {
       _canAccessShuttle = canAccessShuttle;
       _canAccessTicketManager = canAccessTicketManager;
+      _canAccessAdminGroups = canAccessAdminGroups;
       _recomputeVisibleTabs();
       if (!_visibleTabs.contains(_currentTab)) {
         _currentTab = _visibleTabs.first;
@@ -878,6 +908,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         return 'איפוס סיסמת Windows';
       case MainTab.settings:
         return 'הגדרות';
+      case MainTab.adminGroups:
+        return 'ניהול קבוצות';
     }
   }
 

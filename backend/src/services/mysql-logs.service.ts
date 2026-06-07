@@ -68,6 +68,7 @@ export interface CommunityGroupDbConfig {
   groupName: string;
   members: string[];
   writers: string[];
+  isEnabled?: boolean;
 }
 
 export interface ChatGroupDbRecord {
@@ -1151,11 +1152,17 @@ export class MysqlLogsService {
         CREATE TABLE IF NOT EXISTS \`CommunityGroups\` (
           \`GroupId\` VARCHAR(255) NOT NULL,
           \`GroupName\` VARCHAR(255) NOT NULL,
+          \`IsEnabled\` TINYINT(1) NOT NULL DEFAULT 1,
           \`CreatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP,
           \`UpdatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
           PRIMARY KEY (\`GroupId\`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
       `);
+      // Add IsEnabled column to existing tables that pre-date this migration
+      await this.pool.execute(`
+        ALTER TABLE \`CommunityGroups\`
+          ADD COLUMN IF NOT EXISTS \`IsEnabled\` TINYINT(1) NOT NULL DEFAULT 1
+      `).catch(() => undefined);
       await this.pool.execute(`
         CREATE TABLE IF NOT EXISTS \`CommunityGroupMembers\` (
           \`GroupId\` VARCHAR(255) NOT NULL,
@@ -1184,7 +1191,7 @@ export class MysqlLogsService {
     await this.ensureCommunityGroupsTables();
     try {
       const [groupRows] = await this.pool.execute<RowDataPacket[]>(
-        'SELECT `GroupId`, `GroupName` FROM `CommunityGroups` ORDER BY `GroupId`'
+        'SELECT `GroupId`, `GroupName`, `IsEnabled` FROM `CommunityGroups` WHERE `IsEnabled` = 1 ORDER BY `GroupId`'
       );
       if (!groupRows.length) return [];
 
@@ -1219,7 +1226,8 @@ export class MysqlLogsService {
           groupId,
           groupName: toTrimmedString(row.GroupName),
           members: membersMap.get(groupId) ?? [],
-          writers: writersMap.get(groupId) ?? []
+          writers: writersMap.get(groupId) ?? [],
+          isEnabled: row.IsEnabled !== 0
         };
       }).filter((g) => g.groupId && g.groupName);
     } catch (err: unknown) {
@@ -1448,6 +1456,143 @@ export class MysqlLogsService {
       console.warn('[MYSQL] seedChatGroupsFromRuntime warning:', message);
     }
     return seeded;
+  }
+
+  // ─── Admin: Community Group CRUD ────────────────────────────────────────────
+
+  /** List ALL community groups (enabled and disabled) — for admin UI. */
+  async adminListCommunityGroups(): Promise<CommunityGroupDbConfig[]> {
+    await this.ensureCommunityGroupsTables();
+    try {
+      const [groupRows] = await this.pool.execute<RowDataPacket[]>(
+        'SELECT `GroupId`, `GroupName`, `IsEnabled` FROM `CommunityGroups` ORDER BY `GroupId`'
+      );
+      if (!groupRows.length) return [];
+
+      const [memberRows] = await this.pool.execute<RowDataPacket[]>(
+        'SELECT `GroupId`, `Phone` FROM `CommunityGroupMembers` ORDER BY `GroupId`, `Phone`'
+      );
+      const [writerRows] = await this.pool.execute<RowDataPacket[]>(
+        'SELECT `GroupId`, `Phone` FROM `CommunityGroupWriters` ORDER BY `GroupId`, `Phone`'
+      );
+
+      const membersMap = new Map<string, string[]>();
+      for (const row of memberRows) {
+        const gid = toTrimmedString(row.GroupId);
+        const phone = toTrimmedString(row.Phone);
+        if (!gid || !phone) continue;
+        if (!membersMap.has(gid)) membersMap.set(gid, []);
+        membersMap.get(gid)!.push(phone);
+      }
+      const writersMap = new Map<string, string[]>();
+      for (const row of writerRows) {
+        const gid = toTrimmedString(row.GroupId);
+        const phone = toTrimmedString(row.Phone);
+        if (!gid || !phone) continue;
+        if (!writersMap.has(gid)) writersMap.set(gid, []);
+        writersMap.get(gid)!.push(phone);
+      }
+
+      return groupRows.map((row) => {
+        const groupId = toTrimmedString(row.GroupId);
+        return {
+          groupId,
+          groupName: toTrimmedString(row.GroupName),
+          members: membersMap.get(groupId) ?? [],
+          writers: writersMap.get(groupId) ?? [],
+          isEnabled: row.IsEnabled !== 0
+        };
+      }).filter((g) => g.groupId && g.groupName);
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.error('[MYSQL] adminListCommunityGroups error:', message);
+      return [];
+    }
+  }
+
+  /** Create or fully replace a community group (name, members, writers). */
+  async upsertCommunityGroup(config: CommunityGroupDbConfig): Promise<boolean> {
+    await this.ensureCommunityGroupsTables();
+    const conn = await this.pool.getConnection();
+    try {
+      await conn.beginTransaction();
+
+      await conn.execute(
+        `INSERT INTO \`CommunityGroups\` (\`GroupId\`, \`GroupName\`, \`IsEnabled\`)
+         VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           \`GroupName\` = VALUES(\`GroupName\`),
+           \`IsEnabled\` = VALUES(\`IsEnabled\`)`,
+        [config.groupId, config.groupName, config.isEnabled !== false ? 1 : 0]
+      );
+
+      await conn.execute('DELETE FROM `CommunityGroupMembers` WHERE `GroupId` = ?', [config.groupId]);
+      const validMembers = (config.members || []).filter(Boolean);
+      if (validMembers.length > 0) {
+        const ph = validMembers.map(() => '(?, ?)').join(', ');
+        await conn.execute(
+          `INSERT IGNORE INTO \`CommunityGroupMembers\` (\`GroupId\`, \`Phone\`) VALUES ${ph}`,
+          validMembers.flatMap((p) => [config.groupId, p])
+        );
+      }
+
+      await conn.execute('DELETE FROM `CommunityGroupWriters` WHERE `GroupId` = ?', [config.groupId]);
+      const validWriters = (config.writers || []).filter(Boolean);
+      if (validWriters.length > 0) {
+        const ph = validWriters.map(() => '(?, ?)').join(', ');
+        await conn.execute(
+          `INSERT IGNORE INTO \`CommunityGroupWriters\` (\`GroupId\`, \`Phone\`) VALUES ${ph}`,
+          validWriters.flatMap((p) => [config.groupId, p])
+        );
+      }
+
+      await conn.commit();
+      console.log('[MYSQL] upsertCommunityGroup:', config.groupId);
+      return true;
+    } catch (err: unknown) {
+      await conn.rollback().catch(() => undefined);
+      const message = String((err as { message?: string }).message || '');
+      console.warn('[MYSQL] upsertCommunityGroup warning:', config.groupId, message);
+      return false;
+    } finally {
+      conn.release();
+    }
+  }
+
+  /** Permanently delete a community group and all its members/writers. */
+  async deleteCommunityGroup(groupId: string): Promise<boolean> {
+    await this.ensureCommunityGroupsTables();
+    try {
+      const [result] = await this.pool.execute<import('mysql2').ResultSetHeader>(
+        'DELETE FROM `CommunityGroups` WHERE `GroupId` = ?',
+        [groupId]
+      );
+      const affected = (result as { affectedRows?: number }).affectedRows ?? 0;
+      console.log('[MYSQL] deleteCommunityGroup:', groupId, 'affected=' + affected);
+      return affected > 0;
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.warn('[MYSQL] deleteCommunityGroup warning:', groupId, message);
+      return false;
+    }
+  }
+
+  /** Enable or disable a community group (soft toggle). */
+  async setCommunityGroupEnabled(groupId: string, enabled: boolean): Promise<boolean> {
+    await this.ensureCommunityGroupsTables();
+    try {
+      const [result] = await this.pool.execute<import('mysql2').ResultSetHeader>(
+        'UPDATE `CommunityGroups` SET `IsEnabled` = ? WHERE `GroupId` = ?',
+        [enabled ? 1 : 0, groupId]
+      );
+      const affected = (result as { affectedRows?: number }).affectedRows ?? 0;
+      console.log('[MYSQL] setCommunityGroupEnabled:', groupId, enabled, 'affected=' + affected);
+      return affected > 0;
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.warn('[MYSQL] setCommunityGroupEnabled warning:', groupId, message);
+      return false;
+    }
   }
 
   // ─── MessageActivities audit table ──────────────────────────────────────────

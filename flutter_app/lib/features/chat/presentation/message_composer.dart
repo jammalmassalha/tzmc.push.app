@@ -7,6 +7,7 @@ library;
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -401,9 +402,28 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
   }
 
   Future<void> _pickFile() async {
-    // For now, show a placeholder message
-    // File picking requires additional setup (file_picker package)
-    showTopToast(context, 'בחירת קובץ - בקרוב');
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['pdf'],
+        withData: true,
+      );
+      if (result == null || result.files.isEmpty) return;
+      final picked = result.files.first;
+      final bytes = picked.bytes;
+      if (bytes == null) return;
+      setState(() {
+        _selectedFile = xfile.XFile.fromBytes(
+          name: picked.name,
+          bytes: bytes,
+          mimeType: 'application/pdf',
+        );
+        _selectedImage = null;
+        _selectedImageBytes = null;
+      });
+    } catch (e) {
+      if (mounted) showTopToast(context, 'שגיאה בבחירת קובץ: ${e.toString()}');
+    }
   }
 
   /// Mirrors Angular's [shareLocation]: gets the device's GPS position and
@@ -519,14 +539,14 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
         // Upload image if selected
         if (pendingImage != null) {
           final api = ref.read(chatApiServiceProvider);
-          final uploadResult = await api.uploadFile(pendingImage);
+          final uploadResult = await api.uploadFile(pendingImage, chatId: chatId);
           imageUrl = uploadResult.url;
         }
 
         // Upload file if selected
         if (pendingFile != null) {
           final api = ref.read(chatApiServiceProvider);
-          final uploadResult = await api.uploadFile(pendingFile);
+          final uploadResult = await api.uploadFile(pendingFile, chatId: chatId);
           fileUrl = uploadResult.url;
         }
 

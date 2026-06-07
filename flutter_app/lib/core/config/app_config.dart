@@ -28,6 +28,7 @@ class AppConfig {
     'הסעות',
     'דוברות',
     'בדיקה - דוברות',
+    'אקרדיטציה',
   ];
 }
 
@@ -110,6 +111,9 @@ class ApiEndpoints {
   static const String resetPasswordByUsernameVerifySms = '/reset-password/by-username/verify-sms';
   static const String resetPasswordByUsernameSubmit = '/reset-password/by-username/submit';
   static const String resetPasswordByUsernameStatus = '/reset-password/by-username/status';
+
+  // Admin: Community Group Management
+  static const String adminCommunityGroups = '/admin/community-groups';
 }
 
 /// Network timeouts (matching Angular frontend behavior)

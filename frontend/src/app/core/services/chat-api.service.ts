@@ -956,8 +956,12 @@ export class ChatApiService {
     };
   }
 
-  async uploadFile(file: File, thumbnail?: File | null): Promise<UploadResponse> {
+  async uploadFile(file: File, thumbnail?: File | null, chatId?: string | null): Promise<UploadResponse> {
     const formData = new FormData();
+    const normalizedChatId = String(chatId ?? '').trim();
+    if (normalizedChatId) {
+      formData.append('chatId', normalizedChatId);
+    }
     formData.append('file', file, file.name);
     if (thumbnail) {
       formData.append('thumbnail', thumbnail, thumbnail.name);

@@ -9,6 +9,7 @@ const bodyParser = require('body-parser');
 const multer = require('multer'); 
 const path = require('path');
 const fs = require('fs');
+const fsPromises = fs.promises;
 const cors = require('cors');
 const crypto = require('crypto');
 const { Server: SocketIOServer } = require('socket.io');
@@ -58,6 +59,11 @@ const redisStateStorePromise = createRedisStateStoreFromEnv(process.env)
 
 // --- 1. SETUP UPLOADS FOLDER ---
 const uploadDir = path.join(__dirname, 'uploads');
+const ACCREDITATION_UPLOAD_CHAT_ID = 'אקרדיטציה';
+const ACCREDITATION_UPLOAD_SUBDIRECTORY = 'Accreditation';
+const SPECIAL_UPLOAD_SUBDIRECTORIES_BY_CHAT_ID = Object.freeze({
+    [ACCREDITATION_UPLOAD_CHAT_ID]: ACCREDITATION_UPLOAD_SUBDIRECTORY
+});
 const uploadSecurityWorkerPath = path.join(__dirname, 'backend', 'dist', 'services', 'upload-security-worker.js');
 const uploadSecurityService = new UploadSecurityService({
     uploadDir,
@@ -380,6 +386,72 @@ function isAllowedThumbnailUpload(file) { return uploadSecurityService.isAllowed
 function buildSafeUploadFilename(file) { return uploadSecurityService.buildSafeUploadFilename(file || {}); }
 function safelyDeleteUploadedFile(file) { return uploadSecurityService.safelyDeleteUploadedFile(file); }
 function validateUploadedFileSecurity(file, options) { return uploadSecurityService.validateUploadedFileSecurity(file || {}, options); }
+const TRIMMABLE_EDGE_QUOTES = new Set([`'`, `"`, '`', '׳', '״']);
+function trimMatchingEdgeQuotes(value) {
+   let result = String(value || '').trim();
+   while (result) {
+       const firstChar = result.charAt(0);
+       if (!TRIMMABLE_EDGE_QUOTES.has(firstChar)) {
+           break;
+       }
+       result = result.slice(1).trimStart();
+   }
+   while (result) {
+       const lastChar = result.charAt(result.length - 1);
+       if (!TRIMMABLE_EDGE_QUOTES.has(lastChar)) {
+           break;
+       }
+       result = result.slice(0, -1).trimEnd();
+   }
+   return result;
+}
+function normalizeUploadTargetChatId(rawValue) {
+   return trimMatchingEdgeQuotes(rawValue);
+}
+function resolveUploadSubdirectory(req) {
+   const body = req && req.body && typeof req.body === 'object' ? req.body : {};
+   const targetChatId = normalizeUploadTargetChatId(
+       body.groupId || body.chatId || body.targetChatId || body.recipient || ''
+   );
+   return SPECIAL_UPLOAD_SUBDIRECTORIES_BY_CHAT_ID[targetChatId] || '';
+}
+function resolveSafeUploadPath(baseDir, candidatePath) {
+   const resolvedBaseDir = `${path.resolve(baseDir)}${path.sep}`;
+   const resolvedPath = path.resolve(String(candidatePath || ''));
+   if (!resolvedPath.startsWith(resolvedBaseDir)) {
+       throw new Error('Invalid upload path');
+   }
+   return resolvedPath;
+}
+async function relocateUploadedFileToAccreditationSubdirectory(file) {
+   if (!file || !file.path) {
+       return file;
+   }
+   const targetDir = path.join(uploadDir, ACCREDITATION_UPLOAD_SUBDIRECTORY);
+   await fsPromises.mkdir(targetDir, { recursive: true });
+   const rawFilename = String(file.filename || '').trim();
+   const safeFilename = path.basename(rawFilename);
+   if (!safeFilename || safeFilename !== rawFilename || !/^[a-zA-Z0-9._-]+$/.test(safeFilename)) {
+       throw new Error('Invalid upload filename');
+   }
+   const sourcePath = resolveSafeUploadPath(uploadDir, file.path);
+   const targetPath = resolveSafeUploadPath(targetDir, path.join(targetDir, safeFilename));
+   await fsPromises.rename(sourcePath, targetPath);
+   file.destination = targetDir;
+   file.filename = safeFilename;
+   file.path = targetPath;
+   return file;
+}
+function buildUploadedFileUrl(file, subdirectory = '') {
+   const encodedFilename = encodeURIComponent(String(file && file.filename ? file.filename : '').trim());
+   if (!encodedFilename) {
+       throw new Error('Invalid upload filename');
+   }
+    if (!subdirectory) {
+        return `/notify/uploads/${encodedFilename}`;
+    }
+    return `/notify/uploads/${encodeURIComponent(subdirectory)}/${encodedFilename}`;
+}
 
 // --- 2. STORAGE CONFIG ---
 const storage = multer.diskStorage({
@@ -643,6 +715,12 @@ const SEED_COMMUNITY_GROUPS = [
         groupName: String(process.env.DOVRUT_TEST_GROUP_ID || 'בדיקה - דוברות').trim() || 'בדיקה - דוברות',
         members: parseUsernamesInput(process.env.DOVRUT_TEST_GROUP_MEMBERS || '0546799693,0550000001,0547997273,0505203520'),
         writers: parseUsernamesInput(process.env.DOVRUT_TEST_ALLOWED_WRITERS || '0546799693')
+    },
+    {
+        groupId: String(process.env.AKREDITATSIA_GROUP_ID || 'אקרדיטציה').trim() || 'אקרדיטציה',
+        groupName: String(process.env.AKREDITATSIA_GROUP_NAME || process.env.AKREDITATSIA_GROUP_ID || 'אקרדיטציה').trim() || 'אקרדיטציה',
+        members: [],
+        writers: parseUsernamesInput(process.env.AKREDITATSIA_ALLOWED_WRITERS || '0502798700')
     }
 ];
 
@@ -6093,6 +6171,236 @@ app.post(['/backup-all-groups-to-db', '/notify/backup-all-groups-to-db'],
     }
 );
 
+// --- Admin: Community Group Management (super-admin only: 0546799693) ---
+const ADMIN_SUPER_USER_SET = new Set(
+    (process.env.SUPER_ADMIN_USERS || '0546799693').split(',').map(normalizeUserKey).filter(Boolean)
+);
+const adminGroupsRateLimitStore = new Map();
+
+/** Parse any truthy/falsy value to boolean (e.g. from request body). */
+function toBooleanValue(value) {
+    return value !== false && value !== 0 && value !== 'false' && value !== '0';
+}
+
+// GET /admin/community-groups — list all groups (including disabled)
+app.get(
+    ['/admin/community-groups', '/notify/admin/community-groups'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const rateCheck = consumeRateLimitEntry(adminGroupsRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        next();
+    },
+    async (_req, res) => {
+        try {
+            const groups = await mysqlLogsService.adminListCommunityGroups();
+            return res.json({ groups });
+        } catch (err) {
+            console.error('[ADMIN-GROUPS] list error:', err && err.message ? err.message : err);
+            return res.status(500).json({ error: 'Failed to list groups' });
+        }
+    }
+);
+
+// POST /admin/community-groups — create new community group
+app.post(
+    ['/admin/community-groups', '/notify/admin/community-groups'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const rateCheck = consumeRateLimitEntry(adminGroupsRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        next();
+    },
+    async (req, res) => {
+        const { groupId, groupName, members, writers } = req.body || {};
+        const gid = String(groupId || '').trim();
+        const gname = String(groupName || '').trim();
+        if (!gid || !gname) {
+            return res.status(400).json({ error: 'groupId and groupName are required' });
+        }
+        try {
+            const ok = await mysqlLogsService.upsertCommunityGroup({
+                groupId: gid,
+                groupName: gname,
+                members: parseUsernamesInput(members),
+                writers: parseUsernamesInput(writers),
+                isEnabled: true
+            });
+            if (!ok) return res.status(500).json({ error: 'Failed to create group' });
+            await loadAndSeedCommunityGroups();
+            return res.json({ status: 'created', groupId: gid });
+        } catch (err) {
+            console.error('[ADMIN-GROUPS] create error:', err && err.message ? err.message : err);
+            return res.status(500).json({ error: 'Failed to create group' });
+        }
+    }
+);
+
+// PUT /admin/community-groups/:groupId — edit group
+app.put(
+    ['/admin/community-groups/:groupId', '/notify/admin/community-groups/:groupId'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const rateCheck = consumeRateLimitEntry(adminGroupsRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        next();
+    },
+    async (req, res) => {
+        const groupId = decodeURIComponent(String(req.params.groupId || '')).trim();
+        if (!groupId) return res.status(400).json({ error: 'groupId is required' });
+        const { groupName, members, writers, isEnabled } = req.body || {};
+        const gname = String(groupName || '').trim();
+        if (!gname) return res.status(400).json({ error: 'groupName is required' });
+        try {
+            const ok = await mysqlLogsService.upsertCommunityGroup({
+                groupId,
+                groupName: gname,
+                members: parseUsernamesInput(members),
+                writers: parseUsernamesInput(writers),
+                isEnabled: toBooleanValue(isEnabled)
+            });
+            if (!ok) return res.status(500).json({ error: 'Failed to update group' });
+            await loadAndSeedCommunityGroups();
+            return res.json({ status: 'updated', groupId });
+        } catch (err) {
+            console.error('[ADMIN-GROUPS] update error:', err && err.message ? err.message : err);
+            return res.status(500).json({ error: 'Failed to update group' });
+        }
+    }
+);
+
+// POST /admin/community-groups/:groupId/enable
+app.post(
+    ['/admin/community-groups/:groupId/enable', '/notify/admin/community-groups/:groupId/enable'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const rateCheck = consumeRateLimitEntry(adminGroupsRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        next();
+    },
+    async (req, res) => {
+        const groupId = decodeURIComponent(String(req.params.groupId || '')).trim();
+        if (!groupId) return res.status(400).json({ error: 'groupId is required' });
+        try {
+            const ok = await mysqlLogsService.setCommunityGroupEnabled(groupId, true);
+            if (!ok) return res.status(404).json({ error: 'Group not found' });
+            await loadAndSeedCommunityGroups();
+            return res.json({ status: 'enabled', groupId });
+        } catch (err) {
+            console.error('[ADMIN-GROUPS] enable error:', err && err.message ? err.message : err);
+            return res.status(500).json({ error: 'Failed to enable group' });
+        }
+    }
+);
+
+// POST /admin/community-groups/:groupId/disable
+app.post(
+    ['/admin/community-groups/:groupId/disable', '/notify/admin/community-groups/:groupId/disable'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const rateCheck = consumeRateLimitEntry(adminGroupsRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        next();
+    },
+    async (req, res) => {
+        const groupId = decodeURIComponent(String(req.params.groupId || '')).trim();
+        if (!groupId) return res.status(400).json({ error: 'groupId is required' });
+        try {
+            const ok = await mysqlLogsService.setCommunityGroupEnabled(groupId, false);
+            if (!ok) return res.status(404).json({ error: 'Group not found' });
+            await loadAndSeedCommunityGroups();
+            return res.json({ status: 'disabled', groupId });
+        } catch (err) {
+            console.error('[ADMIN-GROUPS] disable error:', err && err.message ? err.message : err);
+            return res.status(500).json({ error: 'Failed to disable group' });
+        }
+    }
+);
+
+// DELETE /admin/community-groups/:groupId
+app.delete(
+    ['/admin/community-groups/:groupId', '/notify/admin/community-groups/:groupId'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const rateCheck = consumeRateLimitEntry(adminGroupsRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        next();
+    },
+    async (req, res) => {
+        const groupId = decodeURIComponent(String(req.params.groupId || '')).trim();
+        if (!groupId) return res.status(400).json({ error: 'groupId is required' });
+        try {
+            const ok = await mysqlLogsService.deleteCommunityGroup(groupId);
+            if (!ok) return res.status(404).json({ error: 'Group not found' });
+            await loadAndSeedCommunityGroups();
+            return res.json({ status: 'deleted', groupId });
+        } catch (err) {
+            console.error('[ADMIN-GROUPS] delete error:', err && err.message ? err.message : err);
+            return res.status(500).json({ error: 'Failed to delete group' });
+        }
+    }
+);
+
 // --- Sync all MessageActivities (no filtering) ---
 app.get(['/message-activities', '/notify/message-activities'], async (_req, res) => {
     try {
@@ -6354,8 +6662,21 @@ app.post(['/upload', '/notify/upload'], uploadFieldsValidated, async (req, res) 
         return rejectWithCleanup(400, 'File content validation failed');
     }
 
-    const fileUrl = `/notify/uploads/${encodeURIComponent(file.filename)}`;
-    const thumbUrl = thumbnail ? `/notify/uploads/${encodeURIComponent(thumbnail.filename)}` : null;
+    const uploadSubdirectory = resolveUploadSubdirectory(req);
+    try {
+        if (uploadSubdirectory === ACCREDITATION_UPLOAD_SUBDIRECTORY) {
+            await relocateUploadedFileToAccreditationSubdirectory(file);
+            if (thumbnail) {
+                await relocateUploadedFileToAccreditationSubdirectory(thumbnail);
+            }
+        }
+    } catch (error) {
+        console.error('[UPLOAD] Failed to move uploaded file:', error && error.message ? error.message : error);
+        return rejectWithCleanup(500, 'Failed to finalize uploaded file');
+    }
+
+    const fileUrl = buildUploadedFileUrl(file, uploadSubdirectory);
+    const thumbUrl = thumbnail ? buildUploadedFileUrl(thumbnail, uploadSubdirectory) : null;
     res.json({ status: 'success', url: fileUrl, thumbUrl, type: file.mimetype });
 });
 

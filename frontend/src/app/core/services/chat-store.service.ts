@@ -103,6 +103,11 @@ const SEED_COMMUNITY_GROUPS: readonly CommunityGroupConfig[] = [
     name: 'בדיקה - דוברות',
     staticMembers: ['0546799693', '0550000001', '0547997273', '0505203520'],
     allowedWriters: ['0546799693']
+  },
+  {
+    id: 'אקרדיטציה',
+    name: 'אקרדיטציה',
+    allowedWriters: ['0502798700']
   }
 ];
 const SHUTTLE_DAY_NAMES_BY_LANGUAGE: Record<ShuttleLanguage, readonly string[]> = {
@@ -2518,7 +2523,7 @@ export class ChatStoreService {
     this.uploading.set(true);
     this.lastError.set(null);
     try {
-      const upload = await this.api.uploadFile(file);
+      const upload = await this.api.uploadFile(file, null, this.activeChatId());
       if (upload.status !== 'success' || !upload.url) {
         throw new Error('Upload did not return a file URL');
       }
@@ -2551,7 +2556,7 @@ export class ChatStoreService {
     this.uploading.set(true);
     this.lastError.set(null);
     try {
-      const upload = await this.api.uploadFile(file);
+      const upload = await this.api.uploadFile(file, null, this.activeChatId());
       if (upload.status !== 'success' || !upload.url) {
         throw new Error('Upload did not return a file URL');
       }

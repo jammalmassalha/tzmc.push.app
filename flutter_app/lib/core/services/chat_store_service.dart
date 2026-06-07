@@ -62,6 +62,36 @@ const String kPendingChatUpdatesKey = 'tzmc_pending_chat_updates_v1';
 const String kDeletedChatsKey = 'tzmc_deleted_chats_v1';
 
 // ---------------------------------------------------------------------------
+// Community group seed data (mirrors Angular's SEED_COMMUNITY_GROUPS)
+// ---------------------------------------------------------------------------
+
+/// The creator identity used for all synthesised community groups —
+/// mirrors Angular's `DOVRUT_SYSTEM_CREATOR = 'dovrut-system'`.
+const String _kDovrutSystemCreator = 'dovrut-system';
+
+/// Seed / fallback community group configs — used when the server returns no
+/// configs (e.g. first boot before the DB tables are populated).
+/// Mirrors Angular's `SEED_COMMUNITY_GROUPS`.
+const List<CommunityGroupConfig> _kSeedCommunityGroups = [
+  CommunityGroupConfig(
+    id: 'דוברות',
+    name: 'דוברות',
+    allowedWriters: ['0506501040', '0506267447', '0543108095'],
+  ),
+  CommunityGroupConfig(
+    id: 'בדיקה - דוברות',
+    name: 'בדיקה - דוברות',
+    staticMembers: ['0546799693', '0550000001', '0547997273', '0505203520'],
+    allowedWriters: ['0546799693'],
+  ),
+  CommunityGroupConfig(
+    id: 'אקרדיטציה',
+    name: 'אקרדיטציה',
+    allowedWriters: ['0502798700'],
+  ),
+];
+
+// ---------------------------------------------------------------------------
 // Chat State
 // ---------------------------------------------------------------------------
 
@@ -215,6 +245,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   int _lastGapAnalysisTime = 0;
   String? _currentUser;
 
+  /// Community group configs loaded from the server; seeded with defaults.
+  /// Mirrors Angular's `communityGroupConfigs` field.
+  List<CommunityGroupConfig> _communityGroupConfigs = List.unmodifiable(_kSeedCommunityGroups);
+
   /// Per-chat timers that clear a typing indicator after an idle period.
   final Map<String, Map<String, Timer>> _typingClearTimers = {};
 
@@ -350,6 +384,16 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         _pullContacts(),
         _pullGroups(),
       ]);
+
+      // 2a. Load community group configs from the server and synthesise the
+      //     community group entries in state.  This must happen BEFORE
+      //     recoverMissedMessages so that _normalizeLogMessageForImport can
+      //     resolve group IDs from the sender field for community messages
+      //     (e.g. sender = 'אקרדיטציה').
+      //     Mirrors Angular's loadCommunityGroupConfigs() + the reactive
+      //     dovrutGroupSyncEffect that calls syncHardcodedCommunityGroups().
+      await _loadCommunityGroupConfigs();
+      _syncCommunityGroups();
 
       // 3. Pull missed messages (gap analysis).
       //
@@ -955,6 +999,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       //    Angular's `loadUserChatGroupsFromDb()` which prefers the server
       //    record when its `updatedAt` is newer than the local one.
       await _mergeUserChatGroups();
+
+      // 4a. Reload community group configs and synthesise community groups so
+      //     they appear in state before the logs pull.  Mirrors Angular's
+      //     loadCommunityGroupConfigs() + syncHardcodedCommunityGroups().
+      await _loadCommunityGroupConfigs();
+      _syncCommunityGroups();
+
       state = state.copyWith(
         syncProgressPercent: 40,
         syncProgressLabel: 'מרענן נתונים...',
@@ -1352,6 +1403,156 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
 
     state = state.copyWith(messagesByChat: newMessagesByChat);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Community group config loading + synthesis (mirrors Angular's
+  //   loadCommunityGroupConfigs() + syncHardcodedCommunityGroups())
+  // ---------------------------------------------------------------------------
+
+  /// Fetch community group configs from the server and update
+  /// [_communityGroupConfigs].  Falls back to the seed list on any error.
+  ///
+  /// Mirrors Angular's `loadCommunityGroupConfigs()`.
+  Future<void> _loadCommunityGroupConfigs() async {
+    try {
+      final configs = await _api.getCommunityGroupConfigs();
+      if (configs.isNotEmpty) {
+        _communityGroupConfigs = List.unmodifiable(configs);
+      }
+    } catch (_) {
+      // Keep seed defaults on error.
+    }
+  }
+
+  /// Synthesise / update community group entries in [state.groups] based on
+  /// [_communityGroupConfigs].
+  ///
+  /// Mirrors Angular's `syncHardcodedCommunityGroups`:
+  ///   • Groups with no [CommunityGroupConfig.staticMembers] (or an empty list)
+  ///     are open to all users — their member list is set to all contacts.
+  ///   • Groups with a non-empty [CommunityGroupConfig.staticMembers] are only
+  ///     shown to users in that list.
+  ///   • Each group is created with `type = community`, `createdBy =
+  ///     _kDovrutSystemCreator`, and `admins = allowedWriters`.
+  ///
+  /// Call this **after** contacts have been pulled so the open-group member
+  /// list is accurate, and **before** `recoverMissedMessages` so that
+  /// `_normalizeLogMessageForImport` can resolve group IDs from the sender
+  /// field for community group messages.
+  void _syncCommunityGroups() {
+    final user = _currentUser;
+    if (user == null || user.isEmpty) return;
+
+    final configs = _communityGroupConfigs;
+    if (configs.isEmpty) return;
+
+    // All contact usernames, normalised — used as member list for open groups.
+    final allContacts = state.contacts.keys
+        .map((k) => k.trim().toLowerCase())
+        .where((k) => k.isNotEmpty)
+        .toList()
+      ..sort();
+
+    final groupsById = Map<String, ChatGroup>.from(state.groups);
+    bool changed = false;
+
+    final hardcodedIds =
+        configs.map((cfg) => cfg.id.trim().toLowerCase()).toList();
+
+    for (final cfg in configs) {
+      final normalizedId = cfg.id.trim().toLowerCase();
+
+      // Determine if this group has an explicit member allow-list.
+      final isRestricted =
+          cfg.staticMembers != null && cfg.staticMembers!.isNotEmpty;
+
+      // Compute expected member list.
+      final List<String> expectedMembers;
+      if (isRestricted) {
+        expectedMembers = cfg.staticMembers!
+            .map((m) => m.trim().toLowerCase())
+            .where((m) => m.isNotEmpty)
+            .toList()
+          ..sort();
+      } else {
+        // Open group — all contacts are considered members.
+        expectedMembers = allContacts;
+      }
+
+      // Determine if this user should see the group.
+      final shouldInclude =
+          !isRestricted || expectedMembers.contains(user);
+
+      if (!shouldInclude) {
+        if (groupsById.containsKey(normalizedId)) {
+          groupsById.remove(normalizedId);
+          changed = true;
+        }
+        continue;
+      }
+
+      final admins = cfg.allowedWriters
+          .map((w) => w.trim().toLowerCase())
+          .where((w) => w.isNotEmpty)
+          .toList();
+
+      final existing = groupsById[normalizedId];
+
+      // Sorted existing member list for comparison.
+      final existingMembers = existing != null
+          ? (existing.members
+                .map((m) => m.trim().toLowerCase())
+                .where((m) => m.isNotEmpty)
+                .toList()
+              ..sort())
+          : <String>[];
+
+      final needsUpdate = existing == null ||
+          existing.name != cfg.name ||
+          existing.type != GroupType.community ||
+          existing.createdBy.trim().toLowerCase() != _kDovrutSystemCreator ||
+          !_areStringListsEqual(existingMembers, expectedMembers);
+
+      if (!needsUpdate) continue;
+
+      changed = true;
+      groupsById[normalizedId] = ChatGroup(
+        id: normalizedId,
+        name: cfg.name,
+        members: expectedMembers,
+        admins: admins.isEmpty ? null : admins,
+        createdBy: _kDovrutSystemCreator,
+        updatedAt: DateTime.now().millisecondsSinceEpoch,
+        type: GroupType.community,
+      );
+    }
+
+    if (!changed) return;
+
+    // Reorder: hardcoded community groups first, then the rest.
+    final hardcodedFirst = hardcodedIds
+        .map((id) => groupsById[id])
+        .whereType<ChatGroup>()
+        .toList();
+    final remaining =
+        groupsById.values.where((g) => !hardcodedIds.contains(g.id)).toList();
+
+    state = state.copyWith(
+      groups: Map.fromEntries(
+        [...hardcodedFirst, ...remaining].map((g) => MapEntry(g.id, g)),
+      ),
+    );
+    _schedulePersistence();
+  }
+
+  /// Returns true when [a] and [b] are equal element-by-element.
+  static bool _areStringListsEqual(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   /// Loads the groups that are persisted in the server DB and merges them into
