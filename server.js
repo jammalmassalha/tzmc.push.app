@@ -331,7 +331,6 @@ app.use(['/uploads', '/notify/uploads'], (req, res, next) => {
 });
 
 
-app.use(bodyParser.json());
 // --- CORS CONFIGURATION ---
 // When the browser sends credentialed requests (withCredentials/credentials:'include'),
 // the response must echo a specific origin – the wildcard '*' is not allowed. We
