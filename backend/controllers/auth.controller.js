@@ -214,7 +214,14 @@ function registerAuthController(app, deps = {}) {
 
             const verificationCode = generateAuthCode();
             await setAuthCodeOnSubscribeSheet(requestedUser, verificationCode);
-            await sendAuthCodeSms(requestedUser, verificationCode);
+
+            // Send SMS asynchronously so the client is not blocked waiting for the
+            // SMS gateway. The code is already persisted in the sheet at this point,
+            // so verification will work regardless of when the SMS actually delivers.
+            sendAuthCodeSms(requestedUser, verificationCode).catch((smsError) => {
+                const reason = smsError && smsError.message ? String(smsError.message) : 'Unknown SMS error';
+                console.error('[AUTH CODE] Background SMS delivery failed for user', requestedUser, ':', reason);
+            });
 
             return res.json({
                 status: 'success',
