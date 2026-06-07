@@ -6171,6 +6171,185 @@ app.post(['/backup-all-groups-to-db', '/notify/backup-all-groups-to-db'],
     }
 );
 
+// --- Admin: Community Group Management (super-admin only: 0546799693) ---
+const ADMIN_SUPER_USER_SET = new Set(
+    (process.env.SUPER_ADMIN_USERS || '0546799693').split(',').map(normalizeUserKey).filter(Boolean)
+);
+const adminGroupsRateLimitStore = new Map();
+
+function requireSuperAdmin(req, res) {
+    const user = normalizeUserKey(req.resolvedUser || '');
+    if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+        res.status(403).json({ error: 'Forbidden: super-admin only' });
+        return null;
+    }
+    const rateCheck = consumeRateLimitEntry(adminGroupsRateLimitStore, user, 60, 60 * 1000);
+    if (!rateCheck.allowed) {
+        res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        return null;
+    }
+    return user;
+}
+
+// GET /admin/community-groups — list all groups (including disabled)
+app.get(
+    ['/admin/community-groups', '/notify/admin/community-groups'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        if (!requireSuperAdmin(req, res)) return;
+        try {
+            const groups = await mysqlLogsService.adminListCommunityGroups();
+            return res.json({ groups });
+        } catch (err) {
+            console.error('[ADMIN-GROUPS] list error:', err && err.message ? err.message : err);
+            return res.status(500).json({ error: 'Failed to list groups' });
+        }
+    }
+);
+
+// POST /admin/community-groups — create new community group
+app.post(
+    ['/admin/community-groups', '/notify/admin/community-groups'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        if (!requireSuperAdmin(req, res)) return;
+        const { groupId, groupName, members, writers } = req.body || {};
+        const gid = String(groupId || '').trim();
+        const gname = String(groupName || '').trim();
+        if (!gid || !gname) {
+            return res.status(400).json({ error: 'groupId and groupName are required' });
+        }
+        try {
+            const ok = await mysqlLogsService.upsertCommunityGroup({
+                groupId: gid,
+                groupName: gname,
+                members: parseUsernamesInput(members),
+                writers: parseUsernamesInput(writers),
+                isEnabled: true
+            });
+            if (!ok) return res.status(500).json({ error: 'Failed to create group' });
+            await loadAndSeedCommunityGroups();
+            return res.json({ status: 'created', groupId: gid });
+        } catch (err) {
+            console.error('[ADMIN-GROUPS] create error:', err && err.message ? err.message : err);
+            return res.status(500).json({ error: 'Failed to create group' });
+        }
+    }
+);
+
+// PUT /admin/community-groups/:groupId — edit group
+app.put(
+    ['/admin/community-groups/:groupId', '/notify/admin/community-groups/:groupId'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        if (!requireSuperAdmin(req, res)) return;
+        const groupId = decodeURIComponent(String(req.params.groupId || '')).trim();
+        if (!groupId) return res.status(400).json({ error: 'groupId is required' });
+        const { groupName, members, writers, isEnabled } = req.body || {};
+        const gname = String(groupName || '').trim();
+        if (!gname) return res.status(400).json({ error: 'groupName is required' });
+        try {
+            const ok = await mysqlLogsService.upsertCommunityGroup({
+                groupId,
+                groupName: gname,
+                members: parseUsernamesInput(members),
+                writers: parseUsernamesInput(writers),
+                isEnabled: isEnabled !== false && isEnabled !== 0
+            });
+            if (!ok) return res.status(500).json({ error: 'Failed to update group' });
+            await loadAndSeedCommunityGroups();
+            return res.json({ status: 'updated', groupId });
+        } catch (err) {
+            console.error('[ADMIN-GROUPS] update error:', err && err.message ? err.message : err);
+            return res.status(500).json({ error: 'Failed to update group' });
+        }
+    }
+);
+
+// POST /admin/community-groups/:groupId/enable
+app.post(
+    ['/admin/community-groups/:groupId/enable', '/notify/admin/community-groups/:groupId/enable'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        if (!requireSuperAdmin(req, res)) return;
+        const groupId = decodeURIComponent(String(req.params.groupId || '')).trim();
+        if (!groupId) return res.status(400).json({ error: 'groupId is required' });
+        try {
+            const ok = await mysqlLogsService.setCommunityGroupEnabled(groupId, true);
+            if (!ok) return res.status(404).json({ error: 'Group not found' });
+            await loadAndSeedCommunityGroups();
+            return res.json({ status: 'enabled', groupId });
+        } catch (err) {
+            console.error('[ADMIN-GROUPS] enable error:', err && err.message ? err.message : err);
+            return res.status(500).json({ error: 'Failed to enable group' });
+        }
+    }
+);
+
+// POST /admin/community-groups/:groupId/disable
+app.post(
+    ['/admin/community-groups/:groupId/disable', '/notify/admin/community-groups/:groupId/disable'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        if (!requireSuperAdmin(req, res)) return;
+        const groupId = decodeURIComponent(String(req.params.groupId || '')).trim();
+        if (!groupId) return res.status(400).json({ error: 'groupId is required' });
+        try {
+            const ok = await mysqlLogsService.setCommunityGroupEnabled(groupId, false);
+            if (!ok) return res.status(404).json({ error: 'Group not found' });
+            await loadAndSeedCommunityGroups();
+            return res.json({ status: 'disabled', groupId });
+        } catch (err) {
+            console.error('[ADMIN-GROUPS] disable error:', err && err.message ? err.message : err);
+            return res.status(500).json({ error: 'Failed to disable group' });
+        }
+    }
+);
+
+// DELETE /admin/community-groups/:groupId
+app.delete(
+    ['/admin/community-groups/:groupId', '/notify/admin/community-groups/:groupId'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        if (!requireSuperAdmin(req, res)) return;
+        const groupId = decodeURIComponent(String(req.params.groupId || '')).trim();
+        if (!groupId) return res.status(400).json({ error: 'groupId is required' });
+        try {
+            const ok = await mysqlLogsService.deleteCommunityGroup(groupId);
+            if (!ok) return res.status(404).json({ error: 'Group not found' });
+            await loadAndSeedCommunityGroups();
+            return res.json({ status: 'deleted', groupId });
+        } catch (err) {
+            console.error('[ADMIN-GROUPS] delete error:', err && err.message ? err.message : err);
+            return res.status(500).json({ error: 'Failed to delete group' });
+        }
+    }
+);
+
 // --- Sync all MessageActivities (no filtering) ---
 app.get(['/message-activities', '/notify/message-activities'], async (_req, res) => {
     try {
