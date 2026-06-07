@@ -7,6 +7,7 @@ library;
 import 'dart:async';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../config/app_config.dart';
@@ -140,7 +141,8 @@ class ChatApiService {
     } on DioException catch (e) {
       final message = _extractErrorMessage(e.response?.data, '');
       throw AuthException(message.isNotEmpty ? message : 'שליחת קוד אימות נכשלה');
-    } catch (_, stackTrace) {
+    } catch (error, stackTrace) {
+      debugPrint('requestSessionCode unexpected error: $error');
       Error.throwWithStackTrace(AuthException('שליחת קוד אימות נכשלה'), stackTrace);
     }
   }
