@@ -15,6 +15,7 @@ import '../models/chat_models.dart';
 import '../models/helpdesk_models.dart';
 import '../utils/xfile.dart';
 import 'http_client.dart';
+import '../../features/accreditation_agent/data/accreditation_agent_response.dart';
 
 /// Chat API service provider
 final chatApiServiceProvider = Provider<ChatApiService>((ref) {
@@ -1991,6 +1992,29 @@ class ChatApiService {
         _extractErrorMessage(response.data, 'שגיאה במחיקת הקבוצה'),
       );
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Accreditation AI Agent
+  // ---------------------------------------------------------------------------
+
+  /// Sends [question] to the Gemini-powered accreditation AI agent.
+  ///
+  /// Returns an [AccreditationAgentResponse] containing the generated
+  /// answer and a list of the relevant source PDF files.
+  Future<AccreditationAgentResponse> askAccreditationAgent(String question) async {
+    final response = await _client.post<Map<String, dynamic>>(
+      ApiEndpoints.accreditationAgent,
+      data: {'question': question},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 90)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה בשאילתת הסוכן'),
+      );
+    }
+    final body = _coerceJsonMap(response.data);
+    return AccreditationAgentResponse.fromJson(body);
   }
 }
 
