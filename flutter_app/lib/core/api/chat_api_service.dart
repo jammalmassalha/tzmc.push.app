@@ -140,8 +140,8 @@ class ChatApiService {
     } on DioException catch (e) {
       final message = _extractErrorMessage(e.response?.data, '');
       throw AuthException(message.isNotEmpty ? message : 'שליחת קוד אימות נכשלה');
-    } catch (_) {
-      throw AuthException('שליחת קוד אימות נכשלה');
+    } catch (_, stackTrace) {
+      Error.throwWithStackTrace(AuthException('שליחת קוד אימות נכשלה'), stackTrace);
     }
   }
 
