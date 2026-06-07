@@ -1463,9 +1463,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     for (final cfg in configs) {
       final normalizedId = cfg.id.trim().toLowerCase();
 
+      // Determine if this group has an explicit member allow-list.
+      final isRestricted =
+          cfg.staticMembers != null && cfg.staticMembers!.isNotEmpty;
+
       // Compute expected member list.
       final List<String> expectedMembers;
-      if (cfg.staticMembers != null && cfg.staticMembers!.isNotEmpty) {
+      if (isRestricted) {
         expectedMembers = cfg.staticMembers!
             .map((m) => m.trim().toLowerCase())
             .where((m) => m.isNotEmpty)
@@ -1477,8 +1481,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       }
 
       // Determine if this user should see the group.
-      final isRestricted =
-          cfg.staticMembers != null && cfg.staticMembers!.isNotEmpty;
       final shouldInclude =
           !isRestricted || expectedMembers.contains(user);
 
