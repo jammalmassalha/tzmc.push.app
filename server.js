@@ -386,12 +386,21 @@ function isAllowedThumbnailUpload(file) { return uploadSecurityService.isAllowed
 function buildSafeUploadFilename(file) { return uploadSecurityService.buildSafeUploadFilename(file || {}); }
 function safelyDeleteUploadedFile(file) { return uploadSecurityService.safelyDeleteUploadedFile(file); }
 function validateUploadedFileSecurity(file, options) { return uploadSecurityService.validateUploadedFileSecurity(file || {}, options); }
+const TRIMMABLE_EDGE_QUOTES = new Set([`'`, `"`, '`', '׳', '״']);
 function trimMatchingEdgeQuotes(value) {
    let result = String(value || '').trim();
-   while (result && [`'`, '"', '`', '׳', '״'].includes(result.charAt(0))) {
+   while (result) {
+       const firstChar = result.charAt(0);
+       if (!TRIMMABLE_EDGE_QUOTES.has(firstChar)) {
+           break;
+       }
        result = result.slice(1).trimStart();
    }
-   while (result && [`'`, '"', '`', '׳', '״'].includes(result.charAt(result.length - 1))) {
+   while (result) {
+       const lastChar = result.charAt(result.length - 1);
+       if (!TRIMMABLE_EDGE_QUOTES.has(lastChar)) {
+           break;
+       }
        result = result.slice(0, -1).trimEnd();
    }
    return result;
@@ -412,9 +421,15 @@ async function relocateUploadedFileToAccreditationSubdirectory(file) {
    }
    const targetDir = path.join(uploadDir, ACCREDITATION_UPLOAD_SUBDIRECTORY);
    await fsPromises.mkdir(targetDir, { recursive: true });
-   const targetPath = path.join(targetDir, file.filename);
+   const rawFilename = String(file.filename || '').trim();
+   const safeFilename = path.basename(rawFilename);
+   if (!safeFilename || safeFilename !== rawFilename || !/^[a-zA-Z0-9._-]+$/.test(safeFilename)) {
+       throw new Error('Invalid upload filename');
+   }
+   const targetPath = path.join(targetDir, safeFilename);
    await fsPromises.rename(file.path, targetPath);
    file.destination = targetDir;
+   file.filename = safeFilename;
    file.path = targetPath;
    return file;
 }
