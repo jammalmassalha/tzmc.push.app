@@ -165,43 +165,43 @@ function registerAuthController(app, deps = {}) {
     });
 
     app.post(['/auth/session/request-code', '/notify/auth/session/request-code'], async (req, res) => {
-        const payload = req.body && typeof req.body === 'object' ? req.body : {};
-        const requestedUser = normalizeUserCandidate(payload.username || payload.user || payload.phone);
-        if (!SESSION_USER_PATTERN.test(requestedUser)) {
-            return res.status(400).json({ status: 'error', message: 'Invalid user' });
-        }
-        const registrationFlowCheck = ensureRegistrationFlowOnly(req, requestedUser);
-        if (!registrationFlowCheck.ok) {
-            return res.status(registrationFlowCheck.status).json({
-                status: 'error',
-                message: registrationFlowCheck.message
-            });
-        }
-
-        const clientIp = getClientIpAddress(req);
-        const ipLimit = consumeRateLimitEntry(
-            authCodeRequestRateLimitByIp,
-            clientIp,
-            AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_IP,
-            AUTH_CODE_RATE_LIMIT_WINDOW_MS
-        );
-        const userLimit = consumeRateLimitEntry(
-            authCodeRequestRateLimitByUser,
-            requestedUser,
-            AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_USER,
-            AUTH_CODE_RATE_LIMIT_WINDOW_MS
-        );
-        if (!ipLimit.allowed || !userLimit.allowed) {
-            const retryAfterSeconds = Math.max(ipLimit.retryAfterSeconds || 0, userLimit.retryAfterSeconds || 0, 1);
-            res.setHeader('Retry-After', String(retryAfterSeconds));
-            return res.status(429).json({
-                status: 'error',
-                message: 'Too many verification attempts. Please try again later.',
-                retryAfterSeconds
-            });
-        }
-
         try {
+            const payload = req.body && typeof req.body === 'object' ? req.body : {};
+            const requestedUser = normalizeUserCandidate(payload.username || payload.user || payload.phone);
+            if (!SESSION_USER_PATTERN.test(requestedUser)) {
+                return res.status(400).json({ status: 'error', message: 'Invalid user' });
+            }
+            const registrationFlowCheck = ensureRegistrationFlowOnly(req, requestedUser);
+            if (!registrationFlowCheck.ok) {
+                return res.status(registrationFlowCheck.status).json({
+                    status: 'error',
+                    message: registrationFlowCheck.message
+                });
+            }
+
+            const clientIp = getClientIpAddress(req);
+            const ipLimit = consumeRateLimitEntry(
+                authCodeRequestRateLimitByIp,
+                clientIp,
+                AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_IP,
+                AUTH_CODE_RATE_LIMIT_WINDOW_MS
+            );
+            const userLimit = consumeRateLimitEntry(
+                authCodeRequestRateLimitByUser,
+                requestedUser,
+                AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_USER,
+                AUTH_CODE_RATE_LIMIT_WINDOW_MS
+            );
+            if (!ipLimit.allowed || !userLimit.allowed) {
+                const retryAfterSeconds = Math.max(ipLimit.retryAfterSeconds || 0, userLimit.retryAfterSeconds || 0, 1);
+                res.setHeader('Retry-After', String(retryAfterSeconds));
+                return res.status(429).json({
+                    status: 'error',
+                    message: 'Too many verification attempts. Please try again later.',
+                    retryAfterSeconds
+                });
+            }
+
             if (AUTH_CODE_REQUIRE_REGISTERED_USER) {
                 const registrationCheck = await ensureRequestedUserIsRegistered(requestedUser);
                 if (!registrationCheck.ok) {
@@ -232,7 +232,7 @@ function registerAuthController(app, deps = {}) {
             });
         } catch (error) {
             const reason = error && error.message ? String(error.message) : 'Unable to send verification code';
-            console.error('[AUTH CODE] Failed to send verification code:', reason);
+            console.error('[AUTH CODE] Failed to send verification code for user, error:', reason, error && error.stack ? error.stack : '');
             return res.status(502).json({ status: 'error', message: reason });
         }
     });

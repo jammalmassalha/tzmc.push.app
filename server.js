@@ -7645,6 +7645,22 @@ async function checkOutgoingQueue() {
     }
 }
 
+// Global error handler — catches any unhandled error thrown from a route or middleware
+// (including async handlers in Express 5) and returns a clean JSON response instead of
+// Express's default HTML/verbose error page.
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, _next) => {
+    const status = (err && Number.isInteger(err.status) && err.status >= 400 && err.status < 600)
+        ? err.status
+        : 500;
+    const message = err && err.message ? String(err.message) : 'Internal server error';
+    console.error('[UNHANDLED ERROR]', req.method, req.originalUrl || req.url,
+        'status:', status, 'error:', message,
+        err && err.stack ? err.stack : '');
+    if (res.headersSent) return;
+    res.status(status).json({ status: 'error', message });
+});
+
 // Start the Timer (10,000 ms = 10 seconds)
 setInterval(checkOutgoingQueue, 10000);
 startSubscriptionAuthRefreshScheduler();
