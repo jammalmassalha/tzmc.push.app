@@ -166,25 +166,23 @@ function registerAuthController(app, deps = {}) {
 
     // IP-level rate-limit middleware applied before the request-code handler so
     // that it runs unconditionally, ahead of any authorization checks.
-    const requestCodeIpRateLimit = (req, res, next) => {
-        const clientIp = getClientIpAddress(req);
-        const ipLimit = consumeRateLimitEntry(
-            authCodeRequestRateLimitByIp,
-            clientIp,
-            AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_IP,
-            AUTH_CODE_RATE_LIMIT_WINDOW_MS
-        );
-        if (!ipLimit.allowed) {
-            const retryAfterSeconds = Math.max(ipLimit.retryAfterSeconds || 0, 1);
+    const rateLimit = require('express-rate-limit');
+    const requestCodeIpRateLimit = rateLimit({
+        windowMs: AUTH_CODE_RATE_LIMIT_WINDOW_MS,
+        limit: AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_IP,
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: (req) => getClientIpAddress(req),
+        handler: (_req, res, _next, options) => {
+            const retryAfterSeconds = Math.ceil(options.windowMs / 1000);
             res.setHeader('Retry-After', String(retryAfterSeconds));
-            return res.status(429).json({
+            res.status(429).json({
                 status: 'error',
                 message: 'Too many verification attempts. Please try again later.',
                 retryAfterSeconds
             });
         }
-        return next();
-    };
+    });
 
     app.post(
         ['/auth/session/request-code', '/notify/auth/session/request-code'],
@@ -260,25 +258,22 @@ function registerAuthController(app, deps = {}) {
     );
 
     // IP-level rate-limit middleware for the verify-code handler.
-    const verifyCodeIpRateLimit = (req, res, next) => {
-        const clientIp = getClientIpAddress(req);
-        const ipLimit = consumeRateLimitEntry(
-            authCodeVerifyRateLimitByIp,
-            clientIp,
-            AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_IP,
-            AUTH_CODE_RATE_LIMIT_WINDOW_MS
-        );
-        if (!ipLimit.allowed) {
-            const retryAfterSeconds = Math.max(ipLimit.retryAfterSeconds || 0, 1);
+    const verifyCodeIpRateLimit = rateLimit({
+        windowMs: AUTH_CODE_RATE_LIMIT_WINDOW_MS,
+        limit: AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_IP,
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: (req) => getClientIpAddress(req),
+        handler: (_req, res, _next, options) => {
+            const retryAfterSeconds = Math.ceil(options.windowMs / 1000);
             res.setHeader('Retry-After', String(retryAfterSeconds));
-            return res.status(429).json({
+            res.status(429).json({
                 status: 'error',
                 message: 'Too many verification attempts. Please try again later.',
                 retryAfterSeconds
             });
         }
-        return next();
-    };
+    });
 
     app.post(
         ['/auth/session/verify-code', '/notify/auth/session/verify-code'],
