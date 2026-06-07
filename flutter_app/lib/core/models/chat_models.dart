@@ -121,6 +121,43 @@ class Contact extends Equatable {
   }
 }
 
+/// Community group configuration — mirrors Angular's CommunityGroupConfig.
+///
+/// Groups with no [staticMembers] (or an empty list) are open to all users.
+/// Groups with a non-empty [staticMembers] list are restricted to those users.
+/// [allowedWriters] are the users permitted to post messages to the group.
+class CommunityGroupConfig {
+  final String id;
+  final String name;
+  final List<String>? staticMembers;
+  final List<String> allowedWriters;
+
+  const CommunityGroupConfig({
+    required this.id,
+    required this.name,
+    this.staticMembers,
+    this.allowedWriters = const [],
+  });
+
+  factory CommunityGroupConfig.fromJson(Map<String, dynamic> json) {
+    List<String> parseStringList(dynamic value) {
+      if (value == null) return const [];
+      if (value is List) {
+        return value.map((e) => e.toString().trim()).where((e) => e.isNotEmpty).toList();
+      }
+      return const [];
+    }
+
+    final parsed = parseStringList(json['staticMembers']);
+    return CommunityGroupConfig(
+      id: (json['id'] ?? '').toString().trim(),
+      name: (json['name'] ?? '').toString().trim(),
+      staticMembers: parsed.isNotEmpty ? parsed : null,
+      allowedWriters: parseStringList(json['allowedWriters']),
+    );
+  }
+}
+
 /// Chat group model
 class ChatGroup extends Equatable {
   final String id;

@@ -275,6 +275,29 @@ class ChatApiService {
     }
   }
 
+  /// Get community group configurations — mirrors Angular's getCommunityGroupConfigs().
+  ///
+  /// Returns the server-persisted list of community group configs, falling back
+  /// to an empty list on any error so the caller can use seed defaults.
+  Future<List<CommunityGroupConfig>> getCommunityGroupConfigs() async {
+    try {
+      final response = await _client.get<Map<String, dynamic>>(
+        ApiEndpoints.communityGroupConfigs,
+        retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+      );
+
+      if (!response.isSuccessful) return [];
+
+      final configs = (response.data?['configs'] as List?) ?? [];
+      return configs
+          .map((item) => CommunityGroupConfig.fromJson(item as Map<String, dynamic>))
+          .where((cfg) => cfg.id.isNotEmpty && cfg.name.isNotEmpty)
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Messages
   // ---------------------------------------------------------------------------
