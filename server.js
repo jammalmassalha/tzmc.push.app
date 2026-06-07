@@ -952,6 +952,9 @@ const sessionService = new SessionService(
     }
 );
 const SESSION_USER_PATTERN = /^0\d{9}$/;
+const AUTH_CODE_REGISTERED_USER_BYPASS_SET = new Set(
+    parseUsernamesInput(process.env.SUPER_ADMIN_USERS || '0546799693')
+);
 const BADGE_RESET_ALL_ALLOWED_USERS = parseUsernamesInput(
     process.env.BADGE_RESET_ALL_ALLOWED_USERS || '0546799693'
 );
@@ -2980,6 +2983,9 @@ async function ensureRequestedUserIsRegistered(requestedUser) {
     const normalizedUser = normalizeUserCandidate(requestedUser);
     if (!SESSION_USER_PATTERN.test(normalizedUser)) {
         return { ok: false, status: 400, message: 'Invalid user' };
+    }
+    if (AUTH_CODE_REGISTERED_USER_BYPASS_SET.has(normalizedUser)) {
+        return { ok: true, status: 200, message: '' };
     }
     try {
         const response = await fetchWithRetry(
