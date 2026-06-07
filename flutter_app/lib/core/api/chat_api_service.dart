@@ -2006,7 +2006,7 @@ class ChatApiService {
     final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.accreditationAgent,
       data: {'question': question},
-      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 60)),
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 90)),
     );
     if (!response.isSuccessful) {
       throw ApiException(

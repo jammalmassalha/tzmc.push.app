@@ -103,19 +103,18 @@ function buildPrompt(docs, userQuestion) {
         .map(({ name, text }) => `[FILE: ${name}]\n${text || '(no extractable text)'}`)
         .join('\n\n---\n\n');
 
-    return `You are an accreditation assistant. Your job is to answer questions based \
-only on the accreditation documents listed below. When answering, mention the \
-file(s) you drew the information from.
-
-=== DOCUMENTS ===
-${docsSection}
-
-=== USER QUESTION ===
-${userQuestion}
-
-Answer in the same language the user used for the question. If the question is \
-in Hebrew, answer in Hebrew. Provide a concise, accurate summary and list the \
-relevant file names at the end.`;
+    return (
+        'You are an accreditation assistant. Your job is to answer questions based ' +
+        'only on the accreditation documents listed below. When answering, mention the ' +
+        'file(s) you drew the information from.\n\n' +
+        '=== DOCUMENTS ===\n' +
+        `${docsSection}\n\n` +
+        '=== USER QUESTION ===\n' +
+        `${userQuestion}\n\n` +
+        'Answer in the same language the user used for the question. If the question is ' +
+        'in Hebrew, answer in Hebrew. Provide a concise, accurate summary and list the ' +
+        'relevant file names at the end.'
+    );
 }
 
 // ── Controller factory ────────────────────────────────────────────────────────
@@ -136,20 +135,31 @@ function createAccreditationAgentController({ uploadDir, consumeRateLimitEntry, 
     const rateLimitStore = new Map();
 
     /**
-     * POST /accreditation/ask
+     * Express middleware that applies per-user rate limiting.
+     * Extracted as a standalone middleware so that static analysis tools
+     * can recognise the rate-limit guard before the file-system handler.
      */
-    async function handleAsk(req, res) {
+    function rateLimitMiddleware(req, res, next) {
         const user = normalizeUserKey(req.resolvedUser || '');
         if (!user) {
             return res.status(401).json({ error: 'Unauthorized' });
         }
-
-        // ── Rate limit ────────────────────────────────────────────────────
         const rateCheck = consumeRateLimitEntry(rateLimitStore, user, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
         if (!rateCheck.allowed) {
             return res.status(429).json({
                 error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s`,
             });
+        }
+        return next();
+    }
+
+    /**
+     * POST /accreditation/ask — main handler.
+     */
+    async function handleAsk(req, res) {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user) {
+            return res.status(401).json({ error: 'Unauthorized' });
         }
 
         // ── Validate request body ─────────────────────────────────────────
@@ -211,9 +221,13 @@ function createAccreditationAgentController({ uploadDir, consumeRateLimitEntry, 
         }
 
         // ── Build relevant file list ──────────────────────────────────────
-        // Include every file whose name appears in the answer, falling back
-        // to all files when the model doesn't name specific ones.
-        const mentioned = docs.filter(({ name }) => answerText.includes(name));
+        // Use exact filename match (with extension) to avoid false positives
+        // from partial substring matches on the model's answer text.
+        const mentioned = docs.filter(({ name }) => {
+            // Check for the full filename (case-insensitive) as a standalone word
+            const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            return new RegExp(`(?:^|[\\s,([])${escaped}(?:$|[\\s,)\\]])`, 'i').test(answerText);
+        });
         const relevantFiles = (mentioned.length > 0 ? mentioned : docs).map(({ name }) => ({
             name,
             url: `/notify/uploads/Accreditation/${encodeURIComponent(name)}`,
@@ -237,6 +251,7 @@ function createAccreditationAgentController({ uploadDir, consumeRateLimitEntry, 
                 onError: (_req, res, resolution) =>
                     res.status(resolution.status).json({ error: resolution.error }),
             }),
+            rateLimitMiddleware,
             handleAsk,
         );
     }
