@@ -1306,13 +1306,13 @@ class MysqlLogsService {
                 await conn.execute(`INSERT IGNORE INTO \`CommunityGroupWriters\` (\`GroupId\`, \`Phone\`) VALUES ${ph}`, validWriters.flatMap((p) => [config.groupId, p]));
             }
             await conn.commit();
-            console.log(`[MYSQL] upsertCommunityGroup: ${config.groupId}`);
+            console.log('[MYSQL] upsertCommunityGroup:', config.groupId);
             return true;
         }
         catch (err) {
             await conn.rollback().catch(() => undefined);
             const message = String(err.message || '');
-            console.warn(`[MYSQL] upsertCommunityGroup(${config.groupId}) warning:`, message);
+            console.warn('[MYSQL] upsertCommunityGroup warning:', config.groupId, message);
             return false;
         }
         finally {
@@ -1325,12 +1325,12 @@ class MysqlLogsService {
         try {
             const [result] = await this.pool.execute('DELETE FROM `CommunityGroups` WHERE `GroupId` = ?', [groupId]);
             const affected = result.affectedRows ?? 0;
-            console.log(`[MYSQL] deleteCommunityGroup: ${groupId}, affected=${affected}`);
+            console.log('[MYSQL] deleteCommunityGroup:', groupId, 'affected=' + affected);
             return affected > 0;
         }
         catch (err) {
             const message = String(err.message || '');
-            console.warn(`[MYSQL] deleteCommunityGroup(${groupId}) warning:`, message);
+            console.warn('[MYSQL] deleteCommunityGroup warning:', groupId, message);
             return false;
         }
     }
@@ -1340,12 +1340,12 @@ class MysqlLogsService {
         try {
             const [result] = await this.pool.execute('UPDATE `CommunityGroups` SET `IsEnabled` = ? WHERE `GroupId` = ?', [enabled ? 1 : 0, groupId]);
             const affected = result.affectedRows ?? 0;
-            console.log(`[MYSQL] setCommunityGroupEnabled(${groupId}, ${enabled}), affected=${affected}`);
+            console.log('[MYSQL] setCommunityGroupEnabled:', groupId, enabled, 'affected=' + affected);
             return affected > 0;
         }
         catch (err) {
             const message = String(err.message || '');
-            console.warn(`[MYSQL] setCommunityGroupEnabled(${groupId}) warning:`, message);
+            console.warn('[MYSQL] setCommunityGroupEnabled warning:', groupId, message);
             return false;
         }
     }

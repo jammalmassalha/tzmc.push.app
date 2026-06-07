@@ -1547,12 +1547,12 @@ export class MysqlLogsService {
       }
 
       await conn.commit();
-      console.log(`[MYSQL] upsertCommunityGroup: ${config.groupId}`);
+      console.log('[MYSQL] upsertCommunityGroup:', config.groupId);
       return true;
     } catch (err: unknown) {
       await conn.rollback().catch(() => undefined);
       const message = String((err as { message?: string }).message || '');
-      console.warn(`[MYSQL] upsertCommunityGroup(${config.groupId}) warning:`, message);
+      console.warn('[MYSQL] upsertCommunityGroup warning:', config.groupId, message);
       return false;
     } finally {
       conn.release();
@@ -1568,11 +1568,11 @@ export class MysqlLogsService {
         [groupId]
       );
       const affected = (result as { affectedRows?: number }).affectedRows ?? 0;
-      console.log(`[MYSQL] deleteCommunityGroup: ${groupId}, affected=${affected}`);
+      console.log('[MYSQL] deleteCommunityGroup:', groupId, 'affected=' + affected);
       return affected > 0;
     } catch (err: unknown) {
       const message = String((err as { message?: string }).message || '');
-      console.warn(`[MYSQL] deleteCommunityGroup(${groupId}) warning:`, message);
+      console.warn('[MYSQL] deleteCommunityGroup warning:', groupId, message);
       return false;
     }
   }
@@ -1586,11 +1586,11 @@ export class MysqlLogsService {
         [enabled ? 1 : 0, groupId]
       );
       const affected = (result as { affectedRows?: number }).affectedRows ?? 0;
-      console.log(`[MYSQL] setCommunityGroupEnabled(${groupId}, ${enabled}), affected=${affected}`);
+      console.log('[MYSQL] setCommunityGroupEnabled:', groupId, enabled, 'affected=' + affected);
       return affected > 0;
     } catch (err: unknown) {
       const message = String((err as { message?: string }).message || '');
-      console.warn(`[MYSQL] setCommunityGroupEnabled(${groupId}) warning:`, message);
+      console.warn('[MYSQL] setCommunityGroupEnabled warning:', groupId, message);
       return false;
     }
   }
