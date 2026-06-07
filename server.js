@@ -2961,7 +2961,18 @@ async function ensureRequestedUserCanAuthenticate(requestedUser) {
 }
 
 function ensureRegistrationFlowOnly(req, requestedUser) {
-    return { ok: true, status: 200, message: '' };
+    const sessionUser = normalizeUserCandidate(req && req.authUser);
+    if (!sessionUser) {
+        return { ok: true, status: 200, message: '' };
+    }
+    if (sessionUser === requestedUser) {
+        return { ok: true, status: 200, message: '' };
+    }
+    return {
+        ok: false,
+        status: 403,
+        message: 'User mismatch'
+    };
 }
 
 async function ensureRequestedUserIsRegistered(requestedUser) {
@@ -5209,14 +5220,7 @@ app.use((req, res, next) => {
     }
 
     const requestPath = String(req.path || '').trim();
-    const isAuthSessionPath = (
-        requestPath === '/auth/session' ||
-        requestPath === '/notify/auth/session' ||
-        requestPath === '/auth/session/request-code' ||
-        requestPath === '/notify/auth/session/request-code' ||
-        requestPath === '/auth/session/verify-code' ||
-        requestPath === '/notify/auth/session/verify-code'
-    );
+    const isAuthSessionPath = requestPath === '/auth/session' || requestPath === '/notify/auth/session';
     if (isAuthSessionPath && method === 'POST') {
         return next();
     }
