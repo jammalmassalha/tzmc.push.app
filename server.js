@@ -2962,10 +2962,11 @@ async function ensureRequestedUserCanAuthenticate(requestedUser) {
 
 function ensureRegistrationFlowOnly(req, requestedUser) {
     const sessionUser = normalizeUserCandidate(req && req.authUser);
+    const normalizedRequestedUser = normalizeUserCandidate(requestedUser);
     if (!sessionUser) {
         return { ok: true, status: 200, message: '' };
     }
-    if (sessionUser === requestedUser) {
+    if (sessionUser === normalizedRequestedUser) {
         return { ok: true, status: 200, message: '' };
     }
     return {
