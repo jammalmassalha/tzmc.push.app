@@ -61,6 +61,8 @@ const redisStateStorePromise = createRedisStateStoreFromEnv(process.env)
 const uploadDir = path.join(__dirname, 'uploads');
 const ACCREDITATION_UPLOAD_CHAT_ID = 'אקרדיטציה';
 const ACCREDITATION_UPLOAD_SUBDIRECTORY = 'Accreditation';
+const USERS_UPLOAD_SUBDIRECTORY = 'users';
+const USERS_UPLOAD_ROUTE_PATHS = new Set(['/upload/users', '/notify/upload/users']);
 const SPECIAL_UPLOAD_SUBDIRECTORIES_BY_CHAT_ID = Object.freeze({
     [ACCREDITATION_UPLOAD_CHAT_ID]: ACCREDITATION_UPLOAD_SUBDIRECTORY
 });
@@ -408,7 +410,36 @@ function trimMatchingEdgeQuotes(value) {
 function normalizeUploadTargetChatId(rawValue) {
    return trimMatchingEdgeQuotes(rawValue);
 }
+function normalizeRequestPathname(req) {
+   const rawPath = String(
+       (req && (req.path || req.originalUrl || req.url)) || ''
+   ).trim();
+   if (!rawPath) {
+       return '';
+   }
+   return rawPath.split('?')[0].replace(/\/+$/, '').toLowerCase();
+}
+function isUsersUploadRoute(req) {
+   const normalizedPath = normalizeRequestPathname(req);
+   return USERS_UPLOAD_ROUTE_PATHS.has(normalizedPath);
+}
+function buildUsersUploadFilename(file) {
+   const rawName = String(file && file.originalname ? file.originalname : '').trim();
+   const baseName = path.basename(rawName);
+   const safeName = baseName
+       .replace(/[\u0000-\u001f\u007f]+/g, '')
+       .replace(/\s+/g, ' ')
+       .trim()
+       .slice(0, 160);
+   if (!safeName || safeName === '.' || safeName === '..') {
+       return buildSafeUploadFilename(file);
+   }
+   return safeName;
+}
 function resolveUploadSubdirectory(req) {
+   if (isUsersUploadRoute(req)) {
+       return USERS_UPLOAD_SUBDIRECTORY;
+   }
    const body = req && req.body && typeof req.body === 'object' ? req.body : {};
    const targetChatId = normalizeUploadTargetChatId(
        body.groupId || body.chatId || body.targetChatId || body.recipient || ''
@@ -455,8 +486,23 @@ function buildUploadedFileUrl(file, subdirectory = '') {
 
 // --- 2. STORAGE CONFIG ---
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
+  destination: (req, file, cb) => {
+    if (isUsersUploadRoute(req)) {
+        const usersDir = path.join(uploadDir, USERS_UPLOAD_SUBDIRECTORY);
+        fs.mkdir(usersDir, { recursive: true }, (error) => {
+            if (error) {
+                return cb(error);
+            }
+            return cb(null, usersDir);
+        });
+        return;
+    }
+    cb(null, uploadDir);
+  },
   filename: (req, file, cb) => {
+    if (isUsersUploadRoute(req)) {
+        return cb(null, buildUsersUploadFilename(file));
+    }
     cb(null, buildSafeUploadFilename(file));
   }
 });
@@ -6626,7 +6672,7 @@ registerMessageController(app, {
     updateUserReceivedTimeBatch: (entries) => mysqlLogsService.updateUserReceivedTimeBatch(entries)
 });
 
-app.post(['/upload', '/notify/upload'], uploadFieldsValidated, async (req, res) => {
+app.post(['/upload', '/notify/upload', '/upload/users', '/notify/upload/users'], uploadFieldsValidated, async (req, res) => {
     const file = req.files && req.files.file ? req.files.file[0] : null;
     const thumbnail = req.files && req.files.thumbnail ? req.files.thumbnail[0] : null;
     const uploadedFiles = [file, thumbnail].filter(Boolean);
