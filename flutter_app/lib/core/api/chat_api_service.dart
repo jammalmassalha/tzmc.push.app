@@ -135,14 +135,11 @@ class ChatApiService {
       final body = SessionResponse.fromJson(_coerceJsonMap(response.data));
       final expiresInSeconds = body.expiresInSeconds ?? 300;
       return expiresInSeconds > 0 ? expiresInSeconds : 300;
-    } on RateLimitException {
-      rethrow;
-    } on AuthException {
-      rethrow;
     } on TimeoutException {
       throw AuthException('השרת לא הגיב בזמן. נסה שוב');
     } on DioException catch (e) {
-      throw AuthException(_extractErrorMessage(e.response?.data, 'שגיאת תקשורת עם השרת'));
+      final message = _extractErrorMessage(e.response?.data, '');
+      throw AuthException(message.isNotEmpty ? message : 'שליחת קוד אימות נכשלה');
     } catch (_) {
       throw AuthException('שליחת קוד אימות נכשלה');
     }
