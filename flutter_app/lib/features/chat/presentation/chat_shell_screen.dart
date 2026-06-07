@@ -19,6 +19,7 @@ import '../../helpdesk/presentation/helpdesk_screen.dart';
 import '../../password_reset/presentation/password_reset_bot_screen.dart';
 import '../../shuttle/presentation/shuttle_screen.dart';
 import '../../admin/presentation/admin_groups_screen.dart';
+import '../../accreditation_agent/presentation/accreditation_agent_screen.dart';
 import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
 import 'chat_list_screen.dart';
@@ -396,6 +397,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
               case 'settings':
                 _handleOpenSettings();
                 break;
+              case 'accreditation':
+                _handleOpenAccreditationAgent();
+                break;
             }
           },
           itemBuilder: (context) => [
@@ -426,6 +430,16 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
                   const Icon(Icons.settings_outlined, size: 20),
                   const SizedBox(width: 12),
                   const Text('הגדרות'),
+                ],
+              ),
+            ),
+            PopupMenuItem(
+              value: 'accreditation',
+              child: Row(
+                children: [
+                  const Icon(Icons.auto_awesome_outlined, size: 20),
+                  const SizedBox(width: 12),
+                  const Text('סוכן אקרדיטציה'),
                 ],
               ),
             ),
@@ -983,6 +997,14 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
             body: _SettingsPlaceholder(user: ref.read(currentUserProvider)),
           ),
         ),
+      ),
+    );
+  }
+
+  void _handleOpenAccreditationAgent() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const AccreditationAgentScreen(),
       ),
     );
   }

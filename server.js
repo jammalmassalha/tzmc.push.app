@@ -22,6 +22,7 @@ const { registerFlutterPushRoutes } = require('./backend/routes/flutter-push.rou
 const { registerMessageController } = require('./backend/controllers/message.controller');
 const { registerShuttleController } = require('./backend/controllers/shuttle.controller');
 const { registerHelpdeskController } = require('./backend/controllers/helpdesk.controller');
+const { createAccreditationAgentController } = require('./backend/controllers/accreditation-agent.controller');
 const {
     createSheetIntegrationServiceFromEnv,
     createMysqlLogsServiceFromEnv,
@@ -6712,6 +6713,13 @@ registerMessageController(app, {
     updateUserReceivedTime: (msgId, receivedAt) => mysqlLogsService.updateUserReceivedTime(msgId, receivedAt),
     updateUserReceivedTimeBatch: (entries) => mysqlLogsService.updateUserReceivedTimeBatch(entries)
 });
+
+const { registerAccreditationAgentRoutes } = createAccreditationAgentController({
+    uploadDir,
+    consumeRateLimitEntry,
+    normalizeUserKey,
+});
+registerAccreditationAgentRoutes(app, requireAuthorizedUser);
 
 app.post(['/upload', '/notify/upload', '/upload/users', '/notify/upload/users'], uploadFieldsValidated, async (req, res) => {
     const file = req.files && req.files.file ? req.files.file[0] : null;

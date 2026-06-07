@@ -114,6 +114,9 @@ class ApiEndpoints {
 
   // Admin: Community Group Management
   static const String adminCommunityGroups = '/admin/community-groups';
+
+  // Accreditation AI Agent
+  static const String accreditationAgent = '/accreditation/ask';
 }
 
 /// Network timeouts (matching Angular frontend behavior)

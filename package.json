@@ -21,12 +21,14 @@
   },
   "homepage": "https://github.com/jmassalha/tzmc.push.app#readme",
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "body-parser": "^2.2.2",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "firebase-admin": "^13.8.0",
     "multer": "^2.1.1",
     "mysql2": "^3.20.0",
+    "pdf-parse": "^2.4.5",
     "redis": "^5.11.0",
     "socket.io": "^4.8.3",
     "web-push": "^3.6.7"
