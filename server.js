@@ -2961,22 +2961,7 @@ async function ensureRequestedUserCanAuthenticate(requestedUser) {
 }
 
 function ensureRegistrationFlowOnly(req, requestedUser) {
-    const sessionUser = normalizeUserCandidate(req && req.authUser);
-    if (!sessionUser) {
-        return { ok: true, status: 200, message: '' };
-    }
-    if (sessionUser === requestedUser) {
-        return {
-            ok: false,
-            status: 403,
-            message: 'Authenticated users cannot request registration SMS code'
-        };
-    }
-    return {
-        ok: false,
-        status: 403,
-        message: 'User mismatch'
-    };
+    return { ok: true, status: 200, message: '' };
 }
 
 async function ensureRequestedUserIsRegistered(requestedUser) {
@@ -5224,7 +5209,14 @@ app.use((req, res, next) => {
     }
 
     const requestPath = String(req.path || '').trim();
-    const isAuthSessionPath = requestPath === '/auth/session' || requestPath === '/notify/auth/session';
+    const isAuthSessionPath = (
+        requestPath === '/auth/session' ||
+        requestPath === '/notify/auth/session' ||
+        requestPath === '/auth/session/request-code' ||
+        requestPath === '/notify/auth/session/request-code' ||
+        requestPath === '/auth/session/verify-code' ||
+        requestPath === '/notify/auth/session/verify-code'
+    );
     if (isAuthSessionPath && method === 'POST') {
         return next();
     }
