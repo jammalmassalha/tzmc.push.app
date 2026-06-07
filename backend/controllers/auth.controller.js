@@ -172,14 +172,9 @@ function registerAuthController(app, deps = {}) {
             if (!SESSION_USER_PATTERN.test(requestedUser)) {
                 return res.status(400).json({ status: 'error', message: 'Invalid user' });
             }
-            const registrationFlowCheck = ensureRegistrationFlowOnly(req, requestedUser);
-            if (!registrationFlowCheck.ok) {
-                return res.status(registrationFlowCheck.status).json({
-                    status: 'error',
-                    message: registrationFlowCheck.message
-                });
-            }
 
+            // Rate limiting must happen before any authorization checks to prevent
+            // request-flood attacks and to avoid leaking session state information.
             const clientIp = getClientIpAddress(req);
             const ipLimit = consumeRateLimitEntry(
                 authCodeRequestRateLimitByIp,
@@ -200,6 +195,14 @@ function registerAuthController(app, deps = {}) {
                     status: 'error',
                     message: 'Too many verification attempts. Please try again later.',
                     retryAfterSeconds
+                });
+            }
+
+            const registrationFlowCheck = ensureRegistrationFlowOnly(req, requestedUser);
+            if (!registrationFlowCheck.ok) {
+                return res.status(registrationFlowCheck.status).json({
+                    status: 'error',
+                    message: registrationFlowCheck.message
                 });
             }
 
