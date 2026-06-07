@@ -165,9 +165,10 @@ function registerAuthController(app, deps = {}) {
     });
 
     app.post(['/auth/session/request-code', '/notify/auth/session/request-code'], async (req, res) => {
+        let requestedUser = '';
         try {
             const payload = req.body && typeof req.body === 'object' ? req.body : {};
-            const requestedUser = normalizeUserCandidate(payload.username || payload.user || payload.phone);
+            requestedUser = normalizeUserCandidate(payload.username || payload.user || payload.phone);
             if (!SESSION_USER_PATTERN.test(requestedUser)) {
                 return res.status(400).json({ status: 'error', message: 'Invalid user' });
             }
