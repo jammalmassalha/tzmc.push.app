@@ -9,6 +9,7 @@ const bodyParser = require('body-parser');
 const multer = require('multer'); 
 const path = require('path');
 const fs = require('fs');
+const fsPromises = fs.promises;
 const cors = require('cors');
 const crypto = require('crypto');
 const { Server: SocketIOServer } = require('socket.io');
@@ -60,6 +61,9 @@ const redisStateStorePromise = createRedisStateStoreFromEnv(process.env)
 const uploadDir = path.join(__dirname, 'uploads');
 const ACCREDITATION_UPLOAD_CHAT_ID = 'אקרדיטציה';
 const ACCREDITATION_UPLOAD_SUBDIRECTORY = 'Accreditation';
+const SPECIAL_UPLOAD_SUBDIRECTORIES_BY_CHAT_ID = Object.freeze({
+    [ACCREDITATION_UPLOAD_CHAT_ID]: ACCREDITATION_UPLOAD_SUBDIRECTORY
+});
 const uploadSecurityWorkerPath = path.join(__dirname, 'backend', 'dist', 'services', 'upload-security-worker.js');
 const uploadSecurityService = new UploadSecurityService({
     uploadDir,
@@ -382,32 +386,37 @@ function isAllowedThumbnailUpload(file) { return uploadSecurityService.isAllowed
 function buildSafeUploadFilename(file) { return uploadSecurityService.buildSafeUploadFilename(file || {}); }
 function safelyDeleteUploadedFile(file) { return uploadSecurityService.safelyDeleteUploadedFile(file); }
 function validateUploadedFileSecurity(file, options) { return uploadSecurityService.validateUploadedFileSecurity(file || {}, options); }
+function trimMatchingEdgeQuotes(value) {
+   let result = String(value || '').trim();
+   while (result && [`'`, '"', '`', '׳', '״'].includes(result.charAt(0))) {
+       result = result.slice(1).trimStart();
+   }
+   while (result && [`'`, '"', '`', '׳', '״'].includes(result.charAt(result.length - 1))) {
+       result = result.slice(0, -1).trimEnd();
+   }
+   return result;
+}
 function normalizeUploadTargetChatId(rawValue) {
-    return String(rawValue || '')
-        .trim()
-        .replace(/^[`"'׳״]+|[`"'׳״]+$/g, '');
+   return trimMatchingEdgeQuotes(rawValue);
 }
 function resolveUploadSubdirectory(req) {
-    const body = req && req.body && typeof req.body === 'object' ? req.body : {};
-    const targetChatId = normalizeUploadTargetChatId(
-        body.groupId || body.chatId || body.targetChatId || body.recipient || ''
-    );
-    if (targetChatId === ACCREDITATION_UPLOAD_CHAT_ID) {
-        return ACCREDITATION_UPLOAD_SUBDIRECTORY;
-    }
-    return '';
+   const body = req && req.body && typeof req.body === 'object' ? req.body : {};
+   const targetChatId = normalizeUploadTargetChatId(
+       body.groupId || body.chatId || body.targetChatId || body.recipient || ''
+   );
+   return SPECIAL_UPLOAD_SUBDIRECTORIES_BY_CHAT_ID[targetChatId] || '';
 }
-function relocateUploadedFileToSubdirectory(file, subdirectory) {
-    if (!file || !file.path || !subdirectory) {
-        return file;
-    }
-    const targetDir = path.join(uploadDir, subdirectory);
-    fs.mkdirSync(targetDir, { recursive: true });
-    const targetPath = path.join(targetDir, file.filename);
-    fs.renameSync(file.path, targetPath);
-    file.destination = targetDir;
-    file.path = targetPath;
-    return file;
+async function relocateUploadedFileToAccreditationSubdirectory(file) {
+   if (!file || !file.path) {
+       return file;
+   }
+   const targetDir = path.join(uploadDir, ACCREDITATION_UPLOAD_SUBDIRECTORY);
+   await fsPromises.mkdir(targetDir, { recursive: true });
+   const targetPath = path.join(targetDir, file.filename);
+   await fsPromises.rename(file.path, targetPath);
+   file.destination = targetDir;
+   file.path = targetPath;
+   return file;
 }
 function buildUploadedFileUrl(file, subdirectory = '') {
     const encodedFilename = encodeURIComponent(String(file && file.filename ? file.filename : '').trim());
@@ -6401,10 +6410,10 @@ app.post(['/upload', '/notify/upload'], uploadFieldsValidated, async (req, res) 
 
     const uploadSubdirectory = resolveUploadSubdirectory(req);
     try {
-        if (uploadSubdirectory) {
-            relocateUploadedFileToSubdirectory(file, uploadSubdirectory);
+        if (uploadSubdirectory === ACCREDITATION_UPLOAD_SUBDIRECTORY) {
+            await relocateUploadedFileToAccreditationSubdirectory(file);
             if (thumbnail) {
-                relocateUploadedFileToSubdirectory(thumbnail, uploadSubdirectory);
+                await relocateUploadedFileToAccreditationSubdirectory(thumbnail);
             }
         }
     } catch (error) {
