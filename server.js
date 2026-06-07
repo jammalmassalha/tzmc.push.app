@@ -415,6 +415,14 @@ function resolveUploadSubdirectory(req) {
    );
    return SPECIAL_UPLOAD_SUBDIRECTORIES_BY_CHAT_ID[targetChatId] || '';
 }
+function resolveSafeUploadPath(baseDir, candidatePath) {
+   const resolvedBaseDir = `${path.resolve(baseDir)}${path.sep}`;
+   const resolvedPath = path.resolve(String(candidatePath || ''));
+   if (!resolvedPath.startsWith(resolvedBaseDir)) {
+       throw new Error('Invalid upload path');
+   }
+   return resolvedPath;
+}
 async function relocateUploadedFileToAccreditationSubdirectory(file) {
    if (!file || !file.path) {
        return file;
@@ -426,18 +434,19 @@ async function relocateUploadedFileToAccreditationSubdirectory(file) {
    if (!safeFilename || safeFilename !== rawFilename || !/^[a-zA-Z0-9._-]+$/.test(safeFilename)) {
        throw new Error('Invalid upload filename');
    }
-   const targetPath = path.join(targetDir, safeFilename);
-   await fsPromises.rename(file.path, targetPath);
+   const sourcePath = resolveSafeUploadPath(uploadDir, file.path);
+   const targetPath = resolveSafeUploadPath(targetDir, path.join(targetDir, safeFilename));
+   await fsPromises.rename(sourcePath, targetPath);
    file.destination = targetDir;
    file.filename = safeFilename;
    file.path = targetPath;
    return file;
 }
 function buildUploadedFileUrl(file, subdirectory = '') {
-    const encodedFilename = encodeURIComponent(String(file && file.filename ? file.filename : '').trim());
-    if (!encodedFilename) {
-        return '/notify/uploads/';
-    }
+   const encodedFilename = encodeURIComponent(String(file && file.filename ? file.filename : '').trim());
+   if (!encodedFilename) {
+       throw new Error('Invalid upload filename');
+   }
     if (!subdirectory) {
         return `/notify/uploads/${encodedFilename}`;
     }
