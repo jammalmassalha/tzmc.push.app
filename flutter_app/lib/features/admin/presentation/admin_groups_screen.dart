@@ -41,7 +41,8 @@ class AdminCommunityGroup {
       groupName: map['groupName']?.toString() ?? '',
       members: _toStringList(map['members']),
       writers: _toStringList(map['writers']),
-      isEnabled: map['isEnabled'] != false && map['isEnabled'] != 0,
+      isEnabled: map['isEnabled'] != false && map['isEnabled'] != 0 &&
+          map['isEnabled'] != 'false' && map['isEnabled'] != '0',
     );
   }
 

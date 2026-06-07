@@ -6182,19 +6182,6 @@ function toBooleanValue(value) {
     return value !== false && value !== 0 && value !== 'false' && value !== '0';
 }
 
-/** Middleware: verify super-admin and apply rate limiting; calls next() on success. */
-function adminSuperAdminMiddleware(req, res, next) {
-    const user = normalizeUserKey(req.resolvedUser || '');
-    if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
-        return res.status(403).json({ error: 'Forbidden: super-admin only' });
-    }
-    const rateCheck = consumeRateLimitEntry(adminGroupsRateLimitStore, user, 60, 60 * 1000);
-    if (!rateCheck.allowed) {
-        return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
-    }
-    next();
-}
-
 // GET /admin/community-groups — list all groups (including disabled)
 app.get(
     ['/admin/community-groups', '/notify/admin/community-groups'],
@@ -6203,7 +6190,17 @@ app.get(
         candidateKeys: ['user'],
         onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
     }),
-    adminSuperAdminMiddleware,
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const rateCheck = consumeRateLimitEntry(adminGroupsRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        next();
+    },
     async (_req, res) => {
         try {
             const groups = await mysqlLogsService.adminListCommunityGroups();
@@ -6223,7 +6220,17 @@ app.post(
         candidateKeys: ['user'],
         onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
     }),
-    adminSuperAdminMiddleware,
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const rateCheck = consumeRateLimitEntry(adminGroupsRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        next();
+    },
     async (req, res) => {
         const { groupId, groupName, members, writers } = req.body || {};
         const gid = String(groupId || '').trim();
@@ -6257,7 +6264,17 @@ app.put(
         candidateKeys: ['user'],
         onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
     }),
-    adminSuperAdminMiddleware,
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const rateCheck = consumeRateLimitEntry(adminGroupsRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        next();
+    },
     async (req, res) => {
         const groupId = decodeURIComponent(String(req.params.groupId || '')).trim();
         if (!groupId) return res.status(400).json({ error: 'groupId is required' });
@@ -6290,7 +6307,17 @@ app.post(
         candidateKeys: ['user'],
         onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
     }),
-    adminSuperAdminMiddleware,
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const rateCheck = consumeRateLimitEntry(adminGroupsRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        next();
+    },
     async (req, res) => {
         const groupId = decodeURIComponent(String(req.params.groupId || '')).trim();
         if (!groupId) return res.status(400).json({ error: 'groupId is required' });
@@ -6314,7 +6341,17 @@ app.post(
         candidateKeys: ['user'],
         onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
     }),
-    adminSuperAdminMiddleware,
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const rateCheck = consumeRateLimitEntry(adminGroupsRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        next();
+    },
     async (req, res) => {
         const groupId = decodeURIComponent(String(req.params.groupId || '')).trim();
         if (!groupId) return res.status(400).json({ error: 'groupId is required' });
@@ -6338,7 +6375,17 @@ app.delete(
         candidateKeys: ['user'],
         onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
     }),
-    adminSuperAdminMiddleware,
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const rateCheck = consumeRateLimitEntry(adminGroupsRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        next();
+    },
     async (req, res) => {
         const groupId = decodeURIComponent(String(req.params.groupId || '')).trim();
         if (!groupId) return res.status(400).json({ error: 'groupId is required' });
