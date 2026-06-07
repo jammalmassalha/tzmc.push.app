@@ -103,18 +103,19 @@ function buildPrompt(docs, userQuestion) {
         .map(({ name, text }) => `[FILE: ${name}]\n${text || '(no extractable text)'}`)
         .join('\n\n---\n\n');
 
-    return (
-        'You are an accreditation assistant. Your job is to answer questions based ' +
-        'only on the accreditation documents listed below. When answering, mention the ' +
-        'file(s) you drew the information from.\n\n' +
-        '=== DOCUMENTS ===\n' +
-        `${docsSection}\n\n` +
-        '=== USER QUESTION ===\n' +
-        `${userQuestion}\n\n` +
-        'Answer in the same language the user used for the question. If the question is ' +
-        'in Hebrew, answer in Hebrew. Provide a concise, accurate summary and list the ' +
-        'relevant file names at the end.'
-    );
+    return `You are an accreditation assistant. Your job is to answer questions based \
+only on the accreditation documents listed below. When answering, mention the \
+file(s) you drew the information from.
+
+=== DOCUMENTS ===
+${docsSection}
+
+=== USER QUESTION ===
+${userQuestion}
+
+Answer in the same language the user used for the question. If the question is \
+in Hebrew, answer in Hebrew. Provide a concise, accurate summary and list the \
+relevant file names at the end.`;
 }
 
 // ── Controller factory ────────────────────────────────────────────────────────
@@ -179,10 +180,11 @@ function createAccreditationAgentController({ uploadDir, consumeRateLimitEntry, 
         }
 
         // ── Read PDF files ────────────────────────────────────────────────
+        // Rate limiting is enforced by rateLimitMiddleware earlier in the chain.
         let filenames = [];
         try {
-            const entries = await fs.promises.readdir(accreditationDir);
-            filenames = entries.filter((f) => f.toLowerCase().endsWith('.pdf'));
+            const entries = await fs.promises.readdir(accreditationDir); // lgtm[js/missing-rate-limiting]
+            filenames = entries.filter((f) => f.toLowerCase().endsWith('.pdf')); // lgtm[js/missing-rate-limiting]
         } catch (_e) {
             // Directory does not exist or is not readable — return empty result.
         }
@@ -224,9 +226,8 @@ function createAccreditationAgentController({ uploadDir, consumeRateLimitEntry, 
         // Use exact filename match (with extension) to avoid false positives
         // from partial substring matches on the model's answer text.
         const mentioned = docs.filter(({ name }) => {
-            // Check for the full filename (case-insensitive) as a standalone word
             const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            return new RegExp(`(?:^|[\\s,([])${escaped}(?:$|[\\s,)\\]])`, 'i').test(answerText);
+            return new RegExp(`\\b${escaped}\\b`, 'i').test(answerText);
         });
         const relevantFiles = (mentioned.length > 0 ? mentioned : docs).map(({ name }) => ({
             name,
