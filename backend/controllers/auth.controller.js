@@ -232,7 +232,7 @@ function registerAuthController(app, deps = {}) {
             });
         } catch (error) {
             const reason = error && error.message ? String(error.message) : 'Unable to send verification code';
-            console.error('[AUTH CODE] Failed to send verification code for user, error:', reason, error && error.stack ? error.stack : '');
+            console.error('[AUTH CODE] Failed to send verification code for user', requestedUser, 'error:', reason, error && error.stack ? error.stack : '');
             return res.status(502).json({ status: 'error', message: reason });
         }
     });

@@ -2969,7 +2969,7 @@ function ensureRegistrationFlowOnly(req, requestedUser) {
         return { ok: true, status: 200, message: '' };
     }
     if (sessionUser === normalizedRequestedUser) {
-        return { ok: true, status: 200, message: '' };
+        return { ok: false, status: 403, message: 'Already authenticated' };
     }
     return {
         ok: false,
