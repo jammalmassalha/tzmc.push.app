@@ -2523,7 +2523,7 @@ export class ChatStoreService {
     this.uploading.set(true);
     this.lastError.set(null);
     try {
-      const upload = await this.api.uploadFile(file);
+      const upload = await this.api.uploadFile(file, null, this.activeChatId());
       if (upload.status !== 'success' || !upload.url) {
         throw new Error('Upload did not return a file URL');
       }
@@ -2556,7 +2556,7 @@ export class ChatStoreService {
     this.uploading.set(true);
     this.lastError.set(null);
     try {
-      const upload = await this.api.uploadFile(file);
+      const upload = await this.api.uploadFile(file, null, this.activeChatId());
       if (upload.status !== 'success' || !upload.url) {
         throw new Error('Upload did not return a file URL');
       }

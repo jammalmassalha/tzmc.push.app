@@ -476,11 +476,18 @@ class ChatApiService {
   // ---------------------------------------------------------------------------
 
   /// Upload file (cross-platform)
-  Future<UploadResponse> uploadFile(XFile file, {XFile? thumbnail}) async {
+  Future<UploadResponse> uploadFile(
+    XFile file, {
+    XFile? thumbnail,
+    String? chatId,
+  }) async {
     final response = await _client.uploadFile<Map<String, dynamic>>(
       ApiEndpoints.upload,
       file: file,
       thumbnail: thumbnail,
+      additionalFields: {
+        if (chatId != null && chatId.trim().isNotEmpty) 'chatId': chatId.trim(),
+      },
       retryOptions: const RetryOptions(retries: 2, timeout: NetworkTimeouts.uploadTimeout),
     );
 

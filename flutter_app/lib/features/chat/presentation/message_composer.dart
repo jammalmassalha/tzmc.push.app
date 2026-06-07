@@ -539,14 +539,14 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
         // Upload image if selected
         if (pendingImage != null) {
           final api = ref.read(chatApiServiceProvider);
-          final uploadResult = await api.uploadFile(pendingImage);
+          final uploadResult = await api.uploadFile(pendingImage, chatId: chatId);
           imageUrl = uploadResult.url;
         }
 
         // Upload file if selected
         if (pendingFile != null) {
           final api = ref.read(chatApiServiceProvider);
-          final uploadResult = await api.uploadFile(pendingFile);
+          final uploadResult = await api.uploadFile(pendingFile, chatId: chatId);
           fileUrl = uploadResult.url;
         }
 

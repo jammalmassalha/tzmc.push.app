@@ -58,6 +58,8 @@ const redisStateStorePromise = createRedisStateStoreFromEnv(process.env)
 
 // --- 1. SETUP UPLOADS FOLDER ---
 const uploadDir = path.join(__dirname, 'uploads');
+const ACCREDITATION_UPLOAD_CHAT_ID = 'אקרדיטציה';
+const ACCREDITATION_UPLOAD_SUBDIRECTORY = 'Accreditation';
 const uploadSecurityWorkerPath = path.join(__dirname, 'backend', 'dist', 'services', 'upload-security-worker.js');
 const uploadSecurityService = new UploadSecurityService({
     uploadDir,
@@ -380,6 +382,43 @@ function isAllowedThumbnailUpload(file) { return uploadSecurityService.isAllowed
 function buildSafeUploadFilename(file) { return uploadSecurityService.buildSafeUploadFilename(file || {}); }
 function safelyDeleteUploadedFile(file) { return uploadSecurityService.safelyDeleteUploadedFile(file); }
 function validateUploadedFileSecurity(file, options) { return uploadSecurityService.validateUploadedFileSecurity(file || {}, options); }
+function normalizeUploadTargetChatId(rawValue) {
+    return String(rawValue || '')
+        .trim()
+        .replace(/^[`"'׳״]+|[`"'׳״]+$/g, '');
+}
+function resolveUploadSubdirectory(req) {
+    const body = req && req.body && typeof req.body === 'object' ? req.body : {};
+    const targetChatId = normalizeUploadTargetChatId(
+        body.groupId || body.chatId || body.targetChatId || body.recipient || ''
+    );
+    if (targetChatId === ACCREDITATION_UPLOAD_CHAT_ID) {
+        return ACCREDITATION_UPLOAD_SUBDIRECTORY;
+    }
+    return '';
+}
+function relocateUploadedFileToSubdirectory(file, subdirectory) {
+    if (!file || !file.path || !subdirectory) {
+        return file;
+    }
+    const targetDir = path.join(uploadDir, subdirectory);
+    fs.mkdirSync(targetDir, { recursive: true });
+    const targetPath = path.join(targetDir, file.filename);
+    fs.renameSync(file.path, targetPath);
+    file.destination = targetDir;
+    file.path = targetPath;
+    return file;
+}
+function buildUploadedFileUrl(file, subdirectory = '') {
+    const encodedFilename = encodeURIComponent(String(file && file.filename ? file.filename : '').trim());
+    if (!encodedFilename) {
+        return '/notify/uploads/';
+    }
+    if (!subdirectory) {
+        return `/notify/uploads/${encodedFilename}`;
+    }
+    return `/notify/uploads/${encodeURIComponent(subdirectory)}/${encodedFilename}`;
+}
 
 // --- 2. STORAGE CONFIG ---
 const storage = multer.diskStorage({
@@ -6360,8 +6399,21 @@ app.post(['/upload', '/notify/upload'], uploadFieldsValidated, async (req, res) 
         return rejectWithCleanup(400, 'File content validation failed');
     }
 
-    const fileUrl = `/notify/uploads/${encodeURIComponent(file.filename)}`;
-    const thumbUrl = thumbnail ? `/notify/uploads/${encodeURIComponent(thumbnail.filename)}` : null;
+    const uploadSubdirectory = resolveUploadSubdirectory(req);
+    try {
+        if (uploadSubdirectory) {
+            relocateUploadedFileToSubdirectory(file, uploadSubdirectory);
+            if (thumbnail) {
+                relocateUploadedFileToSubdirectory(thumbnail, uploadSubdirectory);
+            }
+        }
+    } catch (error) {
+        console.error('[UPLOAD] Failed to move uploaded file:', error && error.message ? error.message : error);
+        return rejectWithCleanup(500, 'Failed to finalize uploaded file');
+    }
+
+    const fileUrl = buildUploadedFileUrl(file, uploadSubdirectory);
+    const thumbUrl = thumbnail ? buildUploadedFileUrl(thumbnail, uploadSubdirectory) : null;
     res.json({ status: 'success', url: fileUrl, thumbUrl, type: file.mimetype });
 });
 
