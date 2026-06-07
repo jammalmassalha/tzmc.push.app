@@ -61,6 +61,9 @@ const redisStateStorePromise = createRedisStateStoreFromEnv(process.env)
 const uploadDir = path.join(__dirname, 'uploads');
 const ACCREDITATION_UPLOAD_CHAT_ID = 'אקרדיטציה';
 const ACCREDITATION_UPLOAD_SUBDIRECTORY = 'Accreditation';
+const USERS_UPLOAD_SUBDIRECTORY = 'users';
+const MAX_USERS_UPLOAD_FILENAME_LENGTH = 160;
+const USERS_UPLOAD_ROUTE_PATHS = new Set(['/upload/users', '/notify/upload/users']);
 const SPECIAL_UPLOAD_SUBDIRECTORIES_BY_CHAT_ID = Object.freeze({
     [ACCREDITATION_UPLOAD_CHAT_ID]: ACCREDITATION_UPLOAD_SUBDIRECTORY
 });
@@ -408,7 +411,42 @@ function trimMatchingEdgeQuotes(value) {
 function normalizeUploadTargetChatId(rawValue) {
    return trimMatchingEdgeQuotes(rawValue);
 }
+function normalizeRequestPathname(req) {
+   const rawPath = String(
+       (req && (req.path || req.originalUrl || req.url)) || ''
+   ).trim();
+   if (!rawPath) {
+       return '';
+   }
+   return rawPath.split('?')[0].replace(/\/+$/, '').toLowerCase();
+}
+function isUsersUploadRoute(req) {
+   const normalizedPath = normalizeRequestPathname(req);
+   return USERS_UPLOAD_ROUTE_PATHS.has(normalizedPath);
+}
+function buildUsersUploadFilename(file) {
+   const rawName = String(file?.originalname || '').trim();
+   const baseName = path.basename(rawName);
+   const safeName = baseName
+       .replace(/[\u0000-\u001f\u007f]+/g, '')
+       .replace(/\s+/g, ' ')
+       .trim()
+       .slice(0, MAX_USERS_UPLOAD_FILENAME_LENGTH);
+   if (!safeName || safeName === '.' || safeName === '..') {
+       return '';
+   }
+   if (safeName.includes('..') || /[\\/]/.test(safeName)) {
+       return '';
+   }
+   if (/[<>:"|?*\`;$&]/.test(safeName)) {
+       return '';
+   }
+   return safeName;
+}
 function resolveUploadSubdirectory(req) {
+   if (isUsersUploadRoute(req)) {
+       return USERS_UPLOAD_SUBDIRECTORY;
+   }
    const body = req && req.body && typeof req.body === 'object' ? req.body : {};
    const targetChatId = normalizeUploadTargetChatId(
        body.groupId || body.chatId || body.targetChatId || body.recipient || ''
@@ -442,6 +480,36 @@ async function relocateUploadedFileToAccreditationSubdirectory(file) {
    file.path = targetPath;
    return file;
 }
+async function finalizeUsersUploadedFile(file) {
+   if (!file || !file.path) {
+       return file;
+   }
+   const targetDir = path.join(uploadDir, USERS_UPLOAD_SUBDIRECTORY);
+   await fsPromises.mkdir(targetDir, { recursive: true });
+   const targetFilename = buildUsersUploadFilename(file);
+   if (!targetFilename) {
+       throw new Error('Invalid users upload filename');
+   }
+   const sourcePath = resolveSafeUploadPath(targetDir, file.path);
+   const targetPath = resolveSafeUploadPath(targetDir, path.join(targetDir, targetFilename));
+   if (sourcePath !== targetPath) {
+       try {
+           await fsPromises.copyFile(sourcePath, targetPath, fs.constants.COPYFILE_EXCL);
+           await fsPromises.unlink(sourcePath);
+       } catch (error) {
+           if (error && error.code === 'EEXIST') {
+               const conflictError = new Error('A file with this name already exists in users uploads');
+               conflictError.statusCode = 409;
+               throw conflictError;
+           }
+           throw error;
+       }
+   }
+   file.destination = targetDir;
+   file.filename = targetFilename;
+   file.path = targetPath;
+   return file;
+}
 function buildUploadedFileUrl(file, subdirectory = '') {
    const encodedFilename = encodeURIComponent(String(file && file.filename ? file.filename : '').trim());
    if (!encodedFilename) {
@@ -455,8 +523,27 @@ function buildUploadedFileUrl(file, subdirectory = '') {
 
 // --- 2. STORAGE CONFIG ---
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
+  destination: (req, file, cb) => {
+    if (isUsersUploadRoute(req)) {
+        const usersDir = path.join(uploadDir, USERS_UPLOAD_SUBDIRECTORY);
+        fs.mkdir(usersDir, { recursive: true }, (error) => {
+            if (error) {
+                return cb(error);
+            }
+            return cb(null, usersDir);
+        });
+        return;
+    }
+    cb(null, uploadDir);
+  },
   filename: (req, file, cb) => {
+    if (isUsersUploadRoute(req)) {
+        const usersFilename = buildUsersUploadFilename(file);
+        if (!usersFilename) {
+            return cb(new Error('Invalid users upload filename'));
+        }
+        return cb(null, buildSafeUploadFilename(file));
+    }
     cb(null, buildSafeUploadFilename(file));
   }
 });
@@ -6626,7 +6713,7 @@ registerMessageController(app, {
     updateUserReceivedTimeBatch: (entries) => mysqlLogsService.updateUserReceivedTimeBatch(entries)
 });
 
-app.post(['/upload', '/notify/upload'], uploadFieldsValidated, async (req, res) => {
+app.post(['/upload', '/notify/upload', '/upload/users', '/notify/upload/users'], uploadFieldsValidated, async (req, res) => {
     const file = req.files && req.files.file ? req.files.file[0] : null;
     const thumbnail = req.files && req.files.thumbnail ? req.files.thumbnail[0] : null;
     const uploadedFiles = [file, thumbnail].filter(Boolean);
@@ -6664,7 +6751,12 @@ app.post(['/upload', '/notify/upload'], uploadFieldsValidated, async (req, res) 
 
     const uploadSubdirectory = resolveUploadSubdirectory(req);
     try {
-        if (uploadSubdirectory === ACCREDITATION_UPLOAD_SUBDIRECTORY) {
+        if (uploadSubdirectory === USERS_UPLOAD_SUBDIRECTORY) {
+            await finalizeUsersUploadedFile(file);
+            if (thumbnail) {
+                await finalizeUsersUploadedFile(thumbnail);
+            }
+        } else if (uploadSubdirectory === ACCREDITATION_UPLOAD_SUBDIRECTORY) {
             await relocateUploadedFileToAccreditationSubdirectory(file);
             if (thumbnail) {
                 await relocateUploadedFileToAccreditationSubdirectory(thumbnail);
@@ -6672,7 +6764,8 @@ app.post(['/upload', '/notify/upload'], uploadFieldsValidated, async (req, res) 
         }
     } catch (error) {
         console.error('[UPLOAD] Failed to move uploaded file:', error && error.message ? error.message : error);
-        return rejectWithCleanup(500, 'Failed to finalize uploaded file');
+        const statusCode = Number(error && error.statusCode) || 500;
+        return rejectWithCleanup(statusCode, statusCode === 409 ? error.message : 'Failed to finalize uploaded file');
     }
 
     const fileUrl = buildUploadedFileUrl(file, uploadSubdirectory);
