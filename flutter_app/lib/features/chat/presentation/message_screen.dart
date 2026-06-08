@@ -23,6 +23,7 @@ import '../../../core/api/http_client.dart';
 import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
 import '../../../shared/widgets/authenticated_image.dart';
+import '../../accreditation_agent/presentation/accreditation_agent_screen.dart';
 import 'group_info_screen.dart';
 import 'message_composer.dart';
 
@@ -70,6 +71,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   /// `scrollBottomThresholdPx = 44`.
   static const double _scrollBottomThreshold = 44.0;
 
+  /// The chat ID of the accreditation group that exposes the AI agent button.
+  static const String _accreditationChatId = 'אקרדיטציה';
   /// The date label currently shown in the floating date badge at the top of
   /// the messages area (e.g. "היום", "אתמול", "01/05/2025").
   /// Mirrors Angular's `stickyMessageDateLabel` / `messages-sticky-date`.
@@ -420,6 +423,16 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                         },
                       );
                     }),
+                  if (widget.chatId == _accreditationChatId)
+                    IconButton(
+                      icon: const Icon(Icons.auto_awesome_outlined),
+                      tooltip: 'סוכן AI',
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const AccreditationAgentScreen(),
+                        ),
+                      ),
+                    ),
                   IconButton(
                     icon: const Icon(Icons.search),
                     tooltip: 'חיפוש',

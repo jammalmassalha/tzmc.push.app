@@ -1,3 +1,6 @@
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
+
 const vapidKeys = {
     publicKey: process.env.VAPID_PUBLIC_KEY || "BNgK2Le8hUyXIrFeuHJJsHwjOUkK5y5bf46QH80Ybd1AoQFfQDEanVCfjo9HwqdJwWoD2-2pxxgTRdTasf9YYMk",
     privateKey: process.env.VAPID_PRIVATE_KEY || "fMQqCaakMboV7LEV57wJhxPAdyppOBRDBjRDVQBxg1s"
@@ -7,7 +10,6 @@ const http = require('http');
 const webpush = require('web-push');
 const bodyParser = require('body-parser');
 const multer = require('multer'); 
-const path = require('path');
 const fs = require('fs');
 const fsPromises = fs.promises;
 const cors = require('cors');

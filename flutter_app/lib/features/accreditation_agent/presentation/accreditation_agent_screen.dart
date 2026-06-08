@@ -7,6 +7,7 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shimmer/shimmer.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/api/chat_api_service.dart';
@@ -26,6 +27,7 @@ class _AccreditationAgentScreenState
     extends ConsumerState<AccreditationAgentScreen> {
   final TextEditingController _questionController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  final FocusNode _inputFocus = FocusNode();
 
   bool _isLoading = false;
   String? _submittedQuestion;
@@ -37,6 +39,7 @@ class _AccreditationAgentScreenState
   void dispose() {
     _questionController.dispose();
     _scrollController.dispose();
+    _inputFocus.dispose();
     super.dispose();
   }
 
@@ -44,6 +47,7 @@ class _AccreditationAgentScreenState
     final question = _questionController.text.trim();
     if (question.isEmpty) return;
     _questionController.clear();
+    _inputFocus.unfocus();
 
     setState(() {
       _isLoading = true;
@@ -128,26 +132,43 @@ class _AccreditationAgentScreenState
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Directionality(
       textDirection: TextDirection.rtl,
       child: Scaffold(
+        backgroundColor: colorScheme.surfaceContainerLowest,
         appBar: AppBar(
-          title: const Text('סוכן אקרדיטציה'),
+          title: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: Colors.white.withAlpha(40),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(Icons.auto_awesome, color: Colors.white, size: 18),
+              ),
+              const SizedBox(width: 10),
+              const Text('סוכן אקרדיטציה'),
+            ],
+          ),
           backgroundColor: AppColors.primary,
           foregroundColor: Colors.white,
+          elevation: 0,
         ),
         body: Column(
           children: [
             Expanded(
               child: SingleChildScrollView(
                 controller: _scrollController,
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     _buildIntroCard(),
-                    if (_submittedQuestion != null) _buildQuestionCard(),
-                    if (_isLoading) _buildLoadingIndicator(),
+                    if (_submittedQuestion != null) _buildQuestionBubble(),
+                    if (_isLoading) _buildShimmerLoader(),
                     if (_errorMessage != null) _buildErrorCard(),
                     if (_answer != null) _buildAnswerCard(),
                     if (_relevantFiles.isNotEmpty) _buildFilesSection(),
@@ -163,22 +184,56 @@ class _AccreditationAgentScreenState
     );
   }
 
+  // ── Intro banner ────────────────────────────────────────────────────────────
+
   Widget _buildIntroCard() {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 16),
-      color: AppColors.primaryLight.withAlpha(30),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: const Padding(
-        padding: EdgeInsets.all(16),
+    return Container(
+      margin: const EdgeInsets.only(bottom: 20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            AppColors.primary.withAlpha(20),
+            AppColors.primaryLight.withAlpha(10),
+          ],
+          begin: Alignment.topRight,
+          end: Alignment.bottomLeft,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.primary.withAlpha(40)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(Icons.auto_awesome, color: AppColors.primary),
-            SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                'שאל שאלה בשפה חופשית על מסמכי האקרדיטציה.\n'
-                'הסוכן יענה ויצרף את הקבצים הרלוונטיים.',
-                style: TextStyle(fontSize: 13),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withAlpha(20),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.auto_awesome, color: AppColors.primary, size: 22),
+            ),
+            const SizedBox(width: 14),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'עוזר אקרדיטציה חכם',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                      color: AppColors.primaryDark,
+                    ),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    'שאל שאלה בשפה חופשית על מסמכי האקרדיטציה.\n'
+                    'הסוכן יענה ויצרף את הקבצים הרלוונטיים.',
+                    style: TextStyle(fontSize: 13, height: 1.5, color: AppColors.textSecondary),
+                  ),
+                ],
               ),
             ),
           ],
@@ -187,139 +242,505 @@ class _AccreditationAgentScreenState
     );
   }
 
-  Widget _buildLoadingIndicator() {
-    return const Padding(
-      padding: EdgeInsets.symmetric(vertical: 32),
-      child: Center(
-        child: Column(
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 12),
-            Text('מעבד את השאלה...', style: TextStyle(color: Colors.grey)),
-          ],
-        ),
+  // ── User question bubble ────────────────────────────────────────────────────
+
+  Widget _buildQuestionBubble() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Flexible(
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 320),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [AppColors.primaryDark, AppColors.primary],
+                  begin: Alignment.topRight,
+                  end: Alignment.bottomLeft,
+                ),
+                borderRadius: const BorderRadius.only(
+                  topRight: Radius.circular(4),
+                  topLeft: Radius.circular(18),
+                  bottomLeft: Radius.circular(18),
+                  bottomRight: Radius.circular(18),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.primary.withAlpha(60),
+                    blurRadius: 8,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.person_rounded, color: Colors.white70, size: 14),
+                      const SizedBox(width: 4),
+                      Text(
+                        'השאלה שלך',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.white.withAlpha(180),
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.3,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    _submittedQuestion ?? '',
+                    style: const TextStyle(
+                      fontSize: 14,
+                      height: 1.55,
+                      color: Colors.white,
+                    ),
+                    textDirection: TextDirection.rtl,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          CircleAvatar(
+            radius: 16,
+            backgroundColor: AppColors.primary.withAlpha(25),
+            child: const Icon(Icons.person_rounded, color: AppColors.primary, size: 18),
+          ),
+        ],
       ),
     );
   }
+
+  // ── Shimmer loading skeleton ────────────────────────────────────────────────
+
+  Widget _buildShimmerLoader() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          CircleAvatar(
+            radius: 16,
+            backgroundColor: AppColors.primaryLight.withAlpha(40),
+            child: const Icon(Icons.smart_toy_outlined, color: AppColors.primary, size: 18),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Shimmer.fromColors(
+              baseColor: Colors.grey.shade200,
+              highlightColor: Colors.grey.shade50,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    height: 12,
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Container(
+                    height: 12,
+                    width: 240,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Container(
+                    height: 12,
+                    width: 180,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Container(
+                    height: 12,
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Error card ──────────────────────────────────────────────────────────────
 
   Widget _buildErrorCard() {
-    return Card(
+    return Container(
       margin: const EdgeInsets.only(bottom: 16),
-      color: AppColors.error.withAlpha(20),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Icon(Icons.error_outline, color: AppColors.error),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                _errorMessage ?? '',
-                style: const TextStyle(color: AppColors.error),
-              ),
+      decoration: BoxDecoration(
+        color: AppColors.error.withAlpha(12),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.error.withAlpha(50)),
+      ),
+      padding: const EdgeInsets.all(14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.error_outline_rounded, color: AppColors.error, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'אירעה שגיאה',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.error,
+                    fontSize: 13,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  _errorMessage ?? '',
+                  style: const TextStyle(color: AppColors.error, fontSize: 13, height: 1.4),
+                ),
+                const SizedBox(height: 10),
+                TextButton.icon(
+                  onPressed: _sendQuestion,
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppColors.error,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    visualDensity: VisualDensity.compact,
+                    side: const BorderSide(color: AppColors.error, width: 1),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  icon: const Icon(Icons.refresh_rounded, size: 16),
+                  label: const Text('נסה שוב', style: TextStyle(fontSize: 12)),
+                ),
+              ],
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
+
+  // ── AI answer card ──────────────────────────────────────────────────────────
 
   Widget _buildAnswerCard() {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 16),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Row(
-              children: [
-                Icon(Icons.smart_toy_outlined, color: AppColors.primary, size: 20),
-                SizedBox(width: 8),
-                Text(
-                  'תשובת הסוכן',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          CircleAvatar(
+            radius: 16,
+            backgroundColor: AppColors.primaryLight.withAlpha(40),
+            child: const Icon(Icons.auto_awesome, color: AppColors.primary, size: 16),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: const BorderRadius.only(
+                  topRight: Radius.circular(18),
+                  topLeft: Radius.circular(4),
+                  bottomLeft: Radius.circular(18),
+                  bottomRight: Radius.circular(18),
                 ),
-              ],
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withAlpha(14),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+                border: Border(
+                  right: BorderSide(color: AppColors.primary.withAlpha(80), width: 3),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Header
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [
+                          AppColors.primary.withAlpha(18),
+                          AppColors.primaryLight.withAlpha(8),
+                        ],
+                        begin: Alignment.topRight,
+                        end: Alignment.bottomLeft,
+                      ),
+                      borderRadius: const BorderRadius.only(
+                        topRight: Radius.circular(18),
+                        topLeft: Radius.circular(4),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.smart_toy_outlined, color: AppColors.primary, size: 16),
+                        const SizedBox(width: 6),
+                        const Text(
+                          'תשובת הסוכן',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                            color: AppColors.primaryDark,
+                          ),
+                        ),
+                        const Spacer(),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: AppColors.primary.withAlpha(20),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.bolt, color: AppColors.primary, size: 11),
+                              SizedBox(width: 2),
+                              Text(
+                                'Gemini AI',
+                                style: TextStyle(fontSize: 10, color: AppColors.primary, fontWeight: FontWeight.w600),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  // Body
+                  Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: _buildFormattedAnswer(_answer ?? ''),
+                  ),
+                ],
+              ),
             ),
-            const SizedBox(height: 12),
-            SelectableText(
-              _answer ?? '',
-              style: const TextStyle(fontSize: 14, height: 1.6),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildQuestionCard() {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Row(
+  // ── Markdown-like answer renderer ───────────────────────────────────────────
+
+  /// Renders the Gemini answer text with basic markdown:
+  /// - `**bold**` → bold
+  /// - Lines starting with `* ` → bullet point
+  /// - `[FILE: name]` references → grey chip label
+  Widget _buildFormattedAnswer(String text) {
+    // Strip [FILE: ...] references — they are redundant here because the
+    // same files are shown separately in the relevant-files section below.
+    final cleaned = text.replaceAll(RegExp(r'\[FILE:[^\]]*\]'), '').trim();
+    final lines = cleaned.split('\n');
+    final widgets = <Widget>[];
+
+    for (final raw in lines) {
+      final line = raw.trim();
+      if (line.isEmpty) {
+        widgets.add(const SizedBox(height: 6));
+        continue;
+      }
+      if (line.startsWith('* ') || line.startsWith('- ')) {
+        // Bullet point
+        widgets.add(
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(Icons.person_outline, color: AppColors.primary, size: 20),
-                SizedBox(width: 8),
-                Text(
-                  'השאלה שלך',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                Padding(
+                  padding: const EdgeInsets.only(top: 5, left: 6),
+                  child: Container(
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      color: AppColors.primary,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: SelectableText.rich(
+                    _parseInlineBold(line.substring(2)),
+                    style: const TextStyle(fontSize: 14, height: 1.55),
+                  ),
                 ),
               ],
             ),
-            const SizedBox(height: 12),
-            Text(
-              _submittedQuestion ?? '',
-              style: const TextStyle(fontSize: 14, height: 1.6),
+          ),
+        );
+      } else {
+        widgets.add(
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: SelectableText.rich(
+              _parseInlineBold(line),
+              style: const TextStyle(fontSize: 14, height: 1.55),
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      }
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: widgets,
     );
   }
+
+  /// Converts `**text**` segments inside a line into bold [TextSpan]s.
+  TextSpan _parseInlineBold(String text) {
+    final spans = <TextSpan>[];
+    final pattern = RegExp(r'\*\*(.+?)\*\*');
+    int cursor = 0;
+    for (final match in pattern.allMatches(text)) {
+      if (match.start > cursor) {
+        spans.add(TextSpan(text: text.substring(cursor, match.start)));
+      }
+      spans.add(TextSpan(
+        text: match.group(1),
+        style: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.primaryDark),
+      ));
+      cursor = match.end;
+    }
+    if (cursor < text.length) {
+      spans.add(TextSpan(text: text.substring(cursor)));
+    }
+    return TextSpan(children: spans);
+  }
+
+  // ── Relevant files section ──────────────────────────────────────────────────
 
   Widget _buildFilesSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text(
-          'קבצים רלוונטיים',
-          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withAlpha(15),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: AppColors.primary.withAlpha(40)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.folder_open_rounded, color: AppColors.primary, size: 15),
+                    const SizedBox(width: 5),
+                    Text(
+                      'קבצים רלוונטיים (${_relevantFiles.length})',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12,
+                        color: AppColors.primary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
-        const SizedBox(height: 8),
         ..._relevantFiles.map(_buildFileTile),
       ],
     );
   }
 
+  static const Color _imageFileColor = Color(0xFF00897B); // teal
+  static const Color _pdfFileColor = Color(0xFFE53935);   // red
+
   Widget _buildFileTile(AccreditationFile file) {
     final isImage = _isImageFile(file.name);
+    final isPdf = file.name.toLowerCase().endsWith('.pdf');
+    final iconColor = isImage ? _imageFileColor : _pdfFileColor;
+    final bgColor = isImage
+        ? _imageFileColor.withAlpha(15)
+        : _pdfFileColor.withAlpha(15);
+
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      child: ListTile(
-        leading: isImage
-            ? const Icon(Icons.image, color: Colors.blueGrey)
-            : const Icon(Icons.picture_as_pdf, color: Colors.red),
-        title: Text(
-          file.name,
-          style: const TextStyle(fontSize: 13),
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-        ),
-        trailing: const Icon(Icons.open_in_new, size: 18, color: Colors.grey),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: iconColor.withAlpha(40)),
+      ),
+      child: InkWell(
         onTap: () => _openFile(file),
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: bgColor,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(
+                  isImage
+                      ? Icons.image_rounded
+                      : isPdf
+                          ? Icons.picture_as_pdf_rounded
+                          : Icons.insert_drive_file_rounded,
+                  color: iconColor,
+                  size: 22,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      file.name,
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      isImage ? 'תמונה' : isPdf ? 'מסמך PDF' : 'קובץ',
+                      style: TextStyle(fontSize: 11, color: iconColor),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(Icons.open_in_new_rounded, size: 17, color: Colors.grey.shade400),
+            ],
+          ),
+        ),
       ),
     );
   }
+
+  // ── Static helpers ──────────────────────────────────────────────────────────
 
   /// Returns true when [name] has an image extension.
   static bool _isImageFile(String name) {
@@ -329,64 +750,101 @@ class _AccreditationAgentScreenState
     return imageExts.contains(name.substring(dot).toLowerCase());
   }
 
+  // ── Input bar ───────────────────────────────────────────────────────────────
+
   Widget _buildInputBar() {
     return Container(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
       decoration: BoxDecoration(
-        color: Theme.of(context).scaffoldBackgroundColor,
+        color: Colors.white,
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withAlpha(25),
-            blurRadius: 6,
-            offset: const Offset(0, -2),
+            color: Colors.black.withAlpha(18),
+            blurRadius: 10,
+            offset: const Offset(0, -3),
           ),
         ],
       ),
       child: SafeArea(
         top: false,
-        child: Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _questionController,
-                textDirection: TextDirection.rtl,
-                maxLines: 4,
-                minLines: 1,
-                textInputAction: TextInputAction.send,
-                onSubmitted: (_) {
-                  if (_isLoading) return;
-                  _sendQuestion();
-                },
-                decoration: InputDecoration(
-                  hintText: 'הקלד שאלה על מסמכי האקרדיטציה...',
-                  hintTextDirection: TextDirection.rtl,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(24),
-                    borderSide: BorderSide(color: Colors.grey.shade300),
-                  ),
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 10,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _questionController,
+                  focusNode: _inputFocus,
+                  textDirection: TextDirection.rtl,
+                  maxLines: 5,
+                  minLines: 1,
+                  textInputAction: TextInputAction.send,
+                  onSubmitted: (_) {
+                    if (_isLoading) return;
+                    _sendQuestion();
+                  },
+                  decoration: InputDecoration(
+                    hintText: 'שאל שאלה על מסמכי האקרדיטציה...',
+                    hintTextDirection: TextDirection.rtl,
+                    filled: true,
+                    fillColor: Colors.grey.shade50,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 18,
+                      vertical: 12,
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(26),
+                      borderSide: BorderSide(color: Colors.grey.shade200),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(26),
+                      borderSide: BorderSide(color: Colors.grey.shade200),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(26),
+                      borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
+                    ),
                   ),
                 ),
               ),
-            ),
-            const SizedBox(width: 8),
-            _isLoading
-                ? const SizedBox(
-                    width: 44,
-                    height: 44,
-                    child: Padding(
-                      padding: EdgeInsets.all(10),
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                  )
-                : IconButton(
-                    icon: const Icon(Icons.send, color: AppColors.primary),
-                    tooltip: 'שלח',
-                    onPressed: _sendQuestion,
-                  ),
-          ],
+              const SizedBox(width: 8),
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 200),
+                child: _isLoading
+                    ? Container(
+                        key: const ValueKey('loading'),
+                        width: 46,
+                        height: 46,
+                        decoration: BoxDecoration(
+                          color: AppColors.primary.withAlpha(15),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Padding(
+                          padding: EdgeInsets.all(12),
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.5,
+                            color: AppColors.primary,
+                          ),
+                        ),
+                      )
+                    : Material(
+                        key: const ValueKey('send'),
+                        color: AppColors.primary,
+                        shape: const CircleBorder(),
+                        elevation: 2,
+                        child: InkWell(
+                          customBorder: const CircleBorder(),
+                          onTap: _sendQuestion,
+                          child: const SizedBox(
+                            width: 46,
+                            height: 46,
+                            child: Icon(Icons.send_rounded, color: Colors.white, size: 20),
+                          ),
+                        ),
+                      ),
+              ),
+            ],
+          ),
         ),
       ),
     );
