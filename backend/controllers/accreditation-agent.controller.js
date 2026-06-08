@@ -342,8 +342,16 @@ function createAccreditationAgentController({ uploadDir, consumeRateLimitEntry, 
             const result = await model.generateContent(contentParts);
             answerText = result.response.text().trim();
         } catch (err) {
-            console.error('[ACCREDITATION-AGENT] Gemini API error:', err.message);
-            return res.status(502).json({ error: 'AI service error. Please try again later.' });
+            // Extract a safe, human-readable reason from the Gemini SDK error.
+            // The SDK wraps Google API errors in err.message — strip any echoed
+            // API key from the message before forwarding it to the client.
+            const rawMessage = (err && (err.message || String(err))) || 'Unknown error';
+            const safeMessage = rawMessage.replace(/key=[A-Za-z0-9_-]{10,}/g, 'key=***');
+            const statusCode = (err && err.status) || (err && err.statusCode) || null;
+            console.error('[ACCREDITATION-AGENT] Gemini API error' + (statusCode ? ` (HTTP ${statusCode})` : '') + ':', rawMessage);
+            return res.status(502).json({
+                error: `AI service error: ${safeMessage}`,
+            });
         }
 
         // ── Build relevant file list ──────────────────────────────────────
