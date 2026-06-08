@@ -7,6 +7,7 @@ library;
 import 'dart:async';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../config/app_config.dart';
@@ -53,6 +54,15 @@ class ChatApiService {
     return normalized.isNotEmpty ? normalized : fallback;
   }
 
+  int? _parseRetryAfterSeconds(dynamic body) {
+    final map = _coerceJsonMap(body);
+    final value = map['retryAfterSeconds'];
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    if (value is String) return int.tryParse(value.trim());
+    return null;
+  }
+
   // ---------------------------------------------------------------------------
   // Authentication
   // ---------------------------------------------------------------------------
@@ -96,32 +106,45 @@ class ChatApiService {
       throw AuthException('מספר טלפון לא תקין');
     }
 
-    final response = await _client.post<Map<String, dynamic>>(
-      ApiEndpoints.requestCode,
-      data: {'user': normalized},
-      retryOptions: const RetryOptions(retries: 1, timeout: NetworkTimeouts.sessionTimeout),
-    );
+    try {
+      final response = await _client.post<Map<String, dynamic>>(
+        ApiEndpoints.requestCode,
+        data: {'user': normalized},
+        retryOptions: const RetryOptions(retries: 1, timeout: NetworkTimeouts.sessionTimeout),
+      );
 
-    if (!response.isSuccessful) {
-      final body = response.data;
-      final message = (body?['message'] ?? body?['error'] ?? '').toString().trim();
+      if (!response.isSuccessful) {
+        final body = _coerceJsonMap(response.data);
+        final message = _extractErrorMessage(body, '');
 
-      if (response.statusCode == 400) {
-        throw AuthException('מספר טלפון לא תקין');
-      } else if (response.statusCode == 403) {
-        throw AuthException('המשתמש אינו מורשה');
-      } else if (response.statusCode == 429) {
-        final retryAfter = body?['retryAfterSeconds'] as int?;
-        throw RateLimitException('יותר מדי ניסיונות. נסה שוב בעוד $retryAfter שניות', retryAfter);
-      } else if (message.isNotEmpty) {
-        throw AuthException(message);
+        if (response.statusCode == 400) {
+          throw AuthException('מספר טלפון לא תקין');
+        } else if (response.statusCode == 403) {
+          throw AuthException('המשתמש אינו מורשה');
+        } else if (response.statusCode == 429) {
+          final retryAfter = _parseRetryAfterSeconds(body);
+          final retryMessage = retryAfter == null
+              ? 'יותר מדי ניסיונות. נסה שוב מאוחר יותר'
+              : 'יותר מדי ניסיונות. נסה שוב בעוד $retryAfter שניות';
+          throw RateLimitException(retryMessage, retryAfter);
+        } else if (message.isNotEmpty) {
+          throw AuthException(message);
+        }
+        throw AuthException('שליחת קוד אימות נכשלה');
       }
-      throw AuthException('שליחת קוד אימות נכשלה');
-    }
 
-    final body = SessionResponse.fromJson(response.data ?? {});
-    final expiresInSeconds = body.expiresInSeconds ?? 300;
-    return expiresInSeconds > 0 ? expiresInSeconds : 300;
+      final body = SessionResponse.fromJson(_coerceJsonMap(response.data));
+      final expiresInSeconds = body.expiresInSeconds ?? 300;
+      return expiresInSeconds > 0 ? expiresInSeconds : 300;
+    } on TimeoutException {
+      throw AuthException('השרת לא הגיב בזמן. נסה שוב');
+    } on DioException catch (e) {
+      final message = _extractErrorMessage(e.response?.data, '');
+      throw AuthException(message.isNotEmpty ? message : 'שליחת קוד אימות נכשלה');
+    } catch (error, stackTrace) {
+      debugPrint('requestSessionCode unexpected error: $error');
+      Error.throwWithStackTrace(AuthException('שליחת קוד אימות נכשלה'), stackTrace);
+    }
   }
 
   /// Verify SMS code

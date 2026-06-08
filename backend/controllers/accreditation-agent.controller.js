@@ -14,8 +14,13 @@
 
 const fs = require('fs');
 const path = require('path');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-const pdfParse = require('pdf-parse');
+
+// @google/generative-ai and pdf-parse are optional — loaded lazily inside
+// handleAsk so that startup succeeds even when the packages are not installed.
+let GoogleGenerativeAI = null;
+let pdfParse = null;
+try { ({ GoogleGenerativeAI } = require('@google/generative-ai')); } catch (_e) { /* not installed */ }
+try { pdfParse = require('pdf-parse'); } catch (_e) { /* not installed */ }
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -173,6 +178,9 @@ function createAccreditationAgentController({ uploadDir, consumeRateLimitEntry, 
         }
 
         // ── Gemini API key ────────────────────────────────────────────────
+        if (!GoogleGenerativeAI || !pdfParse) {
+            return res.status(503).json({ error: 'AI service is not available (packages not installed)' });
+        }
         const apiKey = process.env.GEMINI_API_KEY;
         if (!apiKey) {
             console.error('[ACCREDITATION-AGENT] GEMINI_API_KEY is not set');

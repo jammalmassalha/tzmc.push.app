@@ -331,7 +331,6 @@ app.use(['/uploads', '/notify/uploads'], (req, res, next) => {
 });
 
 
-app.use(bodyParser.json());
 // --- CORS CONFIGURATION ---
 // When the browser sends credentialed requests (withCredentials/credentials:'include'),
 // the response must echo a specific origin – the wildcard '*' is not allowed. We
@@ -952,6 +951,9 @@ const sessionService = new SessionService(
     }
 );
 const SESSION_USER_PATTERN = /^0\d{9}$/;
+const AUTH_CODE_REGISTERED_USER_BYPASS_SET = new Set(
+    parseUsernamesInput(process.env.SUPER_ADMIN_USERS || '0546799693')
+);
 const BADGE_RESET_ALL_ALLOWED_USERS = parseUsernamesInput(
     process.env.BADGE_RESET_ALL_ALLOWED_USERS || '0546799693'
 );
@@ -2962,15 +2964,12 @@ async function ensureRequestedUserCanAuthenticate(requestedUser) {
 
 function ensureRegistrationFlowOnly(req, requestedUser) {
     const sessionUser = normalizeUserCandidate(req && req.authUser);
+    const normalizedRequestedUser = normalizeUserCandidate(requestedUser);
     if (!sessionUser) {
         return { ok: true, status: 200, message: '' };
     }
-    if (sessionUser === requestedUser) {
-        return {
-            ok: false,
-            status: 403,
-            message: 'Authenticated users cannot request registration SMS code'
-        };
+    if (sessionUser === normalizedRequestedUser) {
+        return { ok: false, status: 403, message: 'Authenticated users cannot request registration SMS code' };
     }
     return {
         ok: false,
@@ -2983,6 +2982,9 @@ async function ensureRequestedUserIsRegistered(requestedUser) {
     const normalizedUser = normalizeUserCandidate(requestedUser);
     if (!SESSION_USER_PATTERN.test(normalizedUser)) {
         return { ok: false, status: 400, message: 'Invalid user' };
+    }
+    if (AUTH_CODE_REGISTERED_USER_BYPASS_SET.has(normalizedUser)) {
+        return { ok: true, status: 200, message: '' };
     }
     try {
         const response = await fetchWithRetry(
@@ -7647,6 +7649,22 @@ async function checkOutgoingQueue() {
         console.error('[QUEUE ERROR] Failed to check sheet:', error.message);
     }
 }
+
+// Global error handler — catches any unhandled error thrown from a route or middleware
+// (including async handlers in Express 5) and returns a clean JSON response instead of
+// Express's default HTML/verbose error page.
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, _next) => {
+    const status = (err && Number.isInteger(err.status) && err.status >= 400 && err.status < 600)
+        ? err.status
+        : 500;
+    const message = err && err.message ? String(err.message) : 'Internal server error';
+    console.error('[UNHANDLED ERROR]', req.method, req.originalUrl || req.url,
+        'status:', status, 'error:', message,
+        err && err.stack ? err.stack : '');
+    if (res.headersSent) return;
+    res.status(status).json({ status: 'error', message });
+});
 
 // Start the Timer (10,000 ms = 10 seconds)
 setInterval(checkOutgoingQueue, 10000);
