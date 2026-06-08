@@ -2384,8 +2384,20 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     try {
       await _api.markMessagesAsRead(chatId, messageIds, _currentUser ?? '');
+      await markChatSeen(chatId);
     } catch (e) {
       // Silent failure
+    }
+  }
+
+  Future<void> markChatSeen(String chatId) async {
+    final user = (_currentUser ?? '').trim().toLowerCase();
+    final normalizedChatId = chatId.trim().toLowerCase();
+    if (user.isEmpty || normalizedChatId.isEmpty) return;
+    try {
+      await _api.markMessagesSeen(user, normalizedChatId);
+    } catch (_) {
+      // Best-effort.
     }
   }
 
@@ -2424,6 +2436,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // Also clear the FCM pending tray so the badge is not re-shown on
         // the next cold start when messages haven't been loaded yet.
         unawaited(_clearChatFromPendingTray(chatId));
+        // Persist SeenTime on the server even when we couldn't build a
+        // message-id read receipt (e.g. chat opened before messages loaded),
+        // so other connected devices can sync badge clearing.
+        unawaited(markChatSeen(chatId));
       }
     }
 
