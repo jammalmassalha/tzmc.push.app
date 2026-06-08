@@ -15,6 +15,7 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'core/api/http_client.dart';
 import 'core/config/environment.dart';
 import 'core/navigation/root_navigator.dart';
+import 'core/services/accessibility_service.dart';
 import 'core/services/push_notification_service.dart';
 import 'firebase_options.dart';
 import 'shared/theme/app_theme.dart';
@@ -97,6 +98,7 @@ class TzmcPushApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final accessibility = ref.watch(accessibilitySettingsProvider);
     return MaterialApp(
       title: 'מרכז רפואי צפון',
       debugShowCheckedModeBanner: false,
@@ -123,6 +125,20 @@ class TzmcPushApp extends ConsumerWidget {
       theme: AppTheme.light,
       darkTheme: AppTheme.light,
       themeMode: ThemeMode.light,
+      builder: (context, child) {
+        final mediaQuery = MediaQuery.maybeOf(context);
+        if (child == null || mediaQuery == null) {
+          return child ?? const SizedBox.shrink();
+        }
+        return MediaQuery(
+          data: mediaQuery.copyWith(
+            textScaler: TextScaler.linear(
+              accessibility.effectiveTextScaleFactor,
+            ),
+          ),
+          child: child,
+        );
+      },
 
       // Initial route handling based on auth state
       home: const AuthRouter(),
