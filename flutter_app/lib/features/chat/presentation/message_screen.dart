@@ -1294,7 +1294,8 @@ String _sanitizeSaveFilename(String name) {
   final withoutTraversal = name
       .replaceAll('..', '_')
       .replaceAll('/', '_')
-      .replaceAll('\\', '_');
+      .replaceAll('\\', '_')
+      .replaceAll('\u0000', '_');
   final safe = withoutTraversal.replaceAll(RegExp(r'[<>:"|?*\x00-\x1F]'), '_').trim();
   return safe.isEmpty ? 'file_${DateTime.now().millisecondsSinceEpoch}' : safe;
 }
