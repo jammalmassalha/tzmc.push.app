@@ -1291,13 +1291,15 @@ String _extractSaveFilename(String url) {
 }
 
 String _sanitizeSaveFilename(String name) {
-  final withoutTraversal = name
-      .replaceAll('..', '_')
-      .replaceAll('/', '_')
-      .replaceAll('\\', '_')
-      .replaceAll('\u0000', '_');
-  final safe = withoutTraversal.replaceAll(RegExp(r'[<>:"|?*\x00-\x1F]'), '_').trim();
-  return safe.isEmpty ? 'file_${DateTime.now().millisecondsSinceEpoch}' : safe;
+  final normalized = name.replaceAll('\\', '/');
+  final segments = normalized.split('/').where((segment) => segment.isNotEmpty).toList();
+  final basename = segments.isNotEmpty ? segments.last : null;
+  final candidate = (basename ?? name).replaceAll('\u0000', '');
+  final safe = candidate.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '_').trim();
+  if (safe.isEmpty || safe == '.' || safe == '..') {
+    return 'file_${DateTime.now().millisecondsSinceEpoch}';
+  }
+  return safe;
 }
 
 Future<File> _createUniqueSaveFile(String filename) async {
