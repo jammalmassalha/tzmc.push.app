@@ -5,19 +5,11 @@
 /// server and returned together with clickable source PDF links.
 library;
 
-import 'dart:io' show File;
-import 'dart:typed_data' show Uint8List;
-
-import 'package:dio/dio.dart' show Options, ResponseType;
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:shimmer/shimmer.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/api/chat_api_service.dart';
-import '../../../core/api/http_client.dart';
 import '../../../shared/widgets/authenticated_image.dart';
 import '../../../shared/theme/app_theme.dart';
 import '../data/accreditation_agent_response.dart';
@@ -126,46 +118,11 @@ class _AccreditationAgentScreenState
       return;
     }
     final resolved = resolveToAbsoluteUrl(file.url);
-    if (!await _openAuthenticatedFile(resolved)) {
+    if (!await openAuthenticatedFileExternally(context, resolved)) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('לא ניתן לפתוח את הקובץ: ${file.name}')),
         );
-      }
-    }
-
-    String _extractSaveFilename(String url) {
-      try {
-        final segment = Uri.parse(url)
-            .pathSegments
-            .lastWhere((s) => s.isNotEmpty, orElse: () => '');
-        final decoded = Uri.decodeComponent(segment);
-        if (decoded.isNotEmpty) return decoded;
-      } catch (_) {}
-      return 'file_${DateTime.now().millisecondsSinceEpoch}';
-    }
-
-    Future<bool> _openAuthenticatedFile(String url) async {
-      final uri = Uri.tryParse(url);
-      if (uri == null) return false;
-      if (kIsWeb) {
-        return launchUrl(uri, mode: LaunchMode.externalApplication);
-      }
-
-      try {
-        final client = ref.read(httpClientProvider);
-        final response = await client.get<List<int>>(
-          url,
-          options: Options(responseType: ResponseType.bytes),
-        );
-        if (response.statusCode != 200 || response.data == null) return false;
-        final bytes = Uint8List.fromList(response.data!);
-        final dir = await getApplicationDocumentsDirectory();
-        final file = File('${dir.path}/${_extractSaveFilename(url)}');
-        await file.writeAsBytes(bytes, flush: true);
-        return launchUrl(file.uri, mode: LaunchMode.externalApplication);
-      } catch (_) {
-        return false;
       }
     }
   }

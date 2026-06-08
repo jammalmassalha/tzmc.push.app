@@ -4,21 +4,17 @@
 library;
 
 import 'dart:async';
-import 'dart:io' show File;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:dio/dio.dart' show Options, ResponseType;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart' as img_picker;
 import 'package:intl/intl.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/api/chat_api_service.dart';
-import '../../../core/api/http_client.dart';
 import '../../../core/models/helpdesk_models.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../../core/utils/xfile.dart' as xfile;
@@ -2428,46 +2424,11 @@ class _AttachmentRow extends StatelessWidget {
 
   Future<void> _open(BuildContext context) async {
     final resolvedUrl = resolveToAbsoluteUrl(url);
-    if (!await _openAuthenticatedFile(context, resolvedUrl)) {
+    if (!await openAuthenticatedFileExternally(context, resolvedUrl)) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('לא ניתן לפתוח את הקובץ')),
         );
-      }
-    }
-
-    String _extractSaveFilename(String sourceUrl) {
-      try {
-        final segment = Uri.parse(sourceUrl)
-            .pathSegments
-            .lastWhere((s) => s.isNotEmpty, orElse: () => '');
-        final decoded = Uri.decodeComponent(segment);
-        if (decoded.isNotEmpty) return decoded;
-      } catch (_) {}
-      return 'file_${DateTime.now().millisecondsSinceEpoch}';
-    }
-
-    Future<bool> _openAuthenticatedFile(BuildContext context, String resolvedUrl) async {
-      final uri = Uri.tryParse(resolvedUrl);
-      if (uri == null) return false;
-      if (kIsWeb) {
-        return launchUrl(uri, mode: LaunchMode.externalApplication);
-      }
-      try {
-        final container = ProviderScope.containerOf(context, listen: false);
-        final client = container.read(httpClientProvider);
-        final response = await client.get<List<int>>(
-          resolvedUrl,
-          options: Options(responseType: ResponseType.bytes),
-        );
-        if (response.statusCode != 200 || response.data == null) return false;
-        final bytes = Uint8List.fromList(response.data!);
-        final dir = await getApplicationDocumentsDirectory();
-        final file = File('${dir.path}/${_extractSaveFilename(resolvedUrl)}');
-        await file.writeAsBytes(bytes, flush: true);
-        return launchUrl(file.uri, mode: LaunchMode.externalApplication);
-      } catch (_) {
-        return false;
       }
     }
   }
