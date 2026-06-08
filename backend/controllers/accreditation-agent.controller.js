@@ -279,7 +279,7 @@ function createAccreditationAgentController({ uploadDir, consumeRateLimitEntry, 
         if (!GoogleGenerativeAI) {
             return res.status(503).json({ error: 'AI service is not available (packages not installed)' });
         }
-        const apiKey = process.env.GEMINI_API_KEY;
+        const apiKey = "AQ.Ab8RN6L0V0acwk0-lblcR3Tg887csNOijlPtXtQmMuAvXzdYtw";//process.env.GEMINI_API_KEY;
         if (!apiKey) {
             console.error('[ACCREDITATION-AGENT] GEMINI_API_KEY is not set');
             return res.status(503).json({ error: 'AI service is not configured' });
