@@ -65,7 +65,7 @@ const MAX_IMAGES = 10;
 const MAX_IMAGE_SIZE_BYTES = 2 * 1024 * 1024; // 2 MB
 
 /** Gemini model to use. */
-const GEMINI_MODEL = 'gemini-1.5-flash';
+const GEMINI_MODEL = 'gemini-2.5-flash';
 
 /** Rate-limit: max requests per user per window. */
 const RATE_LIMIT_MAX = 10;
