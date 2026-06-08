@@ -28,6 +28,7 @@ class _AccreditationAgentScreenState
   final ScrollController _scrollController = ScrollController();
 
   bool _isLoading = false;
+  String? _submittedQuestion;
   String? _answer;
   List<AccreditationFile> _relevantFiles = [];
   String? _errorMessage;
@@ -42,9 +43,11 @@ class _AccreditationAgentScreenState
   Future<void> _sendQuestion() async {
     final question = _questionController.text.trim();
     if (question.isEmpty) return;
+    _questionController.clear();
 
     setState(() {
       _isLoading = true;
+      _submittedQuestion = question;
       _answer = null;
       _relevantFiles = [];
       _errorMessage = null;
@@ -79,6 +82,38 @@ class _AccreditationAgentScreenState
   }
 
   Future<void> _openFile(AccreditationFile file) async {
+    if (_isImageFile(file.name)) {
+      final resolved = resolveToAbsoluteUrl(file.url);
+      if (!mounted) return;
+      showDialog<void>(
+        context: context,
+        builder: (_) => Dialog(
+          backgroundColor: Colors.black,
+          insetPadding: EdgeInsets.zero,
+          child: Stack(
+            children: [
+              Center(
+                child: InteractiveViewer(
+                  child: AuthenticatedNetworkImage(
+                    url: resolved,
+                    fit: BoxFit.contain,
+                  ),
+                ),
+              ),
+              Positioned(
+                top: 8,
+                right: 8,
+                child: IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white),
+                  onPressed: () => Navigator.of(context).pop(),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+      return;
+    }
     final resolved = resolveToAbsoluteUrl(file.url);
     final uri = Uri.tryParse(resolved);
     if (uri == null) return;
@@ -111,6 +146,7 @@ class _AccreditationAgentScreenState
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     _buildIntroCard(),
+                    if (_submittedQuestion != null) _buildQuestionCard(),
                     if (_isLoading) _buildLoadingIndicator(),
                     if (_errorMessage != null) _buildErrorCard(),
                     if (_answer != null) _buildAnswerCard(),
@@ -220,6 +256,36 @@ class _AccreditationAgentScreenState
     );
   }
 
+  Widget _buildQuestionCard() {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.person_outline, color: AppColors.primary, size: 20),
+                SizedBox(width: 8),
+                Text(
+                  'השאלה שלך',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              _submittedQuestion ?? '',
+              style: const TextStyle(fontSize: 14, height: 1.6),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildFilesSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -235,11 +301,14 @@ class _AccreditationAgentScreenState
   }
 
   Widget _buildFileTile(AccreditationFile file) {
+    final isImage = _isImageFile(file.name);
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       child: ListTile(
-        leading: const Icon(Icons.picture_as_pdf, color: Colors.red),
+        leading: isImage
+            ? const Icon(Icons.image, color: Colors.blueGrey)
+            : const Icon(Icons.picture_as_pdf, color: Colors.red),
         title: Text(
           file.name,
           style: const TextStyle(fontSize: 13),
@@ -250,6 +319,14 @@ class _AccreditationAgentScreenState
         onTap: () => _openFile(file),
       ),
     );
+  }
+
+  /// Returns true when [name] has an image extension.
+  static bool _isImageFile(String name) {
+    const imageExts = {'.jpg', '.jpeg', '.png', '.gif', '.webp'};
+    final dot = name.lastIndexOf('.');
+    if (dot < 0) return false;
+    return imageExts.contains(name.substring(dot).toLowerCase());
   }
 
   Widget _buildInputBar() {
@@ -276,7 +353,10 @@ class _AccreditationAgentScreenState
                 maxLines: 4,
                 minLines: 1,
                 textInputAction: TextInputAction.send,
-                onSubmitted: (_) => _isLoading ? null : _sendQuestion(),
+                onSubmitted: (_) {
+                  if (_isLoading) return;
+                  _sendQuestion();
+                },
                 decoration: InputDecoration(
                   hintText: 'הקלד שאלה על מסמכי האקרדיטציה...',
                   hintTextDirection: TextDirection.rtl,

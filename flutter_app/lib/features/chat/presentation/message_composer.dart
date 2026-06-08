@@ -5,6 +5,7 @@
 library;
 
 import 'dart:async';
+import 'dart:io' as io;
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
@@ -410,12 +411,29 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
       );
       if (result == null || result.files.isEmpty) return;
       final picked = result.files.first;
-      final bytes = picked.bytes;
-      if (bytes == null) return;
+
+      // On native platforms, fall back to reading from the file path when bytes
+      // is null (e.g. large PDFs, cloud-backed files, or iOS Files providers).
+      Uint8List? bytes = picked.bytes;
+      if (bytes == null && !kIsWeb && picked.path != null) {
+        try {
+          bytes = await io.File(picked.path!).readAsBytes();
+        } catch (_) {
+          // handled below
+        }
+      }
+
+      if (bytes == null) {
+        if (mounted) showTopToast(context, 'לא ניתן לקרוא את הקובץ. נסה שוב.');
+        return;
+      }
+
+      // Re-bind as non-nullable so Dart flow analysis carries into the closure.
+      final fileBytes = bytes;
       setState(() {
         _selectedFile = xfile.XFile.fromBytes(
           name: picked.name,
-          bytes: bytes,
+          bytes: fileBytes,
           mimeType: 'application/pdf',
         );
         _selectedImage = null;
