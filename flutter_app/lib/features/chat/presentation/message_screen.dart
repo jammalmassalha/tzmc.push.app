@@ -3,7 +3,7 @@
 /// Shows message bubbles with support for text, images, reactions,
 /// replies, and edit/delete status.
 library;
-import 'dart:io' show File;
+import 'dart:io' show Directory, File;
 import 'dart:typed_data' show Uint8List;
 import 'dart:ui' as ui;
 
@@ -1290,8 +1290,37 @@ String _extractSaveFilename(String url) {
   return 'file_${DateTime.now().millisecondsSinceEpoch}';
 }
 
+String _sanitizeSaveFilename(String name) {
+  final withoutTraversal = name
+      .replaceAll('..', '_')
+      .replaceAll('/', '_')
+      .replaceAll('\\', '_')
+      .replaceAll('\u0000', '_');
+  final safe = withoutTraversal.replaceAll(RegExp(r'[<>:"|?*\x00-\x1F]'), '_').trim();
+  return safe.isEmpty ? 'file_${DateTime.now().millisecondsSinceEpoch}' : safe;
+}
+
+Future<File> _createUniqueSaveFile(String filename) async {
+  Directory? dir;
+  try {
+    dir = await getDownloadsDirectory();
+  } catch (_) {}
+  dir ??= await getApplicationDocumentsDirectory();
+
+  final safeName = _sanitizeSaveFilename(filename);
+  var file = File('${dir.path}/$safeName');
+  if (!await file.exists()) return file;
+
+  final dot = safeName.lastIndexOf('.');
+  final hasExt = dot > 0 && dot < safeName.length - 1;
+  final base = hasExt ? safeName.substring(0, dot) : safeName;
+  final ext = hasExt ? safeName.substring(dot) : '';
+  final suffix = DateTime.now().millisecondsSinceEpoch;
+  return File('${dir.path}/${base}_$suffix$ext');
+}
+
 /// Downloads [url] with the authenticated HTTP client and saves the bytes
-/// to the app's documents directory.
+/// to the Downloads directory when available (fallback: app documents dir).
 ///
 /// On web the file is opened in a new tab instead (no local file system).
 /// The caller should pre-capture any context-sensitive objects before the
@@ -1331,9 +1360,8 @@ Future<void> _saveFileToDevice(
     }
 
     final bytes = Uint8List.fromList(response.data!);
-    final dir = await getApplicationDocumentsDirectory();
-    final filename = _extractSaveFilename(url);
-    final file = File('${dir.path}/$filename');
+    final filename = _extractSaveFilename(resolvedUrl);
+    final file = await _createUniqueSaveFile(filename);
     await file.writeAsBytes(bytes, flush: true);
 
     if (openAfterSave) {
@@ -1342,12 +1370,12 @@ Future<void> _saveFileToDevice(
         mode: LaunchMode.externalApplication,
       );
       if (!opened) {
-        showTopToastOnOverlay(overlay, 'נשמר: $filename');
+        showTopToastOnOverlay(overlay, 'הקובץ נשמר ב: ${file.path}');
       }
       return;
     }
 
-    showTopToastOnOverlay(overlay, 'נשמר: $filename');
+    showTopToastOnOverlay(overlay, 'הקובץ נשמר ב: ${file.path}');
   } catch (e) {
     debugPrint('_saveFileToDevice error: $e');
     showTopToastOnOverlay(overlay, 'שגיאה בשמירת הקובץ');
@@ -2510,7 +2538,10 @@ class _FileAttachmentButton extends StatelessWidget {
     return InkWell(
       onTap: () async {
         if (_isAuthenticatedUploadUrl(url)) {
-          await _saveFileToDevice(context, url, openAfterSave: true);
+          final opened = await openAuthenticatedFileExternally(context, url);
+          if (!opened) {
+            showTopToast(context, 'שגיאה בפתיחת הקובץ');
+          }
           return;
         }
         final uri = Uri.tryParse(url);
@@ -2668,7 +2699,10 @@ class _LinkButton extends StatelessWidget {
     return InkWell(
       onTap: () async {
         if (_isAuthenticatedUploadUrl(url)) {
-          await _saveFileToDevice(context, url, openAfterSave: true);
+          final opened = await openAuthenticatedFileExternally(context, url);
+          if (!opened) {
+            showTopToast(context, 'שגיאה בפתיחת הקובץ');
+          }
           return;
         }
         final uri = Uri.tryParse(url);

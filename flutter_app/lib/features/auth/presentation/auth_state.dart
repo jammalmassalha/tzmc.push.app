@@ -99,6 +99,7 @@ class AuthNotifier extends Notifier<AuthState> {
         await _secureStorage.write(key: _userKey, value: sessionUser);
         final cachedPhone = await _secureStorage.read(key: _phoneKey);
         state = AuthAuthenticated(user: sessionUser, phone: cachedPhone);
+        unawaited(_resetBadgeAfterAuth());
         _logger.i('Session restored for user: $sessionUser');
       } else {
         await _secureStorage.delete(key: _userKey);
@@ -182,6 +183,7 @@ class AuthNotifier extends Notifier<AuthState> {
       await _secureStorage.write(key: _userKey, value: user);
       await _secureStorage.write(key: _phoneKey, value: currentState.phoneNumber);
       state = AuthAuthenticated(user: user, phone: currentState.phoneNumber);
+      unawaited(_resetBadgeAfterAuth());
       _logger.i('Code verification successful for: $user');
     } on AuthException catch (e) {
       state = AuthError(message: e.message, previousState: previousState);
@@ -236,6 +238,14 @@ class AuthNotifier extends Notifier<AuthState> {
   /// Reset to unauthenticated state
   void reset() {
     state = const AuthUnauthenticated();
+  }
+
+  Future<void> _resetBadgeAfterAuth() async {
+    try {
+      await ref.read(pushNotificationServiceProvider).resetBadge();
+    } catch (e) {
+      _logger.w('Error resetting badge after auth: $e');
+    }
   }
 }
 

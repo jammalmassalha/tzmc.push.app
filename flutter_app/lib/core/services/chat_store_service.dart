@@ -396,6 +396,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       _syncCommunityGroups();
 
       // 3. Pull missed messages (gap analysis).
+      int latestTimestampBeforeRecovery;
+      try {
+        latestTimestampBeforeRecovery = await _db.getLatestMessageTimestamp();
+      } catch (_) {
+        latestTimestampBeforeRecovery = _latestTimestampFromState();
+      }
+      final hadLocalHistory = latestTimestampBeforeRecovery > 0;
+
       //
       // Use force:true to bypass the 30-second cooldown.  The realtime
       // transport can fire _handleConnectionChange(true) before we reach
@@ -418,7 +426,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // was queried).  We take the MAX so we never downgrade a count that
       // the pull already computed correctly.
       final tray = await _readAndClearPendingTray();
-      if (tray.isNotEmpty) {
+      if (hadLocalHistory && tray.isNotEmpty) {
         final merged = Map<String, int>.from(state.unreadByChat);
         for (final entry in tray.entries) {
           // Skip the currently open chat — the user is already viewing it so
