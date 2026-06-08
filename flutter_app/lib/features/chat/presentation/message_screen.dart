@@ -1431,7 +1431,10 @@ void _showFullScreenImage(BuildContext context, String imageUrl) {
             left: 4,
             child: IconButton(
               onPressed: () => _saveFileToDevice(
-                  ctx, resolveToAbsoluteUrl(imageUrl)),
+                ctx,
+                resolveToAbsoluteUrl(imageUrl),
+                openAfterSave: true,
+              ),
               icon: const Icon(Icons.download, color: Colors.white, size: 28),
               style: IconButton.styleFrom(backgroundColor: Colors.black38),
               tooltip: 'שמור תמונה',
@@ -1502,7 +1505,7 @@ String _normalizeMessageUrl(String url) {
 
   if (RegExp(r'^www\.', caseSensitive: false).hasMatch(value)) {
     value = 'https://$value';
-  } else if (RegExp(r'^/?notify/uploads/', caseSensitive: false)
+  } else if (RegExp(r'^/?(?:notify/)?uploads/', caseSensitive: false)
       .hasMatch(value)) {
     value = value.startsWith('/') ? value : '/$value';
   }
@@ -1648,7 +1651,7 @@ List<_MessagePart> _parseMessageBody(String body) {
   if (value.isEmpty) return [];
 
   final urlRegex = RegExp(
-    '(https?://[^\\s<>"\']+|/?notify/uploads/[^\\s<>"\']+|www\\.[^\\s<>"\']+|geo:[^\\s<>"\']+)',
+    '(https?://[^\\s<>"\']+|/?(?:notify/)?uploads/[^\\s<>"\']+|www\\.[^\\s<>"\']+|geo:[^\\s<>"\']+)',
     caseSensitive: false,
   );
 
@@ -2083,6 +2086,7 @@ class _MessageBubble extends StatelessWidget {
                   _saveFileToDevice(
                     context,
                     message.imageUrl ?? message.fileUrl!,
+                    openAfterSave: true,
                   );
                 },
               ),
@@ -2583,7 +2587,11 @@ class _FileAttachmentButton extends StatelessWidget {
               visualDensity: VisualDensity.compact,
               icon: Icon(Icons.download, color: iconColor, size: 18),
               tooltip: 'שמור במכשיר',
-              onPressed: () => _saveFileToDevice(context, url),
+              onPressed: () => _saveFileToDevice(
+                context,
+                url,
+                openAfterSave: true,
+              ),
             ),
           ],
         ),
