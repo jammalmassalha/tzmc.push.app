@@ -1231,9 +1231,7 @@ class _AccessibilitySettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(accessibilitySettingsProvider);
     final notifier = ref.read(accessibilitySettingsProvider.notifier);
-    final textScale = settings.textScaleFactor
-        .clamp(kAccessibilityMinTextScale, kAccessibilityMaxTextScale)
-        .toDouble();
+    final textScale = settings.textScaleFactor;
 
     return ListView(
       padding: const EdgeInsets.all(16),
