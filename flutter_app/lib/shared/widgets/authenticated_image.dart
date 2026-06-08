@@ -59,7 +59,7 @@ String _sanitizeSaveFilename(String name) {
   return safe.isEmpty ? 'file_${DateTime.now().millisecondsSinceEpoch}' : safe;
 }
 
-Future<File> _createUniqueFilePath(String filename) async {
+Future<File> _createUniqueFile(String filename) async {
   final dir = await getApplicationDocumentsDirectory();
   final safeName = _sanitizeSaveFilename(filename);
   var file = File('${dir.path}/$safeName');
@@ -101,10 +101,11 @@ Future<bool> openAuthenticatedFileExternally(BuildContext context, String url) a
       options: Options(responseType: ResponseType.bytes),
     );
     if (response.statusCode != 200 || response.data == null) return false;
-    final file = await _createUniqueFilePath(_extractSaveFilename(resolvedUrl));
+    final file = await _createUniqueFile(_extractSaveFilename(resolvedUrl));
     await file.writeAsBytes(Uint8List.fromList(response.data!), flush: true);
     return launchUrl(file.uri, mode: LaunchMode.externalApplication);
-  } catch (_) {
+  } catch (e) {
+    debugPrint('[openAuthenticatedFileExternally] Failed: $e');
     return false;
   }
 }

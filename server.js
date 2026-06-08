@@ -6210,7 +6210,6 @@ app.post(['/mark-seen', '/notify/mark-seen'],
             void addToQueue(user, {
                 type: 'read-receipt',
                 chatId,
-                sender: chatId,
                 timestamp: Date.now()
             }).catch((err) => {
                 console.warn('[MARK-SEEN] Self-clear queue failed:', err && err.message ? err.message : err);
@@ -6220,8 +6219,7 @@ app.post(['/mark-seen', '/notify/mark-seen'],
                 body: { shortText: '', longText: '' },
                 data: {
                     type: 'read-receipt',
-                    chatId,
-                    sender: chatId
+                    chatId
                 }
             }, chatId, { skipBadge: true, singlePerUser: true, allowSecondAttempt: false }).catch((err) => {
                 console.warn('[MARK-SEEN] Self-clear push failed:', err && err.message ? err.message : err);
