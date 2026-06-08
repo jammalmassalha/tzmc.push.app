@@ -88,11 +88,19 @@ Future<bool> openAuthenticatedFileExternally(BuildContext context, String url) a
   final uri = Uri.tryParse(resolvedUrl);
   if (uri == null) return false;
   if (kIsWeb) {
-    return launchUrl(uri, mode: LaunchMode.externalApplication);
+    try {
+      return await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      return false;
+    }
   }
 
   if (!isAuthenticatedUploadUrl(resolvedUrl)) {
-    return launchUrl(uri, mode: LaunchMode.externalApplication);
+    try {
+      return await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      return false;
+    }
   }
 
   try {
@@ -102,16 +110,28 @@ Future<bool> openAuthenticatedFileExternally(BuildContext context, String url) a
       resolvedUrl,
       options: Options(responseType: ResponseType.bytes),
     );
-    if (response.statusCode != 200 || response.data == null) return false;
+    if (response.statusCode != 200 || response.data == null) {
+      try {
+        return await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } catch (_) {
+        return false;
+      }
+    }
     final file = await _createUniqueFile(_extractSaveFilename(resolvedUrl));
     await file.writeAsBytes(Uint8List.fromList(response.data!), flush: true);
-    final opened = await launchUrl(file.uri);
+    final opened = await launchUrl(
+      file.uri,
+      mode: LaunchMode.externalApplication,
+    );
     if (!opened) {
       showTopToast(context, 'הקובץ נשמר ב: ${file.path}');
     }
     return true;
   } catch (e) {
     debugPrint('[openAuthenticatedFileExternally] Download/write/open failed: $e');
+    try {
+      return await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {}
     return false;
   }
 }

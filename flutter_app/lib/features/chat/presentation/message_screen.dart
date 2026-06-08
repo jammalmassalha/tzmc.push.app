@@ -1820,18 +1820,7 @@ class _MessageBubble extends StatelessWidget {
                     if (message.imageUrl != null && !isDeleted)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
-                        child: GestureDetector(
-                          onTap: () =>
-                              _showFullScreenImage(context, message.imageUrl!),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: AuthenticatedNetworkImage(
-                              url: message.imageUrl!,
-                              width: 200,
-                              height: 150,
-                            ),
-                          ),
-                        ),
+                        child: _ImageAttachmentCard(url: message.imageUrl!),
                       ),
 
                     // File attachment
@@ -2426,17 +2415,7 @@ class _MessageBody extends StatelessWidget {
           flushInline();
           widgets.add(Padding(
             padding: const EdgeInsets.symmetric(vertical: 4),
-            child: GestureDetector(
-              onTap: () => _showFullScreenImage(context, url),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: AuthenticatedNetworkImage(
-                  url: url,
-                  width: 200,
-                  height: 150,
-                ),
-              ),
-            ),
+            child: _ImageAttachmentCard(url: url),
           ));
         case _FilePart(:final url):
           flushInline();
@@ -2516,8 +2495,81 @@ class _LocationButton extends StatelessWidget {
   }
 }
 
-/// A tappable file attachment button. Detects PDF files and shows an
-/// appropriate icon. Tapping opens the file URL in an external application.
+/// A styled image attachment card that mirrors the AI-agent attachment look.
+class _ImageAttachmentCard extends StatelessWidget {
+  final String url;
+
+  const _ImageAttachmentCard({required this.url});
+
+  static const Color _imageFileColor = Color(0xFF00897B);
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: EdgeInsets.zero,
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: _imageFileColor.withAlpha(40)),
+      ),
+      child: InkWell(
+        onTap: () => _showFullScreenImage(context, url),
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: AuthenticatedNetworkImage(
+                  url: url,
+                  width: 200,
+                  height: 150,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Container(
+                    width: 26,
+                    height: 26,
+                    decoration: BoxDecoration(
+                      color: _imageFileColor.withAlpha(15),
+                      borderRadius: BorderRadius.circular(7),
+                    ),
+                    child: const Icon(
+                      Icons.image_rounded,
+                      size: 16,
+                      color: _imageFileColor,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'תמונה',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: _imageFileColor,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    Icons.open_in_new_rounded,
+                    size: 17,
+                    color: Colors.grey.shade400,
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _FileAttachmentButton extends StatelessWidget {
   final String url;
 
@@ -2537,63 +2589,79 @@ class _FileAttachmentButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final icon = _isPdf ? Icons.picture_as_pdf : Icons.attach_file;
-    final iconColor = _isPdf ? Colors.red.shade700 : AppColors.primary;
+    final iconColor = _isPdf ? const Color(0xFFE53935) : AppColors.primary;
+    final bgColor = iconColor.withAlpha(15);
 
-    return InkWell(
-      onTap: () async {
-        if (_isAuthenticatedUploadUrl(url)) {
-          final opened = await openAuthenticatedFileExternally(context, url);
-          if (!opened) {
-            showTopToast(context, 'שגיאה בפתיחת הקובץ');
+    return Card(
+      margin: EdgeInsets.zero,
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: iconColor.withAlpha(40)),
+      ),
+      child: InkWell(
+        onTap: () async {
+          if (_isAuthenticatedUploadUrl(url)) {
+            final opened = await openAuthenticatedFileExternally(context, url);
+            if (!opened) {
+              showTopToast(context, 'שגיאה בפתיחת הקובץ');
+            }
+            return;
           }
-          return;
-        }
-        final uri = Uri.tryParse(url);
-        if (uri != null) {
-          try {
-            await launchUrl(uri, mode: LaunchMode.externalApplication);
-          } catch (_) {}
-        }
-      },
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        padding: const EdgeInsets.only(left: 10, top: 8, bottom: 8, right: 4),
-        decoration: BoxDecoration(
-          color: iconColor.withAlpha((255 * 0.1).round()),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: iconColor.withAlpha((255 * 0.3).round())),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, color: iconColor, size: 20),
-            const SizedBox(width: 6),
-            Flexible(
-              child: Text(
-                _fileName,
-                style: TextStyle(
-                  color: iconColor,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 13,
+          final uri = Uri.tryParse(url);
+          if (uri != null) {
+            try {
+              await launchUrl(uri, mode: LaunchMode.externalApplication);
+            } catch (_) {}
+          }
+        },
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.only(left: 12, right: 8, top: 10, bottom: 10),
+          child: Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: bgColor,
+                  borderRadius: BorderRadius.circular(10),
                 ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+                child: Icon(icon, color: iconColor, size: 22),
               ),
-            ),
-            const SizedBox(width: 4),
-            IconButton(
-              padding: const EdgeInsets.all(4),
-              constraints: const BoxConstraints(),
-              visualDensity: VisualDensity.compact,
-              icon: Icon(Icons.download, color: iconColor, size: 18),
-              tooltip: 'שמור במכשיר',
-              onPressed: () => _saveFileToDevice(
-                context,
-                url,
-                openAfterSave: false,
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _fileName,
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _isPdf ? 'מסמך PDF' : 'קובץ',
+                      style: TextStyle(fontSize: 11, color: iconColor),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+              IconButton(
+                padding: const EdgeInsets.all(4),
+                constraints: const BoxConstraints(),
+                visualDensity: VisualDensity.compact,
+                icon: Icon(Icons.download, color: iconColor, size: 18),
+                tooltip: 'שמור במכשיר',
+                onPressed: () => _saveFileToDevice(
+                  context,
+                  url,
+                  openAfterSave: false,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
