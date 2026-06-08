@@ -28,6 +28,7 @@ class _AccreditationAgentScreenState
   final ScrollController _scrollController = ScrollController();
 
   bool _isLoading = false;
+  String? _submittedQuestion;
   String? _answer;
   List<AccreditationFile> _relevantFiles = [];
   String? _errorMessage;
@@ -42,9 +43,11 @@ class _AccreditationAgentScreenState
   Future<void> _sendQuestion() async {
     final question = _questionController.text.trim();
     if (question.isEmpty) return;
+    _questionController.clear();
 
     setState(() {
       _isLoading = true;
+      _submittedQuestion = question;
       _answer = null;
       _relevantFiles = [];
       _errorMessage = null;
@@ -143,6 +146,7 @@ class _AccreditationAgentScreenState
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     _buildIntroCard(),
+                    if (_submittedQuestion != null) _buildQuestionCard(),
                     if (_isLoading) _buildLoadingIndicator(),
                     if (_errorMessage != null) _buildErrorCard(),
                     if (_answer != null) _buildAnswerCard(),
@@ -252,6 +256,36 @@ class _AccreditationAgentScreenState
     );
   }
 
+  Widget _buildQuestionCard() {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.person_outline, color: AppColors.primary, size: 20),
+                SizedBox(width: 8),
+                Text(
+                  'השאלה שלך',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              _submittedQuestion ?? '',
+              style: const TextStyle(fontSize: 14, height: 1.6),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildFilesSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -319,7 +353,10 @@ class _AccreditationAgentScreenState
                 maxLines: 4,
                 minLines: 1,
                 textInputAction: TextInputAction.send,
-                onSubmitted: (_) => _isLoading ? null : _sendQuestion(),
+                onSubmitted: (_) {
+                  if (_isLoading) return;
+                  _sendQuestion();
+                },
                 decoration: InputDecoration(
                   hintText: 'הקלד שאלה על מסמכי האקרדיטציה...',
                   hintTextDirection: TextDirection.rtl,
