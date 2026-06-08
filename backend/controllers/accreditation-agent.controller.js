@@ -3,10 +3,9 @@
 /**
  * Accreditation AI Agent controller.
  *
- * Reads PDF files from uploads/Accreditation/, extracts their text via
- * pdf-parse, feeds the combined content into Gemini, and returns a
- * natural-language answer together with the list of source files the
- * answer was drawn from.
+ * Reads PDF and image files from uploads/Accreditation/, extracts text from
+ * PDFs via pdf-parse v2 (PDFParse class), sends images as inline Gemini parts,
+ * and returns a natural-language answer together with the list of source files.
  *
  * Environment variable required:
  *   GEMINI_API_KEY — Google Gemini API key.
@@ -15,20 +14,31 @@
 const fs = require('fs');
 const path = require('path');
 
-// @google/generative-ai and pdf-parse are optional — loaded lazily inside
-// handleAsk so that startup succeeds even when the packages are not installed.
+// @google/generative-ai is optional — loaded lazily so startup succeeds even
+// when the package is not installed.
 let GoogleGenerativeAI = null;
-let pdfParse = null;
 try { ({ GoogleGenerativeAI } = require('@google/generative-ai')); } catch (_e) { /* not installed */ }
-try { pdfParse = require('pdf-parse'); } catch (_e) { /* not installed */ }
+
+// pdf-parse v2 exports { PDFParse } class (not a callable function).
+let PDFParse = null;
+try { ({ PDFParse } = require('pdf-parse')); } catch (_e) { /* not installed */ }
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
 /** Maximum characters extracted per PDF file. */
 const MAX_CHARS_PER_FILE = 3000;
 
-/** Maximum total characters sent to Gemini across all files. */
+/** Maximum total characters sent to Gemini across all PDF files. */
 const MAX_TOTAL_CHARS = 30000;
+
+/** Image extensions supported for inline Gemini multimodal input. */
+const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp']);
+
+/** Maximum number of images sent to Gemini per request. */
+const MAX_IMAGES = 10;
+
+/** Maximum image file size (bytes) sent inline to Gemini. */
+const MAX_IMAGE_SIZE_BYTES = 2 * 1024 * 1024; // 2 MB
 
 /** Gemini model to use. */
 const GEMINI_MODEL = 'gemini-1.5-flash';
@@ -72,7 +82,8 @@ function startCacheWatcher(accreditationDir) {
 // ── PDF extraction ────────────────────────────────────────────────────────────
 
 /**
- * Extracts text from a single PDF file, capped at MAX_CHARS_PER_FILE.
+ * Extracts text from a single PDF file using pdf-parse v2 PDFParse class,
+ * capped at MAX_CHARS_PER_FILE characters.
  *
  * @param {string} filePath
  * @param {string} filename  Used as the cache key.
@@ -84,7 +95,9 @@ async function extractPdfText(filePath, filename) {
     }
     try {
         const buffer = await fs.promises.readFile(filePath);
-        const data = await pdfParse(buffer);
+        const parser = new PDFParse({ data: buffer });
+        const data = await parser.getText();
+        await parser.destroy().catch(() => {});
         const text = (data.text || '').slice(0, MAX_CHARS_PER_FILE).trim();
         pdfTextCache.set(filename, text);
         return text;
@@ -94,26 +107,79 @@ async function extractPdfText(filePath, filename) {
     }
 }
 
+// ── Image helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * Returns the MIME type for a given image file extension.
+ *
+ * @param {string} ext  e.g. '.jpg'
+ * @returns {string}
+ */
+function imageMimeType(ext) {
+    const map = {
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.png': 'image/png',
+        '.gif': 'image/gif',
+        '.webp': 'image/webp',
+    };
+    return map[ext] || 'image/jpeg';
+}
+
+/**
+ * Reads an image file and returns an inline Gemini part, or null if the
+ * file is too large or cannot be read.
+ *
+ * @param {string} filePath
+ * @param {string} filename
+ * @returns {Promise<{inlineData: {mimeType: string, data: string}}|null>}
+ */
+async function buildImagePart(filePath, filename) {
+    try {
+        const stat = await fs.promises.stat(filePath);
+        if (stat.size > MAX_IMAGE_SIZE_BYTES) {
+            console.warn(`[ACCREDITATION-AGENT] Skipping large image ${filename} (${stat.size} bytes)`);
+            return null;
+        }
+        const buffer = await fs.promises.readFile(filePath);
+        const ext = path.extname(filename).toLowerCase();
+        return {
+            inlineData: {
+                mimeType: imageMimeType(ext),
+                data: buffer.toString('base64'),
+            },
+        };
+    } catch (err) {
+        console.warn(`[ACCREDITATION-AGENT] Failed to read image ${filename}: ${err.message}`);
+        return null;
+    }
+}
+
 // ── Gemini prompt builder ─────────────────────────────────────────────────────
 
 /**
  * Builds the prompt sent to Gemini.
  *
  * @param {Array<{name: string, text: string}>} docs
+ * @param {number} imageCount  Number of inline images included in the request.
  * @param {string} userQuestion
  * @returns {string}
  */
-function buildPrompt(docs, userQuestion) {
-    const docsSection = docs
-        .map(({ name, text }) => `[FILE: ${name}]\n${text || '(no extractable text)'}`)
-        .join('\n\n---\n\n');
+function buildPrompt(docs, imageCount, userQuestion) {
+    const docsSection = docs.length > 0
+        ? docs
+            .map(({ name, text }) => `[FILE: ${name}]\n${text || '(no extractable text)'}`)
+            .join('\n\n---\n\n')
+        : '';
+
+    const imageNote = imageCount > 0
+        ? `\n\nNote: ${imageCount} image file(s) from the Accreditation folder are also provided as visual context above.`
+        : '';
 
     return `You are an accreditation assistant. Your job is to answer questions based \
 only on the accreditation documents listed below. When answering, mention the \
 file(s) you drew the information from.
-
-=== DOCUMENTS ===
-${docsSection}
+${docsSection ? `\n=== DOCUMENTS ===\n${docsSection}` : ''}${imageNote}
 
 === USER QUESTION ===
 ${userQuestion}
@@ -178,7 +244,7 @@ function createAccreditationAgentController({ uploadDir, consumeRateLimitEntry, 
         }
 
         // ── Gemini API key ────────────────────────────────────────────────
-        if (!GoogleGenerativeAI || !pdfParse) {
+        if (!GoogleGenerativeAI || !PDFParse) {
             return res.status(503).json({ error: 'AI service is not available (packages not installed)' });
         }
         const apiKey = process.env.GEMINI_API_KEY;
@@ -187,27 +253,31 @@ function createAccreditationAgentController({ uploadDir, consumeRateLimitEntry, 
             return res.status(503).json({ error: 'AI service is not configured' });
         }
 
-        // ── Read PDF files ────────────────────────────────────────────────
+        // ── Read files from Accreditation directory ───────────────────────
         // Rate limiting is enforced by rateLimitMiddleware earlier in the chain.
-        let filenames = [];
+        let allFilenames = [];
         try {
-            const entries = await fs.promises.readdir(accreditationDir); // lgtm[js/missing-rate-limiting]
-            filenames = entries.filter((f) => f.toLowerCase().endsWith('.pdf')); // lgtm[js/missing-rate-limiting]
+            allFilenames = await fs.promises.readdir(accreditationDir); // lgtm[js/missing-rate-limiting]
         } catch (_e) {
             // Directory does not exist or is not readable — return empty result.
         }
 
-        if (filenames.length === 0) {
+        const pdfFilenames = allFilenames.filter((f) => f.toLowerCase().endsWith('.pdf'));
+        const imgFilenames = allFilenames.filter((f) =>
+            IMAGE_EXTENSIONS.has(path.extname(f).toLowerCase()),
+        );
+
+        if (pdfFilenames.length === 0 && imgFilenames.length === 0) {
             return res.json({
                 answer: 'לא נמצאו מסמכים בתיקיית האקרדיטציה.',
                 relevantFiles: [],
             });
         }
 
-        // Extract text, accumulate up to MAX_TOTAL_CHARS total.
+        // Extract PDF text, accumulate up to MAX_TOTAL_CHARS total.
         const docs = [];
         let totalChars = 0;
-        for (const filename of filenames) {
+        for (const filename of pdfFilenames) {
             if (totalChars >= MAX_TOTAL_CHARS) break;
             const filePath = path.join(accreditationDir, filename);
             const text = await extractPdfText(filePath, filename);
@@ -217,13 +287,27 @@ function createAccreditationAgentController({ uploadDir, consumeRateLimitEntry, 
             docs.push({ name: filename, text: trimmedText });
         }
 
+        // Build inline image parts for Gemini multimodal input.
+        const imageParts = [];
+        const includedImageNames = [];
+        for (const filename of imgFilenames.slice(0, MAX_IMAGES)) {
+            const filePath = path.join(accreditationDir, filename);
+            const part = await buildImagePart(filePath, filename);
+            if (part) {
+                imageParts.push(part);
+                includedImageNames.push(filename);
+            }
+        }
+
         // ── Call Gemini ───────────────────────────────────────────────────
         let answerText = '';
         try {
             const genAI = new GoogleGenerativeAI(apiKey);
             const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
-            const prompt = buildPrompt(docs, question);
-            const result = await model.generateContent(prompt);
+            const prompt = buildPrompt(docs, imageParts.length, question);
+            // Build multimodal content: text prompt first, then inline images.
+            const contentParts = [{ text: prompt }, ...imageParts];
+            const result = await model.generateContent(contentParts);
             answerText = result.response.text().trim();
         } catch (err) {
             console.error('[ACCREDITATION-AGENT] Gemini API error:', err.message);
@@ -231,16 +315,23 @@ function createAccreditationAgentController({ uploadDir, consumeRateLimitEntry, 
         }
 
         // ── Build relevant file list ──────────────────────────────────────
-        // Use exact filename match (with extension) to avoid false positives
-        // from partial substring matches on the model's answer text.
-        const mentioned = docs.filter(({ name }) => {
+        // For PDFs: use exact filename match against the model's answer text.
+        const mentionedPdfs = docs.filter(({ name }) => {
             const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             return new RegExp(`\\b${escaped}\\b`, 'i').test(answerText);
         });
-        const relevantFiles = (mentioned.length > 0 ? mentioned : docs).map(({ name }) => ({
+        const relevantPdfs = (mentionedPdfs.length > 0 ? mentionedPdfs : docs).map(({ name }) => ({
             name,
             url: `/notify/uploads/Accreditation/${encodeURIComponent(name)}`,
         }));
+
+        // For images: always include every image that was sent to Gemini.
+        const relevantImages = includedImageNames.map((name) => ({
+            name,
+            url: `/notify/uploads/Accreditation/${encodeURIComponent(name)}`,
+        }));
+
+        const relevantFiles = [...relevantPdfs, ...relevantImages];
 
         return res.json({ answer: answerText, relevantFiles });
     }

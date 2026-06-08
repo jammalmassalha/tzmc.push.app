@@ -79,6 +79,38 @@ class _AccreditationAgentScreenState
   }
 
   Future<void> _openFile(AccreditationFile file) async {
+    if (_isImageFile(file.name)) {
+      final resolved = resolveToAbsoluteUrl(file.url);
+      if (!mounted) return;
+      showDialog<void>(
+        context: context,
+        builder: (_) => Dialog(
+          backgroundColor: Colors.black,
+          insetPadding: EdgeInsets.zero,
+          child: Stack(
+            children: [
+              Center(
+                child: InteractiveViewer(
+                  child: AuthenticatedNetworkImage(
+                    url: resolved,
+                    fit: BoxFit.contain,
+                  ),
+                ),
+              ),
+              Positioned(
+                top: 8,
+                right: 8,
+                child: IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white),
+                  onPressed: () => Navigator.of(context).pop(),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+      return;
+    }
     final resolved = resolveToAbsoluteUrl(file.url);
     final uri = Uri.tryParse(resolved);
     if (uri == null) return;
@@ -235,11 +267,14 @@ class _AccreditationAgentScreenState
   }
 
   Widget _buildFileTile(AccreditationFile file) {
+    final isImage = _isImageFile(file.name);
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       child: ListTile(
-        leading: const Icon(Icons.picture_as_pdf, color: Colors.red),
+        leading: isImage
+            ? const Icon(Icons.image, color: Colors.blueGrey)
+            : const Icon(Icons.picture_as_pdf, color: Colors.red),
         title: Text(
           file.name,
           style: const TextStyle(fontSize: 13),
@@ -250,6 +285,14 @@ class _AccreditationAgentScreenState
         onTap: () => _openFile(file),
       ),
     );
+  }
+
+  /// Returns true when [name] has an image extension.
+  static bool _isImageFile(String name) {
+    const imageExts = {'.jpg', '.jpeg', '.png', '.gif', '.webp'};
+    final dot = name.lastIndexOf('.');
+    if (dot < 0) return false;
+    return imageExts.contains(name.substring(dot).toLowerCase());
   }
 
   Widget _buildInputBar() {
