@@ -54,7 +54,8 @@ String _sanitizeSaveFilename(String name) {
   final withoutTraversal = name
       .replaceAll('..', '_')
       .replaceAll('/', '_')
-      .replaceAll('\\', '_');
+      .replaceAll('\\', '_')
+      .replaceAll('\u0000', '_');
   final safe = withoutTraversal.replaceAll(RegExp(r'[<>:"|?*\x00-\x1F]'), '_').trim();
   return safe.isEmpty ? 'file_${DateTime.now().millisecondsSinceEpoch}' : safe;
 }
@@ -105,7 +106,7 @@ Future<bool> openAuthenticatedFileExternally(BuildContext context, String url) a
     await file.writeAsBytes(Uint8List.fromList(response.data!), flush: true);
     return launchUrl(file.uri, mode: LaunchMode.externalApplication);
   } catch (e) {
-    debugPrint('[openAuthenticatedFileExternally] Failed: $e');
+    debugPrint('[openAuthenticatedFileExternally] Download/write/open failed: $e');
     return false;
   }
 }
