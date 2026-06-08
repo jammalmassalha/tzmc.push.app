@@ -1283,7 +1283,11 @@ String _extractSaveFilename(String url) {
 /// On web the file is opened in a new tab instead (no local file system).
 /// The caller should pre-capture any context-sensitive objects before the
 /// `await` if the calling widget may be unmounted during the download.
-Future<void> _saveFileToDevice(BuildContext context, String url) async {
+Future<void> _saveFileToDevice(
+  BuildContext context,
+  String url, {
+  bool openAfterSave = false,
+}) async {
   if (kIsWeb) {
     final uri = Uri.tryParse(url);
     if (uri != null) {
@@ -1319,11 +1323,30 @@ Future<void> _saveFileToDevice(BuildContext context, String url) async {
     final file = File('${dir.path}/$filename');
     await file.writeAsBytes(bytes, flush: true);
 
+    if (openAfterSave) {
+      final opened = await launchUrl(
+        file.uri,
+        mode: LaunchMode.externalApplication,
+      );
+      if (!opened) {
+        showTopToastOnOverlay(overlay, 'נשמר: $filename');
+      }
+      return;
+    }
+
     showTopToastOnOverlay(overlay, 'נשמר: $filename');
   } catch (e) {
     debugPrint('_saveFileToDevice error: $e');
     showTopToastOnOverlay(overlay, 'שגיאה בשמירת הקובץ');
   }
+}
+
+bool _isAuthenticatedUploadUrl(String url) {
+  final resolved = resolveToAbsoluteUrl(url);
+  final uri = Uri.tryParse(resolved);
+  if (uri == null) return false;
+  final path = uri.path.toLowerCase();
+  return path.startsWith('/notify/uploads/') || path.startsWith('/uploads/');
 }
 
 void _showFullScreenImage(BuildContext context, String imageUrl) {
@@ -2473,6 +2496,10 @@ class _FileAttachmentButton extends StatelessWidget {
 
     return InkWell(
       onTap: () async {
+        if (_isAuthenticatedUploadUrl(url)) {
+          await _saveFileToDevice(context, url, openAfterSave: true);
+          return;
+        }
         final uri = Uri.tryParse(url);
         if (uri != null) {
           try {
@@ -2627,6 +2654,10 @@ class _LinkButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       onTap: () async {
+        if (_isAuthenticatedUploadUrl(url)) {
+          await _saveFileToDevice(context, url, openAfterSave: true);
+          return;
+        }
         final uri = Uri.tryParse(url);
         if (uri != null) {
           try {
