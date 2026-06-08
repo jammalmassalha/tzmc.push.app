@@ -5,13 +5,17 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+const double kAccessibilityMinTextScale = 1.0;
+const double kAccessibilityMaxTextScale = 1.6;
+const double kAccessibilityDefaultTextScale = 1.15;
+
 class AccessibilitySettings {
   final bool enabled;
   final double textScaleFactor;
 
   const AccessibilitySettings({
     this.enabled = false,
-    this.textScaleFactor = 1.15,
+    this.textScaleFactor = kAccessibilityDefaultTextScale,
   });
 
   double get effectiveTextScaleFactor => enabled ? textScaleFactor : 1.0;
@@ -46,10 +50,13 @@ class AccessibilitySettingsNotifier extends Notifier<AccessibilitySettings> {
     try {
       final prefs = await SharedPreferences.getInstance();
       final enabled = prefs.getBool(_enabledKey) ?? false;
-      final textScale = prefs.getDouble(_textScaleFactorKey) ?? 1.15;
+      final textScale =
+          prefs.getDouble(_textScaleFactorKey) ?? kAccessibilityDefaultTextScale;
       state = state.copyWith(
         enabled: enabled,
-        textScaleFactor: textScale.clamp(1.0, 1.6).toDouble(),
+        textScaleFactor: textScale
+            .clamp(kAccessibilityMinTextScale, kAccessibilityMaxTextScale)
+            .toDouble(),
       );
     } catch (_) {
       // Keep defaults when local persistence is unavailable.
@@ -65,7 +72,9 @@ class AccessibilitySettingsNotifier extends Notifier<AccessibilitySettings> {
   }
 
   Future<void> setTextScaleFactor(double value) async {
-    final normalized = value.clamp(1.0, 1.6).toDouble();
+    final normalized = value
+        .clamp(kAccessibilityMinTextScale, kAccessibilityMaxTextScale)
+        .toDouble();
     state = state.copyWith(textScaleFactor: normalized);
     try {
       final prefs = await SharedPreferences.getInstance();

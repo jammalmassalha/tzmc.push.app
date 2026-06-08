@@ -1231,7 +1231,9 @@ class _AccessibilitySettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(accessibilitySettingsProvider);
     final notifier = ref.read(accessibilitySettingsProvider.notifier);
-    final textScale = settings.textScaleFactor.clamp(1.0, 1.6).toDouble();
+    final textScale = settings.textScaleFactor
+        .clamp(kAccessibilityMinTextScale, kAccessibilityMaxTextScale)
+        .toDouble();
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -1285,8 +1287,8 @@ class _AccessibilitySettingsScreen extends ConsumerWidget {
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
                 Slider(
-                  min: 1.0,
-                  max: 1.6,
+                  min: kAccessibilityMinTextScale,
+                  max: kAccessibilityMaxTextScale,
                   divisions: 6,
                   value: textScale,
                   onChanged: settings.enabled
