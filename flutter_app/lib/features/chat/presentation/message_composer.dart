@@ -428,10 +428,12 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
         return;
       }
 
+      // Re-bind as non-nullable so Dart flow analysis carries into the closure.
+      final fileBytes = bytes;
       setState(() {
         _selectedFile = xfile.XFile.fromBytes(
           name: picked.name,
-          bytes: bytes!,
+          bytes: fileBytes,
           mimeType: 'application/pdf',
         );
         _selectedImage = null;
