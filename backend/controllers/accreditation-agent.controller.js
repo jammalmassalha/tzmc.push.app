@@ -13,15 +13,39 @@
 
 const fs = require('fs');
 const path = require('path');
+const { createRequire } = require('module');
+
+function loadOptionalPackage(packageName) {
+    try {
+        return require(packageName);
+    } catch (_err) {
+        try {
+            const requireFromCwd = createRequire(path.join(process.cwd(), 'package.json'));
+            return requireFromCwd(packageName);
+        } catch (_cwdErr) {
+            return null;
+        }
+    }
+}
 
 // @google/generative-ai is optional — loaded lazily so startup succeeds even
 // when the package is not installed.
 let GoogleGenerativeAI = null;
-try { ({ GoogleGenerativeAI } = require('@google/generative-ai')); } catch (_e) { /* not installed */ }
+{
+    const geminiPkg = loadOptionalPackage('@google/generative-ai');
+    if (geminiPkg && typeof geminiPkg.GoogleGenerativeAI === 'function') {
+        ({ GoogleGenerativeAI } = geminiPkg);
+    }
+}
 
 // pdf-parse v2 exports { PDFParse } class (not a callable function).
 let PDFParse = null;
-try { ({ PDFParse } = require('pdf-parse')); } catch (_e) { /* not installed */ }
+{
+    const pdfParsePkg = loadOptionalPackage('pdf-parse');
+    if (pdfParsePkg && typeof pdfParsePkg.PDFParse === 'function') {
+        ({ PDFParse } = pdfParsePkg);
+    }
+}
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -58,6 +82,7 @@ const RATE_LIMIT_WINDOW_MS = 60 * 1000;
  */
 const pdfTextCache = new Map();
 let cacheWatcher = null;
+let warnedMissingPdfParse = false;
 
 /**
  * Starts watching the Accreditation directory for changes and clears
@@ -92,6 +117,13 @@ function startCacheWatcher(accreditationDir) {
 async function extractPdfText(filePath, filename) {
     if (pdfTextCache.has(filename)) {
         return pdfTextCache.get(filename);
+    }
+    if (!PDFParse) {
+        if (!warnedMissingPdfParse) {
+            warnedMissingPdfParse = true;
+            console.warn('[ACCREDITATION-AGENT] pdf-parse is unavailable; continuing without PDF text extraction');
+        }
+        return '';
     }
     try {
         const buffer = await fs.promises.readFile(filePath);
@@ -244,7 +276,7 @@ function createAccreditationAgentController({ uploadDir, consumeRateLimitEntry, 
         }
 
         // ── Gemini API key ────────────────────────────────────────────────
-        if (!GoogleGenerativeAI || !PDFParse) {
+        if (!GoogleGenerativeAI) {
             return res.status(503).json({ error: 'AI service is not available (packages not installed)' });
         }
         const apiKey = process.env.GEMINI_API_KEY;
