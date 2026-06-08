@@ -407,35 +407,35 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['pdf'],
-        withData: true,
+        withData: kIsWeb,
       );
       if (result == null || result.files.isEmpty) return;
       final picked = result.files.first;
 
-      // On native platforms, fall back to reading from the file path when bytes
-      // is null (e.g. large PDFs, cloud-backed files, or iOS Files providers).
-      Uint8List? bytes = picked.bytes;
-      if (bytes == null && !kIsWeb && picked.path != null) {
-        try {
-          bytes = await io.File(picked.path!).readAsBytes();
-        } catch (_) {
-          // handled below
-        }
-      }
-
-      if (bytes == null) {
-        if (mounted) showTopToast(context, 'לא ניתן לקרוא את הקובץ. נסה שוב.');
-        return;
-      }
-
-      // Re-bind as non-nullable so Dart flow analysis carries into the closure.
-      final fileBytes = bytes;
-      setState(() {
-        _selectedFile = xfile.XFile.fromBytes(
-          name: picked.name,
-          bytes: fileBytes,
-          mimeType: 'application/pdf',
+      final mimeType =
+          xfile.XFileUtils.mimeTypeFromExtension(picked.extension ?? 'pdf');
+      late final xfile.XFile selectedFile;
+      if (!kIsWeb && picked.path != null && picked.path!.trim().isNotEmpty) {
+        selectedFile = xfile.XFileUtils.fromNativePath(
+          picked.path!,
+          () => io.File(picked.path!).readAsBytes(),
+          mimeType: mimeType,
         );
+      } else {
+        final bytes = picked.bytes;
+        if (bytes == null) {
+          if (mounted) showTopToast(context, 'לא ניתן לקרוא את הקובץ. נסה שוב.');
+          return;
+        }
+        selectedFile = xfile.XFile.fromBytes(
+          name: picked.name,
+          bytes: bytes,
+          mimeType: mimeType,
+        );
+      }
+
+      setState(() {
+        _selectedFile = selectedFile;
         _selectedImage = null;
         _selectedImageBytes = null;
       });

@@ -1433,7 +1433,7 @@ void _showFullScreenImage(BuildContext context, String imageUrl) {
               onPressed: () => _saveFileToDevice(
                 ctx,
                 resolveToAbsoluteUrl(imageUrl),
-                openAfterSave: true,
+                openAfterSave: false,
               ),
               icon: const Icon(Icons.download, color: Colors.white, size: 28),
               style: IconButton.styleFrom(backgroundColor: Colors.black38),
@@ -2086,7 +2086,7 @@ class _MessageBubble extends StatelessWidget {
                   _saveFileToDevice(
                     context,
                     message.imageUrl ?? message.fileUrl!,
-                    openAfterSave: true,
+                    openAfterSave: false,
                   );
                 },
               ),
@@ -2590,7 +2590,7 @@ class _FileAttachmentButton extends StatelessWidget {
               onPressed: () => _saveFileToDevice(
                 context,
                 url,
-                openAfterSave: true,
+                openAfterSave: false,
               ),
             ),
           ],

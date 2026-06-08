@@ -24,6 +24,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/api/http_client.dart';
 import '../../core/config/environment.dart';
+import '../../core/utils/toast_utils.dart';
 
 /// Converts a server-issued relative upload path to an absolute URL.
 ///
@@ -104,7 +105,11 @@ Future<bool> openAuthenticatedFileExternally(BuildContext context, String url) a
     if (response.statusCode != 200 || response.data == null) return false;
     final file = await _createUniqueFile(_extractSaveFilename(resolvedUrl));
     await file.writeAsBytes(Uint8List.fromList(response.data!), flush: true);
-    return launchUrl(file.uri, mode: LaunchMode.externalApplication);
+    final opened = await launchUrl(file.uri);
+    if (!opened) {
+      showTopToast(context, 'הקובץ נשמר ב: ${file.path}');
+    }
+    return true;
   } catch (e) {
     debugPrint('[openAuthenticatedFileExternally] Download/write/open failed: $e');
     return false;
