@@ -548,7 +548,8 @@ class _AccreditationAgentScreenState
   /// - Lines starting with `* ` → bullet point
   /// - `[FILE: name]` references → grey chip label
   Widget _buildFormattedAnswer(String text) {
-    // Strip trailing [FILE: ...] references (shown in files section).
+    // Strip [FILE: ...] references — they are redundant here because the
+    // same files are shown separately in the relevant-files section below.
     final cleaned = text.replaceAll(RegExp(r'\[FILE:[^\]]*\]'), '').trim();
     final lines = cleaned.split('\n');
     final widgets = <Widget>[];
@@ -670,13 +671,16 @@ class _AccreditationAgentScreenState
     );
   }
 
+  static const Color _imageFileColor = Color(0xFF00897B); // teal
+  static const Color _pdfFileColor = Color(0xFFE53935);   // red
+
   Widget _buildFileTile(AccreditationFile file) {
     final isImage = _isImageFile(file.name);
     final isPdf = file.name.toLowerCase().endsWith('.pdf');
-    final iconColor = isImage ? const Color(0xFF00897B) : const Color(0xFFE53935);
+    final iconColor = isImage ? _imageFileColor : _pdfFileColor;
     final bgColor = isImage
-        ? const Color(0xFF00897B).withAlpha(15)
-        : const Color(0xFFE53935).withAlpha(15);
+        ? _imageFileColor.withAlpha(15)
+        : _pdfFileColor.withAlpha(15);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
