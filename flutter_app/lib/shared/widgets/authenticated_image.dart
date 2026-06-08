@@ -105,6 +105,11 @@ Future<bool> openAuthenticatedFileExternally(BuildContext context, String url) a
     }
   }
 
+  // For authenticated upload URLs, never fall back to launchUrl with the
+  // server URI. The device browser does not share the app's session cookie, so
+  // opening the URL in a browser would return 401 "Authentication required"
+  // and the user would see "not authorized". Return false instead so callers
+  // can show an appropriate error message.
   try {
     final container = ProviderScope.containerOf(context, listen: false);
     final client = container.read(httpClientProvider);
@@ -113,11 +118,7 @@ Future<bool> openAuthenticatedFileExternally(BuildContext context, String url) a
       options: Options(responseType: ResponseType.bytes),
     );
     if (response.statusCode != 200 || response.data == null) {
-      try {
-        return await launchUrl(uri, mode: LaunchMode.externalApplication);
-      } catch (_) {
-        return false;
-      }
+      return false;
     }
     final file = await _createUniqueFile(_extractSaveFilename(resolvedUrl));
     await file.writeAsBytes(Uint8List.fromList(response.data!), flush: true);
@@ -131,9 +132,6 @@ Future<bool> openAuthenticatedFileExternally(BuildContext context, String url) a
     return true;
   } catch (e) {
     debugPrint('[openAuthenticatedFileExternally] Download/write/open failed: $e');
-    try {
-      return await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } catch (_) {}
     return false;
   }
 }
