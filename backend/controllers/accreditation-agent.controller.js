@@ -65,7 +65,7 @@ const CHUNK_OVERLAP_CHARS = 200;
 const MAX_CHUNKS_IN_PROMPT = 20;
 
 /** Maximum number of PDFs sent inline to Gemini per request. */
-const MAX_INLINE_PDFS = 10;
+const MAX_INLINE_PDFS = 15;
 
 /** Maximum PDF file size (bytes) sent inline to Gemini. */
 const MAX_INLINE_PDF_SIZE_BYTES = 8 * 1024 * 1024; // 8 MB
@@ -74,7 +74,7 @@ const MAX_INLINE_PDF_SIZE_BYTES = 8 * 1024 * 1024; // 8 MB
 const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp']);
 
 /** Maximum number of images sent to Gemini per request. */
-const MAX_IMAGES = 10;
+const MAX_IMAGES = 15;
 
 /** Maximum image file size (bytes) sent inline to Gemini. */
 const MAX_IMAGE_SIZE_BYTES = 2 * 1024 * 1024; // 2 MB
