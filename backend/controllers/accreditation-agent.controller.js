@@ -488,9 +488,7 @@ function createAccreditationAgentController({ uploadDir, consumeRateLimitEntry, 
                 for (const filename of pdfFilenames) {
                     const filePath = path.join(accreditationDir, filename);
                     const text = await extractPdfText(filePath, filename);
-                    if (text) {
-                        docs.push({ name: filename, text });
-                    }
+                    docs.push({ name: filename, text: text || '' });
                 }
             }
         }
@@ -535,7 +533,9 @@ function createAccreditationAgentController({ uploadDir, consumeRateLimitEntry, 
             const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             return new RegExp(`\\b${escaped}\\b`, 'i').test(answerText);
         });
-        const relevantPdfNames = mentionedPdfNames.length > 0 ? mentionedPdfNames : uniquePdfNames;
+        const relevantPdfNames = mentionedPdfNames.length > 0
+            ? mentionedPdfNames
+            : (uniquePdfNames.length > 0 ? uniquePdfNames : pdfFilenames);
         const relevantPdfs = relevantPdfNames.map((name) => ({
             name,
             url: `/notify/uploads/Accreditation/${encodeURIComponent(name)}`,
