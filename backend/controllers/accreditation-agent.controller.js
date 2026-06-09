@@ -90,6 +90,11 @@ const RATE_LIMIT_WINDOW_MS = 60 * 1000;
  * @type {Map<string, string>}
  */
 const pdfTextCache = new Map();
+/**
+ * Cache: filename → { mtimeMs, size, chunks } where chunks are embedded
+ * document chunks for vector retrieval.
+ * @type {Map<string, {mtimeMs: number, size: number, chunks: Array<{name: string, text: string, embedding: number[]}>}>}
+ */
 const pdfVectorCache = new Map();
 let cacheWatcher = null;
 let warnedMissingPdfParse = false;
@@ -164,7 +169,10 @@ function splitIntoChunks(text) {
     if (clean.length <= CHUNK_SIZE_CHARS) return [clean];
 
     const chunks = [];
-    const step = Math.max(1, CHUNK_SIZE_CHARS - CHUNK_OVERLAP_CHARS);
+    const chunkOverlap = CHUNK_OVERLAP_CHARS >= CHUNK_SIZE_CHARS
+        ? Math.max(0, CHUNK_SIZE_CHARS - 1)
+        : CHUNK_OVERLAP_CHARS;
+    const step = Math.max(1, CHUNK_SIZE_CHARS - chunkOverlap);
     for (let start = 0; start < clean.length; start += step) {
         const chunk = clean.slice(start, start + CHUNK_SIZE_CHARS).trim();
         if (!chunk) continue;
@@ -194,7 +202,7 @@ function extractEmbeddingValues(embeddingResult) {
  */
 function cosineSimilarity(a, b) {
     if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || b.length === 0 || a.length !== b.length) {
-        return -1;
+        return Number.NEGATIVE_INFINITY;
     }
     let dot = 0;
     let normA = 0;
@@ -206,7 +214,7 @@ function cosineSimilarity(a, b) {
         normA += av * av;
         normB += bv * bv;
     }
-    if (normA <= 0 || normB <= 0) return -1;
+    if (normA <= 0 || normB <= 0) return Number.NEGATIVE_INFINITY;
     return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
