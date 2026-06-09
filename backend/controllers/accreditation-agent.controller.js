@@ -64,6 +64,12 @@ const CHUNK_OVERLAP_CHARS = 200;
 /** Maximum number of text chunks sent to Gemini per question. */
 const MAX_CHUNKS_IN_PROMPT = 20;
 
+/** Maximum number of PDFs sent inline to Gemini per request. */
+const MAX_INLINE_PDFS = 10;
+
+/** Maximum PDF file size (bytes) sent inline to Gemini. */
+const MAX_INLINE_PDF_SIZE_BYTES = 8 * 1024 * 1024; // 8 MB
+
 /** Image extensions supported for inline Gemini multimodal input. */
 const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp']);
 
@@ -331,31 +337,71 @@ async function buildImagePart(filePath, filename) {
     }
 }
 
+/**
+ * Reads a PDF file and returns an inline Gemini part, or null if the
+ * file is too large or cannot be read.
+ *
+ * @param {string} filePath
+ * @param {string} filename
+ * @returns {Promise<{inlineData: {mimeType: string, data: string}}|null>}
+ */
+async function buildPdfPart(filePath, filename) {
+    try {
+        const stat = await fs.promises.stat(filePath); // lgtm[js/missing-rate-limiting]
+        if (stat.size > MAX_INLINE_PDF_SIZE_BYTES) {
+            console.warn(`[ACCREDITATION-AGENT] Skipping large PDF ${filename} (${stat.size} bytes)`);
+            return null;
+        }
+        const buffer = await fs.promises.readFile(filePath); // lgtm[js/missing-rate-limiting]
+        return {
+            inlineData: {
+                mimeType: 'application/pdf',
+                data: buffer.toString('base64'),
+            },
+        };
+    } catch (err) {
+        console.warn(`[ACCREDITATION-AGENT] Failed to read PDF ${filename}: ${err.message}`);
+        return null;
+    }
+}
+
 // ── Gemini prompt builder ─────────────────────────────────────────────────────
 
 /**
  * Builds the prompt sent to Gemini.
  *
  * @param {Array<{name: string, text: string}>} docs
+ * @param {number} textDocCount  Number of extracted text docs included in the prompt.
+ * @param {number} inlinePdfCount  Number of inline PDF files included in the request.
  * @param {number} imageCount  Number of inline images included in the request.
  * @param {string} userQuestion
  * @returns {string}
  */
-function buildPrompt(docs, imageCount, userQuestion) {
+function buildPrompt(docs, textDocCount, inlinePdfCount, imageCount, userQuestion) {
     const docsSection = docs.length > 0
         ? docs
             .map(({ name, text }) => `[FILE: ${name}]\n${text || '(no extractable text)'}`)
             .join('\n\n---\n\n')
         : '';
 
-    const imageNote = imageCount > 0
-        ? `\n\nNote: ${imageCount} image file(s) from the Accreditation folder are also provided as visual context above.`
+    const contextNotes = [];
+    if (textDocCount > 0) {
+        contextNotes.push(`${textDocCount} extracted PDF text chunk(s) are included below.`);
+    }
+    if (inlinePdfCount > 0) {
+        contextNotes.push(`${inlinePdfCount} PDF file(s) from the Accreditation folder are also provided above as inline documents for visual/text reading.`);
+    }
+    if (imageCount > 0) {
+        contextNotes.push(`${imageCount} image file(s) from the Accreditation folder are also provided above as visual context.`);
+    }
+    const contextNoteBlock = contextNotes.length > 0
+        ? `\n\nNote: ${contextNotes.join(' ')}`
         : '';
 
     return `You are an accreditation assistant. Your job is to answer questions based \
 only on the accreditation documents listed below. When answering, mention the \
 file(s) you drew the information from.
-${docsSection ? `\n=== DOCUMENTS ===\n${docsSection}` : ''}${imageNote}
+${docsSection ? `\n=== DOCUMENTS ===\n${docsSection}` : ''}${contextNoteBlock}
 
 === USER QUESTION ===
 ${userQuestion}
@@ -505,12 +551,22 @@ function createAccreditationAgentController({ uploadDir, consumeRateLimitEntry, 
             }
         }
 
+        // Build inline PDF parts for Gemini multimodal input (helps for scanned PDFs).
+        const pdfParts = [];
+        for (const filename of pdfFilenames.slice(0, MAX_INLINE_PDFS)) {
+            const filePath = path.join(accreditationDir, filename);
+            const part = await buildPdfPart(filePath, filename);
+            if (part) {
+                pdfParts.push(part);
+            }
+        }
+
         // ── Call Gemini ───────────────────────────────────────────────────
         let answerText = '';
         try {
-            const prompt = buildPrompt(docs, imageParts.length, question);
-            // Build multimodal content: text prompt first, then inline images.
-            const contentParts = [{ text: prompt }, ...imageParts];
+            const prompt = buildPrompt(docs, docs.length, pdfParts.length, imageParts.length, question);
+            // Build multimodal content: text prompt first, then inline PDFs/images.
+            const contentParts = [{ text: prompt }, ...pdfParts, ...imageParts];
             const result = await answerModel.generateContent(contentParts);
             answerText = result.response.text().trim();
         } catch (err) {
