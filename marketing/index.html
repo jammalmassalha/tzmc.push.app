@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TZMC Push — Real-Time Alerts and Notifications</title>
+    <meta
+      name="description"
+      content="TZMC Push delivers fast, reliable alerts and real-time notifications so users can stay informed wherever they are."
+    />
+    <meta name="theme-color" content="#6750A4" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700;900&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        color-scheme: light;
+        --md-primary: #6750a4;
+        --md-primary-dark: #543892;
+        --md-on-primary: #ffffff;
+        --md-primary-container: #eaddff;
+        --md-on-primary-container: #21005d;
+        --md-secondary: #625b71;
+        --md-surface: #fffbfe;
+        --md-surface-2: #f7f2fa;
+        --md-surface-3: #ede7f6;
+        --md-on-surface: #1c1b1f;
+        --md-on-surface-variant: #49454f;
+        --md-outline: #79747e;
+        --md-outline-variant: #cac4d0;
+        --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.12);
+        --shadow-2: 0 10px 28px rgba(0, 0, 0, 0.12);
+        --radius-xl: 28px;
+        --radius-lg: 20px;
+        --radius-md: 16px;
+        --radius-sm: 12px;
+        --content-width: 1160px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        font-family: 'Roboto', Arial, sans-serif;
+        background:
+          radial-gradient(circle at top right, rgba(103, 80, 164, 0.13), transparent 26%),
+          linear-gradient(180deg, #f7f0ff 0%, var(--md-surface) 24%, #fcfcff 100%);
+        color: var(--md-on-surface);
+        line-height: 1.6;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      img {
+        max-width: 100%;
+        display: block;
+      }
+
+      .container {
+        width: min(100% - 32px, var(--content-width));
+        margin: 0 auto;
+      }
+
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        backdrop-filter: blur(14px);
+        background: rgba(255, 251, 254, 0.84);
+        border-bottom: 1px solid rgba(121, 116, 126, 0.16);
+      }
+
+      .topbar-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 14px 0;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+
+      .brand-badge {
+        width: 48px;
+        height: 48px;
+        border-radius: 16px;
+        display: grid;
+        place-items: center;
+        background: linear-gradient(135deg, var(--md-primary), #8a6dd3);
+        color: var(--md-on-primary);
+        box-shadow: var(--shadow-1);
+        font-weight: 800;
+        letter-spacing: 0.4px;
+      }
+
+      .brand-title {
+        margin: 0;
+        font-size: 1.05rem;
+        font-weight: 700;
+      }
+
+      .brand-subtitle {
+        margin: 2px 0 0;
+        color: var(--md-on-surface-variant);
+        font-size: 0.92rem;
+      }
+
+      .nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .nav a {
+        padding: 10px 14px;
+        border-radius: 999px;
+        color: var(--md-on-surface-variant);
+        font-weight: 500;
+      }
+
+      .nav a:hover {
+        background: rgba(103, 80, 164, 0.08);
+      }
+
+      .hero {
+        padding: 48px 0 28px;
+      }
+
+      .hero-grid {
+        display: grid;
+        grid-template-columns: 1.15fr 0.85fr;
+        gap: 24px;
+        align-items: stretch;
+      }
+
+      .hero-card,
+      .phone-card,
+      .card,
+      .cta-card {
+        border: 1px solid rgba(121, 116, 126, 0.18);
+        border-radius: var(--radius-xl);
+        box-shadow: var(--shadow-2);
+      }
+
+      .hero-card {
+        background: linear-gradient(145deg, rgba(234, 221, 255, 0.96), rgba(255, 251, 254, 0.98));
+        padding: 40px;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 14px;
+        padding: 8px 14px;
+        border-radius: 999px;
+        background: rgba(103, 80, 164, 0.12);
+        color: var(--md-on-primary-container);
+        font-size: 0.9rem;
+        font-weight: 600;
+      }
+
+      h1 {
+        margin: 0 0 14px;
+        font-size: clamp(2.2rem, 4.8vw, 4rem);
+        line-height: 1.04;
+        letter-spacing: -0.04em;
+      }
+
+      .lead {
+        margin: 0;
+        color: var(--md-on-surface-variant);
+        font-size: 1.08rem;
+        max-width: 60ch;
+      }
+
+      .hero-actions {
+        margin-top: 24px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        min-height: 48px;
+        padding: 0 20px;
+        border-radius: 999px;
+        border: 1px solid transparent;
+        font-weight: 700;
+        transition: 0.2s ease;
+      }
+
+      .button.primary {
+        background: var(--md-primary);
+        color: var(--md-on-primary);
+      }
+
+      .button.primary:hover {
+        background: var(--md-primary-dark);
+      }
+
+      .button.secondary {
+        background: rgba(255, 255, 255, 0.76);
+        color: var(--md-primary);
+        border-color: var(--md-outline-variant);
+      }
+
+      .button.secondary:hover {
+        background: rgba(103, 80, 164, 0.06);
+      }
+
+      .hero-points {
+        margin-top: 24px;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .hero-point {
+        padding: 16px;
+        border-radius: var(--radius-lg);
+        background: rgba(255, 255, 255, 0.78);
+        border: 1px solid rgba(121, 116, 126, 0.16);
+      }
+
+      .hero-point strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      .phone-card {
+        background:
+          radial-gradient(circle at top left, rgba(138, 109, 211, 0.24), transparent 24%),
+          linear-gradient(180deg, #ffffff 0%, #f7f2fa 100%);
+        padding: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .phone-frame {
+        width: min(100%, 340px);
+        background: #17151d;
+        border-radius: 36px;
+        padding: 14px;
+        box-shadow: 0 16px 36px rgba(45, 29, 82, 0.28);
+      }
+
+      .phone-screen {
+        border-radius: 26px;
+        overflow: hidden;
+        background: linear-gradient(180deg, #f6f1fb 0%, #ffffff 100%);
+        min-height: 620px;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .phone-top {
+        padding: 14px 18px 10px;
+        display: flex;
+        justify-content: space-between;
+        color: #5c5570;
+        font-size: 0.86rem;
+        font-weight: 600;
+      }
+
+      .app-preview {
+        padding: 0 18px 18px;
+      }
+
+      .preview-header {
+        padding: 20px 0 16px;
+      }
+
+      .preview-badge {
+        width: 56px;
+        height: 56px;
+        border-radius: 18px;
+        display: grid;
+        place-items: center;
+        background: linear-gradient(135deg, var(--md-primary), #8a6dd3);
+        color: white;
+        font-weight: 800;
+        margin-bottom: 12px;
+      }
+
+      .preview-title {
+        margin: 0;
+        font-size: 1.3rem;
+        font-weight: 800;
+      }
+
+      .preview-subtitle {
+        margin: 4px 0 0;
+        color: var(--md-on-surface-variant);
+        font-size: 0.95rem;
+      }
+
+      .notification-card {
+        background: #ffffff;
+        border: 1px solid rgba(121, 116, 126, 0.16);
+        border-radius: 20px;
+        padding: 16px;
+        box-shadow: var(--shadow-1);
+        margin-top: 14px;
+      }
+
+      .notification-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 10px;
+      }
+
+      .notification-app {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 700;
+      }
+
+      .mini-badge {
+        width: 34px;
+        height: 34px;
+        border-radius: 12px;
+        display: grid;
+        place-items: center;
+        background: rgba(103, 80, 164, 0.12);
+        color: var(--md-primary);
+        font-size: 0.9rem;
+        font-weight: 800;
+      }
+
+      .notification-text {
+        color: var(--md-on-surface-variant);
+        font-size: 0.95rem;
+      }
+
+      .section {
+        padding: 16px 0 34px;
+      }
+
+      .section h2 {
+        margin: 0 0 12px;
+        font-size: 2rem;
+        letter-spacing: -0.02em;
+      }
+
+      .section-intro {
+        margin: 0 0 24px;
+        max-width: 70ch;
+        color: var(--md-on-surface-variant);
+      }
+
+      .grid-3 {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 20px;
+      }
+
+      .card {
+        background: rgba(255, 255, 255, 0.84);
+        padding: 24px;
+      }
+
+      .icon {
+        width: 48px;
+        height: 48px;
+        border-radius: 16px;
+        display: grid;
+        place-items: center;
+        background: rgba(103, 80, 164, 0.12);
+        color: var(--md-primary);
+        margin-bottom: 16px;
+      }
+
+      .card h3 {
+        margin: 0 0 10px;
+        font-size: 1.16rem;
+      }
+
+      .card p,
+      .card li {
+        color: var(--md-on-surface-variant);
+      }
+
+      .feature-list {
+        padding-left: 20px;
+        margin: 12px 0 0;
+      }
+
+      .two-col {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 20px;
+      }
+
+      .quote-card {
+        background: linear-gradient(180deg, rgba(234, 221, 255, 0.8), rgba(255, 255, 255, 0.96));
+      }
+
+      .quote {
+        font-size: 1.1rem;
+        color: var(--md-on-surface);
+        font-weight: 500;
+      }
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 16px;
+      }
+
+      .stat {
+        padding: 16px;
+        border-radius: var(--radius-lg);
+        background: rgba(255, 255, 255, 0.75);
+        border: 1px solid rgba(121, 116, 126, 0.16);
+      }
+
+      .stat strong {
+        display: block;
+        font-size: 1.1rem;
+      }
+
+      .cta-card {
+        background: linear-gradient(145deg, #6750a4, #8a6dd3);
+        color: white;
+        padding: 34px;
+      }
+
+      .cta-card p {
+        color: rgba(255, 255, 255, 0.9);
+        margin: 0 0 20px;
+      }
+
+      .cta-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      .button.light {
+        background: white;
+        color: var(--md-primary);
+      }
+
+      .button.ghost {
+        background: transparent;
+        color: white;
+        border-color: rgba(255, 255, 255, 0.4);
+      }
+
+      footer {
+        padding: 24px 0 44px;
+        color: var(--md-on-surface-variant);
+      }
+
+      .footer-card {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 18px 20px;
+        border-radius: var(--radius-lg);
+        border: 1px solid rgba(121, 116, 126, 0.18);
+        background: rgba(255, 255, 255, 0.75);
+      }
+
+      @media (max-width: 980px) {
+        .hero-grid,
+        .grid-3,
+        .two-col,
+        .hero-points,
+        .stats {
+          grid-template-columns: 1fr;
+        }
+
+        .topbar-inner {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .container {
+          width: min(100% - 20px, var(--content-width));
+        }
+
+        .hero {
+          padding-top: 24px;
+        }
+
+        .hero-card,
+        .phone-card,
+        .card,
+        .cta-card {
+          padding: 20px;
+        }
+
+        .nav a {
+          padding: 8px 12px;
+        }
+
+        .phone-screen {
+          min-height: 560px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="container topbar-inner">
+        <div class="brand">
+          <div class="brand-badge" aria-hidden="true">TZ</div>
+          <div>
+            <p class="brand-title">TZMC Push</p>
+            <p class="brand-subtitle">Real-time alerts and notifications</p>
+          </div>
+        </div>
+        <nav class="nav" aria-label="Marketing navigation">
+          <a href="#features">Features</a>
+          <a href="#benefits">Benefits</a>
+          <a href="#support">Support</a>
+          <a href="#privacy">Privacy</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="container">
+          <div class="hero-grid">
+            <div class="hero-card">
+              <div class="eyebrow">Official product page</div>
+              <h1>Never miss an important update.</h1>
+              <p class="lead">
+                <strong>TZMC Push</strong> helps users stay informed with fast, reliable notifications and real-time
+                alerts delivered directly to their mobile devices.
+              </p>
+
+              <div class="hero-actions">
+                <a class="button primary" href="#features">Explore features</a>
+                <a class="button secondary" href="/support">Get support</a>
+              </div>
+
+              <div class="hero-points">
+                <div class="hero-point">
+                  <strong>Instant delivery</strong>
+                  <span>Receive alerts and updates as soon as they are available.</span>
+                </div>
+                <div class="hero-point">
+                  <strong>Simple experience</strong>
+                  <span>A clean interface focused on fast access to important information.</span>
+                </div>
+                <div class="hero-point">
+                  <strong>Reliable communication</strong>
+                  <span>Stay connected with timely messages wherever you are.</span>
+                </div>
+              </div>
+            </div>
+
+            <aside class="phone-card" aria-label="App preview">
+              <div class="phone-frame">
+                <div class="phone-screen">
+                  <div class="phone-top">
+                    <span>9:41</span>
+                    <span>TZMC Push</span>
+                  </div>
+                  <div class="app-preview">
+                    <div class="preview-header">
+                      <div class="preview-badge">TZ</div>
+                      <p class="preview-title">Stay informed</p>
+                      <p class="preview-subtitle">Fast alerts. Important updates. Right on time.</p>
+                    </div>
+
+                    <div class="notification-card">
+                      <div class="notification-top">
+                        <div class="notification-app">
+                          <div class="mini-badge">TZ</div>
+                          <span>TZMC Push</span>
+                        </div>
+                        <small class="preview-subtitle">Now</small>
+                      </div>
+                      <div class="notification-text">
+                        New update available — stay connected with the latest information and alerts.
+                      </div>
+                    </div>
+
+                    <div class="notification-card">
+                      <div class="notification-top">
+                        <div class="notification-app">
+                          <div class="mini-badge">TZ</div>
+                          <span>Important alert</span>
+                        </div>
+                        <small class="preview-subtitle">2 min ago</small>
+                      </div>
+                      <div class="notification-text">
+                        Receive timely messages and important announcements directly on your device.
+                      </div>
+                    </div>
+
+                    <div class="notification-card">
+                      <div class="notification-top">
+                        <div class="notification-app">
+                          <div class="mini-badge">TZ</div>
+                          <span>Support access</span>
+                        </div>
+                        <small class="preview-subtitle">Anytime</small>
+                      </div>
+                      <div class="notification-text">
+                        Need help? Access support and privacy information quickly and clearly.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="features">
+        <div class="container">
+          <h2>Key features</h2>
+          <p class="section-intro">
+            TZMC Push is designed to make important communication faster, clearer, and easier to access.
+          </p>
+          <div class="grid-3">
+            <article class="card">
+              <div class="icon" aria-hidden="true">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 3a7 7 0 0 0-7 7v3.2l-1.2 2.2A1 1 0 0 0 4.7 17h14.6a1 1 0 0 0 .9-1.5L19 13.2V10a7 7 0 0 0-7-7Z" stroke="currentColor" stroke-width="1.8" />
+                  <path d="M10 20a2 2 0 0 0 4 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                </svg>
+              </div>
+              <h3>Real-time notifications</h3>
+              <p>Get timely alerts and updates the moment they are sent.</p>
+            </article>
+
+            <article class="card">
+              <div class="icon" aria-hidden="true">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                  <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v8A1.5 1.5 0 0 1 18.5 15h-8L7 18.5V15H5.5A1.5 1.5 0 0 1 4 13.5v-8Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+                  <path d="M8 8h8M8 11h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                </svg>
+              </div>
+              <h3>Clear communication</h3>
+              <p>Receive announcements, reminders, and important messages in a simple format.</p>
+            </article>
+
+            <article class="card">
+              <div class="icon" aria-hidden="true">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 4 5 8v4c0 4.2 2.9 8.2 7 9 4.1-.8 7-4.8 7-9V8l-7-4Z" stroke="currentColor" stroke-width="1.8" />
+                  <path d="m9.5 12 1.7 1.7 3.3-3.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </div>
+              <h3>Reliable access</h3>
+              <p>Built to support dependable delivery and convenient access to important updates.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="benefits">
+        <div class="container">
+          <div class="two-col">
+            <article class="card">
+              <h2>Why use TZMC Push?</h2>
+              <p>
+                Whether you need to stay updated on time-sensitive alerts or keep communication organized,
+                TZMC Push offers a professional and straightforward mobile experience.
+              </p>
+              <ul class="feature-list">
+                <li>Receive important updates without unnecessary complexity</li>
+                <li>Stay connected on the go from your phone</li>
+                <li>Access support information quickly when needed</li>
+                <li>Designed for a fast, focused notification experience</li>
+              </ul>
+            </article>
+
+            <article class="card quote-card">
+              <h2>Built for clarity</h2>
+              <p class="quote">
+                “A simple notification experience can make important communication faster, easier, and more
+                reliable for every user.”
+              </p>
+              <div class="stats">
+                <div class="stat">
+                  <strong>Fast</strong>
+                  <span>Real-time communication for timely updates</span>
+                </div>
+                <div class="stat">
+                  <strong>Focused</strong>
+                  <span>Designed around important alerts and messages</span>
+                </div>
+                <div class="stat">
+                  <strong>Accessible</strong>
+                  <span>Support and privacy pages available on the web</span>
+                </div>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="support">
+        <div class="container">
+          <div class="cta-card">
+            <h2>Need help or want more information?</h2>
+            <p>
+              Visit our support and privacy pages for assistance, troubleshooting, and important policy details.
+            </p>
+            <div class="cta-actions">
+              <a class="button light" href="/support">Support page</a>
+              <a class="button ghost" href="/privacy">Privacy policy</a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="privacy">
+        <div class="container">
+          <div class="grid-3">
+            <article class="card">
+              <h3>Privacy-first communication</h3>
+              <p>
+                TZMC Push provides a clear privacy policy so users can understand how information may be handled
+                within the app.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Store-ready web presence</h3>
+              <p>
+                This page can be used as the App Store Marketing URL and works together with the support and
+                privacy pages for submission requirements.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Professional presentation</h3>
+              <p>
+                The design follows a modern Material-inspired visual language with a polished, mobile-friendly UX.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="container">
+        <div class="footer-card">
+          <span>© <span id="year"></span> TZMC Push. All rights reserved.</span>
+          <span>
+            <a href="/support">Support</a> · <a href="/privacy">Privacy</a>
+          </span>
+        </div>
+      </div>
+    </footer>
+
+    <script>
+      document.getElementById('year').textContent = new Date().getFullYear();
+    </script>
+  </body>
+</html>
