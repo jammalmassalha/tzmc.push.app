@@ -8,7 +8,6 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shimmer/shimmer.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/api/chat_api_service.dart';
 import '../../../shared/widgets/authenticated_image.dart';
@@ -119,9 +118,7 @@ class _AccreditationAgentScreenState
       return;
     }
     final resolved = resolveToAbsoluteUrl(file.url);
-    final uri = Uri.tryParse(resolved);
-    if (uri == null) return;
-    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+    if (!await openAuthenticatedFileExternally(context, resolved)) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('לא ניתן לפתוח את הקובץ: ${file.name}')),

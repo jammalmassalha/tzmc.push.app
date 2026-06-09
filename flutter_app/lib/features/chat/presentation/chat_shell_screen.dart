@@ -12,6 +12,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/api/chat_api_service.dart';
 import '../../../core/realtime/realtime_transport_service.dart';
+import '../../../core/services/accessibility_service.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../../core/services/push_notification_service.dart';
 import '../../auth/presentation/auth_state.dart';
@@ -28,7 +29,17 @@ import 'message_screen.dart';
 import 'new_chat_dialog.dart';
 
 /// Main tab enumeration
-enum MainTab { chats, groups, shuttle, helpdesk, ticketManager, passwordReset, settings, adminGroups }
+enum MainTab {
+  chats,
+  groups,
+  shuttle,
+  helpdesk,
+  ticketManager,
+  passwordReset,
+  accessibility,
+  settings,
+  adminGroups
+}
 
 const List<String> _kHelpdeskAllowedUsers = [
   '0546799693',
@@ -527,6 +538,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         return Icons.manage_accounts_outlined;
       case MainTab.passwordReset:
         return Icons.lock_reset_outlined;
+      case MainTab.accessibility:
+        return Icons.accessibility_new_outlined;
       case MainTab.settings:
         return Icons.settings_outlined;
       case MainTab.adminGroups:
@@ -548,6 +561,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         return Icons.manage_accounts;
       case MainTab.passwordReset:
         return Icons.lock_reset;
+      case MainTab.accessibility:
+        return Icons.accessibility_new;
       case MainTab.settings:
         return Icons.settings;
       case MainTab.adminGroups:
@@ -722,6 +737,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         return _buildTicketManagerTab();
       case MainTab.passwordReset:
         return _buildPasswordResetTab();
+      case MainTab.accessibility:
+        return _buildAccessibilityTab();
       case MainTab.settings:
         return _buildSettingsTab();
       case MainTab.adminGroups:
@@ -767,6 +784,12 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
           activeIcon: Icon(Icons.lock_reset),
           label: 'איפוס סיסמה',
         );
+      case MainTab.accessibility:
+        return const BottomNavigationBarItem(
+          icon: Icon(Icons.accessibility_new_outlined),
+          activeIcon: Icon(Icons.accessibility_new),
+          label: 'נגישות',
+        );
       case MainTab.settings:
         return const BottomNavigationBarItem(
           icon: Icon(Icons.settings_outlined),
@@ -806,6 +829,10 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     return const AdminGroupsScreen();
   }
 
+  Widget _buildAccessibilityTab() {
+    return const _AccessibilitySettingsScreen();
+  }
+
   Widget _buildSettingsTab() {
     final user = ref.watch(currentUserProvider);
     return _SettingsPlaceholder(user: user);
@@ -819,6 +846,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       MainTab.helpdesk,
       if (_canAccessTicketManager) MainTab.ticketManager,
       if (!kIsWeb) MainTab.passwordReset,
+      MainTab.accessibility,
       if (_canAccessAdminGroups) MainTab.adminGroups,
     ];
     _visibleTabs = tabs;
@@ -920,6 +948,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         return 'מנהל קריאות';
       case MainTab.passwordReset:
         return 'איפוס סיסמת Windows';
+      case MainTab.accessibility:
+        return 'נגישות';
       case MainTab.settings:
         return 'הגדרות';
       case MainTab.adminGroups:
@@ -1101,13 +1131,16 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
 // Settings Placeholder (still using placeholder for now)
 // ---------------------------------------------------------------------------
 
-class _SettingsPlaceholder extends StatelessWidget {
+class _SettingsPlaceholder extends ConsumerWidget {
   final String? user;
 
   const _SettingsPlaceholder({this.user});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final accessibility = ref.watch(accessibilitySettingsProvider);
+    final accessibilityNotifier = ref.read(accessibilitySettingsProvider.notifier);
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -1152,6 +1185,20 @@ class _SettingsPlaceholder extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 16),
+        ListTile(
+          leading: const Icon(Icons.accessibility_new_outlined),
+          title: const Text('נגישות'),
+          subtitle: Text(
+            accessibility.enabled
+                ? 'פעיל (גודל טקסט ${accessibility.textScaleFactor.toStringAsFixed(2)}x)'
+                : 'כבוי',
+          ),
+          trailing: Switch.adaptive(
+            value: accessibility.enabled,
+            onChanged: accessibilityNotifier.setEnabled,
+          ),
+        ),
+        const Divider(),
         const ListTile(
           leading: Icon(Icons.notifications_outlined),
           title: Text('התראות'),
@@ -1171,6 +1218,89 @@ class _SettingsPlaceholder extends StatelessWidget {
           title: Text('אודות'),
           subtitle: Text('גרסה 1.0.0'),
           trailing: Icon(Icons.chevron_left),
+        ),
+      ],
+    );
+  }
+}
+
+class _AccessibilitySettingsScreen extends ConsumerWidget {
+  const _AccessibilitySettingsScreen();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final settings = ref.watch(accessibilitySettingsProvider);
+    final notifier = ref.read(accessibilitySettingsProvider.notifier);
+    final textScale = settings.textScaleFactor;
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.accessibility_new),
+                    const SizedBox(width: 8),
+                    Text(
+                      'מצב נגישות',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const Spacer(),
+                    Switch.adaptive(
+                      value: settings.enabled,
+                      onChanged: notifier.setEnabled,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  settings.enabled
+                      ? 'מצב נגישות פעיל בכל האפליקציה'
+                      : 'הפעל כדי להחיל הגדרות נגישות בכל האפליקציה',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'גודל טקסט',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '${textScale.toStringAsFixed(2)}x',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                Slider(
+                  min: kAccessibilityMinTextScale,
+                  max: kAccessibilityMaxTextScale,
+                  divisions: 6,
+                  value: textScale,
+                  onChanged: settings.enabled
+                      ? notifier.setTextScaleFactor
+                      : null,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'טקסט לדוגמה לנגישות: האפליקציה מתאימה את גודל הטקסט בכל המסכים.',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              ],
+            ),
+          ),
         ),
       ],
     );

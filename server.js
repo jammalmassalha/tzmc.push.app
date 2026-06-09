@@ -6205,6 +6205,25 @@ app.post(['/mark-seen', '/notify/mark-seen'],
         }
         try {
             const affected = await mysqlLogsService.markMessagesSeen(user, chatId);
+            // Notify the same user's other connected devices to clear local
+            // unread counters for this chat (cross-device badge sync).
+            void addToQueue(user, {
+                type: 'read-receipt',
+                chatId,
+                timestamp: Date.now()
+            }).catch((err) => {
+                console.warn('[MARK-SEEN] Self-clear queue failed:', err && err.message ? err.message : err);
+            });
+            void sendPushNotificationToUser(user, {
+                title: '',
+                body: { shortText: '', longText: '' },
+                data: {
+                    type: 'read-receipt',
+                    chatId
+                }
+            }, chatId, { skipBadge: true, singlePerUser: true, allowSecondAttempt: false }).catch((err) => {
+                console.warn('[MARK-SEEN] Self-clear push failed:', err && err.message ? err.message : err);
+            });
             return res.json({ status: 'ok', marked: affected });
         } catch (err) {
             console.error('[MARK-SEEN] Failed:', err && err.message ? err.message : err);

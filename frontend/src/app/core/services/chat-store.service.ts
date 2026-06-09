@@ -6954,6 +6954,12 @@ export class ChatStoreService {
   }
 
   private applyIncomingReadReceipt(incoming: IncomingServerMessage): boolean {
+    const chatId = this.normalizeChatId(String(incoming.chatId ?? '').trim());
+    if (chatId) {
+      this.clearUnreadCountForChat(chatId);
+      return true;
+    }
+
     const messageIds = Array.isArray(incoming.messageIds)
       ? incoming.messageIds.map((id) => String(id || '').trim()).filter(Boolean)
       : String(incoming.messageId ?? '')

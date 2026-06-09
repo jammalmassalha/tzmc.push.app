@@ -2424,9 +2424,7 @@ class _AttachmentRow extends StatelessWidget {
 
   Future<void> _open(BuildContext context) async {
     final resolvedUrl = resolveToAbsoluteUrl(url);
-    final uri = Uri.tryParse(resolvedUrl);
-    if (uri == null) return;
-    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+    if (!await openAuthenticatedFileExternally(context, resolvedUrl)) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('לא ניתן לפתוח את הקובץ')),

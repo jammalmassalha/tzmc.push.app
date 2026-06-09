@@ -396,6 +396,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       _syncCommunityGroups();
 
       // 3. Pull missed messages (gap analysis).
+      int latestTimestampBeforeRecovery;
+      try {
+        latestTimestampBeforeRecovery = await _db.getLatestMessageTimestamp();
+      } catch (_) {
+        latestTimestampBeforeRecovery = _latestTimestampFromState();
+      }
+      final hadLocalHistory = latestTimestampBeforeRecovery > 0;
+
       //
       // Use force:true to bypass the 30-second cooldown.  The realtime
       // transport can fire _handleConnectionChange(true) before we reach
@@ -418,7 +426,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // was queried).  We take the MAX so we never downgrade a count that
       // the pull already computed correctly.
       final tray = await _readAndClearPendingTray();
-      if (tray.isNotEmpty) {
+      if (hadLocalHistory && tray.isNotEmpty) {
         final merged = Map<String, int>.from(state.unreadByChat);
         for (final entry in tray.entries) {
           // Skip the currently open chat — the user is already viewing it so
@@ -2384,8 +2392,20 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     try {
       await _api.markMessagesAsRead(chatId, messageIds, _currentUser ?? '');
+      await markChatSeen(chatId);
     } catch (e) {
       // Silent failure
+    }
+  }
+
+  Future<void> markChatSeen(String chatId) async {
+    final user = (_currentUser ?? '').trim().toLowerCase();
+    final normalizedChatId = chatId.trim().toLowerCase();
+    if (user.isEmpty || normalizedChatId.isEmpty) return;
+    try {
+      await _api.markMessagesSeen(user, normalizedChatId);
+    } catch (_) {
+      // Best-effort.
     }
   }
 
@@ -2424,6 +2444,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // Also clear the FCM pending tray so the badge is not re-shown on
         // the next cold start when messages haven't been loaded yet.
         unawaited(_clearChatFromPendingTray(chatId));
+        // Persist SeenTime on the server even when we couldn't build a
+        // message-id read receipt (e.g. chat opened before messages loaded),
+        // so other connected devices can sync badge clearing.
+        unawaited(markChatSeen(chatId));
       }
     }
 

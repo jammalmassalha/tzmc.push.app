@@ -12,15 +12,20 @@
 /// browser handle cookie forwarding natively.
 library;
 
+import 'dart:io' show File;
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:open_filex/open_filex.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/api/http_client.dart';
 import '../../core/config/environment.dart';
+import '../../core/utils/toast_utils.dart';
 
 /// Converts a server-issued relative upload path to an absolute URL.
 ///
@@ -34,6 +39,102 @@ String resolveToAbsoluteUrl(String url) {
   if (url.startsWith('http://') || url.startsWith('https://')) return url;
   final origin = Uri.parse(Env.current.baseUrl).origin;
   return origin + (url.startsWith('/') ? url : '/$url');
+}
+
+String _extractSaveFilename(String url) {
+  try {
+    final segment = Uri.parse(url)
+        .pathSegments
+        .lastWhere((s) => s.isNotEmpty, orElse: () => '');
+    final decoded = Uri.decodeComponent(segment);
+    if (decoded.isNotEmpty) return decoded;
+  } catch (_) {}
+  return 'file_${DateTime.now().millisecondsSinceEpoch}';
+}
+
+String _sanitizeSaveFilename(String name) {
+  final normalized = name.replaceAll('\\', '/');
+  final segments = normalized.split('/').where((segment) => segment.isNotEmpty).toList();
+  final basename = segments.isNotEmpty ? segments.last : null;
+  final candidate = (basename ?? name).replaceAll('\u0000', '');
+  final safe = candidate.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '_').trim();
+  if (safe.isEmpty || safe == '.' || safe == '..') {
+    return 'file_${DateTime.now().millisecondsSinceEpoch}';
+  }
+  return safe;
+}
+
+Future<File> _createUniqueFile(String filename) async {
+  final dir = await getApplicationDocumentsDirectory();
+  final safeName = _sanitizeSaveFilename(filename);
+  var file = File('${dir.path}/$safeName');
+  if (!await file.exists()) return file;
+
+  final dot = safeName.lastIndexOf('.');
+  final hasExt = dot > 0 && dot < safeName.length - 1;
+  final base = hasExt ? safeName.substring(0, dot) : safeName;
+  final ext = hasExt ? safeName.substring(dot) : '';
+  final suffix = DateTime.now().millisecondsSinceEpoch;
+  return File('${dir.path}/${base}_$suffix$ext');
+}
+
+bool isAuthenticatedUploadUrl(String url) {
+  final resolved = resolveToAbsoluteUrl(url);
+  final uri = Uri.tryParse(resolved);
+  if (uri == null) return false;
+  final path = uri.path.toLowerCase();
+  return path.startsWith('/notify/uploads/') || path.startsWith('/uploads/');
+}
+
+Future<bool> openAuthenticatedFileExternally(BuildContext context, String url) async {
+  final resolvedUrl = resolveToAbsoluteUrl(url);
+  final uri = Uri.tryParse(resolvedUrl);
+  if (uri == null) return false;
+  if (kIsWeb) {
+    try {
+      return await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  if (!isAuthenticatedUploadUrl(resolvedUrl)) {
+    try {
+      return await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // For authenticated upload URLs, never fall back to launchUrl with the
+  // server URI. The device browser does not share the app's session cookie, so
+  // opening the URL in a browser would return 401 "Authentication required"
+  // and the user would see "not authorized". Return false instead so callers
+  // can show an appropriate error message.
+  try {
+    final container = ProviderScope.containerOf(context, listen: false);
+    final client = container.read(httpClientProvider);
+    final response = await client.get<List<int>>(
+      resolvedUrl,
+      options: Options(responseType: ResponseType.bytes),
+    );
+    if (response.statusCode != 200 || response.data == null) {
+      return false;
+    }
+    final file = await _createUniqueFile(_extractSaveFilename(resolvedUrl));
+    await file.writeAsBytes(Uint8List.fromList(response.data!), flush: true);
+    // Use open_filex instead of launchUrl(file.uri) because on Android 7+
+    // file:// URIs cannot be shared with external apps without a FileProvider.
+    // open_filex handles the FileProvider content:// wrapping automatically.
+    final result = await OpenFilex.open(file.path);
+    if (result.type != ResultType.done) {
+      showTopToast(context, 'הקובץ נשמר ב: ${file.path}');
+    }
+    return true;
+  } catch (e) {
+    debugPrint('[openAuthenticatedFileExternally] Download/write/open failed: $e');
+    return false;
+  }
 }
 
 /// Fetches an image from an authenticated endpoint and renders it.
