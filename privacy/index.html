@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TZMC Push Privacy Policy</title>
+    <meta
+      name="description"
+      content="Privacy Policy for TZMC Push describing how information is collected, used, protected, and handled in the app."
+    />
+    <meta name="theme-color" content="#6750A4" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        color-scheme: light;
+        --md-primary: #6750a4;
+        --md-on-primary: #ffffff;
+        --md-primary-container: #eaddff;
+        --md-on-primary-container: #21005d;
+        --md-secondary: #625b71;
+        --md-surface: #fffbfe;
+        --md-surface-container: #f3edf7;
+        --md-surface-container-high: #ece6f0;
+        --md-on-surface: #1c1b1f;
+        --md-on-surface-variant: #49454f;
+        --md-outline: #79747e;
+        --md-outline-variant: #cac4d0;
+        --md-error: #b3261e;
+        --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.12);
+        --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.1);
+        --radius-xl: 28px;
+        --radius-lg: 20px;
+        --radius-md: 16px;
+        --radius-sm: 12px;
+        --content-width: 1120px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        font-family: 'Roboto', Arial, sans-serif;
+        background:
+          radial-gradient(circle at top right, rgba(103, 80, 164, 0.12), transparent 28%),
+          linear-gradient(180deg, #f8f2ff 0%, var(--md-surface) 30%, #fcfcff 100%);
+        color: var(--md-on-surface);
+        line-height: 1.65;
+      }
+
+      a {
+        color: var(--md-primary);
+        text-decoration: none;
+      }
+
+      a:hover {
+        text-decoration: underline;
+      }
+
+      .container {
+        width: min(100% - 32px, var(--content-width));
+        margin: 0 auto;
+      }
+
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        backdrop-filter: blur(14px);
+        background: rgba(255, 251, 254, 0.84);
+        border-bottom: 1px solid rgba(121, 116, 126, 0.16);
+      }
+
+      .topbar-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 14px 0;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+
+      .brand-badge {
+        width: 48px;
+        height: 48px;
+        border-radius: 16px;
+        display: grid;
+        place-items: center;
+        background: linear-gradient(135deg, var(--md-primary), #8a6dd3);
+        color: var(--md-on-primary);
+        box-shadow: var(--shadow-1);
+        font-weight: 700;
+      }
+
+      .brand-title {
+        margin: 0;
+        font-size: 1.05rem;
+        font-weight: 700;
+      }
+
+      .brand-subtitle {
+        margin: 2px 0 0;
+        color: var(--md-on-surface-variant);
+        font-size: 0.92rem;
+      }
+
+      .nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .nav a {
+        padding: 10px 14px;
+        border-radius: 999px;
+        color: var(--md-on-surface-variant);
+        font-weight: 500;
+      }
+
+      .nav a:hover {
+        background: rgba(103, 80, 164, 0.08);
+        text-decoration: none;
+      }
+
+      .hero {
+        padding: 48px 0 24px;
+      }
+
+      .hero-card {
+        background: linear-gradient(145deg, rgba(234, 221, 255, 0.95), rgba(255, 251, 254, 0.96));
+        border: 1px solid rgba(121, 116, 126, 0.18);
+        border-radius: var(--radius-xl);
+        padding: 40px;
+        box-shadow: var(--shadow-2);
+        display: grid;
+        grid-template-columns: 1.4fr 0.9fr;
+        gap: 24px;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 14px;
+        padding: 8px 14px;
+        border-radius: 999px;
+        background: rgba(103, 80, 164, 0.12);
+        color: var(--md-on-primary-container);
+        font-size: 0.9rem;
+        font-weight: 600;
+      }
+
+      h1 {
+        margin: 0 0 14px;
+        font-size: clamp(2rem, 4vw, 3.4rem);
+        line-height: 1.08;
+        letter-spacing: -0.03em;
+      }
+
+      .hero p,
+      .section-intro,
+      .card p,
+      .card li,
+      .policy p {
+        color: var(--md-on-surface-variant);
+      }
+
+      .hero-actions {
+        margin-top: 24px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        min-height: 48px;
+        padding: 0 20px;
+        border-radius: 999px;
+        border: 1px solid transparent;
+        font-weight: 600;
+        transition: 0.2s ease;
+      }
+
+      .button.primary {
+        background: var(--md-primary);
+        color: var(--md-on-primary);
+        box-shadow: var(--shadow-1);
+      }
+
+      .button.primary:hover {
+        text-decoration: none;
+        filter: brightness(1.02);
+      }
+
+      .button.secondary {
+        background: transparent;
+        border-color: var(--md-outline-variant);
+        color: var(--md-primary);
+      }
+
+      .button.secondary:hover {
+        text-decoration: none;
+        background: rgba(103, 80, 164, 0.05);
+      }
+
+      .summary-card,
+      .card,
+      .policy-section {
+        background: rgba(255, 255, 255, 0.84);
+        border: 1px solid rgba(121, 116, 126, 0.18);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow-1);
+      }
+
+      .summary-card {
+        padding: 24px;
+      }
+
+      .summary-list {
+        display: grid;
+        gap: 14px;
+      }
+
+      .summary-item {
+        padding: 14px 16px;
+        border-radius: var(--radius-md);
+        background: var(--md-surface);
+        border: 1px solid var(--md-outline-variant);
+      }
+
+      .summary-item strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      .section {
+        padding: 14px 0 32px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 20px;
+      }
+
+      .card {
+        padding: 24px;
+      }
+
+      .icon {
+        width: 44px;
+        height: 44px;
+        border-radius: 14px;
+        display: grid;
+        place-items: center;
+        background: rgba(103, 80, 164, 0.12);
+        color: var(--md-primary);
+        margin-bottom: 16px;
+      }
+
+      .policy {
+        display: grid;
+        gap: 18px;
+      }
+
+      .policy-section {
+        padding: 26px;
+      }
+
+      .policy-section h2 {
+        margin: 0 0 10px;
+        font-size: 1.35rem;
+      }
+
+      .policy-section p,
+      .policy-section ul {
+        margin: 0;
+      }
+
+      .policy-section ul {
+        margin-top: 12px;
+        padding-left: 20px;
+      }
+
+      .contact-card {
+        padding: 24px;
+      }
+
+      .note {
+        margin-top: 16px;
+        padding: 14px 16px;
+        border-radius: var(--radius-md);
+        background: rgba(103, 80, 164, 0.08);
+        color: var(--md-on-primary-container);
+      }
+
+      footer {
+        padding: 24px 0 44px;
+        color: var(--md-on-surface-variant);
+      }
+
+      .footer-card {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 18px 20px;
+        border-radius: var(--radius-lg);
+        border: 1px solid rgba(121, 116, 126, 0.18);
+        background: rgba(255, 255, 255, 0.75);
+      }
+
+      @media (max-width: 920px) {
+        .hero-card,
+        .grid {
+          grid-template-columns: 1fr;
+        }
+
+        .topbar-inner {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .container {
+          width: min(100% - 20px, var(--content-width));
+        }
+
+        .hero {
+          padding-top: 24px;
+        }
+
+        .hero-card,
+        .summary-card,
+        .card,
+        .policy-section,
+        .contact-card {
+          padding: 20px;
+        }
+
+        .nav a {
+          padding: 8px 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="container topbar-inner">
+        <div class="brand">
+          <div class="brand-badge" aria-hidden="true">TZ</div>
+          <div>
+            <p class="brand-title">TZMC Push Privacy Policy</p>
+            <p class="brand-subtitle">How we handle data, notifications, and user privacy</p>
+          </div>
+        </div>
+        <nav class="nav" aria-label="Privacy navigation">
+          <a href="#overview">Overview</a>
+          <a href="#highlights">Highlights</a>
+          <a href="#policy">Policy</a>
+          <a href="#contact">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero" id="overview">
+        <div class="container">
+          <div class="hero-card">
+            <div>
+              <div class="eyebrow">Official privacy notice for TZMC Push</div>
+              <h1>Your privacy matters.</h1>
+              <p>
+                This Privacy Policy explains how <strong>TZMC Push</strong> may collect, use, store, and protect
+                information when you use the app. It is designed to provide clear and transparent information for
+                users, App Store review, and Google Play compliance.
+              </p>
+              <div class="hero-actions">
+                <a class="button primary" href="#policy">Read full policy</a>
+                <a class="button secondary" href="mailto:support@tzmc.co.il?subject=TZMC%20Push%20Privacy%20Request">Contact us</a>
+              </div>
+            </div>
+
+            <aside class="summary-card" aria-label="Privacy quick summary">
+              <div class="summary-list">
+                <div class="summary-item">
+                  <strong>Last updated</strong>
+                  <span>June 9, 2026</span>
+                </div>
+                <div class="summary-item">
+                  <strong>Contact email</strong>
+                  <span><a href="mailto:support@tzmc.co.il">support@tzmc.co.il</a></span>
+                </div>
+                <div class="summary-item">
+                  <strong>Main purpose</strong>
+                  <span>To deliver app functionality, notifications, and support services</span>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="highlights">
+        <div class="container">
+          <h2>Privacy highlights</h2>
+          <p class="section-intro">
+            Below is a short overview of the kinds of information that may be involved when using TZMC Push.
+            You should review the full policy below before publication and adjust it if your app collects or uses
+            additional data.
+          </p>
+          <div class="grid">
+            <article class="card">
+              <div class="icon" aria-hidden="true">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 4 5 8v4c0 4.2 2.9 8.2 7 9 4.1-.8 7-4.8 7-9V8l-7-4Z" stroke="currentColor" stroke-width="1.8" />
+                  <path d="m9.5 12 1.7 1.7 3.3-3.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </div>
+              <h3>App functionality</h3>
+              <p>
+                We may process basic technical or account-related information necessary to operate the app and
+                provide requested features.
+              </p>
+            </article>
+
+            <article class="card">
+              <div class="icon" aria-hidden="true">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 3a7 7 0 0 0-7 7v3.2l-1.2 2.2A1 1 0 0 0 4.7 17h14.6a1 1 0 0 0 .9-1.5L19 13.2V10a7 7 0 0 0-7-7Z" stroke="currentColor" stroke-width="1.8" />
+                  <path d="M10 20a2 2 0 0 0 4 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                </svg>
+              </div>
+              <h3>Notifications</h3>
+              <p>
+                If you allow notifications, the app may use device or messaging tokens to send alerts and updates
+                to your device.
+              </p>
+            </article>
+
+            <article class="card">
+              <div class="icon" aria-hidden="true">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                  <path d="M4 7.5A1.5 1.5 0 0 1 5.5 6h13A1.5 1.5 0 0 1 20 7.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 16.5v-9Z" stroke="currentColor" stroke-width="1.8" />
+                  <path d="m5 8 7 5 7-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </div>
+              <h3>Support</h3>
+              <p>
+                If you contact support, we may use the information you provide to investigate and respond to your
+                request.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="policy">
+        <div class="container">
+          <h2>Full Privacy Policy</h2>
+          <div class="policy">
+            <section class="policy-section">
+              <h2>1. Introduction</h2>
+              <p>
+                TZMC Push respects your privacy. This Privacy Policy describes how information may be collected,
+                used, disclosed, and protected when you use the TZMC Push mobile application and related support
+                services.
+              </p>
+            </section>
+
+            <section class="policy-section">
+              <h2>2. Information We May Collect</h2>
+              <p>
+                Depending on the features you use, TZMC Push may collect or process the following categories of
+                information:
+              </p>
+              <ul>
+                <li>Basic account or profile information that you provide voluntarily</li>
+                <li>Device information such as device model, operating system, and app version</li>
+                <li>Notification-related identifiers, such as push or messaging tokens</li>
+                <li>Support information you send when requesting help</li>
+                <li>Diagnostic or technical data needed to maintain app performance and reliability</li>
+              </ul>
+            </section>
+
+            <section class="policy-section">
+              <h2>3. How We Use Information</h2>
+              <p>
+                We may use information collected through the app to:
+              </p>
+              <ul>
+                <li>Provide and maintain the app’s functionality</li>
+                <li>Send notifications, alerts, and relevant updates</li>
+                <li>Respond to support requests and troubleshoot issues</li>
+                <li>Improve app performance, stability, and user experience</li>
+                <li>Comply with legal obligations and enforce our terms or policies</li>
+              </ul>
+            </section>
+
+            <section class="policy-section">
+              <h2>4. Notifications</h2>
+              <p>
+                If you enable notifications, TZMC Push may use notification permissions and device messaging
+                tokens to deliver alerts and updates. You can manage notification permissions in your device
+                settings at any time.
+              </p>
+            </section>
+
+            <section class="policy-section">
+              <h2>5. Sharing of Information</h2>
+              <p>
+                We do not sell your personal information. We may share information only when necessary to operate
+                the app, provide technical services, comply with legal obligations, protect rights and safety, or
+                work with service providers acting on our behalf.
+              </p>
+            </section>
+
+            <section class="policy-section">
+              <h2>6. Data Retention</h2>
+              <p>
+                We keep information only for as long as reasonably necessary to provide services, resolve support
+                requests, maintain security, comply with law, or fulfill legitimate business needs.
+              </p>
+            </section>
+
+            <section class="policy-section">
+              <h2>7. Data Security</h2>
+              <p>
+                We use reasonable administrative, technical, and organizational measures to protect information.
+                However, no method of transmission or storage is completely secure, and we cannot guarantee
+                absolute security.
+              </p>
+            </section>
+
+            <section class="policy-section">
+              <h2>8. Children’s Privacy</h2>
+              <p>
+                TZMC Push is not intended for children unless explicitly stated otherwise. If you believe that a
+                child has provided personal information in violation of applicable law, please contact us so we can
+                review and address the issue.
+              </p>
+            </section>
+
+            <section class="policy-section">
+              <h2>9. Your Choices</h2>
+              <p>
+                You may be able to control certain data practices through your device settings, app permissions,
+                and by contacting us directly. For example, you can disable notifications in your device settings.
+              </p>
+            </section>
+
+            <section class="policy-section">
+              <h2>10. Third-Party Services</h2>
+              <p>
+                The app may rely on third-party services such as hosting, analytics, crash reporting, or push
+                delivery providers. Those services may process information according to their own privacy policies
+                and applicable agreements.
+              </p>
+            </section>
+
+            <section class="policy-section">
+              <h2>11. Changes to This Policy</h2>
+              <p>
+                We may update this Privacy Policy from time to time. When we do, we will revise the “Last updated”
+                date on this page. Continued use of the app after changes may indicate acceptance of the updated
+                policy, where permitted by law.
+              </p>
+            </section>
+
+            <section class="policy-section" id="contact">
+              <h2>12. Contact Us</h2>
+              <p>
+                If you have questions about this Privacy Policy or want to make a privacy-related request, please
+                contact us at <a href="mailto:support@tzmc.co.il">support@tzmc.co.il</a>.
+              </p>
+              <div class="note">
+                Important: review this page before publishing. If TZMC Push collects account data, analytics,
+                precise location, payment information, health data, or other sensitive information, this policy
+                should be updated to reflect the app’s actual behavior.
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="container">
+        <div class="footer-card">
+          <span>© <span id="year"></span> TZMC Push. All rights reserved.</span>
+          <span>
+            Privacy questions: <a href="mailto:support@tzmc.co.il">support@tzmc.co.il</a>
+          </span>
+        </div>
+      </div>
+    </footer>
+
+    <script>
+      document.getElementById('year').textContent = new Date().getFullYear();
+    </script>
+  </body>
+</html>
