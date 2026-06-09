@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TZMC Push Support</title>
+    <meta
+      name="description"
+      content="Support page for TZMC Push. Get help with notifications, troubleshooting, account questions, and contact support."
+    />
+    <meta name="theme-color" content="#6750A4" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        color-scheme: light;
+        --md-primary: #6750a4;
+        --md-on-primary: #ffffff;
+        --md-primary-container: #eaddff;
+        --md-on-primary-container: #21005d;
+        --md-secondary: #625b71;
+        --md-surface: #fffbfe;
+        --md-surface-container: #f3edf7;
+        --md-surface-container-high: #ece6f0;
+        --md-on-surface: #1c1b1f;
+        --md-on-surface-variant: #49454f;
+        --md-outline: #79747e;
+        --md-outline-variant: #cac4d0;
+        --md-error: #b3261e;
+        --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.12);
+        --shadow-2: 0 6px 16px rgba(0, 0, 0, 0.1);
+        --radius-xl: 28px;
+        --radius-lg: 20px;
+        --radius-md: 16px;
+        --radius-sm: 12px;
+        --content-width: 1120px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        font-family: 'Roboto', Arial, sans-serif;
+        background:
+          radial-gradient(circle at top right, rgba(103, 80, 164, 0.12), transparent 28%),
+          linear-gradient(180deg, #f8f2ff 0%, var(--md-surface) 30%, #fcfcff 100%);
+        color: var(--md-on-surface);
+        line-height: 1.6;
+      }
+
+      a {
+        color: var(--md-primary);
+        text-decoration: none;
+      }
+
+      a:hover {
+        text-decoration: underline;
+      }
+
+      .container {
+        width: min(100% - 32px, var(--content-width));
+        margin: 0 auto;
+      }
+
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        backdrop-filter: blur(14px);
+        background: rgba(255, 251, 254, 0.84);
+        border-bottom: 1px solid rgba(121, 116, 126, 0.16);
+      }
+
+      .topbar-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 14px 0;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        min-width: 0;
+      }
+
+      .brand-badge {
+        width: 48px;
+        height: 48px;
+        border-radius: 16px;
+        display: grid;
+        place-items: center;
+        background: linear-gradient(135deg, var(--md-primary), #8a6dd3);
+        color: var(--md-on-primary);
+        box-shadow: var(--shadow-1);
+        font-weight: 700;
+        letter-spacing: 0.4px;
+      }
+
+      .brand-text {
+        min-width: 0;
+      }
+
+      .brand-title {
+        margin: 0;
+        font-size: 1.05rem;
+        font-weight: 700;
+      }
+
+      .brand-subtitle {
+        margin: 2px 0 0;
+        color: var(--md-on-surface-variant);
+        font-size: 0.92rem;
+      }
+
+      .nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .nav a {
+        padding: 10px 14px;
+        border-radius: 999px;
+        color: var(--md-on-surface-variant);
+        font-weight: 500;
+      }
+
+      .nav a:hover {
+        background: rgba(103, 80, 164, 0.08);
+        text-decoration: none;
+      }
+
+      .hero {
+        padding: 48px 0 28px;
+      }
+
+      .hero-card {
+        background: linear-gradient(145deg, rgba(234, 221, 255, 0.95), rgba(255, 251, 254, 0.96));
+        border: 1px solid rgba(121, 116, 126, 0.18);
+        border-radius: var(--radius-xl);
+        padding: 40px;
+        box-shadow: var(--shadow-2);
+        display: grid;
+        grid-template-columns: 1.5fr 1fr;
+        gap: 28px;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 14px;
+        padding: 8px 14px;
+        border-radius: 999px;
+        background: rgba(103, 80, 164, 0.12);
+        color: var(--md-on-primary-container);
+        font-size: 0.9rem;
+        font-weight: 600;
+      }
+
+      h1 {
+        margin: 0 0 14px;
+        font-size: clamp(2rem, 4vw, 3.6rem);
+        line-height: 1.1;
+        letter-spacing: -0.03em;
+      }
+
+      .hero p {
+        margin: 0;
+        color: var(--md-on-surface-variant);
+        font-size: 1.05rem;
+        max-width: 62ch;
+      }
+
+      .hero-actions {
+        margin-top: 24px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        min-height: 48px;
+        padding: 0 20px;
+        border-radius: 999px;
+        border: 1px solid transparent;
+        font-weight: 600;
+        transition: 0.2s ease;
+      }
+
+      .button.primary {
+        background: var(--md-primary);
+        color: var(--md-on-primary);
+        box-shadow: var(--shadow-1);
+      }
+
+      .button.primary:hover {
+        text-decoration: none;
+        filter: brightness(1.02);
+      }
+
+      .button.secondary {
+        background: transparent;
+        border-color: var(--md-outline-variant);
+        color: var(--md-primary);
+      }
+
+      .button.secondary:hover {
+        text-decoration: none;
+        background: rgba(103, 80, 164, 0.05);
+      }
+
+      .status-card {
+        align-self: stretch;
+        background: rgba(255, 255, 255, 0.72);
+        border: 1px solid rgba(121, 116, 126, 0.18);
+        border-radius: var(--radius-lg);
+        padding: 24px;
+      }
+
+      .status-card h2,
+      .section h2 {
+        margin: 0 0 14px;
+        font-size: 1.45rem;
+      }
+
+      .status-list {
+        display: grid;
+        gap: 14px;
+      }
+
+      .status-item {
+        padding: 14px 16px;
+        border-radius: var(--radius-md);
+        background: var(--md-surface);
+        border: 1px solid var(--md-outline-variant);
+      }
+
+      .status-item strong {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 0.98rem;
+      }
+
+      .section {
+        padding: 14px 0 34px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 20px;
+      }
+
+      .card {
+        background: rgba(255, 255, 255, 0.84);
+        border: 1px solid rgba(121, 116, 126, 0.18);
+        border-radius: var(--radius-lg);
+        padding: 24px;
+        box-shadow: var(--shadow-1);
+      }
+
+      .card h3 {
+        margin: 0 0 10px;
+        font-size: 1.12rem;
+      }
+
+      .card p,
+      .card li,
+      .section p {
+        color: var(--md-on-surface-variant);
+      }
+
+      .icon {
+        width: 44px;
+        height: 44px;
+        border-radius: 14px;
+        display: grid;
+        place-items: center;
+        background: rgba(103, 80, 164, 0.12);
+        color: var(--md-primary);
+        margin-bottom: 16px;
+      }
+
+      .faq {
+        display: grid;
+        gap: 14px;
+      }
+
+      details {
+        background: rgba(255, 255, 255, 0.84);
+        border: 1px solid rgba(121, 116, 126, 0.18);
+        border-radius: var(--radius-md);
+        padding: 18px 20px;
+        box-shadow: var(--shadow-1);
+      }
+
+      summary {
+        cursor: pointer;
+        font-weight: 600;
+        list-style: none;
+      }
+
+      summary::-webkit-details-marker {
+        display: none;
+      }
+
+      details p {
+        margin: 12px 0 0;
+      }
+
+      .contact-wrap {
+        display: grid;
+        grid-template-columns: 1.15fr 0.85fr;
+        gap: 20px;
+      }
+
+      .contact-list {
+        display: grid;
+        gap: 14px;
+        margin: 18px 0 0;
+      }
+
+      .contact-item {
+        display: flex;
+        gap: 14px;
+        align-items: flex-start;
+        padding: 14px 0;
+        border-top: 1px solid var(--md-outline-variant);
+      }
+
+      .contact-item:first-child {
+        border-top: 0;
+        padding-top: 0;
+      }
+
+      .contact-label {
+        font-weight: 700;
+        margin-bottom: 4px;
+      }
+
+      .muted {
+        color: var(--md-on-surface-variant);
+      }
+
+      .note {
+        margin-top: 16px;
+        padding: 14px 16px;
+        border-radius: var(--radius-md);
+        background: rgba(103, 80, 164, 0.08);
+        color: var(--md-on-primary-container);
+      }
+
+      footer {
+        padding: 24px 0 44px;
+        color: var(--md-on-surface-variant);
+      }
+
+      .footer-card {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 18px 20px;
+        border-radius: var(--radius-lg);
+        border: 1px solid rgba(121, 116, 126, 0.18);
+        background: rgba(255, 255, 255, 0.75);
+      }
+
+      ul {
+        padding-left: 20px;
+      }
+
+      @media (max-width: 920px) {
+        .hero-card,
+        .contact-wrap,
+        .grid {
+          grid-template-columns: 1fr;
+        }
+
+        .topbar-inner {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .container {
+          width: min(100% - 20px, var(--content-width));
+        }
+
+        .hero {
+          padding-top: 24px;
+        }
+
+        .hero-card,
+        .card,
+        details,
+        .status-card {
+          padding: 20px;
+        }
+
+        .nav {
+          gap: 6px;
+        }
+
+        .nav a {
+          padding: 8px 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="container topbar-inner">
+        <div class="brand">
+          <div class="brand-badge" aria-hidden="true">TZ</div>
+          <div class="brand-text">
+            <p class="brand-title">TZMC Push Support</p>
+            <p class="brand-subtitle">Help center for notifications, access, and troubleshooting</p>
+          </div>
+        </div>
+        <nav class="nav" aria-label="Support navigation">
+          <a href="#help">Help Topics</a>
+          <a href="#faq">FAQ</a>
+          <a href="#contact">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="container">
+          <div class="hero-card">
+            <div>
+              <div class="eyebrow">Reliable support for TZMC Push</div>
+              <h1>Get help with notifications, updates, and account access.</h1>
+              <p>
+                Welcome to the official support page for <strong>TZMC Push</strong>. If you need help receiving
+                notifications, troubleshooting issues, or contacting support, you’ll find the most important
+                information here.
+              </p>
+              <div class="hero-actions">
+                <a class="button primary" href="mailto:support@tzmc.co.il?subject=TZMC%20Push%20Support%20Request">Email Support</a>
+                <a class="button secondary" href="#faq">View FAQ</a>
+              </div>
+            </div>
+
+            <aside class="status-card" aria-label="Support overview">
+              <h2>Support overview</h2>
+              <div class="status-list">
+                <div class="status-item">
+                  <strong>Support email</strong>
+                  <span><a href="mailto:support@tzmc.co.il">support@tzmc.co.il</a></span>
+                </div>
+                <div class="status-item">
+                  <strong>Typical response time</strong>
+                  <span>Within 1–2 business days</span>
+                </div>
+                <div class="status-item">
+                  <strong>Recommended details</strong>
+                  <span>Device model, OS version, app version, and a short description of the issue</span>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="help">
+        <div class="container">
+          <h2>How we can help</h2>
+          <div class="grid">
+            <article class="card">
+              <div class="icon" aria-hidden="true">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M12 3a7 7 0 0 0-7 7v3.2l-1.2 2.2A1 1 0 0 0 4.7 17h14.6a1 1 0 0 0 .9-1.5L19 13.2V10a7 7 0 0 0-7-7Z" stroke="currentColor" stroke-width="1.8" />
+                  <path d="M10 20a2 2 0 0 0 4 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                </svg>
+              </div>
+              <h3>Notification issues</h3>
+              <p>
+                Not receiving alerts? We can help you verify notification permissions, background settings,
+                and device configuration.
+              </p>
+            </article>
+
+            <article class="card">
+              <div class="icon" aria-hidden="true">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M12 4 5 8v4c0 4.2 2.9 8.2 7 9 4.1-.8 7-4.8 7-9V8l-7-4Z" stroke="currentColor" stroke-width="1.8" />
+                  <path d="m9.5 12 1.7 1.7 3.3-3.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </div>
+              <h3>Account and access</h3>
+              <p>
+                If you have trouble signing in, updating your profile, or accessing app features, contact us
+                with your account details and issue summary.
+              </p>
+            </article>
+
+            <article class="card">
+              <div class="icon" aria-hidden="true">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v8A1.5 1.5 0 0 1 18.5 15h-8L7 18.5V15H5.5A1.5 1.5 0 0 1 4 13.5v-8Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+                  <path d="M8 8h8M8 11h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                </svg>
+              </div>
+              <h3>General assistance</h3>
+              <p>
+                For bug reports, usability questions, or feedback, send us a message and we’ll help you as
+                quickly as possible.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="faq">
+        <div class="container">
+          <h2>Frequently asked questions</h2>
+          <div class="faq">
+            <details>
+              <summary>Why am I not receiving push notifications?</summary>
+              <p>
+                First, confirm that notifications are enabled for TZMC Push in your device settings. Also make
+                sure your internet connection is active and that battery optimization or focus modes are not
+                blocking alerts.
+              </p>
+            </details>
+            <details>
+              <summary>What information should I send when reporting a problem?</summary>
+              <p>
+                Please include your device model, operating system version, app version, and a clear description
+                of the issue. Screenshots are also helpful when available.
+              </p>
+            </details>
+            <details>
+              <summary>How long does support usually take to respond?</summary>
+              <p>
+                We aim to respond within 1–2 business days. Complex issues may require additional follow-up.
+              </p>
+            </details>
+            <details>
+              <summary>Can I contact support about feature requests?</summary>
+              <p>
+                Yes. We welcome feedback and feature suggestions. Please send your idea through the support
+                email and include as much context as possible.
+              </p>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="contact">
+        <div class="container">
+          <div class="contact-wrap">
+            <article class="card">
+              <h2>Contact support</h2>
+              <p>
+                If you need help with TZMC Push, please contact us using the details below. To help us resolve
+                your issue faster, include technical details when possible.
+              </p>
+
+              <div class="contact-list">
+                <div class="contact-item">
+                  <div class="icon" aria-hidden="true" style="margin: 0; width: 40px; height: 40px; border-radius: 12px;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                      <path d="M4 7.5A1.5 1.5 0 0 1 5.5 6h13A1.5 1.5 0 0 1 20 7.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 16.5v-9Z" stroke="currentColor" stroke-width="1.8" />
+                      <path d="m5 8 7 5 7-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                  </div>
+                  <div>
+                    <div class="contact-label">Email</div>
+                    <div><a href="mailto:support@tzmc.co.il">support@tzmc.co.il</a></div>
+                  </div>
+                </div>
+
+                <div class="contact-item">
+                  <div class="icon" aria-hidden="true" style="margin: 0; width: 40px; height: 40px; border-radius: 12px;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                      <path d="M12 7v5l3 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                      <circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.8" />
+                    </svg>
+                  </div>
+                  <div>
+                    <div class="contact-label">Response time</div>
+                    <div class="muted">Usually within 1–2 business days</div>
+                  </div>
+                </div>
+
+                <div class="contact-item">
+                  <div class="icon" aria-hidden="true" style="margin: 0; width: 40px; height: 40px; border-radius: 12px;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                      <path d="M6 5h12a1 1 0 0 1 1 1v12l-4-2-3 2-3-2-4 2V6a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+                    </svg>
+                  </div>
+                  <div>
+                    <div class="contact-label">Include in your message</div>
+                    <div class="muted">Device type, OS version, app version, and issue details</div>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <aside class="card">
+              <h2>Before you contact us</h2>
+              <ul>
+                <li>Make sure the app is updated to the latest version.</li>
+                <li>Check that internet access is working on your device.</li>
+                <li>Verify that notifications are enabled in device settings.</li>
+                <li>Restart the app and try again before reporting the issue.</li>
+              </ul>
+              <div class="note">
+                For privacy-related questions, policy requests, or account-specific support, please contact us by
+                email and mention <strong>TZMC Push</strong> in the subject line.
+              </div>
+            </aside>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="container">
+        <div class="footer-card">
+          <span>© <span id="year"></span> TZMC Push. All rights reserved.</span>
+          <span>
+            Need help? <a href="mailto:support@tzmc.co.il">support@tzmc.co.il</a>
+          </span>
+        </div>
+      </div>
+    </footer>
+
+    <script>
+      document.getElementById('year').textContent = new Date().getFullYear();
+    </script>
+  </body>
+</html>
