@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -1367,11 +1368,11 @@ Future<void> _saveFileToDevice(
     await file.writeAsBytes(bytes, flush: true);
 
     if (openAfterSave) {
-      final opened = await launchUrl(
-        file.uri,
-        mode: LaunchMode.externalApplication,
-      );
-      if (!opened) {
+      // Use open_filex instead of launchUrl(file.uri) because on Android 7+
+      // file:// URIs cannot be shared with external apps without a FileProvider.
+      // open_filex handles the FileProvider content:// wrapping automatically.
+      final result = await OpenFilex.open(file.path);
+      if (result.type != ResultType.done) {
         showTopToastOnOverlay(overlay, 'הקובץ נשמר ב: ${file.path}');
       }
       return;

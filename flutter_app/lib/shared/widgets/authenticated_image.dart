@@ -19,6 +19,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -122,11 +123,11 @@ Future<bool> openAuthenticatedFileExternally(BuildContext context, String url) a
     }
     final file = await _createUniqueFile(_extractSaveFilename(resolvedUrl));
     await file.writeAsBytes(Uint8List.fromList(response.data!), flush: true);
-    final opened = await launchUrl(
-      file.uri,
-      mode: LaunchMode.externalApplication,
-    );
-    if (!opened) {
+    // Use open_filex instead of launchUrl(file.uri) because on Android 7+
+    // file:// URIs cannot be shared with external apps without a FileProvider.
+    // open_filex handles the FileProvider content:// wrapping automatically.
+    final result = await OpenFilex.open(file.path);
+    if (result.type != ResultType.done) {
       showTopToast(context, 'הקובץ נשמר ב: ${file.path}');
     }
     return true;
