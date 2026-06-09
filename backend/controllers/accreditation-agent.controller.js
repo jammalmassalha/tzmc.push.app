@@ -50,7 +50,7 @@ let PDFParse = null;
 // ── Constants ────────────────────────────────────────────────────────────────
 
 /** Maximum characters extracted per PDF file. */
-const MAX_CHARS_PER_FILE = 3000;
+const MAX_CHARS_PER_FILE = 100000000;
 
 /** Embedding model used to build the in-memory vector store. */
 const EMBEDDING_MODEL = 'text-embedding-004';
@@ -77,10 +77,10 @@ const MAX_IMAGE_SIZE_BYTES = 2 * 1024 * 1024; // 2 MB
 const GEMINI_MODEL = 'gemini-2.5-flash';
 
 /** Rate-limit: max requests per user per window. */
-const RATE_LIMIT_MAX = 10;
+const RATE_LIMIT_MAX = 120;
 
 /** Rate-limit window in milliseconds. */
-const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const RATE_LIMIT_WINDOW_MS = 2 * 60 * 1000;
 
 // ── In-memory PDF text cache ─────────────────────────────────────────────────
 
