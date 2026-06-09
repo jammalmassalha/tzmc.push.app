@@ -50,19 +50,19 @@ let PDFParse = null;
 // ── Constants ────────────────────────────────────────────────────────────────
 
 /** Maximum characters extracted per PDF file. */
-const MAX_CHARS_PER_FILE = 3000;
+const MAX_CHARS_PER_FILE = 300000;
 
 /** Maximum total characters sent to Gemini across all PDF files. */
-const MAX_TOTAL_CHARS = 30000;
+const MAX_TOTAL_CHARS = 3000000;
 
 /** Image extensions supported for inline Gemini multimodal input. */
 const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp']);
 
 /** Maximum number of images sent to Gemini per request. */
-const MAX_IMAGES = 10;
+const MAX_IMAGES = 20;
 
 /** Maximum image file size (bytes) sent inline to Gemini. */
-const MAX_IMAGE_SIZE_BYTES = 2 * 1024 * 1024; // 2 MB
+const MAX_IMAGE_SIZE_BYTES = 4 * 1024 * 1024; // 2 MB
 
 /** Gemini model to use. */
 const GEMINI_MODEL = 'gemini-2.5-flash';
@@ -71,7 +71,7 @@ const GEMINI_MODEL = 'gemini-2.5-flash';
 const RATE_LIMIT_MAX = 10;
 
 /** Rate-limit window in milliseconds. */
-const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const RATE_LIMIT_WINDOW_MS =  2 * 60 * 1000;
 
 // ── In-memory PDF text cache ─────────────────────────────────────────────────
 
