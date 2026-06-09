@@ -463,22 +463,45 @@ function resolveSafeUploadPath(baseDir, candidatePath) {
    }
    return resolvedPath;
 }
+function buildAccreditationUploadFilename(file) {
+   const rawName = String(file?.originalname || file?.filename || '').trim();
+   const ext = path.extname(rawName).toLowerCase().replace(/[^a-zA-Z0-9.]/g, '');
+   const rawStem = path.basename(rawName, path.extname(rawName)).trim();
+   // Remove null bytes, control chars, and path-traversal characters; preserve Hebrew and other unicode
+   const safeStem = rawStem
+       .replace(/[\u0000-\u001f\u007f]+/g, '')
+       .replace(/[/\\<>:"|?*`$&;{}\[\]^%!~+=]+/g, '-')
+       .replace(/-+/g, '-')
+       .replace(/^[-\s]+|[-\s]+$/g, '')
+       .slice(0, 100);
+   const now = new Date();
+   const pad = (n) => String(n).padStart(2, '0');
+   const datetime = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+   const base = safeStem || 'upload';
+   return `${datetime} ${base}${ext}`;
+}
 async function relocateUploadedFileToAccreditationSubdirectory(file) {
    if (!file || !file.path) {
        return file;
    }
    const targetDir = path.join(uploadDir, ACCREDITATION_UPLOAD_SUBDIRECTORY);
    await fsPromises.mkdir(targetDir, { recursive: true });
-   const rawFilename = String(file.filename || '').trim();
-   const safeFilename = path.basename(rawFilename);
-   if (!safeFilename || safeFilename !== rawFilename || !/^[a-zA-Z0-9._-]+$/.test(safeFilename)) {
+   // Validate the multer-generated source filename to prevent path traversal
+   const rawSourceFilename = String(file.filename || '').trim();
+   const safeSourceFilename = path.basename(rawSourceFilename);
+   if (!safeSourceFilename || safeSourceFilename !== rawSourceFilename || !/^[a-zA-Z0-9._-]+$/.test(safeSourceFilename)) {
        throw new Error('Invalid upload filename');
    }
    const sourcePath = resolveSafeUploadPath(uploadDir, file.path);
-   const targetPath = resolveSafeUploadPath(targetDir, path.join(targetDir, safeFilename));
+   // Build target filename: datetime prefix + original name
+   const targetFilename = buildAccreditationUploadFilename(file);
+   if (!targetFilename || /[\u0000-\u001f\u007f]|[/\\]/.test(targetFilename)) {
+       throw new Error('Invalid accreditation upload filename');
+   }
+   const targetPath = resolveSafeUploadPath(targetDir, path.join(targetDir, targetFilename));
    await fsPromises.rename(sourcePath, targetPath);
    file.destination = targetDir;
-   file.filename = safeFilename;
+   file.filename = targetFilename;
    file.path = targetPath;
    return file;
 }
