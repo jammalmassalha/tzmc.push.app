@@ -1573,7 +1573,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       this.accreditationAnswer.set(result.answer);
       this.accreditationFiles.set(result.relevantFiles);
     } catch (error) {
-      this.accreditationError.set(error instanceof Error ? error.message : 'שגיאה בפנייה לסוכן');
+      this.accreditationError.set(error instanceof Error ? error.message : 'שגיאה בפנייה לסוכן. בדוק את החיבור ונסה שוב.');
     } finally {
       this.accreditationLoading.set(false);
     }
