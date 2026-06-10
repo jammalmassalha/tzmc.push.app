@@ -12,7 +12,7 @@
 /// browser handle cookie forwarding natively.
 library;
 
-import 'dart:io' show File;
+import 'dart:io' show File, Platform;
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -123,12 +123,30 @@ Future<bool> openAuthenticatedFileExternally(BuildContext context, String url) a
     }
     final file = await _createUniqueFile(_extractSaveFilename(resolvedUrl));
     await file.writeAsBytes(Uint8List.fromList(response.data!), flush: true);
-    // Use open_filex instead of launchUrl(file.uri) because on Android 7+
-    // file:// URIs cannot be shared with external apps without a FileProvider.
-    // open_filex handles the FileProvider content:// wrapping automatically.
-    final result = await OpenFilex.open(file.path);
-    if (result.type != ResultType.done) {
-      showTopToast(context, 'הקובץ נשמר ב: ${file.path}');
+    final isPdf = file.path.toLowerCase().endsWith('.pdf');
+    // On iOS, use launchUrl with a file:// URI so the system opens the PDF in
+    // the browser / Quick Look viewer directly – always available and fast.
+    // On Android 7+, file:// URIs cannot be shared with other apps without a
+    // FileProvider, so we use open_filex which handles content:// wrapping.
+    // Passing the explicit MIME type for PDFs lets Android offer Chrome as a
+    // handler, avoiding "no app found" errors on devices without a PDF viewer.
+    bool opened = false;
+    if (isPdf && !kIsWeb && !Platform.isAndroid) {
+      try {
+        opened = await launchUrl(
+          Uri.file(file.path),
+          mode: LaunchMode.externalApplication,
+        );
+      } catch (_) {}
+    }
+    if (!opened) {
+      final result = await OpenFilex.open(
+        file.path,
+        type: isPdf ? 'application/pdf' : null,
+      );
+      if (result.type != ResultType.done) {
+        showTopToast(context, 'הקובץ נשמר ב: ${file.path}');
+      }
     }
     return true;
   } catch (e) {
