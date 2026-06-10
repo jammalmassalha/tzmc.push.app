@@ -222,7 +222,7 @@ export class UploadSecurityService {
       .replace(/[\u0000-\u001f\u007f]+/gu, '')
       .replace(/[^\p{L}\p{N}._\- ]+/gu, '-')
       .replace(/-+/g, '-')
-      .replace(/^[._\- ]+|[._\- ]+$/g, '')
+      .replace(/^[._\- ]+/, '').replace(/[._\- ]+$/, '')
       .slice(0, 100);
     return sanitized || 'upload';
   }

@@ -474,7 +474,7 @@ function buildAccreditationUploadFilename(file) {
        .replace(/[\u0000-\u001f\u007f]+/g, '')
        .replace(/[/\\<>:"|?*`$&;{}\[\]^%!~+=]+/g, '-')
        .replace(/-+/g, '-')
-       .replace(/^[-\s]+|[-\s]+$/g, '')
+       .replace(/^[-\s]+/, '').replace(/[-\s]+$/, '')
        .slice(0, 100);
    const now = new Date();
    const pad = (n) => String(n).padStart(2, '0');
