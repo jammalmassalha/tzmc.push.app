@@ -428,7 +428,8 @@ function isUsersUploadRoute(req) {
 }
 function buildUsersUploadFilename(file) {
    const rawName = String(file?.originalname || '').trim();
-   const baseName = path.basename(rawName);
+   const decodedName = (() => { try { return Buffer.from(rawName, 'latin1').toString('utf8'); } catch { return rawName; } })();
+   const baseName = path.basename(decodedName);
    const safeName = baseName
        .replace(/[\u0000-\u001f\u007f]+/g, '')
        .replace(/\s+/g, ' ')
@@ -465,8 +466,9 @@ function resolveSafeUploadPath(baseDir, candidatePath) {
 }
 function buildAccreditationUploadFilename(file) {
    const rawName = String(file?.originalname || file?.filename || '').trim();
-   const ext = path.extname(rawName).toLowerCase().replace(/[^a-zA-Z0-9.]/g, '');
-   const rawStem = path.basename(rawName, path.extname(rawName)).trim();
+   const decodedName = (() => { try { return Buffer.from(rawName, 'latin1').toString('utf8'); } catch { return rawName; } })();
+   const ext = path.extname(decodedName).toLowerCase().replace(/[^a-zA-Z0-9.]/g, '');
+   const rawStem = path.basename(decodedName, path.extname(decodedName)).trim();
    // Remove null bytes, control chars, and path-traversal characters; preserve Hebrew and other unicode
    const safeStem = rawStem
        .replace(/[\u0000-\u001f\u007f]+/g, '')

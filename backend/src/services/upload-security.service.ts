@@ -58,12 +58,26 @@ const PDF_DISALLOWED_TOKENS: RegExp[] = [
 
 // ─── Pure helper functions ──────────────────────────────────────────────────
 
+/**
+ * Multer reads multipart filenames from the Content-Disposition header using
+ * latin1. When the client sends a UTF-8 encoded filename (e.g. Hebrew), the
+ * resulting string must be re-interpreted as UTF-8. This helper performs that
+ * re-encoding transparently, falling back to the raw string on any error.
+ */
+function decodeUploadOriginalname(rawName: string): string {
+  try {
+    return Buffer.from(String(rawName || ''), 'latin1').toString('utf8');
+  } catch {
+    return String(rawName || '');
+  }
+}
+
 function normalizeUploadMimeType(file: Partial<UploadedFileDescriptor>): string {
   return String(file.mimetype || '').trim().toLowerCase();
 }
 
 function normalizeUploadExtension(file: Partial<UploadedFileDescriptor>): string {
-  return path.extname(String(file.originalname || '')).toLowerCase();
+  return path.extname(decodeUploadOriginalname(file.originalname || '')).toLowerCase();
 }
 
 function bufferStartsWith(buffer: Buffer, signature: Buffer): boolean {
@@ -196,15 +210,20 @@ export class UploadSecurityService {
   }
 
   sanitizeUploadBaseName(rawName = ''): string {
-    const base = path.basename(String(rawName || '').trim());
+    const decoded = decodeUploadOriginalname(String(rawName || ''));
+    const base = path.basename(decoded.trim());
     const ext = path.extname(base);
     const stem = base.slice(0, Math.max(0, base.length - ext.length));
+    // Allow Unicode letters (\p{L}) and digits (\p{N}) so Hebrew and other
+    // non-ASCII filenames are preserved. Strip only control chars and shell/
+    // path-dangerous characters.
     const sanitized = stem
-      .normalize('NFKD')
-      .replace(/[^a-zA-Z0-9._-]+/g, '-')
+      .normalize('NFC')
+      .replace(/[\u0000-\u001f\u007f]+/gu, '')
+      .replace(/[^\p{L}\p{N}._\- ]+/gu, '-')
       .replace(/-+/g, '-')
-      .replace(/^[._-]+|[._-]+$/g, '')
-      .slice(0, 40);
+      .replace(/^[._\- ]+|[._\- ]+$/g, '')
+      .slice(0, 100);
     return sanitized || 'upload';
   }
 
