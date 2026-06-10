@@ -1050,7 +1050,7 @@ const AUTH_CODE_STATIC_USERS = (() => {
     const raw = String(process.env.AUTH_CODE_STATIC_USERS || '0500000001:123456').trim();
     if (raw) {
         raw.split(',').forEach((entry) => {
-            const colonIdx = entry.lastIndexOf(':');
+            const colonIdx = entry.indexOf(':');
             if (colonIdx < 1) return;
             const phone = entry.slice(0, colonIdx).trim().replace(/\D/g, '');
             const code = entry.slice(colonIdx + 1).trim().replace(/\D/g, '');
@@ -2888,7 +2888,7 @@ async function sendAuthCodeSms(user, code) {
     const normalizedUser = normalizeUserCandidate(user);
     // Static-password users never need an SMS — their code is fixed and known in advance.
     if (AUTH_CODE_STATIC_USERS.has(normalizedUser)) {
-        console.log(`[SMS] Skipping SMS for static-password user ${normalizedUser}`);
+        console.log(`[SMS] Skipping SMS for static-password user ***${normalizedUser.slice(-4)}`);
         return;
     }
     if (!INFORU_USERNAME || !INFORU_API_TOKEN) {
