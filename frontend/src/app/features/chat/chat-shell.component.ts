@@ -435,7 +435,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     Boolean(this.shuttleOrdersDashboard() || this.shuttleQuickPicker() || this.isShuttleOperationsRoomActive())
   );
   readonly isComposerHidden = computed(() =>
-    Boolean(this.shuttleQuickPicker() || this.isShuttleOperationsRoomActive() || this.helpdeskQuickPicker() || this.isAccreditationRoomActive())
+    Boolean(this.shuttleQuickPicker() || this.isShuttleOperationsRoomActive() || this.helpdeskQuickPicker())
   );
   readonly helpdeskQuickPicker = computed<ShuttleQuickPickerState | null>(() =>
     this.store.getHelpdeskQuickPickerState()
@@ -453,6 +453,7 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   readonly helpdeskEditorSubTab = signal<'new' | 'in_progress' | 'closed'>('new');
   readonly isSubmittingHelpdeskTicket = signal(false);
   readonly isAccreditationRoomActive = computed(() => this.store.getAccreditationChatActive());
+  readonly isAccreditationPanelOpen = signal(false);
   readonly accreditationQuestion = signal('');
   readonly accreditationSubmittedQuestion = signal<string | null>(null);
   readonly accreditationAnswer = signal<string | null>(null);
@@ -601,7 +602,6 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       Boolean(this.store.activeChatId()) &&
       !this.isShuttleRoomActive() &&
       !this.isHelpdeskRoomActive() &&
-      !this.isAccreditationRoomActive() &&
       this.store.activeMessages().length > 0 &&
       !this.isMessagesPanelAtBottom()
   );
@@ -763,8 +763,8 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   });
 
   private readonly accreditationChatResetEffect = effect(() => {
-    const active = this.isAccreditationRoomActive();
-    if (!active) {
+    const open = this.isAccreditationPanelOpen();
+    if (!open) {
       this.accreditationQuestion.set('');
       this.accreditationSubmittedQuestion.set(null);
       this.accreditationAnswer.set(null);
@@ -1549,6 +1549,14 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     if (!dateString) return 0;
     const ts = Date.parse(dateString);
     return Number.isFinite(ts) ? ts : 0;
+  }
+
+  openAccreditationAgentPanel(): void {
+    this.isAccreditationPanelOpen.set(true);
+  }
+
+  closeAccreditationAgentPanel(): void {
+    this.isAccreditationPanelOpen.set(false);
   }
 
   async askAccreditationAgent(): Promise<void> {
