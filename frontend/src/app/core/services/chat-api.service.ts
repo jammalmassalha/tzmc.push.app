@@ -1624,6 +1624,30 @@ export class ChatApiService {
     return url;
   }
 
+  async askAccreditationAgent(question: string): Promise<{ answer: string; relevantFiles: Array<{ name: string; url: string }> }> {
+    const trimmed = String(question || '').trim();
+    if (!trimmed) {
+      throw new Error('שאלה ריקה');
+    }
+    const response = await this.fetchWithRetry(
+      `${this.notifyBaseUrl}/accreditation/ask`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: trimmed })
+      },
+      { retries: 1, timeoutMs: 90_000 }
+    );
+    const body = await response.json() as { answer?: string; relevantFiles?: Array<{ name: string; url: string }>; message?: string };
+    if (!response.ok) {
+      throw new Error(String(body.message || 'שגיאה בשאילתת הסוכן'));
+    }
+    return {
+      answer: String(body.answer ?? ''),
+      relevantFiles: Array.isArray(body.relevantFiles) ? body.relevantFiles : []
+    };
+  }
+
   private isLikelyHtmlPayload(payloadText: string): boolean {
     return /<html[\s>]/i.test(payloadText) || /<body[\s>]/i.test(payloadText);
   }

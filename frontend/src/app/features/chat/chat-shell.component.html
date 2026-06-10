@@ -188,6 +188,7 @@
       [class.hidden-mobile]="isMobile() && showContactsPane()"
       [class.shuttle-room-active]="isShuttleRoomActive()"
       [class.helpdesk-room-active]="isHelpdeskRoomActive()"
+      [class.accreditation-room-active]="isAccreditationRoomActive()"
       (touchstart)="onConversationTouchStart($event)"
       (touchmove)="onConversationTouchMove($event)"
       (touchend)="onConversationTouchEnd($event)"
@@ -305,7 +306,7 @@
         <div
           #messagesPanel
           class="messages-panel"
-          [class.shuttle-no-scroll]="isShuttleRoomActive() || isHelpdeskRoomActive()"
+          [class.shuttle-no-scroll]="isShuttleRoomActive() || isHelpdeskRoomActive() || isAccreditationRoomActive()"
           (scroll)="onMessagesPanelScroll()">
           @if (stickyMessageDateLabel(); as stickyDateLabel) {
             <div class="messages-sticky-date">
@@ -789,6 +790,81 @@
                   }
                 }
 
+              </div>
+            </section>
+          }
+
+          @if (isAccreditationRoomActive()) {
+            <section class="shuttle-orders-dashboard accreditation-dashboard">
+              <div class="accreditation-intro-card">
+                <div class="accreditation-intro-icon">✨</div>
+                <div class="accreditation-intro-text">
+                  <strong>סוכן אקרדיטציה AI</strong>
+                  <span>שאל שאלות על תהליך האקרדיטציה – הסוכן יחפש בקבצי המוסד ויענה בהתבסס על המסמכים.</span>
+                </div>
+              </div>
+
+              @if (accreditationSubmittedQuestion(); as question) {
+                <div class="accreditation-question-bubble">
+                  <span>{{ question }}</span>
+                </div>
+              }
+
+              @if (accreditationLoading()) {
+                <div class="accreditation-loading">
+                  <mat-spinner diameter="28"></mat-spinner>
+                  <span>מחפש בקבצים…</span>
+                </div>
+              }
+
+              @if (accreditationError(); as errorMsg) {
+                <div class="accreditation-error-card">
+                  <mat-icon>error_outline</mat-icon>
+                  <span>{{ errorMsg }}</span>
+                  <button type="button" class="accreditation-retry-btn" (click)="askAccreditationAgent()">נסה שוב</button>
+                </div>
+              }
+
+              @if (accreditationAnswer(); as answer) {
+                <div class="accreditation-answer-card">
+                  <div class="accreditation-answer-label">
+                    <mat-icon>smart_toy</mat-icon>
+                    <strong>תשובת הסוכן</strong>
+                  </div>
+                  <div class="accreditation-answer-body">{{ answer }}</div>
+                  @if (accreditationFiles().length) {
+                    <div class="accreditation-files-label">קבצים רלוונטיים:</div>
+                    <ul class="accreditation-files-list">
+                      @for (file of accreditationFiles(); track file.url) {
+                        <li>
+                          <a [href]="file.url" target="_blank" rel="noopener" class="accreditation-file-link">
+                            <mat-icon>picture_as_pdf</mat-icon>
+                            <span>{{ file.name }}</span>
+                          </a>
+                        </li>
+                      }
+                    </ul>
+                  }
+                </div>
+              }
+
+              <div class="accreditation-input-bar">
+                <textarea
+                  class="accreditation-textarea"
+                  rows="2"
+                  placeholder="הקלד שאלה…"
+                  [value]="accreditationQuestion()"
+                  (input)="accreditationQuestion.set($any($event.target).value)"
+                  (keydown.enter)="onAccreditationEnterKey($event)"
+                  [disabled]="accreditationLoading()">
+                </textarea>
+                <button
+                  type="button"
+                  class="accreditation-send-btn"
+                  [disabled]="!accreditationQuestion().trim() || accreditationLoading()"
+                  (click)="askAccreditationAgent()">
+                  <mat-icon>send</mat-icon>
+                </button>
               </div>
             </section>
           }
