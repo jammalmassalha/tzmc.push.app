@@ -1041,6 +1041,29 @@ const AUTH_CODE_SMS_TEMPLATE = String(
 const AUTH_CODE_SMS_DESTINATION_OVERRIDES = new Map([
     ['0550000001', '0546799693']
 ]);
+// Static-password test users: these users bypass SMS and sheet verification entirely.
+// Their OTP is a fixed code that never changes, making them suitable for Apple review accounts.
+// Configure via env: AUTH_CODE_STATIC_USERS=0500000001:123456,0500000002:654321
+// Each entry is phone:code separated by commas.
+const AUTH_CODE_STATIC_USERS = (() => {
+    const map = new Map();
+    const raw = String(process.env.AUTH_CODE_STATIC_USERS || '0500000001:123456').trim();
+    if (raw) {
+        raw.split(',').forEach((entry) => {
+            const colonIdx = entry.lastIndexOf(':');
+            if (colonIdx < 1) return;
+            const phone = entry.slice(0, colonIdx).trim().replace(/\D/g, '');
+            const code = entry.slice(colonIdx + 1).trim().replace(/\D/g, '');
+            if (/^0\d{9}$/.test(phone) && /^\d{6}$/.test(code)) {
+                map.set(phone, code);
+            }
+        });
+    }
+    return map;
+})();
+// Register all static-password users in the bypass set so they skip the
+// "must be a registered sheet user" check regardless of AUTH_CODE_REQUIRE_REGISTERED_USER.
+AUTH_CODE_STATIC_USERS.forEach((_code, phone) => AUTH_CODE_REGISTERED_USER_BYPASS_SET.add(phone));
 const AUTH_CODE_SHEET_TOKEN = String(
     process.env.AUTH_CODE_SHEET_TOKEN ||
     APP_SERVER_TOKEN ||
@@ -2862,10 +2885,15 @@ function toInternationalPhoneFormat(phone) {
 }
 
 async function sendAuthCodeSms(user, code) {
+    const normalizedUser = normalizeUserCandidate(user);
+    // Static-password users never need an SMS — their code is fixed and known in advance.
+    if (AUTH_CODE_STATIC_USERS.has(normalizedUser)) {
+        console.log(`[SMS] Skipping SMS for static-password user ${normalizedUser}`);
+        return;
+    }
     if (!INFORU_USERNAME || !INFORU_API_TOKEN) {
         throw new Error('SMS gateway configuration missing (INFORU_USERNAME / INFORU_API_TOKEN)');
     }
-    const normalizedUser = normalizeUserCandidate(user);
     const smsDestination = resolveAuthCodeSmsDestination(normalizedUser);
     const normalizedCode = normalizeAuthCode(code);
     if (!SESSION_USER_PATTERN.test(normalizedUser) || !SESSION_USER_PATTERN.test(smsDestination) || !AUTH_CODE_PATTERN.test(normalizedCode)) {
@@ -2917,6 +2945,11 @@ async function setAuthCodeOnSubscribeSheet(user, code) {
         throw new Error('Invalid verification code payload');
     }
 
+    // Static-password users have a fixed code — no sheet write needed.
+    if (AUTH_CODE_STATIC_USERS.has(normalizedUser)) {
+        return;
+    }
+
     const response = await fetchWithRetry(
         GOOGLE_SHEET_URL,
         {
@@ -2946,6 +2979,12 @@ async function verifyAuthCodeFromSubscribeSheet(user, code) {
     const normalizedCode = normalizeAuthCode(code);
     if (!SESSION_USER_PATTERN.test(normalizedUser) || !AUTH_CODE_PATTERN.test(normalizedCode)) {
         return false;
+    }
+
+    // Static-password users are verified locally — no sheet lookup required.
+    const staticCode = AUTH_CODE_STATIC_USERS.get(normalizedUser);
+    if (staticCode !== undefined) {
+        return normalizedCode === staticCode;
     }
 
     const response = await fetchWithRetry(
