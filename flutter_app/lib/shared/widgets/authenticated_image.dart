@@ -131,7 +131,7 @@ Future<bool> openAuthenticatedFileExternally(BuildContext context, String url) a
     // Passing the explicit MIME type for PDFs lets Android offer Chrome as a
     // handler, avoiding "no app found" errors on devices without a PDF viewer.
     bool opened = false;
-    if (isPdf && !kIsWeb && !Platform.isAndroid) {
+    if (isPdf && !kIsWeb && Platform.isIOS) {
       try {
         opened = await launchUrl(
           Uri.file(file.path),
