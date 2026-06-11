@@ -143,6 +143,9 @@ class NetworkTimeouts {
   /// worst-case), so give the Flutter client enough headroom.
   static const Duration resetPasswordTimeout = Duration(seconds: 45);
 
+  /// AI agent timeout (Gemini PDF embedding + generation can take 60-90 s).
+  static const Duration aiAgentTimeout = Duration(seconds: 120);
+
   /// Default retry backoff
   static const Duration retryBackoff = Duration(milliseconds: 450);
 }
