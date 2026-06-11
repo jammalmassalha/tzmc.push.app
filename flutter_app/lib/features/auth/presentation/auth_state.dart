@@ -206,6 +206,16 @@ class AuthNotifier extends Notifier<AuthState> {
       _logger.w('Error unregistering push token: $e');
     }
 
+    // Reset the app-icon badge and server-side badge counter on logout so
+    // they start from zero on the next login — without this the old count
+    // survives across reinstalls (iOS keychain) and is incorrectly shown
+    // as unread when the user signs back in.
+    try {
+      await ref.read(pushNotificationServiceProvider).resetBadge();
+    } catch (e) {
+      _logger.w('Error resetting badge on logout: $e');
+    }
+
     try {
       await _apiService.clearSession();
     } catch (e) {

@@ -3089,6 +3089,21 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       await WebChatStorage.clear();
     }
     await _writeDeletedChats(const {});
+
+    // Clear the FCM background-notification pending tray so that stale unread
+    // counts written before a logout, update, or reinstall are never replayed
+    // as badge counts on the next login.  Without this, the tray survives app
+    // updates (SharedPreferences is preserved across updates on Android/iOS)
+    // and would incorrectly re-show badges for messages the user already read.
+    if (!kIsWeb) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove(kPendingChatUpdatesKey);
+      } catch (_) {
+        // best-effort
+      }
+    }
+
     state = const ChatState();
   }
 }
