@@ -866,6 +866,18 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           latestTimestamp = _latestTimestampFromState();
         }
       }
+
+      // Never use the incremental pull path as a full-history download.
+      // When latestTimestamp == 0 the DB is empty (fresh install / cleared
+      // state) and the server would return ALL historical messages.  Each of
+      // those messages would be routed through _handleIncomingTextMessage and
+      // marked as unread because state.messagesByChat is also empty.  A full
+      // history load must always go through _pullAllMessagesFromLogs (the
+      // batch-import path) which never increments unread counts.
+      // recoverMissedMessages already handles the since==0 case correctly, so
+      // we simply bail out here and let initialization finish first.
+      if (latestTimestamp <= 0) return;
+
       final messages = await _api.getMessagesFromLogs(
         user: user,
         since: latestTimestamp,
@@ -2398,6 +2410,23 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
   }
 
+  /// Clears all local unread badges and the persisted background tray counts.
+  ///
+  /// Used by the push-permission onboarding flow so the app starts from a clean
+  /// unread state right after notifications are enabled for the first time.
+  Future<void> clearAllUnreadBadgesInBackground() async {
+    state = state.copyWith(unreadByChat: const {});
+    _schedulePersistence();
+
+    try {
+      await _db.setAllUnreadCounts(const {});
+    } catch (e) {
+      debugPrint('[ChatStore] Failed to clear unread counts: $e');
+    }
+
+    await _clearPendingTrayUnreadCounts();
+  }
+
   Future<void> markChatSeen(String chatId) async {
     final user = (_currentUser ?? '').trim().toLowerCase();
     final normalizedChatId = chatId.trim().toLowerCase();
@@ -2882,6 +2911,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       debugPrint('[ChatStore] Poll tick skipped — transport is ${_transport.transportMode.name}');
       return;
     }
+    // Do not poll before initialization is complete. Polling before initialize()
+    // finishes results in pullMessages() reading latestTimestamp=0 from an
+    // empty DB, fetching ALL historical messages through the incremental path,
+    // and marking every incoming message as unread. The batch-import path in
+    // recoverMissedMessages resets unreadByChat to {} at the end of initialize,
+    // but intermediate poll ticks during the several-second initialization
+    // window can still cause all chats to briefly (or permanently) show unread
+    // badges after an app update or reinstall.
+    if (!state.isInitialized) return;
     // Do not poll during a full sync — the sync performs its own comprehensive
     // pull and polling with a cleared state would mark historical messages as
     // unread.
@@ -3068,7 +3106,25 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       await WebChatStorage.clear();
     }
     await _writeDeletedChats(const {});
+
+    // Clear the FCM background-notification pending tray so that stale unread
+    // counts written before a logout, update, or reinstall are never replayed
+    // as badge counts on the next login.  Without this, the tray survives app
+    // updates (SharedPreferences is preserved across updates on Android/iOS)
+    // and would incorrectly re-show badges for messages the user already read.
+    await _clearPendingTrayUnreadCounts();
+
     state = const ChatState();
+  }
+
+  Future<void> _clearPendingTrayUnreadCounts() async {
+    if (kIsWeb) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(kPendingChatUpdatesKey);
+    } catch (e) {
+      debugPrint('[ChatStore] Failed to clear pending tray unread counts: $e');
+    }
   }
 }
 
