@@ -2415,10 +2415,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// Used by the push-permission onboarding flow so the app starts from a clean
   /// unread state right after notifications are enabled for the first time.
   Future<void> clearAllUnreadBadgesInBackground() async {
-    if (state.unreadByChat.isNotEmpty) {
-      state = state.copyWith(unreadByChat: const {});
-      _schedulePersistence();
-    }
+    state = state.copyWith(unreadByChat: const {});
+    _schedulePersistence();
 
     try {
       await _db.setAllUnreadCounts(const {});
@@ -2426,14 +2424,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       debugPrint('[ChatStore] Failed to clear unread counts: $e');
     }
 
-    if (!kIsWeb) {
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.remove(kPendingChatUpdatesKey);
-      } catch (e) {
-        debugPrint('[ChatStore] Failed to clear pending tray unread counts: $e');
-      }
-    }
+    await _clearPendingTrayUnreadCounts();
   }
 
   Future<void> markChatSeen(String chatId) async {
@@ -3121,16 +3112,19 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // as badge counts on the next login.  Without this, the tray survives app
     // updates (SharedPreferences is preserved across updates on Android/iOS)
     // and would incorrectly re-show badges for messages the user already read.
-    if (!kIsWeb) {
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.remove(kPendingChatUpdatesKey);
-      } catch (e) {
-        debugPrint('[ChatStore] Failed to clear pending tray on clearAll: $e');
-      }
-    }
+    await _clearPendingTrayUnreadCounts();
 
     state = const ChatState();
+  }
+
+  Future<void> _clearPendingTrayUnreadCounts() async {
+    if (kIsWeb) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(kPendingChatUpdatesKey);
+    } catch (e) {
+      debugPrint('[ChatStore] Failed to clear pending tray unread counts: $e');
+    }
   }
 }
 
