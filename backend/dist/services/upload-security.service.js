@@ -33,11 +33,25 @@ const PDF_DISALLOWED_TOKENS = [
     /\/encrypt\b/i
 ];
 // ─── Pure helper functions ──────────────────────────────────────────────────
+/**
+ * Multer reads multipart filenames from the Content-Disposition header using
+ * latin1. When the client sends a UTF-8 encoded filename (e.g. Hebrew), the
+ * resulting string must be re-interpreted as UTF-8. This helper performs that
+ * re-encoding transparently, falling back to the raw string on any error.
+ */
+function decodeUploadOriginalname(rawName) {
+    try {
+        return Buffer.from(String(rawName || ''), 'latin1').toString('utf8');
+    }
+    catch {
+        return String(rawName || '');
+    }
+}
 function normalizeUploadMimeType(file) {
     return String(file.mimetype || '').trim().toLowerCase();
 }
 function normalizeUploadExtension(file) {
-    return node_path_1.default.extname(String(file.originalname || '')).toLowerCase();
+    return node_path_1.default.extname(decodeUploadOriginalname(file.originalname || '')).toLowerCase();
 }
 function bufferStartsWith(buffer, signature) {
     if (!Buffer.isBuffer(buffer) || !Buffer.isBuffer(signature))
@@ -184,15 +198,20 @@ class UploadSecurityService {
         return '';
     }
     sanitizeUploadBaseName(rawName = '') {
-        const base = node_path_1.default.basename(String(rawName || '').trim());
+        const decoded = decodeUploadOriginalname(String(rawName || ''));
+        const base = node_path_1.default.basename(decoded.trim());
         const ext = node_path_1.default.extname(base);
         const stem = base.slice(0, Math.max(0, base.length - ext.length));
+        // Allow Unicode letters (\p{L}) and digits (\p{N}) so Hebrew and other
+        // non-ASCII filenames are preserved. Strip only control chars and shell/
+        // path-dangerous characters.
         const sanitized = stem
-            .normalize('NFKD')
-            .replace(/[^a-zA-Z0-9._-]+/g, '-')
+            .normalize('NFC')
+            .replace(/[\u0000-\u001f\u007f]+/gu, '')
+            .replace(/[^\p{L}\p{N}._\- ]+/gu, '-')
             .replace(/-+/g, '-')
-            .replace(/^[._-]+|[._-]+$/g, '')
-            .slice(0, 40);
+            .replace(/^[._\- ]+/, '').replace(/[._\- ]+$/, '')
+            .slice(0, 100);
         return sanitized || 'upload';
     }
     buildSafeUploadFilename(file) {

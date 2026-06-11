@@ -20,6 +20,17 @@
       </mat-chip>
     </mat-chip-set>
 
+    <button
+      mat-icon-button
+      type="button"
+      class="agent-toolbar-btn"
+      [class.active]="isAccreditationPanelOpen()"
+      (click)="openAccreditationAgentPanel()"
+      aria-label="סוכן אקרדיטציה AI"
+      title="סוכן אקרדיטציה AI">
+      <mat-icon>auto_awesome</mat-icon>
+    </button>
+
     <button mat-icon-button type="button" [matMenuTriggerFor]="mainMenu" aria-label="תפריט">
       <mat-icon>more_vert</mat-icon>
     </button>
@@ -55,6 +66,10 @@
     <button mat-menu-item type="button" (click)="openCreateGroupDialog()">
       <mat-icon>group_add</mat-icon>
       <span>קבוצה חדשה</span>
+    </button>
+    <button mat-menu-item type="button" (click)="openAccreditationAgentPanel()">
+      <mat-icon>auto_awesome</mat-icon>
+      <span>סוכן אקרדיטציה AI</span>
     </button>
     <button mat-menu-item type="button" (click)="openInformationSecurityPolicy()">
       <mat-icon>security</mat-icon>
@@ -793,6 +808,7 @@
             </section>
           }
 
+
           @for (message of visibleMessages(); track trackByMessageUpdate(index, message); let index = $index) {
             @if (shouldShowMessageDateBadge(messageAbsoluteIndex(index), message.timestamp)) {
               <div class="message-date-badge">
@@ -1456,6 +1472,134 @@
       }
     </section>
   </div>
+
+  @if (isAccreditationPanelOpen()) {
+    <div class="accreditation-panel-backdrop" (click)="closeAccreditationAgentPanel()"></div>
+    <aside class="accreditation-panel" dir="rtl">
+      <div class="accreditation-panel-header">
+        <div class="accreditation-panel-header-title">
+          <div class="accreditation-panel-header-icon">
+            <mat-icon>auto_awesome</mat-icon>
+          </div>
+          <span>סוכן אקרדיטציה AI</span>
+        </div>
+        <button mat-icon-button type="button" class="accreditation-panel-close" (click)="closeAccreditationAgentPanel()" aria-label="סגור">
+          <mat-icon>close</mat-icon>
+        </button>
+      </div>
+
+      <div class="accreditation-panel-body">
+        <div class="accreditation-intro-card">
+          <div class="accreditation-intro-icon-wrap">
+            <mat-icon>auto_awesome</mat-icon>
+          </div>
+          <div class="accreditation-intro-text">
+            <strong>עוזר אקרדיטציה חכם</strong>
+            <span>שאל שאלה בשפה חופשית על מסמכי האקרדיטציה. הסוכן יענה ויצרף את הקבצים הרלוונטיים.</span>
+          </div>
+        </div>
+
+        @if (accreditationSubmittedQuestion(); as question) {
+          <div class="accreditation-question-row">
+            <div class="accreditation-question-bubble">
+              <div class="accreditation-question-meta">
+                <mat-icon>person_rounded</mat-icon>
+                <span>השאלה שלך</span>
+              </div>
+              <div class="accreditation-question-text">{{ question }}</div>
+            </div>
+            <div class="accreditation-user-avatar">
+              <mat-icon>person</mat-icon>
+            </div>
+          </div>
+        }
+
+        @if (accreditationLoading()) {
+          <div class="accreditation-loading-row">
+            <div class="accreditation-bot-avatar">
+              <mat-icon>smart_toy</mat-icon>
+            </div>
+            <div class="accreditation-shimmer-block">
+              <div class="accreditation-shimmer-line full"></div>
+              <div class="accreditation-shimmer-line w60"></div>
+              <div class="accreditation-shimmer-line w80"></div>
+              <div class="accreditation-shimmer-line w40"></div>
+            </div>
+          </div>
+        }
+
+        @if (accreditationError(); as errorMsg) {
+          <div class="accreditation-error-card">
+            <mat-icon>error_outline</mat-icon>
+            <div class="accreditation-error-content">
+              <strong>אירעה שגיאה</strong>
+              <span>{{ errorMsg }}</span>
+              <button type="button" class="accreditation-retry-btn" (click)="askAccreditationAgent()">
+                <mat-icon>refresh</mat-icon>
+                <span>נסה שוב</span>
+              </button>
+            </div>
+          </div>
+        }
+
+        @if (accreditationAnswer(); as answer) {
+          <div class="accreditation-answer-row">
+            <div class="accreditation-bot-avatar">
+              <mat-icon>auto_awesome</mat-icon>
+            </div>
+            <div class="accreditation-answer-card">
+              <div class="accreditation-answer-header">
+                <mat-icon>smart_toy</mat-icon>
+                <strong>תשובת הסוכן</strong>
+                <div class="accreditation-gemini-badge">
+                  <mat-icon>bolt</mat-icon>
+                  <span>Gemini AI</span>
+                </div>
+              </div>
+              <div class="accreditation-answer-body">{{ answer }}</div>
+              @if (accreditationFiles().length) {
+                <div class="accreditation-files-section">
+                  <div class="accreditation-files-label">
+                    <mat-icon>folder_open</mat-icon>
+                    <span>קבצים רלוונטיים</span>
+                  </div>
+                  <ul class="accreditation-files-list">
+                    @for (file of accreditationFiles(); track file.url) {
+                      <li>
+                        <a [href]="file.url" target="_blank" rel="noopener" class="accreditation-file-link">
+                          <mat-icon>picture_as_pdf</mat-icon>
+                          <span>{{ file.name }}</span>
+                        </a>
+                      </li>
+                    }
+                  </ul>
+                </div>
+              }
+            </div>
+          </div>
+        }
+      </div>
+
+      <div class="accreditation-input-bar">
+        <textarea
+          class="accreditation-textarea"
+          rows="2"
+          placeholder="שאל שאלה על מסמכי האקרדיטציה…"
+          [value]="accreditationQuestion()"
+          (input)="accreditationQuestion.set($any($event.target).value)"
+          (keydown.enter)="onAccreditationEnterKey($event)"
+          [disabled]="accreditationLoading()">
+        </textarea>
+        <button
+          type="button"
+          class="accreditation-send-btn"
+          [disabled]="!accreditationQuestion().trim() || accreditationLoading()"
+          (click)="askAccreditationAgent()">
+          <mat-icon>send</mat-icon>
+        </button>
+      </div>
+    </aside>
+  }
 
   @if (isLoggingOut()) {
     <div class="logout-loader-backdrop" role="status" aria-live="polite" aria-busy="true">

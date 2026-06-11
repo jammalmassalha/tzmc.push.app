@@ -77,7 +77,7 @@ const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp']);
 const MAX_IMAGES = 15;
 
 /** Maximum image file size (bytes) sent inline to Gemini. */
-const MAX_IMAGE_SIZE_BYTES = 2 * 1024 * 1024; // 2 MB
+const MAX_IMAGE_SIZE_BYTES = 4 * 1024 * 1024; // 2 MB
 
 /** Gemini model to use. */
 const GEMINI_MODEL = 'gemini-2.5-flash';

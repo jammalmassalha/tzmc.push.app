@@ -452,6 +452,14 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
   readonly helpdeskDashboardTab = signal<'ongoing' | 'past' | 'assigned' | 'editor'>('ongoing');
   readonly helpdeskEditorSubTab = signal<'new' | 'in_progress' | 'closed'>('new');
   readonly isSubmittingHelpdeskTicket = signal(false);
+  readonly isAccreditationRoomActive = computed(() => this.store.getAccreditationChatActive());
+  readonly isAccreditationPanelOpen = signal(false);
+  readonly accreditationQuestion = signal('');
+  readonly accreditationSubmittedQuestion = signal<string | null>(null);
+  readonly accreditationAnswer = signal<string | null>(null);
+  readonly accreditationFiles = signal<Array<{ name: string; url: string }>>([]);
+  readonly accreditationLoading = signal(false);
+  readonly accreditationError = signal<string | null>(null);
   readonly uploadingFileName = signal('');
   readonly expandedShuttleOperationsDates = signal<Set<string>>(new Set<string>());
   readonly shuttleBreadcrumbs = computed<ShuttleBreadcrumbStep[] | null>(() =>
@@ -751,6 +759,18 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       this.lastShuttlePickerKey = key;
       this.shuttlePickerControl.setValue('');
       this.shuttlePickerSearchControl.setValue('');
+    }
+  });
+
+  private readonly accreditationChatResetEffect = effect(() => {
+    const open = this.isAccreditationPanelOpen();
+    if (!open) {
+      this.accreditationQuestion.set('');
+      this.accreditationSubmittedQuestion.set(null);
+      this.accreditationAnswer.set(null);
+      this.accreditationFiles.set([]);
+      this.accreditationLoading.set(false);
+      this.accreditationError.set(null);
     }
   });
 
@@ -1529,6 +1549,41 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     if (!dateString) return 0;
     const ts = Date.parse(dateString);
     return Number.isFinite(ts) ? ts : 0;
+  }
+
+  openAccreditationAgentPanel(): void {
+    this.isAccreditationPanelOpen.set(true);
+  }
+
+  closeAccreditationAgentPanel(): void {
+    this.isAccreditationPanelOpen.set(false);
+  }
+
+  async askAccreditationAgent(): Promise<void> {
+    const question = this.accreditationQuestion().trim();
+    if (!question || this.accreditationLoading()) return;
+    this.accreditationSubmittedQuestion.set(question);
+    this.accreditationQuestion.set('');
+    this.accreditationAnswer.set(null);
+    this.accreditationFiles.set([]);
+    this.accreditationError.set(null);
+    this.accreditationLoading.set(true);
+    try {
+      const result = await this.store.askAccreditationAgentQuestion(question);
+      this.accreditationAnswer.set(result.answer);
+      this.accreditationFiles.set(result.relevantFiles);
+    } catch (error) {
+      this.accreditationError.set(error instanceof Error ? error.message : 'שגיאה בפנייה לסוכן. בדוק את החיבור ונסה שוב.');
+    } finally {
+      this.accreditationLoading.set(false);
+    }
+  }
+
+  onAccreditationEnterKey(event: Event): void {
+    const keyboardEvent = event as KeyboardEvent;
+    if (keyboardEvent.shiftKey) return;
+    event.preventDefault();
+    void this.askAccreditationAgent();
   }
 
   messageAbsoluteIndex(index: number): number {

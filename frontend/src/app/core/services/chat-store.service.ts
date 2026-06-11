@@ -65,6 +65,7 @@ const SHUTTLE_CHAT_NAME = 'הזמנת הסעה';
 const SHUTTLE_CHAT_TITLE = 'הזמנת הסעה / Заказ שаттла';
 const SHUTTLE_OPERATIONS_CHAT_NAME = 'הסעות';
 const HELPDESK_CHAT_NAME = 'מוקד איחוד - קריאות';
+const ACCREDITATION_CHAT_NAME = 'אקרדיטציה';
 const HELPDESK_STATE_KEY_PREFIX = 'helpdesk_state_';
 const HELPDESK_TICKETS_CACHE_TTL_MS = 60 * 1000;
 const HELPDESK_TICKETS_POLL_INTERVAL_MS = 20 * 1000;
@@ -2789,6 +2790,10 @@ export class ChatStoreService {
     return this.normalizeChatId(chatId ?? '') === this.normalizeChatId(HELPDESK_CHAT_NAME);
   }
 
+  private isAccreditationChat(chatId: string | null): boolean {
+    return this.normalizeChatId(chatId ?? '') === this.normalizeChatId(ACCREDITATION_CHAT_NAME);
+  }
+
   private isShuttleChat(chatId: string | null): boolean {
     const normalized = this.normalizeChatId(chatId ?? '');
     return Boolean(normalized && this.shuttleChatIdSet.has(normalized));
@@ -5068,6 +5073,14 @@ export class ChatStoreService {
   getHelpdeskTicketsLoading(): boolean {
     this.helpdeskPickerRevision();
     return this.helpdeskTicketsLoadingSignal();
+  }
+
+  getAccreditationChatActive(): boolean {
+    return this.isAccreditationChat(this.activeChatId());
+  }
+
+  askAccreditationAgentQuestion(question: string): Promise<{ answer: string; relevantFiles: Array<{ name: string; url: string }> }> {
+    return this.api.askAccreditationAgent(question);
   }
 
   async chooseHelpdeskOption(value: string): Promise<void> {

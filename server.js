@@ -428,7 +428,8 @@ function isUsersUploadRoute(req) {
 }
 function buildUsersUploadFilename(file) {
    const rawName = String(file?.originalname || '').trim();
-   const baseName = path.basename(rawName);
+   const decodedName = (() => { try { return Buffer.from(rawName, 'latin1').toString('utf8'); } catch { return rawName; } })();
+   const baseName = path.basename(decodedName);
    const safeName = baseName
        .replace(/[\u0000-\u001f\u007f]+/g, '')
        .replace(/\s+/g, ' ')
@@ -463,22 +464,46 @@ function resolveSafeUploadPath(baseDir, candidatePath) {
    }
    return resolvedPath;
 }
+function buildAccreditationUploadFilename(file) {
+   const rawName = String(file?.originalname || file?.filename || '').trim();
+   const decodedName = (() => { try { return Buffer.from(rawName, 'latin1').toString('utf8'); } catch { return rawName; } })();
+   const ext = path.extname(decodedName).toLowerCase().replace(/[^a-zA-Z0-9.]/g, '');
+   const rawStem = path.basename(decodedName, path.extname(decodedName)).trim();
+   // Remove null bytes, control chars, and path-traversal characters; preserve Hebrew and other unicode
+   const safeStem = rawStem
+       .replace(/[\u0000-\u001f\u007f]+/g, '')
+       .replace(/[/\\<>:"|?*`$&;{}\[\]^%!~+=]+/g, '-')
+       .replace(/-+/g, '-')
+       .replace(/^[-\s]+/, '').replace(/[-\s]+$/, '')
+       .slice(0, 100);
+   const now = new Date();
+   const pad = (n) => String(n).padStart(2, '0');
+   const datetime = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+   const base = safeStem || 'upload';
+   return `${datetime} ${base}${ext}`;
+}
 async function relocateUploadedFileToAccreditationSubdirectory(file) {
    if (!file || !file.path) {
        return file;
    }
    const targetDir = path.join(uploadDir, ACCREDITATION_UPLOAD_SUBDIRECTORY);
    await fsPromises.mkdir(targetDir, { recursive: true });
-   const rawFilename = String(file.filename || '').trim();
-   const safeFilename = path.basename(rawFilename);
-   if (!safeFilename || safeFilename !== rawFilename || !/^[a-zA-Z0-9._-]+$/.test(safeFilename)) {
+   // Validate the multer-generated source filename to prevent path traversal
+   const rawSourceFilename = String(file.filename || '').trim();
+   const safeSourceFilename = path.basename(rawSourceFilename);
+   if (!safeSourceFilename || safeSourceFilename !== rawSourceFilename || !/^[a-zA-Z0-9._-]+$/.test(safeSourceFilename)) {
        throw new Error('Invalid upload filename');
    }
    const sourcePath = resolveSafeUploadPath(uploadDir, file.path);
-   const targetPath = resolveSafeUploadPath(targetDir, path.join(targetDir, safeFilename));
+   // Build target filename: datetime prefix + original name
+   const targetFilename = buildAccreditationUploadFilename(file);
+   if (!targetFilename || /[\u0000-\u001f\u007f]|[/\\]/.test(targetFilename)) {
+       throw new Error('Invalid accreditation upload filename');
+   }
+   const targetPath = resolveSafeUploadPath(targetDir, path.join(targetDir, targetFilename));
    await fsPromises.rename(sourcePath, targetPath);
    file.destination = targetDir;
-   file.filename = safeFilename;
+   file.filename = targetFilename;
    file.path = targetPath;
    return file;
 }
@@ -1016,6 +1041,29 @@ const AUTH_CODE_SMS_TEMPLATE = String(
 const AUTH_CODE_SMS_DESTINATION_OVERRIDES = new Map([
     ['0550000001', '0546799693']
 ]);
+// Static-password test users: these users bypass SMS and sheet verification entirely.
+// Their OTP is a fixed code that never changes, making them suitable for Apple review accounts.
+// Configure via env: AUTH_CODE_STATIC_USERS=0500000001:123456,0500000002:654321
+// Each entry is phone:code separated by commas.
+const AUTH_CODE_STATIC_USERS = (() => {
+    const map = new Map();
+    const raw = String(process.env.AUTH_CODE_STATIC_USERS || '0500000001:123456').trim();
+    if (raw) {
+        raw.split(',').forEach((entry) => {
+            const colonIdx = entry.indexOf(':');
+            if (colonIdx < 1) return;
+            const phone = entry.slice(0, colonIdx).trim().replace(/\D/g, '');
+            const code = entry.slice(colonIdx + 1).trim().replace(/\D/g, '');
+            if (/^0\d{9}$/.test(phone) && /^\d{6}$/.test(code)) {
+                map.set(phone, code);
+            }
+        });
+    }
+    return map;
+})();
+// Register all static-password users in the bypass set so they skip the
+// "must be a registered sheet user" check regardless of AUTH_CODE_REQUIRE_REGISTERED_USER.
+AUTH_CODE_STATIC_USERS.forEach((_code, phone) => AUTH_CODE_REGISTERED_USER_BYPASS_SET.add(phone));
 const AUTH_CODE_SHEET_TOKEN = String(
     process.env.AUTH_CODE_SHEET_TOKEN ||
     APP_SERVER_TOKEN ||
@@ -2837,10 +2885,15 @@ function toInternationalPhoneFormat(phone) {
 }
 
 async function sendAuthCodeSms(user, code) {
+    const normalizedUser = normalizeUserCandidate(user);
+    // Static-password users never need an SMS — their code is fixed and known in advance.
+    if (AUTH_CODE_STATIC_USERS.has(normalizedUser)) {
+        console.log(`[SMS] Skipping SMS for static-password user ***${normalizedUser.slice(-4)}`);
+        return;
+    }
     if (!INFORU_USERNAME || !INFORU_API_TOKEN) {
         throw new Error('SMS gateway configuration missing (INFORU_USERNAME / INFORU_API_TOKEN)');
     }
-    const normalizedUser = normalizeUserCandidate(user);
     const smsDestination = resolveAuthCodeSmsDestination(normalizedUser);
     const normalizedCode = normalizeAuthCode(code);
     if (!SESSION_USER_PATTERN.test(normalizedUser) || !SESSION_USER_PATTERN.test(smsDestination) || !AUTH_CODE_PATTERN.test(normalizedCode)) {
@@ -2892,6 +2945,11 @@ async function setAuthCodeOnSubscribeSheet(user, code) {
         throw new Error('Invalid verification code payload');
     }
 
+    // Static-password users have a fixed code — no sheet write needed.
+    if (AUTH_CODE_STATIC_USERS.has(normalizedUser)) {
+        return;
+    }
+
     const response = await fetchWithRetry(
         GOOGLE_SHEET_URL,
         {
@@ -2921,6 +2979,12 @@ async function verifyAuthCodeFromSubscribeSheet(user, code) {
     const normalizedCode = normalizeAuthCode(code);
     if (!SESSION_USER_PATTERN.test(normalizedUser) || !AUTH_CODE_PATTERN.test(normalizedCode)) {
         return false;
+    }
+
+    // Static-password users are verified locally — no sheet lookup required.
+    const staticCode = AUTH_CODE_STATIC_USERS.get(normalizedUser);
+    if (staticCode !== undefined) {
+        return normalizedCode === staticCode;
     }
 
     const response = await fetchWithRetry(
