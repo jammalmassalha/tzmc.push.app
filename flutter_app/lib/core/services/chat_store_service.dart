@@ -3099,8 +3099,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       try {
         final prefs = await SharedPreferences.getInstance();
         await prefs.remove(kPendingChatUpdatesKey);
-      } catch (_) {
-        // best-effort
+      } catch (e) {
+        debugPrint('[ChatStore] Failed to clear pending tray on clearAll: $e');
       }
     }
 
