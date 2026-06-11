@@ -2410,6 +2410,32 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
   }
 
+  /// Clears all local unread badges and the persisted background tray counts.
+  ///
+  /// Used by the push-permission onboarding flow so the app starts from a clean
+  /// unread state right after notifications are enabled for the first time.
+  Future<void> clearAllUnreadBadgesInBackground() async {
+    if (state.unreadByChat.isNotEmpty) {
+      state = state.copyWith(unreadByChat: const {});
+      _schedulePersistence();
+    }
+
+    try {
+      await _db.setAllUnreadCounts(const {});
+    } catch (e) {
+      debugPrint('[ChatStore] Failed to clear unread counts: $e');
+    }
+
+    if (!kIsWeb) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove(kPendingChatUpdatesKey);
+      } catch (e) {
+        debugPrint('[ChatStore] Failed to clear pending tray unread counts: $e');
+      }
+    }
+  }
+
   Future<void> markChatSeen(String chatId) async {
     final user = (_currentUser ?? '').trim().toLowerCase();
     final normalizedChatId = chatId.trim().toLowerCase();

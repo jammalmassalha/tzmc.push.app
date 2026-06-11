@@ -477,6 +477,7 @@ class PushNotificationService {
         }),
       );
       if (_isAuthorized(authorizationStatus)) {
+        unawaited(_clearUnreadBadgesAfterPermissionGranted());
         await _getAndRegisterToken();
       }
     } on FirebaseException catch (e) {
@@ -542,6 +543,14 @@ class PushNotificationService {
           .resolvePlatformSpecificImplementation<
               AndroidFlutterLocalNotificationsPlugin>()
           ?.createNotificationChannel(channel);
+    }
+  }
+
+  Future<void> _clearUnreadBadgesAfterPermissionGranted() async {
+    try {
+      await _ref.read(chatStoreProvider.notifier).clearAllUnreadBadgesInBackground();
+    } catch (e) {
+      debugPrint('[PushNotificationService] clear unread badges error: $e');
     }
   }
 
