@@ -225,6 +225,30 @@ function cosineSimilarity(a, b) {
 }
 
 /**
+ * Normalizes chunk text so duplicate content can be compared across files.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function normalizeChunkText(text) {
+    return String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/**
+ * Chooses the preferred chunk between two files that contain the same content.
+ * Newer files win; score is used as a tiebreaker.
+ *
+ * @param {{mtimeMs: number, score: number}} incoming
+ * @param {{mtimeMs: number, score: number}|undefined} existing
+ * @returns {boolean}
+ */
+function shouldReplaceChunkByRecency(incoming, existing) {
+    if (!existing) return true;
+    if (incoming.mtimeMs !== existing.mtimeMs) return incoming.mtimeMs > existing.mtimeMs;
+    return incoming.score > existing.score;
+}
+
+/**
  * Creates a single embedding for text using Gemini.
  *
  * @param {object} embeddingModel
@@ -491,6 +515,16 @@ function createAccreditationAgentController({ uploadDir, consumeRateLimitEntry, 
         const imgFilenames = allFilenames.filter((f) =>
             IMAGE_EXTENSIONS.has(path.extname(f).toLowerCase()),
         );
+        const pdfMtimeByName = new Map();
+        await Promise.all(pdfFilenames.map(async (filename) => {
+            const filePath = path.join(accreditationDir, filename);
+            try {
+                const stat = await fs.promises.stat(filePath);
+                pdfMtimeByName.set(filename, stat.mtimeMs);
+            } catch (_err) {
+                pdfMtimeByName.set(filename, 0);
+            }
+        }));
 
         if (pdfFilenames.length === 0 && imgFilenames.length === 0) {
             return res.json({
@@ -514,28 +548,54 @@ function createAccreditationAgentController({ uploadDir, consumeRateLimitEntry, 
                 for (const filename of pdfFilenames) {
                     const filePath = path.join(accreditationDir, filename);
                     const embeddedChunks = await getEmbeddedPdfChunks({ embeddingModel, filename, filePath });
+                    const mtimeMs = pdfMtimeByName.get(filename) || 0;
                     for (const chunk of embeddedChunks) {
                         const score = cosineSimilarity(queryEmbedding, chunk.embedding);
                         scoredChunks.push({
                             name: chunk.name,
                             text: chunk.text,
                             score,
+                            mtimeMs,
                         });
                     }
                 }
-                scoredChunks
-                    .sort((a, b) => b.score - a.score)
+                const bestChunkByContent = new Map();
+                for (const chunk of scoredChunks) {
+                    const key = normalizeChunkText(chunk.text);
+                    if (!key) continue;
+                    const existing = bestChunkByContent.get(key);
+                    if (shouldReplaceChunkByRecency(chunk, existing)) {
+                        bestChunkByContent.set(key, chunk);
+                    }
+                }
+                const dedupedScoredChunks = [...bestChunkByContent.values()];
+                dedupedScoredChunks
+                    .sort((a, b) => (b.score - a.score) || (b.mtimeMs - a.mtimeMs))
                     .slice(0, MAX_CHUNKS_IN_PROMPT)
                     .forEach(({ name, text }) => docs.push({ name, text }));
             }
 
             // Fallback if embeddings are unavailable.
             if (docs.length === 0) {
+                const fallbackDocsByContent = new Map();
                 for (const filename of pdfFilenames) {
                     const filePath = path.join(accreditationDir, filename);
                     const text = await extractPdfText(filePath, filename);
-                    docs.push({ name: filename, text: text || '' });
+                    const mtimeMs = pdfMtimeByName.get(filename) || 0;
+                    const candidate = { name: filename, text: text || '', mtimeMs, score: 0 };
+                    const key = normalizeChunkText(candidate.text);
+                    if (!key) {
+                        docs.push({ name: filename, text: candidate.text });
+                        continue;
+                    }
+                    const existing = fallbackDocsByContent.get(key);
+                    if (shouldReplaceChunkByRecency(candidate, existing)) {
+                        fallbackDocsByContent.set(key, candidate);
+                    }
                 }
+                docs.push(...[...fallbackDocsByContent.values()]
+                    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+                    .map(({ name, text }) => ({ name, text })));
             }
         }
 
