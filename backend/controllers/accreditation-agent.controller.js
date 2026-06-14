@@ -521,7 +521,8 @@ function createAccreditationAgentController({ uploadDir, consumeRateLimitEntry, 
             try {
                 const stat = await fs.promises.stat(filePath);
                 pdfMtimeByName.set(filename, stat.mtimeMs);
-            } catch (_err) {
+            } catch (err) {
+                console.warn(`[ACCREDITATION-AGENT] Failed to read metadata for ${filename}: ${err.message}`);
                 pdfMtimeByName.set(filename, 0);
             }
         }));
