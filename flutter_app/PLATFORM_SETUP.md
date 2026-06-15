@@ -44,6 +44,27 @@ After initializing the Flutter project with `flutter create`, configure:
    - Download `google-services.json` from Firebase Console
    - Place in `android/app/`
 
+4. **Release Signing** (required for Google Play):
+   - Generate a keystore once (keep it safe — you can never change it for a published app):
+     ```bash
+     keytool -genkey -v -keystore ~/my-release-key.jks \
+       -keyalg RSA -keysize 2048 -validity 10000 \
+       -alias my-key-alias
+     ```
+   - Copy `android/key.properties.template` to `android/key.properties` and fill in the values:
+     ```
+     storePassword=<keystore password>
+     keyPassword=<key password>
+     keyAlias=my-key-alias
+     storeFile=/path/to/my-release-key.jks
+     ```
+   - `key.properties` is gitignored — never commit it or the `.jks` file.
+   - Build a signed release AAB for Google Play:
+     ```bash
+     flutter build appbundle --release
+     ```
+   - The signed AAB is output to `build/app/outputs/bundle/release/app-release.aab`.
+
 ## Push Notifications (Firebase)
 
 The Flutter app uses **Firebase Cloud Messaging (FCM)** on Android and APNs (via Firebase) on iOS for push notifications. Web continues to use the existing web-push system in the Angular frontend, so no Firebase config is needed for the web build.
