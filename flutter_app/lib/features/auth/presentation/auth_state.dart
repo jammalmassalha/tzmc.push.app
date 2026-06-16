@@ -13,6 +13,8 @@ import '../../../core/api/chat_api_service.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../../core/services/push_notification_service.dart';
 import '../../../core/services/windows_auth_service.dart'
+    // On web (dart.library.html is available) the stub is loaded instead,
+    // because dart:io is unavailable on that platform.
     if (dart.library.html) '../../../core/services/windows_auth_service_stub.dart';
 
 final _logger = Logger(
