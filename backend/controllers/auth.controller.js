@@ -37,7 +37,8 @@ function registerAuthController(app, deps = {}) {
         unreadCounts,
         requireAuthorizedUser,
         APP_SERVER_TOKEN,
-        BADGE_RESET_ALL_ALLOWED_USERS
+        BADGE_RESET_ALL_ALLOWED_USERS,
+        lookupUserByWindowsUsername
     } = deps;
     const resetAllAllowedUserSet = new Set(
         (Array.isArray(BADGE_RESET_ALL_ALLOWED_USERS) ? BADGE_RESET_ALL_ALLOWED_USERS : [])
@@ -366,6 +367,62 @@ function registerAuthController(app, deps = {}) {
         clearSessionCookie(res, req);
         return res.json({ status: 'success', authenticated: false });
     });
+
+    // Windows desktop auto-login: looks up the Windows username in column O of
+    // the Subscribe sheet and creates a session without requiring SMS verification.
+    // Requires a valid APP_SERVER_TOKEN so only the trusted desktop build can use it.
+    app.post(
+        ['/auth/session/windows-login', '/notify/auth/session/windows-login'],
+        async (req, res) => {
+            const payload = req.body && typeof req.body === 'object' ? req.body : {};
+            const windowsUser = String(payload.windowsUser || '').trim();
+            const submittedToken = String(payload.token || '').trim();
+
+            if (!windowsUser) {
+                return res.status(400).json({ status: 'error', message: 'Missing windowsUser' });
+            }
+
+            const configuredToken = String(APP_SERVER_TOKEN || '').trim();
+            if (!configuredToken || submittedToken !== configuredToken) {
+                return res.status(403).json({ status: 'error', message: 'Invalid token' });
+            }
+
+            if (!SESSION_SIGNING_SECRET) {
+                return res.status(500).json({ status: 'error', message: 'Session configuration missing' });
+            }
+
+            try {
+                const lookupResult = await lookupUserByWindowsUsername(windowsUser);
+                if (!lookupResult || !lookupResult.user) {
+                    return res.status(403).json({ status: 'error', message: 'Windows user not registered' });
+                }
+
+                const matchedUser = normalizeUserCandidate(lookupResult.user);
+                if (!matchedUser) {
+                    return res.status(403).json({ status: 'error', message: 'Windows user not registered' });
+                }
+
+                const sessionToken = createSessionToken(matchedUser);
+                if (!sessionToken) {
+                    return res.status(500).json({ status: 'error', message: 'Failed to create session' });
+                }
+
+                setSessionCookie(res, req, sessionToken.token, sessionToken.expiresAt);
+                console.log('[WINDOWS LOGIN] Auto-login successful for windowsUser:', windowsUser, '→ user:', matchedUser);
+                return res.json({
+                    status: 'success',
+                    authenticated: true,
+                    user: matchedUser,
+                    expiresAt: sessionToken.expiresAt,
+                    csrfToken: sessionToken.csrfToken
+                });
+            } catch (error) {
+                const reason = error && error.message ? String(error.message) : 'Windows login failed';
+                console.error('[WINDOWS LOGIN] Error:', reason);
+                return res.status(502).json({ status: 'error', message: reason });
+            }
+        }
+    );
 
     app.post(
         ['/register-device', '/notify/register-device'],

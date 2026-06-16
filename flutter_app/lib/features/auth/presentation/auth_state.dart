@@ -12,6 +12,8 @@ import 'package:logger/logger.dart';
 import '../../../core/api/chat_api_service.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../../core/services/push_notification_service.dart';
+import '../../../core/services/windows_auth_service.dart'
+    if (dart.library.html) '../../../core/services/windows_auth_service_stub.dart';
 
 final _logger = Logger(
   printer: PrettyPrinter(methodCount: 0, errorMethodCount: 5, lineLength: 80),
@@ -103,8 +105,19 @@ class AuthNotifier extends Notifier<AuthState> {
         _logger.i('Session restored for user: $sessionUser');
       } else {
         await _secureStorage.delete(key: _userKey);
-        state = const AuthUnauthenticated();
-        _logger.i('No active session found');
+
+        // On Windows desktop, attempt auto-login via the Windows username
+        // before falling back to the manual login screen.
+        final windowsUser = await tryWindowsAutoLogin(_apiService);
+        if (windowsUser != null) {
+          await _secureStorage.write(key: _userKey, value: windowsUser);
+          state = AuthAuthenticated(user: windowsUser, phone: null);
+          unawaited(_resetBadgeAfterAuth());
+          _logger.i('Windows auto-login succeeded for user: $windowsUser');
+        } else {
+          state = const AuthUnauthenticated();
+          _logger.i('No active session found');
+        }
       }
     } catch (e) {
       _logger.e('Error checking session: $e');

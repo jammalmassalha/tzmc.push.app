@@ -7,6 +7,14 @@ library;
 class AppConfig {
   const AppConfig._();
 
+  /// Application token for Windows desktop auto-login.
+  /// Set at build time via --dart-define=WINDOWS_APP_SERVER_TOKEN=<value>.
+  /// Must match the APP_SERVER_TOKEN configured on the backend server.
+  static const String windowsAppToken = String.fromEnvironment(
+    'WINDOWS_APP_SERVER_TOKEN',
+    defaultValue: '',
+  );
+
   /// Default backend origin (production)
   static const String defaultBackendOrigin = 'https://www.tzmc.co.il';
 
@@ -40,6 +48,7 @@ class ApiEndpoints {
   static const String session = '/auth/session';
   static const String requestCode = '/auth/session/request-code';
   static const String verifyCode = '/auth/session/verify-code';
+  static const String windowsLogin = '/auth/session/windows-login';
 
   // Contacts & Groups
   static const String contacts = '/contacts';

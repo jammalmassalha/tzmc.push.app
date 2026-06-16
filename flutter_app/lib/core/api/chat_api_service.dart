@@ -206,6 +206,41 @@ class ChatApiService {
     await _client.clearCookies();
   }
 
+  /// Windows desktop auto-login — looks up [windowsUser] in column O of the
+  /// Subscribe sheet via the backend and creates a session without SMS.
+  /// Returns the matched user identifier on success, or null if not found / token invalid.
+  Future<String?> windowsAutoLogin(String windowsUser, String appToken) async {
+    final normalizedUser = windowsUser.trim();
+    if (normalizedUser.isEmpty || appToken.isEmpty) return null;
+
+    try {
+      final response = await _client.post<Map<String, dynamic>>(
+        ApiEndpoints.windowsLogin,
+        data: {'windowsUser': normalizedUser, 'token': appToken},
+        retryOptions: const RetryOptions(retries: 1, timeout: NetworkTimeouts.sessionTimeout),
+      );
+
+      if (!response.isSuccessful) return null;
+
+      final body = _coerceJsonMap(response.data);
+      final authenticated = body['authenticated'] == true;
+      if (!authenticated) return null;
+
+      final sessionUser = (body['user'] as String?)?.trim().toLowerCase();
+      if (sessionUser == null || sessionUser.isEmpty) return null;
+
+      final csrfToken = body['csrfToken'] as String?;
+      if (csrfToken != null && csrfToken.isNotEmpty) {
+        _client.setCsrfToken(csrfToken);
+      }
+
+      return sessionUser;
+    } catch (e) {
+      debugPrint('windowsAutoLogin error: $e');
+      return null;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Contacts & Groups
   // ---------------------------------------------------------------------------
