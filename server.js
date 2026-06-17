@@ -14,6 +14,7 @@ const fs = require('fs');
 const fsPromises = fs.promises;
 const cors = require('cors');
 const crypto = require('crypto');
+const rateLimit = require('express-rate-limit');
 const { Server: SocketIOServer } = require('socket.io');
 const { Worker } = require('node:worker_threads');
 const { createAuthorizedUserMiddleware } = require('./backend/middleware/authorized-user.middleware');
@@ -3256,14 +3257,11 @@ async function refreshShuttleReminderKnownUsers(options = {}) {
         shuttleReminderKnownUsersCache.users.forEach((userKey) => addUserToSet(users, userKey));
     } else {
         const discoveredFromSheet = new Set();
-        const sheetUrls = [
-            buildGoogleSheetGetUrl({ usernames: 'all' }),
-            buildGoogleSheetGetUrl({ action: 'get_all_subscriptions' }),
-            buildGoogleSheetGetUrl({ action: 'get_subscriptions' })
-        ];
-        for (const url of sheetUrls) {
-            const subscriptions = await fetchSubscriptionsFromSheetUrl(url);
+        try {
+            const subscriptions = await mysqlLogsService.loadSubscriptions();
             collectShuttleReminderUsersFromSubscriptions(subscriptions, discoveredFromSheet);
+        } catch (error) {
+            console.warn('[DB-SUBSCRIPTIONS] Failed to refresh shuttle reminder known users from DB:', error.message);
         }
         shuttleReminderKnownUsersCache.at = now;
         shuttleReminderKnownUsersCache.users = Array.from(discoveredFromSheet)
@@ -3495,16 +3493,13 @@ async function getAllSubscriptionsForAuthRefresh(options = {}) {
     const requestedUsers = parseUsernamesInput(options.usernames);
     requestedUsers.forEach((userKey) => addUserToSet(discoveredUsers, userKey));
 
-    const sheetUrls = [
-        buildGoogleSheetGetUrl({ usernames: 'all' }),
-        buildGoogleSheetGetUrl({ action: 'get_all_subscriptions' }),
-        buildGoogleSheetGetUrl({ action: 'get_subscriptions' })
-    ];
-    for (const url of sheetUrls) {
-        const fromSheet = await fetchSubscriptionsFromSheetUrl(url);
-        if (fromSheet.length) {
-            collected.push(...fromSheet);
+    try {
+        const fromDb = await mysqlLogsService.loadSubscriptions();
+        if (fromDb && fromDb.length) {
+            collected.push(...fromDb);
         }
+    } catch (error) {
+        console.warn('[DB-SUBSCRIPTIONS] Failed to load subscriptions from DB for auth refresh:', error.message);
     }
 
     for (const cacheEntry of subscriptionCache.values()) {
@@ -5139,131 +5134,38 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
         new Set(parseUsernamesInput(requestUserList).map(normalizeUserKey).filter(Boolean))
     );
     const requestedAliasToCanonical = buildUserAliasLookupMap(requestedUsers);
-    const singleRequestedUser = requestedUsers.length === 1 ? requestedUsers[0] : '';
     if (!requestedUsers.length) {
         return cached ? cached.subscriptions : [];
     }
-    const normalizeLookupSubscriptions = (payload) => {
-        const extracted = extractSubscriptionsFromSheetResponse(payload);
-        if (!extracted.length) return [];
+
+    try {
+        const subscriptions = await mysqlLogsService.loadSubscriptions(requestedUsers);
+        
+        // Remap to canonical user just in case
         const matched = [];
-        const unknownWithoutUser = [];
-        extracted.forEach((subscription) => {
-            const rawUser = normalizeUserKey(subscription && (subscription.username || subscription.user));
+        subscriptions.forEach((sub) => {
+            const rawUser = normalizeUserKey(sub.username || sub.user);
             const canonicalUser = resolveCanonicalUserFromLookup(
                 rawUser,
                 requestedAliasToCanonical
             );
             if (canonicalUser) {
                 matched.push({
-                    ...subscription,
+                    ...sub,
                     username: canonicalUser
                 });
-                return;
+            } else {
+                matched.push(sub);
             }
-            // If payload provides a user that does not match requested users, never remap it.
-            if (rawUser) {
-                return;
-            }
-            if (!singleRequestedUser) {
-                return;
-            }
-            unknownWithoutUser.push({
-                ...subscription,
-                username: singleRequestedUser
-            });
         });
+
         if (matched.length) {
+            subscriptionCache.set(cacheKey, { at: now, subscriptions: matched });
             return matched;
-        }
-        // Only allow tiny user-less fallbacks; large sets likely indicate unfiltered sheet response.
-        if (unknownWithoutUser.length > 0 && unknownWithoutUser.length <= UNKNOWN_USER_FALLBACK_MAX_ENDPOINTS) {
-            return unknownWithoutUser;
-        }
-        return [];
-    };
-    const fetchLookupBatchSubscriptions = async (batchUsers = []) => {
-        const normalizedBatch = Array.from(new Set(
-            (Array.isArray(batchUsers) ? batchUsers : [])
-                .map(normalizeUserKey)
-                .filter(Boolean)
-        ));
-        if (!normalizedBatch.length) {
-            return [];
-        }
-        const csvUsers = normalizedBatch.join(',');
-        const candidateUrls = [
-            buildGoogleSheetGetUrl({ usernames: csvUsers }),
-            buildGoogleSheetGetUrl({ action: 'get_subscriptions', usernames: csvUsers })
-        ];
-        if (normalizedBatch.length === 1) {
-            candidateUrls.push(buildGoogleSheetGetUrl({ action: 'get_subscriptions', username: normalizedBatch[0] }));
-        }
-
-        for (const url of candidateUrls) {
-            try {
-                const response = await fetchWithRetry(
-                    url,
-                    {},
-                    { timeoutMs: 12000, retries: 2, backoffMs: 500 }
-                );
-                if (!response.ok) {
-                    continue;
-                }
-                const result = await response.json();
-                const subscriptions = normalizeLookupSubscriptions(result);
-                if (subscriptions.length) {
-                    return subscriptions;
-                }
-            } catch (_error) {
-                // Continue with next variant; some Apps Script deployments only support one shape.
-            }
-        }
-
-        // Last fallback: request each user explicitly via action=get_subscriptions&username=<user>.
-        const collected = [];
-        for (const userKey of normalizedBatch) {
-            try {
-                const response = await fetchWithRetry(
-                    buildGoogleSheetGetUrl({ action: 'get_subscriptions', username: userKey }),
-                    {},
-                    { timeoutMs: 12000, retries: 2, backoffMs: 500 }
-                );
-                if (!response.ok) {
-                    continue;
-                }
-                const result = await response.json();
-                collected.push(...normalizeLookupSubscriptions(result));
-            } catch (_error) {
-                // Keep lookup resilient and continue trying remaining users.
-            }
-        }
-        return dedupeSubscriptionsByEndpoint(collected);
-    };
-
-    try {
-        let subscriptions = [];
-        if (requestedUsers.length <= SUBSCRIPTION_LOOKUP_BATCH_SIZE) {
-            subscriptions = await fetchLookupBatchSubscriptions(requestedUsers);
-        } else {
-            const collected = [];
-            for (let i = 0; i < requestedUsers.length; i += SUBSCRIPTION_LOOKUP_BATCH_SIZE) {
-                const batch = requestedUsers.slice(i, i + SUBSCRIPTION_LOOKUP_BATCH_SIZE);
-                if (!batch.length) continue;
-                const batchSubscriptions = await fetchLookupBatchSubscriptions(batch);
-                if (batchSubscriptions.length) {
-                    collected.push(...batchSubscriptions);
-                }
-            }
-            subscriptions = dedupeSubscriptionsByEndpoint(collected);
-        }
-        if (subscriptions.length) {
-            subscriptionCache.set(cacheKey, { at: now, subscriptions });
-            return subscriptions;
         }
         return cached ? cached.subscriptions : [];
     } catch (error) {
-        console.error('Network Error fetching from Google Sheet:', error);
+        console.error('Database Error loading subscriptions:', error);
         return cached ? cached.subscriptions : [];
     }
 }
@@ -7763,6 +7665,68 @@ async function checkOutgoingQueue() {
     }
 }
 
+// ======================================================
+// [NEW] SUBSCRIBE SHEET TO DB SYNC SERVICE & WEBHOOK
+// ======================================================
+async function syncSubscribeSheetToDb() {
+    console.log('[SUBSCRIBE-SYNC] Starting sync from Google Sheet to MySQL...');
+    try {
+        const { createSheetIntegrationServiceFromEnv } = require('./backend/dist/services');
+        const sheetIntegrationServiceInstance = createSheetIntegrationServiceFromEnv(process.env);
+        if (!sheetIntegrationServiceInstance || !mysqlLogsService) {
+            console.warn('[SUBSCRIBE-SYNC] mysqlLogsService or sheetIntegrationService not available.');
+            return;
+        }
+
+        const url = sheetIntegrationServiceInstance.buildGoogleSheetGetUrl({
+            action: 'get_subscribe_dump',
+            limit: '10000'
+        });
+
+        const response = await fetchWithRetry(
+            url,
+            {},
+            { timeoutMs: 30000, retries: 2, backoffMs: 1000 }
+        );
+
+        if (!response.ok) {
+            throw new Error(`Google Sheet returned HTTP ${response.status}`);
+        }
+
+        const payload = await response.json();
+        if (payload && payload.result === 'success' && Array.isArray(payload.rows)) {
+            const rows = payload.rows;
+            await mysqlLogsService.syncSubscribeRows(rows);
+            console.log(`[SUBSCRIBE-SYNC] Successfully synced ${rows.length} rows to DB.`);
+        } else {
+            const errorMsg = payload && payload.message ? payload.message : 'Unknown sheet error';
+            throw new Error(errorMsg);
+        }
+    } catch (error) {
+        console.error('[SUBSCRIBE-SYNC] Sync failed:', error.message);
+    }
+}
+
+const syncLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000,
+    max: 10,
+    message: { error: 'Too many sync requests. Please try again later.' }
+});
+
+app.post(['/subscribe/sync', '/notify/subscribe/sync'], syncLimiter, async (req, res) => {
+    if (!isSchedulerOpsRequestAuthorized(req)) {
+        return res.status(403).json({ error: 'Forbidden' });
+    }
+    try {
+        console.log('[API-SUBSCRIBE-SYNC] Manual subscription sync triggered.');
+        await syncSubscribeSheetToDb();
+        res.json({ status: 'success', message: 'Subscriptions synced successfully from Google Sheet to DB.' });
+    } catch (error) {
+        console.error('[API-SUBSCRIBE-SYNC] Failed:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Global error handler — catches any unhandled error thrown from a route or middleware
 // (including async handlers in Express 5) and returns a clean JSON response instead of
 // Express's default HTML/verbose error page.
@@ -7783,6 +7747,10 @@ app.use((err, req, res, _next) => {
 setInterval(checkOutgoingQueue, 10000);
 startSubscriptionAuthRefreshScheduler();
 //startShuttleReminderScheduler();
+
+// Run the Google Sheet Subscribe to DB sync immediately at startup and then every 5 minutes (300,000 ms)
+syncSubscribeSheetToDb();
+setInterval(syncSubscribeSheetToDb, 300000);
 
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, () => {
