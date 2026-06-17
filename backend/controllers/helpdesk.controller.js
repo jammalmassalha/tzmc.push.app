@@ -891,15 +891,20 @@ function registerHelpdeskController(app, deps = {}) {
                 createdAt: noteRow.created_at instanceof Date ? noteRow.created_at.toISOString() : String(noteRow.created_at || '')
             } : { id: noteId, ticketId, authorUsername: user, noteText, attachmentUrl: attachmentUrl || null, createdAt: new Date().toISOString() };
 
-            // ── Notify handler ──────────────────────────────────────────────────
-            // When a note is added by someone other than the handler, deliver the
-            // note to the handler via both FCM push and real-time SSE/socket so it
-            // appears in the 'מוקד איחוד' tab without delay.
-            const handlerUsername = ticket.handler_username;
-            if (handlerUsername && handlerUsername !== user) {
+            // ── Notify ticket participants ──────────────────────────────────────
+            // Deliver note updates to both the creator and assigned handler
+            // (excluding the author) so all directly-related users are alerted.
+            const recipients = [...new Set([ticket.creator_username, ticket.handler_username].filter(Boolean))]
+                .filter((recipient) => recipient !== user);
+            if (recipients.length) {
                 const ticketTitle = String(ticket.title || ticket.description || '').trim().substring(0, 80);
-                const shortNote = noteText.substring(0, 200);
-                const noteMsgText = `Ticket #${ticketId} - ${ticketTitle}: ${shortNote}`;
+                const shortNote = noteText
+                    ? noteText.substring(0, 200)
+                    : (attachmentUrl ? 'צורף קובץ לעדכון הקריאה' : '');
+                const ticketLabel = ticketTitle
+                    ? `Ticket #${ticketId} - ${ticketTitle}`
+                    : `Ticket #${ticketId}`;
+                const noteMsgText = shortNote ? `${ticketLabel}: ${shortNote}` : ticketLabel;
                 const notificationData = {
                     messageId: `helpdesk-note-${noteId}`,
                     title: 'מוקד איחוד',
@@ -916,31 +921,33 @@ function registerHelpdeskController(app, deps = {}) {
                     }
                 };
 
-                // FCM push (fire-and-forget)
                 if (typeof sendPushNotificationToUser === 'function') {
-                    void sendPushNotificationToUser(handlerUsername, notificationData, 'מוקד איחוד', {
-                        messageId: `helpdesk-note-${noteId}`,
-                        skipBadge: false,
-                        singlePerUser: true,
-                        allowSecondAttempt: false
-                    }).catch((err) => {
-                        console.warn('[HELPDESK] Note push to handler failed:', err && err.message ? err.message : err);
-                    });
+                    for (const recipient of recipients) {
+                        void sendPushNotificationToUser(recipient, notificationData, 'מוקד איחוד', {
+                            messageId: `helpdesk-note-${noteId}`,
+                            skipBadge: false,
+                            singlePerUser: true,
+                            allowSecondAttempt: false
+                        }).catch((err) => {
+                            console.warn('[HELPDESK] Note push failed:', err && err.message ? err.message : err);
+                        });
+                    }
                 }
 
-                // Real-time SSE/socket delivery (fire-and-forget)
                 if (typeof notifyRealtimeClients === 'function') {
-                    try {
-                        notifyRealtimeClients(handlerUsername, {
-                            type: 'helpdesk',
-                            ticketId: String(ticketId),
-                            noteId: String(noteId),
-                            noteText: shortNote,
-                            title: notificationData.title,
-                            timestamp: Date.now()
-                        });
-                    } catch (notifyErr) {
-                        console.warn('[HELPDESK] notifyRealtimeClients error:', notifyErr && notifyErr.message ? notifyErr.message : notifyErr);
+                    for (const recipient of recipients) {
+                        try {
+                            notifyRealtimeClients(recipient, {
+                                type: 'helpdesk',
+                                ticketId: String(ticketId),
+                                noteId: String(noteId),
+                                noteText: shortNote,
+                                title: notificationData.title,
+                                timestamp: Date.now()
+                            });
+                        } catch (notifyErr) {
+                            console.warn('[HELPDESK] notifyRealtimeClients error:', notifyErr && notifyErr.message ? notifyErr.message : notifyErr);
+                        }
                     }
                 }
             }

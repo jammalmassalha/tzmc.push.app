@@ -1,0 +1,8 @@
+# Copy this file to key.properties (same directory) and fill in your keystore details.
+# key.properties is gitignored and must NEVER be committed to source control.
+# See flutter_app/PLATFORM_SETUP.md for instructions on generating a keystore.
+
+storePassword=<your-keystore-password>
+keyPassword=<your-key-password>
+keyAlias=<your-key-alias>
+storeFile=<absolute-or-relative-path-to-your-keystore.jks>

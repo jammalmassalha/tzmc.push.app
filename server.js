@@ -3079,6 +3079,33 @@ async function ensureRequestedUserIsRegistered(requestedUser) {
     }
 }
 
+/**
+ * Look up a Windows username (column O of the Subscribe sheet) and return the
+ * matching user identifier (column A / phone).
+ * Returns { user: '<phone>' } on success or null when not found.
+ */
+async function lookupUserByWindowsUsername(windowsUser) {
+    const normalized = String(windowsUser || '').trim();
+    if (!normalized) return null;
+    try {
+        const response = await fetchWithRetry(
+            buildGoogleSheetGetUrl({ action: 'get_windows_user', windowsUser: normalized }),
+            {},
+            { timeoutMs: 12000, retries: 1, backoffMs: 500 }
+        );
+        if (!response.ok) return null;
+        const payload = await response.json();
+        const result = String(payload && payload.result ? payload.result : '').trim().toLowerCase();
+        if (result === 'success' && payload.user) {
+            return { user: String(payload.user).trim() };
+        }
+        return null;
+    } catch (error) {
+        console.error('[WINDOWS LOGIN] lookupUserByWindowsUsername error:', error && error.message ? error.message : error);
+        return null;
+    }
+}
+
 function extractUsernamesFromContactsResponse(payload = {}) {
     const extracted = new Set();
     const candidateArrays = [];
@@ -5426,7 +5453,8 @@ registerAuthController(app, {
     unreadCounts,
     requireAuthorizedUser,
     APP_SERVER_TOKEN,
-    BADGE_RESET_ALL_ALLOWED_USERS
+    BADGE_RESET_ALL_ALLOWED_USERS,
+    lookupUserByWindowsUsername
 });
 
 // --- CLIENT TELEMETRY ---

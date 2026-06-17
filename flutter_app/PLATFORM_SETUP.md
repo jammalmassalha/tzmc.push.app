@@ -26,6 +26,107 @@ cd flutter_app
 
 **Note:** Local builds may fail with SSL certificate errors on corporate networks. See troubleshooting below.
 
+## Windows Desktop Setup
+
+The Flutter Windows desktop target enables automatic login using the Windows logged-in
+username (the `USERNAME` environment variable). The username is looked up against column O
+of the Subscribe Google Sheet; if a match is found a session is created immediately without
+any SMS verification.
+
+### 1. Enable the Windows platform (one-time scaffold)
+
+```bash
+cd flutter_app
+flutter create --platforms=windows .
+```
+
+This generates the `windows/` directory needed for desktop builds. No additional
+Flutter dependencies are required — Windows desktop support is built-in.
+
+### 2. Backend — `APP_SERVER_TOKEN`
+
+The Windows endpoint (`POST /auth/session/windows-login`) requires a matching
+`APP_SERVER_TOKEN` on the server. Set this in your server's environment / `.env`:
+
+```
+APP_SERVER_TOKEN=<your-secret-token>
+```
+
+### 3. Google Apps Script — `get_windows_user` action
+
+In the Apps Script bound to the Subscribe sheet add a new branch in `doGet`:
+
+```javascript
+if (action === 'get_windows_user') {
+  const windowsUser = String(e.parameter.windowsUser || '').trim().toLowerCase();
+  const sheet = SpreadsheetApp.getActiveSpreadsheet()
+    .getSheetByName('Subscribe');
+  const data = sheet.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    const colO = String(data[i][14] || '').trim().toLowerCase(); // column O = index 14
+    if (colO === windowsUser) {
+      const phone = String(data[i][0] || '').trim(); // column A = phone/username
+      return ContentService
+        .createTextOutput(JSON.stringify({ result: 'success', user: phone }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+  }
+  return ContentService
+    .createTextOutput(JSON.stringify({ result: 'not_found' }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+```
+
+Re-deploy the Apps Script Web App after adding this branch (**Deploy → Manage deployments → New version**).
+
+### 4. Build the Windows desktop app
+
+The `WINDOWS_APP_SERVER_TOKEN` dart-define must match `APP_SERVER_TOKEN` on the server:
+
+```bash
+cd flutter_app
+flutter build windows --release \
+  --dart-define=WINDOWS_APP_SERVER_TOKEN=<your-secret-token>
+```
+
+The built executable and its supporting files are placed in:
+```
+flutter_app/build/windows/x64/runner/Release/
+```
+
+Distribute the entire `Release/` folder to Windows users (it includes the required DLLs).
+
+#### GitHub Actions Windows build
+
+Add the token as a GitHub Actions secret (e.g. `WINDOWS_APP_SERVER_TOKEN`) and pass it
+to the build step:
+
+```yaml
+- name: Build Windows
+  run: |
+    cd flutter_app
+    flutter build windows --release \
+      --dart-define=WINDOWS_APP_SERVER_TOKEN=${{ secrets.WINDOWS_APP_SERVER_TOKEN }}
+```
+
+> **Security note:** The token acts as a shared secret so only the trusted desktop
+> build can use the Windows auto-login endpoint. Keep it out of source control and
+> rotate it if it is ever leaked. Random internet requests without the token receive
+> a `403` response.
+
+### 5. How it works at runtime
+
+1. The app starts and calls `GET /auth/session` — if a cookie session already exists,
+   login is complete as normal.
+2. If no session is found **and** the app is running on Windows, it reads
+   `Platform.environment['USERNAME']` and calls `POST /auth/session/windows-login`
+   with the username and the baked-in token.
+3. The backend looks up the username in column O of the Subscribe sheet via the Apps
+   Script `get_windows_user` action.
+4. On a match, a session cookie is set and the app proceeds directly to the chat
+   screen — the login screen is never shown.
+5. If the username is not registered, the normal login screen is displayed.
+
 ## Android Setup
 
 After initializing the Flutter project with `flutter create`, configure:
@@ -43,6 +144,27 @@ After initializing the Flutter project with `flutter create`, configure:
 3. **Firebase Setup**:
    - Download `google-services.json` from Firebase Console
    - Place in `android/app/`
+
+4. **Release Signing** (required for Google Play):
+   - Generate a keystore once (keep it safe — you can never change it for a published app):
+     ```bash
+     keytool -genkey -v -keystore ~/my-release-key.jks \
+       -keyalg RSA -keysize 2048 -validity 10000 \
+       -alias my-key-alias
+     ```
+   - Copy `android/key.properties.template` to `android/key.properties` and fill in the values:
+     ```
+     storePassword=<keystore password>
+     keyPassword=<key password>
+     keyAlias=my-key-alias
+     storeFile=/path/to/my-release-key.jks
+     ```
+   - `key.properties` is gitignored — never commit it or the `.jks` file.
+   - Build a signed release AAB for Google Play:
+     ```bash
+     flutter build appbundle --release
+     ```
+   - The signed AAB is output to `build/app/outputs/bundle/release/app-release.aab`.
 
 ## Push Notifications (Firebase)
 
