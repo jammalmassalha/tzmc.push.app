@@ -1714,6 +1714,7 @@ class MysqlLogsService {
         try {
             await this.pool.execute(`
         CREATE TABLE IF NOT EXISTS \`Subscribe\` (
+          \`RowID\` INT AUTO_INCREMENT UNIQUE,
           \`DateTimeRegistration\` DATETIME NULL,
           \`User\` VARCHAR(50) NOT NULL PRIMARY KEY,
           \`PushType\` VARCHAR(255) NULL,
@@ -1732,6 +1733,13 @@ class MysqlLogsService {
           \`UpdatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
       `);
+            try {
+                await this.pool.execute('SELECT `RowID` FROM `Subscribe` LIMIT 1');
+            }
+            catch (err) {
+                console.log('[MYSQL] RowID column missing in Subscribe, adding it...');
+                await this.pool.execute('ALTER TABLE `Subscribe` ADD COLUMN `RowID` INT AUTO_INCREMENT UNIQUE FIRST');
+            }
         }
         catch (err) {
             const message = String(err.message || '');
@@ -1839,6 +1847,94 @@ class MysqlLogsService {
         catch (err) {
             const message = String(err.message || '');
             console.error('[MYSQL] loadSubscriptions error:', message);
+            return [];
+        }
+    }
+    async checkAuth(username) {
+        await this.ensureSubscribeTable();
+        try {
+            const normalized = String(username).trim();
+            const [rows] = await this.pool.query('SELECT `FullName`, `Staus`, `ExeptionStatus` FROM `Subscribe` WHERE `User` = ?', [normalized]);
+            if (!rows || rows.length === 0) {
+                return { status: 'error', message: 'User not registered', isActive: false };
+            }
+            const row = rows[0];
+            const status = String(row.Staus || '').trim();
+            const exceptionStatus = String(row.ExeptionStatus || '').trim();
+            const fullName = String(row.FullName || '').trim();
+            if (status === '1' || exceptionStatus === '1') {
+                return { status: 'success', fullName, isActive: true };
+            }
+            return { status: 'error', message: 'User inactive', isActive: false };
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.error('[MYSQL] checkAuth error:', message);
+            return { status: 'error', message: 'Database query failed', isActive: false };
+        }
+    }
+    async lookupUserByWindowsUsername(windowsUser) {
+        await this.ensureSubscribeTable();
+        try {
+            const normalized = String(windowsUser).trim();
+            const [rows] = await this.pool.query('SELECT `User` FROM `Subscribe` WHERE `UserName` = ? LIMIT 1', [normalized]);
+            if (rows && rows.length > 0) {
+                return { user: String(rows[0].User || '').trim() };
+            }
+            return null;
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.error('[MYSQL] lookupUserByWindowsUsername error:', message);
+            return null;
+        }
+    }
+    async getContacts(requestingUser) {
+        await this.ensureSubscribeTable();
+        try {
+            if (requestingUser) {
+                const normalized = String(requestingUser).trim();
+                // Check if requesting user is allowed: status === '1' or exceptionStatus === '1'
+                const [userRows] = await this.pool.query('SELECT `Staus`, `ExeptionStatus` FROM `Subscribe` WHERE `User` = ?', [normalized]);
+                if (!userRows || userRows.length === 0) {
+                    return [];
+                }
+                const userRow = userRows[0];
+                const status = String(userRow.Staus || '').trim();
+                const exceptionStatus = String(userRow.ExeptionStatus || '').trim();
+                if (status !== '1' && exceptionStatus !== '1') {
+                    return [];
+                }
+            }
+            // Fetch all contacts from DB
+            const [rows] = await this.pool.query('SELECT `User`, `FullName`, `Staus`, `ExeptionStatus`, `ExeptionName`, `Upic` FROM `Subscribe`');
+            const users = [];
+            rows.forEach((row) => {
+                const user = String(row.User || '').trim();
+                if (!user || user === 'undefined')
+                    return;
+                const nameColF = String(row.FullName || '').trim();
+                const statusColG = String(row.Staus || '').trim();
+                const exceptionStatusColH = String(row.ExeptionStatus || '').trim();
+                const nameColI = String(row.ExeptionName || '').trim();
+                const upic = String(row.Upic || '').trim();
+                const finalName = nameColF !== '' ? nameColF : nameColI;
+                const normalizedStatus = (statusColG === '1' || exceptionStatusColH === '1') ? 1 : 0;
+                users.push({
+                    username: user,
+                    displayName: finalName !== '' ? finalName : user,
+                    fullName: finalName,
+                    upic: upic,
+                    status: normalizedStatus
+                });
+            });
+            // Sort alphabetically by displayName case-insensitively
+            users.sort((a, b) => a.displayName.toLowerCase().localeCompare(b.displayName.toLowerCase()));
+            return users;
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.error('[MYSQL] getContacts error:', message);
             return [];
         }
     }
