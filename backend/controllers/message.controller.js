@@ -9,6 +9,7 @@ function registerMessageController(app, deps = {}) {
         getGroupMessageSendersByMessageId,
         getHardcodedGroupIds,
         getHardcodedGroupMembers,
+        getContacts,
         // Legacy static fallbacks (kept for backward compatibility)
         hardcodedGroupIds: _legacyHardcodedGroupIds,
         hardcodedGroupMembers: _legacyHardcodedGroupMembers,
@@ -235,6 +236,14 @@ function registerMessageController(app, deps = {}) {
             }
 
             try {
+                if (typeof getContacts === 'function') {
+                    const users = await getContacts(user);
+                    return res.json({
+                        result: 'success',
+                        users
+                    });
+                }
+
                 const response = await fetchWithRetry(
                     buildGoogleSheetGetUrl({ action: 'get_contacts', user }),
                     {},

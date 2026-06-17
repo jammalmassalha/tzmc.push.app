@@ -3013,20 +3013,16 @@ async function ensureRequestedUserCanAuthenticate(requestedUser) {
     if (!AUTH_SESSION_REQUIRE_CONTACT_VERIFICATION) {
         return { ok: true, status: 200, message: '' };
     }
-    const response = await fetchWithRetry(
-        buildGoogleSheetGetUrl({ action: 'get_contacts', user: requestedUser }),
-        {},
-        { timeoutMs: 10000, retries: 1, backoffMs: 500 }
-    );
-    if (!response.ok) {
+    try {
+        const users = await mysqlLogsService.getContacts(requestedUser);
+        if (!users || !users.length) {
+            return { ok: false, status: 403, message: 'Unauthorized user' };
+        }
+        return { ok: true, status: 200, message: '' };
+    } catch (error) {
+        console.error('[AUTH] ensureRequestedUserCanAuthenticate error:', error);
         return { ok: false, status: 502, message: 'Unable to verify user' };
     }
-    const contactsPayload = await response.json();
-    const users = Array.isArray(contactsPayload && contactsPayload.users) ? contactsPayload.users : [];
-    if (!users.length) {
-        return { ok: false, status: 403, message: 'Unauthorized user' };
-    }
-    return { ok: true, status: 200, message: '' };
 }
 
 function ensureRegistrationFlowOnly(req, requestedUser) {
@@ -3054,15 +3050,7 @@ async function ensureRequestedUserIsRegistered(requestedUser) {
         return { ok: true, status: 200, message: '' };
     }
     try {
-        const response = await fetchWithRetry(
-            buildGoogleSheetGetUrl({ action: 'check_auth', user: normalizedUser }),
-            {},
-            { timeoutMs: 10000, retries: 1, backoffMs: 500 }
-        );
-        if (!response.ok) {
-            return { ok: false, status: 502, message: 'Unable to verify registered user' };
-        }
-        const payload = await response.json();
+        const payload = await mysqlLogsService.checkAuth(normalizedUser);
         const status = String(payload && payload.status ? payload.status : '').trim().toLowerCase();
         const isActive = payload && Object.prototype.hasOwnProperty.call(payload, 'isActive')
             ? Boolean(payload.isActive)
@@ -3089,16 +3077,9 @@ async function lookupUserByWindowsUsername(windowsUser) {
     const normalized = String(windowsUser || '').trim();
     if (!normalized) return null;
     try {
-        const response = await fetchWithRetry(
-            buildGoogleSheetGetUrl({ action: 'get_windows_user', windowsUser: normalized }),
-            {},
-            { timeoutMs: 12000, retries: 1, backoffMs: 500 }
-        );
-        if (!response.ok) return null;
-        const payload = await response.json();
-        const result = String(payload && payload.result ? payload.result : '').trim().toLowerCase();
-        if (result === 'success' && payload.user) {
-            return { user: String(payload.user).trim() };
+        const payload = await mysqlLogsService.lookupUserByWindowsUsername(normalized);
+        if (payload && payload.user) {
+            return { user: payload.user };
         }
         return null;
     } catch (error) {
@@ -3135,15 +3116,10 @@ function extractUsernamesFromContactsResponse(payload = {}) {
 async function fetchContactUsernamesForUser(userKey) {
     if (!userKey) return [];
     try {
-        const response = await fetchWithRetry(
-            buildGoogleSheetGetUrl({ action: 'get_contacts', user: userKey }),
-            {},
-            { timeoutMs: 10000, retries: 1, backoffMs: 500 }
-        );
-        if (!response.ok) return [];
-        const payload = await response.json();
-        return extractUsernamesFromContactsResponse(payload);
+        const users = await mysqlLogsService.getContacts(userKey);
+        return users.map(u => u.username);
     } catch (error) {
+        console.error('[CONTACTS] fetchContactUsernamesForUser error:', error);
         return [];
     }
 }
@@ -5867,22 +5843,11 @@ app.post(['/verify-status', '/notify/verify-status'], async (req, res) => {
 
     console.log(`[Verify] Checking status for user: ${username}...`);
 
-    // --- FIX: Use the variable 'GOOGLE_SHEET_URL' declared at the top of server.js ---
-    const scriptUrl = buildGoogleSheetGetUrl({ action: 'get_contacts', user: username });
     try {
-        
-        
-        const sheetResponse = await fetchWithRetry(scriptUrl, {}, { timeoutMs: 10000, retries: 2 });
-        
-        // Safety check: Ensure we got a valid JSON response from Google
-        if (!sheetResponse.ok) {
-            throw new Error(`Google Sheet returned ${sheetResponse.status} ${sheetResponse.statusText}`);
-        }
-
-        const sheetData = await sheetResponse.json();
+        const users = await mysqlLogsService.getContacts(username);
 
         // Logic: If users array is empty, it means Access Denied (Status 0 or Not Found)
-        if (!sheetData.users || sheetData.users.length === 0) {
+        if (!users || users.length === 0) {
             console.log(`[Verify] User ${username} is BLOCKED (Status 0). Sending Push...`);
 
             const notificationPayload = JSON.stringify({
@@ -5908,7 +5873,7 @@ app.post(['/verify-status', '/notify/verify-status'], async (req, res) => {
 
     } catch (error) {
         console.error('[Verify] Error:', error); // Check your terminal to see the specific error
-        res.status(500).json({ error: scriptUrl });
+        res.status(500).json({ error: error.message });
     }
 });
 // ======================================================
@@ -6711,6 +6676,7 @@ registerMessageController(app, {
     getLogsMessagesForUser: (user, options = {}) => mysqlLogsService.getLogsMessagesForUser(user, options),
     getMessageActivitiesForUser: (user, options = {}) => mysqlLogsService.getMessageActivitiesForUser(user, options),
     getGroupMessageSendersByMessageId: (user, options = {}) => mysqlLogsService.getGroupMessageSendersByMessageId(user, options),
+    getContacts: (user) => mysqlLogsService.getContacts(user),
     getHardcodedGroupIds: () => communityGroupIds,
     getHardcodedGroupMembers: () => {
         const membersMap = {};
