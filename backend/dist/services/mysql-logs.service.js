@@ -1710,6 +1710,138 @@ class MysqlLogsService {
             conn.release();
         }
     }
+    async ensureSubscribeTable() {
+        try {
+            await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`Subscribe\` (
+          \`DateTimeRegistration\` DATETIME NULL,
+          \`User\` VARCHAR(50) NOT NULL PRIMARY KEY,
+          \`PushType\` VARCHAR(255) NULL,
+          \`AuthJson\` TEXT NULL,
+          \`AuthJsonPc\` TEXT NULL,
+          \`FullName\` VARCHAR(255) NULL,
+          \`Staus\` VARCHAR(255) NULL,
+          \`ExeptionStatus\` VARCHAR(255) NULL,
+          \`ExeptionName\` VARCHAR(255) NULL,
+          \`Upic\` VARCHAR(255) NULL,
+          \`2FA\` VARCHAR(255) NULL,
+          \`FlutterMobile\` TEXT NULL,
+          \`FlutterWeb\` TEXT NULL,
+          \`YearOfBirth\` VARCHAR(255) NULL,
+          \`UserName\` VARCHAR(255) NULL,
+          \`UpdatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.warn('[MYSQL] ensureSubscribeTable warning:', message);
+        }
+    }
+    async syncSubscribeRows(rows) {
+        await this.ensureSubscribeTable();
+        if (!rows.length)
+            return;
+        const query = `
+      INSERT INTO \`Subscribe\` (
+        \`DateTimeRegistration\`, \`User\`, \`PushType\`, \`AuthJson\`, \`AuthJsonPc\`,
+        \`FullName\`, \`Staus\`, \`ExeptionStatus\`, \`ExeptionName\`, \`Upic\`,
+        \`2FA\`, \`FlutterMobile\`, \`FlutterWeb\`, \`YearOfBirth\`, \`UserName\`
+      ) VALUES ?
+      ON DUPLICATE KEY UPDATE
+        \`DateTimeRegistration\` = VALUES(\`DateTimeRegistration\`),
+        \`PushType\` = VALUES(\`PushType\`),
+        \`AuthJson\` = VALUES(\`AuthJson\`),
+        \`AuthJsonPc\` = VALUES(\`AuthJsonPc\`),
+        \`FullName\` = VALUES(\`FullName\`),
+        \`Staus\` = VALUES(\`Staus\`),
+        \`ExeptionStatus\` = VALUES(\`ExeptionStatus\`),
+        \`ExeptionName\` = VALUES(\`ExeptionName\`),
+        \`Upic\` = VALUES(\`Upic\`),
+        \`2FA\` = VALUES(\`2FA\`),
+        \`FlutterMobile\` = VALUES(\`FlutterMobile\`),
+        \`FlutterWeb\` = VALUES(\`FlutterWeb\`),
+        \`YearOfBirth\` = VALUES(\`YearOfBirth\`),
+        \`UserName\` = VALUES(\`UserName\`)
+    `;
+        const values = rows.map(r => {
+            let dt = null;
+            if (r.dateTimeRegistration) {
+                const parsed = Date.parse(r.dateTimeRegistration);
+                if (Number.isFinite(parsed) && parsed > 0) {
+                    dt = new Date(parsed);
+                }
+            }
+            return [
+                dt,
+                toTrimmedString(r.user),
+                toTrimmedString(r.pushType) || null,
+                toTrimmedString(r.authJson) || null,
+                toTrimmedString(r.authJsonPc) || null,
+                toTrimmedString(r.fullName) || null,
+                toTrimmedString(r.staus) || null,
+                toTrimmedString(r.exeptionStatus) || null,
+                toTrimmedString(r.exeptionName) || null,
+                toTrimmedString(r.upic) || null,
+                toTrimmedString(r.twoFA || r['2fa'] || r['2FA']) || null,
+                toTrimmedString(r.flutterMobile) || null,
+                toTrimmedString(r.flutterWeb) || null,
+                toTrimmedString(r.yearOfBirth) || null,
+                toTrimmedString(r.userName) || null
+            ];
+        }).filter(row => row[1]);
+        if (values.length > 0) {
+            await this.pool.query(query, [values]);
+        }
+    }
+    async loadSubscriptions(usernames) {
+        await this.ensureSubscribeTable();
+        try {
+            let query = 'SELECT `User`, `PushType`, `AuthJson`, `AuthJsonPc` FROM `Subscribe`';
+            let params = [];
+            if (usernames && usernames.length > 0) {
+                query += ' WHERE `User` IN (?)';
+                params.push(usernames);
+            }
+            const [rows] = await this.pool.query(query, params);
+            const subscriptions = [];
+            rows.forEach((row) => {
+                const user = String(row.User || '').trim();
+                if (row.AuthJson) {
+                    try {
+                        const subObj = JSON.parse(row.AuthJson);
+                        subObj.username = user;
+                        subObj.type = 'mobile';
+                        if (subObj.endpoint) {
+                            subscriptions.push(subObj);
+                        }
+                    }
+                    catch (_e) {
+                        // ignore
+                    }
+                }
+                if (row.AuthJsonPc) {
+                    try {
+                        const subObjPC = JSON.parse(row.AuthJsonPc);
+                        subObjPC.username = user;
+                        subObjPC.type = 'pc';
+                        if (subObjPC.endpoint) {
+                            subscriptions.push(subObjPC);
+                        }
+                    }
+                    catch (_e) {
+                        // ignore
+                    }
+                }
+            });
+            return subscriptions;
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.error('[MYSQL] loadSubscriptions error:', message);
+            return [];
+        }
+    }
 }
 exports.MysqlLogsService = MysqlLogsService;
 function createMysqlLogsServiceFromEnv(env = process.env) {
