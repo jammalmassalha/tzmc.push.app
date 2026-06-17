@@ -2035,6 +2035,48 @@ export class MysqlLogsService {
         await this.pool.execute('ALTER TABLE `Subscribe` ADD COLUMN `RowID` INT AUTO_INCREMENT UNIQUE FIRST');
       }
 
+      // 1. Deduplicate table by User column (retaining the row with the highest RowID)
+      try {
+        console.log('[MYSQL] Running deduplication on Subscribe table by User column...');
+        await this.pool.execute(`
+          DELETE s1 FROM \`Subscribe\` s1
+          INNER JOIN \`Subscribe\` s2 
+          ON s1.\`User\` = s2.\`User\` AND s1.\`RowID\` < s2.\`RowID\`
+        `);
+      } catch (dedupErr: any) {
+        console.warn('[MYSQL] Deduplicate Subscribe error:', dedupErr.message || dedupErr);
+      }
+
+      // 2. Ensure User is the PRIMARY KEY of Subscribe table
+      try {
+        const [keys] = await this.pool.query<any[]>('SHOW KEYS FROM `Subscribe` WHERE Key_name = "PRIMARY"');
+        const hasPrimaryKey = keys && keys.length > 0;
+        let isUserPk = false;
+        if (hasPrimaryKey) {
+          isUserPk = keys.some((k: any) => String(k.Column_name || k.column_name || '').toLowerCase() === 'user');
+        }
+
+        if (!isUserPk) {
+          console.log('[MYSQL] Primary key is not User. Adjusting keys...');
+          if (hasPrimaryKey) {
+            try {
+              await this.pool.execute('ALTER TABLE `Subscribe` DROP PRIMARY KEY');
+            } catch (dropErr: any) {
+              console.warn('[MYSQL] Could not drop existing primary key (may be AUTO_INCREMENT or not exist):', dropErr.message || dropErr);
+            }
+          }
+          
+          try {
+            await this.pool.execute('ALTER TABLE `Subscribe` ADD PRIMARY KEY (`User`)');
+            console.log('[MYSQL] Successfully set User as PRIMARY KEY on Subscribe table.');
+          } catch (addPkErr: any) {
+            console.error('[MYSQL] Failed to set User as PRIMARY KEY on Subscribe table:', addPkErr.message || addPkErr);
+          }
+        }
+      } catch (pkErr: any) {
+        console.warn('[MYSQL] Primary key validation check warning:', pkErr.message || pkErr);
+      }
+
       // Dynamically verify and add any other missing columns to handle schema drift
       try {
         const [columns] = await this.pool.query<any[]>('SHOW COLUMNS FROM `Subscribe`');
