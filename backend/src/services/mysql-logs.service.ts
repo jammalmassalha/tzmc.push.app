@@ -2034,6 +2034,43 @@ export class MysqlLogsService {
         console.log('[MYSQL] RowID column missing in Subscribe, adding it...');
         await this.pool.execute('ALTER TABLE `Subscribe` ADD COLUMN `RowID` INT AUTO_INCREMENT UNIQUE FIRST');
       }
+
+      // Dynamically verify and add any other missing columns to handle schema drift
+      try {
+        const [columns] = await this.pool.query<any[]>('SHOW COLUMNS FROM `Subscribe`');
+        const existingCols = new Set(columns.map((c: any) => String(c.Field || c.field || '').toLowerCase()));
+
+        const expectedColumns: { name: string; type: string }[] = [
+          { name: 'DateTimeRegistration', type: 'DATETIME NULL' },
+          { name: 'PushType', type: 'VARCHAR(255) NULL' },
+          { name: 'AuthJson', type: 'TEXT NULL' },
+          { name: 'AuthJsonPc', type: 'TEXT NULL' },
+          { name: 'FullName', type: 'VARCHAR(255) NULL' },
+          { name: 'Staus', type: 'VARCHAR(255) NULL' },
+          { name: 'ExeptionStatus', type: 'VARCHAR(255) NULL' },
+          { name: 'ExeptionName', type: 'VARCHAR(255) NULL' },
+          { name: 'Upic', type: 'VARCHAR(255) NULL' },
+          { name: '2FA', type: 'VARCHAR(255) NULL' },
+          { name: 'FlutterMobile', type: 'TEXT NULL' },
+          { name: 'FlutterWeb', type: 'TEXT NULL' },
+          { name: 'YearOfBirth', type: 'VARCHAR(255) NULL' },
+          { name: 'UserName', type: 'VARCHAR(255) NULL' },
+          { name: 'UpdatedAt', type: 'DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP' },
+        ];
+
+        for (const col of expectedColumns) {
+          if (!existingCols.has(col.name.toLowerCase())) {
+            console.log(`[MYSQL] Column ${col.name} missing in Subscribe, adding it...`);
+            try {
+              await this.pool.execute(`ALTER TABLE \`Subscribe\` ADD COLUMN \`${col.name}\` ${col.type}`);
+            } catch (alterErr) {
+              console.error(`[MYSQL] Failed to add column ${col.name}:`, alterErr);
+            }
+          }
+        }
+      } catch (colErr) {
+        console.warn('[MYSQL] ensureSubscribeTable schema check warning:', colErr);
+      }
     } catch (err: unknown) {
       const message = String((err as { message?: string }).message || '');
       console.warn('[MYSQL] ensureSubscribeTable warning:', message);
