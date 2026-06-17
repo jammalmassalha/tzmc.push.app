@@ -7750,7 +7750,7 @@ startSubscriptionAuthRefreshScheduler();
 
 // Run the Google Sheet Subscribe to DB sync immediately at startup and then every 5 minutes (300,000 ms)
 syncSubscribeSheetToDb();
-setInterval(syncSubscribeSheetToDb, 300000);
+const subscribeSyncSchedulerTimer = setInterval(syncSubscribeSheetToDb, 300000);
 
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, () => {
