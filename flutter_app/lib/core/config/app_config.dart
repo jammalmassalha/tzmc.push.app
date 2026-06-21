@@ -124,6 +124,9 @@ class ApiEndpoints {
   // Admin: Community Group Management
   static const String adminCommunityGroups = '/admin/community-groups';
 
+  // Admin: Secretaries Management
+  static const String adminSecretaries = '/api/admin/secretaries';
+
   // Accreditation AI Agent
   static const String accreditationAgent = '/accreditation/ask';
 }

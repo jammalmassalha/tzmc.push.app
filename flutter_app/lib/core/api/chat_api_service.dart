@@ -2053,6 +2053,94 @@ class ChatApiService {
   }
 
   // ---------------------------------------------------------------------------
+  // Admin: Secretaries Management
+  // ---------------------------------------------------------------------------
+
+  /// List ALL secretaries — super-admin only.
+  Future<List<Map<String, dynamic>>> adminListSecretaries(String user) async {
+    final response = await _client.get<Map<String, dynamic>>(
+      ApiEndpoints.adminSecretaries,
+      queryParameters: {'user': user},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה בטעינת המזכירויות'),
+      );
+    }
+    final data = response.data ?? {};
+    final rawList = data['secretaries'];
+    if (rawList is! List) return [];
+    return rawList
+        .whereType<Map>()
+        .map((e) => e.map((k, v) => MapEntry(k.toString(), v)))
+        .toList();
+  }
+
+  /// Create a new secretary — super-admin only.
+  Future<void> adminCreateSecretary({
+    required String user,
+    required String departName,
+    required String phoneNumber,
+    required int status,
+  }) async {
+    final response = await _client.post<Map<String, dynamic>>(
+      ApiEndpoints.adminSecretaries,
+      queryParameters: {'user': user},
+      data: {
+        'DepartName': departName,
+        'PhoneNumber': phoneNumber,
+        'Status': status,
+      },
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה ביצירת המזכירות'),
+      );
+    }
+  }
+
+  /// Update an existing secretary — super-admin only.
+  Future<void> adminUpdateSecretary({
+    required String user,
+    required int id,
+    required String departName,
+    required String phoneNumber,
+    required int status,
+  }) async {
+    final response = await _client.put<Map<String, dynamic>>(
+      '${ApiEndpoints.adminSecretaries}/$id',
+      queryParameters: {'user': user},
+      data: {
+        'DepartName': departName,
+        'PhoneNumber': phoneNumber,
+        'Status': status,
+      },
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה בעדכון המזכירות'),
+      );
+    }
+  }
+
+  /// Delete a secretary — super-admin only.
+  Future<void> adminDeleteSecretary(String user, int id) async {
+    final response = await _client.delete<Map<String, dynamic>>(
+      '${ApiEndpoints.adminSecretaries}/$id',
+      queryParameters: {'user': user},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה במחיקת המזכירות'),
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Accreditation AI Agent
   // ---------------------------------------------------------------------------
 

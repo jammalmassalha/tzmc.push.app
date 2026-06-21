@@ -22,6 +22,7 @@ import '../../helpdesk/presentation/helpdesk_screen.dart';
 import '../../password_reset/presentation/password_reset_bot_screen.dart';
 import '../../shuttle/presentation/shuttle_screen.dart';
 import '../../admin/presentation/admin_groups_screen.dart';
+import '../../admin/presentation/admin_secretaries_screen.dart';
 import '../../accreditation_agent/presentation/accreditation_agent_screen.dart';
 import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
@@ -1055,24 +1056,12 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     );
   }
 
-  Future<void> _handleOpenSecretariesAdmin() async {
-    final user = ref.read(currentUserProvider);
-    if (user == null) {
-      if (mounted) {
-        showTopToast(context, 'לא נמצא משתמש מחובר.');
-      }
-      return;
-    }
-    final baseUrl = Env.current.baseUrl;
-    final url = '$baseUrl/admin/secretaries?user=${Uri.encodeComponent(user)}';
-    final uri = Uri.parse(url);
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } else {
-      if (mounted) {
-        showTopToast(context, 'לא ניתן לפתוח את מנהל המזכירויות כעת.');
-      }
-    }
+  void _handleOpenSecretariesAdmin() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const AdminSecretariesScreen(),
+      ),
+    );
   }
 
   Future<void> _openNewChatDialog() async {
