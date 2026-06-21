@@ -1055,6 +1055,26 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     );
   }
 
+  Future<void> _handleOpenSecretariesAdmin() async {
+    final user = ref.read(currentUserProvider);
+    if (user == null) {
+      if (mounted) {
+        showTopToast(context, 'לא נמצא משתמש מחובר.');
+      }
+      return;
+    }
+    final baseUrl = Env.current.baseUrl;
+    final url = '$baseUrl/admin/secretaries?user=${Uri.encodeComponent(user)}';
+    final uri = Uri.parse(url);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } else {
+      if (mounted) {
+        showTopToast(context, 'לא ניתן לפתוח את מנהל המזכירויות כעת.');
+      }
+    }
+  }
+
   Future<void> _openNewChatDialog() async {
     final username = await showNewChatDialog(context);
     if (username == null || !mounted) return;
