@@ -2250,7 +2250,8 @@ export class MysqlLogsService {
       if (status === '1' || exceptionStatus === '1') {
         return { status: 'success', fullName, isActive: true };
       }
-      if (status === '0') {
+      const isRestricted = status === '0' && exceptionStatus !== '1';
+      if (isRestricted) {
         return { status: 'success', fullName, isActive: true, isRestricted: true };
       }
       return { status: 'error', message: 'User inactive', isActive: false };
@@ -2297,8 +2298,9 @@ export class MysqlLogsService {
         const status = String(userRow.Staus || '').trim();
         const exceptionStatus = String(userRow.ExeptionStatus || '').trim();
 
-        // If restricted user (status = 0), show all active secretaries
-        if (status === '0') {
+        // If restricted user (status = 0 and exceptionStatus != 1), show all active secretaries
+        const isRestricted = status === '0' && exceptionStatus !== '1';
+        if (isRestricted) {
           const activeSecs = await this.listActiveSecretaries();
           if (activeSecs && activeSecs.length > 0) {
             return activeSecs.map(sec => ({

@@ -7,6 +7,7 @@ function registerMessageController(app, deps = {}) {
         getLogsMessagesForUser,
         getMessageActivitiesForUser,
         getGroupMessageSendersByMessageId,
+        getUserAuthStatus,
         getHardcodedGroupIds,
         getHardcodedGroupMembers,
         getContacts,
@@ -420,6 +421,13 @@ function registerMessageController(app, deps = {}) {
                 return res.status(403).json({ messages: [], error: 'User mismatch' });
             }
             const user = sessionUser;
+            let isRestrictedUser = false;
+            try {
+                if (typeof getUserAuthStatus === 'function') {
+                    const auth = await getUserAuthStatus(user);
+                    isRestrictedUser = Boolean(auth && auth.isRestricted === true);
+                }
+            } catch (_authError) { }
 
             const limitRaw = Number(req.query && req.query.limit);
             const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.floor(limitRaw)), 200000) : 700;
@@ -541,11 +549,13 @@ function registerMessageController(app, deps = {}) {
 
             try {
                 const hardcodedGroupMembers = resolveHardcodedGroupMembers();
-                const allowedHardcodedGroupIds = Array.from(hardcodedGroupKeySet).filter((groupId) => {
-                    const restrictedMembers = hardcodedGroupMembers[groupId];
-                    if (!Array.isArray(restrictedMembers) || !restrictedMembers.length) return true;
-                    return restrictedMembers.map(normalizeUserKey).includes(user);
-                });
+                const allowedHardcodedGroupIds = isRestrictedUser
+                    ? []
+                    : Array.from(hardcodedGroupKeySet).filter((groupId) => {
+                        const restrictedMembers = hardcodedGroupMembers[groupId];
+                        if (!Array.isArray(restrictedMembers) || !restrictedMembers.length) return true;
+                        return restrictedMembers.map(normalizeUserKey).includes(user);
+                    });
                 allowedHardcodedGroupIds.forEach((groupId) => userAllowedGroupIds.add(groupId));
 
                 const isFullSync = since <= 0;
@@ -565,7 +575,7 @@ function registerMessageController(app, deps = {}) {
                         offset,
                         since, // Optimization passed here
                         excludeSystem: true,
-                        hardcodedGroupIds: Array.from(hardcodedGroupKeySet),
+                        hardcodedGroupIds: isRestrictedUser ? [] : Array.from(hardcodedGroupKeySet),
                         hardcodedGroupMembers,
                         dynamicGroupIds: userDynamicGroupIds
                     });
@@ -711,6 +721,9 @@ function registerMessageController(app, deps = {}) {
                     }
 
                     const resolvedGroupType = groupTypeRaw === 'community' ? 'community' : (groupTypeRaw === 'group' ? 'group' : (resolvedGroupId ? (knownGroupTypeById.get(resolvedGroupId) || (hardcodedGroupKeySet.has(resolvedGroupId) ? 'community' : 'group')) : undefined));
+                    if (isRestrictedUser && resolvedGroupId && hardcodedGroupKeySet.has(resolvedGroupId)) {
+                        return null;
+                    }
 
                     if (isActionMessage) {
                         const normalizedReactor = normalizeUserKey(message.reactor || sender);

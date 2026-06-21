@@ -2284,7 +2284,8 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         if (subRows && subRows.length > 0) {
             const status = String(subRows[0].Staus || '').trim();
             const exceptionStatus = String(subRows[0].ExeptionStatus || '').trim();
-            if (status === '0') {
+            const isUserRestricted = status === '0' && exceptionStatus !== '1';
+            if (isUserRestricted) {
                 isRestricted = true;
                 const userDept = String(subRows[0].ExeptionName || '').trim();
                 if (userDept) {
@@ -7366,6 +7367,7 @@ registerMessageController(app, {
     getLogsMessagesForUser: (user, options = {}) => mysqlLogsService.getLogsMessagesForUser(user, options),
     getMessageActivitiesForUser: (user, options = {}) => mysqlLogsService.getMessageActivitiesForUser(user, options),
     getGroupMessageSendersByMessageId: (user, options = {}) => mysqlLogsService.getGroupMessageSendersByMessageId(user, options),
+    getUserAuthStatus: (user) => mysqlLogsService.checkAuth(user),
     getContacts: (user) => mysqlLogsService.getContacts(user),
     getHardcodedGroupIds: () => communityGroupIds,
     getHardcodedGroupMembers: () => {
