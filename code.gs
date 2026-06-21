@@ -1158,7 +1158,7 @@ function doPost(e) {
           '',                     // D Auth JSON
           '',                     // E Auth JSON PC
           '',                     // F Full name (legacy/fallback)
-          '1',                    // G Status (active by default for SMS registration flow)
+          '0',                    // G Status (start restricted; external service updates it after verification)
           '',                     // H Exception status
           '',                     // I Alt name
           '',                     // J Reserved

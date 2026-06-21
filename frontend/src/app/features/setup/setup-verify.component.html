@@ -52,6 +52,12 @@
             <mat-spinner diameter="20"></mat-spinner>
           }
         </button>
+
+        @if (submitting()) {
+          <p class="verify-wait-hint" role="status" aria-live="polite">
+            מאמת את הקוד ומשלים את ההתחברות, נא להמתין עד דקה...
+          </p>
+        }
       </form>
 
       <div class="actions-row">

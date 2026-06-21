@@ -354,15 +354,56 @@ function registerAuthController(app, deps = {}) {
                     return res.status(500).json({ status: 'error', message: 'Failed to create session' });
                 }
 
+                // After verifying the SMS code, give the external service time to
+                // process the user and update their final Status on the Subscribe
+                // sheet. The client keeps showing a loader while we hold this
+                // response open. Configurable via env vars:
+                //   AUTH_CODE_POST_VERIFY_STATUS_WAIT_MS (default 45000)
+                //   AUTH_CODE_POST_VERIFY_STATUS_POLL_INTERVAL_MS (default 5000)
+                const parsePositiveInt = (raw, fallback) => {
+                    const n = parseInt(String(raw ?? ''), 10);
+                    return Number.isFinite(n) && n > 0 ? n : fallback;
+                };
+                const totalWaitMs = parsePositiveInt(
+                    process.env.AUTH_CODE_POST_VERIFY_STATUS_WAIT_MS,
+                    45000
+                );
+                const pollIntervalMs = Math.min(
+                    parsePositiveInt(process.env.AUTH_CODE_POST_VERIFY_STATUS_POLL_INTERVAL_MS, 5000),
+                    Math.max(totalWaitMs, 1000)
+                );
+                const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
                 let isRestricted = false;
                 if (mysqlLogsService) {
+                    const deadline = Date.now() + totalWaitMs;
+                    let lastResult = null;
+                    // Initial check so callers whose status is already final return
+                    // promptly without waiting the full window.
                     try {
-                        const authResult = await mysqlLogsService.checkAuth(requestedUser);
-                        if (authResult && authResult.isRestricted) {
-                            isRestricted = true;
-                        }
+                        lastResult = await mysqlLogsService.checkAuth(requestedUser);
                     } catch (err) {
                         console.error('[AUTH CODE] Error checking auth status during verification:', err);
+                    }
+                    // Poll until the external service flips the user out of the
+                    // restricted/new state, or the wait window elapses.
+                    while (
+                        lastResult &&
+                        lastResult.isRestricted &&
+                        Date.now() < deadline
+                    ) {
+                        const remaining = deadline - Date.now();
+                        await sleep(Math.min(pollIntervalMs, Math.max(remaining, 0)));
+                        if (Date.now() >= deadline) break;
+                        try {
+                            lastResult = await mysqlLogsService.checkAuth(requestedUser);
+                        } catch (err) {
+                            console.error('[AUTH CODE] Error polling auth status during verification:', err);
+                            break;
+                        }
+                    }
+                    if (lastResult && lastResult.isRestricted) {
+                        isRestricted = true;
                     }
                 }
 

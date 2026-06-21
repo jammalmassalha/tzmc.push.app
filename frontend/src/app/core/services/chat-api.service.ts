@@ -293,7 +293,10 @@ export class ChatApiService {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user: normalized, code: normalizedCode })
       },
-      { retries: 1, timeoutMs: 12000 }
+      // The backend holds this request open for up to ~45s while it waits for
+      // an external service to set the user's final Status, so allow plenty of
+      // headroom and do not retry (a retry here would double the wait).
+      { retries: 0, timeoutMs: 90000 }
     );
     if (!response.ok) {
       let errorMessage = 'אימות הקוד נכשל';
