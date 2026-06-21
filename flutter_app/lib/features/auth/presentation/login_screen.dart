@@ -29,6 +29,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   int _resendCountdown = 0;
   Timer? _resendTimer;
 
+  // Set true while a verify-code request is in flight. The server holds the
+  // request open for up to ~45 s while it waits for an external service to
+  // finalise the user's Status, so we keep the SMS code UI visible and show
+  // a "please wait" hint instead of dropping the user back to the phone
+  // input screen with just a spinner.
+  bool _isVerifyingCode = false;
+  // Remember the phone number associated with the in-flight verification so
+  // we can keep rendering the correct "code sent to <phone>" copy even
+  // though the global auth state is briefly AuthLoading during the wait.
+  String? _verifyingPhoneNumber;
+
   @override
   void dispose() {
     _phoneController.dispose();
@@ -57,8 +68,29 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Widget build(BuildContext context) {
     final authState = ref.watch(authStateProvider);
     final isLoading = authState is AuthLoading;
-    final awaitingCode = authState is AuthAwaitingCode;
+    // Keep the SMS code UI visible while a verify-code request is in flight
+    // (which transitions the global auth state to AuthLoading) so the user
+    // sees the loader + "please wait" hint instead of bouncing back to the
+    // phone input screen.
+    final awaitingCode = authState is AuthAwaitingCode || _isVerifyingCode;
+    final awaitingPhoneNumber = authState is AuthAwaitingCode
+        ? authState.phoneNumber
+        : _verifyingPhoneNumber ?? '';
     final error = authState is AuthError ? authState.message : null;
+
+    // Clear the local verifying flag once the auth flow has resolved (either
+    // back to AuthAwaitingCode on error/clearError or forward to
+    // AuthAuthenticated on success).
+    if (_isVerifyingCode && !isLoading) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _isVerifyingCode) {
+          setState(() {
+            _isVerifyingCode = false;
+            _verifyingPhoneNumber = null;
+          });
+        }
+      });
+    }
 
     // Show error snackbar
     if (error != null) {
@@ -167,7 +199,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'נשלח קוד אימות ל-${authState.phoneNumber}',
+                    'נשלח קוד אימות ל-$awaitingPhoneNumber',
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                           color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.6).round()),
                         ),
@@ -213,6 +245,21 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         : const Text('אימות'),
                   ),
 
+                  // While the server is finalising the login (after the SMS
+                  // code is matched it polls an external service for up to
+                  // ~45 s to set the user's final Status), surface a clear
+                  // "please wait" hint so the user understands the spinner.
+                  if (isLoading && _isVerifyingCode) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      'מאמת את הקוד ומשלים את ההתחברות, נא להמתין עד דקה...',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.7).round()),
+                          ),
+                    ),
+                  ],
+
                   const SizedBox(height: 16),
 
                   // Back button
@@ -231,7 +278,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     onPressed: isLoading || _resendCountdown > 0
                         ? null
                         : () {
-                            ref.read(authStateProvider.notifier).requestCode(authState.phoneNumber);
+                            ref.read(authStateProvider.notifier).requestCode(awaitingPhoneNumber);
                             _startResendCooldown();
                           },
                     child: _resendCountdown > 0
@@ -280,6 +327,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       return;
     }
 
+    final authState = ref.read(authStateProvider);
+    final phoneNumber = authState is AuthAwaitingCode ? authState.phoneNumber : null;
+    setState(() {
+      _isVerifyingCode = true;
+      _verifyingPhoneNumber = phoneNumber;
+    });
     ref.read(authStateProvider.notifier).verifyCode(code);
   }
 }

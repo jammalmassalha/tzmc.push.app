@@ -188,10 +188,17 @@ class ChatApiService {
       throw AuthException('יש להזין קוד אימות בן 6 ספרות');
     }
 
+    // The backend holds this request open for up to ~45 s while it waits for
+    // an external service to set the user's final Status, so allow plenty of
+    // headroom and do not retry (a retry here would double the wait).
     final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.verifyCode,
       data: {'user': normalized, 'code': normalizedCode},
-      retryOptions: const RetryOptions(retries: 1, timeout: NetworkTimeouts.sessionTimeout),
+      options: Options(
+        receiveTimeout: NetworkTimeouts.verifyCodeTimeout,
+        sendTimeout: NetworkTimeouts.verifyCodeTimeout,
+      ),
+      retryOptions: const RetryOptions(retries: 0, timeout: NetworkTimeouts.verifyCodeTimeout),
     );
 
     if (!response.isSuccessful) {
@@ -237,10 +244,17 @@ class ChatApiService {
       throw AuthException('יש להזין קוד אימות בן 6 ספרות');
     }
 
+    // The backend holds this request open for up to ~45 s while it waits for
+    // an external service to set the user's final Status, so allow plenty of
+    // headroom and do not retry (a retry here would double the wait).
     final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.verifyCode,
       data: {'user': normalized, 'code': normalizedCode},
-      retryOptions: const RetryOptions(retries: 1, timeout: NetworkTimeouts.sessionTimeout),
+      options: Options(
+        receiveTimeout: NetworkTimeouts.verifyCodeTimeout,
+        sendTimeout: NetworkTimeouts.verifyCodeTimeout,
+      ),
+      retryOptions: const RetryOptions(retries: 0, timeout: NetworkTimeouts.verifyCodeTimeout),
     );
 
     if (!response.isSuccessful) {

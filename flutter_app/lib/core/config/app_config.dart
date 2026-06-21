@@ -141,6 +141,12 @@ class NetworkTimeouts {
   /// Session operations timeout
   static const Duration sessionTimeout = Duration(seconds: 12);
 
+  /// SMS verify-code timeout. The server holds the request open for up to
+  /// ~45 s after a successful code match while it waits for an external
+  /// service to set the user's final Status on the Subscribe sheet, so the
+  /// client needs plenty of headroom.
+  static const Duration verifyCodeTimeout = Duration(seconds: 90);
+
   /// Upload timeout (longer for file uploads)
   static const Duration uploadTimeout = Duration(seconds: 30);
 
