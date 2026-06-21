@@ -9,7 +9,9 @@ import 'dart:async';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import '../../../core/config/environment.dart';
 import '../../../core/api/chat_api_service.dart';
 import '../../../core/realtime/realtime_transport_service.dart';
 import '../../../core/services/accessibility_service.dart';
