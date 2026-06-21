@@ -17,6 +17,7 @@ import '../database/web_storage.dart';
 import '../models/api_payloads.dart';
 import '../models/chat_models.dart';
 import '../realtime/realtime_transport_service.dart';
+import '../../features/auth/presentation/auth_state.dart';
 
 // ---------------------------------------------------------------------------
 // Constants (matching Angular constants)
@@ -240,6 +241,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   StreamSubscription<IncomingServerMessage>? _messageSubscription;
   StreamSubscription<bool>? _connectionSubscription;
   StreamSubscription<void>? _pollTickSubscription;
+  StreamSubscription<bool>? _statusSubscription;
 
   Timer? _persistTimer;
   int _lastGapAnalysisTime = 0;
@@ -273,6 +275,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       _messageSubscription?.cancel();
       _connectionSubscription?.cancel();
       _pollTickSubscription?.cancel();
+      _statusSubscription?.cancel();
       _persistTimer?.cancel();
       for (final timers in _typingClearTimers.values) {
         for (final t in timers.values) {
@@ -289,6 +292,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _messageSubscription = _transport.message$.listen(_handleServerMessage);
     _connectionSubscription = _transport.connected$.listen(_handleConnectionChange);
     _pollTickSubscription = _transport.pollTick$.listen((_) => _handlePollTick());
+    _statusSubscription = _transport.status$.listen(_handleStatusChange);
+  }
+
+  void _handleStatusChange(bool isRestricted) {
+    ref.read(authStateProvider.notifier).updateUserRestrictedStatus(isRestricted);
   }
 
   // ---------------------------------------------------------------------------

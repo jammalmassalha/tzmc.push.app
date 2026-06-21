@@ -53,6 +53,10 @@ class RealtimeTransportService {
   @Deprecated('Use pollTick\$ instead')
   Stream<void> get pollTickStream => pollTick$;
 
+  /// Stream controller for user status updates
+  final _statusController = StreamController<bool>.broadcast();
+  Stream<bool> get status$ => _statusController.stream;
+
   // Internal state
   socket_io.Socket? _socket;
   bool _socketConnected = false;
@@ -260,6 +264,17 @@ class RealtimeTransportService {
           _messageController.add(msg);
         } catch (e) {
           _logger.w('Failed to parse socket message: $e');
+        }
+      });
+
+      socket.on('user:status_updated', (data) {
+        if (data == null) return;
+        try {
+          final map = data as Map;
+          final isRestricted = map['isRestricted'] == true;
+          _statusController.add(isRestricted);
+        } catch (e) {
+          _logger.w('Failed to parse user:status_updated socket event: $e');
         }
       });
 
