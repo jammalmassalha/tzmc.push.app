@@ -56,7 +56,9 @@ class AuthAuthenticated extends AuthState {
   /// persisted session that pre-dates this field.
   final String? phone;
 
-  const AuthAuthenticated({required this.user, this.phone});
+  final bool isRestricted;
+
+  const AuthAuthenticated({required this.user, this.phone, this.isRestricted = false});
 }
 
 /// Authentication error
@@ -97,14 +99,19 @@ class AuthNotifier extends Notifier<AuthState> {
       final cachedUser = await _secureStorage.read(key: _userKey);
 
       // Then verify with server
-      final sessionUser = await _apiService.getSessionUser();
+      final sessionInfo = await _apiService.getSessionInfo();
 
-      if (sessionUser != null) {
+      if (sessionInfo != null) {
+        final sessionUser = sessionInfo.user?.trim().toLowerCase() ?? cachedUser ?? '';
         await _secureStorage.write(key: _userKey, value: sessionUser);
         final cachedPhone = await _secureStorage.read(key: _phoneKey);
-        state = AuthAuthenticated(user: sessionUser, phone: cachedPhone);
+        state = AuthAuthenticated(
+          user: sessionUser,
+          phone: cachedPhone,
+          isRestricted: sessionInfo.isRestricted ?? false,
+        );
         unawaited(_resetBadgeAfterAuth());
-        _logger.i('Session restored for user: $sessionUser');
+        _logger.i('Session restored for user: $sessionUser (isRestricted: ${sessionInfo.isRestricted})');
       } else {
         await _secureStorage.delete(key: _userKey);
 
@@ -113,7 +120,7 @@ class AuthNotifier extends Notifier<AuthState> {
         final windowsUser = await tryWindowsAutoLogin(_apiService);
         if (windowsUser != null) {
           await _secureStorage.write(key: _userKey, value: windowsUser);
-          state = AuthAuthenticated(user: windowsUser, phone: null);
+          state = AuthAuthenticated(user: windowsUser, phone: null, isRestricted: false);
           unawaited(_resetBadgeAfterAuth());
           _logger.i('Windows auto-login succeeded for user: $windowsUser');
         } else {
@@ -191,15 +198,20 @@ class AuthNotifier extends Notifier<AuthState> {
     state = const AuthLoading();
 
     try {
-      final user = await _apiService.verifySessionCode(
+      final sessionResponse = await _apiService.verifySessionCodeResponse(
         currentState.phoneNumber,
         code,
       );
+      final user = sessionResponse.user?.trim().toLowerCase() ?? currentState.phoneNumber;
       await _secureStorage.write(key: _userKey, value: user);
       await _secureStorage.write(key: _phoneKey, value: currentState.phoneNumber);
-      state = AuthAuthenticated(user: user, phone: currentState.phoneNumber);
+      state = AuthAuthenticated(
+        user: user,
+        phone: currentState.phoneNumber,
+        isRestricted: sessionResponse.isRestricted ?? false,
+      );
       unawaited(_resetBadgeAfterAuth());
-      _logger.i('Code verification successful for: $user');
+      _logger.i('Code verification successful for: $user (isRestricted: ${sessionResponse.isRestricted})');
     } on AuthException catch (e) {
       state = AuthError(message: e.message, previousState: previousState);
     } catch (e) {
@@ -265,6 +277,21 @@ class AuthNotifier extends Notifier<AuthState> {
     state = const AuthUnauthenticated();
   }
 
+  /// Update the isRestricted status for the authenticated user dynamically
+  void updateUserRestrictedStatus(bool isRestricted) {
+    final currentState = state;
+    if (currentState is AuthAuthenticated) {
+      if (currentState.isRestricted != isRestricted) {
+        state = AuthAuthenticated(
+          user: currentState.user,
+          phone: currentState.phone,
+          isRestricted: isRestricted,
+        );
+        _logger.i('Dynamic status updated for user: ${currentState.user} (isRestricted: $isRestricted)');
+      }
+    }
+  }
+
   Future<void> _resetBadgeAfterAuth() async {
     try {
       await ref.read(pushNotificationServiceProvider).resetBadge();
@@ -287,6 +314,15 @@ final currentUserProvider = Provider<String?>((ref) {
 final isAuthenticatedProvider = Provider<bool>((ref) {
   final authState = ref.watch(authStateProvider);
   return authState is AuthAuthenticated;
+});
+
+/// Provider for checking if current user is restricted
+final isUserRestrictedProvider = Provider<bool>((ref) {
+  final authState = ref.watch(authStateProvider);
+  if (authState is AuthAuthenticated) {
+    return authState.isRestricted;
+  }
+  return false;
 });
 
 /// Provider for the current user's phone number (the phone used to log in).
