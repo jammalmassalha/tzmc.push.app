@@ -202,6 +202,8 @@ class MysqlLogsService {
     flutterPushRegistrationDebugTableReady = false;
     flutterPushRegistrationDebugActionColumnWidthReady = false;
     flutterPushRegistrationDebugFullResponseColumnReady = false;
+    secretariesTableReady = false;
+    botSessionsTableReady = false;
     constructor(config) {
         this.tableName = normalizeTableName(config.table);
         // 11 columns / 11 parameters — keep in sync with insertLog() and insertLogsBulk()
@@ -220,6 +222,8 @@ class MysqlLogsService {
         void this.ensureFileUrlColumn();
         void this.ensureSeenTimeColumn();
         void this.ensureGroupSenderNameColumn();
+        void this.ensureSecretariesTable();
+        void this.ensureBotSessionsTable();
     }
     async ensureImageUrlColumn() {
         if (this.imageUrlColumnReady)
@@ -2014,6 +2018,168 @@ class MysqlLogsService {
             const message = String(err.message || '');
             console.error('[MYSQL] getContacts error:', message);
             return [];
+        }
+    }
+    async ensureSecretariesTable() {
+        if (this.secretariesTableReady)
+            return;
+        try {
+            await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`Secretaries\` (
+          \`ID\` INT AUTO_INCREMENT PRIMARY KEY,
+          \`DepartName\` VARCHAR(255) NOT NULL,
+          \`PhoneNumber\` VARCHAR(100) NOT NULL,
+          \`Status\` TINYINT DEFAULT 1
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+            this.secretariesTableReady = true;
+            console.log('[MYSQL] Secretaries table ensured.');
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.warn('[MYSQL] ensureSecretariesTable warning:', message);
+        }
+    }
+    async ensureBotSessionsTable() {
+        if (this.botSessionsTableReady)
+            return;
+        try {
+            await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`BotSessions\` (
+          \`UserPhone\` VARCHAR(100) PRIMARY KEY,
+          \`Step\` VARCHAR(50) NOT NULL DEFAULT 'ID',
+          \`CollectedData\` LONGTEXT NULL,
+          \`UpdatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+            this.botSessionsTableReady = true;
+            console.log('[MYSQL] BotSessions table ensured.');
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.warn('[MYSQL] ensureBotSessionsTable warning:', message);
+        }
+    }
+    async addSecretary(departName, phoneNumber, status) {
+        await this.ensureSecretariesTable();
+        try {
+            await this.pool.execute('INSERT INTO `Secretaries` (`DepartName`, `PhoneNumber`, `Status`) VALUES (?, ?, ?)', [departName.trim(), phoneNumber.trim(), status]);
+            return true;
+        }
+        catch (err) {
+            console.error('[MYSQL] addSecretary error:', err);
+            return false;
+        }
+    }
+    async editSecretary(id, departName, phoneNumber, status) {
+        await this.ensureSecretariesTable();
+        try {
+            await this.pool.execute('UPDATE `Secretaries` SET `DepartName` = ?, `PhoneNumber` = ?, `Status` = ? WHERE `ID` = ?', [departName.trim(), phoneNumber.trim(), status, id]);
+            return true;
+        }
+        catch (err) {
+            console.error('[MYSQL] editSecretary error:', err);
+            return false;
+        }
+    }
+    async deleteSecretary(id) {
+        await this.ensureSecretariesTable();
+        try {
+            await this.pool.execute('DELETE FROM `Secretaries` WHERE `ID` = ?', [id]);
+            return true;
+        }
+        catch (err) {
+            console.error('[MYSQL] deleteSecretary error:', err);
+            return false;
+        }
+    }
+    async listSecretaries() {
+        await this.ensureSecretariesTable();
+        try {
+            const [rows] = await this.pool.query('SELECT * FROM `Secretaries` ORDER BY `DepartName` ASC');
+            return rows;
+        }
+        catch (err) {
+            console.error('[MYSQL] listSecretaries error:', err);
+            return [];
+        }
+    }
+    async listActiveSecretaries() {
+        await this.ensureSecretariesTable();
+        try {
+            const [rows] = await this.pool.query('SELECT * FROM `Secretaries` WHERE `Status` = 1');
+            return rows;
+        }
+        catch (err) {
+            console.error('[MYSQL] listActiveSecretaries error:', err);
+            return [];
+        }
+    }
+    async getSecretaryByDepartment(departName) {
+        await this.ensureSecretariesTable();
+        try {
+            const [rows] = await this.pool.query('SELECT * FROM `Secretaries` WHERE `DepartName` = ? AND `Status` = 1 LIMIT 1', [departName.trim()]);
+            if (rows && rows.length > 0) {
+                return rows[0];
+            }
+            return null;
+        }
+        catch (err) {
+            console.error('[MYSQL] getSecretaryByDepartment error:', err);
+            return null;
+        }
+    }
+    async getBotSession(userPhone) {
+        await this.ensureBotSessionsTable();
+        try {
+            const [rows] = await this.pool.query('SELECT * FROM `BotSessions` WHERE `UserPhone` = ? LIMIT 1', [userPhone.trim()]);
+            if (rows && rows.length > 0) {
+                const row = rows[0];
+                let collectedData = {};
+                if (row.CollectedData) {
+                    try {
+                        collectedData = JSON.parse(row.CollectedData);
+                    }
+                    catch {
+                        collectedData = {};
+                    }
+                }
+                return {
+                    userPhone: row.UserPhone,
+                    step: row.Step,
+                    collectedData
+                };
+            }
+            return null;
+        }
+        catch (err) {
+            console.error('[MYSQL] getBotSession error:', err);
+            return null;
+        }
+    }
+    async saveBotSession(userPhone, step, collectedData) {
+        await this.ensureBotSessionsTable();
+        try {
+            const serialized = JSON.stringify(collectedData || {});
+            await this.pool.execute(`INSERT INTO \`BotSessions\` (\`UserPhone\`, \`Step\`, \`CollectedData\`)
+         VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE \`Step\` = VALUES(\`Step\`), \`CollectedData\` = VALUES(\`CollectedData\`)`, [userPhone.trim(), step.trim(), serialized]);
+            return true;
+        }
+        catch (err) {
+            console.error('[MYSQL] saveBotSession error:', err);
+            return false;
+        }
+    }
+    async deleteBotSession(userPhone) {
+        await this.ensureBotSessionsTable();
+        try {
+            await this.pool.execute('DELETE FROM `BotSessions` WHERE `UserPhone` = ?', [userPhone.trim()]);
+            return true;
+        }
+        catch (err) {
+            console.error('[MYSQL] deleteBotSession error:', err);
+            return false;
         }
     }
 }
