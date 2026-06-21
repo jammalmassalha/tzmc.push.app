@@ -413,6 +413,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
               case 'accreditation':
                 _handleOpenAccreditationAgent();
                 break;
+              case 'secretaries_admin':
+                _handleOpenSecretariesAdmin();
+                break;
             }
           },
           itemBuilder: (context) => [
@@ -456,6 +459,17 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
                 ],
               ),
             ),
+            if (_canAccessAdminGroups)
+              PopupMenuItem(
+                value: 'secretaries_admin',
+                child: Row(
+                  children: [
+                    const Icon(Icons.settings_phone, size: 20),
+                    const SizedBox(width: 12),
+                    const Text('ניהול מזכירויות מחלקתיות'),
+                  ],
+                ),
+              ),
             const PopupMenuDivider(),
             PopupMenuItem(
               value: 'logout',
