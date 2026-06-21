@@ -198,6 +198,14 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   @override
   Widget build(BuildContext context) {
     final chatState = ref.watch(chatStoreProvider);
+    final isRestricted = ref.watch(isUserRestrictedProvider);
+
+    _recomputeVisibleTabs();
+    if (!_visibleTabs.contains(_currentTab)) {
+      _currentTab = _visibleTabs.first;
+      _syncPageToCurrentTab();
+    }
+
     final isDesktopWeb =
         kIsWeb && MediaQuery.sizeOf(context).width >= _kDesktopShellBreakpoint;
 
@@ -284,21 +292,23 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         },
         children: _visibleTabs.map(_buildTabBody).toList(),
       ),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _visibleTabs.indexOf(_currentTab),
-        onTap: (index) {
-          if (index < 0 || index >= _visibleTabs.length) return;
-          setState(() {
-            _currentTab = _visibleTabs[index];
-          });
-          _pageController.animateToPage(
-            index,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeInOut,
-          );
-        },
-        items: _visibleTabs.map(_buildNavItem).toList(),
-      ),
+      bottomNavigationBar: _visibleTabs.length < 2
+        ? null
+        : BottomNavigationBar(
+            currentIndex: _visibleTabs.indexOf(_currentTab),
+            onTap: (index) {
+              if (index < 0 || index >= _visibleTabs.length) return;
+              setState(() {
+                _currentTab = _visibleTabs[index];
+              });
+              _pageController.animateToPage(
+                index,
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeInOut,
+              );
+            },
+            items: _visibleTabs.map(_buildNavItem).toList(),
+          ),
     );
   }
 
@@ -338,8 +348,10 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
                 ),
                 child: Row(
                   children: [
-                    _buildDesktopNavigationRail(),
-                    Container(width: 1, color: AppColors.divider),
+                    if (_visibleTabs.length >= 2) ...[
+                      _buildDesktopNavigationRail(),
+                      Container(width: 1, color: AppColors.divider),
+                    ],
                     Expanded(
                       child: _isChatSplitTab(_currentTab)
                           ? _buildDesktopChatLayout(chatState)
@@ -856,6 +868,12 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   }
 
   void _recomputeVisibleTabs() {
+    final isRestricted = ref.read(isUserRestrictedProvider);
+    if (isRestricted) {
+      _visibleTabs = [MainTab.chats];
+      return;
+    }
+
     final tabs = <MainTab>[
       MainTab.chats,
       MainTab.groups,
