@@ -1947,7 +1947,7 @@ class MysqlLogsService {
             if (status === '1' || exceptionStatus === '1') {
                 return { status: 'success', fullName, isActive: true };
             }
-            const isRestricted = status === '0' && exceptionStatus !== '1';
+            const isRestricted = status === '0' && (exceptionStatus === '' || exceptionStatus === '0');
             if (isRestricted) {
                 return { status: 'success', fullName, isActive: true, isRestricted: true };
             }
@@ -1989,7 +1989,7 @@ class MysqlLogsService {
                 const status = String(userRow.Staus || '').trim();
                 const exceptionStatus = String(userRow.ExeptionStatus || '').trim();
                 // If restricted user (status = 0 and exceptionStatus != 1), show all active secretaries
-                const isRestricted = status === '0' && exceptionStatus !== '1';
+                const isRestricted = status === '0' && (exceptionStatus === '' || exceptionStatus === '0');
                 if (isRestricted) {
                     const activeSecs = await this.listActiveSecretaries();
                     if (activeSecs && activeSecs.length > 0) {
