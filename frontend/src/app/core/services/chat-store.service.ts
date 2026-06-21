@@ -1342,6 +1342,12 @@ export class ChatStoreService {
     this.schedulePersist();
   }
 
+  canCurrentUserManageSecretaries(): boolean {
+    const normalizedUser = this.normalizeUser(this.currentUser() ?? '');
+    if (!normalizedUser) return false;
+    return this.badgeResetAllAdminUsersSet.has(normalizedUser);
+  }
+
   canCurrentUserBackupGroupsToDb(): boolean {
     const normalizedUser = this.normalizeUser(this.currentUser() ?? '');
     if (!normalizedUser) return false;

@@ -6681,10 +6681,57 @@ app.delete(
 );
 
 // --- Admin: Secretaries Management ---
+const adminSecretariesRateLimitStore = new Map();
 
 // Serve the admin Secretaries dashboard
 app.get(
     ['/admin/secretaries', '/notify/admin/secretaries'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).send(`
+            <html lang="he" dir="rtl">
+            <head>
+                <meta charset="UTF-8">
+                <title>שגיאת הזדהות</title>
+                <script src="https://cdn.tailwindcss.com"></script>
+                <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@300;400;500;700&display=swap" rel="stylesheet">
+            </head>
+            <body class="bg-slate-50 min-h-screen text-slate-800 flex items-center justify-center font-['Rubik']">
+                <div class="max-w-md mx-auto bg-white rounded-lg shadow-md p-6 border border-slate-200 text-center">
+                    <h1 class="text-xl font-bold mb-4 text-rose-600">שגיאה: פג תוקף החיבור או שאינך מחובר</h1>
+                    <p class="text-sm text-slate-600 mb-4">נא להתחבר מחדש מתוך האפליקציה.</p>
+                </div>
+            </body>
+            </html>
+        `)
+    }),
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).send(`
+                <html lang="he" dir="rtl">
+                <head>
+                    <meta charset="UTF-8">
+                    <title>שגיאת הרשאה</title>
+                    <script src="https://cdn.tailwindcss.com"></script>
+                    <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@300;400;500;700&display=swap" rel="stylesheet">
+                </head>
+                <body class="bg-slate-50 min-h-screen text-slate-800 flex items-center justify-center font-['Rubik']">
+                    <div class="max-w-md mx-auto bg-white rounded-lg shadow-md p-6 border border-slate-200 text-center">
+                        <h1 class="text-xl font-bold mb-4 text-rose-600">שגיאה: אין הרשאת מנהל</h1>
+                        <p class="text-sm text-slate-600 mb-4">מסך זה מיועד למנהלי מערכת מורשים בלבד.</p>
+                    </div>
+                </body>
+                </html>
+            `);
+        }
+        const rateCheck = consumeRateLimitEntry(adminSecretariesRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).send(`<h1>Too many requests. Retry after ${rateCheck.retryAfterSeconds}s</h1>`);
+        }
+        next();
+    },
     (req, res) => {
         res.send(`<!DOCTYPE html>
 <html lang="he" dir="rtl">
@@ -6799,6 +6846,7 @@ app.get(
     </footer>
 
     <script>
+        const basePath = window.location.pathname.startsWith('/notify') ? '/notify' : '';
         let adminPhone = localStorage.getItem('tzmc_admin_phone') || '';
 
         function getAdminPhoneFromQuery() {
@@ -6850,7 +6898,7 @@ app.get(
 
         async function fetchSecretaries() {
             try {
-                const res = await fetch(\`/api/admin/secretaries?user=\${encodeURIComponent(adminPhone)}\`);
+                const res = await fetch(\`\${basePath}/api/admin/secretaries?user=\${encodeURIComponent(adminPhone)}\`);
                 if (!res.ok) {
                     if (res.status === 403 || res.status === 401) {
                         showAlert('שגיאה: אינך מורשה לגשת למסך זה (יש להשתמש במספר מנהל מורשה)', 'error');
@@ -6938,7 +6986,7 @@ app.get(
             }
 
             const method = id ? 'PUT' : 'POST';
-            const url = id ? \\\`/api/admin/secretaries/\\\${id}?user=\\\${encodeURIComponent(adminPhone)}\\\` : \\\`/api/admin/secretaries?user=\\\${encodeURIComponent(adminPhone)}\\\`;
+            const url = id ? \\\`\${basePath}/api/admin/secretaries/\\\${id}?user=\\\${encodeURIComponent(adminPhone)}\\\` : \\\`\${basePath}/api/admin/secretaries?user=\\\${encodeURIComponent(adminPhone)}\\\`;
 
             try {
                 const res = await fetch(url, {
@@ -6958,7 +7006,7 @@ app.get(
         async function deleteSecretary(id) {
             if (!confirm('האם אתה בטוח שברצונך למחוק מזכירות זו?')) return;
             try {
-                const res = await fetch(\\\`/api/admin/secretaries/\\\${id}?user=\\\${encodeURIComponent(adminPhone)}\\\`, {
+                const res = await fetch(\\\`\${basePath}/api/admin/secretaries/\\\${id}?user=\\\${encodeURIComponent(adminPhone)}\\\`, {
                     method: 'DELETE'
                 });
                 if (!res.ok) throw new Error('שגיאה במחיקת המזכירות');
@@ -6989,6 +7037,10 @@ app.get(
         if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
             return res.status(403).json({ error: 'Forbidden: super-admin only' });
         }
+        const rateCheck = consumeRateLimitEntry(adminSecretariesRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
         try {
             const secretaries = await mysqlLogsService.listSecretaries();
             return res.json({ secretaries });
@@ -7011,6 +7063,10 @@ app.post(
         const user = normalizeUserKey(req.resolvedUser || '');
         if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
             return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const rateCheck = consumeRateLimitEntry(adminSecretariesRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
         }
         const { DepartName, PhoneNumber, Status } = req.body || {};
         if (!DepartName || !PhoneNumber) {
@@ -7039,6 +7095,10 @@ app.put(
         const user = normalizeUserKey(req.resolvedUser || '');
         if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
             return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const rateCheck = consumeRateLimitEntry(adminSecretariesRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
         }
         const id = Number(req.params.id);
         if (isNaN(id)) {
@@ -7071,6 +7131,10 @@ app.delete(
         const user = normalizeUserKey(req.resolvedUser || '');
         if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
             return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const rateCheck = consumeRateLimitEntry(adminSecretariesRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
         }
         const id = Number(req.params.id);
         if (isNaN(id)) {
