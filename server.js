@@ -5458,6 +5458,16 @@ io.on('connection', (socket) => {
     addWebsocketClient(socketUser, socket);
     socket.emit('chat:connected', { user: socketUser, ts: Date.now() });
 
+    // Immediately check if the connected user is restricted and notify them
+    if (mysqlLogsService) {
+        mysqlLogsService.checkAuth(socketUser).then((authResult) => {
+            const isRestricted = authResult && authResult.isRestricted === true;
+            socket.emit('user:status_updated', { isRestricted });
+        }).catch((err) => {
+            console.error('[SOCKET] Error checking status for connected user:', socketUser, err);
+        });
+    }
+
     socket.on('chat:reply', async (payload = {}, ack) => {
         const replyAck = typeof ack === 'function' ? ack : () => undefined;
         try {
@@ -5541,7 +5551,8 @@ registerAuthController(app, {
     requireAuthorizedUser,
     APP_SERVER_TOKEN,
     BADGE_RESET_ALL_ALLOWED_USERS,
-    lookupUserByWindowsUsername
+    lookupUserByWindowsUsername,
+    mysqlLogsService
 });
 
 // --- CLIENT TELEMETRY ---
@@ -8343,6 +8354,24 @@ async function syncSubscribeSheetToDb() {
             const rows = payload.rows;
             await mysqlLogsService.syncSubscribeRows(rows);
             console.log(`[SUBSCRIBE-SYNC] Successfully synced ${rows.length} rows to DB.`);
+
+            // Notify all active websocket clients of any updated status
+            if (typeof websocketClients !== 'undefined') {
+                for (const username of websocketClients.keys()) {
+                    try {
+                        const authResult = await mysqlLogsService.checkAuth(username);
+                        const isRestricted = authResult && authResult.isRestricted === true;
+                        const sockets = websocketClients.get(username);
+                        if (sockets) {
+                            for (const socket of sockets) {
+                                socket.emit('user:status_updated', { isRestricted });
+                            }
+                        }
+                    } catch (err) {
+                        console.error('[SUBSCRIBE-SYNC] Error checking status for connected user during sync:', username, err);
+                    }
+                }
+            }
         } else {
             const errorMsg = payload && payload.message ? payload.message : 'Unknown sheet error';
             throw new Error(errorMsg);

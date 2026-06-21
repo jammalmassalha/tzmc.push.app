@@ -38,7 +38,8 @@ function registerAuthController(app, deps = {}) {
         requireAuthorizedUser,
         APP_SERVER_TOKEN,
         BADGE_RESET_ALL_ALLOWED_USERS,
-        lookupUserByWindowsUsername
+        lookupUserByWindowsUsername,
+        mysqlLogsService
     } = deps;
     const resetAllAllowedUserSet = new Set(
         (Array.isArray(BADGE_RESET_ALL_ALLOWED_USERS) ? BADGE_RESET_ALL_ALLOWED_USERS : [])
@@ -143,15 +144,29 @@ function registerAuthController(app, deps = {}) {
         }
     );
 
-    app.get(['/auth/session', '/notify/auth/session'], (req, res) => {
+    app.get(['/auth/session', '/notify/auth/session'], async (req, res) => {
         const user = normalizeUserCandidate(req.authUser);
         const authSession = req.authSession && typeof req.authSession === 'object' ? req.authSession : null;
         if (!user) {
             return res.json({ authenticated: false, user: null });
         }
+
+        let isRestricted = false;
+        if (mysqlLogsService) {
+            try {
+                const authResult = await mysqlLogsService.checkAuth(user);
+                if (authResult && authResult.isRestricted) {
+                    isRestricted = true;
+                }
+            } catch (err) {
+                console.error('[AUTH SESSION] Error checking auth status:', err);
+            }
+        }
+
         return res.json({
             authenticated: true,
             user,
+            isRestricted,
             csrfToken: authSession && authSession.csrfToken ? authSession.csrfToken : null
         });
     });
@@ -339,11 +354,24 @@ function registerAuthController(app, deps = {}) {
                     return res.status(500).json({ status: 'error', message: 'Failed to create session' });
                 }
 
+                let isRestricted = false;
+                if (mysqlLogsService) {
+                    try {
+                        const authResult = await mysqlLogsService.checkAuth(requestedUser);
+                        if (authResult && authResult.isRestricted) {
+                            isRestricted = true;
+                        }
+                    } catch (err) {
+                        console.error('[AUTH CODE] Error checking auth status during verification:', err);
+                    }
+                }
+
                 setSessionCookie(res, req, sessionToken.token, sessionToken.expiresAt);
                 return res.json({
                     status: 'success',
                     authenticated: true,
                     user: requestedUser,
+                    isRestricted,
                     expiresAt: sessionToken.expiresAt,
                     csrfToken: sessionToken.csrfToken
                 });
@@ -407,12 +435,25 @@ function registerAuthController(app, deps = {}) {
                     return res.status(500).json({ status: 'error', message: 'Failed to create session' });
                 }
 
+                let isRestricted = false;
+                if (mysqlLogsService) {
+                    try {
+                        const authResult = await mysqlLogsService.checkAuth(matchedUser);
+                        if (authResult && authResult.isRestricted) {
+                            isRestricted = true;
+                        }
+                    } catch (err) {
+                        console.error('[WINDOWS LOGIN] Error checking auth status during login:', err);
+                    }
+                }
+
                 setSessionCookie(res, req, sessionToken.token, sessionToken.expiresAt);
                 console.log('[WINDOWS LOGIN] Auto-login successful for windowsUser:', windowsUser, '→ user:', matchedUser);
                 return res.json({
                     status: 'success',
                     authenticated: true,
                     user: matchedUser,
+                    isRestricted,
                     expiresAt: sessionToken.expiresAt,
                     csrfToken: sessionToken.csrfToken
                 });
