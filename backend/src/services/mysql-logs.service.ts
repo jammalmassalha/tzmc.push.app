@@ -2250,6 +2250,9 @@ export class MysqlLogsService {
       if (status === '1' || exceptionStatus === '1') {
         return { status: 'success', fullName, isActive: true };
       }
+      if (status === '0' && exceptionStatus === '0') {
+        return { status: 'success', fullName, isActive: true, isRestricted: true };
+      }
       return { status: 'error', message: 'User inactive', isActive: false };
     } catch (err: unknown) {
       const message = String((err as { message?: string }).message || '');
@@ -2284,7 +2287,7 @@ export class MysqlLogsService {
         const normalized = String(requestingUser).trim();
         // Check if requesting user is allowed: status === '1' or exceptionStatus === '1'
         const [userRows] = await this.pool.query<RowDataPacket[]>(
-          'SELECT `Staus`, `ExeptionStatus` FROM `Subscribe` WHERE `User` = ?',
+          'SELECT `Staus`, `ExeptionStatus`, `ExeptionName` FROM `Subscribe` WHERE `User` = ?',
           [normalized]
         );
         if (!userRows || userRows.length === 0) {
@@ -2293,6 +2296,33 @@ export class MysqlLogsService {
         const userRow = userRows[0];
         const status = String(userRow.Staus || '').trim();
         const exceptionStatus = String(userRow.ExeptionStatus || '').trim();
+
+        // If restricted user (status = 0 and exceptionStatus = 0), only show their Secretary
+        if (status === '0' && exceptionStatus === '0') {
+          const userDept = String(userRow.ExeptionName || '').trim();
+          let secretary = null;
+          if (userDept) {
+            secretary = await this.getSecretaryByDepartment(userDept);
+          }
+          if (!secretary) {
+            // Fallback: get first active secretary
+            const activeSecs = await this.listActiveSecretaries();
+            if (activeSecs && activeSecs.length > 0) {
+              secretary = activeSecs[0];
+            }
+          }
+          if (secretary) {
+            return [{
+              username: secretary.PhoneNumber,
+              displayName: `מזכירות ${secretary.DepartName}`,
+              fullName: `מזכירות ${secretary.DepartName}`,
+              upic: '',
+              status: 1
+            }];
+          }
+          return []; // No secretary available
+        }
+
         if (status !== '1' && exceptionStatus !== '1') {
           return [];
         }

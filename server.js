@@ -2205,6 +2205,43 @@ function emitTypingSignalToRecipients(payload = {}, senderUser = '') {
     return { status: 'success', deliveredTo: recipients.length };
 }
 
+async function sendBotMessage(fromUser, toUser, bodyText, fromName) {
+    const botMessageId = generateMessageId();
+    const pollingMessage = {
+        messageId: botMessageId,
+        sender: fromUser,
+        body: bodyText,
+        timestamp: Date.now(),
+        imageUrl: null,
+        fileUrl: null,
+        groupId: null,
+        groupName: null,
+        groupSenderName: fromName
+    };
+    await logNotificationStatus(
+        fromUser,
+        toUser,
+        bodyText,
+        'Sent',
+        '',
+        '',
+        botMessageId,
+        '',
+        '',
+        { groupSenderName: fromName }
+    );
+    await addToQueue([toUser], pollingMessage);
+    const notificationData = {
+        messageId: botMessageId,
+        title: fromName,
+        body: {
+            shortText: bodyText,
+            longText: bodyText
+        }
+    };
+    await sendPushNotificationToUser([toUser], notificationData, fromUser, { messageId: botMessageId });
+}
+
 async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
     const {
         reply,
@@ -2235,6 +2272,178 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
     if (!user) {
         throw createHttpError(400, 'Missing user');
     }
+
+    // ─── Restricted User / Secretary Chat Interception ───
+    let isRestricted = false;
+    let secretary = null;
+    try {
+        const [subRows] = await mysqlLogsService.pool.query(
+            'SELECT `Staus`, `ExeptionStatus`, `ExeptionName` FROM `Subscribe` WHERE `User` = ?',
+            [user]
+        );
+        if (subRows && subRows.length > 0) {
+            const status = String(subRows[0].Staus || '').trim();
+            const exceptionStatus = String(subRows[0].ExeptionStatus || '').trim();
+            if (status === '0' && exceptionStatus === '0') {
+                isRestricted = true;
+                const userDept = String(subRows[0].ExeptionName || '').trim();
+                if (userDept) {
+                    secretary = await mysqlLogsService.getSecretaryByDepartment(userDept);
+                }
+                if (!secretary) {
+                    const activeSecs = await mysqlLogsService.listActiveSecretaries();
+                    if (activeSecs && activeSecs.length > 0) {
+                        secretary = activeSecs[0];
+                    }
+                }
+            }
+        }
+    } catch (err) {
+        console.error('[SECRETARY CHAT] Error querying restricted status:', err);
+    }
+
+    if (isRestricted) {
+        if (!secretary) {
+            console.error(`[SECRETARY CHAT] Restricted user ${user} has no secretary configured!`);
+            throw createHttpError(403, 'No secretary configured for your department.');
+        }
+
+        // Force originalSender / targetToNotify to be the secretary
+        rawPayload.originalSender = secretary.PhoneNumber;
+
+        // Check bot session
+        try {
+            let botSession = await mysqlLogsService.getBotSession(user);
+            const currentStep = botSession ? String(botSession.step).trim() : '';
+            const collectedData = botSession && botSession.collectedData ? botSession.collectedData : {};
+
+            if (currentStep !== 'completed') {
+                const messageText = String(reply || '').trim();
+                const secName = `מזכירות ${secretary.DepartName}`;
+
+                if (!currentStep) {
+                    // First time, start bot session
+                    await mysqlLogsService.saveBotSession(user, '1', {});
+                    await sendBotMessage(
+                        secretary.PhoneNumber,
+                        user,
+                        "שלום! לפני שנתחיל בשיחה עם המזכירות, נשמח אם תענה על מספר שאלות קצרות לזיהוי. אנא הזן תעודת זהות:",
+                        secName
+                    );
+                    return { status: 'success', details: { success: 1, failed: 0 } };
+                } else if (currentStep === '1') {
+                    if (!messageText) {
+                        await sendBotMessage(
+                            secretary.PhoneNumber,
+                            user,
+                            "אנא הזן תעודת זהות תקינה:",
+                            secName
+                        );
+                        return { status: 'success', details: { success: 1, failed: 0 } };
+                    }
+                    collectedData.id = messageText;
+                    await mysqlLogsService.saveBotSession(user, '2', collectedData);
+                    await sendBotMessage(
+                        secretary.PhoneNumber,
+                        user,
+                        "תודה. אנא הזן שם מלא:",
+                        secName
+                    );
+                    return { status: 'success', details: { success: 1, failed: 0 } };
+                } else if (currentStep === '2') {
+                    if (!messageText) {
+                        await sendBotMessage(
+                            secretary.PhoneNumber,
+                            user,
+                            "אנא הזן שם מלא תקין:",
+                            secName
+                        );
+                        return { status: 'success', details: { success: 1, failed: 0 } };
+                    }
+                    collectedData.name = messageText;
+                    await mysqlLogsService.saveBotSession(user, '3', collectedData);
+                    await sendBotMessage(
+                        secretary.PhoneNumber,
+                        user,
+                        "תודה. אנא הזן מיקום/מחלקה:",
+                        secName
+                    );
+                    return { status: 'success', details: { success: 1, failed: 0 } };
+                } else if (currentStep === '3') {
+                    if (!messageText) {
+                        await sendBotMessage(
+                            secretary.PhoneNumber,
+                            user,
+                            "אנא הזן מיקום/מחלקה תקינים:",
+                            secName
+                        );
+                        return { status: 'success', details: { success: 1, failed: 0 } };
+                    }
+                    collectedData.location = messageText;
+                    await mysqlLogsService.saveBotSession(user, '4', collectedData);
+                    await sendBotMessage(
+                        secretary.PhoneNumber,
+                        user,
+                        "תודה. אנא הזן מגדר (זכר/נקבה):",
+                        secName
+                    );
+                    return { status: 'success', details: { success: 1, failed: 0 } };
+                } else if (currentStep === '4') {
+                    if (!messageText) {
+                        await sendBotMessage(
+                            secretary.PhoneNumber,
+                            user,
+                            "אנא הזן מגדר (זכר/נקבה) תקין:",
+                            secName
+                        );
+                        return { status: 'success', details: { success: 1, failed: 0 } };
+                    }
+                    collectedData.gender = messageText;
+                    await mysqlLogsService.saveBotSession(user, '5', collectedData);
+                    await sendBotMessage(
+                        secretary.PhoneNumber,
+                        user,
+                        "תודה. אנא הזן תאריך לידה (יום.חודש.שנה):",
+                        secName
+                    );
+                    return { status: 'success', details: { success: 1, failed: 0 } };
+                } else if (currentStep === '5') {
+                    if (!messageText) {
+                        await sendBotMessage(
+                            secretary.PhoneNumber,
+                            user,
+                            "אנא הזן תאריך לידה תקין (יום.חודש.שנה):",
+                            secName
+                        );
+                        return { status: 'success', details: { success: 1, failed: 0 } };
+                    }
+                    collectedData.dob = messageText;
+                    await mysqlLogsService.saveBotSession(user, 'completed', collectedData);
+
+                    // Send summary to secretary
+                    const summaryText = `קבלת פנייה חדשה ממשתמש חסום. להלן הפרטים שנאספו על ידי הבוט:\nת.ז: ${collectedData.id}\nשם מלא: ${collectedData.name}\nמיקום: ${collectedData.location}\nמגדר: ${collectedData.gender}\nתאריך לידה: ${collectedData.dob}`;
+                    await sendBotMessage(
+                        user,
+                        secretary.PhoneNumber,
+                        summaryText,
+                        senderName || user
+                    );
+
+                    // Send confirmation to user
+                    await sendBotMessage(
+                        secretary.PhoneNumber,
+                        user,
+                        "תודה רבה! הפרטים שלך הועברו למזכירות המחלקה. כעת תוכל לשוחח איתנו בחופשיות, לשלוח קבצים או תמונות.",
+                        secName
+                    );
+                    return { status: 'success', details: { success: 1, failed: 0 } };
+                }
+            }
+        } catch (botErr) {
+            console.error('[SECRETARY CHAT] Error in bot state machine:', botErr);
+        }
+    }
+
     const messageId = String(clientMessageId || generateMessageId()).trim() || generateMessageId();
     console.log(`[REPLY] From: ${user} | To: ${originalSender}`);
 
@@ -6467,6 +6676,412 @@ app.delete(
         } catch (err) {
             console.error('[ADMIN-GROUPS] delete error:', err && err.message ? err.message : err);
             return res.status(500).json({ error: 'Failed to delete group' });
+        }
+    }
+);
+
+// --- Admin: Secretaries Management ---
+
+// Serve the admin Secretaries dashboard
+app.get(
+    ['/admin/secretaries', '/notify/admin/secretaries'],
+    (req, res) => {
+        res.send(`<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ניהול מזכירויות מחלקתיות</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Rubik', sans-serif; }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen text-slate-800 flex flex-col">
+    <!-- Header -->
+    <header class="bg-gradient-to-r from-blue-600 to-indigo-700 text-white shadow-md p-4">
+        <div class="max-w-6xl mx-auto flex justify-between items-center">
+            <h1 class="text-2xl font-bold tracking-wide">ניהול מזכירויות מחלקתיות - מרכז רפואי צפון</h1>
+            <div id="admin-user-display" class="bg-white/15 px-3 py-1.5 rounded text-sm font-medium"></div>
+        </div>
+    </header>
+
+    <!-- Content -->
+    <main class="flex-grow max-w-6xl mx-auto w-full p-4 md:p-6 space-y-6">
+        <!-- Auth prompt -->
+        <div id="auth-section" class="hidden max-w-md mx-auto bg-white rounded-lg shadow-md p-6 border border-slate-200 mt-10">
+            <h2 class="text-xl font-bold mb-4 text-center text-indigo-700">הזדהות מנהל מערכת</h2>
+            <p class="text-sm text-slate-600 mb-4 text-center">אנא הזן את מספר הטלפון המורשה שלך כדי לנהל את המזכירויות:</p>
+            <div class="space-y-4">
+                <input type="text" id="auth-phone-input" class="w-full px-4 py-2 border rounded border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-center" placeholder="לדוגמה: 0546799693" dir="ltr">
+                <button onclick="saveAdminPhone()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 rounded transition shadow">התחברות</button>
+            </div>
+        </div>
+
+        <!-- Dashboard Section -->
+        <div id="dashboard-section" class="space-y-6">
+            <!-- Add & Alert panel -->
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-4 rounded-lg shadow-sm border border-slate-200">
+                <div>
+                    <h2 class="text-lg font-bold text-slate-800">רשימת מזכירויות פעילות</h2>
+                    <p class="text-xs text-slate-500">הוסף, ערוך או מחק את הגדרות המזכירויות לניתוב פניות משתמשים חסומים</p>
+                </div>
+                <button onclick="openAddModal()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded shadow transition flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                    </svg>
+                    הוספת מזכירות
+                </button>
+            </div>
+
+            <!-- Error / Success Alert -->
+            <div id="alert-box" class="hidden p-4 rounded-lg text-sm font-medium transition"></div>
+
+            <!-- Table -->
+            <div class="bg-white rounded-lg shadow border border-slate-200 overflow-hidden">
+                <table class="w-full border-collapse text-right text-sm">
+                    <thead>
+                        <tr class="bg-slate-100 border-b border-slate-200 text-slate-700 font-semibold">
+                            <th class="p-4">מזהה</th>
+                            <th class="p-4">שם מחלקה</th>
+                            <th class="p-4">מספר טלפון</th>
+                            <th class="p-4">סטטוס</th>
+                            <th class="p-4 text-center">פעולות</th>
+                        </tr>
+                    </thead>
+                    <tbody id="secretaries-tbody" class="divide-y divide-slate-200">
+                        <!-- Loaded dynamically -->
+                        <tr>
+                            <td colspan="5" class="p-8 text-center text-slate-500 font-medium">טוען נתונים...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <!-- Add/Edit Modal -->
+    <div id="editor-modal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm hidden items-center justify-center p-4 z-50">
+        <div class="bg-white rounded-lg shadow-lg max-w-md w-full overflow-hidden border border-slate-200">
+            <header id="modal-header" class="bg-indigo-600 text-white px-6 py-4 flex justify-between items-center">
+                <h3 id="modal-title" class="font-bold text-lg">הוספת מזכירות חדשה</h3>
+                <button onclick="closeModal()" class="text-white hover:text-slate-200 focus:outline-none">✕</button>
+            </header>
+            <div class="p-6 space-y-4">
+                <input type="hidden" id="editor-id">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">שם מחלקה (למשל: מיון, קרדיולוגיה, כללי)</label>
+                    <input type="text" id="editor-depart" class="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-indigo-500 focus:outline-none" placeholder="הזן שם מחלקה">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">מספר טלפון (כמו שיופיע במערכת)</label>
+                    <input type="text" id="editor-phone" class="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-indigo-500 focus:outline-none" placeholder="הזן מספר טלפון">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">סטטוס פעילות</label>
+                    <select id="editor-status" class="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-indigo-500 focus:outline-none">
+                        <option value="1">פעיל</option>
+                        <option value="0">לא פעיל</option>
+                    </select>
+                </div>
+            </div>
+            <footer class="bg-slate-50 px-6 py-4 flex justify-end gap-3 border-t border-slate-100">
+                <button onclick="closeModal()" class="px-4 py-2 text-slate-600 hover:text-slate-800 font-medium transition">ביטול</button>
+                <button id="modal-save-btn" onclick="saveSecretary()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded font-semibold shadow transition">שמירה</button>
+            </footer>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="bg-white border-t border-slate-200 py-4 text-center text-xs text-slate-400">
+        &copy; 2026 מרכז רפואי צפון. כל הזכויות שמורות.
+    </footer>
+
+    <script>
+        let adminPhone = localStorage.getItem('tzmc_admin_phone') || '';
+
+        function getAdminPhoneFromQuery() {
+            const params = new URLSearchParams(window.location.search);
+            const userQuery = params.get('user');
+            if (userQuery) {
+                adminPhone = userQuery;
+                localStorage.setItem('tzmc_admin_phone', adminPhone);
+            }
+        }
+
+        async function init() {
+            getAdminPhoneFromQuery();
+            if (!adminPhone) {
+                document.getElementById('auth-section').classList.remove('hidden');
+                document.getElementById('dashboard-section').classList.add('hidden');
+                document.getElementById('admin-user-display').textContent = '';
+            } else {
+                document.getElementById('auth-section').classList.add('hidden');
+                document.getElementById('dashboard-section').classList.remove('hidden');
+                document.getElementById('admin-user-display').textContent = 'מנהל: ' + adminPhone;
+                await fetchSecretaries();
+            }
+        }
+
+        function saveAdminPhone() {
+            const phone = document.getElementById('auth-phone-input').value.trim();
+            if (phone) {
+                adminPhone = phone;
+                localStorage.setItem('tzmc_admin_phone', phone);
+                init();
+            }
+        }
+
+        function showAlert(msg, type = 'success') {
+            const box = document.getElementById('alert-box');
+            box.textContent = msg;
+            box.className = 'p-4 rounded-lg text-sm font-medium transition ';
+            if (type === 'success') {
+                box.className += 'bg-emerald-50 text-emerald-800 border border-emerald-200';
+            } else {
+                box.className += 'bg-rose-50 text-rose-800 border border-rose-200';
+            }
+            box.classList.remove('hidden');
+            setTimeout(() => {
+                box.classList.add('hidden');
+            }, 5000);
+        }
+
+        async function fetchSecretaries() {
+            try {
+                const res = await fetch(\`/api/admin/secretaries?user=\${encodeURIComponent(adminPhone)}\`);
+                if (!res.ok) {
+                    if (res.status === 403 || res.status === 401) {
+                        showAlert('שגיאה: אינך מורשה לגשת למסך זה (יש להשתמש במספר מנהל מורשה)', 'error');
+                        localStorage.removeItem('tzmc_admin_phone');
+                        adminPhone = '';
+                        setTimeout(init, 2000);
+                        return;
+                    }
+                    throw new Error('שגיאה בטעינת נתונים');
+                }
+                const data = await res.json();
+                renderSecretaries(data.secretaries || []);
+            } catch (err) {
+                showAlert(err.message, 'error');
+            }
+        }
+
+        function renderSecretaries(list) {
+            const tbody = document.getElementById('secretaries-tbody');
+            if (list.length === 0) {
+                tbody.innerHTML = \`<tr><td colspan="5" class="p-8 text-center text-slate-500">לא נמצאו מזכירויות במערכת. לחץ על 'הוספת מזכירות' כדי להוסיף.</td></tr>\`;
+                return;
+            }
+            tbody.innerHTML = list.map(sec => \\\`
+                <tr class="hover:bg-slate-50 transition">
+                    <td class="p-4 font-mono text-slate-500">\\\\\\\${sec.ID}</td>
+                    <td class="p-4 font-semibold text-slate-800">\\\\\\\${sec.DepartName}</td>
+                    <td class="p-4 font-mono text-indigo-600 font-medium">\\\\\\\${sec.PhoneNumber}</td>
+                    <td class="p-4">
+                        <span class="px-2.5 py-1 text-xs font-semibold rounded-full \\\\\\\${
+                            sec.Status === 1 
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
+                            : 'bg-rose-50 text-rose-700 border border-rose-200'
+                        }">
+                            \\\\\\\${sec.Status === 1 ? 'פעיל' : 'לא פעיל'}
+                        </span>
+                    </td>
+                    <td class="p-4 text-center flex justify-center gap-3">
+                        <button onclick="openEditModal(\\\\\\\${sec.ID}, '\\\\\\\${sec.DepartName}', '\\\\\\\${sec.PhoneNumber}', \\\\\\\${sec.Status})" class="text-indigo-600 hover:text-indigo-900 font-medium hover:underline flex items-center gap-1">
+                            ערוך
+                        </button>
+                        <span class="text-slate-300">|</span>
+                        <button onclick="deleteSecretary(\\\\\\\${sec.ID})" class="text-rose-600 hover:text-rose-900 font-medium hover:underline flex items-center gap-1">
+                            מחק
+                        </button>
+                    </td>
+                </tr>
+            \\\`).join('');
+        }
+
+        function openAddModal() {
+            document.getElementById('editor-id').value = '';
+            document.getElementById('editor-depart').value = '';
+            document.getElementById('editor-phone').value = '';
+            document.getElementById('editor-status').value = '1';
+            document.getElementById('modal-title').textContent = 'הוספת מזכירות חדשה';
+            document.getElementById('editor-modal').classList.remove('hidden');
+            document.getElementById('editor-modal').classList.add('flex');
+        }
+
+        function openEditModal(id, depart, phone, status) {
+            document.getElementById('editor-id').value = id;
+            document.getElementById('editor-depart').value = depart;
+            document.getElementById('editor-phone').value = phone;
+            document.getElementById('editor-status').value = status;
+            document.getElementById('modal-title').textContent = 'עריכת מזכירות #' + id;
+            document.getElementById('editor-modal').classList.remove('hidden');
+            document.getElementById('editor-modal').classList.add('flex');
+        }
+
+        function closeModal() {
+            document.getElementById('editor-modal').classList.remove('flex');
+            document.getElementById('editor-modal').classList.add('hidden');
+        }
+
+        async function saveSecretary() {
+            const id = document.getElementById('editor-id').value;
+            const depart = document.getElementById('editor-depart').value.trim();
+            const phone = document.getElementById('editor-phone').value.trim();
+            const status = document.getElementById('editor-status').value;
+
+            if (!depart || !phone) {
+                alert('נא למלא את כל השדות הדרושים');
+                return;
+            }
+
+            const method = id ? 'PUT' : 'POST';
+            const url = id ? \\\`/api/admin/secretaries/\\\${id}?user=\\\${encodeURIComponent(adminPhone)}\\\` : \\\`/api/admin/secretaries?user=\\\${encodeURIComponent(adminPhone)}\\\`;
+
+            try {
+                const res = await fetch(url, {
+                    method: method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ DepartName: depart, PhoneNumber: phone, Status: Number(status) })
+                });
+                if (!res.ok) throw new Error('שגיאה בשמירת הנתונים');
+                showAlert(id ? 'המזכירות עודכנה בהצלחה!' : 'המזכירות נוספה בהצלחה!');
+                closeModal();
+                fetchSecretaries();
+            } catch (err) {
+                showAlert(err.message, 'error');
+            }
+        }
+
+        async function deleteSecretary(id) {
+            if (!confirm('האם אתה בטוח שברצונך למחוק מזכירות זו?')) return;
+            try {
+                const res = await fetch(\\\`/api/admin/secretaries/\\\${id}?user=\\\${encodeURIComponent(adminPhone)}\\\`, {
+                    method: 'DELETE'
+                });
+                if (!res.ok) throw new Error('שגיאה במחיקת המזכירות');
+                showAlert('המזכירות נמחקה בהצלחה!');
+                fetchSecretaries();
+            } catch (err) {
+                showAlert(err.message, 'error');
+            }
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>`);
+    }
+);
+
+// GET /api/admin/secretaries - list all secretaries
+app.get(
+    ['/api/admin/secretaries', '/notify/api/admin/secretaries'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        try {
+            const secretaries = await mysqlLogsService.listSecretaries();
+            return res.json({ secretaries });
+        } catch (err) {
+            console.error('[ADMIN-SECRETARIES] list error:', err);
+            return res.status(500).json({ error: 'Failed to list secretaries' });
+        }
+    }
+);
+
+// POST /api/admin/secretaries - add a new secretary
+app.post(
+    ['/api/admin/secretaries', '/notify/api/admin/secretaries'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const { DepartName, PhoneNumber, Status } = req.body || {};
+        if (!DepartName || !PhoneNumber) {
+            return res.status(400).json({ error: 'DepartName and PhoneNumber are required.' });
+        }
+        try {
+            const parsedStatus = Status !== undefined ? Number(Status) : 1;
+            const success = await mysqlLogsService.addSecretary(String(DepartName).trim(), String(PhoneNumber).trim(), parsedStatus);
+            return res.json({ success });
+        } catch (err) {
+            console.error('[ADMIN-SECRETARIES] create error:', err);
+            return res.status(500).json({ error: 'Failed to add secretary' });
+        }
+    }
+);
+
+// PUT /api/admin/secretaries/:id - update an existing secretary
+app.put(
+    ['/api/admin/secretaries/:id', '/notify/api/admin/secretaries/:id'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const id = Number(req.params.id);
+        if (isNaN(id)) {
+            return res.status(400).json({ error: 'Invalid ID' });
+        }
+        const { DepartName, PhoneNumber, Status } = req.body || {};
+        if (!DepartName || !PhoneNumber) {
+            return res.status(400).json({ error: 'DepartName and PhoneNumber are required.' });
+        }
+        try {
+            const parsedStatus = Status !== undefined ? Number(Status) : 1;
+            const success = await mysqlLogsService.editSecretary(id, String(DepartName).trim(), String(PhoneNumber).trim(), parsedStatus);
+            return res.json({ success });
+        } catch (err) {
+            console.error('[ADMIN-SECRETARIES] update error:', err);
+            return res.status(500).json({ error: 'Failed to update secretary' });
+        }
+    }
+);
+
+// DELETE /api/admin/secretaries/:id - delete a secretary
+app.delete(
+    ['/api/admin/secretaries/:id', '/notify/api/admin/secretaries/:id'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const id = Number(req.params.id);
+        if (isNaN(id)) {
+            return res.status(400).json({ error: 'Invalid ID' });
+        }
+        try {
+            const success = await mysqlLogsService.deleteSecretary(id);
+            return res.json({ success });
+        } catch (err) {
+            console.error('[ADMIN-SECRETARIES] delete error:', err);
+            return res.status(500).json({ error: 'Failed to delete secretary' });
         }
     }
 );
