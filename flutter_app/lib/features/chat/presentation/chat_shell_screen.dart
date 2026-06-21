@@ -368,9 +368,10 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   }
 
   PreferredSizeWidget _buildAppBar() {
+    final isRestricted = ref.watch(isUserRestrictedProvider);
     return AppBar(
       title: Text(_getTabTitle(_currentTab)),
-      leading: (_currentTab == MainTab.chats || _currentTab == MainTab.groups)
+      leading: (!isRestricted && (_currentTab == MainTab.chats || _currentTab == MainTab.groups))
           ? Padding(
               padding: const EdgeInsetsDirectional.only(start: 4),
               child: Semantics(
@@ -1015,6 +1016,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   }
 
   void _handleNewChat() {
+    final isRestricted = ref.read(isUserRestrictedProvider);
+    if (isRestricted) return;
+
     // Bottom sheet that mirrors the Angular FAB menu: choose between starting
     // a new direct chat (NewChatDialog) or creating a group (CreateGroupDialog).
     final isGroupTab = _currentTab == MainTab.groups;

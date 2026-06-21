@@ -2297,28 +2297,17 @@ export class MysqlLogsService {
         const status = String(userRow.Staus || '').trim();
         const exceptionStatus = String(userRow.ExeptionStatus || '').trim();
 
-        // If restricted user (status = 0 and exceptionStatus = 0), only show their Secretary
+        // If restricted user (status = 0 and exceptionStatus = 0), show all active secretaries
         if (status === '0' && exceptionStatus === '0') {
-          const userDept = String(userRow.ExeptionName || '').trim();
-          let secretary = null;
-          if (userDept) {
-            secretary = await this.getSecretaryByDepartment(userDept);
-          }
-          if (!secretary) {
-            // Fallback: get first active secretary
-            const activeSecs = await this.listActiveSecretaries();
-            if (activeSecs && activeSecs.length > 0) {
-              secretary = activeSecs[0];
-            }
-          }
-          if (secretary) {
-            return [{
-              username: secretary.PhoneNumber,
-              displayName: `מזכירות ${secretary.DepartName}`,
-              fullName: `מזכירות ${secretary.DepartName}`,
+          const activeSecs = await this.listActiveSecretaries();
+          if (activeSecs && activeSecs.length > 0) {
+            return activeSecs.map(sec => ({
+              username: sec.PhoneNumber,
+              displayName: `מזכירות ${sec.DepartName}`,
+              fullName: `מזכירות ${sec.DepartName}`,
               upic: '',
               status: 1
-            }];
+            }));
           }
           return []; // No secretary available
         }

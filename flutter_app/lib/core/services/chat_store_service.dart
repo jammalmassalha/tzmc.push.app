@@ -106,6 +106,7 @@ class ChatState {
   final String? currentChatId;
   final bool isLoading;
   final bool isInitialized;
+  final bool isRestricted;
 
   /// Full-sync progress fields (mirrors Angular store.syncing /
   /// store.syncProgressPercent / store.syncProgressLabel).
@@ -125,6 +126,7 @@ class ChatState {
     this.currentChatId,
     this.isLoading = false,
     this.isInitialized = false,
+    this.isRestricted = false,
     this.isSyncing = false,
     this.syncProgressPercent = 0,
     this.syncProgressLabel = '',
@@ -140,6 +142,7 @@ class ChatState {
     String? currentChatId,
     bool? isLoading,
     bool? isInitialized,
+    bool? isRestricted,
     bool clearCurrentChat = false,
     bool? isSyncing,
     int? syncProgressPercent,
@@ -155,6 +158,7 @@ class ChatState {
       currentChatId: clearCurrentChat ? null : (currentChatId ?? this.currentChatId),
       isLoading: isLoading ?? this.isLoading,
       isInitialized: isInitialized ?? this.isInitialized,
+      isRestricted: isRestricted ?? this.isRestricted,
       isSyncing: isSyncing ?? this.isSyncing,
       syncProgressPercent: syncProgressPercent ?? this.syncProgressPercent,
       syncProgressLabel: syncProgressLabel ?? this.syncProgressLabel,
@@ -165,6 +169,34 @@ class ChatState {
   /// Get all chat list items sorted by last message timestamp
   List<ChatListItem> get chatListItems {
     final items = <ChatListItem>[];
+
+    if (isRestricted) {
+      // Return ALL contacts (the active secretaries returned by getContacts) EVEN if they have no messages!
+      for (final contact in contacts.values) {
+        final messages = messagesByChat[contact.username] ?? [];
+        final lastMessage = messages.isNotEmpty ? messages.first : null;
+        items.add(ChatListItem(
+          id: contact.username,
+          title: contact.displayName,
+          info: contact.info,
+          phone: contact.phone,
+          subtitle: lastMessage != null ? _getMessagePreview(lastMessage) : 'לחץ להתחלת שיחה',
+          lastTimestamp: lastMessage != null ? lastMessage.timestamp : 0,
+          unread: unreadByChat[contact.username] ?? 0,
+          isGroup: false,
+          pinned: false,
+          avatarUrl: contact.upic,
+        ));
+      }
+      // Sort so that those with messages or active chats are at the top, or just alphabetically
+      items.sort((a, b) {
+        if (a.lastTimestamp != b.lastTimestamp) {
+          return b.lastTimestamp.compareTo(a.lastTimestamp);
+        }
+        return a.title.toLowerCase().localeCompare(b.title.toLowerCase());
+      });
+      return items;
+    }
 
     // Add direct contacts with messages
     for (final entry in messagesByChat.entries) {
@@ -297,6 +329,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   void _handleStatusChange(bool isRestricted) {
     ref.read(authStateProvider.notifier).updateUserRestrictedStatus(isRestricted);
+    state = state.copyWith(isRestricted: isRestricted);
   }
 
   // ---------------------------------------------------------------------------
@@ -326,9 +359,16 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // as outgoing (avoids the "see my message twice" bug).
     _currentUser = normalized;
 
-    if (state.isInitialized) return;
+    final isRestricted = ref.read(isUserRestrictedProvider);
 
-    state = state.copyWith(isLoading: true);
+    if (state.isInitialized) {
+      if (state.isRestricted != isRestricted) {
+        state = state.copyWith(isRestricted: isRestricted);
+      }
+      return;
+    }
+
+    state = state.copyWith(isLoading: true, isRestricted: isRestricted);
 
     try {
       final deletedChats = await _readDeletedChats();
