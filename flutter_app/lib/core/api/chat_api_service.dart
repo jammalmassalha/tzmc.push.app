@@ -96,6 +96,35 @@ class ChatApiService {
     }
   }
 
+  /// Get current session info (with isRestricted status)
+  Future<SessionResponse?> getSessionInfo() async {
+    try {
+      final response = await _client.get<Map<String, dynamic>>(
+        ApiEndpoints.session,
+        retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 8)),
+      );
+
+      if (!response.isSuccessful) {
+        _client.clearCsrfToken();
+        return null;
+      }
+
+      final body = SessionResponse.fromJson(response.data ?? {});
+      _client.setCsrfToken(body.csrfToken);
+
+      final user = body.user?.trim().toLowerCase();
+      if (!body.authenticated || (user?.isEmpty ?? true)) {
+        _client.clearCsrfToken();
+        return null;
+      }
+
+      return body;
+    } catch (e) {
+      _client.clearCsrfToken();
+      return null;
+    }
+  }
+
   // NOTE: Direct login (createSession) has been removed because it is disabled on the server.
   // All login flows must use the SMS verification code flow via requestSessionCode() and verifySessionCode().
 
@@ -194,6 +223,55 @@ class ChatApiService {
     }
 
     return sessionUser!;
+  }
+
+  /// Verify SMS code and return full SessionResponse
+  Future<SessionResponse> verifySessionCodeResponse(String user, String code) async {
+    final normalized = user.trim().toLowerCase();
+    final normalizedCode = code.trim();
+
+    if (normalized.isEmpty) {
+      throw AuthException('מספר טלפון לא תקין');
+    }
+    if (!RegExp(r'^\d{6}$').hasMatch(normalizedCode)) {
+      throw AuthException('יש להזין קוד אימות בן 6 ספרות');
+    }
+
+    final response = await _client.post<Map<String, dynamic>>(
+      ApiEndpoints.verifyCode,
+      data: {'user': normalized, 'code': normalizedCode},
+      retryOptions: const RetryOptions(retries: 1, timeout: NetworkTimeouts.sessionTimeout),
+    );
+
+    if (!response.isSuccessful) {
+      final body = response.data;
+      final message = (body?['message'] ?? body?['error'] ?? '').toString().trim();
+
+      if (response.statusCode == 400) {
+        throw AuthException('קוד אימות לא תקין');
+      } else if (response.statusCode == 401) {
+        throw AuthException('קוד האימות שגוי או פג תוקף');
+      } else if (response.statusCode == 403) {
+        throw AuthException('המשתמש אינו מורשה');
+      } else if (response.statusCode == 429) {
+        final retryAfter = body?['retryAfterSeconds'] as int?;
+        throw RateLimitException('יותר מדי ניסיונות. נסה שוב בעוד $retryAfter שניות', retryAfter);
+      } else if (message.isNotEmpty) {
+        throw AuthException(message);
+      }
+      throw AuthException('אימות הקוד נכשל');
+    }
+
+    final body = SessionResponse.fromJson(response.data ?? {});
+    _client.setCsrfToken(body.csrfToken);
+
+    final sessionUser = body.user?.trim().toLowerCase();
+    if (!body.authenticated || (sessionUser?.isEmpty ?? true)) {
+      _client.clearCsrfToken();
+      throw AuthException('אימות הקוד נכשל');
+    }
+
+    return body;
   }
 
   /// Clear session (logout)
