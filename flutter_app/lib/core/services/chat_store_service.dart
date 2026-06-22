@@ -62,6 +62,16 @@ const String kPendingChatUpdatesKey = 'tzmc_pending_chat_updates_v1';
 /// arrive after the stored delete timestamp.
 const String kDeletedChatsKeyPrefix = 'tzmc_deleted_chats_v1';
 
+/// SharedPreferences key tracking which user's data is currently stored in
+/// the local Drift/IndexedDB database.
+///
+/// Written to SharedPreferences immediately after a successful persist and
+/// deleted on logout / clearAll.  Checked in [ChatStoreNotifier.initialize]
+/// so that if a different user logs in (even without an explicit logout – e.g.
+/// after a browser session or app restart), the stale DB is cleared before the
+/// new user's data is loaded.
+const String kDbOwnerKey = 'tzmc_db_user_v1';
+
 // ---------------------------------------------------------------------------
 // Community group seed data (mirrors Angular's SEED_COMMUNITY_GROUPS)
 // ---------------------------------------------------------------------------
@@ -348,6 +358,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // a previous session, wipe everything (in-memory state + persisted DB)
     // before proceeding.  Without this guard the new user would see the old
     // user's contacts and messages until the first server pull completes.
+    //
+    // Two checks are performed:
+    //   1. In-memory _currentUser (catches user change within the same app
+    //      lifecycle, e.g. logout → new login without app restart).
+    //   2. SharedPreferences kDbOwnerKey (catches user change across app
+    //      restarts / browser tab reopens where _currentUser is null but the
+    //      local DB still holds another user's data).
     // -----------------------------------------------------------------------
     if (_currentUser != null && _currentUser!.toLowerCase() != normalized) {
       // Null out _currentUser before clearAll() so any callbacks that fire
@@ -355,6 +372,24 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       _currentUser = null;
       await clearAll(); // resets state (isInitialized → false) and wipes DB
       _lastGapAnalysisTime = 0;
+    } else if (_currentUser == null) {
+      // App restart path: check whether the persisted DB belongs to the same
+      // user that is now authenticated.  If not, wipe before restoring to
+      // prevent showing another user's chat history.
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final storedOwner = prefs.getString(kDbOwnerKey);
+        if (storedOwner != null &&
+            storedOwner.trim().toLowerCase() != normalized) {
+          debugPrint(
+            '[ChatStore] DB owner mismatch (stored: $storedOwner, current: $normalized) – clearing stale data',
+          );
+          await clearAll();
+          _lastGapAnalysisTime = 0;
+        }
+      } catch (_) {
+        // SharedPreferences unavailable; proceed without the owner check.
+      }
     }
 
     // Always keep _currentUser up-to-date so own-message echoes are tagged
@@ -1043,6 +1078,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // DB clear failed (e.g. sqlite3.wasm not available on web).
         // The in-memory state is still cleared in the copyWith below.
       }
+      // Remove the DB-owner record so the empty DB is not mistakenly attributed
+      // to this user; it will be re-set once persistNow() completes below.
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove(kDbOwnerKey);
+      } catch (_) {}
       state = state.copyWith(
         messagesByChat: const {},
         unreadByChat: const {},
@@ -1513,6 +1554,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   void _syncCommunityGroups() {
     final user = _currentUser;
     if (user == null || user.isEmpty) return;
+
+    // Restricted users (status=0, ExeptionStatus≠1) should not see any
+    // community broadcast groups such as 'דוברות' or 'אקרדיטציה'.  Their
+    // chat list is limited to secretary contacts only, and adding community
+    // groups to state would expose those groups and their messages.
+    if (state.isRestricted) return;
 
     final configs = _communityGroupConfigs;
     if (configs.isEmpty) return;
@@ -2630,6 +2677,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   }
 
   void _handleIncomingTextMessage(IncomingServerMessage msg) {
+    // Restricted users (status=0, ExeptionStatus≠1) communicate exclusively
+    // via direct secretary chats.  Silently drop any incoming group message
+    // so that community broadcast groups ('דוברות', 'אקרדיטציה', etc.) and
+    // any other group do not appear in the restricted user's chat list.
+    if (state.isRestricted && msg.groupId != null && msg.groupId!.isNotEmpty) {
+      return;
+    }
+
     final chatMessage = _buildChatMessageFromServer(msg);
     if (chatMessage != null) {
       final isNew = _applyIncomingMessage(chatMessage);
@@ -3083,6 +3138,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         }
       }
       await _writeDeletedChats(user, state.deletedChats);
+
+      // Record that this user's data is now stored in the local DB so that the
+      // next app start can detect a user change and wipe stale data.
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(kDbOwnerKey, user);
+      } catch (_) {
+        // Best-effort; does not affect current session.
+      }
     } catch (_) {
       // Persistence failure is non-fatal – data remains available in memory
       // for the current session and will be retried on the next trigger.
@@ -3159,12 +3223,29 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _currentUser = null;
     _lastGapAnalysisTime = 0;
 
-    await _db.clearAll();
+    // Clear the Drift database. On Flutter web without the sqlite3.wasm /
+    // drift_worker files this call can throw; catching it here ensures
+    // `state = const ChatState()` below always executes so in-memory data is
+    // always wiped even when DB operations fail.
+    try {
+      await _db.clearAll();
+    } catch (dbErr) {
+      debugPrint('[ChatStore] DB clearAll failed (non-fatal): $dbErr');
+    }
     if (kIsWeb && previousUser != null && previousUser.trim().isNotEmpty) {
       await WebChatStorage.clear(previousUser);
     }
     if (previousUser != null && previousUser.trim().isNotEmpty) {
       await _writeDeletedChats(previousUser, const {});
+    }
+
+    // Remove the DB-owner record so the next user is not wrongly denied
+    // their own fresh state load.
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(kDbOwnerKey);
+    } catch (_) {
+      // Best-effort; does not affect correctness of the in-memory wipe below.
     }
 
     // Clear the FCM background-notification pending tray so that stale unread

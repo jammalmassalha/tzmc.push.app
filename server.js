@@ -2284,7 +2284,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         if (subRows && subRows.length > 0) {
             const status = String(subRows[0].Staus || '').trim();
             const exceptionStatus = String(subRows[0].ExeptionStatus || '').trim();
-            const isUserRestricted = status === '0' && (exceptionStatus === '' || exceptionStatus === '0');
+            const isUserRestricted = status === '0' && exceptionStatus !== '1';
             if (isUserRestricted) {
                 isRestricted = true;
                 const userDept = String(subRows[0].ExeptionName || '').trim();
