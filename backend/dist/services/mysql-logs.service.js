@@ -2233,7 +2233,10 @@ class LicenserService {
     phoneColumn;
     constructor(config) {
         this.table = normalizeTableName(config.table);
-        this.phoneColumn = String(config.phoneColumn || 'Phone').replace(/`/g, '');
+        // Validate the column name using the same strict pattern as normalizeTableName
+        // so it is safe to interpolate into the query string.
+        const rawColumn = String(config.phoneColumn || 'Phone').trim();
+        this.phoneColumn = /^[A-Za-z0-9_]+$/.test(rawColumn) ? rawColumn : 'Phone';
         this.pool = promise_1.default.createPool({
             host: config.host,
             port: config.port,

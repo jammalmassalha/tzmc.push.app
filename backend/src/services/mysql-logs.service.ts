@@ -2591,7 +2591,10 @@ export class LicenserService {
 
   constructor(config: LicenserConfig) {
     this.table = normalizeTableName(config.table);
-    this.phoneColumn = String(config.phoneColumn || 'Phone').replace(/`/g, '');
+    // Validate the column name using the same strict pattern as normalizeTableName
+    // so it is safe to interpolate into the query string.
+    const rawColumn = String(config.phoneColumn || 'Phone').trim();
+    this.phoneColumn = /^[A-Za-z0-9_]+$/.test(rawColumn) ? rawColumn : 'Phone';
     this.pool = mysql.createPool({
       host: config.host,
       port: config.port,
