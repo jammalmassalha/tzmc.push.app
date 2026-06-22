@@ -2363,21 +2363,6 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
                     }
                     collectedData.name = messageText;
                     await mysqlLogsService.saveBotSession(user, '3', collectedData);
-                    // Update ExeptionName in DB and Google Sheet with the user's provided name
-                    mysqlLogsService.pool.query(
-                        'UPDATE `Subscribe` SET `ExeptionName` = ? WHERE `User` = ?',
-                        [messageText, user]
-                    ).catch(err => console.error('[SECRETARY CHAT] Failed to update ExeptionName in DB:', err && err.message ? err.message : err));
-                    fetchWithRetry(GOOGLE_SHEET_URL, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            action: 'update_exeption_name',
-                            user,
-                            name: messageText,
-                            token: APP_SERVER_TOKEN
-                        })
-                    }, { timeoutMs: 10000, retries: 2 }).catch(err => console.error('[SECRETARY CHAT] Failed to update ExeptionName in sheet:', err && err.message ? err.message : err));
                     await sendBotMessage(
                         secretary.PhoneNumber,
                         user,
@@ -2416,6 +2401,21 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
                     }
                     collectedData.dob = messageText;
                     await mysqlLogsService.saveBotSession(user, 'completed', collectedData);
+                    // Update ExeptionName in DB and Google Sheet with the user's provided name
+                    mysqlLogsService.pool.query(
+                        'UPDATE `Subscribe` SET `ExeptionName` = ? WHERE `User` = ?',
+                        [collectedData.name, user]
+                    ).catch(err => console.error('[SECRETARY CHAT] Failed to update ExeptionName in DB:', err && err.message ? err.message : err));
+                    fetchWithRetry(GOOGLE_SHEET_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            action: 'update_exeption_name',
+                            user,
+                            name: collectedData.name,
+                            token: APP_SERVER_TOKEN
+                        })
+                    }, { timeoutMs: 10000, retries: 2 }).catch(err => console.error('[SECRETARY CHAT] Failed to update ExeptionName in sheet:', err && err.message ? err.message : err));
 
                     // Send summary to secretary
                     const summaryText = `קבלת פנייה חדשה. להלן הפרטים שנאספו על ידי הבוט:\nת.ז: ${collectedData.id}\nשם מלא: ${collectedData.name}\nמגדר: ${collectedData.gender}\nתאריך לידה: ${collectedData.dob}`;
