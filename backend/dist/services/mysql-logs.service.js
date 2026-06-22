@@ -1941,17 +1941,16 @@ class MysqlLogsService {
                 return { status: 'error', message: 'User not registered', isActive: false };
             }
             const row = rows[0];
-            const status = String(row.Staus || '').trim();
-            const exceptionStatus = String(row.ExeptionStatus || '').trim();
+            // Use ?? so that a numeric 0 from MySQL is preserved as '0' (not coerced to '')
+            const status = String(row.Staus ?? '').trim();
+            const exceptionStatus = String(row.ExeptionStatus ?? '').trim();
             const fullName = String(row.FullName || '').trim();
             if (status === '1' || exceptionStatus === '1') {
                 return { status: 'success', fullName, isActive: true };
             }
-            const isRestricted = status === '0' && exceptionStatus !== '1';
-            if (isRestricted) {
-                return { status: 'success', fullName, isActive: true, isRestricted: true };
-            }
-            return { status: 'error', message: 'User inactive', isActive: false };
+            // Any non-active status (including '0', empty string, or NULL stored from a
+            // numeric-0 cell in the Google Sheet) means the user is restricted, not inactive.
+            return { status: 'success', fullName, isActive: true, isRestricted: true };
         }
         catch (err) {
             const message = String(err.message || '');
@@ -1986,10 +1985,10 @@ class MysqlLogsService {
                     return [];
                 }
                 const userRow = userRows[0];
-                const status = String(userRow.Staus || '').trim();
-                const exceptionStatus = String(userRow.ExeptionStatus || '').trim();
-                // If restricted user (status = 0 and exceptionStatus != 1), show all active secretaries
-                const isRestricted = status === '0' && exceptionStatus !== '1';
+                const status = String(userRow.Staus ?? '').trim();
+                const exceptionStatus = String(userRow.ExeptionStatus ?? '').trim();
+                // If restricted user (status != 1 and exceptionStatus != 1), show all active secretaries
+                const isRestricted = status !== '1' && exceptionStatus !== '1';
                 if (isRestricted) {
                     const activeSecs = await this.listActiveSecretaries();
                     if (activeSecs && activeSecs.length > 0) {
@@ -2015,8 +2014,8 @@ class MysqlLogsService {
                 if (!user || user === 'undefined')
                     return;
                 const nameColF = String(row.FullName || '').trim();
-                const statusColG = String(row.Staus || '').trim();
-                const exceptionStatusColH = String(row.ExeptionStatus || '').trim();
+                const statusColG = String(row.Staus ?? '').trim();
+                const exceptionStatusColH = String(row.ExeptionStatus ?? '').trim();
                 const nameColI = String(row.ExeptionName || '').trim();
                 const upic = String(row.Upic || '').trim();
                 const finalName = nameColF !== '' ? nameColF : nameColI;
