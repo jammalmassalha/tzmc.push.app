@@ -983,7 +983,7 @@ export class ChatApiService {
     return (await response.json()) as UploadResponse;
   }
 
-  async registerDevice(user: string, subscription: PushSubscription | null, action?: string): Promise<void> {
+  async registerDevice(user: string, subscription: PushSubscription | null, action?: string, fullName?: string): Promise<void> {
     const deviceType = this.detectDeviceType();
     const platform = this.detectPlatform();
     const payload: {
@@ -995,6 +995,7 @@ export class ChatApiService {
       subscriptionMobile?: PushSubscription | null;
       platform?: 'iOS' | 'Android' | 'Desktop';
       userAgent?: string;
+      fullName?: string;
     } = {
       username: user.toLowerCase(),
       subscription,
@@ -1003,6 +1004,10 @@ export class ChatApiService {
       platform,
       userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : ''
     };
+
+    if (fullName) {
+      payload.fullName = fullName;
+    }
 
     if (deviceType === 'PC') {
       payload.subscriptionPC = subscription;

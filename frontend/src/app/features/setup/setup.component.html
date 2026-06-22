@@ -21,6 +21,22 @@
 
       <form class="setup-form" [formGroup]="form" (ngSubmit)="submit()">
         <mat-form-field appearance="outline">
+          <mat-label>שם מלא</mat-label>
+          <input
+            matInput
+            type="text"
+            autocomplete="name"
+            formControlName="fullName"
+            placeholder="ישראל ישראלי" />
+          @if (form.controls.fullName.hasError('required') && form.controls.fullName.touched) {
+            <mat-error>יש להזין שם מלא.</mat-error>
+          }
+          @if (form.controls.fullName.hasError('minlength') && form.controls.fullName.touched) {
+            <mat-error>השם קצר מדי.</mat-error>
+          }
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
           <mat-label>מספר נייד</mat-label>
           <input
             matInput

@@ -45,6 +45,7 @@ export class SetupComponent implements OnInit, OnDestroy {
   private readonly dialog = inject(MatDialog);
 
   readonly form = this.fb.nonNullable.group({
+    fullName: ['', [Validators.required, Validators.minLength(2)]],
     phone: ['', [Validators.required, Validators.pattern(/^0\d{9}$/)]]
   });
 
@@ -88,11 +89,12 @@ export class SetupComponent implements OnInit, OnDestroy {
     }
 
     const phone = this.form.controls.phone.value;
+    const fullName = this.form.controls.fullName.value.trim();
     this.submitting.set(true);
     try {
       const normalizedPhone = await this.store.requestUserVerificationCode(phone);
       await this.router.navigate(['/setup/verify'], {
-        queryParams: { phone: normalizedPhone }
+        queryParams: { phone: normalizedPhone, name: fullName }
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'שליחת קוד אימות נכשלה';

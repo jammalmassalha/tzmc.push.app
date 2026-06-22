@@ -1799,6 +1799,8 @@ function doPost(e) {
     // This forces Google Sheets to treat the number as Text and keep the leading zero.
     var formattedUsername = "'" + username;
 
+    var fullName = String(data.fullName || data.name || '').trim();
+
     if (rowIndex > 0) {
       // UPDATE EXISTING ROW
       var range = subscribeSheet.getRange(rowIndex, 1, 1, 5);
@@ -1809,18 +1811,36 @@ function doPost(e) {
         nextMobileJson,
         nextPcJson
       ]]);
+      // Also save name to ExeptionName (column I = 9) if provided
+      if (fullName) {
+        subscribeSheet.getRange(rowIndex, 9).setValue(fullName);
+      }
 
       return createJSON({ 'result': 'success', 'action': 'updated' });
 
     } else {
       // CREATE NEW ROW
-      subscribeSheet.appendRow([
-        timestamp,
-        formattedUsername, // Uses the version with the single quote
-        primaryEndpoint,
-        nextMobileJson,
-        nextPcJson
-      ]);
+      if (fullName) {
+        subscribeSheet.appendRow([
+          timestamp,
+          formattedUsername, // Uses the version with the single quote
+          primaryEndpoint,
+          nextMobileJson,
+          nextPcJson,
+          '',  // F: FullName (empty)
+          '',  // G: Staus (empty)
+          '',  // H: ExeptionStatus (empty)
+          fullName  // I: ExeptionName
+        ]);
+      } else {
+        subscribeSheet.appendRow([
+          timestamp,
+          formattedUsername, // Uses the version with the single quote
+          primaryEndpoint,
+          nextMobileJson,
+          nextPcJson
+        ]);
+      }
       return createJSON({ 'result': 'success', 'action': 'created' });
     }
 

@@ -548,6 +548,19 @@ function registerAuthController(app, deps = {}) {
                     : Promise.resolve(null);
 
                 await syncToSheetTask;
+
+                const fullName = String(payload.fullName || payload.name || '').trim();
+                if (fullName && mysqlLogsService && mysqlLogsService.pool) {
+                    try {
+                        await mysqlLogsService.pool.execute(
+                            'INSERT INTO `Subscribe` (`User`, `ExeptionName`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `ExeptionName` = VALUES(`ExeptionName`)',
+                            [username, fullName]
+                        );
+                    } catch (dbErr) {
+                        console.warn('[REGISTER DEVICE] DB ExeptionName update failed:', dbErr && dbErr.message ? dbErr.message : dbErr);
+                    }
+                }
+
                 return res.json({
                     status: 'success',
                     username,

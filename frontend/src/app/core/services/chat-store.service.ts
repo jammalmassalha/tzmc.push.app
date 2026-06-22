@@ -808,7 +808,7 @@ export class ChatStoreService {
     return this.shouldRequireStandaloneInstallForPush() && !this.isRunningStandaloneApp();
   }
 
-  async ensurePushRegistrationReadyForCurrentUser(options: { promptIfNeeded?: boolean } = {}): Promise<void> {
+  async ensurePushRegistrationReadyForCurrentUser(options: { promptIfNeeded?: boolean; fullName?: string } = {}): Promise<void> {
     const user = this.currentUser();
     if (!user) {
       throw new Error('יש להתחבר מחדש לפני השלמת רישום התראות');
@@ -816,7 +816,8 @@ export class ChatStoreService {
     await this.ensurePushRegistrationHealth(user, {
       forceRegister: true,
       promptIfNeeded: options.promptIfNeeded !== false,
-      requireStandaloneOnMobile: true
+      requireStandaloneOnMobile: true,
+      fullName: options.fullName
     });
   }
 
@@ -7684,6 +7685,7 @@ export class ChatStoreService {
       forceRegister?: boolean;
       promptIfNeeded?: boolean;
       requireStandaloneOnMobile?: boolean;
+      fullName?: string;
     } = {}
   ): Promise<void> {
     const normalizedUser = this.normalizeUser(user);
@@ -7717,7 +7719,8 @@ export class ChatStoreService {
     await this.tryRegisterPush(normalizedUser, {
       force: forceRegister,
       allowPermissionPrompt: options.promptIfNeeded !== false,
-      requireStandaloneOnMobile
+      requireStandaloneOnMobile,
+      fullName: options.fullName
     });
 
     const localAfter = await this.hasValidLocalPushRegistration();
@@ -7783,6 +7786,7 @@ export class ChatStoreService {
       force?: boolean;
       allowPermissionPrompt?: boolean;
       requireStandaloneOnMobile?: boolean;
+      fullName?: string;
     } = {}
   ): Promise<void> => {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
@@ -7799,6 +7803,7 @@ export class ChatStoreService {
 
     const force = Boolean(options.force);
     const allowPermissionPrompt = options.allowPermissionPrompt !== false;
+    const fullName = String(options.fullName || '').trim();
     const now = Date.now();
     if (
       this.pushRegisterInFlight ||
@@ -7862,7 +7867,7 @@ export class ChatStoreService {
         return;
       }
 
-      await this.api.registerDevice(userKey, subscription);
+      await this.api.registerDevice(userKey, subscription, undefined, fullName || undefined);
       this.safeStorageSet(storedEndpointKey, endpoint);
       this.safeStorageSet(storedRegisteredAtKey, String(now));
     } catch {

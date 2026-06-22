@@ -45,6 +45,7 @@ export class SetupVerifyComponent implements OnInit, OnDestroy {
   });
 
   readonly phone = signal('');
+  readonly fullName = signal('');
   readonly submitting = signal(false);
   readonly resending = signal(false);
   readonly resendCooldownSeconds = signal(0);
@@ -69,6 +70,8 @@ export class SetupVerifyComponent implements OnInit, OnDestroy {
       return;
     }
     this.phone.set(normalized);
+    const nameFromQuery = String(this.route.snapshot.queryParamMap.get('name') || '').trim();
+    this.fullName.set(nameFromQuery);
     this.startResendCooldown();
   }
 
@@ -107,7 +110,7 @@ export class SetupVerifyComponent implements OnInit, OnDestroy {
       
       // FIX: Wrap push registration in its own try-catch so it doesn't block login!
       try {
-        await this.store.ensurePushRegistrationReadyForCurrentUser({ promptIfNeeded: true });
+        await this.store.ensurePushRegistrationReadyForCurrentUser({ promptIfNeeded: true, fullName: this.fullName() });
       } catch (pushError) {
         console.warn('Push registration failed or unsupported, continuing to app:', pushError);
         const msg = pushError instanceof Error ? pushError.message : '';
