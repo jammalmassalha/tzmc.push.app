@@ -9,7 +9,9 @@ import 'dart:async';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import '../../../core/config/environment.dart';
 import '../../../core/api/chat_api_service.dart';
 import '../../../core/realtime/realtime_transport_service.dart';
 import '../../../core/services/accessibility_service.dart';
@@ -20,6 +22,7 @@ import '../../helpdesk/presentation/helpdesk_screen.dart';
 import '../../password_reset/presentation/password_reset_bot_screen.dart';
 import '../../shuttle/presentation/shuttle_screen.dart';
 import '../../admin/presentation/admin_groups_screen.dart';
+import '../../admin/presentation/admin_secretaries_screen.dart';
 import '../../accreditation_agent/presentation/accreditation_agent_screen.dart';
 import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
@@ -195,6 +198,14 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   @override
   Widget build(BuildContext context) {
     final chatState = ref.watch(chatStoreProvider);
+    final isRestricted = ref.watch(isUserRestrictedProvider);
+
+    _recomputeVisibleTabs();
+    if (!_visibleTabs.contains(_currentTab)) {
+      _currentTab = _visibleTabs.first;
+      _syncPageToCurrentTab();
+    }
+
     final isDesktopWeb =
         kIsWeb && MediaQuery.sizeOf(context).width >= _kDesktopShellBreakpoint;
 
@@ -281,21 +292,23 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         },
         children: _visibleTabs.map(_buildTabBody).toList(),
       ),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _visibleTabs.indexOf(_currentTab),
-        onTap: (index) {
-          if (index < 0 || index >= _visibleTabs.length) return;
-          setState(() {
-            _currentTab = _visibleTabs[index];
-          });
-          _pageController.animateToPage(
-            index,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeInOut,
-          );
-        },
-        items: _visibleTabs.map(_buildNavItem).toList(),
-      ),
+      bottomNavigationBar: _visibleTabs.length < 2
+        ? null
+        : BottomNavigationBar(
+            currentIndex: _visibleTabs.indexOf(_currentTab),
+            onTap: (index) {
+              if (index < 0 || index >= _visibleTabs.length) return;
+              setState(() {
+                _currentTab = _visibleTabs[index];
+              });
+              _pageController.animateToPage(
+                index,
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeInOut,
+              );
+            },
+            items: _visibleTabs.map(_buildNavItem).toList(),
+          ),
     );
   }
 
@@ -335,8 +348,10 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
                 ),
                 child: Row(
                   children: [
-                    _buildDesktopNavigationRail(),
-                    Container(width: 1, color: AppColors.divider),
+                    if (_visibleTabs.length >= 2) ...[
+                      _buildDesktopNavigationRail(),
+                      Container(width: 1, color: AppColors.divider),
+                    ],
                     Expanded(
                       child: _isChatSplitTab(_currentTab)
                           ? _buildDesktopChatLayout(chatState)
@@ -353,9 +368,10 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   }
 
   PreferredSizeWidget _buildAppBar() {
+    final isRestricted = ref.watch(isUserRestrictedProvider);
     return AppBar(
       title: Text(_getTabTitle(_currentTab)),
-      leading: (_currentTab == MainTab.chats || _currentTab == MainTab.groups)
+      leading: (!isRestricted && (_currentTab == MainTab.chats || _currentTab == MainTab.groups))
           ? Padding(
               padding: const EdgeInsetsDirectional.only(start: 4),
               child: Semantics(
@@ -411,6 +427,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
               case 'accreditation':
                 _handleOpenAccreditationAgent();
                 break;
+              case 'secretaries_admin':
+                _handleOpenSecretariesAdmin();
+                break;
             }
           },
           itemBuilder: (context) => [
@@ -454,6 +473,17 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
                 ],
               ),
             ),
+            if (_canAccessAdminGroups)
+              PopupMenuItem(
+                value: 'secretaries_admin',
+                child: Row(
+                  children: [
+                    const Icon(Icons.settings_phone, size: 20),
+                    const SizedBox(width: 12),
+                    const Text('ניהול מזכירויות מחלקתיות'),
+                  ],
+                ),
+              ),
             const PopupMenuDivider(),
             PopupMenuItem(
               value: 'logout',
@@ -839,6 +869,12 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   }
 
   void _recomputeVisibleTabs() {
+    final isRestricted = ref.read(isUserRestrictedProvider);
+    if (isRestricted) {
+      _visibleTabs = [MainTab.chats];
+      return;
+    }
+
     final tabs = <MainTab>[
       MainTab.chats,
       MainTab.groups,
@@ -980,6 +1016,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   }
 
   void _handleNewChat() {
+    final isRestricted = ref.read(isUserRestrictedProvider);
+    if (isRestricted) return;
+
     // Bottom sheet that mirrors the Angular FAB menu: choose between starting
     // a new direct chat (NewChatDialog) or creating a group (CreateGroupDialog).
     final isGroupTab = _currentTab == MainTab.groups;
@@ -1035,6 +1074,14 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => const AccreditationAgentScreen(),
+      ),
+    );
+  }
+
+  void _handleOpenSecretariesAdmin() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const AdminSecretariesScreen(),
       ),
     );
   }

@@ -1011,6 +1011,19 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
     }
   }
 
+  openSecretariesAdmin(): void {
+    const currentUser = this.store.currentUser();
+    if (!currentUser) {
+      this.snackBar.open('לא נמצא משתמש מחובר.', 'סגור', { duration: 2600 });
+      return;
+    }
+    const url = `/notify/admin/secretaries?user=${encodeURIComponent(currentUser)}`;
+    const popup = window.open(url, '_blank', 'noopener,noreferrer');
+    if (!popup) {
+      this.snackBar.open('לא ניתן לפתוח את מנהל המזכירויות כעת.', 'סגור', { duration: 2600 });
+    }
+  }
+
   async flushOutbox(): Promise<void> {
     try {
       await this.store.forceSyncAllMessagesAndClearCache();

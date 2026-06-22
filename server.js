@@ -14,6 +14,7 @@ const fs = require('fs');
 const fsPromises = fs.promises;
 const cors = require('cors');
 const crypto = require('crypto');
+const rateLimit = require('express-rate-limit');
 const { Server: SocketIOServer } = require('socket.io');
 const { Worker } = require('node:worker_threads');
 const { createAuthorizedUserMiddleware } = require('./backend/middleware/authorized-user.middleware');
@@ -2204,6 +2205,43 @@ function emitTypingSignalToRecipients(payload = {}, senderUser = '') {
     return { status: 'success', deliveredTo: recipients.length };
 }
 
+async function sendBotMessage(fromUser, toUser, bodyText, fromName) {
+    const botMessageId = generateMessageId();
+    const pollingMessage = {
+        messageId: botMessageId,
+        sender: fromUser,
+        body: bodyText,
+        timestamp: Date.now(),
+        imageUrl: null,
+        fileUrl: null,
+        groupId: null,
+        groupName: null,
+        groupSenderName: fromName
+    };
+    await logNotificationStatus(
+        fromUser,
+        toUser,
+        bodyText,
+        'Sent',
+        '',
+        '',
+        botMessageId,
+        '',
+        '',
+        { groupSenderName: fromName }
+    );
+    await addToQueue([toUser], pollingMessage);
+    const notificationData = {
+        messageId: botMessageId,
+        title: fromName,
+        body: {
+            shortText: bodyText,
+            longText: bodyText
+        }
+    };
+    await sendPushNotificationToUser([toUser], notificationData, fromUser, { messageId: botMessageId });
+}
+
 async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
     const {
         reply,
@@ -2234,6 +2272,179 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
     if (!user) {
         throw createHttpError(400, 'Missing user');
     }
+
+    // ─── Restricted User / Secretary Chat Interception ───
+    let isRestricted = false;
+    let secretary = null;
+    try {
+        const [subRows] = await mysqlLogsService.pool.query(
+            'SELECT `Staus`, `ExeptionStatus`, `ExeptionName` FROM `Subscribe` WHERE `User` = ?',
+            [user]
+        );
+        if (subRows && subRows.length > 0) {
+            const status = String(subRows[0].Staus || '').trim();
+            const exceptionStatus = String(subRows[0].ExeptionStatus || '').trim();
+            const isUserRestricted = status === '0' && (exceptionStatus === '' || exceptionStatus === '0');
+            if (isUserRestricted) {
+                isRestricted = true;
+                const userDept = String(subRows[0].ExeptionName || '').trim();
+                if (userDept) {
+                    secretary = await mysqlLogsService.getSecretaryByDepartment(userDept);
+                }
+                if (!secretary) {
+                    const activeSecs = await mysqlLogsService.listActiveSecretaries();
+                    if (activeSecs && activeSecs.length > 0) {
+                        secretary = activeSecs[0];
+                    }
+                }
+            }
+        }
+    } catch (err) {
+        console.error('[SECRETARY CHAT] Error querying restricted status:', err);
+    }
+
+    if (isRestricted) {
+        if (!secretary) {
+            console.error(`[SECRETARY CHAT] Restricted user ${user} has no secretary configured!`);
+            throw createHttpError(403, 'No secretary configured for your department.');
+        }
+
+        // Force originalSender / targetToNotify to be the secretary
+        rawPayload.originalSender = secretary.PhoneNumber;
+
+        // Check bot session
+        try {
+            let botSession = await mysqlLogsService.getBotSession(user);
+            const currentStep = botSession ? String(botSession.step).trim() : '';
+            const collectedData = botSession && botSession.collectedData ? botSession.collectedData : {};
+
+            if (currentStep !== 'completed') {
+                const messageText = String(reply || '').trim();
+                const secName = `מזכירות ${secretary.DepartName}`;
+
+                if (!currentStep) {
+                    // First time, start bot session
+                    await mysqlLogsService.saveBotSession(user, '1', {});
+                    await sendBotMessage(
+                        secretary.PhoneNumber,
+                        user,
+                        "שלום! לפני שנתחיל בשיחה עם המזכירות, נשמח אם תענה על מספר שאלות קצרות לזיהוי. אנא הזן תעודת זהות:",
+                        secName
+                    );
+                    return { status: 'success', details: { success: 1, failed: 0 } };
+                } else if (currentStep === '1') {
+                    if (!messageText) {
+                        await sendBotMessage(
+                            secretary.PhoneNumber,
+                            user,
+                            "אנא הזן תעודת זהות תקינה:",
+                            secName
+                        );
+                        return { status: 'success', details: { success: 1, failed: 0 } };
+                    }
+                    collectedData.id = messageText;
+                    await mysqlLogsService.saveBotSession(user, '2', collectedData);
+                    await sendBotMessage(
+                        secretary.PhoneNumber,
+                        user,
+                        "תודה. אנא הזן שם מלא:",
+                        secName
+                    );
+                    return { status: 'success', details: { success: 1, failed: 0 } };
+                } else if (currentStep === '2') {
+                    if (!messageText) {
+                        await sendBotMessage(
+                            secretary.PhoneNumber,
+                            user,
+                            "אנא הזן שם מלא תקין:",
+                            secName
+                        );
+                        return { status: 'success', details: { success: 1, failed: 0 } };
+                    }
+                    collectedData.name = messageText;
+                    await mysqlLogsService.saveBotSession(user, '3', collectedData);
+                    await sendBotMessage(
+                        secretary.PhoneNumber,
+                        user,
+                        "תודה. אנא הזן מיקום/מחלקה:",
+                        secName
+                    );
+                    return { status: 'success', details: { success: 1, failed: 0 } };
+                } else if (currentStep === '3') {
+                    if (!messageText) {
+                        await sendBotMessage(
+                            secretary.PhoneNumber,
+                            user,
+                            "אנא הזן מיקום/מחלקה תקינים:",
+                            secName
+                        );
+                        return { status: 'success', details: { success: 1, failed: 0 } };
+                    }
+                    collectedData.location = messageText;
+                    await mysqlLogsService.saveBotSession(user, '4', collectedData);
+                    await sendBotMessage(
+                        secretary.PhoneNumber,
+                        user,
+                        "תודה. אנא הזן מגדר (זכר/נקבה):",
+                        secName
+                    );
+                    return { status: 'success', details: { success: 1, failed: 0 } };
+                } else if (currentStep === '4') {
+                    if (!messageText) {
+                        await sendBotMessage(
+                            secretary.PhoneNumber,
+                            user,
+                            "אנא הזן מגדר (זכר/נקבה) תקין:",
+                            secName
+                        );
+                        return { status: 'success', details: { success: 1, failed: 0 } };
+                    }
+                    collectedData.gender = messageText;
+                    await mysqlLogsService.saveBotSession(user, '5', collectedData);
+                    await sendBotMessage(
+                        secretary.PhoneNumber,
+                        user,
+                        "תודה. אנא הזן תאריך לידה (יום.חודש.שנה):",
+                        secName
+                    );
+                    return { status: 'success', details: { success: 1, failed: 0 } };
+                } else if (currentStep === '5') {
+                    if (!messageText) {
+                        await sendBotMessage(
+                            secretary.PhoneNumber,
+                            user,
+                            "אנא הזן תאריך לידה תקין (יום.חודש.שנה):",
+                            secName
+                        );
+                        return { status: 'success', details: { success: 1, failed: 0 } };
+                    }
+                    collectedData.dob = messageText;
+                    await mysqlLogsService.saveBotSession(user, 'completed', collectedData);
+
+                    // Send summary to secretary
+                    const summaryText = `קבלת פנייה חדשה ממשתמש חסום. להלן הפרטים שנאספו על ידי הבוט:\nת.ז: ${collectedData.id}\nשם מלא: ${collectedData.name}\nמיקום: ${collectedData.location}\nמגדר: ${collectedData.gender}\nתאריך לידה: ${collectedData.dob}`;
+                    await sendBotMessage(
+                        user,
+                        secretary.PhoneNumber,
+                        summaryText,
+                        senderName || user
+                    );
+
+                    // Send confirmation to user
+                    await sendBotMessage(
+                        secretary.PhoneNumber,
+                        user,
+                        "תודה רבה! הפרטים שלך הועברו למזכירות המחלקה. כעת תוכל לשוחח איתנו בחופשיות, לשלוח קבצים או תמונות.",
+                        secName
+                    );
+                    return { status: 'success', details: { success: 1, failed: 0 } };
+                }
+            }
+        } catch (botErr) {
+            console.error('[SECRETARY CHAT] Error in bot state machine:', botErr);
+        }
+    }
+
     const messageId = String(clientMessageId || generateMessageId()).trim() || generateMessageId();
     console.log(`[REPLY] From: ${user} | To: ${originalSender}`);
 
@@ -3012,20 +3223,16 @@ async function ensureRequestedUserCanAuthenticate(requestedUser) {
     if (!AUTH_SESSION_REQUIRE_CONTACT_VERIFICATION) {
         return { ok: true, status: 200, message: '' };
     }
-    const response = await fetchWithRetry(
-        buildGoogleSheetGetUrl({ action: 'get_contacts', user: requestedUser }),
-        {},
-        { timeoutMs: 10000, retries: 1, backoffMs: 500 }
-    );
-    if (!response.ok) {
+    try {
+        const users = await mysqlLogsService.getContacts(requestedUser);
+        if (!users || !users.length) {
+            return { ok: false, status: 403, message: 'Unauthorized user' };
+        }
+        return { ok: true, status: 200, message: '' };
+    } catch (error) {
+        console.error('[AUTH] ensureRequestedUserCanAuthenticate error:', error);
         return { ok: false, status: 502, message: 'Unable to verify user' };
     }
-    const contactsPayload = await response.json();
-    const users = Array.isArray(contactsPayload && contactsPayload.users) ? contactsPayload.users : [];
-    if (!users.length) {
-        return { ok: false, status: 403, message: 'Unauthorized user' };
-    }
-    return { ok: true, status: 200, message: '' };
 }
 
 function ensureRegistrationFlowOnly(req, requestedUser) {
@@ -3053,15 +3260,7 @@ async function ensureRequestedUserIsRegistered(requestedUser) {
         return { ok: true, status: 200, message: '' };
     }
     try {
-        const response = await fetchWithRetry(
-            buildGoogleSheetGetUrl({ action: 'check_auth', user: normalizedUser }),
-            {},
-            { timeoutMs: 10000, retries: 1, backoffMs: 500 }
-        );
-        if (!response.ok) {
-            return { ok: false, status: 502, message: 'Unable to verify registered user' };
-        }
-        const payload = await response.json();
+        const payload = await mysqlLogsService.checkAuth(normalizedUser);
         const status = String(payload && payload.status ? payload.status : '').trim().toLowerCase();
         const isActive = payload && Object.prototype.hasOwnProperty.call(payload, 'isActive')
             ? Boolean(payload.isActive)
@@ -3088,16 +3287,9 @@ async function lookupUserByWindowsUsername(windowsUser) {
     const normalized = String(windowsUser || '').trim();
     if (!normalized) return null;
     try {
-        const response = await fetchWithRetry(
-            buildGoogleSheetGetUrl({ action: 'get_windows_user', windowsUser: normalized }),
-            {},
-            { timeoutMs: 12000, retries: 1, backoffMs: 500 }
-        );
-        if (!response.ok) return null;
-        const payload = await response.json();
-        const result = String(payload && payload.result ? payload.result : '').trim().toLowerCase();
-        if (result === 'success' && payload.user) {
-            return { user: String(payload.user).trim() };
+        const payload = await mysqlLogsService.lookupUserByWindowsUsername(normalized);
+        if (payload && payload.user) {
+            return { user: payload.user };
         }
         return null;
     } catch (error) {
@@ -3134,15 +3326,10 @@ function extractUsernamesFromContactsResponse(payload = {}) {
 async function fetchContactUsernamesForUser(userKey) {
     if (!userKey) return [];
     try {
-        const response = await fetchWithRetry(
-            buildGoogleSheetGetUrl({ action: 'get_contacts', user: userKey }),
-            {},
-            { timeoutMs: 10000, retries: 1, backoffMs: 500 }
-        );
-        if (!response.ok) return [];
-        const payload = await response.json();
-        return extractUsernamesFromContactsResponse(payload);
+        const users = await mysqlLogsService.getContacts(userKey);
+        return users.map(u => u.username);
     } catch (error) {
+        console.error('[CONTACTS] fetchContactUsernamesForUser error:', error);
         return [];
     }
 }
@@ -3256,14 +3443,11 @@ async function refreshShuttleReminderKnownUsers(options = {}) {
         shuttleReminderKnownUsersCache.users.forEach((userKey) => addUserToSet(users, userKey));
     } else {
         const discoveredFromSheet = new Set();
-        const sheetUrls = [
-            buildGoogleSheetGetUrl({ usernames: 'all' }),
-            buildGoogleSheetGetUrl({ action: 'get_all_subscriptions' }),
-            buildGoogleSheetGetUrl({ action: 'get_subscriptions' })
-        ];
-        for (const url of sheetUrls) {
-            const subscriptions = await fetchSubscriptionsFromSheetUrl(url);
+        try {
+            const subscriptions = await mysqlLogsService.loadSubscriptions();
             collectShuttleReminderUsersFromSubscriptions(subscriptions, discoveredFromSheet);
+        } catch (error) {
+            console.warn('[DB-SUBSCRIPTIONS] Failed to refresh shuttle reminder known users from DB:', error.message);
         }
         shuttleReminderKnownUsersCache.at = now;
         shuttleReminderKnownUsersCache.users = Array.from(discoveredFromSheet)
@@ -3495,16 +3679,13 @@ async function getAllSubscriptionsForAuthRefresh(options = {}) {
     const requestedUsers = parseUsernamesInput(options.usernames);
     requestedUsers.forEach((userKey) => addUserToSet(discoveredUsers, userKey));
 
-    const sheetUrls = [
-        buildGoogleSheetGetUrl({ usernames: 'all' }),
-        buildGoogleSheetGetUrl({ action: 'get_all_subscriptions' }),
-        buildGoogleSheetGetUrl({ action: 'get_subscriptions' })
-    ];
-    for (const url of sheetUrls) {
-        const fromSheet = await fetchSubscriptionsFromSheetUrl(url);
-        if (fromSheet.length) {
-            collected.push(...fromSheet);
+    try {
+        const fromDb = await mysqlLogsService.loadSubscriptions();
+        if (fromDb && fromDb.length) {
+            collected.push(...fromDb);
         }
+    } catch (error) {
+        console.warn('[DB-SUBSCRIPTIONS] Failed to load subscriptions from DB for auth refresh:', error.message);
     }
 
     for (const cacheEntry of subscriptionCache.values()) {
@@ -5139,131 +5320,38 @@ async function getSubscriptionFromSheet(usernames, options = {}) {
         new Set(parseUsernamesInput(requestUserList).map(normalizeUserKey).filter(Boolean))
     );
     const requestedAliasToCanonical = buildUserAliasLookupMap(requestedUsers);
-    const singleRequestedUser = requestedUsers.length === 1 ? requestedUsers[0] : '';
     if (!requestedUsers.length) {
         return cached ? cached.subscriptions : [];
     }
-    const normalizeLookupSubscriptions = (payload) => {
-        const extracted = extractSubscriptionsFromSheetResponse(payload);
-        if (!extracted.length) return [];
+
+    try {
+        const subscriptions = await mysqlLogsService.loadSubscriptions(requestedUsers);
+        
+        // Remap to canonical user just in case
         const matched = [];
-        const unknownWithoutUser = [];
-        extracted.forEach((subscription) => {
-            const rawUser = normalizeUserKey(subscription && (subscription.username || subscription.user));
+        subscriptions.forEach((sub) => {
+            const rawUser = normalizeUserKey(sub.username || sub.user);
             const canonicalUser = resolveCanonicalUserFromLookup(
                 rawUser,
                 requestedAliasToCanonical
             );
             if (canonicalUser) {
                 matched.push({
-                    ...subscription,
+                    ...sub,
                     username: canonicalUser
                 });
-                return;
+            } else {
+                matched.push(sub);
             }
-            // If payload provides a user that does not match requested users, never remap it.
-            if (rawUser) {
-                return;
-            }
-            if (!singleRequestedUser) {
-                return;
-            }
-            unknownWithoutUser.push({
-                ...subscription,
-                username: singleRequestedUser
-            });
         });
+
         if (matched.length) {
+            subscriptionCache.set(cacheKey, { at: now, subscriptions: matched });
             return matched;
-        }
-        // Only allow tiny user-less fallbacks; large sets likely indicate unfiltered sheet response.
-        if (unknownWithoutUser.length > 0 && unknownWithoutUser.length <= UNKNOWN_USER_FALLBACK_MAX_ENDPOINTS) {
-            return unknownWithoutUser;
-        }
-        return [];
-    };
-    const fetchLookupBatchSubscriptions = async (batchUsers = []) => {
-        const normalizedBatch = Array.from(new Set(
-            (Array.isArray(batchUsers) ? batchUsers : [])
-                .map(normalizeUserKey)
-                .filter(Boolean)
-        ));
-        if (!normalizedBatch.length) {
-            return [];
-        }
-        const csvUsers = normalizedBatch.join(',');
-        const candidateUrls = [
-            buildGoogleSheetGetUrl({ usernames: csvUsers }),
-            buildGoogleSheetGetUrl({ action: 'get_subscriptions', usernames: csvUsers })
-        ];
-        if (normalizedBatch.length === 1) {
-            candidateUrls.push(buildGoogleSheetGetUrl({ action: 'get_subscriptions', username: normalizedBatch[0] }));
-        }
-
-        for (const url of candidateUrls) {
-            try {
-                const response = await fetchWithRetry(
-                    url,
-                    {},
-                    { timeoutMs: 12000, retries: 2, backoffMs: 500 }
-                );
-                if (!response.ok) {
-                    continue;
-                }
-                const result = await response.json();
-                const subscriptions = normalizeLookupSubscriptions(result);
-                if (subscriptions.length) {
-                    return subscriptions;
-                }
-            } catch (_error) {
-                // Continue with next variant; some Apps Script deployments only support one shape.
-            }
-        }
-
-        // Last fallback: request each user explicitly via action=get_subscriptions&username=<user>.
-        const collected = [];
-        for (const userKey of normalizedBatch) {
-            try {
-                const response = await fetchWithRetry(
-                    buildGoogleSheetGetUrl({ action: 'get_subscriptions', username: userKey }),
-                    {},
-                    { timeoutMs: 12000, retries: 2, backoffMs: 500 }
-                );
-                if (!response.ok) {
-                    continue;
-                }
-                const result = await response.json();
-                collected.push(...normalizeLookupSubscriptions(result));
-            } catch (_error) {
-                // Keep lookup resilient and continue trying remaining users.
-            }
-        }
-        return dedupeSubscriptionsByEndpoint(collected);
-    };
-
-    try {
-        let subscriptions = [];
-        if (requestedUsers.length <= SUBSCRIPTION_LOOKUP_BATCH_SIZE) {
-            subscriptions = await fetchLookupBatchSubscriptions(requestedUsers);
-        } else {
-            const collected = [];
-            for (let i = 0; i < requestedUsers.length; i += SUBSCRIPTION_LOOKUP_BATCH_SIZE) {
-                const batch = requestedUsers.slice(i, i + SUBSCRIPTION_LOOKUP_BATCH_SIZE);
-                if (!batch.length) continue;
-                const batchSubscriptions = await fetchLookupBatchSubscriptions(batch);
-                if (batchSubscriptions.length) {
-                    collected.push(...batchSubscriptions);
-                }
-            }
-            subscriptions = dedupeSubscriptionsByEndpoint(collected);
-        }
-        if (subscriptions.length) {
-            subscriptionCache.set(cacheKey, { at: now, subscriptions });
-            return subscriptions;
         }
         return cached ? cached.subscriptions : [];
     } catch (error) {
-        console.error('Network Error fetching from Google Sheet:', error);
+        console.error('Database Error loading subscriptions:', error);
         return cached ? cached.subscriptions : [];
     }
 }
@@ -5371,6 +5459,16 @@ io.on('connection', (socket) => {
     addWebsocketClient(socketUser, socket);
     socket.emit('chat:connected', { user: socketUser, ts: Date.now() });
 
+    // Immediately check if the connected user is restricted and notify them
+    if (mysqlLogsService) {
+        mysqlLogsService.checkAuth(socketUser).then((authResult) => {
+            const isRestricted = authResult && authResult.isRestricted === true;
+            socket.emit('user:status_updated', { isRestricted });
+        }).catch((err) => {
+            console.error('[SOCKET] Error checking status for connected user:', socketUser, err);
+        });
+    }
+
     socket.on('chat:reply', async (payload = {}, ack) => {
         const replyAck = typeof ack === 'function' ? ack : () => undefined;
         try {
@@ -5454,7 +5552,8 @@ registerAuthController(app, {
     requireAuthorizedUser,
     APP_SERVER_TOKEN,
     BADGE_RESET_ALL_ALLOWED_USERS,
-    lookupUserByWindowsUsername
+    lookupUserByWindowsUsername,
+    mysqlLogsService
 });
 
 // --- CLIENT TELEMETRY ---
@@ -5965,22 +6064,11 @@ app.post(['/verify-status', '/notify/verify-status'], async (req, res) => {
 
     console.log(`[Verify] Checking status for user: ${username}...`);
 
-    // --- FIX: Use the variable 'GOOGLE_SHEET_URL' declared at the top of server.js ---
-    const scriptUrl = buildGoogleSheetGetUrl({ action: 'get_contacts', user: username });
     try {
-        
-        
-        const sheetResponse = await fetchWithRetry(scriptUrl, {}, { timeoutMs: 10000, retries: 2 });
-        
-        // Safety check: Ensure we got a valid JSON response from Google
-        if (!sheetResponse.ok) {
-            throw new Error(`Google Sheet returned ${sheetResponse.status} ${sheetResponse.statusText}`);
-        }
-
-        const sheetData = await sheetResponse.json();
+        const users = await mysqlLogsService.getContacts(username);
 
         // Logic: If users array is empty, it means Access Denied (Status 0 or Not Found)
-        if (!sheetData.users || sheetData.users.length === 0) {
+        if (!users || users.length === 0) {
             console.log(`[Verify] User ${username} is BLOCKED (Status 0). Sending Push...`);
 
             const notificationPayload = JSON.stringify({
@@ -6006,7 +6094,7 @@ app.post(['/verify-status', '/notify/verify-status'], async (req, res) => {
 
     } catch (error) {
         console.error('[Verify] Error:', error); // Check your terminal to see the specific error
-        res.status(500).json({ error: scriptUrl });
+        res.status(500).json({ error: error.message });
     }
 });
 // ======================================================
@@ -6604,6 +6692,476 @@ app.delete(
     }
 );
 
+// --- Admin: Secretaries Management ---
+const adminSecretariesRateLimitStore = new Map();
+
+// Serve the admin Secretaries dashboard
+app.get(
+    ['/admin/secretaries', '/notify/admin/secretaries'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).send(`
+            <html lang="he" dir="rtl">
+            <head>
+                <meta charset="UTF-8">
+                <title>שגיאת הזדהות</title>
+                <script src="https://cdn.tailwindcss.com"></script>
+                <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@300;400;500;700&display=swap" rel="stylesheet">
+            </head>
+            <body class="bg-slate-50 min-h-screen text-slate-800 flex items-center justify-center font-['Rubik']">
+                <div class="max-w-md mx-auto bg-white rounded-lg shadow-md p-6 border border-slate-200 text-center">
+                    <h1 class="text-xl font-bold mb-4 text-rose-600">שגיאה: פג תוקף החיבור או שאינך מחובר</h1>
+                    <p class="text-sm text-slate-600 mb-4">נא להתחבר מחדש מתוך האפליקציה.</p>
+                </div>
+            </body>
+            </html>
+        `)
+    }),
+    (req, res, next) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).send(`
+                <html lang="he" dir="rtl">
+                <head>
+                    <meta charset="UTF-8">
+                    <title>שגיאת הרשאה</title>
+                    <script src="https://cdn.tailwindcss.com"></script>
+                    <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@300;400;500;700&display=swap" rel="stylesheet">
+                </head>
+                <body class="bg-slate-50 min-h-screen text-slate-800 flex items-center justify-center font-['Rubik']">
+                    <div class="max-w-md mx-auto bg-white rounded-lg shadow-md p-6 border border-slate-200 text-center">
+                        <h1 class="text-xl font-bold mb-4 text-rose-600">שגיאה: אין הרשאת מנהל</h1>
+                        <p class="text-sm text-slate-600 mb-4">מסך זה מיועד למנהלי מערכת מורשים בלבד.</p>
+                    </div>
+                </body>
+                </html>
+            `);
+        }
+        const rateCheck = consumeRateLimitEntry(adminSecretariesRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).send(`<h1>Too many requests. Retry after ${rateCheck.retryAfterSeconds}s</h1>`);
+        }
+        next();
+    },
+    (req, res) => {
+        res.send(`<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ניהול מזכירויות מחלקתיות</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Rubik', sans-serif; }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen text-slate-800 flex flex-col">
+    <!-- Header -->
+    <header class="bg-gradient-to-r from-blue-600 to-indigo-700 text-white shadow-md p-4">
+        <div class="max-w-6xl mx-auto flex justify-between items-center">
+            <h1 class="text-2xl font-bold tracking-wide">ניהול מזכירויות מחלקתיות - מרכז רפואי צפון</h1>
+            <div id="admin-user-display" class="bg-white/15 px-3 py-1.5 rounded text-sm font-medium"></div>
+        </div>
+    </header>
+
+    <!-- Content -->
+    <main class="flex-grow max-w-6xl mx-auto w-full p-4 md:p-6 space-y-6">
+        <!-- Auth prompt -->
+        <div id="auth-section" class="hidden max-w-md mx-auto bg-white rounded-lg shadow-md p-6 border border-slate-200 mt-10">
+            <h2 class="text-xl font-bold mb-4 text-center text-indigo-700">הזדהות מנהל מערכת</h2>
+            <p class="text-sm text-slate-600 mb-4 text-center">אנא הזן את מספר הטלפון המורשה שלך כדי לנהל את המזכירויות:</p>
+            <div class="space-y-4">
+                <input type="text" id="auth-phone-input" class="w-full px-4 py-2 border rounded border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-center" placeholder="לדוגמה: 0546799693" dir="ltr">
+                <button onclick="saveAdminPhone()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 rounded transition shadow">התחברות</button>
+            </div>
+        </div>
+
+        <!-- Dashboard Section -->
+        <div id="dashboard-section" class="space-y-6">
+            <!-- Add & Alert panel -->
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-4 rounded-lg shadow-sm border border-slate-200">
+                <div>
+                    <h2 class="text-lg font-bold text-slate-800">רשימת מזכירויות פעילות</h2>
+                    <p class="text-xs text-slate-500">הוסף, ערוך או מחק את הגדרות המזכירויות לניתוב פניות משתמשים חסומים</p>
+                </div>
+                <button onclick="openAddModal()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded shadow transition flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                    </svg>
+                    הוספת מזכירות
+                </button>
+            </div>
+
+            <!-- Error / Success Alert -->
+            <div id="alert-box" class="hidden p-4 rounded-lg text-sm font-medium transition"></div>
+
+            <!-- Table -->
+            <div class="bg-white rounded-lg shadow border border-slate-200 overflow-hidden">
+                <table class="w-full border-collapse text-right text-sm">
+                    <thead>
+                        <tr class="bg-slate-100 border-b border-slate-200 text-slate-700 font-semibold">
+                            <th class="p-4">מזהה</th>
+                            <th class="p-4">שם מחלקה</th>
+                            <th class="p-4">מספר טלפון</th>
+                            <th class="p-4">סטטוס</th>
+                            <th class="p-4 text-center">פעולות</th>
+                        </tr>
+                    </thead>
+                    <tbody id="secretaries-tbody" class="divide-y divide-slate-200">
+                        <!-- Loaded dynamically -->
+                        <tr>
+                            <td colspan="5" class="p-8 text-center text-slate-500 font-medium">טוען נתונים...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <!-- Add/Edit Modal -->
+    <div id="editor-modal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm hidden items-center justify-center p-4 z-50">
+        <div class="bg-white rounded-lg shadow-lg max-w-md w-full overflow-hidden border border-slate-200">
+            <header id="modal-header" class="bg-indigo-600 text-white px-6 py-4 flex justify-between items-center">
+                <h3 id="modal-title" class="font-bold text-lg">הוספת מזכירות חדשה</h3>
+                <button onclick="closeModal()" class="text-white hover:text-slate-200 focus:outline-none">✕</button>
+            </header>
+            <div class="p-6 space-y-4">
+                <input type="hidden" id="editor-id">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">שם מחלקה (למשל: מיון, קרדיולוגיה, כללי)</label>
+                    <input type="text" id="editor-depart" class="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-indigo-500 focus:outline-none" placeholder="הזן שם מחלקה">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">מספר טלפון (כמו שיופיע במערכת)</label>
+                    <input type="text" id="editor-phone" class="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-indigo-500 focus:outline-none" placeholder="הזן מספר טלפון">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">סטטוס פעילות</label>
+                    <select id="editor-status" class="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-indigo-500 focus:outline-none">
+                        <option value="1">פעיל</option>
+                        <option value="0">לא פעיל</option>
+                    </select>
+                </div>
+            </div>
+            <footer class="bg-slate-50 px-6 py-4 flex justify-end gap-3 border-t border-slate-100">
+                <button onclick="closeModal()" class="px-4 py-2 text-slate-600 hover:text-slate-800 font-medium transition">ביטול</button>
+                <button id="modal-save-btn" onclick="saveSecretary()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded font-semibold shadow transition">שמירה</button>
+            </footer>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="bg-white border-t border-slate-200 py-4 text-center text-xs text-slate-400">
+        &copy; 2026 מרכז רפואי צפון. כל הזכויות שמורות.
+    </footer>
+
+    <script>
+        const basePath = window.location.pathname.startsWith('/notify') ? '/notify' : '';
+        let adminPhone = localStorage.getItem('tzmc_admin_phone') || '';
+
+        function getAdminPhoneFromQuery() {
+            const params = new URLSearchParams(window.location.search);
+            const userQuery = params.get('user');
+            if (userQuery) {
+                adminPhone = userQuery;
+                localStorage.setItem('tzmc_admin_phone', adminPhone);
+            }
+        }
+
+        async function init() {
+            getAdminPhoneFromQuery();
+            if (!adminPhone) {
+                document.getElementById('auth-section').classList.remove('hidden');
+                document.getElementById('dashboard-section').classList.add('hidden');
+                document.getElementById('admin-user-display').textContent = '';
+            } else {
+                document.getElementById('auth-section').classList.add('hidden');
+                document.getElementById('dashboard-section').classList.remove('hidden');
+                document.getElementById('admin-user-display').textContent = 'מנהל: ' + adminPhone;
+                await fetchSecretaries();
+            }
+        }
+
+        function saveAdminPhone() {
+            const phone = document.getElementById('auth-phone-input').value.trim();
+            if (phone) {
+                adminPhone = phone;
+                localStorage.setItem('tzmc_admin_phone', phone);
+                init();
+            }
+        }
+
+        function showAlert(msg, type = 'success') {
+            const box = document.getElementById('alert-box');
+            box.textContent = msg;
+            box.className = 'p-4 rounded-lg text-sm font-medium transition ';
+            if (type === 'success') {
+                box.className += 'bg-emerald-50 text-emerald-800 border border-emerald-200';
+            } else {
+                box.className += 'bg-rose-50 text-rose-800 border border-rose-200';
+            }
+            box.classList.remove('hidden');
+            setTimeout(() => {
+                box.classList.add('hidden');
+            }, 5000);
+        }
+
+        async function fetchSecretaries() {
+            try {
+                const res = await fetch(\`\${basePath}/api/admin/secretaries?user=\${encodeURIComponent(adminPhone)}\`);
+                if (!res.ok) {
+                    if (res.status === 403 || res.status === 401) {
+                        showAlert('שגיאה: אינך מורשה לגשת למסך זה (יש להשתמש במספר מנהל מורשה)', 'error');
+                        localStorage.removeItem('tzmc_admin_phone');
+                        adminPhone = '';
+                        setTimeout(init, 2000);
+                        return;
+                    }
+                    throw new Error('שגיאה בטעינת נתונים');
+                }
+                const data = await res.json();
+                renderSecretaries(data.secretaries || []);
+            } catch (err) {
+                showAlert(err.message, 'error');
+            }
+        }
+
+        function renderSecretaries(list) {
+            const tbody = document.getElementById('secretaries-tbody');
+            if (list.length === 0) {
+                tbody.innerHTML = \`<tr><td colspan="5" class="p-8 text-center text-slate-500">לא נמצאו מזכירויות במערכת. לחץ על 'הוספת מזכירות' כדי להוסיף.</td></tr>\`;
+                return;
+            }
+            tbody.innerHTML = list.map(sec => \\\`
+                <tr class="hover:bg-slate-50 transition">
+                    <td class="p-4 font-mono text-slate-500">\\\\\\\${sec.ID}</td>
+                    <td class="p-4 font-semibold text-slate-800">\\\\\\\${sec.DepartName}</td>
+                    <td class="p-4 font-mono text-indigo-600 font-medium">\\\\\\\${sec.PhoneNumber}</td>
+                    <td class="p-4">
+                        <span class="px-2.5 py-1 text-xs font-semibold rounded-full \\\\\\\${
+                            sec.Status === 1 
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
+                            : 'bg-rose-50 text-rose-700 border border-rose-200'
+                        }">
+                            \\\\\\\${sec.Status === 1 ? 'פעיל' : 'לא פעיל'}
+                        </span>
+                    </td>
+                    <td class="p-4 text-center flex justify-center gap-3">
+                        <button onclick="openEditModal(\\\\\\\${sec.ID}, '\\\\\\\${sec.DepartName}', '\\\\\\\${sec.PhoneNumber}', \\\\\\\${sec.Status})" class="text-indigo-600 hover:text-indigo-900 font-medium hover:underline flex items-center gap-1">
+                            ערוך
+                        </button>
+                        <span class="text-slate-300">|</span>
+                        <button onclick="deleteSecretary(\\\\\\\${sec.ID})" class="text-rose-600 hover:text-rose-900 font-medium hover:underline flex items-center gap-1">
+                            מחק
+                        </button>
+                    </td>
+                </tr>
+            \\\`).join('');
+        }
+
+        function openAddModal() {
+            document.getElementById('editor-id').value = '';
+            document.getElementById('editor-depart').value = '';
+            document.getElementById('editor-phone').value = '';
+            document.getElementById('editor-status').value = '1';
+            document.getElementById('modal-title').textContent = 'הוספת מזכירות חדשה';
+            document.getElementById('editor-modal').classList.remove('hidden');
+            document.getElementById('editor-modal').classList.add('flex');
+        }
+
+        function openEditModal(id, depart, phone, status) {
+            document.getElementById('editor-id').value = id;
+            document.getElementById('editor-depart').value = depart;
+            document.getElementById('editor-phone').value = phone;
+            document.getElementById('editor-status').value = status;
+            document.getElementById('modal-title').textContent = 'עריכת מזכירות #' + id;
+            document.getElementById('editor-modal').classList.remove('hidden');
+            document.getElementById('editor-modal').classList.add('flex');
+        }
+
+        function closeModal() {
+            document.getElementById('editor-modal').classList.remove('flex');
+            document.getElementById('editor-modal').classList.add('hidden');
+        }
+
+        async function saveSecretary() {
+            const id = document.getElementById('editor-id').value;
+            const depart = document.getElementById('editor-depart').value.trim();
+            const phone = document.getElementById('editor-phone').value.trim();
+            const status = document.getElementById('editor-status').value;
+
+            if (!depart || !phone) {
+                alert('נא למלא את כל השדות הדרושים');
+                return;
+            }
+
+            const method = id ? 'PUT' : 'POST';
+            const url = id ? \\\`\${basePath}/api/admin/secretaries/\\\${id}?user=\\\${encodeURIComponent(adminPhone)}\\\` : \\\`\${basePath}/api/admin/secretaries?user=\\\${encodeURIComponent(adminPhone)}\\\`;
+
+            try {
+                const res = await fetch(url, {
+                    method: method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ DepartName: depart, PhoneNumber: phone, Status: Number(status) })
+                });
+                if (!res.ok) throw new Error('שגיאה בשמירת הנתונים');
+                showAlert(id ? 'המזכירות עודכנה בהצלחה!' : 'המזכירות נוספה בהצלחה!');
+                closeModal();
+                fetchSecretaries();
+            } catch (err) {
+                showAlert(err.message, 'error');
+            }
+        }
+
+        async function deleteSecretary(id) {
+            if (!confirm('האם אתה בטוח שברצונך למחוק מזכירות זו?')) return;
+            try {
+                const res = await fetch(\\\`\${basePath}/api/admin/secretaries/\\\${id}?user=\\\${encodeURIComponent(adminPhone)}\\\`, {
+                    method: 'DELETE'
+                });
+                if (!res.ok) throw new Error('שגיאה במחיקת המזכירות');
+                showAlert('המזכירות נמחקה בהצלחה!');
+                fetchSecretaries();
+            } catch (err) {
+                showAlert(err.message, 'error');
+            }
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>`);
+    }
+);
+
+// GET /api/admin/secretaries - list all secretaries
+app.get(
+    ['/api/admin/secretaries', '/notify/api/admin/secretaries'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const rateCheck = consumeRateLimitEntry(adminSecretariesRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        try {
+            const secretaries = await mysqlLogsService.listSecretaries();
+            return res.json({ secretaries });
+        } catch (err) {
+            console.error('[ADMIN-SECRETARIES] list error:', err);
+            return res.status(500).json({ error: 'Failed to list secretaries' });
+        }
+    }
+);
+
+// POST /api/admin/secretaries - add a new secretary
+app.post(
+    ['/api/admin/secretaries', '/notify/api/admin/secretaries'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const rateCheck = consumeRateLimitEntry(adminSecretariesRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        const { DepartName, PhoneNumber, Status } = req.body || {};
+        if (!DepartName || !PhoneNumber) {
+            return res.status(400).json({ error: 'DepartName and PhoneNumber are required.' });
+        }
+        try {
+            const parsedStatus = Status !== undefined ? Number(Status) : 1;
+            const success = await mysqlLogsService.addSecretary(String(DepartName).trim(), String(PhoneNumber).trim(), parsedStatus);
+            return res.json({ success });
+        } catch (err) {
+            console.error('[ADMIN-SECRETARIES] create error:', err);
+            return res.status(500).json({ error: 'Failed to add secretary' });
+        }
+    }
+);
+
+// PUT /api/admin/secretaries/:id - update an existing secretary
+app.put(
+    ['/api/admin/secretaries/:id', '/notify/api/admin/secretaries/:id'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const rateCheck = consumeRateLimitEntry(adminSecretariesRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        const id = Number(req.params.id);
+        if (isNaN(id)) {
+            return res.status(400).json({ error: 'Invalid ID' });
+        }
+        const { DepartName, PhoneNumber, Status } = req.body || {};
+        if (!DepartName || !PhoneNumber) {
+            return res.status(400).json({ error: 'DepartName and PhoneNumber are required.' });
+        }
+        try {
+            const parsedStatus = Status !== undefined ? Number(Status) : 1;
+            const success = await mysqlLogsService.editSecretary(id, String(DepartName).trim(), String(PhoneNumber).trim(), parsedStatus);
+            return res.json({ success });
+        } catch (err) {
+            console.error('[ADMIN-SECRETARIES] update error:', err);
+            return res.status(500).json({ error: 'Failed to update secretary' });
+        }
+    }
+);
+
+// DELETE /api/admin/secretaries/:id - delete a secretary
+app.delete(
+    ['/api/admin/secretaries/:id', '/notify/api/admin/secretaries/:id'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user || !ADMIN_SUPER_USER_SET.has(user)) {
+            return res.status(403).json({ error: 'Forbidden: super-admin only' });
+        }
+        const rateCheck = consumeRateLimitEntry(adminSecretariesRateLimitStore, user, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        const id = Number(req.params.id);
+        if (isNaN(id)) {
+            return res.status(400).json({ error: 'Invalid ID' });
+        }
+        try {
+            const success = await mysqlLogsService.deleteSecretary(id);
+            return res.json({ success });
+        } catch (err) {
+            console.error('[ADMIN-SECRETARIES] delete error:', err);
+            return res.status(500).json({ error: 'Failed to delete secretary' });
+        }
+    }
+);
+
 // --- Sync all MessageActivities (no filtering) ---
 app.get(['/message-activities', '/notify/message-activities'], async (_req, res) => {
     try {
@@ -6809,6 +7367,8 @@ registerMessageController(app, {
     getLogsMessagesForUser: (user, options = {}) => mysqlLogsService.getLogsMessagesForUser(user, options),
     getMessageActivitiesForUser: (user, options = {}) => mysqlLogsService.getMessageActivitiesForUser(user, options),
     getGroupMessageSendersByMessageId: (user, options = {}) => mysqlLogsService.getGroupMessageSendersByMessageId(user, options),
+    getUserAuthStatus: (user) => mysqlLogsService.checkAuth(user),
+    getContacts: (user) => mysqlLogsService.getContacts(user),
     getHardcodedGroupIds: () => communityGroupIds,
     getHardcodedGroupMembers: () => {
         const membersMap = {};
@@ -7763,6 +8323,86 @@ async function checkOutgoingQueue() {
     }
 }
 
+// ======================================================
+// [NEW] SUBSCRIBE SHEET TO DB SYNC SERVICE & WEBHOOK
+// ======================================================
+async function syncSubscribeSheetToDb() {
+    console.log('[SUBSCRIBE-SYNC] Starting sync from Google Sheet to MySQL...');
+    try {
+        const { createSheetIntegrationServiceFromEnv } = require('./backend/dist/services');
+        const sheetIntegrationServiceInstance = createSheetIntegrationServiceFromEnv(process.env);
+        if (!sheetIntegrationServiceInstance || !mysqlLogsService) {
+            console.warn('[SUBSCRIBE-SYNC] mysqlLogsService or sheetIntegrationService not available.');
+            return;
+        }
+
+        const url = sheetIntegrationServiceInstance.buildGoogleSheetGetUrl({
+            action: 'get_subscribe_dump',
+            limit: '10000'
+        });
+
+        const response = await fetchWithRetry(
+            url,
+            {},
+            { timeoutMs: 30000, retries: 2, backoffMs: 1000 }
+        );
+
+        if (!response.ok) {
+            throw new Error(`Google Sheet returned HTTP ${response.status}`);
+        }
+
+        const payload = await response.json();
+        if (payload && payload.result === 'success' && Array.isArray(payload.rows)) {
+            const rows = payload.rows;
+            await mysqlLogsService.syncSubscribeRows(rows);
+            console.log(`[SUBSCRIBE-SYNC] Successfully synced ${rows.length} rows to DB.`);
+
+            // Notify all active websocket clients of any updated status
+            if (typeof websocketClients !== 'undefined') {
+                for (const username of websocketClients.keys()) {
+                    try {
+                        const authResult = await mysqlLogsService.checkAuth(username);
+                        const isRestricted = authResult && authResult.isRestricted === true;
+                        const sockets = websocketClients.get(username);
+                        if (sockets) {
+                            for (const socket of sockets) {
+                                socket.emit('user:status_updated', { isRestricted });
+                            }
+                        }
+                    } catch (err) {
+                        console.error('[SUBSCRIBE-SYNC] Error checking status for connected user during sync:', username, err);
+                    }
+                }
+            }
+        } else {
+            const errorMsg = payload && payload.message ? payload.message : 'Unknown sheet error';
+            throw new Error(errorMsg);
+        }
+    } catch (error) {
+        console.error('[SUBSCRIBE-SYNC] Sync failed:', error.message);
+    }
+}
+
+const syncLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000,
+    max: 10,
+    message: { error: 'Too many sync requests. Please try again later.' }
+});
+
+app.post(['/subscribe/sync', '/notify/subscribe/sync'], syncLimiter, async (req, res) => {
+    if (!isSchedulerOpsRequestAuthorized(req)) {
+        return res.status(403).json({ error: 'Forbidden' });
+    }
+    try {
+        console.log('[API-SUBSCRIBE-SYNC] Manual subscription sync triggered.');
+        await syncSubscribeSheetToDb();
+        res.json({ status: 'success', message: 'Subscriptions synced successfully from Google Sheet to DB.' });
+    } catch (error) {
+        console.error('[API-SUBSCRIBE-SYNC] Failed:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Global error handler — catches any unhandled error thrown from a route or middleware
 // (including async handlers in Express 5) and returns a clean JSON response instead of
 // Express's default HTML/verbose error page.
@@ -7783,6 +8423,10 @@ app.use((err, req, res, _next) => {
 setInterval(checkOutgoingQueue, 10000);
 startSubscriptionAuthRefreshScheduler();
 //startShuttleReminderScheduler();
+
+// Run the Google Sheet Subscribe to DB sync immediately at startup and then every 5 minutes (300,000 ms)
+syncSubscribeSheetToDb();
+const subscribeSyncSchedulerTimer = setInterval(syncSubscribeSheetToDb, 300000);
 
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, () => {

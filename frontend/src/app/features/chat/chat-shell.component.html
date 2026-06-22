@@ -63,6 +63,12 @@
         <span>גיבוי קבוצות למסד נתונים</span>
       </button>
     }
+    @if (store.canCurrentUserManageSecretaries()) {
+      <button mat-menu-item role="menuitem" type="button" (click)="openSecretariesAdmin()">
+        <mat-icon>settings_phone</mat-icon>
+        <span>ניהול מזכירויות מחלקתיות</span>
+      </button>
+    }
     <button mat-menu-item type="button" (click)="openCreateGroupDialog()">
       <mat-icon>group_add</mat-icon>
       <span>קבוצה חדשה</span>

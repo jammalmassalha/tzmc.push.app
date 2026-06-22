@@ -17,6 +17,7 @@ import '../database/web_storage.dart';
 import '../models/api_payloads.dart';
 import '../models/chat_models.dart';
 import '../realtime/realtime_transport_service.dart';
+import '../../features/auth/presentation/auth_state.dart';
 
 // ---------------------------------------------------------------------------
 // Constants (matching Angular constants)
@@ -59,7 +60,7 @@ const String kPendingChatUpdatesKey = 'tzmc_pending_chat_updates_v1';
 /// Stores a JSON object of `{ chatId: deletedAtEpochMs }` so a locally deleted
 /// chat stays hidden across app restarts and full syncs until newer messages
 /// arrive after the stored delete timestamp.
-const String kDeletedChatsKey = 'tzmc_deleted_chats_v1';
+const String kDeletedChatsKeyPrefix = 'tzmc_deleted_chats_v1';
 
 // ---------------------------------------------------------------------------
 // Community group seed data (mirrors Angular's SEED_COMMUNITY_GROUPS)
@@ -105,6 +106,7 @@ class ChatState {
   final String? currentChatId;
   final bool isLoading;
   final bool isInitialized;
+  final bool isRestricted;
 
   /// Full-sync progress fields (mirrors Angular store.syncing /
   /// store.syncProgressPercent / store.syncProgressLabel).
@@ -124,6 +126,7 @@ class ChatState {
     this.currentChatId,
     this.isLoading = false,
     this.isInitialized = false,
+    this.isRestricted = false,
     this.isSyncing = false,
     this.syncProgressPercent = 0,
     this.syncProgressLabel = '',
@@ -139,6 +142,7 @@ class ChatState {
     String? currentChatId,
     bool? isLoading,
     bool? isInitialized,
+    bool? isRestricted,
     bool clearCurrentChat = false,
     bool? isSyncing,
     int? syncProgressPercent,
@@ -154,6 +158,7 @@ class ChatState {
       currentChatId: clearCurrentChat ? null : (currentChatId ?? this.currentChatId),
       isLoading: isLoading ?? this.isLoading,
       isInitialized: isInitialized ?? this.isInitialized,
+      isRestricted: isRestricted ?? this.isRestricted,
       isSyncing: isSyncing ?? this.isSyncing,
       syncProgressPercent: syncProgressPercent ?? this.syncProgressPercent,
       syncProgressLabel: syncProgressLabel ?? this.syncProgressLabel,
@@ -164,6 +169,34 @@ class ChatState {
   /// Get all chat list items sorted by last message timestamp
   List<ChatListItem> get chatListItems {
     final items = <ChatListItem>[];
+
+    if (isRestricted) {
+      // Return ALL contacts (the active secretaries returned by getContacts) EVEN if they have no messages!
+      for (final contact in contacts.values) {
+        final messages = messagesByChat[contact.username] ?? [];
+        final lastMessage = messages.isNotEmpty ? messages.first : null;
+        items.add(ChatListItem(
+          id: contact.username,
+          title: contact.displayName,
+          info: contact.info,
+          phone: contact.phone,
+          subtitle: lastMessage != null ? _getMessagePreview(lastMessage) : 'לחץ להתחלת שיחה',
+          lastTimestamp: lastMessage != null ? lastMessage.timestamp : 0,
+          unread: unreadByChat[contact.username] ?? 0,
+          isGroup: false,
+          pinned: false,
+          avatarUrl: contact.upic,
+        ));
+      }
+      // Sort so that those with messages or active chats are at the top, or just alphabetically
+      items.sort((a, b) {
+        if (a.lastTimestamp != b.lastTimestamp) {
+          return b.lastTimestamp.compareTo(a.lastTimestamp);
+        }
+        return a.title.toLowerCase().compareTo(b.title.toLowerCase());
+      });
+      return items;
+    }
 
     // Add direct contacts with messages
     for (final entry in messagesByChat.entries) {
@@ -240,6 +273,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   StreamSubscription<IncomingServerMessage>? _messageSubscription;
   StreamSubscription<bool>? _connectionSubscription;
   StreamSubscription<void>? _pollTickSubscription;
+  StreamSubscription<bool>? _statusSubscription;
 
   Timer? _persistTimer;
   int _lastGapAnalysisTime = 0;
@@ -260,6 +294,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// would otherwise show a duplicate "incoming from me" bubble).
   String? get currentUser => _currentUser;
 
+  String _deletedChatsKeyForUser(String user) => '$kDeletedChatsKeyPrefix:${user.trim().toLowerCase()}';
+
   @override
   ChatState build() {
     _api = ref.watch(chatApiServiceProvider);
@@ -273,6 +309,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       _messageSubscription?.cancel();
       _connectionSubscription?.cancel();
       _pollTickSubscription?.cancel();
+      _statusSubscription?.cancel();
       _persistTimer?.cancel();
       for (final timers in _typingClearTimers.values) {
         for (final t in timers.values) {
@@ -289,6 +326,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _messageSubscription = _transport.message$.listen(_handleServerMessage);
     _connectionSubscription = _transport.connected$.listen(_handleConnectionChange);
     _pollTickSubscription = _transport.pollTick$.listen((_) => _handlePollTick());
+    _statusSubscription = _transport.status$.listen(_handleStatusChange);
+  }
+
+  void _handleStatusChange(bool isRestricted) {
+    ref.read(authStateProvider.notifier).updateUserRestrictedStatus(isRestricted);
+    state = state.copyWith(isRestricted: isRestricted);
   }
 
   // ---------------------------------------------------------------------------
@@ -318,12 +361,19 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // as outgoing (avoids the "see my message twice" bug).
     _currentUser = normalized;
 
-    if (state.isInitialized) return;
+    final isRestricted = ref.read(isUserRestrictedProvider);
 
-    state = state.copyWith(isLoading: true);
+    if (state.isInitialized) {
+      if (state.isRestricted != isRestricted) {
+        state = state.copyWith(isRestricted: isRestricted);
+      }
+      return;
+    }
+
+    state = state.copyWith(isLoading: true, isRestricted: isRestricted);
 
     try {
-      final deletedChats = await _readDeletedChats();
+      final deletedChats = await _readDeletedChats(normalized);
       state = state.copyWith(deletedChats: deletedChats);
 
       // 1. Restore from local database (best-effort).
@@ -358,7 +408,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // Try restoring from the shared_preferences-based localStorage snapshot.
         if (kIsWeb) {
           try {
-            final webPersisted = await WebChatStorage.getPersistedState();
+            final webPersisted = await WebChatStorage.getPersistedState(normalized);
             if (webPersisted != null) {
               state = state.copyWith(
                 contacts: Map.fromEntries(webPersisted.contacts.map((c) => MapEntry(c.username, c))),
@@ -2522,7 +2572,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     );
 
     await _clearChatFromPendingTray(normalized);
-    await _writeDeletedChats(newDeletedChats);
+    final user = _currentUser;
+    if (user != null && user.trim().isNotEmpty) {
+      await _writeDeletedChats(user, newDeletedChats);
+    }
     _schedulePersistence();
     return true;
   }
@@ -3004,6 +3057,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   Future<void> _persistState() async {
     try {
+      final user = _currentUser;
+      if (user == null || user.trim().isEmpty) {
+        return;
+      }
       final allMessages = <ChatMessage>[];
       for (final messages in state.messagesByChat.values) {
         allMessages.addAll(messages);
@@ -3022,20 +3079,20 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // Drift DB unavailable (e.g. web without sqlite3.wasm).
         // Fall back to shared_preferences-based localStorage snapshot.
         if (kIsWeb) {
-          await WebChatStorage.persistState(snapshot);
+          await WebChatStorage.persistState(user, snapshot);
         }
       }
-      await _writeDeletedChats(state.deletedChats);
+      await _writeDeletedChats(user, state.deletedChats);
     } catch (_) {
       // Persistence failure is non-fatal – data remains available in memory
       // for the current session and will be retried on the next trigger.
     }
   }
 
-  Future<Map<String, int>> _readDeletedChats() async {
+  Future<Map<String, int>> _readDeletedChats(String user) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final json = prefs.getString(kDeletedChatsKey);
+      final json = prefs.getString(_deletedChatsKeyForUser(user));
       if (json == null || json.trim().isEmpty) return const {};
       final decoded = jsonDecode(json);
       if (decoded is! Map) return const {};
@@ -3054,14 +3111,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
   }
 
-  Future<void> _writeDeletedChats(Map<String, int> deletedChats) async {
+  Future<void> _writeDeletedChats(String user, Map<String, int> deletedChats) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       if (deletedChats.isEmpty) {
-        await prefs.remove(kDeletedChatsKey);
+        await prefs.remove(_deletedChatsKeyForUser(user));
         return;
       }
-      await prefs.setString(kDeletedChatsKey, jsonEncode(deletedChats));
+      await prefs.setString(_deletedChatsKeyForUser(user), jsonEncode(deletedChats));
     } catch (_) {
       // Best-effort local persistence; in-memory state remains authoritative.
     }
@@ -3098,14 +3155,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _persistTimer = null;
 
     // Reset per-session tracking fields.
+    final previousUser = _currentUser;
     _currentUser = null;
     _lastGapAnalysisTime = 0;
 
     await _db.clearAll();
-    if (kIsWeb) {
-      await WebChatStorage.clear();
+    if (kIsWeb && previousUser != null && previousUser.trim().isNotEmpty) {
+      await WebChatStorage.clear(previousUser);
     }
-    await _writeDeletedChats(const {});
+    if (previousUser != null && previousUser.trim().isNotEmpty) {
+      await _writeDeletedChats(previousUser, const {});
+    }
 
     // Clear the FCM background-notification pending tray so that stale unread
     // counts written before a logout, update, or reinstall are never replayed

@@ -305,6 +305,8 @@ export class MysqlLogsService {
   private flutterPushRegistrationDebugTableReady = false;
   private flutterPushRegistrationDebugActionColumnWidthReady = false;
   private flutterPushRegistrationDebugFullResponseColumnReady = false;
+  private secretariesTableReady = false;
+  private botSessionsTableReady = false;
 
   constructor(config: MysqlLogsConfig) {
     this.tableName = normalizeTableName(config.table);
@@ -324,6 +326,8 @@ export class MysqlLogsService {
     void this.ensureFileUrlColumn();
     void this.ensureSeenTimeColumn();
     void this.ensureGroupSenderNameColumn();
+    void this.ensureSecretariesTable();
+    void this.ensureBotSessionsTable();
   }
 
   private async ensureImageUrlColumn(): Promise<void> {
@@ -2001,6 +2005,530 @@ export class MysqlLogsService {
       throw err;
     } finally {
       conn.release();
+    }
+  }
+
+  async ensureSubscribeTable(): Promise<void> {
+    try {
+      await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`Subscribe\` (
+          \`RowID\` INT AUTO_INCREMENT UNIQUE,
+          \`DateTimeRegistration\` DATETIME NULL,
+          \`User\` VARCHAR(50) NOT NULL PRIMARY KEY,
+          \`PushType\` VARCHAR(255) NULL,
+          \`AuthJson\` TEXT NULL,
+          \`AuthJsonPc\` TEXT NULL,
+          \`FullName\` VARCHAR(255) NULL,
+          \`Staus\` VARCHAR(255) NULL,
+          \`ExeptionStatus\` VARCHAR(255) NULL,
+          \`ExeptionName\` VARCHAR(255) NULL,
+          \`Upic\` VARCHAR(255) NULL,
+          \`2FA\` VARCHAR(255) NULL,
+          \`FlutterMobile\` TEXT NULL,
+          \`FlutterWeb\` TEXT NULL,
+          \`YearOfBirth\` VARCHAR(255) NULL,
+          \`UserName\` VARCHAR(255) NULL,
+          \`UpdatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+
+      try {
+        await this.pool.execute('SELECT `RowID` FROM `Subscribe` LIMIT 1');
+      } catch (err) {
+        console.log('[MYSQL] RowID column missing in Subscribe, adding it...');
+        await this.pool.execute('ALTER TABLE `Subscribe` ADD COLUMN `RowID` INT AUTO_INCREMENT UNIQUE FIRST');
+      }
+
+      // 1. Deduplicate table by User column (retaining the row with the highest RowID)
+      try {
+        console.log('[MYSQL] Running deduplication on Subscribe table by User column...');
+        await this.pool.execute(`
+          DELETE s1 FROM \`Subscribe\` s1
+          INNER JOIN \`Subscribe\` s2 
+          ON s1.\`User\` = s2.\`User\` AND s1.\`RowID\` < s2.\`RowID\`
+        `);
+      } catch (dedupErr: any) {
+        console.warn('[MYSQL] Deduplicate Subscribe error:', dedupErr.message || dedupErr);
+      }
+
+      // 2. Ensure User is the PRIMARY KEY of Subscribe table
+      try {
+        const [keys] = await this.pool.query<any[]>('SHOW KEYS FROM `Subscribe` WHERE Key_name = "PRIMARY"');
+        const hasPrimaryKey = keys && keys.length > 0;
+        let isUserPk = false;
+        if (hasPrimaryKey) {
+          isUserPk = keys.some((k: any) => String(k.Column_name || k.column_name || '').toLowerCase() === 'user');
+        }
+
+        if (!isUserPk) {
+          console.log('[MYSQL] Primary key is not User. Adjusting keys...');
+          if (hasPrimaryKey) {
+            try {
+              await this.pool.execute('ALTER TABLE `Subscribe` DROP PRIMARY KEY');
+            } catch (dropErr: any) {
+              console.warn('[MYSQL] Could not drop existing primary key (may be AUTO_INCREMENT or not exist):', dropErr.message || dropErr);
+            }
+          }
+          
+          try {
+            await this.pool.execute('ALTER TABLE `Subscribe` ADD PRIMARY KEY (`User`)');
+            console.log('[MYSQL] Successfully set User as PRIMARY KEY on Subscribe table.');
+          } catch (addPkErr: any) {
+            console.error('[MYSQL] Failed to set User as PRIMARY KEY on Subscribe table:', addPkErr.message || addPkErr);
+          }
+        }
+      } catch (pkErr: any) {
+        console.warn('[MYSQL] Primary key validation check warning:', pkErr.message || pkErr);
+      }
+
+      // Dynamically verify and add any other missing columns to handle schema drift
+      try {
+        const [columns] = await this.pool.query<any[]>('SHOW COLUMNS FROM `Subscribe`');
+        const existingCols = new Set(columns.map((c: any) => String(c.Field || c.field || '').toLowerCase()));
+
+        const expectedColumns: { name: string; type: string }[] = [
+          { name: 'DateTimeRegistration', type: 'DATETIME NULL' },
+          { name: 'PushType', type: 'VARCHAR(255) NULL' },
+          { name: 'AuthJson', type: 'TEXT NULL' },
+          { name: 'AuthJsonPc', type: 'TEXT NULL' },
+          { name: 'FullName', type: 'VARCHAR(255) NULL' },
+          { name: 'Staus', type: 'VARCHAR(255) NULL' },
+          { name: 'ExeptionStatus', type: 'VARCHAR(255) NULL' },
+          { name: 'ExeptionName', type: 'VARCHAR(255) NULL' },
+          { name: 'Upic', type: 'VARCHAR(255) NULL' },
+          { name: '2FA', type: 'VARCHAR(255) NULL' },
+          { name: 'FlutterMobile', type: 'TEXT NULL' },
+          { name: 'FlutterWeb', type: 'TEXT NULL' },
+          { name: 'YearOfBirth', type: 'VARCHAR(255) NULL' },
+          { name: 'UserName', type: 'VARCHAR(255) NULL' },
+          { name: 'UpdatedAt', type: 'DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP' },
+        ];
+
+        for (const col of expectedColumns) {
+          if (!existingCols.has(col.name.toLowerCase())) {
+            console.log(`[MYSQL] Column ${col.name} missing in Subscribe, adding it...`);
+            try {
+              await this.pool.execute(`ALTER TABLE \`Subscribe\` ADD COLUMN \`${col.name}\` ${col.type}`);
+            } catch (alterErr) {
+              console.error(`[MYSQL] Failed to add column ${col.name}:`, alterErr);
+            }
+          }
+        }
+      } catch (colErr) {
+        console.warn('[MYSQL] ensureSubscribeTable schema check warning:', colErr);
+      }
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.warn('[MYSQL] ensureSubscribeTable warning:', message);
+    }
+  }
+
+  async syncSubscribeRows(rows: any[]): Promise<void> {
+    await this.ensureSubscribeTable();
+    if (!rows.length) return;
+
+    const query = `
+      INSERT INTO \`Subscribe\` (
+        \`DateTimeRegistration\`, \`User\`, \`PushType\`, \`AuthJson\`, \`AuthJsonPc\`,
+        \`FullName\`, \`Staus\`, \`ExeptionStatus\`, \`ExeptionName\`, \`Upic\`,
+        \`2FA\`, \`FlutterMobile\`, \`FlutterWeb\`, \`YearOfBirth\`, \`UserName\`
+      ) VALUES ?
+      ON DUPLICATE KEY UPDATE
+        \`DateTimeRegistration\` = VALUES(\`DateTimeRegistration\`),
+        \`PushType\` = VALUES(\`PushType\`),
+        \`AuthJson\` = VALUES(\`AuthJson\`),
+        \`AuthJsonPc\` = VALUES(\`AuthJsonPc\`),
+        \`FullName\` = VALUES(\`FullName\`),
+        \`Staus\` = VALUES(\`Staus\`),
+        \`ExeptionStatus\` = VALUES(\`ExeptionStatus\`),
+        \`ExeptionName\` = VALUES(\`ExeptionName\`),
+        \`Upic\` = VALUES(\`Upic\`),
+        \`2FA\` = VALUES(\`2FA\`),
+        \`FlutterMobile\` = VALUES(\`FlutterMobile\`),
+        \`FlutterWeb\` = VALUES(\`FlutterWeb\`),
+        \`YearOfBirth\` = VALUES(\`YearOfBirth\`),
+        \`UserName\` = VALUES(\`UserName\`)
+    `;
+
+    const values = rows.map(r => {
+      let dt: Date | null = null;
+      if (r.dateTimeRegistration) {
+        const parsed = Date.parse(r.dateTimeRegistration);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          dt = new Date(parsed);
+        }
+      }
+      return [
+        dt,
+        toTrimmedString(r.user),
+        toTrimmedString(r.pushType) || null,
+        toTrimmedString(r.authJson) || null,
+        toTrimmedString(r.authJsonPc) || null,
+        toTrimmedString(r.fullName) || null,
+        toTrimmedString(r.staus) || null,
+        toTrimmedString(r.exeptionStatus) || null,
+        toTrimmedString(r.exeptionName) || null,
+        toTrimmedString(r.upic) || null,
+        toTrimmedString(r.twoFA || r['2fa'] || r['2FA']) || null,
+        toTrimmedString(r.flutterMobile) || null,
+        toTrimmedString(r.flutterWeb) || null,
+        toTrimmedString(r.yearOfBirth) || null,
+        toTrimmedString(r.userName) || null
+      ];
+    }).filter(row => row[1]);
+
+    if (values.length > 0) {
+      await this.pool.query(query, [values]);
+    }
+  }
+
+  async loadSubscriptions(usernames?: string[]): Promise<any[]> {
+    await this.ensureSubscribeTable();
+    try {
+      let query = 'SELECT `User`, `PushType`, `AuthJson`, `AuthJsonPc` FROM `Subscribe`';
+      let params: any[] = [];
+      if (usernames && usernames.length > 0) {
+        query += ' WHERE `User` IN (?)';
+        params.push(usernames);
+      }
+      const [rows] = await this.pool.query<RowDataPacket[]>(query, params);
+      
+      const subscriptions: any[] = [];
+      rows.forEach((row) => {
+        const user = String(row.User || '').trim();
+        
+        if (row.AuthJson) {
+          try {
+            const subObj = JSON.parse(row.AuthJson);
+            subObj.username = user;
+            subObj.type = 'mobile';
+            if (subObj.endpoint) {
+              subscriptions.push(subObj);
+            }
+          } catch (_e) {
+            // ignore
+          }
+        }
+        
+        if (row.AuthJsonPc) {
+          try {
+            const subObjPC = JSON.parse(row.AuthJsonPc);
+            subObjPC.username = user;
+            subObjPC.type = 'pc';
+            if (subObjPC.endpoint) {
+              subscriptions.push(subObjPC);
+            }
+          } catch (_e) {
+            // ignore
+          }
+        }
+      });
+      return subscriptions;
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.error('[MYSQL] loadSubscriptions error:', message);
+      return [];
+    }
+  }
+
+  async checkAuth(username: string): Promise<any> {
+    await this.ensureSubscribeTable();
+    try {
+      const normalized = String(username).trim();
+      const [rows] = await this.pool.query<RowDataPacket[]>(
+        'SELECT `FullName`, `Staus`, `ExeptionStatus` FROM `Subscribe` WHERE `User` = ?',
+        [normalized]
+      );
+      if (!rows || rows.length === 0) {
+        return { status: 'error', message: 'User not registered', isActive: false };
+      }
+      const row = rows[0];
+      const status = String(row.Staus || '').trim();
+      const exceptionStatus = String(row.ExeptionStatus || '').trim();
+      const fullName = String(row.FullName || '').trim();
+
+      if (status === '1' || exceptionStatus === '1') {
+        return { status: 'success', fullName, isActive: true };
+      }
+      const isRestricted = status === '0' && (exceptionStatus === '' || exceptionStatus === '0');
+      if (isRestricted) {
+        return { status: 'success', fullName, isActive: true, isRestricted: true };
+      }
+      return { status: 'error', message: 'User inactive', isActive: false };
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.error('[MYSQL] checkAuth error:', message);
+      return { status: 'error', message: 'Database query failed', isActive: false };
+    }
+  }
+
+  async lookupUserByWindowsUsername(windowsUser: string): Promise<any> {
+    await this.ensureSubscribeTable();
+    try {
+      const normalized = String(windowsUser).trim();
+      const [rows] = await this.pool.query<RowDataPacket[]>(
+        'SELECT `User` FROM `Subscribe` WHERE `UserName` = ? LIMIT 1',
+        [normalized]
+      );
+      if (rows && rows.length > 0) {
+        return { user: String(rows[0].User || '').trim() };
+      }
+      return null;
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.error('[MYSQL] lookupUserByWindowsUsername error:', message);
+      return null;
+    }
+  }
+
+  async getContacts(requestingUser?: string): Promise<any[]> {
+    await this.ensureSubscribeTable();
+    try {
+      if (requestingUser) {
+        const normalized = String(requestingUser).trim();
+        // Check if requesting user is allowed: status === '1' or exceptionStatus === '1'
+        const [userRows] = await this.pool.query<RowDataPacket[]>(
+          'SELECT `Staus`, `ExeptionStatus`, `ExeptionName` FROM `Subscribe` WHERE `User` = ?',
+          [normalized]
+        );
+        if (!userRows || userRows.length === 0) {
+          return [];
+        }
+        const userRow = userRows[0];
+        const status = String(userRow.Staus || '').trim();
+        const exceptionStatus = String(userRow.ExeptionStatus || '').trim();
+
+        // If restricted user (status = 0 and exceptionStatus != 1), show all active secretaries
+        const isRestricted = status === '0' && (exceptionStatus === '' || exceptionStatus === '0');
+        if (isRestricted) {
+          const activeSecs = await this.listActiveSecretaries();
+          if (activeSecs && activeSecs.length > 0) {
+            return activeSecs.map(sec => ({
+              username: sec.PhoneNumber,
+              displayName: `מזכירות ${sec.DepartName}`,
+              fullName: `מזכירות ${sec.DepartName}`,
+              upic: '',
+              status: 1
+            }));
+          }
+          return []; // No secretary available
+        }
+
+        if (status !== '1' && exceptionStatus !== '1') {
+          return [];
+        }
+      }
+
+      // Fetch all contacts from DB
+      const [rows] = await this.pool.query<RowDataPacket[]>(
+        'SELECT `User`, `FullName`, `Staus`, `ExeptionStatus`, `ExeptionName`, `Upic` FROM `Subscribe`'
+      );
+
+      const users: any[] = [];
+      rows.forEach((row) => {
+        const user = String(row.User || '').trim();
+        if (!user || user === 'undefined') return;
+
+        const nameColF = String(row.FullName || '').trim();
+        const statusColG = String(row.Staus || '').trim();
+        const exceptionStatusColH = String(row.ExeptionStatus || '').trim();
+        const nameColI = String(row.ExeptionName || '').trim();
+        const upic = String(row.Upic || '').trim();
+
+        const finalName = nameColF !== '' ? nameColF : nameColI;
+        const normalizedStatus = (statusColG === '1' || exceptionStatusColH === '1') ? 1 : 0;
+
+        users.push({
+          username: user,
+          displayName: finalName !== '' ? finalName : user,
+          fullName: finalName,
+          upic: upic,
+          status: normalizedStatus
+        });
+      });
+
+      // Sort alphabetically by displayName case-insensitively
+      users.sort((a, b) => a.displayName.toLowerCase().localeCompare(b.displayName.toLowerCase()));
+
+      return users;
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.error('[MYSQL] getContacts error:', message);
+      return [];
+    }
+  }
+
+  async ensureSecretariesTable(): Promise<void> {
+    if (this.secretariesTableReady) return;
+    try {
+      await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`Secretaries\` (
+          \`ID\` INT AUTO_INCREMENT PRIMARY KEY,
+          \`DepartName\` VARCHAR(255) NOT NULL,
+          \`PhoneNumber\` VARCHAR(100) NOT NULL,
+          \`Status\` TINYINT DEFAULT 1
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+      this.secretariesTableReady = true;
+      console.log('[MYSQL] Secretaries table ensured.');
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.warn('[MYSQL] ensureSecretariesTable warning:', message);
+    }
+  }
+
+  async ensureBotSessionsTable(): Promise<void> {
+    if (this.botSessionsTableReady) return;
+    try {
+      await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`BotSessions\` (
+          \`UserPhone\` VARCHAR(100) PRIMARY KEY,
+          \`Step\` VARCHAR(50) NOT NULL DEFAULT 'ID',
+          \`CollectedData\` LONGTEXT NULL,
+          \`UpdatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+      this.botSessionsTableReady = true;
+      console.log('[MYSQL] BotSessions table ensured.');
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.warn('[MYSQL] ensureBotSessionsTable warning:', message);
+    }
+  }
+
+  async addSecretary(departName: string, phoneNumber: string, status: number): Promise<boolean> {
+    await this.ensureSecretariesTable();
+    try {
+      await this.pool.execute(
+        'INSERT INTO `Secretaries` (`DepartName`, `PhoneNumber`, `Status`) VALUES (?, ?, ?)',
+        [departName.trim(), phoneNumber.trim(), status]
+      );
+      return true;
+    } catch (err: unknown) {
+      console.error('[MYSQL] addSecretary error:', err);
+      return false;
+    }
+  }
+
+  async editSecretary(id: number, departName: string, phoneNumber: string, status: number): Promise<boolean> {
+    await this.ensureSecretariesTable();
+    try {
+      await this.pool.execute(
+        'UPDATE `Secretaries` SET `DepartName` = ?, `PhoneNumber` = ?, `Status` = ? WHERE `ID` = ?',
+        [departName.trim(), phoneNumber.trim(), status, id]
+      );
+      return true;
+    } catch (err: unknown) {
+      console.error('[MYSQL] editSecretary error:', err);
+      return false;
+    }
+  }
+
+  async deleteSecretary(id: number): Promise<boolean> {
+    await this.ensureSecretariesTable();
+    try {
+      await this.pool.execute('DELETE FROM `Secretaries` WHERE `ID` = ?', [id]);
+      return true;
+    } catch (err: unknown) {
+      console.error('[MYSQL] deleteSecretary error:', err);
+      return false;
+    }
+  }
+
+  async listSecretaries(): Promise<any[]> {
+    await this.ensureSecretariesTable();
+    try {
+      const [rows] = await this.pool.query<RowDataPacket[]>('SELECT * FROM `Secretaries` ORDER BY `DepartName` ASC');
+      return rows;
+    } catch (err: unknown) {
+      console.error('[MYSQL] listSecretaries error:', err);
+      return [];
+    }
+  }
+
+  async listActiveSecretaries(): Promise<any[]> {
+    await this.ensureSecretariesTable();
+    try {
+      const [rows] = await this.pool.query<RowDataPacket[]>('SELECT * FROM `Secretaries` WHERE `Status` = 1');
+      return rows;
+    } catch (err: unknown) {
+      console.error('[MYSQL] listActiveSecretaries error:', err);
+      return [];
+    }
+  }
+
+  async getSecretaryByDepartment(departName: string): Promise<any | null> {
+    await this.ensureSecretariesTable();
+    try {
+      const [rows] = await this.pool.query<RowDataPacket[]>(
+        'SELECT * FROM `Secretaries` WHERE `DepartName` = ? AND `Status` = 1 LIMIT 1',
+        [departName.trim()]
+      );
+      if (rows && rows.length > 0) {
+        return rows[0];
+      }
+      return null;
+    } catch (err: unknown) {
+      console.error('[MYSQL] getSecretaryByDepartment error:', err);
+      return null;
+    }
+  }
+
+  async getBotSession(userPhone: string): Promise<any | null> {
+    await this.ensureBotSessionsTable();
+    try {
+      const [rows] = await this.pool.query<RowDataPacket[]>(
+        'SELECT * FROM `BotSessions` WHERE `UserPhone` = ? LIMIT 1',
+        [userPhone.trim()]
+      );
+      if (rows && rows.length > 0) {
+        const row = rows[0];
+        let collectedData = {};
+        if (row.CollectedData) {
+          try {
+            collectedData = JSON.parse(row.CollectedData);
+          } catch {
+            collectedData = {};
+          }
+        }
+        return {
+          userPhone: row.UserPhone,
+          step: row.Step,
+          collectedData
+        };
+      }
+      return null;
+    } catch (err: unknown) {
+      console.error('[MYSQL] getBotSession error:', err);
+      return null;
+    }
+  }
+
+  async saveBotSession(userPhone: string, step: string, collectedData: any): Promise<boolean> {
+    await this.ensureBotSessionsTable();
+    try {
+      const serialized = JSON.stringify(collectedData || {});
+      await this.pool.execute(
+        `INSERT INTO \`BotSessions\` (\`UserPhone\`, \`Step\`, \`CollectedData\`)
+         VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE \`Step\` = VALUES(\`Step\`), \`CollectedData\` = VALUES(\`CollectedData\`)`,
+        [userPhone.trim(), step.trim(), serialized]
+      );
+      return true;
+    } catch (err: unknown) {
+      console.error('[MYSQL] saveBotSession error:', err);
+      return false;
+    }
+  }
+
+  async deleteBotSession(userPhone: string): Promise<boolean> {
+    await this.ensureBotSessionsTable();
+    try {
+      await this.pool.execute('DELETE FROM `BotSessions` WHERE `UserPhone` = ?', [userPhone.trim()]);
+      return true;
+    } catch (err: unknown) {
+      console.error('[MYSQL] deleteBotSession error:', err);
+      return false;
     }
   }
 

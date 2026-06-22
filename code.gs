@@ -615,6 +615,103 @@ function doGet(e) {
     }
 
     // ======================================================
+    // 4b. GET SUBSCRIBE DUMP (From Sheet: Subscribe, raw rows)
+    // ======================================================
+    if (action === 'get_subscribe_dump') {
+      var configuredSubDumpToken = getServerGuardToken();
+      var providedSubDumpToken = String(e.parameter.token || e.parameter.serverToken || '').trim();
+      if (configuredSubDumpToken && providedSubDumpToken !== configuredSubDumpToken) {
+        return createError('Unauthorized get_subscribe_dump read');
+      }
+
+      var subscribeSheet = spreadsheet.getSheetByName('Subscribe');
+      if (!subscribeSheet) {
+        return createJSON({
+          result: 'success',
+          rows: [],
+          offset: 0,
+          nextOffset: 0,
+          count: 0,
+          totalRows: 0,
+          hasMore: false
+        });
+      }
+
+      var subLastRow = getLastDataRow(subscribeSheet);
+      if (!subLastRow) {
+        return createJSON({
+          result: 'success',
+          rows: [],
+          offset: 0,
+          nextOffset: 0,
+          count: 0,
+          totalRows: 0,
+          hasMore: false
+        });
+      }
+
+      var subOffsetRaw = parseInt(String(e.parameter.offset || '0'), 10);
+      var subOffset = isNaN(subOffsetRaw) ? 0 : Math.max(0, subOffsetRaw);
+      var subLimitRaw = parseInt(String(e.parameter.limit || '5000'), 10);
+      var subLimit = isNaN(subLimitRaw) ? 5000 : Math.max(1, Math.min(subLimitRaw, 10000));
+      var subTotalRows = Math.max(0, subLastRow - 1);
+      var subRemaining = Math.max(0, subTotalRows - subOffset);
+      var subFetchRows = Math.min(subLimit, subRemaining);
+
+      if (subFetchRows <= 0) {
+        return createJSON({
+          result: 'success',
+          rows: [],
+          offset: subOffset,
+          nextOffset: subOffset,
+          count: 0,
+          totalRows: subTotalRows,
+          hasMore: false
+        });
+      }
+
+      // Read 15 columns: A..O (1..15)
+      var subValues = getRangeValues(subscribeSheet, 2 + subOffset, 1, subFetchRows, 15);
+      var subRows = subValues.map(function (row) {
+        var rowDate = row[0];
+        var dateTimeText = '';
+        if (rowDate && Object.prototype.toString.call(rowDate) === '[object Date]') {
+          dateTimeText = rowDate.toISOString();
+        } else {
+          dateTimeText = String(rowDate || '').trim();
+        }
+        return {
+          dateTimeRegistration: dateTimeText,
+          user: String(row[1] || '').trim(),
+          pushType: String(row[2] || '').trim(),
+          authJson: String(row[3] || '').trim(),
+          authJsonPc: String(row[4] || '').trim(),
+          fullName: String(row[5] || '').trim(),
+          staus: String(row[6] || '').trim(),
+          exeptionStatus: String(row[7] || '').trim(),
+          exeptionName: String(row[8] || '').trim(),
+          upic: String(row[9] || '').trim(),
+          twoFA: String(row[10] || '').trim(),
+          flutterMobile: String(row[11] || '').trim(),
+          flutterWeb: String(row[12] || '').trim(),
+          yearOfBirth: String(row[13] || '').trim(),
+          userName: String(row[14] || '').trim()
+        };
+      });
+
+      var subNextOffset = subOffset + subRows.length;
+      return createJSON({
+        result: 'success',
+        rows: subRows,
+        offset: subOffset,
+        nextOffset: subNextOffset,
+        count: subRows.length,
+        totalRows: subTotalRows,
+        hasMore: subNextOffset < subTotalRows
+      });
+    }
+
+    // ======================================================
     // 4. GET LOGS DUMP (From Sheet: Logs, raw rows)
     // ======================================================
     if (action === 'get_logs_dump') {
@@ -1061,7 +1158,7 @@ function doPost(e) {
           '',                     // D Auth JSON
           '',                     // E Auth JSON PC
           '',                     // F Full name (legacy/fallback)
-          '1',                    // G Status (active by default for SMS registration flow)
+          '0',                    // G Status (start restricted; external service updates it after verification)
           '',                     // H Exception status
           '',                     // I Alt name
           '',                     // J Reserved

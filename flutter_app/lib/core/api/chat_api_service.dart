@@ -96,6 +96,35 @@ class ChatApiService {
     }
   }
 
+  /// Get current session info (with isRestricted status)
+  Future<SessionResponse?> getSessionInfo() async {
+    try {
+      final response = await _client.get<Map<String, dynamic>>(
+        ApiEndpoints.session,
+        retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 8)),
+      );
+
+      if (!response.isSuccessful) {
+        _client.clearCsrfToken();
+        return null;
+      }
+
+      final body = SessionResponse.fromJson(response.data ?? {});
+      _client.setCsrfToken(body.csrfToken);
+
+      final user = body.user?.trim().toLowerCase();
+      if (!body.authenticated || (user?.isEmpty ?? true)) {
+        _client.clearCsrfToken();
+        return null;
+      }
+
+      return body;
+    } catch (e) {
+      _client.clearCsrfToken();
+      return null;
+    }
+  }
+
   // NOTE: Direct login (createSession) has been removed because it is disabled on the server.
   // All login flows must use the SMS verification code flow via requestSessionCode() and verifySessionCode().
 
@@ -159,10 +188,17 @@ class ChatApiService {
       throw AuthException('יש להזין קוד אימות בן 6 ספרות');
     }
 
+    // The backend holds this request open for up to ~45 s while it waits for
+    // an external service to set the user's final Status, so allow plenty of
+    // headroom and do not retry (a retry here would double the wait).
     final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.verifyCode,
       data: {'user': normalized, 'code': normalizedCode},
-      retryOptions: const RetryOptions(retries: 1, timeout: NetworkTimeouts.sessionTimeout),
+      options: Options(
+        receiveTimeout: NetworkTimeouts.verifyCodeTimeout,
+        sendTimeout: NetworkTimeouts.verifyCodeTimeout,
+      ),
+      retryOptions: const RetryOptions(retries: 0, timeout: NetworkTimeouts.verifyCodeTimeout),
     );
 
     if (!response.isSuccessful) {
@@ -194,6 +230,62 @@ class ChatApiService {
     }
 
     return sessionUser!;
+  }
+
+  /// Verify SMS code and return full SessionResponse
+  Future<SessionResponse> verifySessionCodeResponse(String user, String code) async {
+    final normalized = user.trim().toLowerCase();
+    final normalizedCode = code.trim();
+
+    if (normalized.isEmpty) {
+      throw AuthException('מספר טלפון לא תקין');
+    }
+    if (!RegExp(r'^\d{6}$').hasMatch(normalizedCode)) {
+      throw AuthException('יש להזין קוד אימות בן 6 ספרות');
+    }
+
+    // The backend holds this request open for up to ~45 s while it waits for
+    // an external service to set the user's final Status, so allow plenty of
+    // headroom and do not retry (a retry here would double the wait).
+    final response = await _client.post<Map<String, dynamic>>(
+      ApiEndpoints.verifyCode,
+      data: {'user': normalized, 'code': normalizedCode},
+      options: Options(
+        receiveTimeout: NetworkTimeouts.verifyCodeTimeout,
+        sendTimeout: NetworkTimeouts.verifyCodeTimeout,
+      ),
+      retryOptions: const RetryOptions(retries: 0, timeout: NetworkTimeouts.verifyCodeTimeout),
+    );
+
+    if (!response.isSuccessful) {
+      final body = response.data;
+      final message = (body?['message'] ?? body?['error'] ?? '').toString().trim();
+
+      if (response.statusCode == 400) {
+        throw AuthException('קוד אימות לא תקין');
+      } else if (response.statusCode == 401) {
+        throw AuthException('קוד האימות שגוי או פג תוקף');
+      } else if (response.statusCode == 403) {
+        throw AuthException('המשתמש אינו מורשה');
+      } else if (response.statusCode == 429) {
+        final retryAfter = body?['retryAfterSeconds'] as int?;
+        throw RateLimitException('יותר מדי ניסיונות. נסה שוב בעוד $retryAfter שניות', retryAfter);
+      } else if (message.isNotEmpty) {
+        throw AuthException(message);
+      }
+      throw AuthException('אימות הקוד נכשל');
+    }
+
+    final body = SessionResponse.fromJson(response.data ?? {});
+    _client.setCsrfToken(body.csrfToken);
+
+    final sessionUser = body.user?.trim().toLowerCase();
+    if (!body.authenticated || (sessionUser?.isEmpty ?? true)) {
+      _client.clearCsrfToken();
+      throw AuthException('אימות הקוד נכשל');
+    }
+
+    return body;
   }
 
   /// Clear session (logout)
@@ -2048,6 +2140,94 @@ class ChatApiService {
     if (!response.isSuccessful) {
       throw ApiException(
         _extractErrorMessage(response.data, 'שגיאה במחיקת הקבוצה'),
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Admin: Secretaries Management
+  // ---------------------------------------------------------------------------
+
+  /// List ALL secretaries — super-admin only.
+  Future<List<Map<String, dynamic>>> adminListSecretaries(String user) async {
+    final response = await _client.get<Map<String, dynamic>>(
+      ApiEndpoints.adminSecretaries,
+      queryParameters: {'user': user},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה בטעינת המזכירויות'),
+      );
+    }
+    final data = response.data ?? {};
+    final rawList = data['secretaries'];
+    if (rawList is! List) return [];
+    return rawList
+        .whereType<Map>()
+        .map((e) => e.map((k, v) => MapEntry(k.toString(), v)))
+        .toList();
+  }
+
+  /// Create a new secretary — super-admin only.
+  Future<void> adminCreateSecretary({
+    required String user,
+    required String departName,
+    required String phoneNumber,
+    required int status,
+  }) async {
+    final response = await _client.post<Map<String, dynamic>>(
+      ApiEndpoints.adminSecretaries,
+      queryParameters: {'user': user},
+      data: {
+        'DepartName': departName,
+        'PhoneNumber': phoneNumber,
+        'Status': status,
+      },
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה ביצירת המזכירות'),
+      );
+    }
+  }
+
+  /// Update an existing secretary — super-admin only.
+  Future<void> adminUpdateSecretary({
+    required String user,
+    required int id,
+    required String departName,
+    required String phoneNumber,
+    required int status,
+  }) async {
+    final response = await _client.put<Map<String, dynamic>>(
+      '${ApiEndpoints.adminSecretaries}/$id',
+      queryParameters: {'user': user},
+      data: {
+        'DepartName': departName,
+        'PhoneNumber': phoneNumber,
+        'Status': status,
+      },
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה בעדכון המזכירות'),
+      );
+    }
+  }
+
+  /// Delete a secretary — super-admin only.
+  Future<void> adminDeleteSecretary(String user, int id) async {
+    final response = await _client.delete<Map<String, dynamic>>(
+      '${ApiEndpoints.adminSecretaries}/$id',
+      queryParameters: {'user': user},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה במחיקת המזכירות'),
       );
     }
   }

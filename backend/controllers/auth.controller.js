@@ -38,7 +38,8 @@ function registerAuthController(app, deps = {}) {
         requireAuthorizedUser,
         APP_SERVER_TOKEN,
         BADGE_RESET_ALL_ALLOWED_USERS,
-        lookupUserByWindowsUsername
+        lookupUserByWindowsUsername,
+        mysqlLogsService
     } = deps;
     const resetAllAllowedUserSet = new Set(
         (Array.isArray(BADGE_RESET_ALL_ALLOWED_USERS) ? BADGE_RESET_ALL_ALLOWED_USERS : [])
@@ -143,15 +144,29 @@ function registerAuthController(app, deps = {}) {
         }
     );
 
-    app.get(['/auth/session', '/notify/auth/session'], (req, res) => {
+    app.get(['/auth/session', '/notify/auth/session'], async (req, res) => {
         const user = normalizeUserCandidate(req.authUser);
         const authSession = req.authSession && typeof req.authSession === 'object' ? req.authSession : null;
         if (!user) {
             return res.json({ authenticated: false, user: null });
         }
+
+        let isRestricted = false;
+        if (mysqlLogsService) {
+            try {
+                const authResult = await mysqlLogsService.checkAuth(user);
+                if (authResult && authResult.isRestricted) {
+                    isRestricted = true;
+                }
+            } catch (err) {
+                console.error('[AUTH SESSION] Error checking auth status:', err);
+            }
+        }
+
         return res.json({
             authenticated: true,
             user,
+            isRestricted,
             csrfToken: authSession && authSession.csrfToken ? authSession.csrfToken : null
         });
     });
@@ -339,11 +354,65 @@ function registerAuthController(app, deps = {}) {
                     return res.status(500).json({ status: 'error', message: 'Failed to create session' });
                 }
 
+                // After verifying the SMS code, give the external service time to
+                // process the user and update their final Status on the Subscribe
+                // sheet. The client keeps showing a loader while we hold this
+                // response open. Configurable via env vars:
+                //   AUTH_CODE_POST_VERIFY_STATUS_WAIT_MS (default 45000)
+                //   AUTH_CODE_POST_VERIFY_STATUS_POLL_INTERVAL_MS (default 5000)
+                const parsePositiveInt = (raw, fallback) => {
+                    const n = parseInt(String(raw ?? ''), 10);
+                    return Number.isFinite(n) && n > 0 ? n : fallback;
+                };
+                const totalWaitMs = parsePositiveInt(
+                    process.env.AUTH_CODE_POST_VERIFY_STATUS_WAIT_MS,
+                    45000
+                );
+                const pollIntervalMs = Math.min(
+                    parsePositiveInt(process.env.AUTH_CODE_POST_VERIFY_STATUS_POLL_INTERVAL_MS, 5000),
+                    Math.max(totalWaitMs, 1000)
+                );
+                const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+                let isRestricted = false;
+                if (mysqlLogsService) {
+                    const deadline = Date.now() + totalWaitMs;
+                    let lastResult = null;
+                    // Initial check so callers whose status is already final return
+                    // promptly without waiting the full window.
+                    try {
+                        lastResult = await mysqlLogsService.checkAuth(requestedUser);
+                    } catch (err) {
+                        console.error('[AUTH CODE] Error checking auth status during verification:', err);
+                    }
+                    // Poll until the external service flips the user out of the
+                    // restricted/new state, or the wait window elapses.
+                    while (
+                        lastResult &&
+                        lastResult.isRestricted &&
+                        Date.now() < deadline
+                    ) {
+                        const remaining = deadline - Date.now();
+                        await sleep(Math.min(pollIntervalMs, Math.max(remaining, 0)));
+                        if (Date.now() >= deadline) break;
+                        try {
+                            lastResult = await mysqlLogsService.checkAuth(requestedUser);
+                        } catch (err) {
+                            console.error('[AUTH CODE] Error polling auth status during verification:', err);
+                            break;
+                        }
+                    }
+                    if (lastResult && lastResult.isRestricted) {
+                        isRestricted = true;
+                    }
+                }
+
                 setSessionCookie(res, req, sessionToken.token, sessionToken.expiresAt);
                 return res.json({
                     status: 'success',
                     authenticated: true,
                     user: requestedUser,
+                    isRestricted,
                     expiresAt: sessionToken.expiresAt,
                     csrfToken: sessionToken.csrfToken
                 });
@@ -407,12 +476,25 @@ function registerAuthController(app, deps = {}) {
                     return res.status(500).json({ status: 'error', message: 'Failed to create session' });
                 }
 
+                let isRestricted = false;
+                if (mysqlLogsService) {
+                    try {
+                        const authResult = await mysqlLogsService.checkAuth(matchedUser);
+                        if (authResult && authResult.isRestricted) {
+                            isRestricted = true;
+                        }
+                    } catch (err) {
+                        console.error('[WINDOWS LOGIN] Error checking auth status during login:', err);
+                    }
+                }
+
                 setSessionCookie(res, req, sessionToken.token, sessionToken.expiresAt);
                 console.log('[WINDOWS LOGIN] Auto-login successful for windowsUser:', windowsUser, '→ user:', matchedUser);
                 return res.json({
                     status: 'success',
                     authenticated: true,
                     user: matchedUser,
+                    isRestricted,
                     expiresAt: sessionToken.expiresAt,
                     csrfToken: sessionToken.csrfToken
                 });
