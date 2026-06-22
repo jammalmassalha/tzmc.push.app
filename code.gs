@@ -1158,7 +1158,7 @@ function doPost(e) {
           '',                     // D Auth JSON
           '',                     // E Auth JSON PC
           '',                     // F Full name (legacy/fallback)
-          '0',                    // G Status (start restricted; external service updates it after verification)
+          '',                     // G Status (empty; external service sets the correct value after it processes the new row)
           '',                     // H Exception status
           '',                     // I Alt name
           '',                     // J Reserved

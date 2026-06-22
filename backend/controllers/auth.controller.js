@@ -447,11 +447,13 @@ function registerAuthController(app, deps = {}) {
                     } catch (err) {
                         console.error('[AUTH CODE] Error checking auth status during verification:', err);
                     }
-                    // Poll until the external service flips the user out of the
-                    // restricted/new state, or the wait window elapses.
+                    // Poll only while the status is still empty/pending (external service
+                    // hasn't written the correct value yet).  A status of '0' (explicitly
+                    // restricted) or '1' (active) means the external service has already
+                    // decided — do not wait, use that value as-is.
                     while (
                         lastResult &&
-                        lastResult.isRestricted &&
+                        lastResult.isPending &&
                         Date.now() < deadline
                     ) {
                         const remaining = deadline - Date.now();
