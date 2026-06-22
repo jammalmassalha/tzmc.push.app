@@ -3029,11 +3029,16 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       'type': msg.groupType,
     });
 
+    // Restricted users must not see community broadcast groups.
+    if (group.type == GroupType.community && state.isRestricted) return;
+
     final newGroups = Map<String, ChatGroup>.from(state.groups);
     newGroups[group.id] = group;
     state = state.copyWith(groups: newGroups);
 
-    _db.upsertGroup(group).catchError((_) {});
+    _db.upsertGroup(group).catchError((e) {
+      debugPrint('[ChatStore] _handleGroupUpdate: DB upsert failed (non-fatal): $e');
+    });
   }
 
   void _handleConnectionChange(bool connected) {
