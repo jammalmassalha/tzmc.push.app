@@ -427,9 +427,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // and supplemented by the background-notification tray (step 4).
       try {
         final persisted = await _db.getPersistedState();
+        // Restricted users must not see community groups even from the cache.
+        final restoredGroups = state.isRestricted
+            ? persisted.groups.where((g) => g.type != GroupType.community).toList()
+            : persisted.groups;
         state = state.copyWith(
           contacts: Map.fromEntries(persisted.contacts.map((c) => MapEntry(c.username, c))),
-          groups: Map.fromEntries(persisted.groups.map((g) => MapEntry(g.id, g))),
+          groups: Map.fromEntries(restoredGroups.map((g) => MapEntry(g.id, g))),
           messagesByChat: _filterDeletedChatMessages(
             _groupMessagesByChat(persisted.messages),
             deletedChats,
@@ -445,9 +449,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           try {
             final webPersisted = await WebChatStorage.getPersistedState(normalized);
             if (webPersisted != null) {
+              final restoredGroups = state.isRestricted
+                  ? webPersisted.groups.where((g) => g.type != GroupType.community).toList()
+                  : webPersisted.groups;
               state = state.copyWith(
                 contacts: Map.fromEntries(webPersisted.contacts.map((c) => MapEntry(c.username, c))),
-                groups: Map.fromEntries(webPersisted.groups.map((g) => MapEntry(g.id, g))),
+                groups: Map.fromEntries(restoredGroups.map((g) => MapEntry(g.id, g))),
                 messagesByChat: _filterDeletedChatMessages(
                   _groupMessagesByChat(webPersisted.messages),
                   deletedChats,
@@ -610,9 +617,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   Future<void> _pullGroups() async {
     try {
       final groupList = await _api.getGroups();
-      final groupMap = Map.fromEntries(groupList.map((g) => MapEntry(g.id, g)));
+      // Restricted users should not see any community broadcast groups
+      // ('דוברות', 'אקרדיטציה', etc.).  Filter them out before updating state.
+      final filteredList = state.isRestricted
+          ? groupList.where((g) => g.type != GroupType.community).toList()
+          : groupList;
+      final groupMap = Map.fromEntries(filteredList.map((g) => MapEntry(g.id, g)));
       state = state.copyWith(groups: groupMap);
-      await _db.upsertGroups(groupList);
+      await _db.upsertGroups(filteredList);
     } catch (e) {
       // Use cached data on error
     }
@@ -707,7 +719,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     newGroups[group.id] = group;
     state = state.copyWith(groups: newGroups);
     setCurrentChat(group.id);
-    await _db.upsertGroup(group);
+    try {
+      await _db.upsertGroup(group);
+    } catch (_) {
+      // DB unavailable on web; state is already updated and will be persisted
+      // via WebChatStorage through _schedulePersistence() below.
+    }
     _schedulePersistence();
 
     final membersToNotify = group.members.where((m) => m != user).toList();
@@ -772,7 +789,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final newGroups = Map<String, ChatGroup>.from(state.groups);
     newGroups[groupId] = updated;
     state = state.copyWith(groups: newGroups);
-    await _db.upsertGroup(updated);
+    try {
+      await _db.upsertGroup(updated);
+    } catch (_) {
+      // DB unavailable on web; in-memory state is already updated.
+    }
     _schedulePersistence();
 
     final membersToNotify = group.members.where((m) => m != user).toList();
@@ -819,7 +840,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final newGroups = Map<String, ChatGroup>.from(state.groups);
     newGroups[groupId] = updated;
     state = state.copyWith(groups: newGroups);
-    await _db.upsertGroup(updated);
+    try {
+      await _db.upsertGroup(updated);
+    } catch (_) {
+      // DB unavailable on web; in-memory state is already updated.
+    }
     _schedulePersistence();
 
     final membersToNotify = updatedMembers.where((m) => m != user).toList();
@@ -868,7 +893,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final newGroups = Map<String, ChatGroup>.from(state.groups);
     newGroups[groupId] = updated;
     state = state.copyWith(groups: newGroups);
-    await _db.upsertGroup(updated);
+    try {
+      await _db.upsertGroup(updated);
+    } catch (_) {
+      // DB unavailable on web; in-memory state is already updated.
+    }
     _schedulePersistence();
 
     // Notify remaining members and also the removed member so their client
@@ -993,6 +1022,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
 
     _lastGapAnalysisTime = now;
+
+    // For restricted users, always refresh the contacts list (the active
+    // secretaries returned by the server) so that any changes (new secretary
+    // added, phone number updated) are picked up on the next poll / manual
+    // pull-to-refresh without requiring a full sync.
+    if (state.isRestricted) {
+      await _pullContacts();
+    }
 
     try {
       int latestTimestamp;
@@ -2996,7 +3033,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     newGroups[group.id] = group;
     state = state.copyWith(groups: newGroups);
 
-    _db.upsertGroup(group);
+    _db.upsertGroup(group).catchError((_) {});
   }
 
   void _handleConnectionChange(bool connected) {

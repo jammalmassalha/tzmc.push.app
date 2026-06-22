@@ -432,70 +432,76 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
                 break;
             }
           },
-          itemBuilder: (context) => [
-            PopupMenuItem(
-              value: 'refresh',
-              child: Row(
-                children: [
-                  const Icon(Icons.refresh, size: 20),
-                  const SizedBox(width: 12),
-                  const Text('רענון'),
-                ],
-              ),
-            ),
-            PopupMenuItem(
-              value: 'fullsync',
-              child: Row(
-                children: [
-                  const Icon(Icons.sync, size: 20),
-                  const SizedBox(width: 12),
-                  const Text('סנכרון הודעות'),
-                ],
-              ),
-            ),
-            PopupMenuItem(
-              value: 'settings',
-              child: Row(
-                children: [
-                  const Icon(Icons.settings_outlined, size: 20),
-                  const SizedBox(width: 12),
-                  const Text('הגדרות'),
-                ],
-              ),
-            ),
-            PopupMenuItem(
-              value: 'accreditation',
-              child: Row(
-                children: [
-                  const Icon(Icons.auto_awesome_outlined, size: 20),
-                  const SizedBox(width: 12),
-                  const Text('סוכן אקרדיטציה'),
-                ],
-              ),
-            ),
-            if (_canAccessAdminGroups)
+          itemBuilder: (context) {
+            final isMenuRestricted = ref.read(isUserRestrictedProvider);
+            return [
               PopupMenuItem(
-                value: 'secretaries_admin',
+                value: 'refresh',
                 child: Row(
                   children: [
-                    const Icon(Icons.settings_phone, size: 20),
+                    const Icon(Icons.refresh, size: 20),
                     const SizedBox(width: 12),
-                    const Text('ניהול מזכירויות מחלקתיות'),
+                    const Text('רענון'),
                   ],
                 ),
               ),
-            const PopupMenuDivider(),
-            PopupMenuItem(
-              value: 'logout',
-              child: Row(
-                children: [
-                  Icon(Icons.logout, size: 20, color: Theme.of(context).colorScheme.error),
-                  const SizedBox(width: 12),
-                  Text('התנתקות', style: TextStyle(color: Theme.of(context).colorScheme.error)),
-                ],
+              if (!isMenuRestricted)
+                PopupMenuItem(
+                  value: 'fullsync',
+                  child: Row(
+                    children: [
+                      const Icon(Icons.sync, size: 20),
+                      const SizedBox(width: 12),
+                      const Text('סנכרון הודעות'),
+                    ],
+                  ),
+                ),
+              if (!isMenuRestricted)
+                PopupMenuItem(
+                  value: 'settings',
+                  child: Row(
+                    children: [
+                      const Icon(Icons.settings_outlined, size: 20),
+                      const SizedBox(width: 12),
+                      const Text('הגדרות'),
+                    ],
+                  ),
+                ),
+              if (!isMenuRestricted)
+                PopupMenuItem(
+                  value: 'accreditation',
+                  child: Row(
+                    children: [
+                      const Icon(Icons.auto_awesome_outlined, size: 20),
+                      const SizedBox(width: 12),
+                      const Text('סוכן אקרדיטציה'),
+                    ],
+                  ),
+                ),
+              if (!isMenuRestricted && _canAccessAdminGroups)
+                PopupMenuItem(
+                  value: 'secretaries_admin',
+                  child: Row(
+                    children: [
+                      const Icon(Icons.settings_phone, size: 20),
+                      const SizedBox(width: 12),
+                      const Text('ניהול מזכירויות מחלקתיות'),
+                    ],
+                  ),
+                ),
+              const PopupMenuDivider(),
+              PopupMenuItem(
+                value: 'logout',
+                child: Row(
+                  children: [
+                    Icon(Icons.logout, size: 20, color: Theme.of(context).colorScheme.error),
+                    const SizedBox(width: 12),
+                    Text('התנתקות', style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ];
+          },
         ),
       ],
     );
