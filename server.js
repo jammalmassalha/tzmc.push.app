@@ -2418,7 +2418,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
                     await mysqlLogsService.saveBotSession(user, 'completed', collectedData);
 
                     // Send summary to secretary
-                    const summaryText = `קבלת פנייה חדשה ממשתמש חסום. להלן הפרטים שנאספו על ידי הבוט:\nת.ז: ${collectedData.id}\nשם מלא: ${collectedData.name}\nמגדר: ${collectedData.gender}\nתאריך לידה: ${collectedData.dob}`;
+                    const summaryText = `קבלת פנייה חדשה. להלן הפרטים שנאספו על ידי הבוט:\nת.ז: ${collectedData.id}\nשם מלא: ${collectedData.name}\nמגדר: ${collectedData.gender}\nתאריך לידה: ${collectedData.dob}`;
                     await sendBotMessage(
                         user,
                         secretary.PhoneNumber,
@@ -7245,7 +7245,7 @@ app.post(
 
             if (secretary) {
                 const secName = `מזכירות ${secretary.DepartName}`;
-                const summaryText = `קבלת פנייה חדשה ממשתמש חסום. להלן הפרטים שנאספו על ידי הבוט:\nת.ז: ${collectedData.id}\nשם מלא: ${collectedData.name}\nמגדר: ${collectedData.gender}\nתאריך לידה: ${collectedData.dob}`;
+                const summaryText = `קבלת פנייה חדשה. להלן הפרטים שנאספו על ידי הבוט:\nת.ז: ${collectedData.id}\nשם מלא: ${collectedData.name}\nמגדר: ${collectedData.gender}\nתאריך לידה: ${collectedData.dob}`;
                 await sendBotMessage(user, secretary.PhoneNumber, summaryText, user);
                 await sendBotMessage(secretary.PhoneNumber, user, "תודה רבה! הפרטים שלך הועברו למזכירות המחלקה. כעת תוכל לשוחח איתנו בחופשיות, לשלוח קבצים או תמונות.", secName);
             }
