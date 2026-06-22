@@ -1676,6 +1676,30 @@ function doPost(e) {
     }
 
     // ======================================================
+    // UPDATE EXEPTION NAME (column I of Subscribe sheet)
+    // ======================================================
+    if (data.action === 'update_exeption_name') {
+      if (configuredServerToken && providedServerToken !== configuredServerToken) {
+        return createJSON({ result: 'error', message: 'Unauthorized update_exeption_name request' });
+      }
+      var uenUser = normalizePhone(String(data.user || '').trim());
+      var uenName = String(data.name || '').trim();
+      if (!uenUser || !uenName) {
+        return createJSON({ result: 'error', message: 'Missing user or name' });
+      }
+      var uenSheet = spreadsheet.getSheetByName('Subscribe');
+      if (!uenSheet) {
+        return createJSON({ result: 'error', message: 'Sheet Subscribe not found' });
+      }
+      var uenRow = findUserRow(uenSheet, uenUser);
+      if (!uenRow) {
+        return createJSON({ result: 'error', message: 'User not found in Subscribe sheet' });
+      }
+      uenSheet.getRange(uenRow, 9).setValue(uenName); // I: ExeptionName
+      return createJSON({ result: 'success', updatedRows: 1 });
+    }
+
+    // ======================================================
     // 9. FLUTTER APP CONNECTION (column L = mobile, M = web)
     // ======================================================
     // Triggered by the backend `/flutter/register-fcm` and
