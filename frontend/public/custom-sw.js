@@ -966,6 +966,14 @@ self.addEventListener('message', (event) => {
     if (typeof event.waitUntil === 'function') {
       event.waitUntil(drainTask);
     }
+    return;
+  }
+
+  if (data.action === 'clear-pending-push-payloads') {
+    const clearTask = persistPendingPushQueue([]);
+    if (typeof event.waitUntil === 'function') {
+      event.waitUntil(clearTask);
+    }
   }
 });
 

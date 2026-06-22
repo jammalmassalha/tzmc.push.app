@@ -829,7 +829,13 @@ export class ChatStoreService {
     const previousUser = this.currentUser();
     if (previousUser) {
       this.clearShuttleReminderTimersForUser(previousUser);
+      if (previousUser !== user) {
+        this.clearLocalChatCacheForUser(previousUser, { keepOutbox: false });
+      }
     }
+
+    this.clearLocalChatCacheForUser(user, { keepOutbox: false });
+    await this.clearPendingPushPayloadsInServiceWorker();
 
     this.currentUser.set(user);
     this.initializedUser = null;
@@ -8592,6 +8598,21 @@ export class ChatStoreService {
   public async drainAllPendingPushPayloads(): Promise<void> {
     this.flushPendingServiceWorkerMessages();
     await this.consumePendingPushPayloadsFromServiceWorker();
+  }
+
+  private async clearPendingPushPayloadsInServiceWorker(): Promise<void> {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+      return;
+    }
+    try {
+      const targetWorker = await this.resolveServiceWorkerMessageTarget();
+      if (!targetWorker) {
+        return;
+      }
+      targetWorker.postMessage({ action: 'clear-pending-push-payloads' });
+    } catch {
+      // Best-effort only.
+    }
   }
 
   private processServiceWorkerMessageData(

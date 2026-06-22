@@ -18,8 +18,12 @@ import '../models/chat_models.dart';
 /// Maximum number of messages to keep per chat in the localStorage snapshot.
 const int _maxMessagesPerChat = 200;
 
-/// localStorage key for the serialised state blob.
-const String _stateKey = 'tzmc_chat_state_v1';
+/// localStorage key prefix for the serialised state blob.
+const String _stateKeyPrefix = 'tzmc_chat_state_v1';
+
+String _normalizeUser(String user) => user.trim().toLowerCase();
+
+String _stateKeyForUser(String user) => '$_stateKeyPrefix:${_normalizeUser(user)}';
 
 /// A lightweight persistence layer backed by `shared_preferences` (localStorage
 /// on Flutter web).  All methods are static and best-effort: errors are caught
@@ -29,10 +33,10 @@ class WebChatStorage {
 
   /// Restore previously persisted state.  Returns `null` when no data is
   /// available or when deserialization fails.
-  static Future<PersistedChatState?> getPersistedState() async {
+  static Future<PersistedChatState?> getPersistedState(String user) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final json = prefs.getString(_stateKey);
+      final json = prefs.getString(_stateKeyForUser(user));
       if (json == null || json.isEmpty) return null;
 
       final data = jsonDecode(json) as Map<String, dynamic>;
@@ -71,7 +75,7 @@ class WebChatStorage {
   ///
   /// Messages are capped at [_maxMessagesPerChat] per chat (most recent kept)
   /// to avoid hitting the localStorage size limit.
-  static Future<void> persistState(PersistedChatState state) async {
+  static Future<void> persistState(String user, PersistedChatState state) async {
     try {
       // Collect messages, capping per chat.
       final msgsByChat = <String, List<ChatMessage>>{};
@@ -92,17 +96,17 @@ class WebChatStorage {
       };
 
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_stateKey, jsonEncode(data));
+      await prefs.setString(_stateKeyForUser(user), jsonEncode(data));
     } catch (_) {
       // Best-effort: failure is non-fatal.
     }
   }
 
   /// Remove all persisted data from localStorage.
-  static Future<void> clear() async {
+  static Future<void> clear(String user) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(_stateKey);
+      await prefs.remove(_stateKeyForUser(user));
     } catch (_) {
       // Ignore.
     }

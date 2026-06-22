@@ -60,7 +60,7 @@ const String kPendingChatUpdatesKey = 'tzmc_pending_chat_updates_v1';
 /// Stores a JSON object of `{ chatId: deletedAtEpochMs }` so a locally deleted
 /// chat stays hidden across app restarts and full syncs until newer messages
 /// arrive after the stored delete timestamp.
-const String kDeletedChatsKey = 'tzmc_deleted_chats_v1';
+const String kDeletedChatsKeyPrefix = 'tzmc_deleted_chats_v1';
 
 // ---------------------------------------------------------------------------
 // Community group seed data (mirrors Angular's SEED_COMMUNITY_GROUPS)
@@ -294,6 +294,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// would otherwise show a duplicate "incoming from me" bubble).
   String? get currentUser => _currentUser;
 
+  String _deletedChatsKeyForUser(String user) => '$kDeletedChatsKeyPrefix:${user.trim().toLowerCase()}';
+
   @override
   ChatState build() {
     _api = ref.watch(chatApiServiceProvider);
@@ -371,7 +373,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     state = state.copyWith(isLoading: true, isRestricted: isRestricted);
 
     try {
-      final deletedChats = await _readDeletedChats();
+      final deletedChats = await _readDeletedChats(normalized);
       state = state.copyWith(deletedChats: deletedChats);
 
       // 1. Restore from local database (best-effort).
@@ -406,7 +408,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // Try restoring from the shared_preferences-based localStorage snapshot.
         if (kIsWeb) {
           try {
-            final webPersisted = await WebChatStorage.getPersistedState();
+            final webPersisted = await WebChatStorage.getPersistedState(normalized);
             if (webPersisted != null) {
               state = state.copyWith(
                 contacts: Map.fromEntries(webPersisted.contacts.map((c) => MapEntry(c.username, c))),
@@ -2570,7 +2572,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     );
 
     await _clearChatFromPendingTray(normalized);
-    await _writeDeletedChats(newDeletedChats);
+    final user = _currentUser;
+    if (user != null && user.trim().isNotEmpty) {
+      await _writeDeletedChats(user, newDeletedChats);
+    }
     _schedulePersistence();
     return true;
   }
@@ -3052,6 +3057,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   Future<void> _persistState() async {
     try {
+      final user = _currentUser;
+      if (user == null || user.trim().isEmpty) {
+        return;
+      }
       final allMessages = <ChatMessage>[];
       for (final messages in state.messagesByChat.values) {
         allMessages.addAll(messages);
@@ -3070,20 +3079,20 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // Drift DB unavailable (e.g. web without sqlite3.wasm).
         // Fall back to shared_preferences-based localStorage snapshot.
         if (kIsWeb) {
-          await WebChatStorage.persistState(snapshot);
+          await WebChatStorage.persistState(user, snapshot);
         }
       }
-      await _writeDeletedChats(state.deletedChats);
+      await _writeDeletedChats(user, state.deletedChats);
     } catch (_) {
       // Persistence failure is non-fatal – data remains available in memory
       // for the current session and will be retried on the next trigger.
     }
   }
 
-  Future<Map<String, int>> _readDeletedChats() async {
+  Future<Map<String, int>> _readDeletedChats(String user) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final json = prefs.getString(kDeletedChatsKey);
+      final json = prefs.getString(_deletedChatsKeyForUser(user));
       if (json == null || json.trim().isEmpty) return const {};
       final decoded = jsonDecode(json);
       if (decoded is! Map) return const {};
@@ -3102,14 +3111,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
   }
 
-  Future<void> _writeDeletedChats(Map<String, int> deletedChats) async {
+  Future<void> _writeDeletedChats(String user, Map<String, int> deletedChats) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       if (deletedChats.isEmpty) {
-        await prefs.remove(kDeletedChatsKey);
+        await prefs.remove(_deletedChatsKeyForUser(user));
         return;
       }
-      await prefs.setString(kDeletedChatsKey, jsonEncode(deletedChats));
+      await prefs.setString(_deletedChatsKeyForUser(user), jsonEncode(deletedChats));
     } catch (_) {
       // Best-effort local persistence; in-memory state remains authoritative.
     }
@@ -3146,14 +3155,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _persistTimer = null;
 
     // Reset per-session tracking fields.
+    final previousUser = _currentUser;
     _currentUser = null;
     _lastGapAnalysisTime = 0;
 
     await _db.clearAll();
-    if (kIsWeb) {
-      await WebChatStorage.clear();
+    if (kIsWeb && previousUser != null && previousUser.trim().isNotEmpty) {
+      await WebChatStorage.clear(previousUser);
     }
-    await _writeDeletedChats(const {});
+    if (previousUser != null && previousUser.trim().isNotEmpty) {
+      await _writeDeletedChats(previousUser, const {});
+    }
 
     // Clear the FCM background-notification pending tray so that stale unread
     // counts written before a logout, update, or reinstall are never replayed

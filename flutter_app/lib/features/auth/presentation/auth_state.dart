@@ -103,6 +103,13 @@ class AuthNotifier extends Notifier<AuthState> {
 
       if (sessionInfo != null) {
         final sessionUser = sessionInfo.user?.trim().toLowerCase() ?? cachedUser ?? '';
+        if (cachedUser != null && cachedUser.trim().toLowerCase() != sessionUser) {
+          try {
+            await ref.read(chatStoreProvider.notifier).clearAll();
+          } catch (e) {
+            _logger.w('Error clearing chat cache for switched session user: $e');
+          }
+        }
         await _secureStorage.write(key: _userKey, value: sessionUser);
         final cachedPhone = await _secureStorage.read(key: _phoneKey);
         state = AuthAuthenticated(
@@ -203,6 +210,11 @@ class AuthNotifier extends Notifier<AuthState> {
         code,
       );
       final user = sessionResponse.user?.trim().toLowerCase() ?? currentState.phoneNumber;
+      try {
+        await ref.read(chatStoreProvider.notifier).clearAll();
+      } catch (e) {
+        _logger.w('Error clearing chat cache after verify-code login: $e');
+      }
       await _secureStorage.write(key: _userKey, value: user);
       await _secureStorage.write(key: _phoneKey, value: currentState.phoneNumber);
       state = AuthAuthenticated(
