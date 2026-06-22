@@ -2251,8 +2251,13 @@ export class MysqlLogsService {
       if (status === '1' || exceptionStatus === '1') {
         return { status: 'success', fullName, isActive: true };
       }
-      // Any non-active status (including '0', empty string, or NULL stored from a
-      // numeric-0 cell in the Google Sheet) means the user is restricted, not inactive.
+      // An empty status means the record has not yet been processed by the licenser
+      // service on the other server.  Return isPending so the caller can wait for the
+      // status to be populated before sending the SMS code.
+      if (!status) {
+        return { status: 'success', fullName, isActive: true, isRestricted: true, isPending: true };
+      }
+      // Any other non-active status (e.g. '0') means the user is explicitly restricted.
       // This is consistent with getAllContacts which maps any non-'1' status to restricted.
       return { status: 'success', fullName, isActive: true, isRestricted: true };
     } catch (err: unknown) {

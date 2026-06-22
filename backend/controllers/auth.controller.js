@@ -248,26 +248,26 @@ function registerAuthController(app, deps = {}) {
                     }
                 }
 
-                // For users whose Subscribe-table status is restricted
-                // (status === '0' and no exception override), give the employment
-                // DB time to activate the account before we dispatch the SMS code.
-                // This closes the race window where a newly hired employee receives
-                // the code before their record is promoted from restricted → active,
-                // which was causing the restricted UI to flash incorrectly.
+                // When a user's Subscribe-table status is empty it means the licenser
+                // service on the other server has not yet processed the record.  Poll
+                // the Subscribe table until the status column is populated (non-empty),
+                // so the correct UI (active vs. restricted) is shown when the user logs
+                // in with the SMS code.  A status of '0' means the other server has
+                // already marked the user as restricted — no wait is needed in that case.
                 //
                 // Configurable via env vars:
                 //   LICENSER_WAIT_MS            – total wait ceiling (default 45 000 ms)
                 //   LICENSER_POLL_INTERVAL_MS   – poll cadence         (default 3 000 ms)
-                if (licenserService && mysqlLogsService) {
+                if (mysqlLogsService) {
                     let authResult = null;
                     try {
                         authResult = await mysqlLogsService.checkAuth(requestedUser);
                     } catch (authCheckErr) {
-                        console.error('[AUTH CODE] Licenser pre-check: could not read Subscribe table:', authCheckErr && authCheckErr.message);
+                        console.error('[AUTH CODE] Status pre-check: could not read Subscribe table:', authCheckErr && authCheckErr.message);
                     }
 
-                    const isRestricted = authResult && authResult.isRestricted === true;
-                    if (isRestricted) {
+                    const isPending = authResult && authResult.isPending === true;
+                    if (isPending) {
                         const parsePositiveInt = (raw, fallback) => {
                             const n = parseInt(String(raw ?? ''), 10);
                             return Number.isFinite(n) && n > 0 ? n : fallback;
@@ -282,32 +282,29 @@ function registerAuthController(app, deps = {}) {
                         );
                         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-                        console.log('[AUTH CODE] Licenser: restricted user', requestedUser, '— polling employ table for up to', totalWaitMs, 'ms');
+                        console.log('[AUTH CODE] Status pending for user', requestedUser, '— polling Subscribe table for up to', totalWaitMs, 'ms');
                         const deadline = Date.now() + totalWaitMs;
-                        let foundInEmployTable = false;
-                        // Initial check — if already present, no need to wait.
-                        try {
-                            foundInEmployTable = await licenserService.checkPhoneInEmployTable(requestedUser);
-                        } catch (err) {
-                            console.error('[AUTH CODE] Licenser: employ-table initial check error:', err && err.message);
-                        }
+                        let statusResolved = false;
 
-                        while (!foundInEmployTable && Date.now() < deadline) {
+                        while (!statusResolved && Date.now() < deadline) {
                             const remaining = deadline - Date.now();
                             await sleep(Math.min(pollIntervalMs, Math.max(remaining, 0)));
                             if (Date.now() >= deadline) break;
                             try {
-                                foundInEmployTable = await licenserService.checkPhoneInEmployTable(requestedUser);
+                                const pollResult = await mysqlLogsService.checkAuth(requestedUser);
+                                if (pollResult && !pollResult.isPending) {
+                                    statusResolved = true;
+                                }
                             } catch (err) {
-                                console.error('[AUTH CODE] Licenser: employ-table poll error:', err && err.message);
+                                console.error('[AUTH CODE] Subscribe table poll error:', err && err.message);
                                 break;
                             }
                         }
 
-                        if (foundInEmployTable) {
-                            console.log('[AUTH CODE] Licenser: phone', requestedUser, 'confirmed in employ table — proceeding to send SMS');
+                        if (statusResolved) {
+                            console.log('[AUTH CODE] Status resolved for user', requestedUser, '— proceeding to send SMS');
                         } else {
-                            console.log('[AUTH CODE] Licenser: phone', requestedUser, 'not found in employ table after', totalWaitMs, 'ms — sending SMS anyway');
+                            console.log('[AUTH CODE] Status still pending for user', requestedUser, 'after', totalWaitMs, 'ms — sending SMS anyway');
                         }
                     }
                 }
