@@ -358,18 +358,18 @@ function registerAuthController(app, deps = {}) {
                 // process the user and update their final Status on the Subscribe
                 // sheet. The client keeps showing a loader while we hold this
                 // response open. Configurable via env vars:
-                //   AUTH_CODE_POST_VERIFY_STATUS_WAIT_MS (default 45000)
-                //   AUTH_CODE_POST_VERIFY_STATUS_POLL_INTERVAL_MS (default 5000)
+                //   AUTH_CODE_POST_VERIFY_STATUS_WAIT_MS (default 8000)
+                //   AUTH_CODE_POST_VERIFY_STATUS_POLL_INTERVAL_MS (default 2000)
                 const parsePositiveInt = (raw, fallback) => {
                     const n = parseInt(String(raw ?? ''), 10);
                     return Number.isFinite(n) && n > 0 ? n : fallback;
                 };
                 const totalWaitMs = parsePositiveInt(
                     process.env.AUTH_CODE_POST_VERIFY_STATUS_WAIT_MS,
-                    45000
+                    8000
                 );
                 const pollIntervalMs = Math.min(
-                    parsePositiveInt(process.env.AUTH_CODE_POST_VERIFY_STATUS_POLL_INTERVAL_MS, 5000),
+                    parsePositiveInt(process.env.AUTH_CODE_POST_VERIFY_STATUS_POLL_INTERVAL_MS, 2000),
                     Math.max(totalWaitMs, 1000)
                 );
                 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

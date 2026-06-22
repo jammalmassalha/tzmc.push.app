@@ -762,8 +762,6 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   }
 
   Widget _buildChatsTab() {
-    final isRestricted = ref.watch(isUserRestrictedProvider);
-    if (isRestricted) return const SecretaryBotScreen();
     return const ChatListScreen();
   }
 
@@ -897,7 +895,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   void _recomputeVisibleTabs() {
     final isRestricted = ref.read(isUserRestrictedProvider);
     if (isRestricted) {
-      _visibleTabs = [MainTab.chats];
+      _visibleTabs = [MainTab.chats, MainTab.secretaryBot];
       return;
     }
 
