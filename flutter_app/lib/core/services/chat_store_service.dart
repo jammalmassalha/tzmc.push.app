@@ -193,7 +193,7 @@ class ChatState {
         if (a.lastTimestamp != b.lastTimestamp) {
           return b.lastTimestamp.compareTo(a.lastTimestamp);
         }
-        return a.title.toLowerCase().localeCompare(b.title.toLowerCase());
+        return a.title.toLowerCase().compareTo(b.title.toLowerCase());
       });
       return items;
     }
