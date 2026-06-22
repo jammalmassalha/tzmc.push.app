@@ -127,6 +127,11 @@ class ApiEndpoints {
   // Admin: Secretaries Management
   static const String adminSecretaries = '/api/admin/secretaries';
 
+  // Secretary Bot
+  static const String secretaryBotStatus = '/api/secretary-bot/status';
+  static const String secretaryBotSubmit = '/api/secretary-bot/submit';
+  static const String secretaryBotReset = '/api/secretary-bot/reset';
+
   // Accreditation AI Agent
   static const String accreditationAgent = '/accreditation/ask';
 }

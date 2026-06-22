@@ -24,6 +24,7 @@ import '../../shuttle/presentation/shuttle_screen.dart';
 import '../../admin/presentation/admin_groups_screen.dart';
 import '../../admin/presentation/admin_secretaries_screen.dart';
 import '../../accreditation_agent/presentation/accreditation_agent_screen.dart';
+import '../../secretary_bot/presentation/secretary_bot_screen.dart';
 import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
 import 'chat_list_screen.dart';
@@ -41,7 +42,8 @@ enum MainTab {
   passwordReset,
   accessibility,
   settings,
-  adminGroups
+  adminGroups,
+  secretaryBot,
 }
 
 const List<String> _kHelpdeskAllowedUsers = [
@@ -580,6 +582,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         return Icons.settings_outlined;
       case MainTab.adminGroups:
         return Icons.admin_panel_settings_outlined;
+      case MainTab.secretaryBot:
+        return Icons.support_agent_outlined;
     }
   }
 
@@ -603,6 +607,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         return Icons.settings;
       case MainTab.adminGroups:
         return Icons.admin_panel_settings;
+      case MainTab.secretaryBot:
+        return Icons.support_agent;
     }
   }
 
@@ -779,6 +785,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         return _buildSettingsTab();
       case MainTab.adminGroups:
         return _buildAdminGroupsTab();
+      case MainTab.secretaryBot:
+        return _buildSecretaryBotTab();
     }
   }
 
@@ -838,6 +846,12 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
           activeIcon: Icon(Icons.admin_panel_settings),
           label: 'ניהול קבוצות',
         );
+      case MainTab.secretaryBot:
+        return const BottomNavigationBarItem(
+          icon: Icon(Icons.support_agent_outlined),
+          activeIcon: Icon(Icons.support_agent),
+          label: 'הזדהות',
+        );
     }
   }
 
@@ -865,6 +879,10 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     return const AdminGroupsScreen();
   }
 
+  Widget _buildSecretaryBotTab() {
+    return const SecretaryBotScreen();
+  }
+
   Widget _buildAccessibilityTab() {
     return const _AccessibilitySettingsScreen();
   }
@@ -877,7 +895,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   void _recomputeVisibleTabs() {
     final isRestricted = ref.read(isUserRestrictedProvider);
     if (isRestricted) {
-      _visibleTabs = [MainTab.chats];
+      _visibleTabs = [MainTab.secretaryBot, MainTab.chats];
       return;
     }
 
@@ -996,6 +1014,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         return 'הגדרות';
       case MainTab.adminGroups:
         return 'ניהול קבוצות';
+      case MainTab.secretaryBot:
+        return 'הזדהות';
     }
   }
 

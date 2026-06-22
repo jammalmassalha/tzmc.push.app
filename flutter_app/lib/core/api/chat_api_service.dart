@@ -2233,6 +2233,61 @@ class ChatApiService {
   }
 
   // ---------------------------------------------------------------------------
+  // Secretary Bot
+  // ---------------------------------------------------------------------------
+
+  /// Returns the current bot session state for [user]: step and collectedData.
+  Future<Map<String, dynamic>> getSecretaryBotStatus(String user) async {
+    final response = await _client.get<Map<String, dynamic>>(
+      ApiEndpoints.secretaryBotStatus,
+      queryParameters: {'user': user},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה בטעינת מצב הבוט'),
+      );
+    }
+    return _coerceJsonMap(response.data);
+  }
+
+  /// Submits the collected bot data (id, name, gender, dob) and marks the
+  /// session as completed. Triggers the secretary notification on the server.
+  Future<void> submitSecretaryBot({
+    required String user,
+    required String id,
+    required String name,
+    required String gender,
+    required String dob,
+  }) async {
+    final response = await _client.post<Map<String, dynamic>>(
+      ApiEndpoints.secretaryBotSubmit,
+      queryParameters: {'user': user},
+      data: {'id': id, 'name': name, 'gender': gender, 'dob': dob},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 15)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה בשליחת פרטי הבוט'),
+      );
+    }
+  }
+
+  /// Resets the bot session for [user] so they can start over.
+  Future<void> resetSecretaryBot(String user) async {
+    final response = await _client.post<Map<String, dynamic>>(
+      ApiEndpoints.secretaryBotReset,
+      queryParameters: {'user': user},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה באיפוס הבוט'),
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Accreditation AI Agent
   // ---------------------------------------------------------------------------
 

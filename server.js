@@ -2366,30 +2366,11 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
                     await sendBotMessage(
                         secretary.PhoneNumber,
                         user,
-                        "תודה. אנא הזן מיקום/מחלקה:",
-                        secName
-                    );
-                    return { status: 'success', details: { success: 1, failed: 0 } };
-                } else if (currentStep === '3') {
-                    if (!messageText) {
-                        await sendBotMessage(
-                            secretary.PhoneNumber,
-                            user,
-                            "אנא הזן מיקום/מחלקה תקינים:",
-                            secName
-                        );
-                        return { status: 'success', details: { success: 1, failed: 0 } };
-                    }
-                    collectedData.location = messageText;
-                    await mysqlLogsService.saveBotSession(user, '4', collectedData);
-                    await sendBotMessage(
-                        secretary.PhoneNumber,
-                        user,
                         "תודה. אנא הזן מגדר (זכר/נקבה):",
                         secName
                     );
                     return { status: 'success', details: { success: 1, failed: 0 } };
-                } else if (currentStep === '4') {
+                } else if (currentStep === '3') {
                     if (!messageText) {
                         await sendBotMessage(
                             secretary.PhoneNumber,
@@ -2400,7 +2381,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
                         return { status: 'success', details: { success: 1, failed: 0 } };
                     }
                     collectedData.gender = messageText;
-                    await mysqlLogsService.saveBotSession(user, '5', collectedData);
+                    await mysqlLogsService.saveBotSession(user, '4', collectedData);
                     await sendBotMessage(
                         secretary.PhoneNumber,
                         user,
@@ -2408,7 +2389,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
                         secName
                     );
                     return { status: 'success', details: { success: 1, failed: 0 } };
-                } else if (currentStep === '5') {
+                } else if (currentStep === '4') {
                     if (!messageText) {
                         await sendBotMessage(
                             secretary.PhoneNumber,
@@ -2422,7 +2403,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
                     await mysqlLogsService.saveBotSession(user, 'completed', collectedData);
 
                     // Send summary to secretary
-                    const summaryText = `קבלת פנייה חדשה ממשתמש חסום. להלן הפרטים שנאספו על ידי הבוט:\nת.ז: ${collectedData.id}\nשם מלא: ${collectedData.name}\nמיקום: ${collectedData.location}\nמגדר: ${collectedData.gender}\nתאריך לידה: ${collectedData.dob}`;
+                    const summaryText = `קבלת פנייה חדשה ממשתמש חסום. להלן הפרטים שנאספו על ידי הבוט:\nת.ז: ${collectedData.id}\nשם מלא: ${collectedData.name}\nמגדר: ${collectedData.gender}\nתאריך לידה: ${collectedData.dob}`;
                     await sendBotMessage(
                         user,
                         secretary.PhoneNumber,
@@ -7162,7 +7143,103 @@ app.delete(
     }
 );
 
-// --- Sync all MessageActivities (no filtering) ---
+// --- Secretary Bot: Get session status ---
+app.get(
+    ['/api/secretary-bot/status', '/notify/api/secretary-bot/status'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user) return res.status(400).json({ error: 'Missing user' });
+        try {
+            const session = await mysqlLogsService.getBotSession(user);
+            const step = session ? String(session.step || '').trim() : '';
+            const collectedData = (session && session.collectedData) ? session.collectedData : {};
+            return res.json({ step, collectedData });
+        } catch (err) {
+            console.error('[SECRETARY-BOT] status error:', err);
+            return res.status(500).json({ error: 'Failed to fetch bot session' });
+        }
+    }
+);
+
+// --- Secretary Bot: Submit collected data and complete session ---
+app.post(
+    ['/api/secretary-bot/submit', '/notify/api/secretary-bot/submit'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user) return res.status(400).json({ error: 'Missing user' });
+        const { id, name, gender, dob } = req.body || {};
+        if (!id || !name || !gender || !dob) {
+            return res.status(400).json({ error: 'id, name, gender, and dob are all required.' });
+        }
+        try {
+            let secretary = null;
+            try {
+                const [subRows] = await mysqlLogsService.pool.query(
+                    'SELECT `ExeptionName` FROM `Subscribe` WHERE `User` = ?',
+                    [user]
+                );
+                if (subRows && subRows.length > 0) {
+                    const userDept = String(subRows[0].ExeptionName || '').trim();
+                    if (userDept) {
+                        secretary = await mysqlLogsService.getSecretaryByDepartment(userDept);
+                    }
+                }
+            } catch (_) { /* best-effort */ }
+            if (!secretary) {
+                const activeSecs = await mysqlLogsService.listActiveSecretaries();
+                if (activeSecs && activeSecs.length > 0) secretary = activeSecs[0];
+            }
+
+            const collectedData = { id: String(id).trim(), name: String(name).trim(), gender: String(gender).trim(), dob: String(dob).trim() };
+            await mysqlLogsService.saveBotSession(user, 'completed', collectedData);
+
+            if (secretary) {
+                const secName = `מזכירות ${secretary.DepartName}`;
+                const summaryText = `קבלת פנייה חדשה ממשתמש חסום. להלן הפרטים שנאספו על ידי הבוט:\nת.ז: ${collectedData.id}\nשם מלא: ${collectedData.name}\nמגדר: ${collectedData.gender}\nתאריך לידה: ${collectedData.dob}`;
+                await sendBotMessage(user, secretary.PhoneNumber, summaryText, user);
+                await sendBotMessage(secretary.PhoneNumber, user, "תודה רבה! הפרטים שלך הועברו למזכירות המחלקה. כעת תוכל לשוחח איתנו בחופשיות, לשלוח קבצים או תמונות.", secName);
+            }
+
+            return res.json({ status: 'ok' });
+        } catch (err) {
+            console.error('[SECRETARY-BOT] submit error:', err);
+            return res.status(500).json({ error: 'Failed to submit bot session' });
+        }
+    }
+);
+
+// --- Secretary Bot: Reset session (allow user to restart) ---
+app.post(
+    ['/api/secretary-bot/reset', '/notify/api/secretary-bot/reset'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['user'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ error: resolution.error })
+    }),
+    async (req, res) => {
+        const user = normalizeUserKey(req.resolvedUser || '');
+        if (!user) return res.status(400).json({ error: 'Missing user' });
+        try {
+            await mysqlLogsService.saveBotSession(user, '', {});
+            return res.json({ status: 'ok' });
+        } catch (err) {
+            console.error('[SECRETARY-BOT] reset error:', err);
+            return res.status(500).json({ error: 'Failed to reset bot session' });
+        }
+    }
+);
+
+
 app.get(['/message-activities', '/notify/message-activities'], async (_req, res) => {
     try {
         const activities = await mysqlLogsService.getAllMessageActivities();
