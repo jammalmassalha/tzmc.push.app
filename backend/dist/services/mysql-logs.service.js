@@ -1950,6 +1950,7 @@ class MysqlLogsService {
             }
             // Any non-active status (including '0', empty string, or NULL stored from a
             // numeric-0 cell in the Google Sheet) means the user is restricted, not inactive.
+            // This is consistent with getAllContacts which maps any non-'1' status to restricted.
             return { status: 'success', fullName, isActive: true, isRestricted: true };
         }
         catch (err) {
