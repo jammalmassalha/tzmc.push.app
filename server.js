@@ -7143,6 +7143,8 @@ app.delete(
     }
 );
 
+const secretaryBotRateLimitStore = new Map();
+
 // --- Secretary Bot: Get session status ---
 app.get(
     ['/api/secretary-bot/status', '/notify/api/secretary-bot/status'],
@@ -7154,6 +7156,10 @@ app.get(
     async (req, res) => {
         const user = normalizeUserKey(req.resolvedUser || '');
         if (!user) return res.status(400).json({ error: 'Missing user' });
+        const rateCheck = consumeRateLimitEntry(secretaryBotRateLimitStore, user, 30, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
         try {
             const session = await mysqlLogsService.getBotSession(user);
             const step = session ? String(session.step || '').trim() : '';
@@ -7177,6 +7183,10 @@ app.post(
     async (req, res) => {
         const user = normalizeUserKey(req.resolvedUser || '');
         if (!user) return res.status(400).json({ error: 'Missing user' });
+        const rateCheck = consumeRateLimitEntry(secretaryBotRateLimitStore, user, 10, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
         const { id, name, gender, dob } = req.body || {};
         if (!id || !name || !gender || !dob) {
             return res.status(400).json({ error: 'id, name, gender, and dob are all required.' });
@@ -7229,6 +7239,10 @@ app.post(
     async (req, res) => {
         const user = normalizeUserKey(req.resolvedUser || '');
         if (!user) return res.status(400).json({ error: 'Missing user' });
+        const rateCheck = consumeRateLimitEntry(secretaryBotRateLimitStore, user, 10, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
         try {
             await mysqlLogsService.saveBotSession(user, '', {});
             return res.json({ status: 'ok' });

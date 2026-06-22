@@ -74,6 +74,8 @@ class _SecretaryBotScreenState extends ConsumerState<SecretaryBotScreen> {
   static const String _genderMale = 'זכר';
   static const String _genderFemale = 'נקבה';
 
+  static const String _kDatePattern = 'dd.MM.yyyy';
+
   @override
   void initState() {
     super.initState();
@@ -184,8 +186,8 @@ class _SecretaryBotScreenState extends ConsumerState<SecretaryBotScreen> {
     final picked = await showDatePicker(
       context: context,
       initialDate: DateTime(now.year - 30, now.month, now.day),
-      firstDate: DateTime(1920),
-      lastDate: DateTime(now.year - 1),
+      firstDate: DateTime(1900),
+      lastDate: DateTime.now(),
       locale: const Locale('he'),
       helpText: 'בחר תאריך לידה',
       cancelText: 'ביטול',
@@ -193,7 +195,7 @@ class _SecretaryBotScreenState extends ConsumerState<SecretaryBotScreen> {
     );
     if (picked == null || !mounted) return;
     _answerDob = picked;
-    final formatted = DateFormat('dd.MM.yyyy').format(picked);
+    final formatted = DateFormat(_kDatePattern).format(picked);
     _addMessage(formatted, isBot: false);
     await _submitAll(formatted);
   }
@@ -437,7 +439,7 @@ class _SecretaryBotScreenState extends ConsumerState<SecretaryBotScreen> {
               icon: const Icon(Icons.calendar_today_outlined),
               label: Text(
                 _answerDob != null
-                    ? DateFormat('dd.MM.yyyy').format(_answerDob!)
+                    ? DateFormat(_kDatePattern).format(_answerDob!)
                     : 'בחר תאריך לידה',
               ),
               style: OutlinedButton.styleFrom(
