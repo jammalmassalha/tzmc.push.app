@@ -40,6 +40,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   // though the global auth state is briefly AuthLoading during the wait.
   String? _verifyingPhoneNumber;
 
+  // Set true while a request-code call is in flight so that the login screen
+  // can show the "verifying your data" message instead of just a plain spinner
+  // while the server performs the licenser check (up to ~45 s for restricted users).
+  bool _isRequestingCode = false;
+
   @override
   void dispose() {
     _phoneController.dispose();
@@ -87,6 +92,18 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           setState(() {
             _isVerifyingCode = false;
             _verifyingPhoneNumber = null;
+          });
+        }
+      });
+    }
+
+    // Clear the requesting-code flag once the server responds (the state moves
+    // to AuthAwaitingCode on success or AuthError on failure).
+    if (_isRequestingCode && !isLoading) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _isRequestingCode) {
+          setState(() {
+            _isRequestingCode = false;
           });
         }
       });
@@ -189,6 +206,20 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           )
                         : const Text('התחברות'),
                   ),
+
+                  // While the server checks the employment DB before dispatching
+                  // the SMS (up to ~45 s for restricted users), let the user know
+                  // their details are being verified so they don't think the app froze.
+                  if (isLoading && _isRequestingCode) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      'מאמתים את פרטיך, אנא המתן...',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.7).round()),
+                          ),
+                    ),
+                  ],
                 ],
 
                 // SMS code input
@@ -316,6 +347,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       return;
     }
 
+    setState(() {
+      _isRequestingCode = true;
+    });
     ref.read(authStateProvider.notifier).login(phone);
     _startResendCooldown();
   }

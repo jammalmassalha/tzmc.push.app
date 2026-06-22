@@ -2561,3 +2561,78 @@ export function createMysqlLogsServiceFromEnv(env: NodeJS.ProcessEnv = process.e
     connectionLimit
   });
 }
+
+// ---------------------------------------------------------------------------
+// LicenserService — checks the employment DB to detect pending activations
+// ---------------------------------------------------------------------------
+
+export interface LicenserConfig {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+  /** Table name that holds employee records, e.g. "employ" */
+  table: string;
+  /** Column that stores the employee phone number, e.g. "Phone" */
+  phoneColumn: string;
+  connectionLimit: number;
+}
+
+/**
+ * Lightweight service that queries the external employment DB to determine
+ * whether a phone number belongs to a known employee. Used in the
+ * request-code flow to detect new users who are about to be activated.
+ */
+export class LicenserService {
+  private readonly pool: Pool;
+  private readonly table: string;
+  private readonly phoneColumn: string;
+
+  constructor(config: LicenserConfig) {
+    this.table = normalizeTableName(config.table);
+    this.phoneColumn = String(config.phoneColumn || 'Phone').replace(/`/g, '');
+    this.pool = mysql.createPool({
+      host: config.host,
+      port: config.port,
+      user: config.user,
+      password: config.password,
+      database: config.database,
+      connectionLimit: config.connectionLimit,
+      charset: 'utf8mb4'
+    });
+  }
+
+  /**
+   * Returns true if the given phone number exists in the employment table.
+   * Throws on DB error so callers can decide whether to continue or abort.
+   */
+  async checkPhoneInEmployTable(phone: string): Promise<boolean> {
+    const normalized = String(phone || '').trim();
+    if (!normalized) return false;
+    const [rows] = await this.pool.query<RowDataPacket[]>(
+      `SELECT 1 FROM \`${this.table}\` WHERE \`${this.phoneColumn}\` = ? LIMIT 1`,
+      [normalized]
+    );
+    return Array.isArray(rows) && rows.length > 0;
+  }
+}
+
+export function createLicenserServiceFromEnv(env: NodeJS.ProcessEnv = process.env): LicenserService | null {
+  const host = toTrimmedString(env.LICENSER_DB_HOST || '');
+  // Only create the service when a host is explicitly configured.
+  if (!host) return null;
+
+  const port = toPositiveInteger(env.LICENSER_DB_PORT, 3306);
+  const user = toTrimmedString(env.LICENSER_DB_USER || '');
+  const password = toTrimmedString(env.LICENSER_DB_PASSWORD || '');
+  const database = toTrimmedString(env.LICENSER_DB_NAME || '');
+  const table = toTrimmedString(env.LICENSER_DB_TABLE || 'employ');
+  const phoneColumn = toTrimmedString(env.LICENSER_DB_PHONE_COLUMN || 'Phone');
+  const connectionLimit = Math.max(
+    1,
+    Math.min(toPositiveInteger(env.LICENSER_DB_CONNECTION_LIMIT, 3), 10)
+  );
+
+  return new LicenserService({ host, port, user, password, database, table, phoneColumn, connectionLimit });
+}

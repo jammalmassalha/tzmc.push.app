@@ -136,10 +136,18 @@ class ChatApiService {
     }
 
     try {
+      // The server may hold this request open for up to ~45 s while it waits
+      // for the employment DB to confirm a restricted user's phone number
+      // before dispatching the SMS code. Use a generous timeout and no retries
+      // so we don't double the wait on a slow licenser check.
       final response = await _client.post<Map<String, dynamic>>(
         ApiEndpoints.requestCode,
         data: {'user': normalized},
-        retryOptions: const RetryOptions(retries: 1, timeout: NetworkTimeouts.sessionTimeout),
+        options: Options(
+          receiveTimeout: NetworkTimeouts.requestCodeTimeout,
+          sendTimeout: NetworkTimeouts.requestCodeTimeout,
+        ),
+        retryOptions: const RetryOptions(retries: 0, timeout: NetworkTimeouts.requestCodeTimeout),
       );
 
       if (!response.isSuccessful) {

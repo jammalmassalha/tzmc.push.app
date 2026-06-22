@@ -39,7 +39,8 @@ function registerAuthController(app, deps = {}) {
         APP_SERVER_TOKEN,
         BADGE_RESET_ALL_ALLOWED_USERS,
         lookupUserByWindowsUsername,
-        mysqlLogsService
+        mysqlLogsService,
+        licenserService
     } = deps;
     const resetAllAllowedUserSet = new Set(
         (Array.isArray(BADGE_RESET_ALL_ALLOWED_USERS) ? BADGE_RESET_ALL_ALLOWED_USERS : [])
@@ -244,6 +245,70 @@ function registerAuthController(app, deps = {}) {
                             status: 'error',
                             message: registrationCheck.message
                         });
+                    }
+                }
+
+                // For users whose Subscribe-table status is restricted
+                // (status === '0' and no exception override), give the employment
+                // DB time to activate the account before we dispatch the SMS code.
+                // This closes the race window where a newly hired employee receives
+                // the code before their record is promoted from restricted → active,
+                // which was causing the restricted UI to flash incorrectly.
+                //
+                // Configurable via env vars:
+                //   LICENSER_WAIT_MS            – total wait ceiling (default 45 000 ms)
+                //   LICENSER_POLL_INTERVAL_MS   – poll cadence         (default 3 000 ms)
+                if (licenserService && mysqlLogsService) {
+                    let authResult = null;
+                    try {
+                        authResult = await mysqlLogsService.checkAuth(requestedUser);
+                    } catch (authCheckErr) {
+                        console.error('[AUTH CODE] Licenser pre-check: could not read Subscribe table:', authCheckErr && authCheckErr.message);
+                    }
+
+                    const isRestricted = authResult && authResult.isRestricted === true;
+                    if (isRestricted) {
+                        const parsePositiveInt = (raw, fallback) => {
+                            const n = parseInt(String(raw ?? ''), 10);
+                            return Number.isFinite(n) && n > 0 ? n : fallback;
+                        };
+                        const totalWaitMs = parsePositiveInt(
+                            process.env.LICENSER_WAIT_MS,
+                            45000
+                        );
+                        const pollIntervalMs = Math.min(
+                            parsePositiveInt(process.env.LICENSER_POLL_INTERVAL_MS, 3000),
+                            Math.max(totalWaitMs, 1000)
+                        );
+                        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+                        console.log('[AUTH CODE] Licenser: restricted user', requestedUser, '— polling employ table for up to', totalWaitMs, 'ms');
+                        const deadline = Date.now() + totalWaitMs;
+                        let foundInEmployTable = false;
+                        // Initial check — if already present, no need to wait.
+                        try {
+                            foundInEmployTable = await licenserService.checkPhoneInEmployTable(requestedUser);
+                        } catch (err) {
+                            console.error('[AUTH CODE] Licenser: employ-table initial check error:', err && err.message);
+                        }
+
+                        while (!foundInEmployTable && Date.now() < deadline) {
+                            const remaining = deadline - Date.now();
+                            await sleep(Math.min(pollIntervalMs, Math.max(remaining, 0)));
+                            if (Date.now() >= deadline) break;
+                            try {
+                                foundInEmployTable = await licenserService.checkPhoneInEmployTable(requestedUser);
+                            } catch (err) {
+                                console.error('[AUTH CODE] Licenser: employ-table poll error:', err && err.message);
+                                break;
+                            }
+                        }
+
+                        if (foundInEmployTable) {
+                            console.log('[AUTH CODE] Licenser: phone', requestedUser, 'confirmed in employ table — proceeding to send SMS');
+                        } else {
+                            console.log('[AUTH CODE] Licenser: phone', requestedUser, 'not found in employ table after', totalWaitMs, 'ms — sending SMS anyway');
+                        }
                     }
                 }
 

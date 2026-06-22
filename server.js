@@ -29,6 +29,7 @@ const { createAccreditationAgentController } = require('./backend/controllers/ac
 const {
     createSheetIntegrationServiceFromEnv,
     createMysqlLogsServiceFromEnv,
+    createLicenserServiceFromEnv,
     createWebhookRegistryFromEnv,
     createRedisStateStoreFromEnv,
     SessionTokenJweService,
@@ -47,6 +48,7 @@ const fetch = (...args) => {
 
 const sheetIntegrationService = createSheetIntegrationServiceFromEnv(process.env);
 const mysqlLogsService = createMysqlLogsServiceFromEnv(process.env);
+const licenserService = createLicenserServiceFromEnv(process.env);
 const webhookRegistryService = createWebhookRegistryFromEnv(process.env);
 const GOOGLE_SHEET_URL = sheetIntegrationService.googleSheetUrl;
 const redisStateStorePromise = createRedisStateStoreFromEnv(process.env)
@@ -5549,7 +5551,8 @@ registerAuthController(app, {
     APP_SERVER_TOKEN,
     BADGE_RESET_ALL_ALLOWED_USERS,
     lookupUserByWindowsUsername,
-    mysqlLogsService
+    mysqlLogsService,
+    licenserService
 });
 
 // --- CLIENT TELEMETRY ---

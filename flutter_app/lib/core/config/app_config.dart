@@ -146,6 +146,11 @@ class NetworkTimeouts {
   /// Session operations timeout
   static const Duration sessionTimeout = Duration(seconds: 12);
 
+  /// Request-code timeout. When the user is restricted (status '0'), the
+  /// server waits up to ~45 s for the employment DB to confirm the phone
+  /// before dispatching the SMS code, so the client needs enough headroom.
+  static const Duration requestCodeTimeout = Duration(seconds: 90);
+
   /// SMS verify-code timeout. The server holds the request open for up to
   /// ~45 s after a successful code match while it waits for an external
   /// service to set the user's final Status on the Subscribe sheet, so the
