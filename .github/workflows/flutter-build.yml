@@ -159,6 +159,39 @@ jobs:
       - name: Run code generation
         run: dart run build_runner build --delete-conflicting-outputs
 
+      - name: Set up Drift web assets (sqlite3.wasm + drift_worker.dart.js)
+        run: |
+          PUB_CACHE_DIR="${PUB_CACHE:-$HOME/.pub-cache}"
+          WEB_ASSETS_OK=1
+
+          # -- drift_worker.dart.js ------------------------------------------
+          DRIFT_PKG=$(find "$PUB_CACHE_DIR/hosted/pub.dev" -maxdepth 1 -name "drift-*" \
+              -type d 2>/dev/null | sort -V | tail -n 1)
+          if [ -n "$DRIFT_PKG" ] && [ -f "$DRIFT_PKG/web/drift_worker.dart" ]; then
+            echo "Compiling drift_worker.dart.js from $DRIFT_PKG/web/drift_worker.dart..."
+            dart compile js -O2 -o web/drift_worker.dart.js \
+                "$DRIFT_PKG/web/drift_worker.dart"
+            echo "✅ drift_worker.dart.js compiled"
+          else
+            echo "::warning::drift package not found in pub cache; skipping drift_worker.dart.js"
+            WEB_ASSETS_OK=0
+          fi
+
+          # -- sqlite3.wasm --------------------------------------------------
+          SQLITE3_WASM=$(find "$PUB_CACHE_DIR/hosted/pub.dev" -name "sqlite3.wasm" \
+              2>/dev/null | sort -V | tail -n 1)
+          if [ -n "$SQLITE3_WASM" ]; then
+            cp "$SQLITE3_WASM" web/sqlite3.wasm
+            echo "✅ Copied sqlite3.wasm from $SQLITE3_WASM"
+          else
+            echo "::warning::sqlite3.wasm not found in pub cache; SQLite web storage will be unavailable"
+            WEB_ASSETS_OK=0
+          fi
+
+          if [ "$WEB_ASSETS_OK" -ne 1 ]; then
+            echo "::warning::One or more Drift web assets are missing. The app will fall back to localStorage."
+          fi
+
       - name: Build Web
         run: |
           flutter build web --release --base-href /fluttertest/ --pwa-strategy=none
