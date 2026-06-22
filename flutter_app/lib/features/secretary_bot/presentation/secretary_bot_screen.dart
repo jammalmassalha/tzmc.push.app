@@ -51,7 +51,16 @@ class _ChatBubble {
 // ---------------------------------------------------------------------------
 
 class SecretaryBotScreen extends ConsumerStatefulWidget {
-  const SecretaryBotScreen({super.key});
+  /// The chat ID of the secretary chat. When provided a "proceed to chat"
+  /// button is shown after the identification is completed.
+  final String? chatId;
+
+  /// Called when the user presses the "proceed to chat" button. On mobile the
+  /// caller is expected to navigate to the secretary [MessageScreen]; on
+  /// desktop the caller can rebuild the embedded pane.
+  final VoidCallback? onProceedToChat;
+
+  const SecretaryBotScreen({super.key, this.chatId, this.onProceedToChat});
 
   @override
   ConsumerState<SecretaryBotScreen> createState() => _SecretaryBotScreenState();
@@ -353,7 +362,7 @@ class _SecretaryBotScreenState extends ConsumerState<SecretaryBotScreen> {
             if (_step == _BotStep.enterDob) _buildDobPicker(),
             if (_step == _BotStep.submitting) _buildSubmittingIndicator(),
             if (_step == _BotStep.done || _step == _BotStep.error)
-              _buildRestartButton(),
+              _buildDoneActions(),
           ],
         ),
       ),
@@ -487,6 +496,34 @@ class _SecretaryBotScreenState extends ConsumerState<SecretaryBotScreen> {
           ),
         ),
       ),
+    );
+  }
+
+  /// Actions shown when the identification flow is done (or has errored).
+  /// Always shows the restart button; additionally shows "proceed to chat"
+  /// when the bot is in the [_BotStep.done] state and [widget.onProceedToChat]
+  /// is provided.
+  Widget _buildDoneActions() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (_step == _BotStep.done && widget.onProceedToChat != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+            child: SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: widget.onProceedToChat,
+                icon: const Icon(Icons.chat_outlined),
+                label: const Text('עבור לשיחה'),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+              ),
+            ),
+          ),
+        _buildRestartButton(),
+      ],
     );
   }
 

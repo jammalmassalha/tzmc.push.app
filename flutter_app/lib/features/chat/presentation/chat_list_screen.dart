@@ -11,8 +11,10 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../../core/utils/toast_utils.dart';
+import '../../../features/auth/presentation/auth_state.dart';
 import '../../../shared/theme/app_theme.dart';
 import '../../../shared/widgets/authenticated_image.dart';
+import '../../secretary_bot/presentation/secretary_bot_screen.dart';
 import 'message_screen.dart';
 
 const Color _kSelectedChatTileColor = Color(0xFFE3F2FD); // blue-50 tint matching AppColors.primary
@@ -134,6 +136,38 @@ class ChatListScreen extends ConsumerWidget {
     ref.read(chatStoreProvider.notifier).setCurrentChat(item.id);
     if (onChatSelected != null) {
       onChatSelected!(item);
+      return;
+    }
+    final isRestricted = ref.read(isUserRestrictedProvider);
+    if (isRestricted) {
+      // Restricted users must complete the identification flow first.
+      // Once done they can navigate to the actual secretary chat.
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (context) => Directionality(
+            textDirection: TextDirection.rtl,
+            child: Scaffold(
+              appBar: AppBar(
+                title: Text(item.title),
+                centerTitle: true,
+              ),
+              body: SecretaryBotScreen(
+                chatId: item.id,
+                onProceedToChat: () {
+                  Navigator.of(context).pushReplacement(
+                    MaterialPageRoute(
+                      builder: (context) => MessageScreen(
+                        chatId: item.id,
+                        initialUnreadCount: unreadCount,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      );
       return;
     }
     Navigator.of(context).push(

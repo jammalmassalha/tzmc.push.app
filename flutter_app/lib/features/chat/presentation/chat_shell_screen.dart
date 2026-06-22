@@ -24,6 +24,7 @@ import '../../shuttle/presentation/shuttle_screen.dart';
 import '../../admin/presentation/admin_groups_screen.dart';
 import '../../admin/presentation/admin_secretaries_screen.dart';
 import '../../accreditation_agent/presentation/accreditation_agent_screen.dart';
+import '../../secretary_bot/presentation/secretary_bot_screen.dart';
 import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
 import 'chat_list_screen.dart';
@@ -80,6 +81,11 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     MainTab.groups,
     MainTab.helpdesk,
   ];
+
+  /// Tracks whether the secretary-bot identification has been completed in the
+  /// desktop embedded pane. Resets whenever the selected chat changes.
+  bool _desktopSecretaryBotCompleted = false;
+  String? _desktopSecretaryBotChatId;
 
   @override
   void initState() {
@@ -608,6 +614,32 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
 
   Widget _buildDesktopChatLayout(ChatState chatState) {
     final currentChatId = chatState.currentChatId;
+    final isRestricted = ref.watch(isUserRestrictedProvider);
+
+    // Reset desktop bot state when the selected chat changes.
+    if (currentChatId != _desktopSecretaryBotChatId) {
+      _desktopSecretaryBotCompleted = false;
+      _desktopSecretaryBotChatId = currentChatId;
+    }
+
+    Widget rightPane;
+    if (currentChatId == null) {
+      rightPane = _buildDesktopConversationPlaceholder();
+    } else if (isRestricted && !_desktopSecretaryBotCompleted) {
+      rightPane = SecretaryBotScreen(
+        key: ValueKey('secretary_bot_$currentChatId'),
+        chatId: currentChatId,
+        onProceedToChat: () {
+          setState(() => _desktopSecretaryBotCompleted = true);
+        },
+      );
+    } else {
+      rightPane = MessageScreen(
+        chatId: currentChatId,
+        embedded: true,
+        onExit: () => ref.read(chatStoreProvider.notifier).setCurrentChat(null),
+      );
+    }
 
     return Row(
       children: [
@@ -624,15 +656,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
           ),
         ),
         Container(width: 1, color: AppColors.divider),
-        Expanded(
-          child: currentChatId == null
-              ? _buildDesktopConversationPlaceholder()
-              : MessageScreen(
-                  chatId: currentChatId,
-                  embedded: true,
-                  onExit: () => ref.read(chatStoreProvider.notifier).setCurrentChat(null),
-                ),
-        ),
+        Expanded(child: rightPane),
       ],
     );
   }
