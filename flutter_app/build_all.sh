@@ -159,6 +159,51 @@ echo "2. Running code generation (Drift, JSON serializable, etc.)..."
 dart run build_runner build --delete-conflicting-outputs
 
 echo ""
+echo "2a. Setting up Drift web assets (sqlite3.wasm + drift_worker.dart.js)..."
+# These files must be present in web/ before `flutter build web` so that the
+# browser can load the WASM SQLite engine.  drift_flutter:setup is only
+# available on 0.2.8+; for 0.2.7 we copy from the pub cache manually.
+PUB_CACHE_DIR="${PUB_CACHE:-$HOME/.pub-cache}"
+WEB_ASSETS_OK=1
+
+# -- drift_worker.dart.js --------------------------------------------------
+# Compiled from drift's own web/drift_worker.dart source file.
+DRIFT_PKG=$(find "$PUB_CACHE_DIR/hosted/pub.dev" -maxdepth 1 -name "drift-*" \
+    -type d 2>/dev/null | sort -V | tail -n 1)
+if [ -n "$DRIFT_PKG" ] && [ -f "$DRIFT_PKG/web/drift_worker.dart" ]; then
+    echo "   Compiling drift_worker.dart.js from $DRIFT_PKG/web/drift_worker.dart..."
+    if dart compile js -O2 -o web/drift_worker.dart.js \
+           "$DRIFT_PKG/web/drift_worker.dart" 2>&1; then
+        echo "   ✅ drift_worker.dart.js compiled"
+    else
+        echo "   ⚠️  Failed to compile drift_worker.dart.js"
+        WEB_ASSETS_OK=0
+    fi
+else
+    echo "   ⚠️  drift package not found in pub cache; skipping drift_worker.dart.js"
+    WEB_ASSETS_OK=0
+fi
+
+# -- sqlite3.wasm ----------------------------------------------------------
+# Provided by the sqlite3 Dart package as a prebuilt WASM binary.
+SQLITE3_WASM=$(find "$PUB_CACHE_DIR/hosted/pub.dev" -name "sqlite3.wasm" \
+    2>/dev/null | sort -V | tail -n 1)
+if [ -n "$SQLITE3_WASM" ]; then
+    cp "$SQLITE3_WASM" web/sqlite3.wasm
+    echo "   ✅ Copied sqlite3.wasm from $SQLITE3_WASM"
+else
+    echo "   ⚠️  sqlite3.wasm not found in pub cache; SQLite web storage unavailable."
+    echo "       The app will fall back to localStorage (SharedPreferences) on the web."
+    WEB_ASSETS_OK=0
+fi
+
+if [ "$WEB_ASSETS_OK" -ne 1 ]; then
+    echo ""
+    echo "   ℹ️  To obtain WASM assets manually, upgrade drift_flutter to >=0.2.8"
+    echo "       and run:  dart run drift_flutter:setup"
+fi
+
+echo ""
 echo "3. Checking Flutter setup..."
 flutter doctor -v
 
