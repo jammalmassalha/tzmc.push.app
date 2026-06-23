@@ -340,8 +340,32 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   }
 
   void _handleStatusChange(bool isRestricted) {
+    final changed = state.isRestricted != isRestricted;
     ref.read(authStateProvider.notifier).updateUserRestrictedStatus(isRestricted);
     state = state.copyWith(isRestricted: isRestricted);
+    // When the restriction flag flips at runtime the visible contact set
+    // changes entirely: restricted users must see the secretary chat rooms
+    // (returned by getContacts only for restricted users) while normal users
+    // see their regular contacts.  Re-pull so the correct rooms appear without
+    // requiring a logout / app restart.
+    if (changed) {
+      unawaited(_refreshContactsAfterRestrictionChange());
+    }
+  }
+
+  /// Re-fetch contacts and groups after the user's restricted status changes so
+  /// the chat list reflects the correct rooms (secretary chat rooms for
+  /// restricted users, regular contacts otherwise).
+  Future<void> _refreshContactsAfterRestrictionChange() async {
+    try {
+      await Future.wait([
+        _pullContacts(),
+        _pullGroups(),
+      ]);
+      await persistNow();
+    } catch (e) {
+      debugPrint('[ChatStore] Failed to refresh contacts after restriction change: $e');
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -401,6 +425,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     if (state.isInitialized) {
       if (state.isRestricted != isRestricted) {
         state = state.copyWith(isRestricted: isRestricted);
+        // The restriction flag changed since the last initialise — refresh the
+        // contact set so restricted users see the secretary chat rooms (and
+        // normal users see their regular contacts) without a restart.
+        unawaited(_refreshContactsAfterRestrictionChange());
       }
       return;
     }
