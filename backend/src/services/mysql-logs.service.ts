@@ -2352,20 +2352,24 @@ export class MysqlLogsService {
     try {
       if (requestingUser) {
         const normalized = String(requestingUser).trim();
-        // Check if requesting user is allowed: status === '1' or exceptionStatus === '1'
-        const [userRows] = await this.pool.query<RowDataPacket[]>(
-          'SELECT `Staus`, `ExeptionStatus`, `ExeptionName` FROM `Subscribe` WHERE `User` = ?',
-          [normalized]
-        );
-        if (!userRows || userRows.length === 0) {
+        // Determine the requesting user's access using the SAME authority as the
+        // /auth/session endpoint. checkAuth() consults the live Subscribe status
+        // (Google Sheet via the injected provider) first and only falls back to the
+        // MySQL `Subscribe` row. Previously this method re-derived the restricted
+        // flag directly from the MySQL row and returned [] when the row was missing
+        // or not yet synced, which caused restricted users to receive an empty
+        // contact list instead of the secretary chat rooms even though the session
+        // reported them as restricted.
+        const auth = await this.checkAuth(normalized);
+        const isActive = !!(auth && auth.isActive);
+        if (!isActive) {
+          // User is not registered / has no access at all.
           return [];
         }
-        const userRow = userRows[0];
-        const status = String(userRow.Staus ?? '').trim();
-        const exceptionStatus = String(userRow.ExeptionStatus ?? '').trim();
 
-        // If restricted user (status != 1 and exceptionStatus != 1), show all active secretaries
-        const isRestricted = status !== '1' && exceptionStatus !== '1';
+        // A restricted user only ever sees the active secretaries (the secretary
+        // chat rooms), regardless of whether their MySQL Subscribe row exists yet.
+        const isRestricted = !!(auth && auth.isRestricted);
         if (isRestricted) {
           const activeSecs = await this.listActiveSecretaries();
           if (activeSecs && activeSecs.length > 0) {
@@ -2378,10 +2382,6 @@ export class MysqlLogsService {
             }));
           }
           return []; // No secretary available
-        }
-
-        if (status !== '1' && exceptionStatus !== '1') {
-          return [];
         }
       }
 
