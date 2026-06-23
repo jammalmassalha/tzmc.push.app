@@ -286,6 +286,16 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   StreamSubscription<bool>? _statusSubscription;
 
   Timer? _persistTimer;
+
+  /// Periodically re-checks GET /auth/session so a restriction-status change
+  /// applied server-side (e.g. a user becoming restricted) is reflected in the
+  /// chat list immediately — without waiting for a socket reconnect or a
+  /// logout/login cycle. This is the reliable fallback for transport modes
+  /// (SSE / HTTP polling) where the server's `user:status_updated` socket event
+  /// is never delivered.
+  Timer? _statusPollTimer;
+  static const Duration _statusPollInterval = Duration(seconds: 15);
+
   int _lastGapAnalysisTime = 0;
   String? _currentUser;
 
@@ -321,6 +331,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       _pollTickSubscription?.cancel();
       _statusSubscription?.cancel();
       _persistTimer?.cancel();
+      _statusPollTimer?.cancel();
       for (final timers in _typingClearTimers.values) {
         for (final t in timers.values) {
           t.cancel();
@@ -365,6 +376,35 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       await persistNow();
     } catch (e) {
       debugPrint('[ChatStore] Failed to refresh contacts after restriction change: $e');
+    }
+  }
+
+  /// Starts (or restarts) the periodic session-status poll. The poll fetches
+  /// GET /auth/session and, when the live `isRestricted` value differs from the
+  /// current state, routes it through [_handleStatusChange] so the secretary
+  /// chat rooms load immediately. This guarantees the restriction change is
+  /// applied regardless of the active realtime transport (socket / SSE /
+  /// polling), removing the need for a logout/login to pick up the new status.
+  void _startStatusPolling() {
+    _statusPollTimer?.cancel();
+    _statusPollTimer = Timer.periodic(
+      _statusPollInterval,
+      (_) => unawaited(_pollSessionStatus()),
+    );
+  }
+
+  /// Polls the session endpoint once and applies any restriction-status change.
+  Future<void> _pollSessionStatus() async {
+    if (_currentUser == null) return;
+    try {
+      final session = await _api.getSessionInfo();
+      if (session == null) return;
+      final isRestricted = session.isRestricted ?? false;
+      if (isRestricted != state.isRestricted) {
+        _handleStatusChange(isRestricted);
+      }
+    } catch (e) {
+      debugPrint('[ChatStore] Session status poll failed: $e');
     }
   }
 
@@ -421,6 +461,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _currentUser = normalized;
 
     final isRestricted = ref.read(isUserRestrictedProvider);
+
+    // Keep the live session-status poll running for the current user so a
+    // server-side restriction change is reflected without a logout/login.
+    _startStatusPolling();
 
     if (state.isInitialized) {
       if (state.isRestricted != isRestricted) {
@@ -3287,6 +3331,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // after the wipe.
     _persistTimer?.cancel();
     _persistTimer = null;
+
+    // Stop the session-status poll; it is restarted by the next initialize().
+    _statusPollTimer?.cancel();
+    _statusPollTimer = null;
 
     // Reset per-session tracking fields.
     final previousUser = _currentUser;
