@@ -10,6 +10,27 @@ export interface MysqlLogsConfig {
   connectionLimit: number;
 }
 
+/**
+ * Live status of a user row in the Google Sheet `Subscribe` tab.
+ * Returned by an optional provider so that {@link MysqlLogsService.checkAuth}
+ * can treat the sheet as the source of truth for the restricted flag instead of
+ * the periodically-synced MySQL row (Option A).
+ *
+ * - Resolve to `{ found: false }` when the user does not exist in the sheet.
+ * - Resolve to `{ found: true, status, exceptionStatus, fullName }` with the raw
+ *   Col G (`status`) and Col H (`exceptionStatus`) values when the user exists.
+ * - Resolve to `null` (or reject) when the live value cannot be determined, so
+ *   the caller falls back to the MySQL row.
+ */
+export interface SubscribeLiveStatus {
+  found: boolean;
+  status?: string;
+  exceptionStatus?: string;
+  fullName?: string;
+}
+
+export type SubscribeStatusProvider = (username: string) => Promise<SubscribeLiveStatus | null>;
+
 export interface MysqlLogInsertPayload {
   sender: string;
   recipient: string;
@@ -307,6 +328,7 @@ export class MysqlLogsService {
   private flutterPushRegistrationDebugFullResponseColumnReady = false;
   private secretariesTableReady = false;
   private botSessionsTableReady = false;
+  private subscribeStatusProvider: SubscribeStatusProvider | null = null;
 
   constructor(config: MysqlLogsConfig) {
     this.tableName = normalizeTableName(config.table);
@@ -2233,8 +2255,29 @@ export class MysqlLogsService {
 
   async checkAuth(username: string): Promise<any> {
     await this.ensureSubscribeTable();
+    const normalized = String(username).trim();
+
+    // Option A: the Google Sheet is authoritative for the restricted flag.
+    // Consult the live sheet status first (via the injected provider) so that a
+    // status change in the sheet takes effect immediately, without waiting for
+    // the periodic Subscribe → MySQL sync. Any failure falls back to MySQL.
+    if (this.subscribeStatusProvider) {
+      try {
+        const live = await this.subscribeStatusProvider(normalized);
+        if (live && live.found === false) {
+          return { status: 'error', message: 'User not registered', isActive: false };
+        }
+        if (live && live.found === true) {
+          return this.buildAuthResult(live.status, live.exceptionStatus, live.fullName);
+        }
+        // live === null → couldn't determine; fall through to the MySQL row.
+      } catch (err: unknown) {
+        const message = String((err as { message?: string }).message || '');
+        console.error('[MYSQL] checkAuth live sheet read failed, falling back to DB:', message);
+      }
+    }
+
     try {
-      const normalized = String(username).trim();
       const [rows] = await this.pool.query<RowDataPacket[]>(
         'SELECT `FullName`, `Staus`, `ExeptionStatus` FROM `Subscribe` WHERE `User` = ?',
         [normalized]
@@ -2244,27 +2287,45 @@ export class MysqlLogsService {
       }
       const row = rows[0];
       // Use ?? so that a numeric 0 from MySQL is preserved as '0' (not coerced to '')
-      const status = String(row.Staus ?? '').trim();
-      const exceptionStatus = String(row.ExeptionStatus ?? '').trim();
-      const fullName = String(row.FullName || '').trim();
-
-      if (status === '1' || exceptionStatus === '1') {
-        return { status: 'success', fullName, isActive: true };
-      }
-      // An empty status means the record has not yet been processed by the licenser
-      // service on the other server.  Return isPending so the caller can wait for the
-      // status to be populated before sending the SMS code.
-      if (!status) {
-        return { status: 'success', fullName, isActive: true, isRestricted: true, isPending: true };
-      }
-      // Any other non-active status (e.g. '0') means the user is explicitly restricted.
-      // This is consistent with getAllContacts which maps any non-'1' status to restricted.
-      return { status: 'success', fullName, isActive: true, isRestricted: true };
+      return this.buildAuthResult(row.Staus, row.ExeptionStatus, row.FullName);
     } catch (err: unknown) {
       const message = String((err as { message?: string }).message || '');
       console.error('[MYSQL] checkAuth error:', message);
       return { status: 'error', message: 'Database query failed', isActive: false };
     }
+  }
+
+  /**
+   * Inject a provider that returns the live Subscribe status from the Google
+   * Sheet. When set, {@link checkAuth} prefers it over the MySQL row.
+   */
+  setSubscribeStatusProvider(provider: SubscribeStatusProvider | null): void {
+    this.subscribeStatusProvider = provider;
+  }
+
+  /**
+   * Map raw Subscribe `status` (Col G) and `exceptionStatus` (Col H) values to
+   * the auth result consumed by the auth flows. A user is active when either
+   * column is '1'; an empty status means the licenser service has not finalised
+   * the row yet (pending); any other value means the user is restricted.
+   */
+  private buildAuthResult(rawStatus: unknown, rawExceptionStatus: unknown, rawFullName: unknown): any {
+    const status = String(rawStatus ?? '').trim();
+    const exceptionStatus = String(rawExceptionStatus ?? '').trim();
+    const fullName = String(rawFullName ?? '').trim();
+
+    if (status === '1' || exceptionStatus === '1') {
+      return { status: 'success', fullName, isActive: true };
+    }
+    // An empty status means the record has not yet been processed by the licenser
+    // service on the other server.  Return isPending so the caller can wait for the
+    // status to be populated before sending the SMS code.
+    if (!status) {
+      return { status: 'success', fullName, isActive: true, isRestricted: true, isPending: true };
+    }
+    // Any other non-active status (e.g. '0') means the user is explicitly restricted.
+    // This is consistent with getAllContacts which maps any non-'1' status to restricted.
+    return { status: 'success', fullName, isActive: true, isRestricted: true };
   }
 
   async lookupUserByWindowsUsername(windowsUser: string): Promise<any> {

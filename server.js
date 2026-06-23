@@ -5511,6 +5511,44 @@ io.on('connection', (socket) => {
     });
 });
 
+// Option A: make the Google Sheet the source of truth for a user's restricted
+// status.  checkAuth() consults this provider first and only falls back to the
+// periodically-synced MySQL row when the live sheet value can't be determined.
+// The provider relies on the enhanced Apps Script `check_auth` response (which
+// returns the raw Col G `sheetStatus` and Col H `exceptionStatus`).  If the
+// deployed Apps Script is older and omits those fields, the provider returns
+// null so checkAuth() transparently falls back to MySQL.
+mysqlLogsService.setSubscribeStatusProvider(async (username) => {
+    const normalizedUser = String(username || '').trim();
+    if (!normalizedUser) return null;
+    const url = buildGoogleSheetGetUrl({ action: 'check_auth', user: normalizedUser });
+    const response = await fetchWithRetry(
+        url,
+        {},
+        { timeoutMs: 8000, retries: 1, backoffMs: 500 }
+    );
+    if (!response.ok) {
+        throw new Error(`check_auth HTTP ${response.status}`);
+    }
+    const payload = await response.json();
+    if (!payload || typeof payload !== 'object') return null;
+    // Only the enhanced Apps Script response carries the raw sheet columns.
+    if (Object.prototype.hasOwnProperty.call(payload, 'sheetStatus')) {
+        return {
+            found: true,
+            status: String(payload.sheetStatus ?? '').trim(),
+            exceptionStatus: String(payload.exceptionStatus ?? '').trim(),
+            fullName: String(payload.fullName ?? '').trim()
+        };
+    }
+    // Explicit not-found from the enhanced response.
+    if (payload.found === false) {
+        return { found: false };
+    }
+    // Legacy Apps Script (no sheetStatus field) → fall back to MySQL.
+    return null;
+});
+
 registerAuthController(app, {
     normalizeUserCandidate,
     buildUserLookupAliases,

@@ -1088,25 +1088,27 @@ function handleCheckAuth(userParam) {
 
   const rowIndex = findUserRow(sheet, searchUser);
   if (rowIndex) {
-    const values = sheet.getRange(rowIndex, 2, 1, 6).getValues()[0]; // B..G
+    const values = sheet.getRange(rowIndex, 2, 1, 7).getValues()[0]; // B..H
     const sheetPhone = normalizeSheetPhone(values[0]);
     const fullName = values[4];
-    const sheetStatus = String(values[5]).trim();
+    const sheetStatus = String(values[5]).trim();          // Col G
+    const exceptionStatus = String(values[6] ?? '').trim(); // Col H
 
     if (sheetPhone === searchUser) {
-      if (sheetStatus === '1') {
-        // SUCCESS: User found and active
-        return createJsonResponse({
-          status: 'success',
-          fullName: fullName, // Return Name from Col F
-          isActive: true
-        });
-      }
-      // FAIL: User exists but blocked (Status 0)
+      // A user is active when the live Subscribe status (Col G) is '1' OR the
+      // exception status (Col H) is '1'.  Any other value (e.g. '0' or empty)
+      // means the user is restricted.  The raw column values are returned so the
+      // backend can apply the exact same rule without relying on the periodic
+      // MySQL sync (Option A: the sheet is authoritative).
+      const isActive = sheetStatus === '1' || exceptionStatus === '1';
       return createJsonResponse({
-        status: 'error',
-        message: 'User inactive',
-        isActive: false
+        status: isActive ? 'success' : 'error',
+        message: isActive ? '' : 'User inactive',
+        fullName: fullName, // Return Name from Col F
+        isActive: isActive,
+        found: true,
+        sheetStatus: sheetStatus,          // raw Col G
+        exceptionStatus: exceptionStatus   // raw Col H
       });
     }
   }
@@ -1115,7 +1117,8 @@ function handleCheckAuth(userParam) {
   return createJsonResponse({
     status: 'error',
     message: 'User not registered',
-    isActive: false
+    isActive: false,
+    found: false
   });
 }
 
