@@ -1167,6 +1167,14 @@ function doPost(e) {
         return createJSON({ result: 'success', updatedRows: 1, action: 'created' });
       }
 
+      // If the existing row has an explicit '0' status (set by an old version of
+      // this script or left over from a previous run), clear it so the external
+      // licenser service can re-evaluate the user's access level on its next
+      // sync.  A '1' (active) or empty (pending) status is left untouched.
+      var currentStatus = String(setCodeSheet.getRange(setCodeRow, 7).getValue() ?? '').trim();
+      if (currentStatus === '0') {
+        setCodeSheet.getRange(setCodeRow, 7).setValue(''); // G Status → empty
+      }
       setCodeSheet.getRange(setCodeRow, 11).setValue("'" + setCodeValue); // K
       return createJSON({ result: 'success', updatedRows: 1, action: 'updated' });
     }
