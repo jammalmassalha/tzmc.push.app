@@ -153,11 +153,21 @@ function registerAuthController(app, deps = {}) {
         }
 
         let isRestricted = false;
+        // statusPending is true while the licenser service on the other server
+        // has not yet written a final value to the Subscribe Status column.
+        // The client polls this endpoint after login and keeps showing the
+        // "approving your account" loader until statusPending becomes false,
+        // so the correct (active vs. restricted) UI is applied immediately
+        // without requiring the user to log out and back in.
+        let statusPending = false;
         if (mysqlLogsService) {
             try {
                 const authResult = await mysqlLogsService.checkAuth(user);
                 if (authResult && authResult.isRestricted) {
                     isRestricted = true;
+                }
+                if (authResult && authResult.isPending) {
+                    statusPending = true;
                 }
             } catch (err) {
                 console.error('[AUTH SESSION] Error checking auth status:', err);
@@ -168,6 +178,7 @@ function registerAuthController(app, deps = {}) {
             authenticated: true,
             user,
             isRestricted,
+            statusPending,
             csrfToken: authSession && authSession.csrfToken ? authSession.csrfToken : null
         });
     });

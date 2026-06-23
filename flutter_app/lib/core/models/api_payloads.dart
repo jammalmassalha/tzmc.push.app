@@ -438,6 +438,11 @@ class SessionResponse extends Equatable {
   final bool? legacyLoginDisabled;
   final bool? isRestricted;
 
+  /// True while the licenser service has not yet written a final value to the
+  /// Subscribe Status column. The login flow keeps showing the "approving your
+  /// account" loader until this is false (or a timeout elapses).
+  final bool? statusPending;
+
   const SessionResponse({
     required this.authenticated,
     this.user,
@@ -450,6 +455,7 @@ class SessionResponse extends Equatable {
     this.expiresInSeconds,
     this.legacyLoginDisabled,
     this.isRestricted,
+    this.statusPending,
   });
 
   @override
@@ -465,6 +471,7 @@ class SessionResponse extends Equatable {
         expiresInSeconds,
         legacyLoginDisabled,
         isRestricted,
+        statusPending,
       ];
 
   factory SessionResponse.fromJson(Map<String, dynamic> json) {
@@ -480,6 +487,7 @@ class SessionResponse extends Equatable {
       expiresInSeconds: json['expiresInSeconds'] as int?,
       legacyLoginDisabled: json['legacyLoginDisabled'] as bool?,
       isRestricted: json['isRestricted'] as bool?,
+      statusPending: json['statusPending'] as bool?,
     );
   }
 }

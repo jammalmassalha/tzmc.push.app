@@ -19,6 +19,7 @@ import 'core/services/accessibility_service.dart';
 import 'core/services/push_notification_service.dart';
 import 'firebase_options.dart';
 import 'shared/theme/app_theme.dart';
+import 'features/auth/presentation/approving_account_screen.dart';
 import 'features/auth/presentation/auth_state.dart';
 import 'features/auth/presentation/login_screen.dart';
 import 'features/chat/presentation/chat_shell_screen.dart';
@@ -158,6 +159,7 @@ class AuthRouter extends ConsumerWidget {
       AuthLoading() => const SplashScreen(),
       AuthUnauthenticated() => const LoginScreen(),
       AuthAwaitingCode() => const LoginScreen(),
+      AuthApproving() => const ApprovingAccountScreen(),
       AuthAuthenticated() => const ChatShellScreen(),
       AuthError() => const LoginScreen(),
     };

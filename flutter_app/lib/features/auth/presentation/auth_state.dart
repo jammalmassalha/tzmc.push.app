@@ -10,6 +10,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:logger/logger.dart';
 
 import '../../../core/api/chat_api_service.dart';
+import '../../../core/models/api_payloads.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../../core/services/push_notification_service.dart';
 import '../../../core/services/windows_auth_service.dart'
@@ -44,6 +45,28 @@ class AuthAwaitingCode extends AuthState {
   const AuthAwaitingCode({
     required this.phoneNumber,
     required this.expiresInSeconds,
+  });
+}
+
+/// Code verified — waiting for the licenser service to finalise the account
+/// status on the Subscribe sheet. A progress bar (0–100%) is shown for up to
+/// [totalSeconds]; the flow finishes as soon as the status is resolved.
+class AuthApproving extends AuthState {
+  final String user;
+  final String? phone;
+
+  /// Progress of the approval loader in the range 0.0–1.0.
+  final double progress;
+
+  /// Total duration of the approval window in seconds (used by the loader to
+  /// render a human-readable countdown).
+  final int totalSeconds;
+
+  const AuthApproving({
+    required this.user,
+    this.phone,
+    this.progress = 0.0,
+    this.totalSeconds = 60,
   });
 }
 
@@ -84,6 +107,10 @@ class AuthNotifier extends Notifier<AuthState> {
 
   static const _userKey = 'tzmc_current_user';
   static const _phoneKey = 'tzmc_current_user_phone';
+
+  /// Monotonic counter used to supersede/cancel an in-flight approval loop
+  /// (e.g. when the user logs out or resets while the loader is running).
+  int _approvalGeneration = 0;
 
   @override
   AuthState build() {
@@ -217,13 +244,20 @@ class AuthNotifier extends Notifier<AuthState> {
       }
       await _secureStorage.write(key: _userKey, value: user);
       await _secureStorage.write(key: _phoneKey, value: currentState.phoneNumber);
-      state = AuthAuthenticated(
+      _logger.i('Code verification successful for: $user '
+          '(initial isRestricted: ${sessionResponse.isRestricted}, '
+          'statusPending: ${sessionResponse.statusPending})');
+
+      // Show the "approving your account" loader while the licenser service
+      // finalises the Subscribe Status column. This polls GET /auth/session
+      // for the live isRestricted/statusPending values and applies the correct
+      // UI immediately — without requiring the user to log out and back in.
+      await _runApprovalFlow(
         user: user,
         phone: currentState.phoneNumber,
-        isRestricted: sessionResponse.isRestricted ?? false,
+        initialIsRestricted: sessionResponse.isRestricted ?? false,
+        initiallyPending: sessionResponse.statusPending ?? true,
       );
-      unawaited(_resetBadgeAfterAuth());
-      _logger.i('Code verification successful for: $user (isRestricted: ${sessionResponse.isRestricted})');
     } on AuthException catch (e) {
       state = AuthError(message: e.message, previousState: previousState);
     } catch (e) {
@@ -235,8 +269,95 @@ class AuthNotifier extends Notifier<AuthState> {
     }
   }
 
+  /// Drives the post-verification approval loader. Renders a 0–100% progress
+  /// bar over [_approvalTotalSeconds] while polling GET /auth/session, and
+  /// finalises to [AuthAuthenticated] as soon as the Subscribe Status column is
+  /// resolved (statusPending == false) — or when the window elapses, whichever
+  /// comes first. The live isRestricted value decides the UI that is applied.
+  static const int _approvalTotalSeconds = 60;
+  static const int _approvalPollEverySeconds = 3;
+
+  Future<void> _runApprovalFlow({
+    required String user,
+    required String? phone,
+    required bool initialIsRestricted,
+    required bool initiallyPending,
+  }) async {
+    final int generation = ++_approvalGeneration;
+    bool isRestricted = initialIsRestricted;
+    bool resolved = !initiallyPending;
+
+    // Render the loader immediately at 0%.
+    state = AuthApproving(
+      user: user,
+      phone: phone,
+      progress: 0.0,
+      totalSeconds: _approvalTotalSeconds,
+    );
+
+    // Immediate poll so already-resolved users finish without delay.
+    final firstInfo = await _safeGetSessionInfo();
+    if (generation != _approvalGeneration) return;
+    if (firstInfo != null && (firstInfo.statusPending ?? false) == false) {
+      resolved = true;
+      isRestricted = firstInfo.isRestricted ?? isRestricted;
+    }
+
+    int elapsed = 0;
+    while (!resolved && elapsed < _approvalTotalSeconds) {
+      await Future<void>.delayed(const Duration(seconds: 1));
+      if (generation != _approvalGeneration) return;
+      elapsed++;
+      state = AuthApproving(
+        user: user,
+        phone: phone,
+        progress: (elapsed / _approvalTotalSeconds).clamp(0.0, 1.0),
+        totalSeconds: _approvalTotalSeconds,
+      );
+
+      if (elapsed % _approvalPollEverySeconds == 0) {
+        final info = await _safeGetSessionInfo();
+        if (generation != _approvalGeneration) return;
+        if (info != null && (info.statusPending ?? false) == false) {
+          resolved = true;
+          isRestricted = info.isRestricted ?? isRestricted;
+        }
+      }
+    }
+
+    if (generation != _approvalGeneration) return;
+
+    // Snap the bar to 100% before applying the resolved UI.
+    state = AuthApproving(
+      user: user,
+      phone: phone,
+      progress: 1.0,
+      totalSeconds: _approvalTotalSeconds,
+    );
+
+    state = AuthAuthenticated(
+      user: user,
+      phone: phone,
+      isRestricted: isRestricted,
+    );
+    unawaited(_resetBadgeAfterAuth());
+    _logger.i('Approval flow complete for: $user '
+        '(resolved: $resolved, isRestricted: $isRestricted)');
+  }
+
+  Future<SessionResponse?> _safeGetSessionInfo() async {
+    try {
+      return await _apiService.getSessionInfo();
+    } catch (e) {
+      _logger.w('Approval poll: getSessionInfo failed: $e');
+      return null;
+    }
+  }
+
   /// Logout
   Future<void> logout() async {
+    // Cancel any in-flight approval loader.
+    _approvalGeneration++;
     // Unregister the push device token first so the server stops targeting
     // this device for the user that is logging out.
     try {
@@ -286,6 +407,8 @@ class AuthNotifier extends Notifier<AuthState> {
 
   /// Reset to unauthenticated state
   void reset() {
+    // Cancel any in-flight approval loader.
+    _approvalGeneration++;
     state = const AuthUnauthenticated();
   }
 
