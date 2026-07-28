@@ -7825,7 +7825,76 @@ function parseResetByUsernameRequestId(rawValue) {
     }
     return parsed;
 }
+app.get(['/employees-data', '/notify/employees-data'], async (req, res) => {
+    const targetUrl = 'https://script.googleusercontent.com/macros/echo?user_content_key=AUkAhnTUydpAW1Q15AGgHNAgbe-vuYzRHuwIUDoARvVv3GXjo9gpRsD8o7zLh6L1LlBBGG0B2V8Iw8teAhN5QvgvDmbw0ix55bmqJbHqknO6UjwMG3Qrq8UCBvSOJaODPV8-SvM2cbLsptLS1RNya90y0g2Pir5oOs_lvqOSjX8CV0ab8JFUbcx2RCbCbOxGdYUz76YBrW_VvHYE-uxzxZ5bUJs07HbvslRIE1WrTdAEBEO3E3ciyb92FGiG6csDd0qJUKu6vUBRbTriVnr9Ftx5JBXuIfX16SYabJDC1FZCeAPh9wDUbt2D_gQgUD92_w3LuPoGi8Rj&lib=M61tmyhqGdJnkdffHSdmCsRQIa2hFtaof';
 
+    // 1. Get client IP address using existing server helper
+    const clientIp = getClientIpAddress(req);
+
+    // 2. IP Restriction Check
+    const ALLOWED_IPS = ['212.179.60.30', '194.90.134.33', '82.166.218.115'];
+    
+    // Normalize IP comparison (handles IPv6 mapping if present, e.g. ::ffff:212.179.60.30)
+    const normalizedClientIp = clientIp.replace(/^::ffff:/, '');
+
+    if (!ALLOWED_IPS.includes(normalizedClientIp)) {
+        console.warn(`[SECURITY] Blocked unauthorized IP attempt to /employees-data: ${clientIp}`);
+        return res.status(403).json({
+            clientIp,
+            error: 'Access denied: Unauthorized IP address'
+        });
+    }
+
+    try {
+        console.log(`[GOOGLE-SCRIPT-DATA] Request received from authorized IP: ${clientIp}. Proxying to Google Script...`);
+        
+        // Fetch data using your existing fetchWithRetry helper
+        const response = await fetchWithRetry(
+            targetUrl,
+            { method: 'GET' },
+            { timeoutMs: 15000, retries: 2, backoffMs: 500 }
+        );
+
+        if (!response.ok) {
+            console.error(`[GOOGLE-SCRIPT-DATA] Remote server returned HTTP ${response.status} for IP: ${clientIp}`);
+            return res.status(response.status).json({ 
+                clientIp,
+                error: `Failed to fetch data from Google Script (HTTP ${response.status})` 
+            });
+        }
+
+        const jsonData = await response.json();
+
+        // 3. Attach clientIp to output payload
+        if (Array.isArray(jsonData)) {
+            // If the script returns an Array, wrap it neatly
+            return res.json({
+                clientIp,
+                data: jsonData
+            });
+        } else if (jsonData && typeof jsonData === 'object') {
+            // If the script returns an Object, merge clientIp into it
+            return res.json({
+                clientIp,
+                ...jsonData
+            });
+        }
+
+        // Fallback for raw/primitive responses
+        return res.json({
+            clientIp,
+            data: jsonData
+        });
+
+    } catch (error) {
+        console.error(`[GOOGLE-SCRIPT-DATA] Error for IP ${clientIp}:`, error && error.message ? error.message : error);
+        return res.status(500).json({ 
+            clientIp,
+            error: 'Internal server error while retrieving Google Script data',
+            details: error && error.message ? error.message : String(error)
+        });
+    }
+});
 app.post(
     ['/reset-password/verify-year', '/notify/reset-password/verify-year'],
     authorizePasswordResetRequest('verify', 10, 5, 60 * 1000),
