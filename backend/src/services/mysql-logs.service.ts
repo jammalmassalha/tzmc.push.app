@@ -308,6 +308,26 @@ export class MysqlLogsService {
   private secretariesTableReady = false;
   private botSessionsTableReady = false;
 
+  // ── In-memory launch-data caches ──
+  // `/community-group-configs` and `/user-chat-groups` are called on every
+  // mobile app launch. Their backing tables change rarely, so cache the
+  // fetched rows for a short TTL to avoid re-querying MySQL on every launch,
+  // while still invalidating immediately whenever the data is written.
+  private static readonly GROUPS_CACHE_TTL_MS = Math.max(
+    0,
+    Number(process.env.MYSQL_LOGS_GROUPS_CACHE_TTL_MS) || 30_000
+  );
+  private communityGroupsCache: { data: CommunityGroupDbConfig[]; expiresAt: number } | null = null;
+  private chatGroupsCache: { data: ChatGroupDbRecord[]; expiresAt: number } | null = null;
+
+  private invalidateCommunityGroupsCache(): void {
+    this.communityGroupsCache = null;
+  }
+
+  private invalidateChatGroupsCache(): void {
+    this.chatGroupsCache = null;
+  }
+
   constructor(config: MysqlLogsConfig) {
     this.tableName = normalizeTableName(config.table);
     // 11 columns / 11 parameters — keep in sync with insertLog() and insertLogsBulk()
@@ -1192,19 +1212,31 @@ export class MysqlLogsService {
   }
 
   async loadCommunityGroups(): Promise<CommunityGroupDbConfig[]> {
+    const cached = this.communityGroupsCache;
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.data;
+    }
+
     await this.ensureCommunityGroupsTables();
     try {
-      const [groupRows] = await this.pool.execute<RowDataPacket[]>(
-        'SELECT `GroupId`, `GroupName`, `IsEnabled` FROM `CommunityGroups` WHERE `IsEnabled` = 1 ORDER BY `GroupId`'
-      );
-      if (!groupRows.length) return [];
+      // Run the group/member/writer lookups in parallel (instead of
+      // sequentially) to cut round-trip latency during app launch.
+      const [[groupRows], [memberRows], [writerRows]] = await Promise.all([
+        this.pool.execute<RowDataPacket[]>(
+          'SELECT `GroupId`, `GroupName`, `IsEnabled` FROM `CommunityGroups` WHERE `IsEnabled` = 1 ORDER BY `GroupId`'
+        ),
+        this.pool.execute<RowDataPacket[]>(
+          'SELECT `GroupId`, `Phone` FROM `CommunityGroupMembers` ORDER BY `GroupId`, `Phone`'
+        ),
+        this.pool.execute<RowDataPacket[]>(
+          'SELECT `GroupId`, `Phone` FROM `CommunityGroupWriters` ORDER BY `GroupId`, `Phone`'
+        )
+      ]);
 
-      const [memberRows] = await this.pool.execute<RowDataPacket[]>(
-        'SELECT `GroupId`, `Phone` FROM `CommunityGroupMembers` ORDER BY `GroupId`, `Phone`'
-      );
-      const [writerRows] = await this.pool.execute<RowDataPacket[]>(
-        'SELECT `GroupId`, `Phone` FROM `CommunityGroupWriters` ORDER BY `GroupId`, `Phone`'
-      );
+      if (!groupRows.length) {
+        this.communityGroupsCache = { data: [], expiresAt: Date.now() + MysqlLogsService.GROUPS_CACHE_TTL_MS };
+        return [];
+      }
 
       const membersMap = new Map<string, string[]>();
       for (const row of memberRows) {
