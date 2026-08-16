@@ -1324,7 +1324,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // PUT /helpdesk/users/:id - Admin: update a helpdesk user's details
-    app.put(['/helpdesk/users/:id', '/notify/helpdesk/users/:id'], requireUser, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
+    app.put(['/helpdesk/users/:id', '/notify/helpdesk/users/:id'], requireUser, helpdeskRateLimit(10, 60 * 1000), async (req, res) => { // lgtm[js/missing-rate-limiting]
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
@@ -1367,7 +1367,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // PATCH /helpdesk/users/:id/status - Admin: toggle user status (Active <-> Inactive)
-    app.patch(['/helpdesk/users/:id/status', '/notify/helpdesk/users/:id/status'], requireUser, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
+    app.patch(['/helpdesk/users/:id/status', '/notify/helpdesk/users/:id/status'], requireUser, helpdeskRateLimit(10, 60 * 1000), async (req, res) => { // lgtm[js/missing-rate-limiting]
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
