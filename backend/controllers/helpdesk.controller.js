@@ -366,6 +366,7 @@ async function ensureHelpdeskTables(pool) {
             \`username\` VARCHAR(64) NOT NULL,
             \`role\` VARCHAR(16) NOT NULL DEFAULT 'Editor',
             \`department\` VARCHAR(64) NOT NULL,
+            \`Status\` VARCHAR(16) NOT NULL DEFAULT 'Active',
             \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (\`id\`),
             UNIQUE INDEX \`idx_username\` (\`username\`),
@@ -373,6 +374,16 @@ async function ensureHelpdeskTables(pool) {
             INDEX \`idx_role\` (\`role\`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `, 'helpdesk_users');
+
+    // Migration: add Status column to existing helpdesk_users tables
+    try {
+        await pool.execute(`ALTER TABLE \`helpdesk_users\` ADD COLUMN \`Status\` VARCHAR(16) NOT NULL DEFAULT 'Active' AFTER \`department\``);
+    } catch (err) {
+        // ER_DUP_FIELDNAME (1060) — column already exists, safe to ignore
+        if (!(err && err.errno === 1060)) {
+            console.error('[HELPDESK] Migration helpdesk_users Status column error:', err && err.message ? err.message : err);
+        }
+    }
 
     await safeCreateTable(`
         CREATE TABLE IF NOT EXISTS \`helpdesk_status_history\` (
@@ -1227,11 +1238,11 @@ function registerHelpdeskController(app, deps = {}) {
             let rows;
             if (editorRole.role === 'Admin') {
                 [rows] = await pool.query(
-                    'SELECT `id`, `username`, `role`, `department`, `created_at` FROM `helpdesk_users` ORDER BY `department`, `username`'
+                    'SELECT `id`, `username`, `role`, `department`, `Status`, `created_at` FROM `helpdesk_users` ORDER BY `department`, `username`'
                 );
             } else {
                 [rows] = await pool.query(
-                    'SELECT `id`, `username`, `role`, `department`, `created_at` FROM `helpdesk_users` WHERE `department` = ? ORDER BY `username`',
+                    'SELECT `id`, `username`, `role`, `department`, `Status`, `created_at` FROM `helpdesk_users` WHERE `department` = ? ORDER BY `username`',
                     [editorRole.department]
                 );
             }
@@ -1240,6 +1251,7 @@ function registerHelpdeskController(app, deps = {}) {
                 username: r.username,
                 role: r.role,
                 department: r.department,
+                status: r.Status || 'Active',
                 createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at || '')
             }));
             return res.json({ result: 'success', users });
@@ -1260,9 +1272,11 @@ function registerHelpdeskController(app, deps = {}) {
         const targetUsername = toTrimmedString(body.username || '');
         const role = toTrimmedString(body.role || '');
         const department = toTrimmedString(body.department || '');
+        const status = toTrimmedString(body.status || 'Active');
 
         if (!targetUsername) return res.status(400).json({ result: 'error', message: 'יש להזין שם משתמש' });
         if (!VALID_ROLES.includes(role)) return res.status(400).json({ result: 'error', message: 'תפקיד לא תקין' });
+        if (!['Active', 'Inactive'].includes(status)) return res.status(400).json({ result: 'error', message: 'סטטוס לא תקין' });
 
         try {
             await getTablesReady();
@@ -1273,8 +1287,8 @@ function registerHelpdeskController(app, deps = {}) {
                 return res.status(403).json({ result: 'error', message: 'רק מנהל יכול להוסיף משתמשים' });
             }
             await pool.execute(
-                'INSERT INTO `helpdesk_users` (`username`, `role`, `department`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `role` = VALUES(`role`), `department` = VALUES(`department`)',
-                [targetUsername, role, department]
+                'INSERT INTO `helpdesk_users` (`username`, `role`, `department`, `Status`) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE `role` = VALUES(`role`), `department` = VALUES(`department`), `Status` = VALUES(`Status`)',
+                [targetUsername, role, department, status]
             );
             return res.status(201).json({ result: 'success' });
         } catch (error) {
@@ -1306,6 +1320,86 @@ function registerHelpdeskController(app, deps = {}) {
             const message = error && error.message ? error.message : 'Failed to remove user';
             console.error('[HELPDESK] Remove user error:', message);
             return res.status(500).json({ result: 'error', message: 'שגיאה בהסרת המשתמש' });
+        }
+    });
+
+    // PUT /helpdesk/users/:id - Admin: update a helpdesk user's details
+    app.put(['/helpdesk/users/:id', '/notify/helpdesk/users/:id'], requireUser, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
+        const user = toTrimmedString(req.resolvedUser || '');
+        if (!user) {
+            return res.status(401).json({ result: 'error', message: 'Authentication required' });
+        }
+        const targetId = toPositiveInteger(req.params && req.params.id, null);
+        if (!targetId) {
+            return res.status(400).json({ result: 'error', message: 'מזהה משתמש לא תקין' });
+        }
+        const body = req.body && typeof req.body === 'object' ? req.body : {};
+        const targetUsername = toTrimmedString(body.username || '');
+        const role = toTrimmedString(body.role || '');
+        const department = toTrimmedString(body.department || '');
+        const status = toTrimmedString(body.status || '');
+
+        if (!targetUsername) return res.status(400).json({ result: 'error', message: 'יש להזין שם משתמש' });
+        if (!VALID_ROLES.includes(role)) return res.status(400).json({ result: 'error', message: 'תפקיד לא תקין' });
+        if (!['Active', 'Inactive'].includes(status)) return res.status(400).json({ result: 'error', message: 'סטטוס לא תקין' });
+
+        try {
+            await getTablesReady();
+            const allDepts = await getActiveDepartments(pool);
+            if (!allDepts.some((d) => d.name === department)) return res.status(400).json({ result: 'error', message: 'מחלקה לא תקינה' });
+            const editorRole = await getHelpdeskUserRole(pool, user);
+            if (!editorRole || editorRole.role !== 'Admin') {
+                return res.status(403).json({ result: 'error', message: 'רק מנהל יכול לעדכן משתמשים' });
+            }
+            const [result] = await pool.execute(
+                'UPDATE `helpdesk_users` SET `username` = ?, `role` = ?, `department` = ?, `Status` = ? WHERE `id` = ?',
+                [targetUsername, role, department, status, targetId]
+            );
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ result: 'error', message: 'משתמש לא נמצא' });
+            }
+            return res.json({ result: 'success' });
+        } catch (error) {
+            const message = error && error.message ? error.message : 'Failed to update user';
+            console.error('[HELPDESK] Update user error:', message);
+            return res.status(500).json({ result: 'error', message: 'שגיאה בעדכון המשתמש' });
+        }
+    });
+
+    // PATCH /helpdesk/users/:id/status - Admin: toggle user status (Active <-> Inactive)
+    app.patch(['/helpdesk/users/:id/status', '/notify/helpdesk/users/:id/status'], requireUser, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
+        const user = toTrimmedString(req.resolvedUser || '');
+        if (!user) {
+            return res.status(401).json({ result: 'error', message: 'Authentication required' });
+        }
+        const targetId = toPositiveInteger(req.params && req.params.id, null);
+        if (!targetId) {
+            return res.status(400).json({ result: 'error', message: 'מזהה משתמש לא תקין' });
+        }
+        const body = req.body && typeof req.body === 'object' ? req.body : {};
+        const newStatus = toTrimmedString(body.status || '');
+        if (!['Active', 'Inactive'].includes(newStatus)) {
+            return res.status(400).json({ result: 'error', message: 'סטטוס לא תקין' });
+        }
+
+        try {
+            await getTablesReady();
+            const editorRole = await getHelpdeskUserRole(pool, user);
+            if (!editorRole || editorRole.role !== 'Admin') {
+                return res.status(403).json({ result: 'error', message: 'רק מנהל יכול לשנות סטטוס משתמשים' });
+            }
+            const [result] = await pool.execute(
+                'UPDATE `helpdesk_users` SET `Status` = ? WHERE `id` = ?',
+                [newStatus, targetId]
+            );
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ result: 'error', message: 'משתמש לא נמצא' });
+            }
+            return res.json({ result: 'success' });
+        } catch (error) {
+            const message = error && error.message ? error.message : 'Failed to update user status';
+            console.error('[HELPDESK] Update user status error:', message);
+            return res.status(500).json({ result: 'error', message: 'שגיאה בעדכון סטטוס המשתמש' });
         }
     });
 

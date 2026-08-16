@@ -1,0 +1,190 @@
+<div class="users-mgmt-dialog" dir="rtl">
+
+  <!-- Header -->
+  <div class="dialog-header" mat-dialog-title>
+    <mat-icon class="header-icon">manage_accounts</mat-icon>
+    <span class="header-title">ניהול משתמשי מוקד</span>
+    <button type="button" mat-icon-button class="close-btn" (click)="dialogRef.close()" aria-label="סגור">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
+  <mat-dialog-content class="dialog-content">
+
+    <!-- Add / Edit Form -->
+    <section class="form-section">
+      <div class="form-section-header">
+        <mat-icon class="section-icon">{{ editingUserId() !== null ? 'edit' : 'person_add' }}</mat-icon>
+        <span>{{ editingUserId() !== null ? 'עריכת משתמש' : 'הוספת משתמש חדש' }}</span>
+      </div>
+
+      <form [formGroup]="userForm" (ngSubmit)="saveUser()" class="user-form">
+        <div class="form-row">
+          <!-- Username -->
+          <mat-form-field appearance="outline" class="form-field">
+            <mat-label>שם משתמש</mat-label>
+            <mat-icon matPrefix>person</mat-icon>
+            <input matInput formControlName="username" placeholder="הזן שם משתמש" autocomplete="off" />
+            @if (userForm.get('username')?.invalid && userForm.get('username')?.touched) {
+              <mat-error>יש להזין שם משתמש</mat-error>
+            }
+          </mat-form-field>
+
+          <!-- Role -->
+          <mat-form-field appearance="outline" class="form-field">
+            <mat-label>תפקיד</mat-label>
+            <mat-select formControlName="role">
+              @for (r of ROLES; track r) {
+                <mat-option [value]="r">{{ r === 'Admin' ? 'מנהל (Admin)' : 'עורך (Editor)' }}</mat-option>
+              }
+            </mat-select>
+            @if (userForm.get('role')?.invalid && userForm.get('role')?.touched) {
+              <mat-error>יש לבחור תפקיד</mat-error>
+            }
+          </mat-form-field>
+        </div>
+
+        <div class="form-row">
+          <!-- Department -->
+          <mat-form-field appearance="outline" class="form-field">
+            <mat-label>מחלקה</mat-label>
+            <mat-icon matPrefix>apartment</mat-icon>
+            <mat-select formControlName="department">
+              @if (isLoadingDepts()) {
+                <mat-option disabled>טוען מחלקות...</mat-option>
+              } @else {
+                @for (dept of departments(); track dept.name) {
+                  <mat-option [value]="dept.name">{{ dept.name }}</mat-option>
+                }
+              }
+            </mat-select>
+            @if (userForm.get('department')?.invalid && userForm.get('department')?.touched) {
+              <mat-error>יש לבחור מחלקה</mat-error>
+            }
+          </mat-form-field>
+
+          <!-- Status -->
+          <mat-form-field appearance="outline" class="form-field">
+            <mat-label>סטטוס</mat-label>
+            <mat-select formControlName="status">
+              <mat-option value="Active">פעיל</mat-option>
+              <mat-option value="Inactive">לא פעיל</mat-option>
+            </mat-select>
+          </mat-form-field>
+        </div>
+
+        <div class="form-actions">
+          @if (editingUserId() !== null) {
+            <button type="button" mat-stroked-button (click)="cancelForm()" [disabled]="isSaving()">ביטול</button>
+          }
+          <button
+            type="submit"
+            mat-flat-button
+            color="primary"
+            [disabled]="isSaving() || userForm.invalid">
+            @if (isSaving()) {
+              <mat-spinner diameter="16"></mat-spinner>
+            } @else {
+              <mat-icon>{{ editingUserId() !== null ? 'save' : 'add' }}</mat-icon>
+            }
+            {{ editingUserId() !== null ? 'שמור שינויים' : 'הוסף משתמש' }}
+          </button>
+        </div>
+      </form>
+    </section>
+
+    <div class="section-divider"></div>
+
+    <!-- Users Table -->
+    <section class="users-table-section">
+      <div class="table-section-header">
+        <mat-icon class="section-icon">group</mat-icon>
+        <span>משתמשי מוקד</span>
+        @if (!isLoadingUsers()) {
+          <span class="user-count-badge">{{ users().length }}</span>
+        }
+      </div>
+
+      @if (isLoadingUsers()) {
+        <div class="loading-container">
+          <mat-spinner diameter="32"></mat-spinner>
+          <span>טוען משתמשים...</span>
+        </div>
+      } @else if (!users().length) {
+        <div class="empty-state">
+          <mat-icon>group_off</mat-icon>
+          <span>אין משתמשים מוגדרים</span>
+        </div>
+      } @else {
+        <div class="users-table-wrapper">
+          <table class="users-table" role="table">
+            <thead>
+              <tr>
+                <th>שם משתמש</th>
+                <th>תפקיד</th>
+                <th>מחלקה</th>
+                <th>סטטוס</th>
+                <th>נוצר</th>
+                <th>פעולות</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (user of users(); track user.id) {
+                <tr [class.row-inactive]="user.status === 'Inactive'">
+                  <td class="username-cell">
+                    <mat-icon class="user-icon">person</mat-icon>
+                    {{ user.username }}
+                  </td>
+                  <td>
+                    <span [class]="roleBadgeClass(user.role)">{{ user.role }}</span>
+                  </td>
+                  <td>{{ user.department }}</td>
+                  <td>
+                    <span [class]="statusBadgeClass(user.status)">
+                      {{ user.status === 'Active' ? 'פעיל' : 'לא פעיל' }}
+                    </span>
+                  </td>
+                  <td class="date-cell">{{ formatDate(user.createdAt) }}</td>
+                  <td class="actions-cell">
+                    <button
+                      type="button"
+                      mat-icon-button
+                      [matTooltip]="'עריכה'"
+                      (click)="startEdit(user)"
+                      aria-label="עריכה">
+                      <mat-icon>edit</mat-icon>
+                    </button>
+                    <button
+                      type="button"
+                      mat-icon-button
+                      [matTooltip]="user.status === 'Active' ? 'השבת' : 'הפעל'"
+                      (click)="toggleStatus(user)"
+                      [class.btn-activate]="user.status === 'Inactive'"
+                      aria-label="שנה סטטוס">
+                      <mat-icon>{{ user.status === 'Active' ? 'block' : 'check_circle' }}</mat-icon>
+                    </button>
+                    <button
+                      type="button"
+                      mat-icon-button
+                      matTooltip="הסר"
+                      (click)="removeUser(user)"
+                      class="btn-remove"
+                      aria-label="הסר">
+                      <mat-icon>delete_outline</mat-icon>
+                    </button>
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      }
+    </section>
+
+  </mat-dialog-content>
+
+  <mat-dialog-actions align="end" class="dialog-actions">
+    <button type="button" mat-stroked-button (click)="dialogRef.close()">סגור</button>
+  </mat-dialog-actions>
+
+</div>

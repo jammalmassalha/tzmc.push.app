@@ -312,6 +312,15 @@ export interface HelpdeskManagedUser {
   department: string;
 }
 
+export interface HelpdeskAdminUser {
+  id: number;
+  username: string;
+  role: HelpdeskRole;
+  department: string;
+  status: 'Active' | 'Inactive';
+  createdAt: string;
+}
+
 export interface HelpdeskMyRole {
   role: HelpdeskRole;
   department: string;

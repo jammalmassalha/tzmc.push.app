@@ -52,6 +52,7 @@ import { ConfirmMessageActionDialogComponent } from './dialogs/confirm-message-a
 import { ForwardMessageDialogComponent } from './dialogs/forward-message-dialog.component';
 import { HelpdeskTicketDialogComponent } from './dialogs/helpdesk-ticket-dialog.component';
 import { HelpdeskTicketDetailDialogComponent } from './dialogs/helpdesk-ticket-detail-dialog.component';
+import { HelpdeskUsersManagementDialogComponent } from './dialogs/helpdesk-users-management-dialog.component';
 
 type MessageRenderPart =
   | { kind: 'text'; text: string }
@@ -1546,6 +1547,15 @@ export class ChatShellComponent implements OnInit, OnDestroy, AfterViewInit {
       if (result?.changed) {
         void this.store.refreshHelpdeskTickets();
       }
+    });
+  }
+
+  openHelpdeskUsersManagement(): void {
+    this.dialog.open(HelpdeskUsersManagementDialogComponent, {
+      width: '760px',
+      maxWidth: '96vw',
+      maxHeight: '90vh',
+      direction: 'rtl'
     });
   }
 
