@@ -62,7 +62,14 @@ const double _kDesktopShellBreakpoint = 1100;
 
 /// Chat shell screen widget
 class ChatShellScreen extends ConsumerStatefulWidget {
-  const ChatShellScreen({super.key});
+  final MainTab initialTab;
+  final ValueChanged<MainTab>? onTabChanged;
+
+  const ChatShellScreen({
+    super.key,
+    this.initialTab = MainTab.chats,
+    this.onTabChanged,
+  });
 
   @override
   ConsumerState<ChatShellScreen> createState() => _ChatShellScreenState();
@@ -72,6 +79,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     with WidgetsBindingObserver {
   MainTab _currentTab = MainTab.chats;
   final _pageController = PageController();
+  late String _lastReportedTopLevelPath;
   bool _canAccessShuttle = false;
   bool _canAccessTicketManager = false;
   bool _canAccessAdminGroups = false;
@@ -84,9 +92,23 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   @override
   void initState() {
     super.initState();
+    _currentTab = widget.initialTab;
+    _lastReportedTopLevelPath = _topLevelPathForTab(_currentTab);
     WidgetsBinding.instance.addObserver(this);
     _initializeServices();
     unawaited(_refreshTabPermissions());
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatShellScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialTab != widget.initialTab && _currentTab != widget.initialTab) {
+      setState(() {
+        _currentTab = widget.initialTab;
+      });
+      _syncPageToCurrentTab();
+      _notifyTabChangedIfNeeded();
+    }
   }
 
   /// Called when the app returns to the foreground.
@@ -204,6 +226,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     if (!_visibleTabs.contains(_currentTab)) {
       _currentTab = _visibleTabs.first;
       _syncPageToCurrentTab();
+      _notifyTabChangedIfNeeded();
     }
 
     final isDesktopWeb =
@@ -289,6 +312,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
           setState(() {
             _currentTab = _visibleTabs[index];
           });
+          _notifyTabChangedIfNeeded();
         },
         children: _visibleTabs.map(_buildTabBody).toList(),
       ),
@@ -301,6 +325,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
               setState(() {
                 _currentTab = _visibleTabs[index];
               });
+              _notifyTabChangedIfNeeded();
               _pageController.animateToPage(
                 index,
                 duration: const Duration(milliseconds: 300),
@@ -537,6 +562,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         setState(() {
           _currentTab = _visibleTabs[index];
         });
+        _notifyTabChangedIfNeeded();
         _syncPageToCurrentTab();
       },
       destinations: _visibleTabs
@@ -935,6 +961,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       }
     });
     _syncPageToCurrentTab();
+    _notifyTabChangedIfNeeded();
   }
 
   bool _isUserAllowedForShuttle(String normalizedUser, List<String> employees) {
@@ -968,6 +995,19 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         _pageController.jumpToPage(targetIndex);
       }
     });
+  }
+
+  String _topLevelPathForTab(MainTab tab) {
+    return tab == MainTab.helpdesk ? '/helpdesk' : '/';
+  }
+
+  void _notifyTabChangedIfNeeded() {
+    final callback = widget.onTabChanged;
+    if (callback == null) return;
+    final path = _topLevelPathForTab(_currentTab);
+    if (path == _lastReportedTopLevelPath) return;
+    _lastReportedTopLevelPath = path;
+    callback(_currentTab);
   }
 
   String _getTabTitle(MainTab tab) {

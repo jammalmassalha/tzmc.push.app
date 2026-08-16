@@ -97,6 +97,10 @@ flutter run -d emulator  # Android
 flutter run -d simulator  # iOS
 ```
 
+### Web deep-link hosting note
+
+When deploying the Flutter web build with path-based URLs (for example `/helpdesk`), keep the web base href rooted at `/` and configure your web server/CDN to rewrite unknown paths back to `index.html` so direct refresh/bookmark navigation does not return 404.
+
 ### Building
 
 Build release APK:

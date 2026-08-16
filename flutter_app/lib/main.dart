@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
 import 'core/api/http_client.dart';
@@ -25,6 +26,9 @@ import 'features/chat/presentation/chat_shell_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (kIsWeb) {
+    usePathUrlStrategy();
+  }
 
   // Initialize Hebrew (and default) date formatting symbols so DateFormat
   // calls like DateFormat.yMd('he') don't throw LocaleDataException at build
@@ -141,26 +145,123 @@ class TzmcPushApp extends ConsumerWidget {
       },
 
       // Initial route handling based on auth state
-      home: const AuthRouter(),
+      initialRoute: _initialRouteName(),
+      onGenerateRoute: (settings) {
+        final request = AppRouteRequest.fromName(settings.name);
+        switch (request.path) {
+          case AppRoutes.login:
+            return MaterialPageRoute<void>(
+              settings: settings,
+              builder: (_) => AuthRouter(
+                requestedPath: AppRoutes.login,
+                redirectPath: request.redirectPath,
+              ),
+            );
+          case AppRoutes.helpdesk:
+            return MaterialPageRoute<void>(
+              settings: settings,
+              builder: (_) => const AuthRouter(requestedPath: AppRoutes.helpdesk),
+            );
+          case AppRoutes.home:
+          default:
+            return MaterialPageRoute<void>(
+              settings: settings,
+              builder: (_) => const AuthRouter(requestedPath: AppRoutes.home),
+            );
+        }
+      },
     );
+  }
+
+  String _initialRouteName() {
+    final base = Uri.base;
+    final path = AppRoutes.normalizePath(base.path);
+    if (path == AppRoutes.login) {
+      final redirect = AppRoutes.normalizePath(base.queryParameters['redirect']);
+      if (redirect == AppRoutes.home) return AppRoutes.login;
+      return AppRoutes.loginWithRedirect(redirect);
+    }
+    return path;
   }
 }
 
 /// Router that shows appropriate screen based on auth state
-class AuthRouter extends ConsumerWidget {
-  const AuthRouter({super.key});
+class AuthRouter extends ConsumerStatefulWidget {
+  final String requestedPath;
+  final String? redirectPath;
+
+  const AuthRouter({
+    super.key,
+    required this.requestedPath,
+    this.redirectPath,
+  });
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<AuthRouter> createState() => _AuthRouterState();
+}
+
+class _AuthRouterState extends ConsumerState<AuthRouter> {
+  bool _isNavigating = false;
+
+  @override
+  Widget build(BuildContext context) {
     final authState = ref.watch(authStateProvider);
+    final requestedPath = AppRoutes.normalizePath(widget.requestedPath);
 
     return switch (authState) {
       AuthLoading() => const SplashScreen(),
-      AuthUnauthenticated() => const LoginScreen(),
-      AuthAwaitingCode() => const LoginScreen(),
-      AuthAuthenticated() => const ChatShellScreen(),
-      AuthError() => const LoginScreen(),
+      AuthUnauthenticated() || AuthAwaitingCode() || AuthError() => _buildUnauthenticated(
+          requestedPath,
+        ),
+      AuthAuthenticated authenticated => _buildAuthenticated(requestedPath, authenticated),
     };
+  }
+
+  Widget _buildUnauthenticated(String requestedPath) {
+    if (requestedPath != AppRoutes.login) {
+      _scheduleNavigation(AppRoutes.loginWithRedirect(requestedPath));
+    }
+    return const LoginScreen();
+  }
+
+  Widget _buildAuthenticated(String requestedPath, AuthAuthenticated authState) {
+    String destination = requestedPath == AppRoutes.login
+        ? AppRoutes.normalizePath(widget.redirectPath)
+        : requestedPath;
+
+    if (destination == AppRoutes.helpdesk && authState.isRestricted) {
+      destination = AppRoutes.home;
+    }
+
+    if (destination != requestedPath) {
+      _scheduleNavigation(destination);
+    }
+
+    return ChatShellScreen(
+      initialTab: destination == AppRoutes.helpdesk ? MainTab.helpdesk : MainTab.chats,
+      onTabChanged: (tab) {
+        if (!kIsWeb) return;
+        final targetPath = AppRoutes.topLevelPathForHelpdeskTab(
+          tab == MainTab.helpdesk,
+        );
+        final current = AppRouteRequest.fromName(
+          ModalRoute.of(context)?.settings.name,
+        );
+        if (current.path != targetPath) {
+          Navigator.of(context).pushNamed(targetPath);
+        }
+      },
+    );
+  }
+
+  void _scheduleNavigation(String routeName) {
+    if (_isNavigating || !mounted) return;
+    _isNavigating = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      Navigator.of(context).pushReplacementNamed(routeName);
+      _isNavigating = false;
+    });
   }
 }
 
