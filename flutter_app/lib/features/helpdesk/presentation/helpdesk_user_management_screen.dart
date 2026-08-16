@@ -51,7 +51,10 @@ class _HelpdeskUserManagementScreenState
         api.fetchHelpdeskDepartments(widget.currentUser),
       ]);
       final users = (results[0] as List<HelpdeskUser>).toList()
-        ..sort((a, b) => a.username.toLowerCase().compareTo(b.username.toLowerCase()));
+        ..sort(
+          (a, b) =>
+              a.username.toLowerCase().compareTo(b.username.toLowerCase()),
+        );
       final departments = (results[1] as List<HelpdeskDepartment>).toList()
         ..sort((a, b) => a.name.compareTo(b.name));
 
@@ -174,7 +177,7 @@ class _HelpdeskUserManagementScreenState
           actions: <Widget>[
             IconButton(
               tooltip: 'רענן',
-              onPressed: _isLoading ? null : _loadData,
+              onPressed: _isLoading ? null : () => _loadData(),
               icon: const Icon(Icons.refresh),
             ),
           ],
@@ -205,7 +208,7 @@ class _HelpdeskUserManagementScreenState
               Text(_error!, textAlign: TextAlign.center),
               const SizedBox(height: 12),
               ElevatedButton(
-                onPressed: _loadData,
+                onPressed: () => _loadData(),
                 child: const Text('נסה שוב'),
               ),
             ],
@@ -239,7 +242,7 @@ class _HelpdeskUserManagementScreenState
     }
 
     return RefreshIndicator(
-      onRefresh: _loadData,
+      onRefresh: () => _loadData(),
       child: ListView.separated(
         padding: const EdgeInsets.fromLTRB(12, 12, 12, 88),
         itemCount: _users.length,
@@ -300,7 +303,10 @@ class _HelpdeskUserCard extends StatelessWidget {
                         spacing: 8,
                         runSpacing: 8,
                         children: <Widget>[
-                          _InfoChip(label: user.role, isPrimary: user.role == 'Admin'),
+                          _InfoChip(
+                            label: user.role,
+                            isPrimary: user.role == 'Admin',
+                          ),
                           _InfoChip(label: user.status, isSuccess: user.isActive),
                           _InfoChip(label: user.department),
                         ],
@@ -320,7 +326,10 @@ class _HelpdeskUserCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 12),
-            Text('נוצר: $createdAt', style: Theme.of(context).textTheme.bodySmall),
+            Text(
+              'נוצר: $createdAt',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
             const SizedBox(height: 12),
             Wrap(
               spacing: 8,
@@ -418,7 +427,8 @@ class HelpdeskUserFormDialog extends StatefulWidget {
   });
 
   @override
-  State<HelpdeskUserFormDialog> createState() => _HelpdeskUserFormDialogState();
+  State<HelpdeskUserFormDialog> createState() =>
+      _HelpdeskUserFormDialogState();
 }
 
 class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
@@ -438,7 +448,12 @@ class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
       text: widget.existing?.username ?? '',
     );
     _role = widget.existing?.role ?? 'Editor';
-    _department = widget.existing?.department ?? widget.departments.first.name;
+    final departmentNames = widget.departments.map((d) => d.name).toSet();
+    final existingDepartment = widget.existing?.department;
+    _department = existingDepartment != null &&
+            departmentNames.contains(existingDepartment)
+        ? existingDepartment
+        : widget.departments.first.name;
     _isActive = widget.existing?.isActive ?? true;
   }
 

@@ -477,32 +477,23 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                     style: theme.textTheme.titleMedium
                         ?.copyWith(fontWeight: FontWeight.bold),
                   ),
-                  Row(children: [
-                    if (state.isLoading)
-                      const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2)),
-                    if (state.myRole?.role == HelpdeskRole.admin)
-                     IconButton(
-                       icon: const Icon(Icons.people_alt_outlined),
-                       tooltip: 'ניהול משתמשי מוקד',
-                       onPressed: () => Navigator.of(context).push(
-                         MaterialPageRoute(
-                           builder: (_) => HelpdeskUserManagementScreen(
-                             currentUser:
-                                 ref.read(helpdeskProvider.notifier).currentUser,
-                           ),
-                         ),
+                  Row(
+                    children: [
+                     if (state.isLoading)
+                       const SizedBox(
+                         width: 20,
+                         height: 20,
+                         child: CircularProgressIndicator(strokeWidth: 2),
                        ),
+                     IconButton(
+                       icon: const Icon(Icons.refresh),
+                       tooltip: 'רענן',
+                       onPressed: () => ref
+                           .read(helpdeskProvider.notifier)
+                           .loadTickets(force: true),
                      ),
-                    IconButton(
-                     icon: const Icon(Icons.refresh),
-                     tooltip: 'רענן',
-                      onPressed: () =>
-                          ref.read(helpdeskProvider.notifier).loadTickets(force: true),
-                    ),
-                  ]),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -1263,19 +1254,36 @@ class TicketManagerScreen extends ConsumerWidget {
                     style: theme.textTheme.titleMedium
                         ?.copyWith(fontWeight: FontWeight.bold),
                   ),
-                  Row(children: [
-                    if (state.isLoading)
-                      const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2)),
-                    IconButton(
-                      icon: const Icon(Icons.refresh),
-                      tooltip: 'רענן',
-                      onPressed: () =>
-                          ref.read(helpdeskProvider.notifier).loadTickets(force: true),
-                    ),
-                  ]),
+                  Row(
+                    children: [
+                     if (state.isLoading)
+                       const SizedBox(
+                         width: 20,
+                         height: 20,
+                         child: CircularProgressIndicator(strokeWidth: 2),
+                       ),
+                     if (state.myRole?.role == HelpdeskRole.admin)
+                       IconButton(
+                         icon: const Icon(Icons.people_alt_outlined),
+                         tooltip: 'ניהול משתמשי מוקד',
+                         onPressed: () => Navigator.of(context).push(
+                           MaterialPageRoute(
+                             builder: (_) => HelpdeskUserManagementScreen(
+                               currentUser:
+                                   ref.read(helpdeskProvider.notifier).currentUser,
+                             ),
+                           ),
+                         ),
+                       ),
+                     IconButton(
+                       icon: const Icon(Icons.refresh),
+                       tooltip: 'רענן',
+                       onPressed: () => ref
+                           .read(helpdeskProvider.notifier)
+                           .loadTickets(force: true),
+                     ),
+                    ],
+                  ),
                 ],
               ),
             ),

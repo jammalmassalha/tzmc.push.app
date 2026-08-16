@@ -336,8 +336,9 @@ class HelpdeskDepartment extends Equatable {
 
   factory HelpdeskDepartment.fromJson(Map<String, dynamic> json) {
     return HelpdeskDepartment(
-      id: (json['id'] as num?)?.toInt() ?? 0,
-      name: (json['name'] ?? json['department'] ?? '').toString(),
+      id: ((json['id'] ?? json['ID']) as num?)?.toInt() ?? 0,
+      name: (json['name'] ?? json['department'] ?? json['DepartName'] ?? '')
+          .toString(),
     );
   }
 
@@ -686,16 +687,21 @@ class HelpdeskUser extends Equatable {
   List<Object?> get props => [id, username, role, department, createdAt, status];
 
   factory HelpdeskUser.fromJson(Map<String, dynamic> json) {
-    final createdAtRaw = json['createdAt'] ?? json['created_at'];
+    final createdAtRaw =
+        json['createdAt'] ?? json['created_at'] ?? json['CreatedAt'];
     return HelpdeskUser(
-      id: (json['id'] as num?)?.toInt() ?? 0,
-      username: (json['username'] ?? '').toString(),
-      role: _normalizeHelpdeskUserRole(json['role']?.toString()),
-      department: (json['department'] ?? json['departName'] ?? '').toString(),
+      id: ((json['id'] ?? json['ID']) as num?)?.toInt() ?? 0,
+      username: (json['username'] ?? json['Username'] ?? '').toString(),
+      role: _normalizeHelpdeskUserRole(
+        (json['role'] ?? json['Role'])?.toString(),
+      ),
+      department:
+          (json['department'] ?? json['departName'] ?? json['Department'] ?? '')
+              .toString(),
       createdAt: createdAtRaw is String && createdAtRaw.trim().isNotEmpty
           ? DateTime.tryParse(createdAtRaw)
           : null,
-      status: _normalizeHelpdeskUserStatus(json['status']),
+      status: _normalizeHelpdeskUserStatus(json['status'] ?? json['Status']),
     );
   }
 
