@@ -13,6 +13,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/config/environment.dart';
 import '../../../core/api/chat_api_service.dart';
+import '../../../core/navigation/root_navigator.dart';
 import '../../../core/realtime/realtime_transport_service.dart';
 import '../../../core/services/accessibility_service.dart';
 import '../../../core/services/chat_store_service.dart';
@@ -320,8 +321,10 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         controller: _pageController,
         onPageChanged: (index) {
           if (index < 0 || index >= _visibleTabs.length) return;
+          final nextTab = _visibleTabs[index];
+          if (nextTab == _currentTab) return;
           setState(() {
-            _currentTab = _visibleTabs[index];
+            _currentTab = nextTab;
           });
           _notifyTabChangedIfNeeded();
         },
@@ -333,8 +336,10 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
             currentIndex: _visibleTabs.indexOf(_currentTab),
             onTap: (index) {
               if (index < 0 || index >= _visibleTabs.length) return;
+              final nextTab = _visibleTabs[index];
+              if (nextTab == _currentTab) return;
               setState(() {
-                _currentTab = _visibleTabs[index];
+                _currentTab = nextTab;
               });
               _notifyTabChangedIfNeeded();
               _pageController.animateToPage(
@@ -570,8 +575,10 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       ),
       onDestinationSelected: (index) {
         if (index < 0 || index >= _visibleTabs.length) return;
+        final nextTab = _visibleTabs[index];
+        if (nextTab == _currentTab) return;
         setState(() {
-          _currentTab = _visibleTabs[index];
+          _currentTab = nextTab;
         });
         _notifyTabChangedIfNeeded();
         _syncPageToCurrentTab();
@@ -1013,7 +1020,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   }
 
   String _topLevelPathForTab(MainTab tab) {
-    return tab == MainTab.helpdesk ? '/helpdesk' : '/';
+    return (tab == MainTab.helpdesk || tab == MainTab.ticketManager)
+        ? AppRoutes.helpdesk
+        : AppRoutes.home;
   }
 
   void _notifyTabChangedIfNeeded() {

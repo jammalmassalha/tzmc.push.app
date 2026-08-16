@@ -242,7 +242,7 @@ class _AuthRouterState extends ConsumerState<AuthRouter> {
       onTabChanged: (tab) {
         if (!kIsWeb) return;
         final targetPath = AppRoutes.topLevelPathForHelpdeskTab(
-          tab == MainTab.helpdesk,
+          tab == MainTab.helpdesk || tab == MainTab.ticketManager,
         );
         final current = AppRouteRequest.fromName(
           ModalRoute.of(context)?.settings.name,
