@@ -954,8 +954,8 @@ function registerHelpdeskController(app, deps = {}) {
             return res.status(500).json({ result: 'error', message: 'שגיאה בהעברת הקריאה למחלקה אחרת' });
         }
     }
-    app.patch(['/helpdesk/tickets/:id/department', '/notify/helpdesk/tickets/:id/department'], requireUser, helpdeskRateLimit(10, 60 * 1000), transferTicketDepartmentHandler);
-    app.put(['/helpdesk/tickets/:id/department', '/notify/helpdesk/tickets/:id/department'], requireUser, helpdeskRateLimit(10, 60 * 1000), transferTicketDepartmentHandler);
+    app.patch(['/helpdesk/tickets/:id/department', '/notify/helpdesk/tickets/:id/department'], requireUser, helpdeskAdminMutationIpRateLimit, helpdeskRateLimit(10, 60 * 1000), transferTicketDepartmentHandler);
+    app.put(['/helpdesk/tickets/:id/department', '/notify/helpdesk/tickets/:id/department'], requireUser, helpdeskAdminMutationIpRateLimit, helpdeskRateLimit(10, 60 * 1000), transferTicketDepartmentHandler);
 
     // POST /helpdesk/tickets/:id/notes - Add a note to a ticket
     app.post(['/helpdesk/tickets/:id/notes', '/notify/helpdesk/tickets/:id/notes'], requireUser, helpdeskRateLimit(20, 60 * 1000), async (req, res) => {
