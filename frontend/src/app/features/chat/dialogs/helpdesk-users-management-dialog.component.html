@@ -67,8 +67,9 @@
           <mat-form-field appearance="outline" class="form-field">
             <mat-label>סטטוס</mat-label>
             <mat-select formControlName="status">
-              <mat-option value="Active">פעיל</mat-option>
-              <mat-option value="Inactive">לא פעיל</mat-option>
+              @for (s of STATUSES; track s) {
+                <mat-option [value]="s">{{ s === 'Active' ? 'פעיל' : 'לא פעיל' }}</mat-option>
+              }
             </mat-select>
           </mat-form-field>
         </div>

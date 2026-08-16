@@ -10,6 +10,7 @@ import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatSelectModule } from '@angular/material/select';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatTooltipModule } from '@angular/material/tooltip';
+import { firstValueFrom } from 'rxjs';
 import { HelpdeskAdminUser } from '../../../core/models/chat.models';
 import { ChatApiService } from '../../../core/services/chat-api.service';
 import { ConfirmMessageActionDialogComponent } from './confirm-message-action-dialog.component';
@@ -51,8 +52,6 @@ export class HelpdeskUsersManagementDialogComponent implements OnInit {
 
   readonly ROLES = ['Admin', 'Editor'] as const;
   readonly STATUSES = ['Active', 'Inactive'] as const;
-
-  readonly userForm = this.fb.nonNullable.group({
     username: ['', [Validators.required, Validators.minLength(1), Validators.maxLength(64)]],
     role: ['Editor', Validators.required],
     department: ['', Validators.required],
@@ -88,11 +87,6 @@ export class HelpdeskUsersManagementDialogComponent implements OnInit {
     }
   }
 
-  startAdd(): void {
-    this.editingUserId.set(null);
-    this.userForm.reset({ username: '', role: 'Editor', department: '', status: 'Active' });
-  }
-
   startEdit(user: HelpdeskAdminUser): void {
     this.editingUserId.set(user.id);
     this.userForm.reset({
@@ -106,10 +100,6 @@ export class HelpdeskUsersManagementDialogComponent implements OnInit {
   cancelForm(): void {
     this.editingUserId.set(null);
     this.userForm.reset({ username: '', role: 'Editor', department: '', status: 'Active' });
-  }
-
-  isFormOpen(): boolean {
-    return this.editingUserId() !== null || this.userForm.dirty;
   }
 
   async saveUser(): Promise<void> {
@@ -149,7 +139,7 @@ export class HelpdeskUsersManagementDialogComponent implements OnInit {
       },
       width: '320px'
     });
-    const confirmed = await ref.afterClosed().toPromise();
+    const confirmed = await firstValueFrom(ref.afterClosed());
     if (!confirmed) return;
     try {
       await this.api.patchHelpdeskAdminUserStatus(user.id, newStatus);
@@ -170,7 +160,7 @@ export class HelpdeskUsersManagementDialogComponent implements OnInit {
       },
       width: '320px'
     });
-    const confirmed = await ref.afterClosed().toPromise();
+    const confirmed = await firstValueFrom(ref.afterClosed());
     if (!confirmed) return;
     try {
       await this.api.removeHelpdeskAdminUser(user.username);

@@ -366,7 +366,7 @@ async function ensureHelpdeskTables(pool) {
             \`username\` VARCHAR(64) NOT NULL,
             \`role\` VARCHAR(16) NOT NULL DEFAULT 'Editor',
             \`department\` VARCHAR(64) NOT NULL,
-            \`Status\` VARCHAR(16) NOT NULL DEFAULT 'Active',
+            \`status\` VARCHAR(16) NOT NULL DEFAULT 'Active',
             \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (\`id\`),
             UNIQUE INDEX \`idx_username\` (\`username\`),
@@ -375,13 +375,13 @@ async function ensureHelpdeskTables(pool) {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `, 'helpdesk_users');
 
-    // Migration: add Status column to existing helpdesk_users tables
+    // Migration: add status column to existing helpdesk_users tables
     try {
-        await pool.execute(`ALTER TABLE \`helpdesk_users\` ADD COLUMN \`Status\` VARCHAR(16) NOT NULL DEFAULT 'Active' AFTER \`department\``);
+        await pool.execute(`ALTER TABLE \`helpdesk_users\` ADD COLUMN \`status\` VARCHAR(16) NOT NULL DEFAULT 'Active' AFTER \`department\``);
     } catch (err) {
         // ER_DUP_FIELDNAME (1060) — column already exists, safe to ignore
         if (!(err && err.errno === 1060)) {
-            console.error('[HELPDESK] Migration helpdesk_users Status column error:', err && err.message ? err.message : err);
+            console.error('[HELPDESK] Migration helpdesk_users status column error:', err && err.message ? err.message : err);
         }
     }
 
@@ -1238,11 +1238,11 @@ function registerHelpdeskController(app, deps = {}) {
             let rows;
             if (editorRole.role === 'Admin') {
                 [rows] = await pool.query(
-                    'SELECT `id`, `username`, `role`, `department`, `Status`, `created_at` FROM `helpdesk_users` ORDER BY `department`, `username`'
+                    'SELECT `id`, `username`, `role`, `department`, `status`, `created_at` FROM `helpdesk_users` ORDER BY `department`, `username`'
                 );
             } else {
                 [rows] = await pool.query(
-                    'SELECT `id`, `username`, `role`, `department`, `Status`, `created_at` FROM `helpdesk_users` WHERE `department` = ? ORDER BY `username`',
+                    'SELECT `id`, `username`, `role`, `department`, `status`, `created_at` FROM `helpdesk_users` WHERE `department` = ? ORDER BY `username`',
                     [editorRole.department]
                 );
             }
@@ -1251,7 +1251,7 @@ function registerHelpdeskController(app, deps = {}) {
                 username: r.username,
                 role: r.role,
                 department: r.department,
-                status: r.Status || 'Active',
+                status: r.status || 'Active',
                 createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at || '')
             }));
             return res.json({ result: 'success', users });
@@ -1287,7 +1287,7 @@ function registerHelpdeskController(app, deps = {}) {
                 return res.status(403).json({ result: 'error', message: 'רק מנהל יכול להוסיף משתמשים' });
             }
             await pool.execute(
-                'INSERT INTO `helpdesk_users` (`username`, `role`, `department`, `Status`) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE `role` = VALUES(`role`), `department` = VALUES(`department`), `Status` = VALUES(`Status`)',
+                'INSERT INTO `helpdesk_users` (`username`, `role`, `department`, `status`) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE `role` = VALUES(`role`), `department` = VALUES(`department`), `status` = VALUES(`status`)',
                 [targetUsername, role, department, status]
             );
             return res.status(201).json({ result: 'success' });
@@ -1352,7 +1352,7 @@ function registerHelpdeskController(app, deps = {}) {
                 return res.status(403).json({ result: 'error', message: 'רק מנהל יכול לעדכן משתמשים' });
             }
             const [result] = await pool.execute(
-                'UPDATE `helpdesk_users` SET `username` = ?, `role` = ?, `department` = ?, `Status` = ? WHERE `id` = ?',
+                'UPDATE `helpdesk_users` SET `username` = ?, `role` = ?, `department` = ?, `status` = ? WHERE `id` = ?',
                 [targetUsername, role, department, status, targetId]
             );
             if (result.affectedRows === 0) {
@@ -1389,7 +1389,7 @@ function registerHelpdeskController(app, deps = {}) {
                 return res.status(403).json({ result: 'error', message: 'רק מנהל יכול לשנות סטטוס משתמשים' });
             }
             const [result] = await pool.execute(
-                'UPDATE `helpdesk_users` SET `Status` = ? WHERE `id` = ?',
+                'UPDATE `helpdesk_users` SET `status` = ? WHERE `id` = ?',
                 [newStatus, targetId]
             );
             if (result.affectedRows === 0) {
