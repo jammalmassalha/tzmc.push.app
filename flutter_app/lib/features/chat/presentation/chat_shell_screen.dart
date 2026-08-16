@@ -1029,7 +1029,18 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     final callback = widget.onTabChanged;
     if (callback == null) return;
     final path = _topLevelPathForTab(_currentTab);
-    if (path == _lastReportedTopLevelPath) return;
+    // On Flutter web, guard against a stale _lastReportedTopLevelPath by
+    // comparing the desired path against the *live* route name.  The cached
+    // value can lag behind reality when a previous navigation was short-
+    // circuited (e.g. the OS back gesture, a browser-history pop, or an
+    // auth-guard redirect restored the original URL without disposing this
+    // widget).  Using the stale cache caused helpdesk/ticketManager taps from
+    // a non-/helpdesk route to be silently swallowed — leaving the URL at
+    // "/" instead of navigating to "/helpdesk".
+    final effectiveLast = kIsWeb
+        ? AppRoutes.normalizePath(ModalRoute.of(context)?.settings.name)
+        : _lastReportedTopLevelPath;
+    if (path == effectiveLast) return;
     _lastReportedTopLevelPath = path;
     callback(_currentTab);
   }
