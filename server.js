@@ -80,6 +80,25 @@ const app = express();
 const httpServer = http.createServer(app);
 app.disable('x-powered-by');
 
+// ── Reverse proxy / load-balancer awareness ──
+// When running behind Nginx/Cloudflare/ELB/IIS-ARR (the norm in production),
+// Express must be told to trust the proxy's `X-Forwarded-For`/`X-Forwarded-Proto`
+// headers. Without this, `req.ip` collapses to the proxy's own address for every
+// client, which silently bands ALL users together under the same per-IP rate
+// limit bucket (express-rate-limit) — a common cause of otherwise-legitimate
+// users getting intermittently 429'd / unable to re-authenticate right after a
+// drop. `TRUST_PROXY` accepts the same values Express supports: a hop count
+// (e.g. "1"), a boolean, or a comma-separated allowlist of proxy IPs/CIDRs.
+const TRUST_PROXY_SETTING = (() => {
+    const raw = String(process.env.TRUST_PROXY || '1').trim();
+    if (!raw) return 1;
+    if (raw === 'true') return true;
+    if (raw === 'false') return false;
+    if (/^-?\d+$/.test(raw)) return Number(raw);
+    return raw;
+})();
+app.set('trust proxy', TRUST_PROXY_SETTING);
+
 const DEFAULT_ALLOWED_HOSTS = ['tzmc.co.il', 'www.tzmc.co.il', '*.tzmc.co.il', 'localhost', '127.0.0.1', '::1'];
 // Auto-detect the server's own hostname and IP addresses so requests arriving
 // via the machine's public/private IPs are not rejected by the host-header guard.
@@ -5433,6 +5452,29 @@ const io = new SocketIOServer(httpServer, {
     cors: {
         origin: '*',
         methods: ['GET', 'POST']
+    },
+    // ── Faster zombie-connection detection ──
+    // Socket.IO defaults (pingInterval=25s / pingTimeout=20s) take up to ~45s
+    // to notice a peer that vanished without a clean close (e.g. mobile app
+    // backgrounded/killed or a dead cellular NAT binding). Until that timeout
+    // fires, the stale socket stays in `websocketClients`, so a fresh login
+    // can briefly race against — or get queued behind — the old, unusable
+    // socket. Shortening both intervals frees the slot quickly while staying
+    // well above normal network jitter. Both are env-configurable so ops can
+    // retune without a code change.
+    pingInterval: Math.max(1000, Number(process.env.SOCKET_IO_PING_INTERVAL_MS) || 20000),
+    pingTimeout: Math.max(1000, Number(process.env.SOCKET_IO_PING_TIMEOUT_MS) || 10000),
+    // Bounds how long the initial handshake may take before being dropped.
+    connectTimeout: Math.max(1000, Number(process.env.SOCKET_IO_CONNECT_TIMEOUT_MS) || 20000),
+    // Best-effort reconnection state recovery: if a client's engine.io
+    // transport supports it, a brief reconnect (e.g. app foregrounded again
+    // within the grace window) can resume the same session instead of
+    // requiring a full new handshake. Clients that don't support it (older
+    // socket_io_client versions) simply ignore this — fully backward
+    // compatible, no protocol/payload change.
+    connectionStateRecovery: {
+        maxDisconnectionDuration: Math.max(0, Number(process.env.SOCKET_IO_RECOVERY_WINDOW_MS) || 60000),
+        skipMiddlewares: false
     }
 });
 
@@ -7783,7 +7825,76 @@ function parseResetByUsernameRequestId(rawValue) {
     }
     return parsed;
 }
+app.get(['/employees-data', '/notify/employees-data'], async (req, res) => {
+    const targetUrl = 'https://script.googleusercontent.com/macros/echo?user_content_key=AUkAhnTUydpAW1Q15AGgHNAgbe-vuYzRHuwIUDoARvVv3GXjo9gpRsD8o7zLh6L1LlBBGG0B2V8Iw8teAhN5QvgvDmbw0ix55bmqJbHqknO6UjwMG3Qrq8UCBvSOJaODPV8-SvM2cbLsptLS1RNya90y0g2Pir5oOs_lvqOSjX8CV0ab8JFUbcx2RCbCbOxGdYUz76YBrW_VvHYE-uxzxZ5bUJs07HbvslRIE1WrTdAEBEO3E3ciyb92FGiG6csDd0qJUKu6vUBRbTriVnr9Ftx5JBXuIfX16SYabJDC1FZCeAPh9wDUbt2D_gQgUD92_w3LuPoGi8Rj&lib=M61tmyhqGdJnkdffHSdmCsRQIa2hFtaof';
 
+    // 1. Get client IP address using existing server helper
+    const clientIp = getClientIpAddress(req);
+
+    // 2. IP Restriction Check
+    const ALLOWED_IPS = ['212.179.60.30', '194.90.134.33', '82.166.218.115'];
+    
+    // Normalize IP comparison (handles IPv6 mapping if present, e.g. ::ffff:212.179.60.30)
+    const normalizedClientIp = clientIp.replace(/^::ffff:/, '');
+
+    if (!ALLOWED_IPS.includes(normalizedClientIp)) {
+        console.warn(`[SECURITY] Blocked unauthorized IP attempt to /employees-data: ${clientIp}`);
+        return res.status(403).json({
+            clientIp,
+            error: 'Access denied: Unauthorized IP address'
+        });
+    }
+
+    try {
+        console.log(`[GOOGLE-SCRIPT-DATA] Request received from authorized IP: ${clientIp}. Proxying to Google Script...`);
+        
+        // Fetch data using your existing fetchWithRetry helper
+        const response = await fetchWithRetry(
+            targetUrl,
+            { method: 'GET' },
+            { timeoutMs: 15000, retries: 2, backoffMs: 500 }
+        );
+
+        if (!response.ok) {
+            console.error(`[GOOGLE-SCRIPT-DATA] Remote server returned HTTP ${response.status} for IP: ${clientIp}`);
+            return res.status(response.status).json({ 
+                clientIp,
+                error: `Failed to fetch data from Google Script (HTTP ${response.status})` 
+            });
+        }
+
+        const jsonData = await response.json();
+
+        // 3. Attach clientIp to output payload
+        if (Array.isArray(jsonData)) {
+            // If the script returns an Array, wrap it neatly
+            return res.json({
+                clientIp,
+                data: jsonData
+            });
+        } else if (jsonData && typeof jsonData === 'object') {
+            // If the script returns an Object, merge clientIp into it
+            return res.json({
+                clientIp,
+                ...jsonData
+            });
+        }
+
+        // Fallback for raw/primitive responses
+        return res.json({
+            clientIp,
+            data: jsonData
+        });
+
+    } catch (error) {
+        console.error(`[GOOGLE-SCRIPT-DATA] Error for IP ${clientIp}:`, error && error.message ? error.message : error);
+        return res.status(500).json({ 
+            clientIp,
+            error: 'Internal server error while retrieving Google Script data',
+            details: error && error.message ? error.message : String(error)
+        });
+    }
+});
 app.post(
     ['/reset-password/verify-year', '/notify/reset-password/verify-year'],
     authorizePasswordResetRequest('verify', 10, 5, 60 * 1000),
@@ -8429,6 +8540,44 @@ syncSubscribeSheetToDb();
 const subscribeSyncSchedulerTimer = setInterval(syncSubscribeSheetToDb, 300000);
 
 const PORT = process.env.PORT || 3000;
+
+// ── Node HTTP server keep-alive / timeout tuning ──
+// Node's HTTP server defaults (keepAliveTimeout=5s) are LOWER than the idle
+// timeout of most reverse proxies / load balancers (Nginx/ALB/Cloudflare
+// commonly default to 60-75s). This creates a race: the proxy considers the
+// keep-alive connection to the backend still reusable and forwards a new
+// client request over it right as Node closes it, resulting in an abrupt
+// ECONNRESET / silently dropped request on the client with no clean error —
+// exactly the "disconnected until the app is force-closed and reopened"
+// symptom, since only a brand-new TCP connection on app restart avoids the
+// stale pooled socket. Keep Node's keepAliveTimeout comfortably ABOVE the
+// proxy's idle timeout, and headersTimeout/requestTimeout above that again
+// (Node requires headersTimeout > keepAliveTimeout).
+httpServer.keepAliveTimeout = Math.max(
+    1000,
+    Number(process.env.HTTP_KEEP_ALIVE_TIMEOUT_MS) || 65000
+);
+httpServer.headersTimeout = Math.max(
+    httpServer.keepAliveTimeout + 1000,
+    Number(process.env.HTTP_HEADERS_TIMEOUT_MS) || httpServer.keepAliveTimeout + 5000
+);
+// requestTimeout=0 disables Node's default 5-minute abort of long-running
+// requests/streams (e.g. SSE fallback connections in notifyRealtimeClients).
+httpServer.requestTimeout = Math.max(
+    0,
+    Number(process.env.HTTP_REQUEST_TIMEOUT_MS) || 0
+);
+
+// ── OS-level TCP keep-alive ──
+// Mobile clients frequently sit behind carrier NAT/firewalls that silently
+// drop idle connections without a FIN/RST. Enabling TCP keep-alive lets the
+// OS actively probe and detect those dead sockets so the server (and its
+// websocketClients/sseClients maps) release them promptly instead of holding
+// a "zombie" connection that blocks a clean reconnect.
+httpServer.on('connection', (socket) => {
+    socket.setKeepAlive(true, Math.max(1000, Number(process.env.TCP_KEEP_ALIVE_DELAY_MS) || 30000));
+});
+
 httpServer.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
     if (fcmSender.isFcmSenderConfigured()) {
