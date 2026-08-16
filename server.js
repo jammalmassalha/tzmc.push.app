@@ -3113,7 +3113,7 @@ async function sendAuthCodeSms(user, code) {
 
     const internationalPhone = toInternationalPhoneFormat(smsDestination);
     const maskedUser = maskPhoneForLogs(normalizedUser);
-    const maskedDestination = maskPhoneForLogs(smsDestination || internationalPhone);
+    const maskedDestination = maskPhoneForLogs(internationalPhone);
     console.log(`[SMS] Sending auth code for user ${maskedUser} to destination ${maskedDestination}`);
 
     const message = formatAuthCodeSmsMessage(normalizedCode);
