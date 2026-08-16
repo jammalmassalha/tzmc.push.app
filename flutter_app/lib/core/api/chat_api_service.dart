@@ -1004,6 +1004,42 @@ class ChatApiService {
     }
   }
 
+  /// Transfer a helpdesk ticket to another department (Editor/Admin only).
+  Future<void> transferHelpdeskTicketDepartment(
+    int ticketId,
+    int departmentId,
+    String user,
+  ) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) {
+      throw ApiException('User is required for helpdesk ticket transfer');
+    }
+    if (departmentId <= 0) {
+      throw ApiException('Department is required for helpdesk ticket transfer');
+    }
+
+    final response = await _client.patch<Map<String, dynamic>>(
+      '${ApiEndpoints.helpdeskTickets}/$ticketId/department',
+      data: {
+        'department_id': departmentId,
+        'user': normalizedUser,
+      },
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+
+    final body = response.data ?? {};
+
+    if (!response.isSuccessful) {
+      final errorMessage = body['message'] as String? ?? 'שגיאה בהעברת הקריאה למחלקה אחרת';
+      throw ApiException(errorMessage);
+    }
+
+    if (body['result'] == 'error') {
+      final errorMessage = body['message'] as String? ?? 'שגיאה בהעברת הקריאה למחלקה אחרת';
+      throw ApiException(errorMessage);
+    }
+  }
+
   /// Get helpdesk ticket history
   /// 
   /// [user] is required for backend authorization when session cookies are not available.

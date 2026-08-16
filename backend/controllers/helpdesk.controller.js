@@ -494,10 +494,16 @@ async function getHelpdeskUserRole(pool, username) {
 
 async function getActiveDepartments(pool) {
     const [rows] = await pool.query(
-        'SELECT `name`, `icon` FROM `helpdesk_departments` WHERE `status` = ? ORDER BY `sort_order`, `id`',
+        'SELECT `id`, `name`, `icon`, `status`, `sort_order` FROM `helpdesk_departments` WHERE `status` = ? ORDER BY `sort_order`, `id`',
         ['active']
     );
-    return rows.map((r) => ({ name: r.name, icon: r.icon || null }));
+    return rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        icon: r.icon || null,
+        status: r.status || 'active',
+        sortOrder: Number.isFinite(r.sort_order) ? r.sort_order : Number(r.sort_order || 0)
+    }));
 }
 
 function registerHelpdeskController(app, deps = {}) {
@@ -858,6 +864,98 @@ function registerHelpdeskController(app, deps = {}) {
     }
     app.put(['/helpdesk/tickets/:id/handler', '/notify/helpdesk/tickets/:id/handler'], requireUser, helpdeskRateLimit(20, 60 * 1000), assignHandlerHandler);
     app.post(['/helpdesk/tickets/:id/handler', '/notify/helpdesk/tickets/:id/handler'], requireUser, helpdeskRateLimit(20, 60 * 1000), assignHandlerHandler);
+
+    // PATCH /helpdesk/tickets/:id/department - Editor/Admin transfers a ticket to another department
+    async function transferTicketDepartmentHandler(req, res) {
+        const user = toTrimmedString(req.resolvedUser || '');
+        if (!user) {
+            return res.status(401).json({ result: 'error', message: 'Authentication required' });
+        }
+        const ticketId = toPositiveInteger(req.params && req.params.id, 0);
+        if (!ticketId) {
+            return res.status(400).json({ result: 'error', message: 'מזהה קריאה לא תקין' });
+        }
+        const body = req.body && typeof req.body === 'object' ? req.body : {};
+        const departmentId = toPositiveInteger(body.department_id, 0);
+        if (!departmentId) {
+            return res.status(400).json({ result: 'error', message: 'מחלקה חדשה לא תקינה' });
+        }
+
+        try {
+            await getTablesReady();
+            const editorRole = await getHelpdeskUserRole(pool, user);
+            if (!editorRole) {
+                return res.status(403).json({ result: 'error', message: 'אין הרשאת עורך' });
+            }
+
+            const [ticketRows] = await pool.query(
+                'SELECT `id`, `title`, `creator_username`, `handler_username`, `department`, `status` FROM `helpdesk_tickets` WHERE `id` = ?',
+                [ticketId]
+            );
+            if (!ticketRows.length) {
+                return res.status(404).json({ result: 'error', message: 'קריאה לא נמצאה' });
+            }
+            const ticket = ticketRows[0];
+            if (editorRole.role !== 'Admin' && ticket.department !== editorRole.department) {
+                return res.status(403).json({ result: 'error', message: 'אין הרשאה להעביר קריאה ממחלקה אחרת' });
+            }
+
+            const [departmentRows] = await pool.query(
+                'SELECT `id`, `name`, `status` FROM `helpdesk_departments` WHERE `id` = ? LIMIT 1',
+                [departmentId]
+            );
+            if (!departmentRows.length || departmentRows[0].status !== 'active') {
+                return res.status(400).json({ result: 'error', message: 'מחלקת היעד אינה פעילה או לא קיימת' });
+            }
+
+            const targetDepartment = toTrimmedString(departmentRows[0].name || '');
+            if (!targetDepartment) {
+                return res.status(400).json({ result: 'error', message: 'מחלקת היעד אינה תקינה' });
+            }
+            if (ticket.department === targetDepartment) {
+                return res.status(400).json({ result: 'error', message: 'הקריאה כבר משויכת למחלקה זו' });
+            }
+
+            const previousHandler = ticket.handler_username || null;
+            await pool.execute(
+                'UPDATE `helpdesk_tickets` SET `department` = ?, `handler_username` = NULL WHERE `id` = ?',
+                [targetDepartment, ticketId]
+            );
+
+            if (previousHandler) {
+                pool.execute(
+                    'INSERT INTO `helpdesk_handler_history` (`ticket_id`, `old_handler`, `new_handler`, `changed_by`) VALUES (?, ?, ?, ?)',
+                    [ticketId, previousHandler, null, user]
+                ).catch((histErr) => {
+                    console.error('[HELPDESK] Insert handler reset history error:', histErr && histErr.message ? histErr.message : histErr);
+                });
+            }
+
+            const [[updatedTicketRow]] = await pool.query(
+                'SELECT * FROM `helpdesk_tickets` WHERE `id` = ? LIMIT 1',
+                [ticketId]
+            );
+
+            return res.json({
+                result: 'success',
+                ticket: updatedTicketRow ? mapTicketRow(updatedTicketRow) : {
+                    id: ticketId,
+                    creatorUsername: ticket.creator_username,
+                    department: targetDepartment,
+                    title: ticket.title,
+                    description: '',
+                    status: ticket.status,
+                    handlerUsername: null
+                }
+            });
+        } catch (error) {
+            const message = error && error.message ? error.message : 'Failed to transfer ticket department';
+            console.error('[HELPDESK] Transfer ticket department error:', message);
+            return res.status(500).json({ result: 'error', message: 'שגיאה בהעברת הקריאה למחלקה אחרת' });
+        }
+    }
+    app.patch(['/helpdesk/tickets/:id/department', '/notify/helpdesk/tickets/:id/department'], requireUser, helpdeskRateLimit(10, 60 * 1000), transferTicketDepartmentHandler);
+    app.put(['/helpdesk/tickets/:id/department', '/notify/helpdesk/tickets/:id/department'], requireUser, helpdeskRateLimit(10, 60 * 1000), transferTicketDepartmentHandler);
 
     // POST /helpdesk/tickets/:id/notes - Add a note to a ticket
     app.post(['/helpdesk/tickets/:id/notes', '/notify/helpdesk/tickets/:id/notes'], requireUser, helpdeskRateLimit(20, 60 * 1000), async (req, res) => {
