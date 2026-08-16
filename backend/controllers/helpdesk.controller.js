@@ -1,4 +1,5 @@
 const mysql = require('mysql2/promise');
+const rateLimit = require('express-rate-limit');
 
 function toTrimmedString(value) {
     return String(value === null || value === undefined ? '' : value).trim();
@@ -539,6 +540,23 @@ function registerHelpdeskController(app, deps = {}) {
                 })
         })
         : (_req, _res, next) => next();
+
+    const helpdeskAdminMutationIpRateLimit = rateLimit({
+        windowMs: 60 * 1000,
+        limit: 10,
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: (req) => req.ip || req.socket && req.socket.remoteAddress || 'helpdesk-admin',
+        handler: (_req, res, _next, options) => {
+            const retryAfterSeconds = Math.ceil(options.windowMs / 1000);
+            res.setHeader('Retry-After', String(retryAfterSeconds));
+            return res.status(429).json({
+                result: 'error',
+                message: 'יותר מדי בקשות. נסה שוב בעוד דקה.',
+                retryAfterSeconds
+            });
+        }
+    });
 
     // Per-user-per-endpoint rate limiting middleware factory.
     // The key combines the user identity with the normalised route path so that
@@ -1324,7 +1342,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // PUT /helpdesk/users/:id - Admin: update a helpdesk user's details
-    app.put(['/helpdesk/users/:id', '/notify/helpdesk/users/:id'], requireUser, helpdeskRateLimit(10, 60 * 1000), async (req, res) => { // lgtm[js/missing-rate-limiting]
+    app.put(['/helpdesk/users/:id', '/notify/helpdesk/users/:id'], requireUser, helpdeskAdminMutationIpRateLimit, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
@@ -1354,7 +1372,7 @@ function registerHelpdeskController(app, deps = {}) {
             const [result] = await pool.execute(
                 'UPDATE `helpdesk_users` SET `username` = ?, `role` = ?, `department` = ?, `status` = ? WHERE `id` = ?',
                 [targetUsername, role, department, status, targetId]
-            ); // lgtm[js/missing-rate-limiting]
+            );
             if (result.affectedRows === 0) {
                 return res.status(404).json({ result: 'error', message: 'משתמש לא נמצא' });
             }
@@ -1367,7 +1385,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // PATCH /helpdesk/users/:id/status - Admin: toggle user status (Active <-> Inactive)
-    app.patch(['/helpdesk/users/:id/status', '/notify/helpdesk/users/:id/status'], requireUser, helpdeskRateLimit(10, 60 * 1000), async (req, res) => { // lgtm[js/missing-rate-limiting]
+    app.patch(['/helpdesk/users/:id/status', '/notify/helpdesk/users/:id/status'], requireUser, helpdeskAdminMutationIpRateLimit, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
@@ -1391,7 +1409,7 @@ function registerHelpdeskController(app, deps = {}) {
             const [result] = await pool.execute(
                 'UPDATE `helpdesk_users` SET `status` = ? WHERE `id` = ?',
                 [newStatus, targetId]
-            ); // lgtm[js/missing-rate-limiting]
+            );
             if (result.affectedRows === 0) {
                 return res.status(404).json({ result: 'error', message: 'משתמש לא נמצא' });
             }
