@@ -21,6 +21,7 @@ import '../../../core/utils/xfile.dart' as xfile;
 import '../../../shared/widgets/authenticated_image.dart';
 import '../../auth/presentation/auth_state.dart';
 import '../../../core/utils/toast_utils.dart';
+import 'helpdesk_user_management_screen.dart';
 
 // ---------------------------------------------------------------------------
 // Helpdesk State
@@ -482,9 +483,22 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                           width: 20,
                           height: 20,
                           child: CircularProgressIndicator(strokeWidth: 2)),
+                    if (state.myRole?.role == HelpdeskRole.admin)
+                     IconButton(
+                       icon: const Icon(Icons.people_alt_outlined),
+                       tooltip: 'ניהול משתמשי מוקד',
+                       onPressed: () => Navigator.of(context).push(
+                         MaterialPageRoute(
+                           builder: (_) => HelpdeskUserManagementScreen(
+                             currentUser:
+                                 ref.read(helpdeskProvider.notifier).currentUser,
+                           ),
+                         ),
+                       ),
+                     ),
                     IconButton(
-                      icon: const Icon(Icons.refresh),
-                      tooltip: 'רענן',
+                     icon: const Icon(Icons.refresh),
+                     tooltip: 'רענן',
                       onPressed: () =>
                           ref.read(helpdeskProvider.notifier).loadTickets(force: true),
                     ),

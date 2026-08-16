@@ -321,25 +321,49 @@ class HelpdeskDepartmentEntry extends Equatable {
       };
 }
 
-/// Helpdesk departments — kept as a simple alias so callers that just need a
-/// list of names can use [HelpdeskDepartmentEntry] directly.
+/// Lightweight department model used by admin/helpdesk CRUD flows.
+class HelpdeskDepartment extends Equatable {
+  final int id;
+  final String name;
+
+  const HelpdeskDepartment({
+    required this.id,
+    required this.name,
+  });
+
+  @override
+  List<Object?> get props => [id, name];
+
+  factory HelpdeskDepartment.fromJson(Map<String, dynamic> json) {
+    return HelpdeskDepartment(
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      name: (json['name'] ?? json['department'] ?? '').toString(),
+    );
+  }
+
+  factory HelpdeskDepartment.fromEntry(HelpdeskDepartmentEntry entry) {
+    return HelpdeskDepartment(id: entry.id, name: entry.name);
+  }
+}
+
+/// Legacy department enum kept for backwards compatibility.
 // ignore: deprecated_member_use_from_same_package
-@Deprecated('Use HelpdeskDepartmentEntry instead')
-enum HelpdeskDepartment {
+@Deprecated('Use HelpdeskDepartment instead')
+enum LegacyHelpdeskDepartment {
   it('מערכות מידע'),
   maintenance('אחזקה');
 
   final String label;
-  const HelpdeskDepartment(this.label);
+  const LegacyHelpdeskDepartment(this.label);
 
-  static HelpdeskDepartment fromString(String value) {
+  static LegacyHelpdeskDepartment fromString(String value) {
     switch (value) {
       case 'מערכות מידע':
-        return HelpdeskDepartment.it;
+        return LegacyHelpdeskDepartment.it;
       case 'אחזקה':
-        return HelpdeskDepartment.maintenance;
+        return LegacyHelpdeskDepartment.maintenance;
       default:
-        return HelpdeskDepartment.it;
+        return LegacyHelpdeskDepartment.it;
     }
   }
 }
@@ -611,6 +635,78 @@ class HelpdeskManagedUser extends Equatable {
       department: json['department'] as String? ?? '',
     );
   }
+}
+
+String _normalizeHelpdeskUserRole(String? value) {
+  switch ((value ?? '').trim().toLowerCase()) {
+    case 'admin':
+      return 'Admin';
+    case 'editor':
+      return 'Editor';
+    default:
+      return 'Editor';
+  }
+}
+
+String _normalizeHelpdeskUserStatus(dynamic value) {
+  final normalized = value?.toString().trim().toLowerCase() ?? '';
+  switch (normalized) {
+    case '1':
+    case 'active':
+      return 'Active';
+    case '0':
+    case 'inactive':
+      return 'Inactive';
+    default:
+      return 'Inactive';
+  }
+}
+
+/// Helpdesk user for admin CRUD management.
+class HelpdeskUser extends Equatable {
+  final int id;
+  final String username;
+  final String role;
+  final String department;
+  final DateTime? createdAt;
+  final String status;
+
+  const HelpdeskUser({
+    required this.id,
+    required this.username,
+    required this.role,
+    required this.department,
+    this.createdAt,
+    required this.status,
+  });
+
+  bool get isActive => status == 'Active';
+
+  @override
+  List<Object?> get props => [id, username, role, department, createdAt, status];
+
+  factory HelpdeskUser.fromJson(Map<String, dynamic> json) {
+    final createdAtRaw = json['createdAt'] ?? json['created_at'];
+    return HelpdeskUser(
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      username: (json['username'] ?? '').toString(),
+      role: _normalizeHelpdeskUserRole(json['role']?.toString()),
+      department: (json['department'] ?? json['departName'] ?? '').toString(),
+      createdAt: createdAtRaw is String && createdAtRaw.trim().isNotEmpty
+          ? DateTime.tryParse(createdAtRaw)
+          : null,
+      status: _normalizeHelpdeskUserStatus(json['status']),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'username': username,
+        'role': role,
+        'department': department,
+        if (createdAt != null) 'createdAt': createdAt!.toIso8601String(),
+        'status': status,
+      };
 }
 
 /// My role in helpdesk
