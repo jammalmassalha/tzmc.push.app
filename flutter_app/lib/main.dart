@@ -248,7 +248,7 @@ class _AuthRouterState extends ConsumerState<AuthRouter> {
           ModalRoute.of(context)?.settings.name,
         );
         if (current.path != targetPath) {
-          Navigator.of(context).pushNamed(targetPath);
+          Navigator.of(context).pushReplacementNamed(targetPath);
         }
       },
     );

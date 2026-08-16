@@ -107,7 +107,11 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         _currentTab = widget.initialTab;
       });
       _syncPageToCurrentTab();
-      _notifyTabChangedIfNeeded();
+      // Do not call _notifyTabChangedIfNeeded() here: this is a
+      // programmatic tab reset driven by an auth/prop change, not a user
+      // gesture.  AuthRouter._scheduleNavigation already handles the
+      // corresponding URL transition, so firing the callback here would
+      // cause a duplicate navigator push.
     }
   }
 
@@ -225,8 +229,15 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     _recomputeVisibleTabs();
     if (!_visibleTabs.contains(_currentTab)) {
       _currentTab = _visibleTabs.first;
-      _syncPageToCurrentTab();
-      _notifyTabChangedIfNeeded();
+      // Defer the page sync to the next frame to avoid calling
+      // setState / navigator during a build.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _syncPageToCurrentTab();
+        // Do NOT call _notifyTabChangedIfNeeded() here: programmatic resets
+        // inside build are driven by permission/auth state, not by a user
+        // gesture.  AuthRouter._scheduleNavigation handles URL transitions.
+      });
     }
 
     final isDesktopWeb =
@@ -961,7 +972,11 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       }
     });
     _syncPageToCurrentTab();
-    _notifyTabChangedIfNeeded();
+    // Do not call _notifyTabChangedIfNeeded() here: permission refreshes
+    // are background operations, not user-initiated tab changes.  If
+    // isRestricted changed, AuthRouter._scheduleNavigation already queued the
+    // correct route replacement; firing the callback here would cause a
+    // duplicate push that corrupts the navigator stack.
   }
 
   bool _isUserAllowedForShuttle(String normalizedUser, List<String> employees) {
