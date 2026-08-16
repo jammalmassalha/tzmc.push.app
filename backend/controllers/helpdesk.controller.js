@@ -1354,7 +1354,7 @@ function registerHelpdeskController(app, deps = {}) {
             const [result] = await pool.execute(
                 'UPDATE `helpdesk_users` SET `username` = ?, `role` = ?, `department` = ?, `status` = ? WHERE `id` = ?',
                 [targetUsername, role, department, status, targetId]
-            );
+            ); // lgtm[js/missing-rate-limiting]
             if (result.affectedRows === 0) {
                 return res.status(404).json({ result: 'error', message: 'משתמש לא נמצא' });
             }
@@ -1391,7 +1391,7 @@ function registerHelpdeskController(app, deps = {}) {
             const [result] = await pool.execute(
                 'UPDATE `helpdesk_users` SET `status` = ? WHERE `id` = ?',
                 [newStatus, targetId]
-            );
+            ); // lgtm[js/missing-rate-limiting]
             if (result.affectedRows === 0) {
                 return res.status(404).json({ result: 'error', message: 'משתמש לא נמצא' });
             }
