@@ -35,7 +35,14 @@ const {
     looksLikeJweCompactToken,
     UploadSecurityService,
     NotificationService,
-    SessionService
+    SessionService,
+    formatAuthCodeSmsMessage: formatAuthCodeSmsMessageValue,
+    buildInforuSmsXmlPayload: buildInforuSmsXmlPayloadValue,
+    extractInforuStatusCode: extractInforuStatusCodeValue,
+    extractInforuStatusDescription: extractInforuStatusDescriptionValue,
+    normalizeIsraeliPhoneNumberToLocal,
+    toIsraeliInternationalPhoneDigits,
+    maskPhoneForLogs
 } = require('./backend/dist/services');
 
 const fetch = (...args) => {
@@ -1052,22 +1059,34 @@ const AUTH_CODE_REQUIRE_REGISTERED_USER = String(
     process.env.AUTH_CODE_REQUIRE_REGISTERED_USER || 'false'
 ).trim().toLowerCase() === 'true';
 const INFORU_SMS_URL = String(process.env.INFORU_SMS_URL || 'https://uapi.inforu.co.il/SendMessageXml.ashx').trim();
-const INFORU_USERNAME = String(process.env.INFORU_USERNAME || 'tzmcgovil').trim();
-const INFORU_API_TOKEN = String(process.env.INFORU_API_TOKEN || '088a13e2-c2d9-4518-8c0c-2e531c3033de').trim();
+const INFORU_USERNAME = String(process.env.INFORU_USERNAME || '').trim();
+const INFORU_API_TOKEN = String(process.env.INFORU_API_TOKEN || '').trim();
 const INFORU_SENDER = String(process.env.INFORU_SENDER || 'Tzafon').trim();
 const AUTH_CODE_SMS_TEMPLATE = String(
     process.env.AUTH_CODE_SMS_TEMPLATE || 'קוד אימות לכניסה לאפליקציה: {{code}}'
 ).trim();
-const AUTH_CODE_SMS_DESTINATION_OVERRIDES = new Map([
-    ['0550000001', '0546799693']
-]);
+const AUTH_CODE_SMS_DESTINATION_OVERRIDES = (() => {
+    const map = new Map();
+    const raw = String(process.env.AUTH_CODE_SMS_DESTINATION_OVERRIDES || '').trim();
+    if (!raw) return map;
+    raw.split(',').forEach((entry) => {
+        const separatorIndex = entry.indexOf(':');
+        if (separatorIndex <= 0) return;
+        const source = normalizeIsraeliPhoneNumberToLocal(entry.slice(0, separatorIndex));
+        const destination = normalizeIsraeliPhoneNumberToLocal(entry.slice(separatorIndex + 1));
+        if (source && destination) {
+            map.set(source, destination);
+        }
+    });
+    return map;
+})();
 // Static-password test users: these users bypass SMS and sheet verification entirely.
 // Their OTP is a fixed code that never changes, making them suitable for Apple review accounts.
 // Configure via env: AUTH_CODE_STATIC_USERS=0500000001:123456,0500000002:654321
 // Each entry is phone:code separated by commas.
 const AUTH_CODE_STATIC_USERS = (() => {
     const map = new Map();
-    const raw = String(process.env.AUTH_CODE_STATIC_USERS || '0500000001:123456').trim();
+    const raw = String(process.env.AUTH_CODE_STATIC_USERS || '').trim();
     if (raw) {
         raw.split(',').forEach((entry) => {
             const colonIdx = entry.indexOf(':');
@@ -3005,29 +3024,15 @@ function escapeXmlValue(value) {
 }
 
 function formatAuthCodeSmsMessage(code) {
-    const template = AUTH_CODE_SMS_TEMPLATE || 'קוד אימות לכניסה לאפליקציה: {{code}}';
-    if (template.includes('{{code}}')) {
-        return template.replace(/\{\{code\}\}/g, String(code || ''));
-    }
-    return `${template} ${code}`;
+    return formatAuthCodeSmsMessageValue(AUTH_CODE_SMS_TEMPLATE, code);
 }
 
 function extractInforuStatusCode(rawResponse) {
-    const match = String(rawResponse || '').match(/<Status>\s*([^<\s]+)\s*<\/Status>/i);
-    return match ? String(match[1] || '').trim() : '';
+    return extractInforuStatusCodeValue(rawResponse);
 }
 
 function extractInforuStatusDescription(rawResponse) {
-    const source = String(rawResponse || '');
-    const candidateTags = ['Description', 'StatusDescription', 'ErrorDescription', 'Error', 'Message'];
-    for (const tag of candidateTags) {
-        const expression = new RegExp(`<${tag}>\\s*([^<]+?)\\s*<\\/${tag}>`, 'i');
-        const match = source.match(expression);
-        if (match && String(match[1] || '').trim()) {
-            return String(match[1] || '').trim();
-        }
-    }
-    return '';
+    return extractInforuStatusDescriptionValue(rawResponse);
 }
 
 function buildInforuSmsXmlPayload({
@@ -3038,36 +3043,14 @@ function buildInforuSmsXmlPayload({
     sender,
     includeSender
 }) {
-    const escapedUsername = escapeXmlValue(username);
-    const escapedToken = escapeXmlValue(apiToken);
-    const escapedMessage = escapeXmlValue(message);
-    const escapedPhone = escapeXmlValue(phone);
-    const escapedSender = escapeXmlValue(sender || '');
-    const xmlParts = [
-        '<?xml version="1.0" encoding="utf-8"?>',
-        '<Inforu>',
-        '<User>',
-        `<Username>${escapedUsername}</Username>`,
-        `<ApiToken>${escapedToken}</ApiToken>`,
-        '</User>',
-        '<Content Type="sms">',
-        `<Message>${escapedMessage}</Message>`,
-        '</Content>',
-        '<Recipients>',
-        `<PhoneNumber>${escapedPhone}</PhoneNumber>`,
-        '</Recipients>',
-        '<Settings>'
-    ];
-    if (includeSender && escapedSender) {
-        xmlParts.push(`<Sender>${escapedSender}</Sender>`);
-    }
-    xmlParts.push(
-        '<MessageInterval>0</MessageInterval>',
-        '<TimeToSend></TimeToSend>',
-        '</Settings>',
-        '</Inforu>'
-    );
-    return xmlParts.join('');
+    return buildInforuSmsXmlPayloadValue({
+        username,
+        apiToken,
+        message,
+        phone,
+        sender,
+        includeSender
+    });
 }
 
 async function postInforuSmsXml(xmlPayload) {
@@ -3081,13 +3064,13 @@ async function postInforuSmsXml(xmlPayload) {
             },
             body: encodedPayload
         },
-        { timeoutMs: 15000, retries: 1, backoffMs: 700 }
+        { timeoutMs: 20000, retries: 2, backoffMs: 1500 }
     );
     const rawResponse = await response.text();
     const statusCode = extractInforuStatusCode(rawResponse);
     const description = extractInforuStatusDescription(rawResponse);
     const ok = Boolean(response.ok && statusCode === '1');
-    console.log(`[SMS] InforU response: HTTP ${response.status}, status=${statusCode}, ok=${ok}, desc="${description}", raw="${rawResponse.slice(0, 300)}"`);
+    console.log(`[SMS] InforU response: HTTP ${response.status}, status=${statusCode || 'n/a'}, ok=${ok}, desc="${description || ''}"`);
     return {
         ok,
         statusCode,
@@ -3097,9 +3080,11 @@ async function postInforuSmsXml(xmlPayload) {
 }
 
 function resolveAuthCodeSmsDestination(user) {
-    const normalizedUser = normalizeUserCandidate(user);
+    const normalizedUser = normalizeIsraeliPhoneNumberToLocal(user);
     if (!normalizedUser) return '';
-    return AUTH_CODE_SMS_DESTINATION_OVERRIDES.get(normalizedUser) || normalizedUser;
+    return normalizeIsraeliPhoneNumberToLocal(
+        AUTH_CODE_SMS_DESTINATION_OVERRIDES.get(normalizedUser) || normalizedUser
+    );
 }
 
 /**
@@ -3107,11 +3092,7 @@ function resolveAuthCodeSmsDestination(user) {
  * for reliable SMS gateway delivery. Returns unchanged if already international or non-standard.
  */
 function toInternationalPhoneFormat(phone) {
-    const digits = String(phone || '').replace(/\D/g, '');
-    if (/^0\d{9}$/.test(digits)) {
-        return '972' + digits.slice(1);
-    }
-    return digits || String(phone || '');
+    return toIsraeliInternationalPhoneDigits(phone);
 }
 
 async function sendAuthCodeSms(user, code) {
@@ -3131,7 +3112,9 @@ async function sendAuthCodeSms(user, code) {
     }
 
     const internationalPhone = toInternationalPhoneFormat(smsDestination);
-    console.log(`[SMS] Sending auth code to ${smsDestination} (intl: ${internationalPhone})`);
+    const maskedUser = maskPhoneForLogs(normalizedUser);
+    const maskedDestination = maskPhoneForLogs(smsDestination || internationalPhone);
+    console.log(`[SMS] Sending auth code for user ${maskedUser} to destination ${maskedDestination}`);
 
     const message = formatAuthCodeSmsMessage(normalizedCode);
     const primaryXmlPayload = buildInforuSmsXmlPayload({
@@ -3146,7 +3129,7 @@ async function sendAuthCodeSms(user, code) {
 
     // Some InforU accounts reject a sender alias and accept account default.
     if (!sendResult.ok && sendResult.statusCode === '-17' && INFORU_SENDER) {
-        console.log(`[SMS] Sender alias rejected, retrying without sender for ${internationalPhone}`);
+        console.warn(`[SMS] Sender alias rejected for ${maskedDestination}, retrying without sender`);
         const fallbackXmlPayload = buildInforuSmsXmlPayload({
             username: INFORU_USERNAME,
             apiToken: INFORU_API_TOKEN,
@@ -3161,11 +3144,11 @@ async function sendAuthCodeSms(user, code) {
     if (!sendResult.ok) {
         const statusPart = sendResult.statusCode || `HTTP-${sendResult.httpStatus || 'n/a'}`;
         const descriptionPart = sendResult.description ? `: ${sendResult.description}` : '';
-        console.error(`[SMS] Failed to send auth code to ${internationalPhone}: ${statusPart}${descriptionPart}`);
+        console.error(`[SMS] Failed to send auth code for user ${maskedUser} to ${maskedDestination}: ${statusPart}${descriptionPart}`);
         throw new Error(`SMS gateway rejected request (${statusPart}${descriptionPart})`);
     }
 
-    console.log(`[SMS] Auth code sent successfully to ${internationalPhone}`);
+    console.log(`[SMS] Auth code sent successfully for user ${maskedUser} to ${maskedDestination}`);
 }
 
 async function setAuthCodeOnSubscribeSheet(user, code) {
@@ -5393,7 +5376,10 @@ app.use((req, res, next) => {
         return next();
     }
     // Session is past the halfway point – issue a fresh token with a new TTL.
-    const renewed = createSessionToken(session.user);
+    const renewed = createSessionToken(session.user, {
+        sessionId: session.sessionId,
+        csrfToken: session.csrfToken
+    });
     if (!renewed) {
         return next();
     }
@@ -5567,6 +5553,7 @@ registerAuthController(app, {
     ensureRegistrationFlowOnly,
     getClientIpAddress,
     consumeRateLimitEntry,
+    rollbackRateLimitEntry: (store, key) => sessionService.rollbackRateLimitEntry(store, key),
     authCodeRequestRateLimitByIp,
     AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_IP,
     AUTH_CODE_RATE_LIMIT_WINDOW_MS,

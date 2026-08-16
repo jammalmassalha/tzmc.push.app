@@ -5,9 +5,10 @@
   "main": "server.js",
   "scripts": {
     "build:backend": "tsc -p backend/tsconfig.json",
+    "test:backend": "npm run build:backend && node --test backend/test/*.test.js",
     "import:logs:sheet-to-db": "node scripts/import-logs-from-sheet-to-db.js",
     "start": "node server.js",
-    "test": "echo \"No root tests configured\""
+    "test": "npm run test:backend"
   },
   "repository": {
     "type": "git",
