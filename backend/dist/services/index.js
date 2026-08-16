@@ -21,4 +21,5 @@ __exportStar(require("./webhook-registry.service"), exports);
 __exportStar(require("./session-token-jwe.service"), exports);
 __exportStar(require("./upload-security.service"), exports);
 __exportStar(require("./notification.service"), exports);
+__exportStar(require("./auth-sms.service"), exports);
 __exportStar(require("./session.service"), exports);

@@ -204,6 +204,20 @@ class MysqlLogsService {
     flutterPushRegistrationDebugFullResponseColumnReady = false;
     secretariesTableReady = false;
     botSessionsTableReady = false;
+    // ── In-memory launch-data caches ──
+    // `/community-group-configs` and `/user-chat-groups` are called on every
+    // mobile app launch. Their backing tables change rarely, so cache the
+    // fetched rows for a short TTL to avoid re-querying MySQL on every launch,
+    // while still invalidating immediately whenever the data is written.
+    static GROUPS_CACHE_TTL_MS = Math.max(0, Number(process.env.MYSQL_LOGS_GROUPS_CACHE_TTL_MS) || 30_000);
+    communityGroupsCache = null;
+    chatGroupsCache = null;
+    invalidateCommunityGroupsCache() {
+        this.communityGroupsCache = null;
+    }
+    invalidateChatGroupsCache() {
+        this.chatGroupsCache = null;
+    }
     constructor(config) {
         this.tableName = normalizeTableName(config.table);
         // 11 columns / 11 parameters — keep in sync with insertLog() and insertLogsBulk()
@@ -1009,13 +1023,23 @@ class MysqlLogsService {
         }
     }
     async loadCommunityGroups() {
+        const cached = this.communityGroupsCache;
+        if (cached && cached.expiresAt > Date.now()) {
+            return cached.data;
+        }
         await this.ensureCommunityGroupsTables();
         try {
-            const [groupRows] = await this.pool.execute('SELECT `GroupId`, `GroupName`, `IsEnabled` FROM `CommunityGroups` WHERE `IsEnabled` = 1 ORDER BY `GroupId`');
-            if (!groupRows.length)
+            // Run the group/member/writer lookups in parallel (instead of
+            // sequentially) to cut round-trip latency during app launch.
+            const [[groupRows], [memberRows], [writerRows]] = await Promise.all([
+                this.pool.execute('SELECT `GroupId`, `GroupName`, `IsEnabled` FROM `CommunityGroups` WHERE `IsEnabled` = 1 ORDER BY `GroupId`'),
+                this.pool.execute('SELECT `GroupId`, `Phone` FROM `CommunityGroupMembers` ORDER BY `GroupId`, `Phone`'),
+                this.pool.execute('SELECT `GroupId`, `Phone` FROM `CommunityGroupWriters` ORDER BY `GroupId`, `Phone`')
+            ]);
+            if (!groupRows.length) {
+                this.communityGroupsCache = { data: [], expiresAt: Date.now() + MysqlLogsService.GROUPS_CACHE_TTL_MS };
                 return [];
-            const [memberRows] = await this.pool.execute('SELECT `GroupId`, `Phone` FROM `CommunityGroupMembers` ORDER BY `GroupId`, `Phone`');
-            const [writerRows] = await this.pool.execute('SELECT `GroupId`, `Phone` FROM `CommunityGroupWriters` ORDER BY `GroupId`, `Phone`');
+            }
             const membersMap = new Map();
             for (const row of memberRows) {
                 const gid = toTrimmedString(row.GroupId);
