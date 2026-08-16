@@ -1,5 +1,7 @@
 library;
 
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
@@ -120,7 +122,7 @@ class _HelpdeskUserManagementScreenState
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => Directionality(
-        textDirection: TextDirection.rtl,
+        textDirection: ui.TextDirection.rtl,
         child: AlertDialog(
           title: Text(user.isActive ? 'השבתת משתמש' : 'הפעלת משתמש'),
           content: Text(
@@ -170,7 +172,7 @@ class _HelpdeskUserManagementScreenState
   @override
   Widget build(BuildContext context) {
     return Directionality(
-      textDirection: TextDirection.rtl,
+      textDirection: ui.TextDirection.rtl,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('ניהול משתמשי מוקד'),
@@ -493,7 +495,7 @@ class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
   @override
   Widget build(BuildContext context) {
     return Directionality(
-      textDirection: TextDirection.rtl,
+      textDirection: ui.TextDirection.rtl,
       child: AlertDialog(
         title: Text(_isEdit ? 'ערוך משתמש מוקד' : 'הוסף משתמש מוקד'),
         content: Form(
@@ -507,7 +509,7 @@ class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
                 children: <Widget>[
                   TextFormField(
                     controller: _usernameController,
-                    textDirection: TextDirection.rtl,
+                    textDirection: ui.TextDirection.rtl,
                     decoration: const InputDecoration(
                       labelText: 'שם משתמש',
                       border: OutlineInputBorder(),
