@@ -99,7 +99,6 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(_handleAppResumed());
-      unawaited(_refreshTabPermissions());
     }
   }
 
@@ -199,17 +198,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   @override
   Widget build(BuildContext context) {
     final chatState = ref.watch(chatStoreProvider);
-
-    _recomputeVisibleTabs();
-    if (!_visibleTabs.contains(_currentTab)) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        setState(() {
-          _currentTab = _visibleTabs.first;
-        });
-        _syncPageToCurrentTab();
-      });
-    }
+    // Watch restricted flag so the sidebar rebuilds if the user's restriction
+    // status changes while the shell is visible.
+    ref.watch(isUserRestrictedProvider);
 
     final isDesktopWeb =
         kIsWeb && MediaQuery.sizeOf(context).width >= _kDesktopShellBreakpoint;
@@ -302,7 +293,10 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       bottomNavigationBar: _visibleTabs.length < 2
         ? null
         : BottomNavigationBar(
-            currentIndex: _visibleTabs.indexOf(currentTab),
+            currentIndex: () {
+              final idx = _visibleTabs.indexOf(currentTab);
+              return idx < 0 ? 0 : idx;
+            }(),
             onTap: (index) {
               if (index < 0 || index >= _visibleTabs.length) return;
               final nextTab = _visibleTabs[index];
@@ -506,7 +500,10 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     return NavigationRail(
       extended: false,
       minWidth: 84,
-      selectedIndex: _visibleTabs.indexOf(currentTab),
+      selectedIndex: () {
+        final idx = _visibleTabs.indexOf(currentTab);
+        return idx < 0 ? 0 : idx;
+      }(),
       groupAlignment: -1,
       backgroundColor: AppColors.background,
       indicatorColor: AppColors.primaryLight.withAlpha(60),
@@ -679,7 +676,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
           onGroupSelected: (_, __) {},
         );
       default:
-        return _buildTabBody(_currentTab);
+        return _buildTabBody(currentTab);
     }
   }
 
