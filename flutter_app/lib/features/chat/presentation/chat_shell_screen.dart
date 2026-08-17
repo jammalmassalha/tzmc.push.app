@@ -63,12 +63,7 @@ const double _kDesktopShellBreakpoint = 1100;
 
 /// Chat shell screen widget
 class ChatShellScreen extends ConsumerStatefulWidget {
-  final String routePath;
-
-  const ChatShellScreen({
-    super.key,
-    required this.routePath,
-  });
+  const ChatShellScreen({super.key});
 
   @override
   ConsumerState<ChatShellScreen> createState() => _ChatShellScreenState();
@@ -90,7 +85,6 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   @override
   void initState() {
     super.initState();
-    _currentTab = _tabForPath(widget.routePath);
     WidgetsBinding.instance.addObserver(this);
     _initializeServices();
     unawaited(_refreshTabPermissions());
@@ -99,13 +93,6 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   @override
   void didUpdateWidget(covariant ChatShellScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final nextTab = _tabForPath(widget.routePath);
-    if (oldWidget.routePath != widget.routePath && _currentTab != nextTab) {
-      setState(() {
-        _currentTab = nextTab;
-      });
-      _syncPageToCurrentTab();
-    }
   }
 
   /// Called when the app returns to the foreground.
@@ -217,18 +204,15 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   @override
   Widget build(BuildContext context) {
     final chatState = ref.watch(chatStoreProvider);
-    final requestedTab = _tabForPath(ModalRoute.of(context)?.settings.name ?? widget.routePath);
 
     _recomputeVisibleTabs();
-    final resolvedTab = _visibleTabs.contains(requestedTab) ? requestedTab : _visibleTabs.first;
-    if (_currentTab != resolvedTab) {
+    if (!_visibleTabs.contains(_currentTab)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || _currentTab == resolvedTab) return;
+        if (!mounted) return;
         setState(() {
-          _currentTab = resolvedTab;
+          _currentTab = _visibleTabs.first;
         });
         _syncPageToCurrentTab();
-        _navigateToCurrentTabIfNeeded();
       });
     }
 
@@ -240,8 +224,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       child: Stack(
         children: [
           isDesktopWeb
-              ? _buildDesktopScaffold(chatState, resolvedTab)
-              : _buildMobileScaffold(resolvedTab),
+              ? _buildDesktopScaffold(chatState, _currentTab)
+              : _buildMobileScaffold(_currentTab),
 
           // Full-sync progress overlay — mirrors Angular's sync-loader-backdrop.
           if (chatState.isSyncing)
@@ -922,7 +906,6 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         }
       });
       _syncPageToCurrentTab();
-      _navigateToCurrentTabIfNeeded();
       return;
     }
     final normalizedUser = _normalizeUser(user);
@@ -956,7 +939,6 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       }
     });
     _syncPageToCurrentTab();
-    _navigateToCurrentTabIfNeeded();
   }
 
   bool _isUserAllowedForShuttle(String normalizedUser, List<String> employees) {
@@ -1046,37 +1028,12 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
 
   void _selectTab(MainTab nextTab) {
     if (!_visibleTabs.contains(nextTab)) return;
-
-    final targetPath = _pathForTab(nextTab);
-    final currentPath =
-        AppRoutes.normalizePath(ModalRoute.of(context)?.settings.name ?? widget.routePath);
-
-    if (currentPath == targetPath) {
-      if (nextTab != _currentTab) {
-        setState(() {
-          _currentTab = nextTab;
-        });
-      }
-      _syncPageToCurrentTab(animate: true);
-      return;
+    if (nextTab != _currentTab) {
+      setState(() {
+        _currentTab = nextTab;
+      });
     }
-
-    Navigator.of(context).pushReplacementNamed(targetPath);
-  }
-
-  void _navigateToCurrentTabIfNeeded() {
-    if (!mounted) return;
-    final currentPath =
-        AppRoutes.normalizePath(ModalRoute.of(context)?.settings.name ?? widget.routePath);
-    final targetPath = _pathForTab(_currentTab);
-    if (currentPath == targetPath) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      final livePath =
-          AppRoutes.normalizePath(ModalRoute.of(context)?.settings.name ?? widget.routePath);
-      if (livePath == targetPath) return;
-      Navigator.of(context).pushReplacementNamed(targetPath);
-    });
+    _syncPageToCurrentTab(animate: true);
   }
 
   String _getTabTitle(MainTab tab) {

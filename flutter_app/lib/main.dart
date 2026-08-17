@@ -10,7 +10,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
 import 'core/api/http_client.dart';
@@ -26,9 +25,6 @@ import 'features/chat/presentation/chat_shell_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  if (kIsWeb) {
-    usePathUrlStrategy();
-  }
 
   // Initialize Hebrew (and default) date formatting symbols so DateFormat
   // calls like DateFormat.yMd('he') don't throw LocaleDataException at build
@@ -159,16 +155,7 @@ class TzmcPushApp extends ConsumerWidget {
     );
   }
 
-  String _initialRouteName() {
-    final base = Uri.base;
-    final path = AppRoutes.normalizePath(base.path);
-    if (path == AppRoutes.login) {
-      final redirect = AppRoutes.normalizePath(base.queryParameters['redirect']);
-      if (redirect == AppRoutes.home) return AppRoutes.login;
-      return AppRoutes.loginWithRedirect(redirect);
-    }
-    return path;
-  }
+  String _initialRouteName() => AppRoutes.home;
 }
 
 /// Router that shows appropriate screen based on auth state
@@ -199,7 +186,7 @@ class _AuthRouterState extends ConsumerState<AuthRouter> {
       AuthUnauthenticated() || AuthAwaitingCode() || AuthError() => _buildUnauthenticated(
           requestedPath,
         ),
-      AuthAuthenticated() => _buildAuthenticated(requestedPath),
+      AuthAuthenticated() => _buildAuthenticated(),
     };
   }
 
@@ -210,16 +197,8 @@ class _AuthRouterState extends ConsumerState<AuthRouter> {
     return const LoginScreen();
   }
 
-  Widget _buildAuthenticated(String requestedPath) {
-    String destination = requestedPath == AppRoutes.login
-        ? AppRoutes.normalizePath(widget.redirectPath)
-        : requestedPath;
-
-    if (destination != requestedPath) {
-      _scheduleNavigation(destination);
-    }
-
-    return ChatShellScreen(routePath: destination);
+  Widget _buildAuthenticated() {
+    return const ChatShellScreen();
   }
 
   void _scheduleNavigation(String routeName) {
