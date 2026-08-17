@@ -90,11 +90,6 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     unawaited(_refreshTabPermissions());
   }
 
-  @override
-  void didUpdateWidget(covariant ChatShellScreen oldWidget) {
-    super.didUpdateWidget(oldWidget);
-  }
-
   /// Called when the app returns to the foreground.
   ///
   /// Pulls any messages that arrived while the app was backgrounded so the
