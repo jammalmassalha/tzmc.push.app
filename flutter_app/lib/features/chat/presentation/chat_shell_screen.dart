@@ -222,9 +222,11 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     _recomputeVisibleTabs();
     final resolvedTab = _visibleTabs.contains(requestedTab) ? requestedTab : _visibleTabs.first;
     if (_currentTab != resolvedTab) {
-      _currentTab = resolvedTab;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
+        if (!mounted || _currentTab == resolvedTab) return;
+        setState(() {
+          _currentTab = resolvedTab;
+        });
         _syncPageToCurrentTab();
         _navigateToCurrentTabIfNeeded();
       });
@@ -237,7 +239,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       textDirection: TextDirection.rtl,
       child: Stack(
         children: [
-          isDesktopWeb ? _buildDesktopScaffold(chatState) : _buildMobileScaffold(),
+          isDesktopWeb
+              ? _buildDesktopScaffold(chatState, resolvedTab)
+              : _buildMobileScaffold(resolvedTab),
 
           // Full-sync progress overlay — mirrors Angular's sync-loader-backdrop.
           if (chatState.isSyncing)
@@ -303,9 +307,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     );
   }
 
-  Scaffold _buildMobileScaffold() {
+  Scaffold _buildMobileScaffold(MainTab currentTab) {
     return Scaffold(
-      appBar: _buildAppBar(),
+      appBar: _buildAppBar(currentTab),
       body: PageView(
         controller: _pageController,
         onPageChanged: (index) {
@@ -319,7 +323,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       bottomNavigationBar: _visibleTabs.length < 2
         ? null
         : BottomNavigationBar(
-            currentIndex: _visibleTabs.indexOf(_currentTab),
+            currentIndex: _visibleTabs.indexOf(currentTab),
             onTap: (index) {
               if (index < 0 || index >= _visibleTabs.length) return;
               final nextTab = _visibleTabs[index];
@@ -330,9 +334,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     );
   }
 
-  Scaffold _buildDesktopScaffold(ChatState chatState) {
+  Scaffold _buildDesktopScaffold(ChatState chatState, MainTab currentTab) {
     return Scaffold(
-      appBar: _buildAppBar(),
+      appBar: _buildAppBar(currentTab),
       body: Container(
         decoration: const BoxDecoration(
           gradient: LinearGradient(
@@ -367,13 +371,13 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
                 child: Row(
                   children: [
                     if (_visibleTabs.length >= 2) ...[
-                      _buildDesktopNavigationRail(),
+                      _buildDesktopNavigationRail(currentTab),
                       Container(width: 1, color: AppColors.divider),
                     ],
                     Expanded(
-                      child: _isChatSplitTab(_currentTab)
-                          ? _buildDesktopChatLayout(chatState)
-                          : _buildDesktopContentCard(_buildTabBody(_currentTab)),
+                      child: _isChatSplitTab(currentTab)
+                          ? _buildDesktopChatLayout(chatState, currentTab)
+                          : _buildDesktopContentCard(_buildTabBody(currentTab)),
                     ),
                   ],
                 ),
@@ -385,23 +389,23 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     );
   }
 
-  PreferredSizeWidget _buildAppBar() {
+  PreferredSizeWidget _buildAppBar(MainTab currentTab) {
     final isRestricted = ref.watch(isUserRestrictedProvider);
     return AppBar(
-      title: Text(_getTabTitle(_currentTab)),
-      leading: (!isRestricted && (_currentTab == MainTab.chats || _currentTab == MainTab.groups))
+      title: Text(_getTabTitle(currentTab)),
+      leading: (!isRestricted && (currentTab == MainTab.chats || currentTab == MainTab.groups))
           ? Padding(
               padding: const EdgeInsetsDirectional.only(start: 4),
               child: Semantics(
                 button: true,
-                label: _currentTab == MainTab.groups
+                label: currentTab == MainTab.groups
                     ? 'פתח אפשרויות ליצירת קבוצה חדשה'
                     : 'פתח אפשרויות להתחלת שיחה חדשה',
                 child: IconButton(
-                  tooltip: _currentTab == MainTab.groups ? 'קבוצה חדשה' : 'שיחה חדשה',
+                  tooltip: currentTab == MainTab.groups ? 'קבוצה חדשה' : 'שיחה חדשה',
                   onPressed: _handleNewChat,
                   icon: Icon(
-                    _currentTab == MainTab.groups
+                    currentTab == MainTab.groups
                         ? Icons.group_add_outlined
                         : Icons.add_comment_outlined,
                   ),
@@ -519,11 +523,11 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     );
   }
 
-  Widget _buildDesktopNavigationRail() {
+  Widget _buildDesktopNavigationRail(MainTab currentTab) {
     return NavigationRail(
       extended: false,
       minWidth: 84,
-      selectedIndex: _visibleTabs.indexOf(_currentTab),
+      selectedIndex: _visibleTabs.indexOf(currentTab),
       groupAlignment: -1,
       backgroundColor: AppColors.background,
       indicatorColor: AppColors.primaryLight.withAlpha(60),
@@ -540,7 +544,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
               ),
               child: IconButton(
                 tooltip: 'שיחה חדשה',
-                onPressed: (_currentTab == MainTab.chats || _currentTab == MainTab.groups)
+                onPressed: (currentTab == MainTab.chats || currentTab == MainTab.groups)
                     ? _handleNewChat
                     : null,
                 icon: const Icon(Icons.add_comment_outlined, color: Colors.white),
@@ -616,7 +620,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     }
   }
 
-  Widget _buildDesktopChatLayout(ChatState chatState) {
+  Widget _buildDesktopChatLayout(ChatState chatState, MainTab currentTab) {
     final currentChatId = chatState.currentChatId;
 
     return Row(
@@ -627,8 +631,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
             color: AppColors.background,
             child: Column(
               children: [
-                _buildDesktopPaneHeader(),
-                Expanded(child: _buildDesktopListPane(currentChatId)),
+                _buildDesktopPaneHeader(currentTab),
+                Expanded(child: _buildDesktopListPane(currentChatId, currentTab)),
               ],
             ),
           ),
@@ -647,7 +651,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     );
   }
 
-  Widget _buildDesktopPaneHeader() {
+  Widget _buildDesktopPaneHeader(MainTab currentTab) {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
@@ -661,7 +665,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            _getTabTitle(_currentTab),
+            _getTabTitle(currentTab),
             style: const TextStyle(
               fontSize: 20,
               fontWeight: FontWeight.w700,
@@ -670,7 +674,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
           ),
           const SizedBox(height: 6),
           Text(
-            _currentTab == MainTab.groups
+            currentTab == MainTab.groups
                 ? 'בחר קבוצה כדי להמשיך את השיחה'
                 : 'בחר שיחה כדי לפתוח את חלון ההודעות',
             style: const TextStyle(
@@ -683,8 +687,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     );
   }
 
-  Widget _buildDesktopListPane(String? currentChatId) {
-    switch (_currentTab) {
+  Widget _buildDesktopListPane(String? currentChatId, MainTab currentTab) {
+    switch (currentTab) {
       case MainTab.chats:
         return ChatListScreen(
           selectedChatId: currentChatId,
