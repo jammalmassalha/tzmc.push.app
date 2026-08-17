@@ -63,13 +63,11 @@ const double _kDesktopShellBreakpoint = 1100;
 
 /// Chat shell screen widget
 class ChatShellScreen extends ConsumerStatefulWidget {
-  final MainTab initialTab;
-  final ValueChanged<MainTab>? onTabChanged;
+  final String routePath;
 
   const ChatShellScreen({
     super.key,
-    this.initialTab = MainTab.chats,
-    this.onTabChanged,
+    required this.routePath,
   });
 
   @override
@@ -80,7 +78,6 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     with WidgetsBindingObserver {
   MainTab _currentTab = MainTab.chats;
   final _pageController = PageController();
-  late String _lastReportedTopLevelPath;
   bool _canAccessShuttle = false;
   bool _canAccessTicketManager = false;
   bool _canAccessAdminGroups = false;
@@ -93,8 +90,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   @override
   void initState() {
     super.initState();
-    _currentTab = widget.initialTab;
-    _lastReportedTopLevelPath = _topLevelPathForTab(_currentTab);
+    _currentTab = _tabForPath(widget.routePath);
     WidgetsBinding.instance.addObserver(this);
     _initializeServices();
     unawaited(_refreshTabPermissions());
@@ -103,16 +99,12 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   @override
   void didUpdateWidget(covariant ChatShellScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.initialTab != widget.initialTab && _currentTab != widget.initialTab) {
+    final nextTab = _tabForPath(widget.routePath);
+    if (oldWidget.routePath != widget.routePath && _currentTab != nextTab) {
       setState(() {
-        _currentTab = widget.initialTab;
+        _currentTab = nextTab;
       });
       _syncPageToCurrentTab();
-      // Do not call _notifyTabChangedIfNeeded() here: this is a
-      // programmatic tab reset driven by an auth/prop change, not a user
-      // gesture.  AuthRouter._scheduleNavigation already handles the
-      // corresponding URL transition, so firing the callback here would
-      // cause a duplicate navigator push.
     }
   }
 
@@ -225,19 +217,16 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   @override
   Widget build(BuildContext context) {
     final chatState = ref.watch(chatStoreProvider);
-    final isRestricted = ref.watch(isUserRestrictedProvider);
+    final requestedTab = _tabForPath(ModalRoute.of(context)?.settings.name ?? widget.routePath);
 
     _recomputeVisibleTabs();
-    if (!_visibleTabs.contains(_currentTab)) {
-      _currentTab = _visibleTabs.first;
-      // Defer the page sync to the next frame to avoid calling
-      // setState / navigator during a build.
+    final resolvedTab = _visibleTabs.contains(requestedTab) ? requestedTab : _visibleTabs.first;
+    if (_currentTab != resolvedTab) {
+      _currentTab = resolvedTab;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         _syncPageToCurrentTab();
-        // Do NOT call _notifyTabChangedIfNeeded() here: programmatic resets
-        // inside build are driven by permission/auth state, not by a user
-        // gesture.  AuthRouter._scheduleNavigation handles URL transitions.
+        _navigateToCurrentTabIfNeeded();
       });
     }
 
@@ -323,10 +312,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
           if (index < 0 || index >= _visibleTabs.length) return;
           final nextTab = _visibleTabs[index];
           if (nextTab == _currentTab) return;
-          setState(() {
-            _currentTab = nextTab;
-          });
-          _notifyTabChangedIfNeeded();
+          _selectTab(nextTab);
         },
         children: _visibleTabs.map(_buildTabBody).toList(),
       ),
@@ -337,16 +323,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
             onTap: (index) {
               if (index < 0 || index >= _visibleTabs.length) return;
               final nextTab = _visibleTabs[index];
-              if (nextTab == _currentTab) return;
-              setState(() {
-                _currentTab = nextTab;
-              });
-              _notifyTabChangedIfNeeded();
-              _pageController.animateToPage(
-                index,
-                duration: const Duration(milliseconds: 300),
-                curve: Curves.easeInOut,
-              );
+              _selectTab(nextTab);
             },
             items: _visibleTabs.map(_buildNavItem).toList(),
           ),
@@ -576,12 +553,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       onDestinationSelected: (index) {
         if (index < 0 || index >= _visibleTabs.length) return;
         final nextTab = _visibleTabs[index];
-        if (nextTab == _currentTab) return;
-        setState(() {
-          _currentTab = nextTab;
-        });
-        _notifyTabChangedIfNeeded();
-        _syncPageToCurrentTab();
+        _selectTab(nextTab);
       },
       destinations: _visibleTabs
           .map(
@@ -946,6 +918,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         }
       });
       _syncPageToCurrentTab();
+      _navigateToCurrentTabIfNeeded();
       return;
     }
     final normalizedUser = _normalizeUser(user);
@@ -979,11 +952,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       }
     });
     _syncPageToCurrentTab();
-    // Do not call _notifyTabChangedIfNeeded() here: permission refreshes
-    // are background operations, not user-initiated tab changes.  If
-    // isRestricted changed, AuthRouter._scheduleNavigation already queued the
-    // correct route replacement; firing the callback here would cause a
-    // duplicate push that corrupts the navigator stack.
+    _navigateToCurrentTabIfNeeded();
   }
 
   bool _isUserAllowedForShuttle(String normalizedUser, List<String> employees) {
@@ -1007,42 +976,103 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     return match?.group(0) ?? '';
   }
 
-  void _syncPageToCurrentTab() {
+  void _syncPageToCurrentTab({bool animate = false}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_pageController.hasClients) return;
       final targetIndex = _visibleTabs.indexOf(_currentTab);
       if (targetIndex < 0) return;
       final currentPage = _pageController.page?.round() ?? 0;
       if (currentPage != targetIndex) {
-        _pageController.jumpToPage(targetIndex);
+        if (animate) {
+          _pageController.animateToPage(
+            targetIndex,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+          );
+        } else {
+          _pageController.jumpToPage(targetIndex);
+        }
       }
     });
   }
 
-  String _topLevelPathForTab(MainTab tab) {
-    return (tab == MainTab.helpdesk || tab == MainTab.ticketManager)
-        ? AppRoutes.helpdesk
-        : AppRoutes.home;
+  MainTab _tabForPath(String? path) {
+    switch (AppRoutes.shellRouteForPath(path)) {
+      case AppShellRoute.chats:
+        return MainTab.chats;
+      case AppShellRoute.groups:
+        return MainTab.groups;
+      case AppShellRoute.shuttle:
+        return MainTab.shuttle;
+      case AppShellRoute.helpdesk:
+        return MainTab.helpdesk;
+      case AppShellRoute.ticketManager:
+        return MainTab.ticketManager;
+      case AppShellRoute.passwordReset:
+        return MainTab.passwordReset;
+      case AppShellRoute.accessibility:
+        return MainTab.accessibility;
+      case AppShellRoute.admin:
+        return MainTab.adminGroups;
+    }
   }
 
-  void _notifyTabChangedIfNeeded() {
-    final callback = widget.onTabChanged;
-    if (callback == null) return;
-    final path = _topLevelPathForTab(_currentTab);
-    // On Flutter web, guard against a stale _lastReportedTopLevelPath by
-    // comparing the desired path against the *live* route name.  The cached
-    // value can lag behind reality when a previous navigation was short-
-    // circuited (e.g. the OS back gesture, a browser-history pop, or an
-    // auth-guard redirect restored the original URL without disposing this
-    // widget).  Using the stale cache caused helpdesk/ticketManager taps from
-    // a non-/helpdesk route to be silently swallowed — leaving the URL at
-    // "/" instead of navigating to "/helpdesk".
-    final effectiveLast = kIsWeb
-        ? AppRoutes.normalizePath(ModalRoute.of(context)?.settings.name)
-        : _lastReportedTopLevelPath;
-    if (path == effectiveLast) return;
-    _lastReportedTopLevelPath = path;
-    callback(_currentTab);
+  String _pathForTab(MainTab tab) {
+    switch (tab) {
+      case MainTab.chats:
+        return AppRoutes.home;
+      case MainTab.groups:
+        return AppRoutes.groups;
+      case MainTab.shuttle:
+        return AppRoutes.shuttle;
+      case MainTab.helpdesk:
+        return AppRoutes.helpdesk;
+      case MainTab.ticketManager:
+        return AppRoutes.ticketManager;
+      case MainTab.passwordReset:
+        return AppRoutes.passwordReset;
+      case MainTab.accessibility:
+        return AppRoutes.accessibility;
+      case MainTab.settings:
+        return AppRoutes.home;
+      case MainTab.adminGroups:
+        return AppRoutes.admin;
+    }
+  }
+
+  void _selectTab(MainTab nextTab) {
+    if (!_visibleTabs.contains(nextTab)) return;
+
+    final targetPath = _pathForTab(nextTab);
+    final currentPath =
+        AppRoutes.normalizePath(ModalRoute.of(context)?.settings.name ?? widget.routePath);
+
+    if (currentPath == targetPath) {
+      if (nextTab != _currentTab) {
+        setState(() {
+          _currentTab = nextTab;
+        });
+      }
+      _syncPageToCurrentTab(animate: true);
+      return;
+    }
+
+    Navigator.of(context).pushReplacementNamed(targetPath);
+  }
+
+  void _navigateToCurrentTabIfNeeded() {
+    if (!mounted) return;
+    final currentPath =
+        AppRoutes.normalizePath(ModalRoute.of(context)?.settings.name ?? widget.routePath);
+    final targetPath = _pathForTab(_currentTab);
+    if (currentPath == targetPath) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final livePath =
+          AppRoutes.normalizePath(ModalRoute.of(context)?.settings.name ?? widget.routePath);
+      if (livePath == targetPath) return;
+      Navigator.of(context).pushReplacementNamed(targetPath);
+    });
   }
 
   String _getTabTitle(MainTab tab) {

@@ -20,7 +20,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../features/auth/presentation/auth_state.dart';
 import '../../features/chat/presentation/message_screen.dart';
-import '../../features/helpdesk/presentation/helpdesk_screen.dart';
 import '../../firebase_options.dart';
 import '../api/chat_api_service.dart';
 import '../navigation/root_navigator.dart';
@@ -1270,17 +1269,20 @@ class PushNotificationService {
     );
   }
 
-  /// Push the [HelpdeskScreen] route via the global [rootNavigatorKey].
-  /// Used when a helpdesk push notification is tapped.
+  /// Navigate to the shell-managed helpdesk route via the global
+  /// [rootNavigatorKey] so the sidebar shell stays mounted.
   void _openHelpdeskScreen() {
     final navigator = rootNavigatorKey.currentState;
     if (navigator == null) {
       debugPrint('[PushNotificationService] Navigator not ready, skipping helpdesk deep link');
       return;
     }
-    navigator.push(
-      MaterialPageRoute(builder: (_) => const HelpdeskScreen()),
-    );
+    final currentPath =
+        AppRoutes.normalizePath(rootNavigatorKey.currentContext != null
+            ? ModalRoute.of(rootNavigatorKey.currentContext!)?.settings.name
+            : null);
+    if (currentPath == AppRoutes.helpdesk) return;
+    navigator.pushReplacementNamed(AppRoutes.helpdesk);
   }
 
   /// Reset the app-icon badge to zero and dismiss all pending notifications

@@ -148,27 +148,13 @@ class TzmcPushApp extends ConsumerWidget {
       initialRoute: _initialRouteName(),
       onGenerateRoute: (settings) {
         final request = AppRouteRequest.fromName(settings.name);
-        switch (request.path) {
-          case AppRoutes.login:
-            return MaterialPageRoute<void>(
-              settings: settings,
-              builder: (_) => AuthRouter(
-                requestedPath: AppRoutes.login,
-                redirectPath: request.redirectPath,
-              ),
-            );
-          case AppRoutes.helpdesk:
-            return MaterialPageRoute<void>(
-              settings: settings,
-              builder: (_) => const AuthRouter(requestedPath: AppRoutes.helpdesk),
-            );
-          case AppRoutes.home:
-          default:
-            return MaterialPageRoute<void>(
-              settings: settings,
-              builder: (_) => const AuthRouter(requestedPath: AppRoutes.home),
-            );
-        }
+        return MaterialPageRoute<void>(
+          settings: settings,
+          builder: (_) => AuthRouter(
+            requestedPath: request.path,
+            redirectPath: request.redirectPath,
+          ),
+        );
       },
     );
   }
@@ -213,7 +199,7 @@ class _AuthRouterState extends ConsumerState<AuthRouter> {
       AuthUnauthenticated() || AuthAwaitingCode() || AuthError() => _buildUnauthenticated(
           requestedPath,
         ),
-      AuthAuthenticated authenticated => _buildAuthenticated(requestedPath, authenticated),
+      AuthAuthenticated() => _buildAuthenticated(requestedPath),
     };
   }
 
@@ -224,34 +210,16 @@ class _AuthRouterState extends ConsumerState<AuthRouter> {
     return const LoginScreen();
   }
 
-  Widget _buildAuthenticated(String requestedPath, AuthAuthenticated authState) {
+  Widget _buildAuthenticated(String requestedPath) {
     String destination = requestedPath == AppRoutes.login
         ? AppRoutes.normalizePath(widget.redirectPath)
         : requestedPath;
-
-    if (destination == AppRoutes.helpdesk && authState.isRestricted) {
-      destination = AppRoutes.home;
-    }
 
     if (destination != requestedPath) {
       _scheduleNavigation(destination);
     }
 
-    return ChatShellScreen(
-      initialTab: destination == AppRoutes.helpdesk ? MainTab.helpdesk : MainTab.chats,
-      onTabChanged: (tab) {
-        if (!kIsWeb) return;
-        final targetPath = AppRoutes.topLevelPathForHelpdeskTab(
-          tab == MainTab.helpdesk || tab == MainTab.ticketManager,
-        );
-        final current = AppRouteRequest.fromName(
-          ModalRoute.of(context)?.settings.name,
-        );
-        if (current.path != targetPath) {
-          Navigator.of(context).pushReplacementNamed(targetPath);
-        }
-      },
-    );
+    return ChatShellScreen(routePath: destination);
   }
 
   void _scheduleNavigation(String routeName) {

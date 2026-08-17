@@ -7,23 +7,84 @@ import 'package:flutter/material.dart';
 /// Root navigator key wired into [MaterialApp.navigatorKey] in `main.dart`.
 final GlobalKey<NavigatorState> rootNavigatorKey = GlobalKey<NavigatorState>();
 
+/// Canonical top-level shell routes. The active URL is the single source of
+/// truth for which shell destination is selected.
+enum AppShellRoute {
+  ticketManager('/helpdesk/manage'),
+  helpdesk('/helpdesk'),
+  shuttle('/shuttle'),
+  groups('/groups'),
+  passwordReset('/password-reset'),
+  accessibility('/accessibility'),
+  admin('/admin'),
+  chats('/');
+
+  const AppShellRoute(this.routePath);
+
+  final String routePath;
+
+  static AppShellRoute fromPath(String? rawPath) {
+    final path = _normalizeRawPath(rawPath);
+    if (path.isEmpty || path == AppRoutes.home) {
+      return AppShellRoute.chats;
+    }
+
+    for (final route in AppShellRoute.values) {
+      if (_matchesRoute(path, route.routePath)) {
+        return route;
+      }
+    }
+
+    return AppShellRoute.chats;
+  }
+
+  static bool matchesPath(String? rawPath) {
+    final path = _normalizeRawPath(rawPath);
+    if (path.isEmpty || path == AppRoutes.home) return true;
+    return AppShellRoute.values.any((route) => _matchesRoute(path, route.routePath));
+  }
+
+  static bool _matchesRoute(String path, String routePath) {
+    if (routePath == AppRoutes.home) {
+      return path == AppRoutes.home;
+    }
+    return path == routePath || path.startsWith('$routePath/');
+  }
+
+  static String _normalizeRawPath(String? rawPath) {
+    final trimmed = (rawPath ?? '').trim();
+    if (trimmed.isEmpty) return '';
+    final uri = Uri.tryParse(trimmed);
+    return (uri?.path ?? trimmed).trim();
+  }
+}
+
 /// App-level routes used for Flutter web deep-linking.
 class AppRoutes {
   const AppRoutes._();
 
-  static const String home = '/';
   static const String login = '/login';
+  static const String home = '/';
+  static const String groups = '/groups';
+  static const String shuttle = '/shuttle';
   static const String helpdesk = '/helpdesk';
+  static const String ticketManager = '/helpdesk/manage';
+  static const String passwordReset = '/password-reset';
+  static const String accessibility = '/accessibility';
+  static const String admin = '/admin';
 
   static String normalizePath(String? rawPath) {
-    final path = (rawPath ?? '').trim();
-    if (path.isEmpty || path == '/') return home;
-    if (path == login || path == helpdesk) return path;
+    final path = AppShellRoute._normalizeRawPath(rawPath);
+    if (path.isEmpty || path == home) return home;
+    if (path == login) return login;
+    if (AppShellRoute.matchesPath(path)) {
+      return AppShellRoute.fromPath(path).routePath;
+    }
     return home;
   }
 
-  static String topLevelPathForHelpdeskTab(bool isHelpdeskTab) {
-    return isHelpdeskTab ? helpdesk : home;
+  static AppShellRoute shellRouteForPath(String? rawPath) {
+    return AppShellRoute.fromPath(rawPath);
   }
 
   static String loginWithRedirect(String targetPath) {
