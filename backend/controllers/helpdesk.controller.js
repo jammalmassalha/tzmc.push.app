@@ -1373,7 +1373,6 @@ function registerHelpdeskController(app, deps = {}) {
             const users = rows.map((r) => ({
                 id: r.id,
                 username: r.username,
-                phone: r.username,
                 fullName: r.full_name || null,
                 role: r.role,
                 department: r.department,
