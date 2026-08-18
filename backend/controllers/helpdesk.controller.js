@@ -1342,6 +1342,7 @@ function registerHelpdeskController(app, deps = {}) {
     // GET /helpdesk/users - Admin: list all helpdesk_users; Editor: list users in own department
     app.get(['/helpdesk/users', '/notify/helpdesk/users'], requireUser, helpdeskRateLimit(20, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
+        const requestedDepartment = toTrimmedString((req.query && req.query.department) || '');
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
         }
@@ -1353,13 +1354,21 @@ function registerHelpdeskController(app, deps = {}) {
             }
             let rows;
             if (editorRole.role === 'Admin') {
-                [rows] = await pool.query(
-                    'SELECT hu.`id`, hu.`username`, hu.`role`, hu.`department`, hu.`status`, hu.`created_at`, NULLIF(TRIM(s.`FullName`), \'\') AS `full_name` FROM `helpdesk_users` hu LEFT JOIN `Subscribe` s ON s.`User` = hu.`username` ORDER BY hu.`department`, hu.`username`'
-                );
+                if (requestedDepartment) {
+                    [rows] = await pool.query(
+                        'SELECT hu.`id`, hu.`username`, hu.`role`, hu.`department`, hu.`status`, hu.`created_at`, NULLIF(TRIM(s.`FullName`), \'\') AS `full_name` FROM `helpdesk_users` hu LEFT JOIN `Subscribe` s ON s.`User` = hu.`username` WHERE hu.`department` = ? ORDER BY hu.`username`',
+                        [requestedDepartment]
+                    );
+                } else {
+                    [rows] = await pool.query(
+                        'SELECT hu.`id`, hu.`username`, hu.`role`, hu.`department`, hu.`status`, hu.`created_at`, NULLIF(TRIM(s.`FullName`), \'\') AS `full_name` FROM `helpdesk_users` hu LEFT JOIN `Subscribe` s ON s.`User` = hu.`username` ORDER BY hu.`department`, hu.`username`'
+                    );
+                }
             } else {
+                const departmentFilter = requestedDepartment || editorRole.department;
                 [rows] = await pool.query(
                     'SELECT hu.`id`, hu.`username`, hu.`role`, hu.`department`, hu.`status`, hu.`created_at`, NULLIF(TRIM(s.`FullName`), \'\') AS `full_name` FROM `helpdesk_users` hu LEFT JOIN `Subscribe` s ON s.`User` = hu.`username` WHERE hu.`department` = ? ORDER BY hu.`username`',
-                    [editorRole.department]
+                    [departmentFilter]
                 );
             }
             const users = rows.map((r) => ({

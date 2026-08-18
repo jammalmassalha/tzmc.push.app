@@ -1426,13 +1426,21 @@ class ChatApiService {
   }
 
   /// Get helpdesk users for admin CRUD flows.
-  Future<List<HelpdeskUser>> fetchHelpdeskUsers(String user) async {
+  Future<List<HelpdeskUser>> fetchHelpdeskUsers(
+    String user, {
+    String? department,
+  }) async {
     final normalizedUser = user.trim();
     if (normalizedUser.isEmpty) throw ApiException('User is required');
+    final normalizedDepartment = department?.trim();
 
     final response = await _client.get<Map<String, dynamic>>(
       ApiEndpoints.helpdeskUsers,
-      queryParameters: {'user': normalizedUser},
+      queryParameters: {
+        'user': normalizedUser,
+        if (normalizedDepartment != null && normalizedDepartment.isNotEmpty)
+          'department': normalizedDepartment,
+      },
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
     if (!response.isSuccessful) {

@@ -1808,10 +1808,13 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
     }
   }
 
-  Future<void> _loadAllHandlersIfNeeded() async {
-    if (widget.myRole?.role != HelpdeskRole.admin) return;
+  Future<void> _loadHandlersForDepartment(String departmentName) async {
+    final normalizedDepartment = departmentName.trim();
+    if (normalizedDepartment.isEmpty) return;
     try {
-      final users = await ref.read(chatApiServiceProvider).fetchHelpdeskUsers(_currentUser);
+      final users = await ref
+          .read(chatApiServiceProvider)
+          .fetchHelpdeskUsers(_currentUser, department: normalizedDepartment);
       if (!mounted) return;
       setState(() {
         _allHandlers = users
@@ -1844,7 +1847,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
       _loadHistory(api, ticketId),
       _loadHandlerHistory(api, ticketId),
       _loadNotes(api, ticketId),
-      _loadAllHandlersIfNeeded(),
+      _loadHandlersForDepartment(_selectedDepartmentName()),
     ]);
   }
 
@@ -2168,11 +2171,18 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                                     child: Text(department.name),
                                   ))
                               .toList(),
-                          onChanged: (value) => setState(() {
-                            _selectedDepartmentId = value;
-                            _syncSelectedHandlerWithDepartment();
-                            _handlerError = null;
-                          }),
+                          onChanged: (value) {
+                            setState(() {
+                              _selectedDepartmentId = value;
+                              _syncSelectedHandlerWithDepartment();
+                              _handlerError = null;
+                            });
+                            if (value != null) {
+                              unawaited(
+                                _loadHandlersForDepartment(_selectedDepartmentName()),
+                              );
+                            }
+                          },
                         ),
                       ),
                       const SizedBox(width: 8),

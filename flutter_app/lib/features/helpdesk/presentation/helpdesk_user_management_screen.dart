@@ -501,7 +501,10 @@ class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
     final filtered = query.isEmpty
         ? candidates
         : candidates.where(
-            (user) => user.username.toLowerCase().contains(query),
+            (user) =>
+                user.username.toLowerCase().contains(query) ||
+                (user.fullName?.toLowerCase().contains(query) ?? false) ||
+                user.phoneNumber.toLowerCase().contains(query),
           );
     return filtered.take(8).toList();
   }
