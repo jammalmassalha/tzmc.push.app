@@ -1354,11 +1354,11 @@ function registerHelpdeskController(app, deps = {}) {
             let rows;
             if (editorRole.role === 'Admin') {
                 [rows] = await pool.query(
-                    'SELECT hu.`id`, hu.`username`, hu.`role`, hu.`department`, hu.`status`, hu.`created_at`, COALESCE(NULLIF(TRIM(s.`FullName`), \'\'), NULLIF(TRIM(s.`ExeptionName`), \'\')) AS `full_name` FROM `helpdesk_users` hu LEFT JOIN `Subscribe` s ON s.`User` = hu.`username` ORDER BY hu.`department`, hu.`username`'
+                    'SELECT hu.`id`, hu.`username`, hu.`role`, hu.`department`, hu.`status`, hu.`created_at`, NULLIF(TRIM(s.`FullName`), \'\') AS `full_name` FROM `helpdesk_users` hu LEFT JOIN `Subscribe` s ON s.`User` = hu.`username` ORDER BY hu.`department`, hu.`username`'
                 );
             } else {
                 [rows] = await pool.query(
-                    'SELECT hu.`id`, hu.`username`, hu.`role`, hu.`department`, hu.`status`, hu.`created_at`, COALESCE(NULLIF(TRIM(s.`FullName`), \'\'), NULLIF(TRIM(s.`ExeptionName`), \'\')) AS `full_name` FROM `helpdesk_users` hu LEFT JOIN `Subscribe` s ON s.`User` = hu.`username` WHERE hu.`department` = ? ORDER BY hu.`username`',
+                    'SELECT hu.`id`, hu.`username`, hu.`role`, hu.`department`, hu.`status`, hu.`created_at`, NULLIF(TRIM(s.`FullName`), \'\') AS `full_name` FROM `helpdesk_users` hu LEFT JOIN `Subscribe` s ON s.`User` = hu.`username` WHERE hu.`department` = ? ORDER BY hu.`username`',
                     [editorRole.department]
                 );
             }

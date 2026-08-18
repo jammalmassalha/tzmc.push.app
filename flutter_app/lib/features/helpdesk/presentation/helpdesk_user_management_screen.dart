@@ -287,8 +287,10 @@ class _HelpdeskUserCard extends ConsumerWidget {
     final fullName = user.fullName?.trim().isNotEmpty == true
         ? user.fullName!.trim()
         : contact?.displayName ?? '';
-    final phone = user.phoneNumber;
-    final title = fullName.isNotEmpty ? '$fullName - $phone' : phone;
+    final phone = user.phoneNumber.trim();
+    final title = fullName.isNotEmpty
+        ? (phone.isNotEmpty ? '$fullName - $phone' : fullName)
+        : (phone.isNotEmpty ? phone : user.username);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
