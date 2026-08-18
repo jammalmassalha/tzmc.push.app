@@ -1,4 +1,4 @@
-import mysql, { Pool, RowDataPacket } from 'mysql2/promise';
+import mysql, { Pool, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 
 export interface MysqlLogsConfig {
   host: string;
@@ -2310,6 +2310,60 @@ export class MysqlLogsService {
       const message = String((err as { message?: string }).message || '');
       console.error('[MYSQL] lookupUserByWindowsUsername error:', message);
       return null;
+    }
+  }
+
+  async updateSubscribeUserProfilePicture(userCandidates: unknown, upic: string): Promise<{ user: string; upic: string } | null> {
+    await this.ensureSubscribeTable();
+    try {
+      const normalizedUpic = toTrimmedString(upic);
+      if (!normalizedUpic) {
+        return null;
+      }
+
+      const candidateValues = Array.isArray(userCandidates) ? userCandidates : [userCandidates];
+      const identifiers = Array.from(new Set(
+        candidateValues.flatMap((value) => {
+          const trimmed = toTrimmedString(value);
+          const normalizedPhone = normalizePhone(trimmed);
+          return [trimmed, trimmed.toLowerCase(), normalizedPhone].filter(Boolean);
+        })
+      ));
+
+      if (!identifiers.length) {
+        return null;
+      }
+
+      const placeholders = identifiers.map(() => '?').join(', ');
+      const [rows] = await this.pool.query<RowDataPacket[]>(
+        `SELECT \`User\` FROM \`Subscribe\` WHERE \`User\` IN (${placeholders}) OR \`UserName\` IN (${placeholders}) LIMIT 1`,
+        [...identifiers, ...identifiers]
+      );
+      const matchedUser = rows && rows.length > 0
+        ? toTrimmedString(rows[0].User)
+        : '';
+
+      if (!matchedUser) {
+        return null;
+      }
+
+      const [result] = await this.pool.execute<ResultSetHeader>(
+        'UPDATE `Subscribe` SET `Upic` = ? WHERE `User` = ?',
+        [normalizedUpic, matchedUser]
+      );
+
+      if (!result || Number(result.affectedRows || 0) < 1) {
+        return null;
+      }
+
+      return {
+        user: matchedUser,
+        upic: normalizedUpic,
+      };
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.error('[MYSQL] updateSubscribeUserProfilePicture error:', message);
+      throw err;
     }
   }
 

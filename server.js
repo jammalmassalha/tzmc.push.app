@@ -75,6 +75,7 @@ const ACCREDITATION_UPLOAD_SUBDIRECTORY = 'Accreditation';
 const USERS_UPLOAD_SUBDIRECTORY = 'users';
 const MAX_USERS_UPLOAD_FILENAME_LENGTH = 160;
 const USERS_UPLOAD_ROUTE_PATHS = new Set(['/upload/users', '/notify/upload/users']);
+const USERS_UPLOAD_USER_CANDIDATE_KEYS = ['user', 'username', 'phone', 'user_id', 'id', 'device_id'];
 const SPECIAL_UPLOAD_SUBDIRECTORIES_BY_CHAT_ID = Object.freeze({
     [ACCREDITATION_UPLOAD_CHAT_ID]: ACCREDITATION_UPLOAD_SUBDIRECTORY
 });
@@ -482,6 +483,25 @@ function resolveUploadSubdirectory(req) {
        body.groupId || body.chatId || body.targetChatId || body.recipient || ''
    );
    return SPECIAL_UPLOAD_SUBDIRECTORIES_BY_CHAT_ID[targetChatId] || '';
+}
+function collectUsersUploadIdentityCandidates(req) {
+   const body = req && req.body && typeof req.body === 'object' ? req.body : {};
+   const rawValues = [
+       req && req.resolvedUser,
+       req && req.authorizedUser,
+       req && req.authUser,
+       body.user,
+       body.username,
+       body.phone,
+       body.user_id,
+       body.id,
+       body.device_id
+   ];
+   return Array.from(new Set(
+       rawValues
+           .map((value) => String(value || '').trim())
+           .filter(Boolean)
+   ));
 }
 function resolveSafeUploadPath(baseDir, candidatePath) {
    const resolvedBaseDir = `${path.resolve(baseDir)}${path.sep}`;
@@ -7462,6 +7482,27 @@ app.post(['/upload', '/notify/upload', '/upload/users', '/notify/upload/users'],
     }
 
     const uploadSubdirectory = resolveUploadSubdirectory(req);
+    let usersUploadIdentityCandidates = [];
+    if (uploadSubdirectory === USERS_UPLOAD_SUBDIRECTORY) {
+        const resolution = req && typeof req.resolveAuthorizedUserFromRequest === 'function'
+            ? req.resolveAuthorizedUserFromRequest({
+                required: true,
+                candidateKeys: USERS_UPLOAD_USER_CANDIDATE_KEYS
+            })
+            : { user: '', error: 'Missing user', status: 400 };
+        if (resolution && resolution.error) {
+            return rejectWithCleanup(resolution.status || 400, resolution.error);
+        }
+        req.authorizedUserResolution = resolution;
+        req.authorizedUser = resolution && !resolution.error
+            ? normalizeUserCandidate(resolution.user)
+            : '';
+        req.resolvedUser = req.authorizedUser;
+        usersUploadIdentityCandidates = collectUsersUploadIdentityCandidates(req);
+        if (!usersUploadIdentityCandidates.length) {
+            return rejectWithCleanup(400, 'Missing user');
+        }
+    }
     try {
         if (uploadSubdirectory === USERS_UPLOAD_SUBDIRECTORY) {
             await finalizeUsersUploadedFile(file);
@@ -7482,6 +7523,28 @@ app.post(['/upload', '/notify/upload', '/upload/users', '/notify/upload/users'],
 
     const fileUrl = buildUploadedFileUrl(file, uploadSubdirectory);
     const thumbUrl = thumbnail ? buildUploadedFileUrl(thumbnail, uploadSubdirectory) : null;
+    if (uploadSubdirectory === USERS_UPLOAD_SUBDIRECTORY) {
+        let updatedProfile = null;
+        try {
+            updatedProfile = await mysqlLogsService.updateSubscribeUserProfilePicture(usersUploadIdentityCandidates, fileUrl);
+        } catch (error) {
+            console.error('[UPLOAD] Failed to persist users upload URL:', error && error.message ? error.message : error);
+            return rejectWithCleanup(500, 'Failed to persist uploaded profile picture');
+        }
+        if (!updatedProfile) {
+            return rejectWithCleanup(404, 'User not found in Subscribe');
+        }
+        return res.json({
+            success: true,
+            status: 'success',
+            message: 'Profile picture updated successfully',
+            url: fileUrl,
+            upic: updatedProfile.upic,
+            thumbUrl,
+            type: file.mimetype,
+            user: updatedProfile.user
+        });
+    }
     res.json({ status: 'success', url: fileUrl, thumbUrl, type: file.mimetype });
 });
 
