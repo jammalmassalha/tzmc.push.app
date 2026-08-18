@@ -187,6 +187,25 @@ class HttpClient {
     );
   }
 
+  /// Perform PATCH request with retry
+  Future<Response<T>> patch<T>(
+    String path, {
+    Object? data,
+    Map<String, dynamic>? queryParameters,
+    Options? options,
+    RetryOptions? retryOptions,
+  }) {
+    return _requestWithRetry<T>(
+      () => _dio.patch<T>(
+        path,
+        data: data,
+        queryParameters: queryParameters,
+        options: options,
+      ),
+      retryOptions ?? const RetryOptions(),
+    );
+  }
+
   /// Upload file(s) with multipart form data (cross-platform).
   ///
   /// Uses [XFile] for cross-platform compatibility (works on web and native).

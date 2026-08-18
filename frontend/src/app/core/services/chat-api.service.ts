@@ -7,6 +7,7 @@ import {
   DeleteMessagePayload,
   EditMessagePayload,
   GroupUpdatePayload,
+  HelpdeskAdminUser,
   HelpdeskDashboard,
   HelpdeskManagedUser,
   HelpdeskMyRole,
@@ -1649,6 +1650,68 @@ export class ChatApiService {
       answer: String(body.answer ?? ''),
       relevantFiles: Array.isArray(body.relevantFiles) ? body.relevantFiles : []
     };
+  }
+
+  async getHelpdeskAdminUsers(): Promise<HelpdeskAdminUser[]> {
+    const url = `${this.notifyBaseUrl}/helpdesk/users?_ts=${Date.now()}&ngsw-bypass=1`;
+    const response = await this.fetchWithRetry(url, { cache: 'no-store' }, { retries: 1, timeoutMs: 8000 });
+    const body = await response.json() as { result?: string; message?: string; users?: HelpdeskAdminUser[] };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה בטעינת המשתמשים'));
+    }
+    return Array.isArray(body.users) ? body.users : [];
+  }
+
+  async addHelpdeskAdminUser(payload: { username: string; role: string; department: string; status: string }): Promise<void> {
+    const url = `${this.notifyBaseUrl}/helpdesk/users`;
+    const response = await this.fetchWithRetry(
+      url,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) },
+      { retries: 1, timeoutMs: 8000 }
+    );
+    const body = await response.json() as { result?: string; message?: string };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה בהוספת המשתמש'));
+    }
+  }
+
+  async updateHelpdeskAdminUser(id: number, payload: { username: string; role: string; department: string; status: string }): Promise<void> {
+    const url = `${this.notifyBaseUrl}/helpdesk/users/${encodeURIComponent(String(id))}`;
+    const response = await this.fetchWithRetry(
+      url,
+      { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) },
+      { retries: 1, timeoutMs: 8000 }
+    );
+    const body = await response.json() as { result?: string; message?: string };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה בעדכון המשתמש'));
+    }
+  }
+
+  async patchHelpdeskAdminUserStatus(id: number, status: 'Active' | 'Inactive'): Promise<void> {
+    const url = `${this.notifyBaseUrl}/helpdesk/users/${encodeURIComponent(String(id))}/status`;
+    const response = await this.fetchWithRetry(
+      url,
+      { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) },
+      { retries: 1, timeoutMs: 8000 }
+    );
+    const body = await response.json() as { result?: string; message?: string };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה בעדכון סטטוס המשתמש'));
+    }
+  }
+
+  async removeHelpdeskAdminUser(username: string): Promise<void> {
+    const url = `${this.notifyBaseUrl}/helpdesk/users/${encodeURIComponent(username)}`;
+    const response = await this.fetchWithRetry(
+      url,
+      { method: 'DELETE' },
+      { retries: 1, timeoutMs: 8000 }
+    );
+    const body = await response.json() as { result?: string; message?: string };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה בהסרת המשתמש'));
+    }
   }
 
   private isLikelyHtmlPayload(payloadText: string): boolean {

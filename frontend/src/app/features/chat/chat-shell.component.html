@@ -567,6 +567,15 @@
               <div class="shuttle-orders-toolbar">
                 <div class="shuttle-orders-title">🎫 מוקד איחוד - הקריאות שלי</div>
                 <div class="shuttle-orders-toolbar-actions">
+                  @if (helpdeskDb.myRole?.role === 'Admin') {
+                    <button
+                      type="button"
+                      class="shuttle-orders-refresh-btn helpdesk-manage-users-btn"
+                      (click)="openHelpdeskUsersManagement()">
+                      <mat-icon>manage_accounts</mat-icon>
+                      <span>ניהול משתמשים</span>
+                    </button>
+                  }
                   <button
                     type="button"
                     class="shuttle-orders-refresh-btn"

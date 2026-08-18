@@ -87,12 +87,12 @@ class SessionService {
             .replace(/=+$/g, '');
     }
     // ── Token creation & validation ───────────────────────────────────────
-    createSessionToken(user) {
+    createSessionToken(user, options = {}) {
         const normalizedUser = this.deps.normalizeUserCandidate(user);
         if (!normalizedUser || (!this.signingSecret && !this.jweService))
             return null;
-        const sessionId = this.generateRandomToken(18);
-        const csrfToken = this.generateRandomToken(24);
+        const sessionId = String(options.sessionId || '').trim() || this.generateRandomToken(18);
+        const csrfToken = String(options.csrfToken || '').trim() || this.generateRandomToken(24);
         const expiresAt = Date.now() + this.cookieTtlMs;
         if (!this.deps.activeSessionIdsByUser.has(normalizedUser)) {
             this.deps.activeSessionIdsByUser.set(normalizedUser, new Set());
@@ -263,6 +263,20 @@ class SessionService {
         recent.push(now);
         store.set(normalizedKey, recent);
         return { allowed: true, retryAfterSeconds: 0, remaining: Math.max(0, maxAttempts - recent.length) };
+    }
+    rollbackRateLimitEntry(store, key) {
+        const normalizedKey = String(key || '').trim().toLowerCase();
+        if (!normalizedKey)
+            return;
+        const existing = Array.isArray(store.get(normalizedKey)) ? [...store.get(normalizedKey)] : [];
+        if (existing.length === 0)
+            return;
+        existing.pop();
+        if (existing.length === 0) {
+            store.delete(normalizedKey);
+            return;
+        }
+        store.set(normalizedKey, existing);
     }
 }
 exports.SessionService = SessionService;

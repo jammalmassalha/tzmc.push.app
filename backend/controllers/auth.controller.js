@@ -11,6 +11,7 @@ function registerAuthController(app, deps = {}) {
         ensureRegistrationFlowOnly,
         getClientIpAddress,
         consumeRateLimitEntry,
+        rollbackRateLimitEntry,
         authCodeRequestRateLimitByIp,
         AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_IP,
         AUTH_CODE_RATE_LIMIT_WINDOW_MS,
@@ -205,6 +206,7 @@ function registerAuthController(app, deps = {}) {
         requestCodeIpRateLimit,
         async (req, res) => {
             let requestedUser = '';
+            let consumedUserRateLimit = false;
             try {
                 const payload = req.body && typeof req.body === 'object' ? req.body : {};
                 requestedUser = normalizeUserCandidate(payload.username || payload.user || payload.phone);
@@ -219,6 +221,7 @@ function registerAuthController(app, deps = {}) {
                     AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_USER,
                     AUTH_CODE_RATE_LIMIT_WINDOW_MS
                 );
+                consumedUserRateLimit = true;
                 if (!userLimit.allowed) {
                     const retryAfterSeconds = Math.max(userLimit.retryAfterSeconds || 0, 1);
                     res.setHeader('Retry-After', String(retryAfterSeconds));
@@ -249,14 +252,7 @@ function registerAuthController(app, deps = {}) {
 
                 const verificationCode = generateAuthCode();
                 await setAuthCodeOnSubscribeSheet(requestedUser, verificationCode);
-
-                // Send SMS asynchronously so the client is not blocked waiting for the
-                // SMS gateway. The code is already persisted in the sheet at this point,
-                // so verification will work regardless of when the SMS actually delivers.
-                sendAuthCodeSms(requestedUser, verificationCode).catch((smsError) => {
-                    const reason = smsError && smsError.message ? String(smsError.message) : 'Unknown SMS error';
-                    console.error('[AUTH CODE] Background SMS delivery failed for user', requestedUser, ':', reason);
-                });
+                await sendAuthCodeSms(requestedUser, verificationCode);
 
                 return res.json({
                     status: 'success',
@@ -267,6 +263,9 @@ function registerAuthController(app, deps = {}) {
                 });
             } catch (error) {
                 const reason = error && error.message ? String(error.message) : 'Unable to send verification code';
+                if (consumedUserRateLimit && typeof rollbackRateLimitEntry === 'function' && requestedUser) {
+                    rollbackRateLimitEntry(authCodeRequestRateLimitByUser, requestedUser);
+                }
                 console.error('[AUTH CODE] Failed to send verification code for user', requestedUser, 'error:', reason, error && error.stack ? error.stack : '');
                 return res.status(502).json({ status: 'error', message: reason });
             }

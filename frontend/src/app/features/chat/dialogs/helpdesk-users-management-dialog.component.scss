@@ -1,0 +1,285 @@
+.users-mgmt-dialog {
+  direction: rtl;
+  font-family: inherit;
+}
+
+/* Header */
+.dialog-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px 8px;
+}
+
+.header-icon {
+  color: var(--mdc-theme-primary, #1976d2);
+  font-size: 26px;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+}
+
+.header-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1a1a1a;
+  flex: 1;
+}
+
+.close-btn {
+  margin-inline-start: auto;
+  flex-shrink: 0;
+}
+
+/* Dialog content */
+.dialog-content {
+  padding: 8px 20px 4px !important;
+  max-height: 75vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: min(90vw, 680px);
+}
+
+/* Form section */
+.form-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.form-section-header,
+.table-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #555;
+}
+
+.section-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: #888;
+}
+
+.user-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.form-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.form-field {
+  flex: 1;
+  min-width: 160px;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding-top: 4px;
+
+  button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+}
+
+/* Divider */
+.section-divider {
+  border: none;
+  border-top: 1px solid #e0e0e0;
+  margin: 4px 0;
+}
+
+/* Table section */
+.users-table-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.user-count-badge {
+  display: inline-flex;
+  align-items: center;
+  background: #e3f2fd;
+  color: #1565c0;
+  border-radius: 12px;
+  padding: 1px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-inline-start: 4px;
+}
+
+.loading-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px 0;
+  font-size: 14px;
+  color: #888;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 0;
+  color: #bbb;
+  font-size: 14px;
+
+  mat-icon {
+    font-size: 40px;
+    width: 40px;
+    height: 40px;
+  }
+}
+
+/* Table */
+.users-table-wrapper {
+  overflow-x: auto;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+}
+
+.users-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+
+  th {
+    background: #f5f5f5;
+    padding: 10px 12px;
+    text-align: right;
+    font-weight: 600;
+    color: #555;
+    white-space: nowrap;
+    border-bottom: 1px solid #e0e0e0;
+  }
+
+  td {
+    padding: 10px 12px;
+    border-bottom: 1px solid #f0f0f0;
+    color: #333;
+    vertical-align: middle;
+  }
+
+  tr:last-child td {
+    border-bottom: none;
+  }
+
+  tr:hover td {
+    background: #fafafa;
+  }
+}
+
+.row-inactive td {
+  opacity: 0.6;
+}
+
+.username-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.user-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  color: #888;
+}
+
+.date-cell {
+  white-space: nowrap;
+  color: #888;
+  font-size: 12px;
+}
+
+.actions-cell {
+  white-space: nowrap;
+  padding: 4px 8px !important;
+
+  button {
+    width: 32px !important;
+    height: 32px !important;
+    line-height: 32px !important;
+
+    mat-icon {
+      font-size: 18px;
+      width: 18px;
+      height: 18px;
+    }
+  }
+}
+
+.btn-activate mat-icon {
+  color: #2e7d32;
+}
+
+.btn-remove mat-icon {
+  color: #c62828;
+}
+
+/* Role badges */
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 10px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+
+  &.admin {
+    background: #e8eaf6;
+    color: #283593;
+  }
+
+  &.editor {
+    background: #e0f2f1;
+    color: #00695c;
+  }
+}
+
+/* Status badges */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 10px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+
+  &.active {
+    background: #e8f5e9;
+    color: #2e7d32;
+  }
+
+  &.inactive {
+    background: #f5f5f5;
+    color: #757575;
+  }
+}
+
+/* Dialog actions */
+.dialog-actions {
+  padding: 8px 20px 12px !important;
+}

@@ -54,6 +54,14 @@ class ChatApiService {
     return normalized.isNotEmpty ? normalized : fallback;
   }
 
+  String _normalizeHelpdeskRoleValue(String role) {
+    return role.trim().toLowerCase() == 'admin' ? 'Admin' : 'Editor';
+  }
+
+  String _normalizeHelpdeskStatusValue(String status) {
+    return status.trim().toLowerCase() == 'active' ? 'Active' : 'Inactive';
+  }
+
   int? _parseRetryAfterSeconds(dynamic body) {
     final map = _coerceJsonMap(body);
     final value = map['retryAfterSeconds'];
@@ -996,6 +1004,42 @@ class ChatApiService {
     }
   }
 
+  /// Transfer a helpdesk ticket to another department (Editor/Admin only).
+  Future<void> transferHelpdeskTicketDepartment(
+    int ticketId,
+    int departmentId,
+    String user,
+  ) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) {
+      throw ApiException('User is required for helpdesk ticket transfer');
+    }
+    if (departmentId <= 0) {
+      throw ApiException('Department is required for helpdesk ticket transfer');
+    }
+
+    final response = await _client.patch<Map<String, dynamic>>(
+      '${ApiEndpoints.helpdeskTickets}/$ticketId/department',
+      data: {
+        'department_id': departmentId,
+        'user': normalizedUser,
+      },
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+
+    final body = response.data ?? {};
+
+    if (!response.isSuccessful) {
+      final errorMessage = body['message'] as String? ?? 'שגיאה בהעברת הקריאה למחלקה אחרת';
+      throw ApiException(errorMessage);
+    }
+
+    if (body['result'] == 'error') {
+      final errorMessage = body['message'] as String? ?? 'שגיאה בהעברת הקריאה למחלקה אחרת';
+      throw ApiException(errorMessage);
+    }
+  }
+
   /// Get helpdesk ticket history
   /// 
   /// [user] is required for backend authorization when session cookies are not available.
@@ -1351,6 +1395,141 @@ class ChatApiService {
     final body = response.data ?? {};
     if (!response.isSuccessful || body['result'] == 'error') {
       throw ApiException(body['message'] as String? ?? 'שגיאה במחיקת המחלקה');
+    }
+  }
+
+  /// Get helpdesk departments for admin CRUD flows.
+  Future<List<HelpdeskDepartment>> fetchHelpdeskDepartments(String user) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) throw ApiException('User is required');
+
+    final response = await _client.get<Map<String, dynamic>>(
+      ApiEndpoints.helpdeskDepartments,
+      queryParameters: {'user': normalizedUser},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה בטעינת המחלקות'),
+      );
+    }
+
+    final data = response.data ?? {};
+    final rawList = data['departments'];
+    if (rawList is! List) return [];
+    return rawList
+        .whereType<Map>()
+        .map((e) => HelpdeskDepartment.fromJson(
+              e.map((key, value) => MapEntry(key.toString(), value)),
+            ))
+        .toList();
+  }
+
+  /// Get helpdesk users for admin CRUD flows.
+  Future<List<HelpdeskUser>> fetchHelpdeskUsers(String user) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) throw ApiException('User is required');
+
+    final response = await _client.get<Map<String, dynamic>>(
+      ApiEndpoints.helpdeskUsers,
+      queryParameters: {'user': normalizedUser},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה בטעינת משתמשי המוקד'),
+      );
+    }
+
+    final data = response.data ?? {};
+    final rawList = data['users'] ?? data['helpdeskUsers'] ?? data['data'];
+    if (rawList is! List) return [];
+    return rawList
+        .whereType<Map>()
+        .map((e) => HelpdeskUser.fromJson(
+              e.map((key, value) => MapEntry(key.toString(), value)),
+            ))
+        .toList();
+  }
+
+  /// Create a helpdesk user.
+  Future<void> createHelpdeskUser({
+    required String user,
+    required String username,
+    required String role,
+    required String department,
+    required String status,
+  }) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) throw ApiException('User is required');
+
+    final response = await _client.post<Map<String, dynamic>>(
+      ApiEndpoints.helpdeskUsers,
+      queryParameters: {'user': normalizedUser},
+      data: {
+        'username': username.trim(),
+        'role': _normalizeHelpdeskRoleValue(role),
+        'department': department.trim(),
+        'status': _normalizeHelpdeskStatusValue(status),
+      },
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה ביצירת משתמש מוקד'),
+      );
+    }
+  }
+
+  /// Update a helpdesk user.
+  Future<void> updateHelpdeskUser(
+    String user,
+    int id, {
+    required String username,
+    required String role,
+    required String department,
+    required String status,
+  }) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) throw ApiException('User is required');
+
+    final response = await _client.put<Map<String, dynamic>>(
+      '${ApiEndpoints.helpdeskUsers}/$id',
+      queryParameters: {'user': normalizedUser},
+      data: {
+        'username': username.trim(),
+        'role': _normalizeHelpdeskRoleValue(role),
+        'department': department.trim(),
+        'status': _normalizeHelpdeskStatusValue(status),
+      },
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה בעדכון משתמש מוקד'),
+      );
+    }
+  }
+
+  /// Toggle a helpdesk user status.
+  Future<void> toggleHelpdeskUserStatus(
+    String user,
+    int id,
+    String newStatus,
+  ) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) throw ApiException('User is required');
+
+    final response = await _client.patch<Map<String, dynamic>>(
+      '${ApiEndpoints.helpdeskUsers}/$id/status',
+      queryParameters: {'user': normalizedUser},
+      data: {'status': _normalizeHelpdeskStatusValue(newStatus)},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה בעדכון סטטוס המשתמש'),
+      );
     }
   }
 

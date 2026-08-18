@@ -141,26 +141,74 @@ class TzmcPushApp extends ConsumerWidget {
       },
 
       // Initial route handling based on auth state
-      home: const AuthRouter(),
+      initialRoute: _initialRouteName(),
+      onGenerateRoute: (settings) {
+        final request = AppRouteRequest.fromName(settings.name);
+        return MaterialPageRoute<void>(
+          settings: settings,
+          builder: (_) => AuthRouter(
+            requestedPath: request.path,
+            redirectPath: request.redirectPath,
+          ),
+        );
+      },
     );
   }
+
+  String _initialRouteName() => AppRoutes.home;
 }
 
 /// Router that shows appropriate screen based on auth state
-class AuthRouter extends ConsumerWidget {
-  const AuthRouter({super.key});
+class AuthRouter extends ConsumerStatefulWidget {
+  final String requestedPath;
+  final String? redirectPath;
+
+  const AuthRouter({
+    super.key,
+    required this.requestedPath,
+    this.redirectPath,
+  });
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<AuthRouter> createState() => _AuthRouterState();
+}
+
+class _AuthRouterState extends ConsumerState<AuthRouter> {
+  bool _isNavigating = false;
+
+  @override
+  Widget build(BuildContext context) {
     final authState = ref.watch(authStateProvider);
+    final requestedPath = AppRoutes.normalizePath(widget.requestedPath);
 
     return switch (authState) {
       AuthLoading() => const SplashScreen(),
-      AuthUnauthenticated() => const LoginScreen(),
-      AuthAwaitingCode() => const LoginScreen(),
-      AuthAuthenticated() => const ChatShellScreen(),
-      AuthError() => const LoginScreen(),
+      AuthUnauthenticated() || AuthAwaitingCode() || AuthError() => _buildUnauthenticated(
+          requestedPath,
+        ),
+      AuthAuthenticated() => _buildAuthenticated(),
     };
+  }
+
+  Widget _buildUnauthenticated(String requestedPath) {
+    if (requestedPath != AppRoutes.login) {
+      _scheduleNavigation(AppRoutes.loginWithRedirect(requestedPath));
+    }
+    return const LoginScreen();
+  }
+
+  Widget _buildAuthenticated() {
+    return const ChatShellScreen();
+  }
+
+  void _scheduleNavigation(String routeName) {
+    if (_isNavigating || !mounted) return;
+    _isNavigating = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      Navigator.of(context).pushReplacementNamed(routeName);
+      _isNavigating = false;
+    });
   }
 }
 

@@ -13,6 +13,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/config/environment.dart';
 import '../../../core/api/chat_api_service.dart';
+import '../../../core/navigation/root_navigator.dart';
 import '../../../core/realtime/realtime_transport_service.dart';
 import '../../../core/services/accessibility_service.dart';
 import '../../../core/services/chat_store_service.dart';
@@ -98,7 +99,6 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(_handleAppResumed());
-      unawaited(_refreshTabPermissions());
     }
   }
 
@@ -198,13 +198,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   @override
   Widget build(BuildContext context) {
     final chatState = ref.watch(chatStoreProvider);
-    final isRestricted = ref.watch(isUserRestrictedProvider);
-
-    _recomputeVisibleTabs();
-    if (!_visibleTabs.contains(_currentTab)) {
-      _currentTab = _visibleTabs.first;
-      _syncPageToCurrentTab();
-    }
+    // Watch restricted flag so the sidebar rebuilds if the user's restriction
+    // status changes while the shell is visible.
+    ref.watch(isUserRestrictedProvider);
 
     final isDesktopWeb =
         kIsWeb && MediaQuery.sizeOf(context).width >= _kDesktopShellBreakpoint;
@@ -213,7 +209,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       textDirection: TextDirection.rtl,
       child: Stack(
         children: [
-          isDesktopWeb ? _buildDesktopScaffold(chatState) : _buildMobileScaffold(),
+          isDesktopWeb
+              ? _buildDesktopScaffold(chatState, _currentTab)
+              : _buildMobileScaffold(_currentTab),
 
           // Full-sync progress overlay — mirrors Angular's sync-loader-backdrop.
           if (chatState.isSyncing)
@@ -279,42 +277,39 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     );
   }
 
-  Scaffold _buildMobileScaffold() {
+  Scaffold _buildMobileScaffold(MainTab currentTab) {
     return Scaffold(
-      appBar: _buildAppBar(),
+      appBar: _buildAppBar(currentTab),
       body: PageView(
         controller: _pageController,
         onPageChanged: (index) {
           if (index < 0 || index >= _visibleTabs.length) return;
-          setState(() {
-            _currentTab = _visibleTabs[index];
-          });
+          final nextTab = _visibleTabs[index];
+          if (nextTab == _currentTab) return;
+          _selectTab(nextTab);
         },
         children: _visibleTabs.map(_buildTabBody).toList(),
       ),
       bottomNavigationBar: _visibleTabs.length < 2
         ? null
         : BottomNavigationBar(
-            currentIndex: _visibleTabs.indexOf(_currentTab),
+            currentIndex: () {
+              final idx = _visibleTabs.indexOf(currentTab);
+              return idx < 0 ? 0 : idx;
+            }(),
             onTap: (index) {
               if (index < 0 || index >= _visibleTabs.length) return;
-              setState(() {
-                _currentTab = _visibleTabs[index];
-              });
-              _pageController.animateToPage(
-                index,
-                duration: const Duration(milliseconds: 300),
-                curve: Curves.easeInOut,
-              );
+              final nextTab = _visibleTabs[index];
+              _selectTab(nextTab);
             },
             items: _visibleTabs.map(_buildNavItem).toList(),
           ),
     );
   }
 
-  Scaffold _buildDesktopScaffold(ChatState chatState) {
+  Scaffold _buildDesktopScaffold(ChatState chatState, MainTab currentTab) {
     return Scaffold(
-      appBar: _buildAppBar(),
+      appBar: _buildAppBar(currentTab),
       body: Container(
         decoration: const BoxDecoration(
           gradient: LinearGradient(
@@ -349,13 +344,13 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
                 child: Row(
                   children: [
                     if (_visibleTabs.length >= 2) ...[
-                      _buildDesktopNavigationRail(),
+                      _buildDesktopNavigationRail(currentTab),
                       Container(width: 1, color: AppColors.divider),
                     ],
                     Expanded(
-                      child: _isChatSplitTab(_currentTab)
-                          ? _buildDesktopChatLayout(chatState)
-                          : _buildDesktopContentCard(_buildTabBody(_currentTab)),
+                      child: _isChatSplitTab(currentTab)
+                          ? _buildDesktopChatLayout(chatState, currentTab)
+                          : _buildDesktopContentCard(_buildTabBody(currentTab)),
                     ),
                   ],
                 ),
@@ -367,23 +362,23 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     );
   }
 
-  PreferredSizeWidget _buildAppBar() {
+  PreferredSizeWidget _buildAppBar(MainTab currentTab) {
     final isRestricted = ref.watch(isUserRestrictedProvider);
     return AppBar(
-      title: Text(_getTabTitle(_currentTab)),
-      leading: (!isRestricted && (_currentTab == MainTab.chats || _currentTab == MainTab.groups))
+      title: Text(_getTabTitle(currentTab)),
+      leading: (!isRestricted && (currentTab == MainTab.chats || currentTab == MainTab.groups))
           ? Padding(
               padding: const EdgeInsetsDirectional.only(start: 4),
               child: Semantics(
                 button: true,
-                label: _currentTab == MainTab.groups
+                label: currentTab == MainTab.groups
                     ? 'פתח אפשרויות ליצירת קבוצה חדשה'
                     : 'פתח אפשרויות להתחלת שיחה חדשה',
                 child: IconButton(
-                  tooltip: _currentTab == MainTab.groups ? 'קבוצה חדשה' : 'שיחה חדשה',
+                  tooltip: currentTab == MainTab.groups ? 'קבוצה חדשה' : 'שיחה חדשה',
                   onPressed: _handleNewChat,
                   icon: Icon(
-                    _currentTab == MainTab.groups
+                    currentTab == MainTab.groups
                         ? Icons.group_add_outlined
                         : Icons.add_comment_outlined,
                   ),
@@ -501,11 +496,14 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     );
   }
 
-  Widget _buildDesktopNavigationRail() {
+  Widget _buildDesktopNavigationRail(MainTab currentTab) {
     return NavigationRail(
       extended: false,
       minWidth: 84,
-      selectedIndex: _visibleTabs.indexOf(_currentTab),
+      selectedIndex: () {
+        final idx = _visibleTabs.indexOf(currentTab);
+        return idx < 0 ? 0 : idx;
+      }(),
       groupAlignment: -1,
       backgroundColor: AppColors.background,
       indicatorColor: AppColors.primaryLight.withAlpha(60),
@@ -522,7 +520,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
               ),
               child: IconButton(
                 tooltip: 'שיחה חדשה',
-                onPressed: (_currentTab == MainTab.chats || _currentTab == MainTab.groups)
+                onPressed: (currentTab == MainTab.chats || currentTab == MainTab.groups)
                     ? _handleNewChat
                     : null,
                 icon: const Icon(Icons.add_comment_outlined, color: Colors.white),
@@ -534,10 +532,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       ),
       onDestinationSelected: (index) {
         if (index < 0 || index >= _visibleTabs.length) return;
-        setState(() {
-          _currentTab = _visibleTabs[index];
-        });
-        _syncPageToCurrentTab();
+        final nextTab = _visibleTabs[index];
+        _selectTab(nextTab);
       },
       destinations: _visibleTabs
           .map(
@@ -600,7 +596,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     }
   }
 
-  Widget _buildDesktopChatLayout(ChatState chatState) {
+  Widget _buildDesktopChatLayout(ChatState chatState, MainTab currentTab) {
     final currentChatId = chatState.currentChatId;
 
     return Row(
@@ -611,8 +607,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
             color: AppColors.background,
             child: Column(
               children: [
-                _buildDesktopPaneHeader(),
-                Expanded(child: _buildDesktopListPane(currentChatId)),
+                _buildDesktopPaneHeader(currentTab),
+                Expanded(child: _buildDesktopListPane(currentChatId, currentTab)),
               ],
             ),
           ),
@@ -631,7 +627,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     );
   }
 
-  Widget _buildDesktopPaneHeader() {
+  Widget _buildDesktopPaneHeader(MainTab currentTab) {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
@@ -645,7 +641,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            _getTabTitle(_currentTab),
+            _getTabTitle(currentTab),
             style: const TextStyle(
               fontSize: 20,
               fontWeight: FontWeight.w700,
@@ -654,7 +650,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
           ),
           const SizedBox(height: 6),
           Text(
-            _currentTab == MainTab.groups
+            currentTab == MainTab.groups
                 ? 'בחר קבוצה כדי להמשיך את השיחה'
                 : 'בחר שיחה כדי לפתוח את חלון ההודעות',
             style: const TextStyle(
@@ -667,8 +663,8 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     );
   }
 
-  Widget _buildDesktopListPane(String? currentChatId) {
-    switch (_currentTab) {
+  Widget _buildDesktopListPane(String? currentChatId, MainTab currentTab) {
+    switch (currentTab) {
       case MainTab.chats:
         return ChatListScreen(
           selectedChatId: currentChatId,
@@ -680,7 +676,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
           onGroupSelected: (_, __) {},
         );
       default:
-        return _buildTabBody(_currentTab);
+        return _buildTabBody(currentTab);
     }
   }
 
@@ -958,16 +954,78 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     return match?.group(0) ?? '';
   }
 
-  void _syncPageToCurrentTab() {
+  void _syncPageToCurrentTab({bool animate = false}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_pageController.hasClients) return;
       final targetIndex = _visibleTabs.indexOf(_currentTab);
       if (targetIndex < 0) return;
       final currentPage = _pageController.page?.round() ?? 0;
       if (currentPage != targetIndex) {
-        _pageController.jumpToPage(targetIndex);
+        if (animate) {
+          _pageController.animateToPage(
+            targetIndex,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+          );
+        } else {
+          _pageController.jumpToPage(targetIndex);
+        }
       }
     });
+  }
+
+  MainTab _tabForPath(String? path) {
+    switch (AppRoutes.shellRouteForPath(path)) {
+      case AppShellRoute.chats:
+        return MainTab.chats;
+      case AppShellRoute.groups:
+        return MainTab.groups;
+      case AppShellRoute.shuttle:
+        return MainTab.shuttle;
+      case AppShellRoute.helpdesk:
+        return MainTab.helpdesk;
+      case AppShellRoute.ticketManager:
+        return MainTab.ticketManager;
+      case AppShellRoute.passwordReset:
+        return MainTab.passwordReset;
+      case AppShellRoute.accessibility:
+        return MainTab.accessibility;
+      case AppShellRoute.admin:
+        return MainTab.adminGroups;
+    }
+  }
+
+  String _pathForTab(MainTab tab) {
+    switch (tab) {
+      case MainTab.chats:
+        return AppRoutes.home;
+      case MainTab.groups:
+        return AppRoutes.groups;
+      case MainTab.shuttle:
+        return AppRoutes.shuttle;
+      case MainTab.helpdesk:
+        return AppRoutes.helpdesk;
+      case MainTab.ticketManager:
+        return AppRoutes.ticketManager;
+      case MainTab.passwordReset:
+        return AppRoutes.passwordReset;
+      case MainTab.accessibility:
+        return AppRoutes.accessibility;
+      case MainTab.settings:
+        return AppRoutes.home;
+      case MainTab.adminGroups:
+        return AppRoutes.admin;
+    }
+  }
+
+  void _selectTab(MainTab nextTab) {
+    if (!_visibleTabs.contains(nextTab)) return;
+    if (nextTab != _currentTab) {
+      setState(() {
+        _currentTab = nextTab;
+      });
+    }
+    _syncPageToCurrentTab(animate: true);
   }
 
   String _getTabTitle(MainTab tab) {

@@ -31,6 +31,11 @@ const ENV_RULES: EnvRule[] = [
   // Redis (optional – app can run without it)
   { name: 'REDIS_URL', required: false },
 
+  // SMS authentication gateway
+  { name: 'INFORU_USERNAME', required: true },
+  { name: 'INFORU_API_TOKEN', required: true },
+  { name: 'INFORU_SENDER', required: false },
+
   // Session encryption
   { name: 'SESSION_SIGNING_SECRET', required: true },
   { name: 'SESSION_JWE_SECRET', required: true },

@@ -5,4 +5,5 @@ export * from './webhook-registry.service';
 export * from './session-token-jwe.service';
 export * from './upload-security.service';
 export * from './notification.service';
+export * from './auth-sms.service';
 export * from './session.service';

@@ -1,4 +1,5 @@
 const mysql = require('mysql2/promise');
+const rateLimit = require('express-rate-limit');
 
 function toTrimmedString(value) {
     return String(value === null || value === undefined ? '' : value).trim();
@@ -366,6 +367,7 @@ async function ensureHelpdeskTables(pool) {
             \`username\` VARCHAR(64) NOT NULL,
             \`role\` VARCHAR(16) NOT NULL DEFAULT 'Editor',
             \`department\` VARCHAR(64) NOT NULL,
+            \`status\` VARCHAR(16) NOT NULL DEFAULT 'Active',
             \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (\`id\`),
             UNIQUE INDEX \`idx_username\` (\`username\`),
@@ -373,6 +375,16 @@ async function ensureHelpdeskTables(pool) {
             INDEX \`idx_role\` (\`role\`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `, 'helpdesk_users');
+
+    // Migration: add status column to existing helpdesk_users tables
+    try {
+        await pool.execute(`ALTER TABLE \`helpdesk_users\` ADD COLUMN \`status\` VARCHAR(16) NOT NULL DEFAULT 'Active' AFTER \`department\``);
+    } catch (err) {
+        // ER_DUP_FIELDNAME (1060) — column already exists, safe to ignore
+        if (!(err && err.errno === 1060)) {
+            console.error('[HELPDESK] Migration helpdesk_users status column error:', err && err.message ? err.message : err);
+        }
+    }
 
     await safeCreateTable(`
         CREATE TABLE IF NOT EXISTS \`helpdesk_status_history\` (
@@ -482,10 +494,16 @@ async function getHelpdeskUserRole(pool, username) {
 
 async function getActiveDepartments(pool) {
     const [rows] = await pool.query(
-        'SELECT `name`, `icon` FROM `helpdesk_departments` WHERE `status` = ? ORDER BY `sort_order`, `id`',
+        'SELECT `id`, `name`, `icon`, `status`, `sort_order` FROM `helpdesk_departments` WHERE `status` = ? ORDER BY `sort_order`, `id`',
         ['active']
     );
-    return rows.map((r) => ({ name: r.name, icon: r.icon || null }));
+    return rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        icon: r.icon || null,
+        status: r.status || 'active',
+        sortOrder: Number.isFinite(r.sort_order) ? r.sort_order : Number(r.sort_order || 0)
+    }));
 }
 
 function registerHelpdeskController(app, deps = {}) {
@@ -528,6 +546,23 @@ function registerHelpdeskController(app, deps = {}) {
                 })
         })
         : (_req, _res, next) => next();
+
+    const helpdeskAdminMutationIpRateLimit = rateLimit({
+        windowMs: 60 * 1000,
+        limit: 10,
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: (req) => req.ip || req.socket && req.socket.remoteAddress || 'helpdesk-admin',
+        handler: (_req, res, _next, options) => {
+            const retryAfterSeconds = Math.ceil(options.windowMs / 1000);
+            res.setHeader('Retry-After', String(retryAfterSeconds));
+            return res.status(429).json({
+                result: 'error',
+                message: 'יותר מדי בקשות. נסה שוב בעוד דקה.',
+                retryAfterSeconds
+            });
+        }
+    });
 
     // Per-user-per-endpoint rate limiting middleware factory.
     // The key combines the user identity with the normalised route path so that
@@ -829,6 +864,98 @@ function registerHelpdeskController(app, deps = {}) {
     }
     app.put(['/helpdesk/tickets/:id/handler', '/notify/helpdesk/tickets/:id/handler'], requireUser, helpdeskRateLimit(20, 60 * 1000), assignHandlerHandler);
     app.post(['/helpdesk/tickets/:id/handler', '/notify/helpdesk/tickets/:id/handler'], requireUser, helpdeskRateLimit(20, 60 * 1000), assignHandlerHandler);
+
+    // PATCH /helpdesk/tickets/:id/department - Editor/Admin transfers a ticket to another department
+    async function transferTicketDepartmentHandler(req, res) {
+        const user = toTrimmedString(req.resolvedUser || '');
+        if (!user) {
+            return res.status(401).json({ result: 'error', message: 'Authentication required' });
+        }
+        const ticketId = toPositiveInteger(req.params && req.params.id, 0);
+        if (!ticketId) {
+            return res.status(400).json({ result: 'error', message: 'מזהה קריאה לא תקין' });
+        }
+        const body = req.body && typeof req.body === 'object' ? req.body : {};
+        const departmentId = toPositiveInteger(body.department_id, 0);
+        if (!departmentId) {
+            return res.status(400).json({ result: 'error', message: 'מחלקה חדשה לא תקינה' });
+        }
+
+        try {
+            await getTablesReady();
+            const editorRole = await getHelpdeskUserRole(pool, user);
+            if (!editorRole) {
+                return res.status(403).json({ result: 'error', message: 'אין הרשאת עורך' });
+            }
+
+            const [ticketRows] = await pool.query(
+                'SELECT `id`, `title`, `creator_username`, `handler_username`, `department`, `status` FROM `helpdesk_tickets` WHERE `id` = ?',
+                [ticketId]
+            );
+            if (!ticketRows.length) {
+                return res.status(404).json({ result: 'error', message: 'קריאה לא נמצאה' });
+            }
+            const ticket = ticketRows[0];
+            if (editorRole.role !== 'Admin' && ticket.department !== editorRole.department) {
+                return res.status(403).json({ result: 'error', message: 'אין הרשאה להעביר קריאה ממחלקה אחרת' });
+            }
+
+            const [departmentRows] = await pool.query(
+                'SELECT `id`, `name`, `status` FROM `helpdesk_departments` WHERE `id` = ? LIMIT 1',
+                [departmentId]
+            );
+            if (!departmentRows.length || departmentRows[0].status !== 'active') {
+                return res.status(400).json({ result: 'error', message: 'מחלקת היעד אינה פעילה או לא קיימת' });
+            }
+
+            const targetDepartment = toTrimmedString(departmentRows[0].name || '');
+            if (!targetDepartment) {
+                return res.status(400).json({ result: 'error', message: 'מחלקת היעד אינה תקינה' });
+            }
+            if (ticket.department === targetDepartment) {
+                return res.status(400).json({ result: 'error', message: 'הקריאה כבר משויכת למחלקה זו' });
+            }
+
+            const previousHandler = ticket.handler_username || null;
+            await pool.execute(
+                'UPDATE `helpdesk_tickets` SET `department` = ?, `handler_username` = NULL WHERE `id` = ?',
+                [targetDepartment, ticketId]
+            );
+
+            if (previousHandler) {
+                pool.execute(
+                    'INSERT INTO `helpdesk_handler_history` (`ticket_id`, `old_handler`, `new_handler`, `changed_by`) VALUES (?, ?, ?, ?)',
+                    [ticketId, previousHandler, null, user]
+                ).catch((histErr) => {
+                    console.error('[HELPDESK] Insert handler reset history error:', histErr && histErr.message ? histErr.message : histErr);
+                });
+            }
+
+            const [[updatedTicketRow]] = await pool.query(
+                'SELECT * FROM `helpdesk_tickets` WHERE `id` = ? LIMIT 1',
+                [ticketId]
+            );
+
+            return res.json({
+                result: 'success',
+                ticket: updatedTicketRow ? mapTicketRow(updatedTicketRow) : {
+                    id: ticketId,
+                    creatorUsername: ticket.creator_username,
+                    department: targetDepartment,
+                    title: ticket.title,
+                    description: '',
+                    status: ticket.status,
+                    handlerUsername: null
+                }
+            });
+        } catch (error) {
+            const message = error && error.message ? error.message : 'Failed to transfer ticket department';
+            console.error('[HELPDESK] Transfer ticket department error:', message);
+            return res.status(500).json({ result: 'error', message: 'שגיאה בהעברת הקריאה למחלקה אחרת' });
+        }
+    }
+    app.patch(['/helpdesk/tickets/:id/department', '/notify/helpdesk/tickets/:id/department'], requireUser, helpdeskAdminMutationIpRateLimit, helpdeskRateLimit(10, 60 * 1000), transferTicketDepartmentHandler);
+    app.put(['/helpdesk/tickets/:id/department', '/notify/helpdesk/tickets/:id/department'], requireUser, helpdeskAdminMutationIpRateLimit, helpdeskRateLimit(10, 60 * 1000), transferTicketDepartmentHandler);
 
     // POST /helpdesk/tickets/:id/notes - Add a note to a ticket
     app.post(['/helpdesk/tickets/:id/notes', '/notify/helpdesk/tickets/:id/notes'], requireUser, helpdeskRateLimit(20, 60 * 1000), async (req, res) => {
@@ -1227,11 +1354,11 @@ function registerHelpdeskController(app, deps = {}) {
             let rows;
             if (editorRole.role === 'Admin') {
                 [rows] = await pool.query(
-                    'SELECT `id`, `username`, `role`, `department`, `created_at` FROM `helpdesk_users` ORDER BY `department`, `username`'
+                    'SELECT `id`, `username`, `role`, `department`, `status`, `created_at` FROM `helpdesk_users` ORDER BY `department`, `username`'
                 );
             } else {
                 [rows] = await pool.query(
-                    'SELECT `id`, `username`, `role`, `department`, `created_at` FROM `helpdesk_users` WHERE `department` = ? ORDER BY `username`',
+                    'SELECT `id`, `username`, `role`, `department`, `status`, `created_at` FROM `helpdesk_users` WHERE `department` = ? ORDER BY `username`',
                     [editorRole.department]
                 );
             }
@@ -1240,6 +1367,7 @@ function registerHelpdeskController(app, deps = {}) {
                 username: r.username,
                 role: r.role,
                 department: r.department,
+                status: r.status || 'Active',
                 createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at || '')
             }));
             return res.json({ result: 'success', users });
@@ -1260,9 +1388,11 @@ function registerHelpdeskController(app, deps = {}) {
         const targetUsername = toTrimmedString(body.username || '');
         const role = toTrimmedString(body.role || '');
         const department = toTrimmedString(body.department || '');
+        const status = toTrimmedString(body.status || 'Active');
 
         if (!targetUsername) return res.status(400).json({ result: 'error', message: 'יש להזין שם משתמש' });
         if (!VALID_ROLES.includes(role)) return res.status(400).json({ result: 'error', message: 'תפקיד לא תקין' });
+        if (!['Active', 'Inactive'].includes(status)) return res.status(400).json({ result: 'error', message: 'סטטוס לא תקין' });
 
         try {
             await getTablesReady();
@@ -1273,8 +1403,8 @@ function registerHelpdeskController(app, deps = {}) {
                 return res.status(403).json({ result: 'error', message: 'רק מנהל יכול להוסיף משתמשים' });
             }
             await pool.execute(
-                'INSERT INTO `helpdesk_users` (`username`, `role`, `department`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `role` = VALUES(`role`), `department` = VALUES(`department`)',
-                [targetUsername, role, department]
+                'INSERT INTO `helpdesk_users` (`username`, `role`, `department`, `status`) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE `role` = VALUES(`role`), `department` = VALUES(`department`), `status` = VALUES(`status`)',
+                [targetUsername, role, department, status]
             );
             return res.status(201).json({ result: 'success' });
         } catch (error) {
@@ -1306,6 +1436,86 @@ function registerHelpdeskController(app, deps = {}) {
             const message = error && error.message ? error.message : 'Failed to remove user';
             console.error('[HELPDESK] Remove user error:', message);
             return res.status(500).json({ result: 'error', message: 'שגיאה בהסרת המשתמש' });
+        }
+    });
+
+    // PUT /helpdesk/users/:id - Admin: update a helpdesk user's details
+    app.put(['/helpdesk/users/:id', '/notify/helpdesk/users/:id'], requireUser, helpdeskAdminMutationIpRateLimit, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
+        const user = toTrimmedString(req.resolvedUser || '');
+        if (!user) {
+            return res.status(401).json({ result: 'error', message: 'Authentication required' });
+        }
+        const targetId = toPositiveInteger(req.params && req.params.id, null);
+        if (!targetId) {
+            return res.status(400).json({ result: 'error', message: 'מזהה משתמש לא תקין' });
+        }
+        const body = req.body && typeof req.body === 'object' ? req.body : {};
+        const targetUsername = toTrimmedString(body.username || '');
+        const role = toTrimmedString(body.role || '');
+        const department = toTrimmedString(body.department || '');
+        const status = toTrimmedString(body.status || '');
+
+        if (!targetUsername) return res.status(400).json({ result: 'error', message: 'יש להזין שם משתמש' });
+        if (!VALID_ROLES.includes(role)) return res.status(400).json({ result: 'error', message: 'תפקיד לא תקין' });
+        if (!['Active', 'Inactive'].includes(status)) return res.status(400).json({ result: 'error', message: 'סטטוס לא תקין' });
+
+        try {
+            await getTablesReady();
+            const allDepts = await getActiveDepartments(pool);
+            if (!allDepts.some((d) => d.name === department)) return res.status(400).json({ result: 'error', message: 'מחלקה לא תקינה' });
+            const editorRole = await getHelpdeskUserRole(pool, user);
+            if (!editorRole || editorRole.role !== 'Admin') {
+                return res.status(403).json({ result: 'error', message: 'רק מנהל יכול לעדכן משתמשים' });
+            }
+            const [result] = await pool.execute(
+                'UPDATE `helpdesk_users` SET `username` = ?, `role` = ?, `department` = ?, `status` = ? WHERE `id` = ?',
+                [targetUsername, role, department, status, targetId]
+            );
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ result: 'error', message: 'משתמש לא נמצא' });
+            }
+            return res.json({ result: 'success' });
+        } catch (error) {
+            const message = error && error.message ? error.message : 'Failed to update user';
+            console.error('[HELPDESK] Update user error:', message);
+            return res.status(500).json({ result: 'error', message: 'שגיאה בעדכון המשתמש' });
+        }
+    });
+
+    // PATCH /helpdesk/users/:id/status - Admin: toggle user status (Active <-> Inactive)
+    app.patch(['/helpdesk/users/:id/status', '/notify/helpdesk/users/:id/status'], requireUser, helpdeskAdminMutationIpRateLimit, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
+        const user = toTrimmedString(req.resolvedUser || '');
+        if (!user) {
+            return res.status(401).json({ result: 'error', message: 'Authentication required' });
+        }
+        const targetId = toPositiveInteger(req.params && req.params.id, null);
+        if (!targetId) {
+            return res.status(400).json({ result: 'error', message: 'מזהה משתמש לא תקין' });
+        }
+        const body = req.body && typeof req.body === 'object' ? req.body : {};
+        const newStatus = toTrimmedString(body.status || '');
+        if (!['Active', 'Inactive'].includes(newStatus)) {
+            return res.status(400).json({ result: 'error', message: 'סטטוס לא תקין' });
+        }
+
+        try {
+            await getTablesReady();
+            const editorRole = await getHelpdeskUserRole(pool, user);
+            if (!editorRole || editorRole.role !== 'Admin') {
+                return res.status(403).json({ result: 'error', message: 'רק מנהל יכול לשנות סטטוס משתמשים' });
+            }
+            const [result] = await pool.execute(
+                'UPDATE `helpdesk_users` SET `status` = ? WHERE `id` = ?',
+                [newStatus, targetId]
+            );
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ result: 'error', message: 'משתמש לא נמצא' });
+            }
+            return res.json({ result: 'success' });
+        } catch (error) {
+            const message = error && error.message ? error.message : 'Failed to update user status';
+            console.error('[HELPDESK] Update user status error:', message);
+            return res.status(500).json({ result: 'error', message: 'שגיאה בעדכון סטטוס המשתמש' });
         }
     });
 

@@ -21,6 +21,7 @@ import '../../../core/utils/xfile.dart' as xfile;
 import '../../../shared/widgets/authenticated_image.dart';
 import '../../auth/presentation/auth_state.dart';
 import '../../../core/utils/toast_utils.dart';
+import 'helpdesk_user_management_screen.dart';
 
 // ---------------------------------------------------------------------------
 // Helpdesk State
@@ -348,6 +349,12 @@ class HelpdeskNotifier extends Notifier<HelpdeskState> {
     await _api.updateHelpdeskTicketStatus(ticketId, helpdeskStatus, _currentUser!);
     await loadTickets(force: true);
   }
+
+  Future<void> transferTicketDepartment(int ticketId, int departmentId) async {
+    if (_currentUser == null) throw Exception('יש להתחבר תחילה');
+    await _api.transferHelpdeskTicketDepartment(ticketId, departmentId, _currentUser!);
+    await loadTickets(force: true);
+  }
 }
 
 final helpdeskProvider = NotifierProvider<HelpdeskNotifier, HelpdeskState>(() {
@@ -476,19 +483,23 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                     style: theme.textTheme.titleMedium
                         ?.copyWith(fontWeight: FontWeight.bold),
                   ),
-                  Row(children: [
-                    if (state.isLoading)
-                      const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2)),
-                    IconButton(
-                      icon: const Icon(Icons.refresh),
-                      tooltip: 'רענן',
-                      onPressed: () =>
-                          ref.read(helpdeskProvider.notifier).loadTickets(force: true),
-                    ),
-                  ]),
+                  Row(
+                    children: [
+                     if (state.isLoading)
+                       const SizedBox(
+                         width: 20,
+                         height: 20,
+                         child: CircularProgressIndicator(strokeWidth: 2),
+                       ),
+                     IconButton(
+                       icon: const Icon(Icons.refresh),
+                       tooltip: 'רענן',
+                       onPressed: () => ref
+                           .read(helpdeskProvider.notifier)
+                           .loadTickets(force: true),
+                     ),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -1249,19 +1260,36 @@ class TicketManagerScreen extends ConsumerWidget {
                     style: theme.textTheme.titleMedium
                         ?.copyWith(fontWeight: FontWeight.bold),
                   ),
-                  Row(children: [
-                    if (state.isLoading)
-                      const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2)),
-                    IconButton(
-                      icon: const Icon(Icons.refresh),
-                      tooltip: 'רענן',
-                      onPressed: () =>
-                          ref.read(helpdeskProvider.notifier).loadTickets(force: true),
-                    ),
-                  ]),
+                  Row(
+                    children: [
+                     if (state.isLoading)
+                       const SizedBox(
+                         width: 20,
+                         height: 20,
+                         child: CircularProgressIndicator(strokeWidth: 2),
+                       ),
+                     if (state.myRole?.role == HelpdeskRole.admin)
+                       IconButton(
+                         icon: const Icon(Icons.people_alt_outlined),
+                         tooltip: 'ניהול משתמשי מוקד',
+                         onPressed: () => Navigator.of(context).push(
+                           MaterialPageRoute(
+                             builder: (_) => HelpdeskUserManagementScreen(
+                               currentUser:
+                                   ref.read(helpdeskProvider.notifier).currentUser,
+                             ),
+                           ),
+                         ),
+                       ),
+                     IconButton(
+                       icon: const Icon(Icons.refresh),
+                       tooltip: 'רענן',
+                       onPressed: () => ref
+                           .read(helpdeskProvider.notifier)
+                           .loadTickets(force: true),
+                     ),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -1561,6 +1589,7 @@ class _TicketCard extends ConsumerWidget {
         ticket: ticket,
         myRole: state.myRole,
         handlers: state.handlers,
+        departments: state.departments,
         currentUser: currentUser,
         isManagerView: isManagerView,
       ),
@@ -1637,6 +1666,7 @@ class _TicketDetailSheet extends ConsumerStatefulWidget {
   final HelpdeskTicket ticket;
   final HelpdeskMyRole? myRole;
   final List<HelpdeskManagedUser> handlers;
+  final List<HelpdeskDepartmentEntry> departments;
   final String currentUser;
   final bool isManagerView;
 
@@ -1644,6 +1674,7 @@ class _TicketDetailSheet extends ConsumerStatefulWidget {
     required this.ticket,
     required this.myRole,
     required this.handlers,
+    required this.departments,
     required this.currentUser,
     this.isManagerView = false,
   });
@@ -1662,9 +1693,12 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
   String? _historyError;
 
   String? _selectedHandler;
+  int? _selectedDepartmentId;
   String _selectedStatus = '';
   bool _savingHandler = false;
+  bool _savingDepartment = false;
   bool _savingStatus = false;
+  String? _departmentError;
   String? _handlerError;
   String? _statusError;
 
@@ -1688,6 +1722,14 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
     return widget.myRole!.department == _ticket.department;
   }
 
+  bool get _canTransferDepartment {
+    if (!widget.isManagerView) return false;
+    if (_ticket.status == 'closed') return false;
+    final myRole = widget.myRole;
+    if (myRole == null || myRole.role == HelpdeskRole.relatedUser) return false;
+    return myRole.role == HelpdeskRole.admin || myRole.department == _ticket.department;
+  }
+
   bool get _canChangeStatus {
     if (!widget.isManagerView) return false;
     if (_ticket.status == 'closed') return false;
@@ -1702,8 +1744,25 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
   void initState() {
     super.initState();
     _selectedHandler = _ticket.handlerUsername;
+    _selectedDepartmentId = _findDepartmentIdByName(_ticket.department);
     _selectedStatus = _ticket.status;
     _loadData();
+  }
+
+  int? _findDepartmentIdByName(String departmentName) {
+    for (final department in widget.departments) {
+      if (department.name == departmentName) return department.id;
+    }
+    return null;
+  }
+
+  HelpdeskDepartmentEntry? _findSelectedDepartment() {
+    final selectedDepartmentId = _selectedDepartmentId;
+    if (selectedDepartmentId == null) return null;
+    for (final department in widget.departments) {
+      if (department.id == selectedDepartmentId) return department;
+    }
+    return null;
   }
 
   @override
@@ -1761,6 +1820,35 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
       if (mounted) setState(() => _handlerError = e.toString());
     } finally {
       if (mounted) setState(() => _savingHandler = false);
+    }
+  }
+
+  Future<void> _saveDepartmentTransfer() async {
+    final selectedDepartment = _findSelectedDepartment();
+    if (selectedDepartment == null) {
+      setState(() => _departmentError = 'יש לבחור מחלקה');
+      return;
+    }
+    if (selectedDepartment.name == _ticket.department) {
+      setState(() => _departmentError = 'יש לבחור מחלקה אחרת');
+      return;
+    }
+
+    setState(() {
+      _savingDepartment = true;
+      _departmentError = null;
+    });
+    try {
+      await ref
+          .read(helpdeskProvider.notifier)
+          .transferTicketDepartment(int.parse(_ticket.id), selectedDepartment.id);
+      if (!mounted) return;
+      showTopToast(context, 'הקריאה הועברה בהצלחה');
+      Navigator.of(context).pop();
+    } catch (e) {
+      if (mounted) setState(() => _departmentError = e.toString());
+    } finally {
+      if (mounted) setState(() => _savingDepartment = false);
     }
   }
 
@@ -1981,6 +2069,59 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                           entry: h,
                           resolveDisplay: _resolveDisplay,
                         )),
+
+                  if (_canTransferDepartment) ...[
+                    const SizedBox(height: 16),
+                    const Divider(),
+                    const SizedBox(height: 8),
+                    Row(children: [
+                      const Icon(Icons.swap_horiz, size: 20),
+                      const SizedBox(width: 6),
+                      Text('העברה למחלקה אחרת',
+                          style: theme.textTheme.titleSmall
+                              ?.copyWith(fontWeight: FontWeight.bold)),
+                    ]),
+                    const SizedBox(height: 8),
+                    Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Expanded(
+                        child: DropdownButtonFormField<int>(
+                          value: _selectedDepartmentId,
+                          decoration: const InputDecoration(
+                              labelText: 'מחלקת יעד',
+                              border: OutlineInputBorder()),
+                          hint: const Text('בחר מחלקה'),
+                          items: widget.departments
+                              .map((department) => DropdownMenuItem<int>(
+                                    value: department.id,
+                                    child: Text(department.name),
+                                  ))
+                              .toList(),
+                          onChanged: (value) => setState(() {
+                            _selectedDepartmentId = value;
+                          }),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      ElevatedButton.icon(
+                        onPressed: _savingDepartment ? null : _saveDepartmentTransfer,
+                        icon: _savingDepartment
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2))
+                            : const Icon(Icons.save),
+                        label: const Text('העבר'),
+                      ),
+                    ]),
+                    if (_departmentError != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(_departmentError!,
+                            style: TextStyle(
+                                color: theme.colorScheme.error, fontSize: 12)),
+                      ),
+                  ],
 
                   // Handler assignment (editor only)
                   if (_canManageHandler) ...[

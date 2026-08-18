@@ -111,6 +111,7 @@ class ApiEndpoints {
   static const String helpdeskDepartments = '/helpdesk/departments';
   static const String helpdeskDepartmentsActive = '/helpdesk/departments/active';
   static const String helpdeskDepartmentsTicketForm = '/helpdesk/departments';
+  static const String helpdeskUsers = '/helpdesk/users';
 
   // Password Reset Bot
   static const String resetPasswordVerifyYear = '/reset-password/verify-year';
