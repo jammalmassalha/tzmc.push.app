@@ -265,6 +265,21 @@ class _HelpdeskUserManagementScreenState
   }
 }
 
+String _helpdeskUserDisplayLabel({
+  required String username,
+  String? fullName,
+  required String phoneNumber,
+}) {
+  final normalizedName = fullName?.trim() ?? '';
+  final normalizedPhone = phoneNumber.trim();
+  if (normalizedName.isNotEmpty) {
+    return normalizedPhone.isNotEmpty
+        ? '$normalizedName - $normalizedPhone'
+        : normalizedName;
+  }
+  return normalizedPhone.isNotEmpty ? normalizedPhone : username;
+}
+
 class _HelpdeskUserCard extends ConsumerWidget {
   final HelpdeskUser user;
   final bool isBusy;
@@ -287,10 +302,11 @@ class _HelpdeskUserCard extends ConsumerWidget {
     final fullName = user.fullName?.trim().isNotEmpty == true
         ? user.fullName!.trim()
         : contact?.displayName ?? '';
-    final phone = user.phoneNumber.trim();
-    final title = fullName.isNotEmpty
-        ? (phone.isNotEmpty ? '$fullName - $phone' : fullName)
-        : (phone.isNotEmpty ? phone : user.username);
+    final title = _helpdeskUserDisplayLabel(
+      username: user.username,
+      fullName: fullName,
+      phoneNumber: user.phoneNumber,
+    );
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -560,13 +576,11 @@ class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
                           spacing: 6,
                           runSpacing: 6,
                           children: suggestions.map((candidate) {
-                            final fullName = candidate.fullName?.trim() ?? '';
-                            final phone = candidate.phoneNumber.trim();
-                            final label = fullName.isNotEmpty
-                                ? (phone.isNotEmpty
-                                    ? '$fullName - $phone'
-                                    : fullName)
-                                : (phone.isNotEmpty ? phone : candidate.username);
+                            final label = _helpdeskUserDisplayLabel(
+                              username: candidate.username,
+                              fullName: candidate.fullName,
+                              phoneNumber: candidate.phoneNumber,
+                            );
                             return ActionChip(
                               label: Text(label),
                               onPressed: _isSubmitting

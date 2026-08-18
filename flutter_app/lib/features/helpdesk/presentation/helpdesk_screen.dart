@@ -1248,7 +1248,8 @@ class _TicketManagerScreenState extends ConsumerState<TicketManagerScreen> {
   @override
   void initState() {
     super.initState();
-    Future.microtask(() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
       ref.read(helpdeskProvider.notifier).loadTickets(force: true);
     });
   }
