@@ -706,7 +706,7 @@ class HelpdeskUser extends Equatable {
         json['fullName'] ?? json['full_name'] ?? json['name'] ?? json['displayName'];
     final normalizedFullName = rawFullName?.toString().trim();
     final username = (json['username'] ?? json['Username'] ?? '').toString();
-    final phoneNumber = (json['phone'] ?? json['PhoneNumber'] ?? username).toString();
+    final phoneNumber = (json['phone'] ?? json['PhoneNumber'] ?? '').toString().trim();
     return HelpdeskUser(
       id: ((json['id'] ?? json['ID']) as num?)?.toInt() ?? 0,
       username: username,

@@ -560,9 +560,13 @@ class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
                           spacing: 6,
                           runSpacing: 6,
                           children: suggestions.map((candidate) {
-                            final label = candidate.fullName?.trim().isNotEmpty == true
-                                ? '${candidate.fullName} - ${candidate.phoneNumber}'
-                                : candidate.phoneNumber;
+                            final fullName = candidate.fullName?.trim() ?? '';
+                            final phone = candidate.phoneNumber.trim();
+                            final label = fullName.isNotEmpty
+                                ? (phone.isNotEmpty
+                                    ? '$fullName - $phone'
+                                    : fullName)
+                                : (phone.isNotEmpty ? phone : candidate.username);
                             return ActionChip(
                               label: Text(label),
                               onPressed: _isSubmitting
