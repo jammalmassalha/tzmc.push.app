@@ -76,6 +76,8 @@ const USERS_UPLOAD_SUBDIRECTORY = 'users';
 const MAX_USERS_UPLOAD_FILENAME_LENGTH = 160;
 const USERS_UPLOAD_ROUTE_PATHS = new Set(['/upload/users', '/notify/upload/users']);
 const USERS_UPLOAD_USER_CANDIDATE_KEYS = ['user', 'username', 'phone', 'user_id', 'id', 'device_id'];
+const USERS_UPLOAD_RATE_LIMIT_MAX = 10;
+const USERS_UPLOAD_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
 const SPECIAL_UPLOAD_SUBDIRECTORIES_BY_CHAT_ID = Object.freeze({
     [ACCREDITATION_UPLOAD_CHAT_ID]: ACCREDITATION_UPLOAD_SUBDIRECTORY
 });
@@ -652,6 +654,13 @@ function uploadFieldsValidated(req, res, next) {
         return res.status(400).json({ error: message });
     });
 }
+const usersUploadLimiter = rateLimit({
+    windowMs: USERS_UPLOAD_RATE_LIMIT_WINDOW_MS,
+    max: USERS_UPLOAD_RATE_LIMIT_MAX,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many profile upload attempts. Please try again later.' }
+});
 
 // --- 3. WEB PUSH CONFIG ---
 
@@ -7445,7 +7454,7 @@ const { registerAccreditationAgentRoutes } = createAccreditationAgentController(
 });
 registerAccreditationAgentRoutes(app, requireAuthorizedUser);
 
-app.post(['/upload', '/notify/upload', '/upload/users', '/notify/upload/users'], uploadFieldsValidated, async (req, res) => {
+async function handleGenericUploadRequest(req, res) {
     const file = req.files && req.files.file ? req.files.file[0] : null;
     const thumbnail = req.files && req.files.thumbnail ? req.files.thumbnail[0] : null;
     const uploadedFiles = [file, thumbnail].filter(Boolean);
@@ -7482,34 +7491,8 @@ app.post(['/upload', '/notify/upload', '/upload/users', '/notify/upload/users'],
     }
 
     const uploadSubdirectory = resolveUploadSubdirectory(req);
-    let usersUploadIdentityCandidates = [];
-    if (uploadSubdirectory === USERS_UPLOAD_SUBDIRECTORY) {
-        const resolution = req && typeof req.resolveAuthorizedUserFromRequest === 'function'
-            ? req.resolveAuthorizedUserFromRequest({
-                required: true,
-                candidateKeys: USERS_UPLOAD_USER_CANDIDATE_KEYS
-            })
-            : { user: '', error: 'Missing user', status: 400 };
-        if (resolution && resolution.error) {
-            return rejectWithCleanup(resolution.status || 400, resolution.error);
-        }
-        req.authorizedUserResolution = resolution;
-        req.authorizedUser = resolution && !resolution.error
-            ? normalizeUserCandidate(resolution.user)
-            : '';
-        req.resolvedUser = req.authorizedUser;
-        usersUploadIdentityCandidates = collectUsersUploadIdentityCandidates(req);
-        if (!usersUploadIdentityCandidates.length) {
-            return rejectWithCleanup(400, 'Missing user');
-        }
-    }
     try {
-        if (uploadSubdirectory === USERS_UPLOAD_SUBDIRECTORY) {
-            await finalizeUsersUploadedFile(file);
-            if (thumbnail) {
-                await finalizeUsersUploadedFile(thumbnail);
-            }
-        } else if (uploadSubdirectory === ACCREDITATION_UPLOAD_SUBDIRECTORY) {
+        if (uploadSubdirectory === ACCREDITATION_UPLOAD_SUBDIRECTORY) {
             await relocateUploadedFileToAccreditationSubdirectory(file);
             if (thumbnail) {
                 await relocateUploadedFileToAccreditationSubdirectory(thumbnail);
@@ -7523,30 +7506,99 @@ app.post(['/upload', '/notify/upload', '/upload/users', '/notify/upload/users'],
 
     const fileUrl = buildUploadedFileUrl(file, uploadSubdirectory);
     const thumbUrl = thumbnail ? buildUploadedFileUrl(thumbnail, uploadSubdirectory) : null;
-    if (uploadSubdirectory === USERS_UPLOAD_SUBDIRECTORY) {
-        let updatedProfile = null;
-        try {
-            updatedProfile = await mysqlLogsService.updateSubscribeUserProfilePicture(usersUploadIdentityCandidates, fileUrl);
-        } catch (error) {
-            console.error('[UPLOAD] Failed to persist users upload URL:', error && error.message ? error.message : error);
-            return rejectWithCleanup(500, 'Failed to persist uploaded profile picture');
-        }
-        if (!updatedProfile) {
-            return rejectWithCleanup(404, 'User not found in Subscribe');
-        }
-        return res.json({
-            success: true,
-            status: 'success',
-            message: 'Profile picture updated successfully',
-            url: fileUrl,
-            upic: updatedProfile.upic,
-            thumbUrl,
-            type: file.mimetype,
-            user: updatedProfile.user
-        });
-    }
     res.json({ status: 'success', url: fileUrl, thumbUrl, type: file.mimetype });
-});
+}
+
+async function handleUsersUploadRequest(req, res) {
+    const file = req.files && req.files.file ? req.files.file[0] : null;
+    const thumbnail = req.files && req.files.thumbnail ? req.files.thumbnail[0] : null;
+    const uploadedFiles = [file, thumbnail].filter(Boolean);
+    const rejectWithCleanup = async (statusCode, message) => {
+        await Promise.all(uploadedFiles.map((entry) => safelyDeleteUploadedFile(entry)));
+        return res.status(statusCode).json({ error: message });
+    };
+
+    if (!file) {
+        return rejectWithCleanup(400, 'No file uploaded');
+    }
+    if (!isAllowedMainUpload(file)) {
+        return rejectWithCleanup(400, 'Only image and PDF files are allowed');
+    }
+    if (thumbnail && !isAllowedThumbnailUpload(thumbnail)) {
+        return rejectWithCleanup(400, 'Thumbnail must be an image file');
+    }
+
+    try {
+        const mainValidation = await validateUploadedFileSecurity(file, { allowImage: true, allowPdf: true });
+        if (!mainValidation.ok) {
+            return rejectWithCleanup(400, mainValidation.message || 'Unsafe file content detected');
+        }
+
+        if (thumbnail) {
+            const thumbnailValidation = await validateUploadedFileSecurity(thumbnail, { allowImage: true, allowPdf: false });
+            if (!thumbnailValidation.ok) {
+                return rejectWithCleanup(400, thumbnailValidation.message || 'Unsafe thumbnail content detected');
+            }
+        }
+    } catch (error) {
+        console.error('[UPLOAD SECURITY] Validation failure:', error && error.message ? error.message : error);
+        return rejectWithCleanup(400, 'File content validation failed');
+    }
+
+    const resolution = req && typeof req.resolveAuthorizedUserFromRequest === 'function'
+        ? req.resolveAuthorizedUserFromRequest({
+            required: true,
+            candidateKeys: USERS_UPLOAD_USER_CANDIDATE_KEYS
+        })
+        : { user: '', error: 'Missing user', status: 400 };
+    if (resolution && resolution.error) {
+        return rejectWithCleanup(resolution.status || 400, resolution.error);
+    }
+    req.authorizedUserResolution = resolution;
+    req.authorizedUser = normalizeUserCandidate(resolution && resolution.user);
+    req.resolvedUser = req.authorizedUser;
+    const usersUploadIdentityCandidates = collectUsersUploadIdentityCandidates(req);
+    if (!usersUploadIdentityCandidates.length) {
+        return rejectWithCleanup(400, 'Missing user');
+    }
+
+    try {
+        await finalizeUsersUploadedFile(file);
+        if (thumbnail) {
+            await finalizeUsersUploadedFile(thumbnail);
+        }
+    } catch (error) {
+        console.error('[UPLOAD] Failed to move uploaded file:', error && error.message ? error.message : error);
+        const statusCode = Number(error && error.statusCode) || 500;
+        return rejectWithCleanup(statusCode, statusCode === 409 ? error.message : 'Failed to finalize uploaded file');
+    }
+
+    const fileUrl = buildUploadedFileUrl(file, USERS_UPLOAD_SUBDIRECTORY);
+    const thumbUrl = thumbnail ? buildUploadedFileUrl(thumbnail, USERS_UPLOAD_SUBDIRECTORY) : null;
+    let updatedProfile = null;
+    try {
+        updatedProfile = await mysqlLogsService.updateSubscribeUserProfilePicture(usersUploadIdentityCandidates, fileUrl);
+    } catch (error) {
+        console.error('[UPLOAD] Failed to persist users upload URL:', error && error.message ? error.message : error);
+        return rejectWithCleanup(500, 'Failed to persist uploaded profile picture');
+    }
+    if (!updatedProfile) {
+        return rejectWithCleanup(404, 'User not found in Subscribe');
+    }
+    return res.json({
+        success: true,
+        status: 'success',
+        message: 'Profile picture updated successfully',
+        url: fileUrl,
+        upic: updatedProfile.upic,
+        thumbUrl,
+        type: file.mimetype,
+        user: updatedProfile.user
+    });
+}
+
+app.post(['/upload', '/notify/upload'], uploadFieldsValidated, handleGenericUploadRequest);
+app.post(['/upload/users', '/notify/upload/users'], usersUploadLimiter, uploadFieldsValidated, handleUsersUploadRequest);
 
 app.post(
     ['/reply', '/notify/reply'],

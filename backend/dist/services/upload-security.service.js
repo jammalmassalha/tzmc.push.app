@@ -315,7 +315,7 @@ class UploadSecurityService {
         if (fileSize > this.maxInspectionBytes) {
             return { ok: false, message: 'File is too large for security inspection' };
         }
-        const fileBuffer = await promises_1.default.readFile(file.path);
+        const fileBuffer = await promises_1.default.readFile(resolvedPath);
         if (!fileBuffer.length) {
             return { ok: false, message: 'Uploaded file is empty' };
         }

@@ -39,6 +39,7 @@ test('updateSubscribeUserProfilePicture resolves Subscribe rows by user aliases 
   assert.match(queryCall.sql, /`UserName` IN/);
   assert.ok(queryCall.params.includes('Runner.User'));
   assert.ok(queryCall.params.includes('runner.user'));
+  assert.ok(queryCall.params.includes('546799693'));
   assert.ok(queryCall.params.includes('0546799693'));
   assert.deepEqual(executeCall, {
     sql: 'UPDATE `Subscribe` SET `Upic` = ? WHERE `User` = ?',

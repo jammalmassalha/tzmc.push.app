@@ -1999,6 +1999,48 @@ class MysqlLogsService {
             return null;
         }
     }
+    async updateSubscribeUserProfilePicture(userCandidates, upic) {
+        await this.ensureSubscribeTable();
+        try {
+            const normalizedUpic = toTrimmedString(upic);
+            if (!normalizedUpic) {
+                return null;
+            }
+            const candidateValues = Array.isArray(userCandidates) ? userCandidates : [userCandidates];
+            const identifiers = Array.from(new Set(candidateValues.flatMap((value) => {
+                const trimmed = toTrimmedString(value);
+                const normalizedPhone = normalizePhone(trimmed);
+                return [trimmed, trimmed.toLowerCase(), normalizedPhone].filter(Boolean);
+            })));
+            if (!identifiers.length) {
+                return null;
+            }
+            const placeholders = identifiers.map(() => '?').join(', ');
+            const [rows] = await this.pool.query(`SELECT \`User\` FROM \`Subscribe\`
+         WHERE \`User\` IN (${placeholders}) OR \`UserName\` IN (${placeholders})
+         ORDER BY CASE WHEN \`User\` IN (${placeholders}) THEN 0 ELSE 1 END, \`UpdatedAt\` DESC, \`RowID\` DESC
+         LIMIT 1`, [...identifiers, ...identifiers, ...identifiers]);
+            const matchedUser = rows && rows.length > 0
+                ? toTrimmedString(rows[0].User)
+                : '';
+            if (!matchedUser) {
+                return null;
+            }
+            const [result] = await this.pool.execute('UPDATE `Subscribe` SET `Upic` = ? WHERE `User` = ?', [normalizedUpic, matchedUser]);
+            if (!result || Number(result.affectedRows || 0) < 1) {
+                return null;
+            }
+            return {
+                user: matchedUser,
+                upic: normalizedUpic,
+            };
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.error('[MYSQL] updateSubscribeUserProfilePicture error:', message);
+            throw err;
+        }
+    }
     async getContacts(requestingUser) {
         await this.ensureSubscribeTable();
         try {

@@ -2336,8 +2336,11 @@ export class MysqlLogsService {
 
       const placeholders = identifiers.map(() => '?').join(', ');
       const [rows] = await this.pool.query<RowDataPacket[]>(
-        `SELECT \`User\` FROM \`Subscribe\` WHERE \`User\` IN (${placeholders}) OR \`UserName\` IN (${placeholders}) LIMIT 1`,
-        [...identifiers, ...identifiers]
+        `SELECT \`User\` FROM \`Subscribe\`
+         WHERE \`User\` IN (${placeholders}) OR \`UserName\` IN (${placeholders})
+         ORDER BY CASE WHEN \`User\` IN (${placeholders}) THEN 0 ELSE 1 END, \`UpdatedAt\` DESC, \`RowID\` DESC
+         LIMIT 1`,
+        [...identifiers, ...identifiers, ...identifiers]
       );
       const matchedUser = rows && rows.length > 0
         ? toTrimmedString(rows[0].User)

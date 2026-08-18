@@ -426,8 +426,11 @@ Content-Type: multipart/form-data
   "success": true,
   "status": "success",
   "message": "Profile picture updated successfully",
+  "user": "0546799693",
   "url": "/notify/uploads/users/example.jpg",
-  "upic": "/notify/uploads/users/example.jpg"
+  "upic": "/notify/uploads/users/example.jpg",
+  "thumbUrl": null,
+  "type": "image/jpeg"
 }
 ```
 
