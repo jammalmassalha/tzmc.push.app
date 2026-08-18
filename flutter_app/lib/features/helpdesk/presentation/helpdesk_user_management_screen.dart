@@ -8,6 +8,7 @@ import 'package:intl/intl.dart';
 
 import '../../../core/api/chat_api_service.dart';
 import '../../../core/models/helpdesk_models.dart';
+import '../../../core/services/chat_store_service.dart';
 import '../../../core/utils/toast_utils.dart';
 
 class HelpdeskUserManagementScreen extends ConsumerStatefulWidget {
@@ -85,6 +86,7 @@ class _HelpdeskUserManagementScreenState
       context: context,
       builder: (ctx) => HelpdeskUserFormDialog(
         departments: _departments,
+        users: _users,
         existing: existing,
         onSubmit: (formData) async {
           final api = ref.read(chatApiServiceProvider);
@@ -263,7 +265,7 @@ class _HelpdeskUserManagementScreenState
   }
 }
 
-class _HelpdeskUserCard extends StatelessWidget {
+class _HelpdeskUserCard extends ConsumerWidget {
   final HelpdeskUser user;
   final bool isBusy;
   final VoidCallback onEdit;
@@ -277,10 +279,16 @@ class _HelpdeskUserCard extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final createdAt = user.createdAt == null
         ? '—'
         : DateFormat('HH:mm, d.M.yyyy').format(user.createdAt!);
+    final contact = ref.watch(chatStoreProvider).contacts[user.username];
+    final fullName = user.fullName?.trim().isNotEmpty == true
+        ? user.fullName!.trim()
+        : contact?.displayName ?? '';
+    final phone = user.phoneNumber;
+    final title = fullName.isNotEmpty ? '$fullName - $phone' : phone;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -295,7 +303,7 @@ class _HelpdeskUserCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[
                       Text(
-                        user.username,
+                        title,
                         style: Theme.of(context).textTheme.titleMedium?.copyWith(
                               fontWeight: FontWeight.bold,
                             ),
@@ -418,11 +426,13 @@ class HelpdeskUserFormData {
 
 class HelpdeskUserFormDialog extends StatefulWidget {
   final List<HelpdeskDepartment> departments;
+  final List<HelpdeskUser> users;
   final HelpdeskUser? existing;
   final Future<void> Function(HelpdeskUserFormData data) onSubmit;
 
   const HelpdeskUserFormDialog({
     required this.departments,
+    required this.users,
     required this.onSubmit,
     this.existing,
     super.key,
@@ -463,6 +473,19 @@ class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
   void dispose() {
     _usernameController.dispose();
     super.dispose();
+  }
+
+  List<HelpdeskUser> _departmentUserSuggestions() {
+    final query = _usernameController.text.trim().toLowerCase();
+    final candidates = widget.users.where(
+      (user) => user.department.trim() == _department.trim(),
+    );
+    final filtered = query.isEmpty
+        ? candidates
+        : candidates.where(
+            (user) => user.username.toLowerCase().contains(query),
+          );
+    return filtered.take(8).toList();
   }
 
   Future<void> _submit() async {
@@ -510,15 +533,46 @@ class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
                   TextFormField(
                     controller: _usernameController,
                     textDirection: ui.TextDirection.rtl,
+                    enabled: !_isSubmitting,
                     decoration: const InputDecoration(
                       labelText: 'שם משתמש',
+                      hintText: 'חפש משתמש לפי מחלקה נבחרת',
                       border: OutlineInputBorder(),
                     ),
+                    onChanged: (_) => setState(() {}),
                     validator: (value) {
                       if (value == null || value.trim().isEmpty) {
                         return 'יש להזין שם משתמש';
                       }
                       return null;
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  Builder(
+                    builder: (context) {
+                      final suggestions = _departmentUserSuggestions();
+                      if (suggestions.isEmpty) return const SizedBox.shrink();
+                      return Align(
+                        alignment: AlignmentDirectional.centerStart,
+                        child: Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: suggestions.map((candidate) {
+                            final label = candidate.fullName?.trim().isNotEmpty == true
+                                ? '${candidate.fullName} - ${candidate.phoneNumber}'
+                                : candidate.phoneNumber;
+                            return ActionChip(
+                              label: Text(label),
+                              onPressed: _isSubmitting
+                                  ? null
+                                  : () {
+                                      _usernameController.text = candidate.username;
+                                      setState(() {});
+                                    },
+                            );
+                          }).toList(),
+                        ),
+                      );
                     },
                   ),
                   const SizedBox(height: 12),
@@ -558,7 +612,20 @@ class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
                         ? null
                         : (value) {
                             if (value == null) return;
-                            setState(() => _department = value);
+                            setState(() {
+                              _department = value;
+                              final username = _usernameController.text.trim();
+                              if (username.isEmpty) return;
+                              final existsInDepartment = widget.users.any(
+                                (user) =>
+                                    user.department.trim() == _department.trim() &&
+                                    user.username.trim().toLowerCase() ==
+                                        username.toLowerCase(),
+                              );
+                              if (!existsInDepartment && widget.existing == null) {
+                                _usernameController.clear();
+                              }
+                            });
                           },
                   ),
                   const SizedBox(height: 12),

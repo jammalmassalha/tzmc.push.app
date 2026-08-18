@@ -318,8 +318,9 @@ class _AuthenticatedCircleAvatarState
   @override
   void initState() {
     super.initState();
-    if (!kIsWeb && widget.url != null && widget.url!.isNotEmpty) {
-      _loadViaDio(widget.url!);
+    final url = widget.url?.trim();
+    if (!kIsWeb && url != null && url.isNotEmpty) {
+      _loadViaDio(url);
     }
   }
 
@@ -331,8 +332,9 @@ class _AuthenticatedCircleAvatarState
         _bytes = null;
         _error = false;
       });
-      if (widget.url != null && widget.url!.isNotEmpty) {
-        _loadViaDio(widget.url!);
+      final url = widget.url?.trim();
+      if (url != null && url.isNotEmpty) {
+        _loadViaDio(url);
       }
     }
   }
@@ -370,8 +372,9 @@ class _AuthenticatedCircleAvatarState
   @override
   Widget build(BuildContext context) {
     final diameter = widget.radius * 2;
+    final trimmedUrl = widget.url?.trim();
 
-    if (widget.url == null || widget.url!.isEmpty) {
+    if (trimmedUrl == null || trimmedUrl.isEmpty) {
       return SizedBox(
         width: diameter,
         height: diameter,
@@ -382,11 +385,18 @@ class _AuthenticatedCircleAvatarState
     // On web: use CircleAvatar with NetworkImage — browser sends cookies
     // and avoids CORS issues from XHR.
     if (kIsWeb) {
-      return CircleAvatar(
-        radius: widget.radius,
-        backgroundImage: NetworkImage(resolveToAbsoluteUrl(widget.url!)),
-        onBackgroundImageError: (_, __) {},
-        child: null,
+      return SizedBox(
+        width: diameter,
+        height: diameter,
+        child: ClipOval(
+          child: Image.network(
+            resolveToAbsoluteUrl(trimmedUrl),
+            width: diameter,
+            height: diameter,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => widget.fallback,
+          ),
+        ),
       );
     }
 

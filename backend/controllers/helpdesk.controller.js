@@ -1354,17 +1354,18 @@ function registerHelpdeskController(app, deps = {}) {
             let rows;
             if (editorRole.role === 'Admin') {
                 [rows] = await pool.query(
-                    'SELECT `id`, `username`, `role`, `department`, `status`, `created_at` FROM `helpdesk_users` ORDER BY `department`, `username`'
+                    'SELECT hu.`id`, hu.`username`, hu.`role`, hu.`department`, hu.`status`, hu.`created_at`, COALESCE(NULLIF(TRIM(s.`FullName`), \'\'), NULLIF(TRIM(s.`ExeptionName`), \'\')) AS `full_name` FROM `helpdesk_users` hu LEFT JOIN `Subscribe` s ON s.`User` = hu.`username` ORDER BY hu.`department`, hu.`username`'
                 );
             } else {
                 [rows] = await pool.query(
-                    'SELECT `id`, `username`, `role`, `department`, `status`, `created_at` FROM `helpdesk_users` WHERE `department` = ? ORDER BY `username`',
+                    'SELECT hu.`id`, hu.`username`, hu.`role`, hu.`department`, hu.`status`, hu.`created_at`, COALESCE(NULLIF(TRIM(s.`FullName`), \'\'), NULLIF(TRIM(s.`ExeptionName`), \'\')) AS `full_name` FROM `helpdesk_users` hu LEFT JOIN `Subscribe` s ON s.`User` = hu.`username` WHERE hu.`department` = ? ORDER BY hu.`username`',
                     [editorRole.department]
                 );
             }
             const users = rows.map((r) => ({
                 id: r.id,
                 username: r.username,
+                fullName: r.full_name || null,
                 role: r.role,
                 department: r.department,
                 status: r.status || 'Active',

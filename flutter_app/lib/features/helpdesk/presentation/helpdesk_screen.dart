@@ -1237,11 +1237,24 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
 /// Standalone screen wrapping [_ManagementTab]. Placed in the bottom-nav as
 /// a separate destination so regular users only see their own tickets in the
 /// 'מוקד איחוד' tab while admins/editors access ticket management here.
-class TicketManagerScreen extends ConsumerWidget {
+class TicketManagerScreen extends ConsumerStatefulWidget {
   const TicketManagerScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<TicketManagerScreen> createState() => _TicketManagerScreenState();
+}
+
+class _TicketManagerScreenState extends ConsumerState<TicketManagerScreen> {
+  @override
+  void initState() {
+    super.initState();
+    Future.microtask(() {
+      ref.read(helpdeskProvider.notifier).loadTickets(force: true);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final state = ref.watch(helpdeskProvider);
     final theme = Theme.of(context);
 
@@ -1701,6 +1714,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
   String? _departmentError;
   String? _handlerError;
   String? _statusError;
+  List<HelpdeskManagedUser> _allHandlers = const <HelpdeskManagedUser>[];
 
   final _noteCtrl = TextEditingController();
   bool _submittingNote = false;
@@ -1746,6 +1760,8 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
     _selectedHandler = _ticket.handlerUsername;
     _selectedDepartmentId = _findDepartmentIdByName(_ticket.department);
     _selectedStatus = _ticket.status;
+    _allHandlers = List<HelpdeskManagedUser>.from(widget.handlers);
+    _syncSelectedHandlerWithDepartment();
     _loadData();
   }
 
@@ -1765,6 +1781,55 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
     return null;
   }
 
+  String _selectedDepartmentName() {
+    return _findSelectedDepartment()?.name ?? _ticket.department;
+  }
+
+  List<HelpdeskManagedUser> _eligibleHandlersForDepartment() {
+    final targetDepartment = _selectedDepartmentName().trim();
+    if (targetDepartment.isEmpty) return const <HelpdeskManagedUser>[];
+    return _allHandlers
+        .where((handler) => handler.department.trim() == targetDepartment)
+        .toList()
+      ..sort(
+        (a, b) => _resolveDisplay(a.username)
+            .toLowerCase()
+            .compareTo(_resolveDisplay(b.username).toLowerCase()),
+      );
+  }
+
+  void _syncSelectedHandlerWithDepartment() {
+    final eligibleUsernames = _eligibleHandlersForDepartment()
+        .map((handler) => handler.username)
+        .toSet();
+    if (_selectedHandler != null && !eligibleUsernames.contains(_selectedHandler)) {
+      _selectedHandler = null;
+    }
+  }
+
+  Future<void> _loadAllHandlersIfNeeded() async {
+    if (widget.myRole?.role != HelpdeskRole.admin) return;
+    try {
+      final users = await ref.read(chatApiServiceProvider).fetchHelpdeskUsers(_currentUser);
+      if (!mounted) return;
+      setState(() {
+        _allHandlers = users
+            .where((user) => user.isActive)
+            .map(
+              (user) => HelpdeskManagedUser(
+                username: user.username,
+                role: HelpdeskRole.fromString(user.role),
+                department: user.department,
+              ),
+            )
+            .toList();
+        _syncSelectedHandlerWithDepartment();
+      });
+    } catch (_) {
+      // Keep department-local handlers from dashboard if loading all handlers fails.
+    }
+  }
+
   @override
   void dispose() {
     _noteCtrl.dispose();
@@ -1774,7 +1839,12 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
   Future<void> _loadData() async {
     final api = ref.read(chatApiServiceProvider);
     final ticketId = int.tryParse(_ticket.id) ?? 0;
-    await Future.wait([_loadHistory(api, ticketId), _loadHandlerHistory(api, ticketId), _loadNotes(api, ticketId)]);
+    await Future.wait([
+      _loadHistory(api, ticketId),
+      _loadHandlerHistory(api, ticketId),
+      _loadNotes(api, ticketId),
+      _loadAllHandlersIfNeeded(),
+    ]);
   }
 
   Future<void> _loadHistory(ChatApiService api, int ticketId) async {
@@ -1908,6 +1978,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
     final theme = Theme.of(context);
     final durationLabel =
         _history != null ? _totalDurationLabel(_history!) : '';
+    final eligibleHandlers = _eligibleHandlersForDepartment();
 
     return Directionality(
       textDirection: ui.TextDirection.rtl,
@@ -2098,6 +2169,8 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                               .toList(),
                           onChanged: (value) => setState(() {
                             _selectedDepartmentId = value;
+                            _syncSelectedHandlerWithDepartment();
+                            _handlerError = null;
                           }),
                         ),
                       ),
@@ -2146,7 +2219,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                           items: [
                             const DropdownMenuItem<String?>(
                                 value: null, child: Text('— ללא מטפל —')),
-                            ...widget.handlers.map((h) =>
+                            ...eligibleHandlers.map((h) =>
                                 DropdownMenuItem<String?>(
                                     value: h.username,
                                     child: Text(_resolveDisplay(h.username)))),

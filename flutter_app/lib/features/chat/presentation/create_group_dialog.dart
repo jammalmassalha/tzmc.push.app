@@ -15,6 +15,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../../shared/theme/app_theme.dart';
+import '../../../shared/widgets/authenticated_image.dart';
 
 /// Result returned from the create-group dialog.
 class CreateGroupResult {
@@ -212,16 +213,21 @@ class _CreateGroupDialogState extends ConsumerState<_CreateGroupDialog> {
                             value: selected,
                             onChanged: (v) => _toggle(contact.username, v),
                             controlAffinity: ListTileControlAffinity.trailing,
-                            secondary: contact.upic != null && contact.upic!.isNotEmpty
-                                ? CircleAvatar(
-                                    backgroundImage: NetworkImage(contact.upic!))
-                                : CircleAvatar(
-                                    backgroundColor: AppColors.primary,
-                                    child: Text(initial,
-                                        style: const TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.bold)),
+                            secondary: AuthenticatedCircleAvatar(
+                              url: contact.upic,
+                              radius: 20,
+                              fallback: CircleAvatar(
+                                radius: 20,
+                                backgroundColor: AppColors.primary,
+                                child: Text(
+                                  initial,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
                                   ),
+                                ),
+                              ),
+                            ),
                             title: Text(contact.displayName),
                             subtitle: contact.info != null && contact.info!.isNotEmpty
                                 ? Text(contact.info!,
