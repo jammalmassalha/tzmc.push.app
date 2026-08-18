@@ -1340,7 +1340,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // GET /helpdesk/users - Admin: list all helpdesk_users; Editor: list users in own department
-    app.get(['/helpdesk/users', '/notify/helpdesk/users'], requireUser, helpdeskRateLimit(20, 60 * 1000), async (req, res) => {
+    app.get(['/helpdesk/users', '/notify/helpdesk/users'], requireUser, helpdeskAdminMutationIpRateLimit, helpdeskRateLimit(20, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         const requestedDepartment = toTrimmedString((req.query && req.query.department) || '');
         if (!user) {
