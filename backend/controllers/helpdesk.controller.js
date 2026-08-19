@@ -5,6 +5,16 @@ function toTrimmedString(value) {
     return String(value === null || value === undefined ? '' : value).trim();
 }
 
+function decodeQueryText(value) {
+    const normalized = toTrimmedString(value);
+    if (!normalized || !normalized.includes('%')) return normalized;
+    try {
+        return toTrimmedString(decodeURIComponent(normalized));
+    } catch {
+        return normalized;
+    }
+}
+
 function toPositiveInteger(value, fallbackValue) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed <= 0) return fallbackValue;
@@ -514,17 +524,25 @@ async function getHelpdeskUserRole(pool, username) {
 }
 
 async function getActiveDepartments(pool) {
-    const [rows] = await pool.query(
-        'SELECT `id`, `name`, `icon`, `status`, `sort_order` FROM `helpdesk_departments` WHERE `status` = ? ORDER BY `sort_order`, `id`',
-        ['active']
-    );
-    return rows.map((r) => ({
-        id: r.id,
-        name: r.name,
-        icon: r.icon || null,
-        status: r.status || 'active',
-        sortOrder: Number.isFinite(r.sort_order) ? r.sort_order : Number(r.sort_order || 0)
-    }));
+    try {
+        const [rows] = await pool.query(
+            'SELECT `id`, `name`, `icon`, `status`, `sort_order` FROM `helpdesk_departments` WHERE `status` = ? ORDER BY `sort_order`, `id`',
+            ['active']
+        );
+        if (!Array.isArray(rows) || rows.length === 0) return [];
+        return rows.map((r) => ({
+            id: r.id,
+            name: r.name,
+            icon: r.icon || null,
+            status: r.status || 'active',
+            sortOrder: Number.isFinite(r.sort_order) ? r.sort_order : Number(r.sort_order || 0)
+        }));
+    } catch (err) {
+        // If the table is temporarily unavailable, treat as no active records
+        // so callers can gracefully continue with an empty departments list.
+        if (err && err.errno === 1146) return [];
+        throw err;
+    }
 }
 
 function registerHelpdeskController(app, deps = {}) {
@@ -1380,7 +1398,10 @@ function registerHelpdeskController(app, deps = {}) {
     // GET /helpdesk/users - Admin: list all helpdesk_users; Editor: list users in own department
     app.get(['/helpdesk/users', '/notify/helpdesk/users'], requireUser, helpdeskReadIpRateLimit, helpdeskRateLimit(20, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
-        const requestedDepartment = toTrimmedString((req.query && req.query.department) || '');
+        const departmentQuery = req.query && req.query.department;
+        const requestedDepartment = decodeQueryText(
+            Array.isArray(departmentQuery) ? departmentQuery[0] : departmentQuery
+        );
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
         }
@@ -1393,7 +1414,16 @@ function registerHelpdeskController(app, deps = {}) {
                 const [rows] = params ? await pool.query(sql, params) : await pool.query(sql);
                 return rows;
             } catch (err) {
-                if (withJoin && err && (err.errno === 1146 || err.errno === 1054)) {
+                const errMessage = toTrimmedString(err && (err.sqlMessage || err.message || '')).toLowerCase();
+                const joinUnavailable = err && (
+                    err.errno === 1146 || // table missing
+                    err.errno === 1054 || // column missing
+                    err.errno === 1142 || // SELECT denied for table
+                    err.errno === 1044 || // db access denied
+                    err.errno === 1045 || // auth denied
+                    errMessage.includes('subscribe')
+                );
+                if (withJoin && joinUnavailable) {
                     console.warn('[HELPDESK] Subscribe JOIN unavailable (errno ' + err.errno + '), retrying without JOIN');
                     return null; // signal: retry without JOIN
                 }
@@ -1443,7 +1473,7 @@ function registerHelpdeskController(app, deps = {}) {
                     : await loadUsersRows(editorRole, requestedDepartment, false);
             }
 
-            const users = rows.map((r) => ({
+            const users = (Array.isArray(rows) ? rows : []).map((r) => ({
                 id: r.id,
                 username: r.username,
                 fullName: r.full_name || null,
@@ -1456,7 +1486,12 @@ function registerHelpdeskController(app, deps = {}) {
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to load users';
             console.error('[HELPDESK] Load users error (errno ' + (error && error.errno) + '):', message);
-            return res.status(500).json({ result: 'error', message: 'שגיאה בטעינת המשתמשים' });
+            return res.status(500).json({
+                result: 'error',
+                message: 'שגיאה בטעינת המשתמשים',
+                details: message,
+                errorCode: error && error.code ? error.code : null
+            });
         }
     });
 

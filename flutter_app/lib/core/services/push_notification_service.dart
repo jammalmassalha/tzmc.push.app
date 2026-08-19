@@ -58,6 +58,12 @@ bool get _isNativePlatform {
   return true;
 }
 
+bool _isPermissionBlockedError(FirebaseException error) {
+  final plugin = error.plugin.toLowerCase();
+  final code = error.code.toLowerCase();
+  return plugin == 'firebase_messaging' && code == 'permission-blocked';
+}
+
 // Platform-specific helpers (only used on native)
 String _getPlatformName() {
   if (kIsWeb) return 'web';
@@ -716,6 +722,26 @@ class PushNotificationService {
         );
         _scheduleTokenRegistrationRetry();
       }
+    } on FirebaseException catch (e) {
+      if (_isPermissionBlockedError(e)) {
+        debugPrint(
+          '[PushNotificationService] Notification permission blocked - '
+          'skipping token registration.',
+        );
+        _logIOSRegistrationStep(
+          'ios_fcm_token_permission_blocked',
+          'denied',
+          message: e.message ?? e.toString(),
+        );
+        return;
+      }
+      debugPrint('[PushNotificationService] Error getting token: $e');
+      _logIOSRegistrationStep(
+        'ios_fcm_token_error',
+        'error',
+        message: e.toString(),
+      );
+      _scheduleTokenRegistrationRetry();
     } catch (e) {
       debugPrint('[PushNotificationService] Error getting token: $e');
       _logIOSRegistrationStep(

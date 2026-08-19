@@ -41,6 +41,11 @@ class _HelpdeskUserManagementScreenState
     _loadData();
   }
 
+  String _normalizeError(Object error) {
+    final raw = error.toString().replaceFirst('ApiException: ', '').trim();
+    return raw.isNotEmpty ? raw : 'שגיאה בטעינת המשתמשים';
+  }
+
   Future<void> _loadData({bool showLoader = true}) async {
     if (!mounted) return;
     setState(() {
@@ -50,35 +55,37 @@ class _HelpdeskUserManagementScreenState
       _error = null;
     });
 
+    final api = ref.read(chatApiServiceProvider);
+    String? loadError;
+
+    List<HelpdeskUser> users = <HelpdeskUser>[];
     try {
-      final api = ref.read(chatApiServiceProvider);
-      final results = await Future.wait(<Future<Object>>[
-        api.fetchHelpdeskUsers(),
-        api.getActiveHelpdeskDepartments(),
-      ]);
-      final users = (results[0] as List<HelpdeskUser>).toList()
+      users = (await api.fetchHelpdeskUsers()).toList()
         ..sort(
           (a, b) =>
               a.username.toLowerCase().compareTo(b.username.toLowerCase()),
         );
-      final departments = (results[1] as List<HelpdeskDepartmentEntry>)
+    } catch (e) {
+      loadError = _normalizeError(e);
+    }
+
+    List<HelpdeskDepartment> departments = <HelpdeskDepartment>[];
+    try {
+      departments = (await api.getActiveHelpdeskDepartments())
           .map(HelpdeskDepartment.fromEntry)
           .toList()
         ..sort((a, b) => a.name.compareTo(b.name));
-
-      if (!mounted) return;
-      setState(() {
-        _users = users;
-        _departments = departments;
-        _isLoading = false;
-      });
     } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.toString().replaceFirst('ApiException: ', '');
-        _isLoading = false;
-      });
+      loadError ??= _normalizeError(e);
     }
+
+    if (!mounted) return;
+    setState(() {
+      _users = users;
+      _departments = departments;
+      _error = loadError;
+      _isLoading = false;
+    });
   }
 
   Future<void> _openUserForm({HelpdeskUser? existing}) async {
