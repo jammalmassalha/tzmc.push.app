@@ -223,7 +223,7 @@ class HelpdeskNotifier extends Notifier<HelpdeskState> {
     try {
       final results = await Future.wait([
         _api.getHelpdeskDashboard(_currentUser!),
-        _api.getActiveHelpdeskDepartments(_currentUser!).catchError((_) => <HelpdeskDepartmentEntry>[]),
+        _api.getActiveHelpdeskDepartments().catchError((_) => <HelpdeskDepartmentEntry>[]),
       ]);
       final dashboard = results[0] as HelpdeskDashboard;
       final departments = results[1] as List<HelpdeskDepartmentEntry>;
@@ -297,7 +297,7 @@ class HelpdeskNotifier extends Notifier<HelpdeskState> {
     }
 
     try {
-      final departments = await _api.getActiveHelpdeskDepartments(_currentUser!);
+      final departments = await _api.getActiveHelpdeskDepartments();
       state = state.copyWith(departments: departments, error: null);
       return departments;
     } catch (e) {
@@ -1814,7 +1814,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
     try {
       final users = await ref
           .read(chatApiServiceProvider)
-          .fetchHelpdeskUsers(_currentUser, department: normalizedDepartment);
+          .fetchHelpdeskUsers(department: normalizedDepartment);
       if (!mounted) return;
       setState(() {
         _allHandlers = users
@@ -2785,7 +2785,7 @@ class _DepartmentSettingsScreenState
     });
     try {
       final api = ref.read(chatApiServiceProvider);
-      final depts = await api.getAllHelpdeskDepartments(widget.currentUser);
+      final depts = await api.getAllHelpdeskDepartments();
       setState(() {
         _departments = depts;
         _loading = false;

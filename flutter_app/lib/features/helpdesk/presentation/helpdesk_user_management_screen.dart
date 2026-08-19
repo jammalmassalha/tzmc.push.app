@@ -53,8 +53,8 @@ class _HelpdeskUserManagementScreenState
     try {
       final api = ref.read(chatApiServiceProvider);
       final results = await Future.wait(<Future<Object>>[
-        api.fetchHelpdeskUsers(widget.currentUser),
-        api.getActiveHelpdeskDepartments(widget.currentUser),
+        api.fetchHelpdeskUsers(),
+        api.getActiveHelpdeskDepartments(),
       ]);
       final users = (results[0] as List<HelpdeskUser>).toList()
         ..sort(
@@ -97,7 +97,6 @@ class _HelpdeskUserManagementScreenState
           final api = ref.read(chatApiServiceProvider);
           if (existing == null) {
             await api.createHelpdeskUser(
-              user: widget.currentUser,
               username: formData.username,
               role: formData.role,
               department: formData.department,
@@ -105,7 +104,6 @@ class _HelpdeskUserManagementScreenState
             );
           } else {
             await api.updateHelpdeskUser(
-              widget.currentUser,
               existing.id,
               username: formData.username,
               role: formData.role,
@@ -155,7 +153,7 @@ class _HelpdeskUserManagementScreenState
     setState(() => _busyUserIds.add(user.id));
     try {
       final api = ref.read(chatApiServiceProvider);
-      await api.toggleHelpdeskUserStatus(widget.currentUser, user.id, newStatus);
+      await api.toggleHelpdeskUserStatus(user.id, newStatus);
       await _loadData(showLoader: false);
       if (!mounted) return;
       showTopToast(
