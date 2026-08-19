@@ -564,6 +564,23 @@ function registerHelpdeskController(app, deps = {}) {
         }
     });
 
+    const helpdeskReadIpRateLimit = rateLimit({
+        windowMs: 60 * 1000,
+        limit: 60,
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: (req) => req.ip || req.socket && req.socket.remoteAddress || 'helpdesk-read',
+        handler: (_req, res, _next, options) => {
+            const retryAfterSeconds = Math.ceil(options.windowMs / 1000);
+            res.setHeader('Retry-After', String(retryAfterSeconds));
+            return res.status(429).json({
+                result: 'error',
+                message: 'יותר מדי בקשות. נסה שוב בעוד דקה.',
+                retryAfterSeconds
+            });
+        }
+    });
+
     // Per-user-per-endpoint rate limiting middleware factory.
     // The key combines the user identity with the normalised route path so that
     // each endpoint maintains its own independent quota.  Previously the key was
@@ -1340,7 +1357,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // GET /helpdesk/users - Admin: list all helpdesk_users; Editor: list users in own department
-    app.get(['/helpdesk/users', '/notify/helpdesk/users'], requireUser, helpdeskRateLimit(20, 60 * 1000), async (req, res) => {
+    app.get(['/helpdesk/users', '/notify/helpdesk/users'], requireUser, helpdeskReadIpRateLimit, helpdeskRateLimit(20, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         const requestedDepartment = toTrimmedString((req.query && req.query.department) || '');
         if (!user) {
