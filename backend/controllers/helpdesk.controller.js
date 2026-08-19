@@ -1487,9 +1487,12 @@ function registerHelpdeskController(app, deps = {}) {
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to load users';
             console.error('[HELPDESK] Load users error (errno ' + (error && error.errno) + '):', message);
-            return res.status(500).json({
+            return res.status(200).json({
                 result: 'error',
-                message: 'שגיאה בטעינת המשתמשים'
+                success: false,
+                users: [],
+                data: [],
+                message: message || 'שגיאה בטעינת המשתמשים'
             });
         }
     });

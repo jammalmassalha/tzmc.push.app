@@ -61,22 +61,27 @@ class _HelpdeskUserManagementScreenState
 
     List<HelpdeskUser> users = <HelpdeskUser>[];
     try {
-      users = (await api.fetchHelpdeskUsers()).toList()
+      final fetchedUsers = await api.fetchHelpdeskUsers();
+      users = fetchedUsers.toList()
         ..sort(
           (a, b) =>
               a.username.toLowerCase().compareTo(b.username.toLowerCase()),
         );
     } catch (e) {
+      debugPrint('Failed to load helpdesk users: $e');
       usersError = _normalizeError(e);
     }
 
     List<HelpdeskDepartment> departments = <HelpdeskDepartment>[];
     try {
-      departments = (await api.getActiveHelpdeskDepartments())
+      final entries = await api.getActiveHelpdeskDepartments();
+      departments = entries
           .map(HelpdeskDepartment.fromEntry)
+          .where((department) => department.name.trim().isNotEmpty)
           .toList()
         ..sort((a, b) => a.name.compareTo(b.name));
     } catch (e) {
+      debugPrint('Failed to load helpdesk departments: $e');
       departmentsError = _normalizeError(e);
     }
 

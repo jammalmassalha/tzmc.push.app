@@ -205,57 +205,63 @@ class PushNotificationService {
   /// `await`, so callers should pass a context that belongs to a mounted
   /// widget.
   Future<void> ensurePermissionAndRegister(BuildContext context) async {
-    // iOS must trigger Apple's UNUserNotificationCenter authorization prompt.
-    // Once that prompt has been requested, iOS adds the Notifications entry to
-    // the app's Settings page. Keep Android on permission_handler below
-    // because firebase_messaging's `getNotificationSettings()` is unreliable
-    // there (it reports denied before the runtime permission is requested).
-    if (_isIOSPlatform()) {
-      await _ensureIOSPermissionViaFirebaseMessaging(context);
-      return;
-    }
-
-    if (_isAndroidPlatform()) {
-      await _ensurePermissionViaPermissionHandler(context);
-      return;
-    }
-
-    // Web path — Firebase Messaging is required for browser push.
-    if (_messaging == null) {
-      debugPrint(
-          '[PushNotificationService] FirebaseMessaging not available on web — '
-          'check Firebase JS SDK config / firebase_options.');
-      return;
-    }
-
-    NotificationSettings settings;
     try {
-      settings = await _messaging!.getNotificationSettings();
+      // iOS must trigger Apple's UNUserNotificationCenter authorization prompt.
+      // Once that prompt has been requested, iOS adds the Notifications entry to
+      // the app's Settings page. Keep Android on permission_handler below
+      // because firebase_messaging's `getNotificationSettings()` is unreliable
+      // there (it reports denied before the runtime permission is requested).
+      if (_isIOSPlatform()) {
+        await _ensureIOSPermissionViaFirebaseMessaging(context);
+        return;
+      }
+
+      if (_isAndroidPlatform()) {
+        await _ensurePermissionViaPermissionHandler(context);
+        return;
+      }
+
+      // Web path — Firebase Messaging is required for browser push.
+      if (_messaging == null) {
+        debugPrint(
+            '[PushNotificationService] FirebaseMessaging not available on web — '
+            'check Firebase JS SDK config / firebase_options.');
+        return;
+      }
+
+      NotificationSettings settings;
+      try {
+        settings = await _messaging!.getNotificationSettings();
+      } catch (e) {
+        debugPrint('[PushNotificationService] getNotificationSettings error: $e');
+        return;
+      }
+
+      final status = settings.authorizationStatus;
+      if (_isAuthorized(status)) {
+        // User previously granted permission — clear any stale "open
+        // settings" nag flag so we'll prompt again if they later revoke
+        // and re-deny on a future install.
+        await _clearSettingsNagFlag();
+        await _getAndRegisterToken();
+        return;
+      }
+
+      if (status == AuthorizationStatus.notDetermined) {
+        if (!context.mounted) return;
+        final accepted = await _showRationaleDialog(context);
+        if (accepted != true) return;
+        await _requestPermissionAndRegister();
+        return;
+      }
+
+      // status == denied
+      await _maybeShowOpenSettingsDialog(context);
     } catch (e) {
-      debugPrint('[PushNotificationService] getNotificationSettings error: $e');
-      return;
+      debugPrint(
+        '[PushNotificationService] Suppressed permission/token init error: $e',
+      );
     }
-
-    final status = settings.authorizationStatus;
-    if (_isAuthorized(status)) {
-      // User previously granted permission — clear any stale "open
-      // settings" nag flag so we'll prompt again if they later revoke
-      // and re-deny on a future install.
-      await _clearSettingsNagFlag();
-      await _getAndRegisterToken();
-      return;
-    }
-
-    if (status == AuthorizationStatus.notDetermined) {
-      if (!context.mounted) return;
-      final accepted = await _showRationaleDialog(context);
-      if (accepted != true) return;
-      await _requestPermissionAndRegister();
-      return;
-    }
-
-    // status == denied
-    await _maybeShowOpenSettingsDialog(context);
   }
 
   /// iOS permission flow.
