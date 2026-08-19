@@ -1346,30 +1346,69 @@ function registerHelpdeskController(app, deps = {}) {
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
         }
+
+        // Runs a helpdesk_users query, with or without the Subscribe JOIN.
+        // Falls back to the no-JOIN variant if Subscribe is inaccessible
+        // (e.g. different database, missing table/column — errno 1146 / 1054).
+        async function queryUsers(withJoin, sql, params) {
+            try {
+                const [rows] = params ? await pool.query(sql, params) : await pool.query(sql);
+                return rows;
+            } catch (err) {
+                if (withJoin && err && (err.errno === 1146 || err.errno === 1054)) {
+                    console.warn('[HELPDESK] Subscribe JOIN unavailable (errno ' + err.errno + '), retrying without JOIN');
+                    return null; // signal: retry without JOIN
+                }
+                throw err;
+            }
+        }
+
         try {
             await getTablesReady();
             const editorRole = await getHelpdeskUserRole(pool, user);
             if (!editorRole) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה' });
             }
+
             let rows;
             if (editorRole.role === 'Admin') {
                 if (requestedDepartment) {
-                    [rows] = await pool.query(
+                    rows = await queryUsers(
+                        true,
                         'SELECT hu.`id`, hu.`username`, hu.`role`, hu.`department`, hu.`status`, hu.`created_at`, NULLIF(TRIM(s.`FullName`), \'\') AS `full_name` FROM `helpdesk_users` hu LEFT JOIN `Subscribe` s ON s.`User` = hu.`username` WHERE hu.`department` = ? ORDER BY hu.`username`',
                         [requestedDepartment]
                     );
+                    if (rows === null) {
+                        [rows] = await pool.query(
+                            'SELECT `id`, `username`, `role`, `department`, `status`, `created_at`, NULL AS `full_name` FROM `helpdesk_users` WHERE `department` = ? ORDER BY `username`',
+                            [requestedDepartment]
+                        );
+                    }
                 } else {
-                    [rows] = await pool.query(
+                    rows = await queryUsers(
+                        true,
                         'SELECT hu.`id`, hu.`username`, hu.`role`, hu.`department`, hu.`status`, hu.`created_at`, NULLIF(TRIM(s.`FullName`), \'\') AS `full_name` FROM `helpdesk_users` hu LEFT JOIN `Subscribe` s ON s.`User` = hu.`username` ORDER BY hu.`department`, hu.`username`'
                     );
+                    if (rows === null) {
+                        [rows] = await pool.query(
+                            'SELECT `id`, `username`, `role`, `department`, `status`, `created_at`, NULL AS `full_name` FROM `helpdesk_users` ORDER BY `department`, `username`'
+                        );
+                    }
                 }
             } else {
-                [rows] = await pool.query(
+                rows = await queryUsers(
+                    true,
                     'SELECT hu.`id`, hu.`username`, hu.`role`, hu.`department`, hu.`status`, hu.`created_at`, NULLIF(TRIM(s.`FullName`), \'\') AS `full_name` FROM `helpdesk_users` hu LEFT JOIN `Subscribe` s ON s.`User` = hu.`username` WHERE hu.`department` = ? ORDER BY hu.`username`',
                     [editorRole.department]
                 );
+                if (rows === null) {
+                    [rows] = await pool.query(
+                        'SELECT `id`, `username`, `role`, `department`, `status`, `created_at`, NULL AS `full_name` FROM `helpdesk_users` WHERE `department` = ? ORDER BY `username`',
+                        [editorRole.department]
+                    );
+                }
             }
+
             const users = rows.map((r) => ({
                 id: r.id,
                 username: r.username,
@@ -1382,7 +1421,7 @@ function registerHelpdeskController(app, deps = {}) {
             return res.json({ result: 'success', users });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to load users';
-            console.error('[HELPDESK] Load users error:', message);
+            console.error('[HELPDESK] Load users error (errno ' + (error && error.errno) + '):', message);
             return res.status(500).json({ result: 'error', message: 'שגיאה בטעינת המשתמשים' });
         }
     });
