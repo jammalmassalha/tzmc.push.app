@@ -541,9 +541,15 @@ class _HelpdeskUserFormDialogState
   List<Contact> _availableContacts() {
     final contacts = ref.read(chatStoreProvider).contacts;
     final me = ref.read(chatStoreProvider.notifier).currentUser;
+    final existingUsernames = widget.users
+        .map((u) => u.username.trim().toLowerCase())
+        .toSet();
     return contacts.values.where((c) {
       if (me != null && c.username.trim().toLowerCase() == me) return false;
       if (c.status == 0) return false;
+      if (existingUsernames.contains(c.username.trim().toLowerCase())) {
+        return false;
+      }
       return true;
     }).toList()
       ..sort((a, b) => a.displayName.compareTo(b.displayName));
