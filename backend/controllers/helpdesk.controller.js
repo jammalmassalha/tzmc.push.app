@@ -1461,7 +1461,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // POST /helpdesk/users - Admin: add a user to helpdesk_users
-    app.post(['/helpdesk/users', '/notify/helpdesk/users'], requireUser, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
+    app.post(['/helpdesk/users', '/notify/helpdesk/users'], requireUser, helpdeskAdminMutationIpRateLimit, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
@@ -1513,7 +1513,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // DELETE /helpdesk/users/:username - Admin: remove a user from helpdesk_users
-    app.delete(['/helpdesk/users/:username', '/notify/helpdesk/users/:username'], requireUser, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
+    app.delete(['/helpdesk/users/:username', '/notify/helpdesk/users/:username'], requireUser, helpdeskAdminMutationIpRateLimit, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
