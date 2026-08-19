@@ -1443,8 +1443,8 @@ function registerHelpdeskController(app, deps = {}) {
             const params = shouldFilterDepartment ? [usersDepartment] : null;
 
             const withJoinSql = shouldFilterDepartment
-                ? `SELECT hu.\`id\`, hu.\`username\`, hu.\`role\`, hu.\`department\`, ${statusSelectWithJoin}, hu.\`created_at\`, NULLIF(TRIM(s.\`FullName\`), '') AS \`full_name\` FROM \`helpdesk_users\` hu LEFT JOIN \`Subscribe\` s ON s.\`User\` = hu.\`username\` WHERE hu.\`department\` = ? ORDER BY hu.\`username\``
-                : `SELECT hu.\`id\`, hu.\`username\`, hu.\`role\`, hu.\`department\`, ${statusSelectWithJoin}, hu.\`created_at\`, NULLIF(TRIM(s.\`FullName\`), '') AS \`full_name\` FROM \`helpdesk_users\` hu LEFT JOIN \`Subscribe\` s ON s.\`User\` = hu.\`username\` ORDER BY hu.\`department\`, hu.\`username\``;
+                ? `SELECT hu.\`id\`, hu.\`username\`, hu.\`role\`, hu.\`department\`, ${statusSelectWithJoin}, hu.\`created_at\`, NULLIF(TRIM(s.\`FullName\`), '') AS \`full_name\` FROM \`helpdesk_users\` hu LEFT JOIN \`Subscribe\` s ON s.\`User\` COLLATE utf8mb4_unicode_ci = hu.\`username\` WHERE hu.\`department\` = ? ORDER BY hu.\`username\``
+                : `SELECT hu.\`id\`, hu.\`username\`, hu.\`role\`, hu.\`department\`, ${statusSelectWithJoin}, hu.\`created_at\`, NULLIF(TRIM(s.\`FullName\`), '') AS \`full_name\` FROM \`helpdesk_users\` hu LEFT JOIN \`Subscribe\` s ON s.\`User\` COLLATE utf8mb4_unicode_ci = hu.\`username\` ORDER BY hu.\`department\`, hu.\`username\``;
 
             let rows = await queryUsers(true, withJoinSql, params);
             if (rows !== null) return rows;
