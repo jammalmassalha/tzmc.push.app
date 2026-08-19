@@ -56,7 +56,8 @@ class _HelpdeskUserManagementScreenState
     });
 
     final api = ref.read(chatApiServiceProvider);
-    String? loadError;
+    String? usersError;
+    String? departmentsError;
 
     List<HelpdeskUser> users = <HelpdeskUser>[];
     try {
@@ -66,7 +67,7 @@ class _HelpdeskUserManagementScreenState
               a.username.toLowerCase().compareTo(b.username.toLowerCase()),
         );
     } catch (e) {
-      loadError = _normalizeError(e);
+      usersError = _normalizeError(e);
     }
 
     List<HelpdeskDepartment> departments = <HelpdeskDepartment>[];
@@ -76,16 +77,23 @@ class _HelpdeskUserManagementScreenState
           .toList()
         ..sort((a, b) => a.name.compareTo(b.name));
     } catch (e) {
-      loadError ??= _normalizeError(e);
+      departmentsError = _normalizeError(e);
     }
 
     if (!mounted) return;
     setState(() {
       _users = users;
       _departments = departments;
-      _error = loadError;
+      _error = usersError;
       _isLoading = false;
     });
+    if (usersError == null && departmentsError != null && mounted) {
+      showTopToast(
+        context,
+        departmentsError!,
+        backgroundColor: Theme.of(context).colorScheme.error,
+      );
+    }
   }
 
   Future<void> _openUserForm({HelpdeskUser? existing}) async {

@@ -538,8 +538,8 @@ async function getActiveDepartments(pool) {
             sortOrder: Number.isFinite(r.sort_order) ? r.sort_order : Number(r.sort_order || 0)
         }));
     } catch (err) {
-        // If the table is temporarily unavailable, treat as no active records
-        // so callers can gracefully continue with an empty departments list.
+        // If the departments table is missing (first-run race / not created yet),
+        // treat as no active records so callers can continue gracefully.
         if (err && err.errno === 1146) return [];
         throw err;
     }
@@ -1415,13 +1415,14 @@ function registerHelpdeskController(app, deps = {}) {
                 return rows;
             } catch (err) {
                 const errMessage = toTrimmedString(err && (err.sqlMessage || err.message || '')).toLowerCase();
+                const subscribeTableMentioned = /\bsubscribe\b/.test(errMessage);
                 const joinUnavailable = err && (
                     err.errno === 1146 || // table missing
                     err.errno === 1054 || // column missing
                     err.errno === 1142 || // SELECT denied for table
                     err.errno === 1044 || // db access denied
                     err.errno === 1045 || // auth denied
-                    errMessage.includes('subscribe')
+                    subscribeTableMentioned
                 );
                 if (withJoin && joinUnavailable) {
                     console.warn('[HELPDESK] Subscribe JOIN unavailable (errno ' + err.errno + '), retrying without JOIN');
@@ -1488,9 +1489,7 @@ function registerHelpdeskController(app, deps = {}) {
             console.error('[HELPDESK] Load users error (errno ' + (error && error.errno) + '):', message);
             return res.status(500).json({
                 result: 'error',
-                message: 'שגיאה בטעינת המשתמשים',
-                details: message,
-                errorCode: error && error.code ? error.code : null
+                message: 'שגיאה בטעינת המשתמשים'
             });
         }
     });
