@@ -54,14 +54,16 @@ class _HelpdeskUserManagementScreenState
       final api = ref.read(chatApiServiceProvider);
       final results = await Future.wait(<Future<Object>>[
         api.fetchHelpdeskUsers(widget.currentUser),
-        api.fetchHelpdeskDepartments(widget.currentUser),
+        api.getActiveHelpdeskDepartments(widget.currentUser),
       ]);
       final users = (results[0] as List<HelpdeskUser>).toList()
         ..sort(
           (a, b) =>
               a.username.toLowerCase().compareTo(b.username.toLowerCase()),
         );
-      final departments = (results[1] as List<HelpdeskDepartment>).toList()
+      final departments = (results[1] as List<HelpdeskDepartmentEntry>)
+          .map(HelpdeskDepartment.fromEntry)
+          .toList()
         ..sort((a, b) => a.name.compareTo(b.name));
 
       if (!mounted) return;
