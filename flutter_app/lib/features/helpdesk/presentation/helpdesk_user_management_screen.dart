@@ -539,8 +539,8 @@ class _HelpdeskUserFormDialogState
   }
 
   List<Contact> _availableContacts() {
-    final contacts = ref.watch(chatStoreProvider).contacts;
-    final me = ref.watch(chatStoreProvider.notifier).currentUser;
+    final contacts = ref.read(chatStoreProvider).contacts;
+    final me = ref.read(chatStoreProvider.notifier).currentUser;
     return contacts.values.where((c) {
       if (me != null && c.username.trim().toLowerCase() == me) return false;
       if (c.status == 0) return false;
