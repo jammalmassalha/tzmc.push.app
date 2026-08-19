@@ -687,10 +687,7 @@ class _HelpdeskUserFormDialogState
             child: const Text('ביטול'),
           ),
           ElevatedButton(
-            onPressed: (_isSubmitting ||
-                    (!_isEdit &&
-                        (_selectedContact == null ||
-                            _selectedUsername.trim().isEmpty)))
+            onPressed: (_isSubmitting || (!_isEdit && _selectedContact == null))
                 ? null
                 : _submit,
             child: _isSubmitting
