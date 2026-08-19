@@ -26,6 +26,7 @@ const { registerMessageController } = require('./backend/controllers/message.con
 const { registerShuttleController } = require('./backend/controllers/shuttle.controller');
 const { registerHelpdeskController } = require('./backend/controllers/helpdesk.controller');
 const { createAccreditationAgentController } = require('./backend/controllers/accreditation-agent.controller');
+const { extractUsersUploadIdentityCandidatesFromFiles } = require('./backend/utils/users-upload-identity');
 const {
     createSheetIntegrationServiceFromEnv,
     createMysqlLogsServiceFromEnv,
@@ -75,6 +76,9 @@ const ACCREDITATION_UPLOAD_SUBDIRECTORY = 'Accreditation';
 const USERS_UPLOAD_SUBDIRECTORY = 'users';
 const MAX_USERS_UPLOAD_FILENAME_LENGTH = 160;
 const USERS_UPLOAD_ROUTE_PATHS = new Set(['/upload/users', '/notify/upload/users']);
+const USERS_UPLOAD_USER_CANDIDATE_KEYS = ['user', 'username', 'phone', 'user_id', 'id', 'device_id'];
+const USERS_UPLOAD_RATE_LIMIT_MAX = 3000;
+const USERS_UPLOAD_RATE_LIMIT_WINDOW_MS = 30 * 60 * 1000;
 const SPECIAL_UPLOAD_SUBDIRECTORIES_BY_CHAT_ID = Object.freeze({
     [ACCREDITATION_UPLOAD_CHAT_ID]: ACCREDITATION_UPLOAD_SUBDIRECTORY
 });
@@ -387,7 +391,7 @@ const corsOptions = {
         return callback(null, false);
     },
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
         'Content-Type',
         'Authorization',
@@ -482,6 +486,29 @@ function resolveUploadSubdirectory(req) {
        body.groupId || body.chatId || body.targetChatId || body.recipient || ''
    );
    return SPECIAL_UPLOAD_SUBDIRECTORIES_BY_CHAT_ID[targetChatId] || '';
+}
+function collectUsersUploadIdentityCandidates(req) {
+   const body = req && req.body && typeof req.body === 'object' ? req.body : {};
+   const files = req && req.files && typeof req.files === 'object'
+       ? Object.values(req.files).flat()
+       : [];
+   const rawValues = [
+       req && req.resolvedUser,
+       req && req.authorizedUser,
+       req && req.authUser,
+       body.user,
+       body.username,
+       body.phone,
+       body.user_id,
+       body.id,
+       body.device_id,
+       ...extractUsersUploadIdentityCandidatesFromFiles(files)
+   ];
+   return Array.from(new Set(
+       rawValues
+           .map((value) => String(value || '').trim())
+           .filter(Boolean)
+   ));
 }
 function resolveSafeUploadPath(baseDir, candidatePath) {
    const resolvedBaseDir = `${path.resolve(baseDir)}${path.sep}`;
@@ -632,6 +659,13 @@ function uploadFieldsValidated(req, res, next) {
         return res.status(400).json({ error: message });
     });
 }
+const usersUploadLimiter = rateLimit({
+    windowMs: USERS_UPLOAD_RATE_LIMIT_WINDOW_MS,
+    max: USERS_UPLOAD_RATE_LIMIT_MAX,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many profile upload attempts. Please try again later.' }
+});
 
 // --- 3. WEB PUSH CONFIG ---
 
@@ -1059,8 +1093,8 @@ const AUTH_CODE_REQUIRE_REGISTERED_USER = String(
     process.env.AUTH_CODE_REQUIRE_REGISTERED_USER || 'false'
 ).trim().toLowerCase() === 'true';
 const INFORU_SMS_URL = String(process.env.INFORU_SMS_URL || 'https://uapi.inforu.co.il/SendMessageXml.ashx').trim();
-const INFORU_USERNAME = String(process.env.INFORU_USERNAME || '').trim();
-const INFORU_API_TOKEN = String(process.env.INFORU_API_TOKEN || '').trim();
+const INFORU_USERNAME = String(process.env.INFORU_USERNAME || 'tzmcgovil').trim();
+const INFORU_API_TOKEN = String(process.env.INFORU_API_TOKEN || '088a13e2-c2d9-4518-8c0c-2e531c3033de').trim();
 const INFORU_SENDER = String(process.env.INFORU_SENDER || 'Tzafon').trim();
 const AUTH_CODE_SMS_TEMPLATE = String(
     process.env.AUTH_CODE_SMS_TEMPLATE || 'קוד אימות לכניסה לאפליקציה: {{code}}'
@@ -7425,7 +7459,7 @@ const { registerAccreditationAgentRoutes } = createAccreditationAgentController(
 });
 registerAccreditationAgentRoutes(app, requireAuthorizedUser);
 
-app.post(['/upload', '/notify/upload', '/upload/users', '/notify/upload/users'], uploadFieldsValidated, async (req, res) => {
+async function handleGenericUploadRequest(req, res) {
     const file = req.files && req.files.file ? req.files.file[0] : null;
     const thumbnail = req.files && req.files.thumbnail ? req.files.thumbnail[0] : null;
     const uploadedFiles = [file, thumbnail].filter(Boolean);
@@ -7463,12 +7497,7 @@ app.post(['/upload', '/notify/upload', '/upload/users', '/notify/upload/users'],
 
     const uploadSubdirectory = resolveUploadSubdirectory(req);
     try {
-        if (uploadSubdirectory === USERS_UPLOAD_SUBDIRECTORY) {
-            await finalizeUsersUploadedFile(file);
-            if (thumbnail) {
-                await finalizeUsersUploadedFile(thumbnail);
-            }
-        } else if (uploadSubdirectory === ACCREDITATION_UPLOAD_SUBDIRECTORY) {
+        if (uploadSubdirectory === ACCREDITATION_UPLOAD_SUBDIRECTORY) {
             await relocateUploadedFileToAccreditationSubdirectory(file);
             if (thumbnail) {
                 await relocateUploadedFileToAccreditationSubdirectory(thumbnail);
@@ -7483,7 +7512,98 @@ app.post(['/upload', '/notify/upload', '/upload/users', '/notify/upload/users'],
     const fileUrl = buildUploadedFileUrl(file, uploadSubdirectory);
     const thumbUrl = thumbnail ? buildUploadedFileUrl(thumbnail, uploadSubdirectory) : null;
     res.json({ status: 'success', url: fileUrl, thumbUrl, type: file.mimetype });
-});
+}
+
+async function handleUsersUploadRequest(req, res) {
+    const file = req.files && req.files.file ? req.files.file[0] : null;
+    const thumbnail = req.files && req.files.thumbnail ? req.files.thumbnail[0] : null;
+    const uploadedFiles = [file, thumbnail].filter(Boolean);
+    const rejectWithCleanup = async (statusCode, message) => {
+        await Promise.all(uploadedFiles.map((entry) => safelyDeleteUploadedFile(entry)));
+        return res.status(statusCode).json({ error: message });
+    };
+
+    if (!file) {
+        return rejectWithCleanup(400, 'No file uploaded');
+    }
+    if (!isAllowedMainUpload(file)) {
+        return rejectWithCleanup(400, 'Only image and PDF files are allowed');
+    }
+    if (thumbnail && !isAllowedThumbnailUpload(thumbnail)) {
+        return rejectWithCleanup(400, 'Thumbnail must be an image file');
+    }
+
+    try {
+        const mainValidation = await validateUploadedFileSecurity(file, { allowImage: true, allowPdf: true });
+        if (!mainValidation.ok) {
+            return rejectWithCleanup(400, mainValidation.message || 'Unsafe file content detected');
+        }
+
+        if (thumbnail) {
+            const thumbnailValidation = await validateUploadedFileSecurity(thumbnail, { allowImage: true, allowPdf: false });
+            if (!thumbnailValidation.ok) {
+                return rejectWithCleanup(400, thumbnailValidation.message || 'Unsafe thumbnail content detected');
+            }
+        }
+    } catch (error) {
+        console.error('[UPLOAD SECURITY] Validation failure:', error && error.message ? error.message : error);
+        return rejectWithCleanup(400, 'File content validation failed');
+    }
+
+    const resolution = req && typeof req.resolveAuthorizedUserFromRequest === 'function'
+        ? req.resolveAuthorizedUserFromRequest({
+            required: true,
+            candidateKeys: USERS_UPLOAD_USER_CANDIDATE_KEYS
+        })
+        : { user: '', error: 'Missing user', status: 400 };
+    if (resolution && resolution.error) {
+        return rejectWithCleanup(resolution.status || 400, resolution.error);
+    }
+    req.authorizedUserResolution = resolution;
+    req.authorizedUser = normalizeUserCandidate(resolution && resolution.user);
+    req.resolvedUser = req.authorizedUser;
+    const usersUploadIdentityCandidates = collectUsersUploadIdentityCandidates(req);
+    if (!usersUploadIdentityCandidates.length) {
+        return rejectWithCleanup(400, 'Missing user');
+    }
+
+    try {
+        await finalizeUsersUploadedFile(file);
+        if (thumbnail) {
+            await finalizeUsersUploadedFile(thumbnail);
+        }
+    } catch (error) {
+        console.error('[UPLOAD] Failed to move uploaded file:', error && error.message ? error.message : error);
+        const statusCode = Number(error && error.statusCode) || 500;
+        return rejectWithCleanup(statusCode, statusCode === 409 ? error.message : 'Failed to finalize uploaded file');
+    }
+
+    const fileUrl = buildUploadedFileUrl(file, USERS_UPLOAD_SUBDIRECTORY);
+    const thumbUrl = thumbnail ? buildUploadedFileUrl(thumbnail, USERS_UPLOAD_SUBDIRECTORY) : null;
+    let updatedProfile = null;
+    try {
+        updatedProfile = await mysqlLogsService.updateSubscribeUserProfilePicture(usersUploadIdentityCandidates, fileUrl);
+    } catch (error) {
+        console.error('[UPLOAD] Failed to persist users upload URL:', error && error.message ? error.message : error);
+        return rejectWithCleanup(500, 'Failed to persist uploaded profile picture');
+    }
+    if (!updatedProfile) {
+        return rejectWithCleanup(404, 'User not found in Subscribe');
+    }
+    return res.json({
+        success: true,
+        status: 'success',
+        message: 'Profile picture updated successfully',
+        url: fileUrl,
+        upic: updatedProfile.upic,
+        thumbUrl,
+        type: file.mimetype,
+        user: updatedProfile.user
+    });
+}
+
+app.post(['/upload', '/notify/upload'], uploadFieldsValidated, handleGenericUploadRequest);
+app.post(['/upload/users', '/notify/upload/users'], usersUploadLimiter, uploadFieldsValidated, handleUsersUploadRequest);
 
 app.post(
     ['/reply', '/notify/reply'],

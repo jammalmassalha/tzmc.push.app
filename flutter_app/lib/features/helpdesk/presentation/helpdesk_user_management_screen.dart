@@ -7,8 +7,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../../../core/api/chat_api_service.dart';
+import '../../../core/models/chat_models.dart';
 import '../../../core/models/helpdesk_models.dart';
+import '../../../core/services/chat_store_service.dart';
 import '../../../core/utils/toast_utils.dart';
+import '../../../shared/theme/app_theme.dart';
+import '../../../shared/widgets/authenticated_image.dart';
 
 class HelpdeskUserManagementScreen extends ConsumerStatefulWidget {
   final String currentUser;
@@ -49,15 +53,17 @@ class _HelpdeskUserManagementScreenState
     try {
       final api = ref.read(chatApiServiceProvider);
       final results = await Future.wait(<Future<Object>>[
-        api.fetchHelpdeskUsers(widget.currentUser),
-        api.fetchHelpdeskDepartments(widget.currentUser),
+        api.fetchHelpdeskUsers(),
+        api.getActiveHelpdeskDepartments(),
       ]);
       final users = (results[0] as List<HelpdeskUser>).toList()
         ..sort(
           (a, b) =>
               a.username.toLowerCase().compareTo(b.username.toLowerCase()),
         );
-      final departments = (results[1] as List<HelpdeskDepartment>).toList()
+      final departments = (results[1] as List<HelpdeskDepartmentEntry>)
+          .map(HelpdeskDepartment.fromEntry)
+          .toList()
         ..sort((a, b) => a.name.compareTo(b.name));
 
       if (!mounted) return;
@@ -85,12 +91,12 @@ class _HelpdeskUserManagementScreenState
       context: context,
       builder: (ctx) => HelpdeskUserFormDialog(
         departments: _departments,
+        users: _users,
         existing: existing,
         onSubmit: (formData) async {
           final api = ref.read(chatApiServiceProvider);
           if (existing == null) {
             await api.createHelpdeskUser(
-              user: widget.currentUser,
               username: formData.username,
               role: formData.role,
               department: formData.department,
@@ -98,7 +104,6 @@ class _HelpdeskUserManagementScreenState
             );
           } else {
             await api.updateHelpdeskUser(
-              widget.currentUser,
               existing.id,
               username: formData.username,
               role: formData.role,
@@ -148,7 +153,7 @@ class _HelpdeskUserManagementScreenState
     setState(() => _busyUserIds.add(user.id));
     try {
       final api = ref.read(chatApiServiceProvider);
-      await api.toggleHelpdeskUserStatus(widget.currentUser, user.id, newStatus);
+      await api.toggleHelpdeskUserStatus(user.id, newStatus);
       await _loadData(showLoader: false);
       if (!mounted) return;
       showTopToast(
@@ -263,7 +268,22 @@ class _HelpdeskUserManagementScreenState
   }
 }
 
-class _HelpdeskUserCard extends StatelessWidget {
+String _helpdeskUserDisplayLabel({
+  required String username,
+  String? fullName,
+  required String phoneNumber,
+}) {
+  final normalizedName = fullName?.trim() ?? '';
+  final normalizedPhone = phoneNumber.trim();
+  if (normalizedName.isNotEmpty) {
+    return normalizedPhone.isNotEmpty
+        ? '$normalizedName - $normalizedPhone'
+        : normalizedName;
+  }
+  return normalizedPhone.isNotEmpty ? normalizedPhone : username;
+}
+
+class _HelpdeskUserCard extends ConsumerWidget {
   final HelpdeskUser user;
   final bool isBusy;
   final VoidCallback onEdit;
@@ -277,10 +297,19 @@ class _HelpdeskUserCard extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final createdAt = user.createdAt == null
         ? '—'
         : DateFormat('HH:mm, d.M.yyyy').format(user.createdAt!);
+    final contact = ref.watch(chatStoreProvider).contacts[user.username];
+    final fullName = user.fullName?.trim().isNotEmpty == true
+        ? user.fullName!.trim()
+        : contact?.displayName ?? '';
+    final title = _helpdeskUserDisplayLabel(
+      username: user.username,
+      fullName: fullName,
+      phoneNumber: user.phoneNumber,
+    );
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -295,7 +324,7 @@ class _HelpdeskUserCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[
                       Text(
-                        user.username,
+                        title,
                         style: Theme.of(context).textTheme.titleMedium?.copyWith(
                               fontWeight: FontWeight.bold,
                             ),
@@ -416,26 +445,32 @@ class HelpdeskUserFormData {
   });
 }
 
-class HelpdeskUserFormDialog extends StatefulWidget {
+class HelpdeskUserFormDialog extends ConsumerStatefulWidget {
   final List<HelpdeskDepartment> departments;
+  final List<HelpdeskUser> users;
   final HelpdeskUser? existing;
   final Future<void> Function(HelpdeskUserFormData data) onSubmit;
 
   const HelpdeskUserFormDialog({
     required this.departments,
+    required this.users,
     required this.onSubmit,
     this.existing,
     super.key,
   });
 
   @override
-  State<HelpdeskUserFormDialog> createState() =>
+  ConsumerState<HelpdeskUserFormDialog> createState() =>
       _HelpdeskUserFormDialogState();
 }
 
-class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
+class _HelpdeskUserFormDialogState
+    extends ConsumerState<HelpdeskUserFormDialog> {
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
-  late final TextEditingController _usernameController;
+  final TextEditingController _searchController = TextEditingController();
+  String _query = '';
+  Contact? _selectedContact;
+  late String _selectedUsername;
   late String _role;
   late String _department;
   late bool _isActive;
@@ -446,9 +481,6 @@ class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
   @override
   void initState() {
     super.initState();
-    _usernameController = TextEditingController(
-      text: widget.existing?.username ?? '',
-    );
     _role = widget.existing?.role ?? 'Editor';
     final departmentNames = widget.departments.map((d) => d.name).toSet();
     final existingDepartment = widget.existing?.department;
@@ -457,23 +489,79 @@ class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
         ? existingDepartment
         : widget.departments.first.name;
     _isActive = widget.existing?.isActive ?? true;
+    _selectedUsername = widget.existing?.username ?? '';
+
+    _searchController.addListener(() {
+      setState(() => _query = _searchController.text.trim().toLowerCase());
+    });
   }
 
   @override
   void dispose() {
-    _usernameController.dispose();
+    _searchController.dispose();
     super.dispose();
+  }
+
+  void _selectContact(Contact contact) {
+    final departmentNames = widget.departments.map((d) => d.name).toSet();
+    String? matched;
+    if (contact.info != null && contact.info!.isNotEmpty) {
+      final infoLower = contact.info!.toLowerCase();
+      for (final dept in widget.departments) {
+        if (infoLower.contains(dept.name.toLowerCase())) {
+          matched = dept.name;
+          break;
+        }
+      }
+    }
+    setState(() {
+      _selectedContact = contact;
+      _selectedUsername = contact.username;
+      _query = '';
+      _searchController.clear();
+      if (matched != null && departmentNames.contains(matched)) {
+        _department = matched;
+      }
+    });
+  }
+
+  void _clearContact() {
+    setState(() {
+      _selectedContact = null;
+      _selectedUsername = '';
+      _query = '';
+      _searchController.clear();
+    });
+  }
+
+  List<Contact> _filteredContacts() {
+    final contacts = ref.watch(chatStoreProvider).contacts;
+    final me = ref.watch(chatStoreProvider.notifier).currentUser;
+    return contacts.values.where((c) {
+      if (me != null && c.username.trim().toLowerCase() == me) return false;
+      if (c.status == 0) return false;
+      if (_query.isEmpty) return true;
+      final info = (c.info ?? '').toLowerCase();
+      final phone = (c.phone ?? '').toLowerCase();
+      return c.displayName.toLowerCase().contains(_query) ||
+          c.username.toLowerCase().contains(_query) ||
+          info.contains(_query) ||
+          phone.contains(_query);
+    }).toList()
+      ..sort((a, b) => a.displayName.compareTo(b.displayName));
   }
 
   Future<void> _submit() async {
     final formState = _formKey.currentState;
     if (formState == null || !formState.validate()) return;
+    final username = _selectedUsername.trim();
+    if (username.isEmpty) return;
 
     setState(() => _isSubmitting = true);
     try {
       await widget.onSubmit(
         HelpdeskUserFormData(
-          username: _usernameController.text.trim(),
+          username: username,
           role: _role,
           department: _department,
           status: _isActive ? 'Active' : 'Inactive',
@@ -507,20 +595,68 @@ class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
-                  TextFormField(
-                    controller: _usernameController,
-                    textDirection: ui.TextDirection.rtl,
-                    decoration: const InputDecoration(
-                      labelText: 'שם משתמש',
-                      border: OutlineInputBorder(),
+                  if (_isEdit) ...<Widget>[
+                    // Edit mode: show username as read-only label
+                    InputDecorator(
+                      decoration: const InputDecoration(
+                        labelText: 'שם משתמש',
+                        border: OutlineInputBorder(),
+                      ),
+                      child: Text(
+                        _selectedUsername,
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
                     ),
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return 'יש להזין שם משתמש';
-                      }
-                      return null;
-                    },
-                  ),
+                  ] else if (_selectedContact != null) ...<Widget>[
+                    // Contact selected: show tile + clear button
+                    _SelectedContactTile(
+                      contact: _selectedContact!,
+                      onClear: _isSubmitting ? null : _clearContact,
+                    ),
+                  ] else ...<Widget>[
+                    // Contact search picker
+                    TextField(
+                      controller: _searchController,
+                      textDirection: ui.TextDirection.rtl,
+                      enabled: !_isSubmitting,
+                      decoration: const InputDecoration(
+                        hintText: 'חיפוש איש קשר לפי שם, מחלקה, טלפון',
+                        prefixIcon: Icon(Icons.search),
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 220),
+                      child: Builder(
+                        builder: (context) {
+                          final filtered = _filteredContacts();
+                          if (filtered.isEmpty) {
+                            return const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 16),
+                              child: Center(
+                                child: Text('לא נמצאו אנשי קשר'),
+                              ),
+                            );
+                          }
+                          return ListView.builder(
+                            shrinkWrap: true,
+                            itemCount: filtered.length,
+                            itemBuilder: (context, index) {
+                              final contact = filtered[index];
+                              return _ContactPickerTile(
+                                contact: contact,
+                                onTap: _isSubmitting
+                                    ? null
+                                    : () => _selectContact(contact),
+                              );
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
                     value: _role,
@@ -581,7 +717,10 @@ class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
             child: const Text('ביטול'),
           ),
           ElevatedButton(
-            onPressed: _isSubmitting ? null : _submit,
+            onPressed: (_isSubmitting ||
+                    (!_isEdit && _selectedContact == null))
+                ? null
+                : _submit,
             child: _isSubmitting
                 ? const SizedBox(
                     width: 18,
@@ -592,6 +731,107 @@ class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _SelectedContactTile extends StatelessWidget {
+  final Contact contact;
+  final VoidCallback? onClear;
+
+  const _SelectedContactTile({required this.contact, this.onClear});
+
+  @override
+  Widget build(BuildContext context) {
+    final initial = contact.displayName.isNotEmpty
+        ? contact.displayName[0].toUpperCase()
+        : '?';
+    final fallback = CircleAvatar(
+      backgroundColor: AppColors.primary,
+      radius: 20,
+      child: Text(
+        initial,
+        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+      ),
+    );
+    final Widget avatar = (contact.upic != null && contact.upic!.isNotEmpty)
+        ? AuthenticatedCircleAvatar(
+            url: contact.upic,
+            radius: 20,
+            fallback: fallback,
+          )
+        : fallback;
+
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: AppColors.primary.withOpacity(0.4)),
+        borderRadius: BorderRadius.circular(8),
+        color: AppColors.primary.withOpacity(0.05),
+      ),
+      child: ListTile(
+        leading: avatar,
+        title: Text(
+          contact.displayName,
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
+        subtitle: contact.info != null && contact.info!.isNotEmpty
+            ? Text(
+                contact.info!,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              )
+            : null,
+        trailing: onClear != null
+            ? IconButton(
+                icon: const Icon(Icons.close),
+                tooltip: 'שנה משתמש',
+                onPressed: onClear,
+              )
+            : null,
+      ),
+    );
+  }
+}
+
+class _ContactPickerTile extends StatelessWidget {
+  final Contact contact;
+  final VoidCallback? onTap;
+
+  const _ContactPickerTile({required this.contact, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final initial = contact.displayName.isNotEmpty
+        ? contact.displayName[0].toUpperCase()
+        : '?';
+    final fallback = CircleAvatar(
+      backgroundColor: AppColors.primary,
+      child: Text(
+        initial,
+        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+      ),
+    );
+    final Widget avatar = (contact.upic != null && contact.upic!.isNotEmpty)
+        ? AuthenticatedCircleAvatar(
+            url: contact.upic,
+            radius: 20,
+            fallback: fallback,
+          )
+        : fallback;
+
+    return ListTile(
+      onTap: onTap,
+      leading: avatar,
+      title: Text(contact.displayName, style: theme.textTheme.bodyLarge),
+      subtitle: contact.info != null && contact.info!.isNotEmpty
+          ? Text(
+              contact.info!,
+              style: theme.textTheme.bodySmall,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            )
+          : null,
     );
   }
 }

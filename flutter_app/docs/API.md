@@ -410,6 +410,30 @@ Content-Type: multipart/form-data
 }
 ```
 
+### Upload User Profile Picture
+```
+POST /notify/upload/users
+Content-Type: multipart/form-data
+```
+
+**Form Fields:**
+- `file` - Profile image file to upload
+- `user` / `username` / `phone` - Optional user identifier when no authenticated session is present
+
+**Response:**
+```json
+{
+  "success": true,
+  "status": "success",
+  "message": "Profile picture updated successfully",
+  "user": "0546799693",
+  "url": "/notify/uploads/users/example.jpg",
+  "upic": "/notify/uploads/users/example.jpg",
+  "thumbUrl": null,
+  "type": "image/jpeg"
+}
+```
+
 ---
 
 ## Device Registration

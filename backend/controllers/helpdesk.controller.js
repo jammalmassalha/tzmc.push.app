@@ -40,6 +40,27 @@ const ONGOING_STATUSES = new Set(['open', 'in_progress']);
 // Simple rate limiting store (per-user, in-memory)
 const helpdeskRateLimitStore = new Map();
 
+function isUnknownColumnError(err, columnName) {
+    if (!err || err.errno !== 1054) return false;
+    const message = toTrimmedString(err.sqlMessage || err.message || '').toLowerCase();
+    return message.includes(`'${String(columnName || '').toLowerCase()}'`);
+}
+
+function isMissingHelpdeskUsersStatusColumnError(err) {
+    return isUnknownColumnError(err, 'status');
+}
+
+async function tryAddHelpdeskUsersStatusColumn(pool) {
+    try {
+        await pool.execute("ALTER TABLE `helpdesk_users` ADD COLUMN `status` VARCHAR(16) NOT NULL DEFAULT 'Active' AFTER `department`");
+        return true;
+    } catch (err) {
+        // ER_DUP_FIELDNAME (1060) — column already exists.
+        if (err && err.errno === 1060) return true;
+        return false;
+    }
+}
+
 function parseJsonObject(value, fallbackValue = null) {
     if (value === null || value === undefined || value === '') return fallbackValue;
     if (typeof value === 'object') return value;
@@ -553,6 +574,23 @@ function registerHelpdeskController(app, deps = {}) {
         standardHeaders: true,
         legacyHeaders: false,
         keyGenerator: (req) => req.ip || req.socket && req.socket.remoteAddress || 'helpdesk-admin',
+        handler: (_req, res, _next, options) => {
+            const retryAfterSeconds = Math.ceil(options.windowMs / 1000);
+            res.setHeader('Retry-After', String(retryAfterSeconds));
+            return res.status(429).json({
+                result: 'error',
+                message: 'יותר מדי בקשות. נסה שוב בעוד דקה.',
+                retryAfterSeconds
+            });
+        }
+    });
+
+    const helpdeskReadIpRateLimit = rateLimit({
+        windowMs: 60 * 1000,
+        limit: 60,
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: (req) => req.ip || req.socket && req.socket.remoteAddress || 'helpdesk-read',
         handler: (_req, res, _next, options) => {
             const retryAfterSeconds = Math.ceil(options.windowMs / 1000);
             res.setHeader('Retry-After', String(retryAfterSeconds));
@@ -1340,31 +1378,75 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // GET /helpdesk/users - Admin: list all helpdesk_users; Editor: list users in own department
-    app.get(['/helpdesk/users', '/notify/helpdesk/users'], requireUser, helpdeskRateLimit(20, 60 * 1000), async (req, res) => {
+    app.get(['/helpdesk/users', '/notify/helpdesk/users'], requireUser, helpdeskReadIpRateLimit, helpdeskRateLimit(20, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
+        const requestedDepartment = toTrimmedString((req.query && req.query.department) || '');
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
         }
+
+        // Runs a helpdesk_users query, with or without the Subscribe JOIN.
+        // Falls back to the no-JOIN variant if Subscribe is inaccessible
+        // (e.g. different database, missing table/column — errno 1146 / 1054).
+        async function queryUsers(withJoin, sql, params) {
+            try {
+                const [rows] = params ? await pool.query(sql, params) : await pool.query(sql);
+                return rows;
+            } catch (err) {
+                if (withJoin && err && (err.errno === 1146 || err.errno === 1054)) {
+                    console.warn('[HELPDESK] Subscribe JOIN unavailable (errno ' + err.errno + '), retrying without JOIN');
+                    return null; // signal: retry without JOIN
+                }
+                throw err;
+            }
+        }
+
+        async function loadUsersRows(editorRole, departmentFilter, withStatusColumn) {
+            const statusSelectWithJoin = withStatusColumn ? 'hu.`status`' : '\'Active\' AS `status`';
+            const statusSelectNoJoin = withStatusColumn ? '`status`' : '\'Active\' AS `status`';
+            const adminWithDepartment = Boolean(editorRole.role === 'Admin' && departmentFilter);
+            const usersDepartment = editorRole.role === 'Admin'
+                ? (departmentFilter || '')
+                : editorRole.department;
+            const shouldFilterDepartment = adminWithDepartment || editorRole.role !== 'Admin';
+            const params = shouldFilterDepartment ? [usersDepartment] : null;
+
+            const withJoinSql = shouldFilterDepartment
+                ? `SELECT hu.\`id\`, hu.\`username\`, hu.\`role\`, hu.\`department\`, ${statusSelectWithJoin}, hu.\`created_at\`, NULLIF(TRIM(s.\`FullName\`), '') AS \`full_name\` FROM \`helpdesk_users\` hu LEFT JOIN \`Subscribe\` s ON s.\`User\` = hu.\`username\` WHERE hu.\`department\` = ? ORDER BY hu.\`username\``
+                : `SELECT hu.\`id\`, hu.\`username\`, hu.\`role\`, hu.\`department\`, ${statusSelectWithJoin}, hu.\`created_at\`, NULLIF(TRIM(s.\`FullName\`), '') AS \`full_name\` FROM \`helpdesk_users\` hu LEFT JOIN \`Subscribe\` s ON s.\`User\` = hu.\`username\` ORDER BY hu.\`department\`, hu.\`username\``;
+
+            let rows = await queryUsers(true, withJoinSql, params);
+            if (rows !== null) return rows;
+
+            const noJoinSql = shouldFilterDepartment
+                ? `SELECT \`id\`, \`username\`, \`role\`, \`department\`, ${statusSelectNoJoin}, \`created_at\`, NULL AS \`full_name\` FROM \`helpdesk_users\` WHERE \`department\` = ? ORDER BY \`username\``
+                : `SELECT \`id\`, \`username\`, \`role\`, \`department\`, ${statusSelectNoJoin}, \`created_at\`, NULL AS \`full_name\` FROM \`helpdesk_users\` ORDER BY \`department\`, \`username\``;
+            [rows] = params ? await pool.query(noJoinSql, params) : await pool.query(noJoinSql);
+            return rows;
+        }
+
         try {
             await getTablesReady();
             const editorRole = await getHelpdeskUserRole(pool, user);
             if (!editorRole) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה' });
             }
+
             let rows;
-            if (editorRole.role === 'Admin') {
-                [rows] = await pool.query(
-                    'SELECT `id`, `username`, `role`, `department`, `status`, `created_at` FROM `helpdesk_users` ORDER BY `department`, `username`'
-                );
-            } else {
-                [rows] = await pool.query(
-                    'SELECT `id`, `username`, `role`, `department`, `status`, `created_at` FROM `helpdesk_users` WHERE `department` = ? ORDER BY `username`',
-                    [editorRole.department]
-                );
+            try {
+                rows = await loadUsersRows(editorRole, requestedDepartment, true);
+            } catch (err) {
+                if (!isMissingHelpdeskUsersStatusColumnError(err)) throw err;
+                const added = await tryAddHelpdeskUsersStatusColumn(pool);
+                rows = added
+                    ? await loadUsersRows(editorRole, requestedDepartment, true)
+                    : await loadUsersRows(editorRole, requestedDepartment, false);
             }
+
             const users = rows.map((r) => ({
                 id: r.id,
                 username: r.username,
+                fullName: r.full_name || null,
                 role: r.role,
                 department: r.department,
                 status: r.status || 'Active',
@@ -1373,13 +1455,13 @@ function registerHelpdeskController(app, deps = {}) {
             return res.json({ result: 'success', users });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to load users';
-            console.error('[HELPDESK] Load users error:', message);
+            console.error('[HELPDESK] Load users error (errno ' + (error && error.errno) + '):', message);
             return res.status(500).json({ result: 'error', message: 'שגיאה בטעינת המשתמשים' });
         }
     });
 
     // POST /helpdesk/users - Admin: add a user to helpdesk_users
-    app.post(['/helpdesk/users', '/notify/helpdesk/users'], requireUser, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
+    app.post(['/helpdesk/users', '/notify/helpdesk/users'], requireUser, helpdeskAdminMutationIpRateLimit, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
@@ -1402,10 +1484,26 @@ function registerHelpdeskController(app, deps = {}) {
             if (!editorRole || editorRole.role !== 'Admin') {
                 return res.status(403).json({ result: 'error', message: 'רק מנהל יכול להוסיף משתמשים' });
             }
-            await pool.execute(
-                'INSERT INTO `helpdesk_users` (`username`, `role`, `department`, `status`) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE `role` = VALUES(`role`), `department` = VALUES(`department`), `status` = VALUES(`status`)',
-                [targetUsername, role, department, status]
-            );
+            try {
+                await pool.execute(
+                    'INSERT INTO `helpdesk_users` (`username`, `role`, `department`, `status`) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE `role` = VALUES(`role`), `department` = VALUES(`department`), `status` = VALUES(`status`)',
+                    [targetUsername, role, department, status]
+                );
+            } catch (err) {
+                if (!isMissingHelpdeskUsersStatusColumnError(err)) throw err;
+                const added = await tryAddHelpdeskUsersStatusColumn(pool);
+                if (added) {
+                    await pool.execute(
+                        'INSERT INTO `helpdesk_users` (`username`, `role`, `department`, `status`) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE `role` = VALUES(`role`), `department` = VALUES(`department`), `status` = VALUES(`status`)',
+                        [targetUsername, role, department, status]
+                    );
+                } else {
+                    await pool.execute(
+                        'INSERT INTO `helpdesk_users` (`username`, `role`, `department`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `role` = VALUES(`role`), `department` = VALUES(`department`)',
+                        [targetUsername, role, department]
+                    );
+                }
+            }
             return res.status(201).json({ result: 'success' });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to add user';
@@ -1415,7 +1513,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // DELETE /helpdesk/users/:username - Admin: remove a user from helpdesk_users
-    app.delete(['/helpdesk/users/:username', '/notify/helpdesk/users/:username'], requireUser, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
+    app.delete(['/helpdesk/users/:username', '/notify/helpdesk/users/:username'], requireUser, helpdeskAdminMutationIpRateLimit, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
@@ -1467,10 +1565,27 @@ function registerHelpdeskController(app, deps = {}) {
             if (!editorRole || editorRole.role !== 'Admin') {
                 return res.status(403).json({ result: 'error', message: 'רק מנהל יכול לעדכן משתמשים' });
             }
-            const [result] = await pool.execute(
-                'UPDATE `helpdesk_users` SET `username` = ?, `role` = ?, `department` = ?, `status` = ? WHERE `id` = ?',
-                [targetUsername, role, department, status, targetId]
-            );
+            let result;
+            try {
+                [result] = await pool.execute(
+                    'UPDATE `helpdesk_users` SET `username` = ?, `role` = ?, `department` = ?, `status` = ? WHERE `id` = ?',
+                    [targetUsername, role, department, status, targetId]
+                );
+            } catch (err) {
+                if (!isMissingHelpdeskUsersStatusColumnError(err)) throw err;
+                const added = await tryAddHelpdeskUsersStatusColumn(pool);
+                if (added) {
+                    [result] = await pool.execute(
+                        'UPDATE `helpdesk_users` SET `username` = ?, `role` = ?, `department` = ?, `status` = ? WHERE `id` = ?',
+                        [targetUsername, role, department, status, targetId]
+                    );
+                } else {
+                    [result] = await pool.execute(
+                        'UPDATE `helpdesk_users` SET `username` = ?, `role` = ?, `department` = ? WHERE `id` = ?',
+                        [targetUsername, role, department, targetId]
+                    );
+                }
+            }
             if (result.affectedRows === 0) {
                 return res.status(404).json({ result: 'error', message: 'משתמש לא נמצא' });
             }
@@ -1504,10 +1619,26 @@ function registerHelpdeskController(app, deps = {}) {
             if (!editorRole || editorRole.role !== 'Admin') {
                 return res.status(403).json({ result: 'error', message: 'רק מנהל יכול לשנות סטטוס משתמשים' });
             }
-            const [result] = await pool.execute(
-                'UPDATE `helpdesk_users` SET `status` = ? WHERE `id` = ?',
-                [newStatus, targetId]
-            );
+            let result;
+            try {
+                [result] = await pool.execute(
+                    'UPDATE `helpdesk_users` SET `status` = ? WHERE `id` = ?',
+                    [newStatus, targetId]
+                );
+            } catch (err) {
+                if (!isMissingHelpdeskUsersStatusColumnError(err)) throw err;
+                const added = await tryAddHelpdeskUsersStatusColumn(pool);
+                if (added) {
+                    [result] = await pool.execute(
+                        'UPDATE `helpdesk_users` SET `status` = ? WHERE `id` = ?',
+                        [newStatus, targetId]
+                    );
+                } else {
+                    const unavailableError = new Error('Helpdesk user status column is unavailable');
+                    unavailableError.httpStatus = 503;
+                    throw unavailableError;
+                }
+            }
             if (result.affectedRows === 0) {
                 return res.status(404).json({ result: 'error', message: 'משתמש לא נמצא' });
             }
@@ -1515,6 +1646,9 @@ function registerHelpdeskController(app, deps = {}) {
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to update user status';
             console.error('[HELPDESK] Update user status error:', message);
+            if (error && error.httpStatus === 503) {
+                return res.status(503).json({ result: 'error', message: 'לא ניתן לעדכן סטטוס משתמש כרגע' });
+            }
             return res.status(500).json({ result: 'error', message: 'שגיאה בעדכון סטטוס המשתמש' });
         }
     });

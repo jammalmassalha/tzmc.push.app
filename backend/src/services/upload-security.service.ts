@@ -343,7 +343,7 @@ export class UploadSecurityService {
       return { ok: false, message: 'File is too large for security inspection' };
     }
 
-    const fileBuffer = await fs.readFile(file.path);
+    const fileBuffer = await fs.readFile(resolvedPath);
     if (!fileBuffer.length) {
       return { ok: false, message: 'Uploaded file is empty' };
     }

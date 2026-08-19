@@ -1270,13 +1270,9 @@ class ChatApiService {
   }
 
 
-  Future<List<HelpdeskDepartmentEntry>> getActiveHelpdeskDepartments(String user) async {
-    final normalizedUser = user.trim();
-    if (normalizedUser.isEmpty) throw ApiException('User is required');
-
+  Future<List<HelpdeskDepartmentEntry>> getActiveHelpdeskDepartments() async {
     final response = await _client.get<Map<String, dynamic>>(
       ApiEndpoints.helpdeskDepartmentsActive,
-      queryParameters: {'user': normalizedUser},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
@@ -1291,13 +1287,9 @@ class ChatApiService {
   }
 
   /// Get all helpdesk departments (Admin only).
-  Future<List<HelpdeskDepartmentEntry>> getAllHelpdeskDepartments(String user) async {
-    final normalizedUser = user.trim();
-    if (normalizedUser.isEmpty) throw ApiException('User is required');
-
+  Future<List<HelpdeskDepartmentEntry>> getAllHelpdeskDepartments() async {
     final response = await _client.get<Map<String, dynamic>>(
       ApiEndpoints.helpdeskDepartments,
-      queryParameters: {'user': normalizedUser},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
@@ -1426,13 +1418,17 @@ class ChatApiService {
   }
 
   /// Get helpdesk users for admin CRUD flows.
-  Future<List<HelpdeskUser>> fetchHelpdeskUsers(String user) async {
-    final normalizedUser = user.trim();
-    if (normalizedUser.isEmpty) throw ApiException('User is required');
+  Future<List<HelpdeskUser>> fetchHelpdeskUsers({
+    String? department,
+  }) async {
+    final normalizedDepartment = department?.trim();
 
     final response = await _client.get<Map<String, dynamic>>(
       ApiEndpoints.helpdeskUsers,
-      queryParameters: {'user': normalizedUser},
+      queryParameters: {
+        if (normalizedDepartment != null && normalizedDepartment.isNotEmpty)
+          'department': normalizedDepartment,
+      },
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
     if (!response.isSuccessful) {
@@ -1454,18 +1450,13 @@ class ChatApiService {
 
   /// Create a helpdesk user.
   Future<void> createHelpdeskUser({
-    required String user,
     required String username,
     required String role,
     required String department,
     required String status,
   }) async {
-    final normalizedUser = user.trim();
-    if (normalizedUser.isEmpty) throw ApiException('User is required');
-
     final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.helpdeskUsers,
-      queryParameters: {'user': normalizedUser},
       data: {
         'username': username.trim(),
         'role': _normalizeHelpdeskRoleValue(role),
@@ -1483,19 +1474,14 @@ class ChatApiService {
 
   /// Update a helpdesk user.
   Future<void> updateHelpdeskUser(
-    String user,
     int id, {
     required String username,
     required String role,
     required String department,
     required String status,
   }) async {
-    final normalizedUser = user.trim();
-    if (normalizedUser.isEmpty) throw ApiException('User is required');
-
     final response = await _client.put<Map<String, dynamic>>(
       '${ApiEndpoints.helpdeskUsers}/$id',
-      queryParameters: {'user': normalizedUser},
       data: {
         'username': username.trim(),
         'role': _normalizeHelpdeskRoleValue(role),
@@ -1513,16 +1499,11 @@ class ChatApiService {
 
   /// Toggle a helpdesk user status.
   Future<void> toggleHelpdeskUserStatus(
-    String user,
     int id,
     String newStatus,
   ) async {
-    final normalizedUser = user.trim();
-    if (normalizedUser.isEmpty) throw ApiException('User is required');
-
     final response = await _client.patch<Map<String, dynamic>>(
       '${ApiEndpoints.helpdeskUsers}/$id/status',
-      queryParameters: {'user': normalizedUser},
       data: {'status': _normalizeHelpdeskStatusValue(newStatus)},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );

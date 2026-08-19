@@ -667,6 +667,8 @@ String _normalizeHelpdeskUserStatus(dynamic value) {
 class HelpdeskUser extends Equatable {
   final int id;
   final String username;
+  final String? fullName;
+  final String phoneNumber;
   final String role;
   final String department;
   final DateTime? createdAt;
@@ -675,6 +677,8 @@ class HelpdeskUser extends Equatable {
   const HelpdeskUser({
     required this.id,
     required this.username,
+    this.fullName,
+    required this.phoneNumber,
     required this.role,
     required this.department,
     this.createdAt,
@@ -684,14 +688,32 @@ class HelpdeskUser extends Equatable {
   bool get isActive => status == 'Active';
 
   @override
-  List<Object?> get props => [id, username, role, department, createdAt, status];
+  List<Object?> get props => [
+        id,
+        username,
+        fullName,
+        phoneNumber,
+        role,
+        department,
+        createdAt,
+        status,
+      ];
 
   factory HelpdeskUser.fromJson(Map<String, dynamic> json) {
     final createdAtRaw =
         json['createdAt'] ?? json['created_at'] ?? json['CreatedAt'];
+    final rawFullName =
+        json['fullName'] ?? json['full_name'] ?? json['name'] ?? json['displayName'];
+    final normalizedFullName = rawFullName?.toString().trim();
+    final username = (json['username'] ?? json['Username'] ?? '').toString();
+    final phoneNumber = (json['phone'] ?? json['PhoneNumber'] ?? '').toString().trim();
     return HelpdeskUser(
       id: ((json['id'] ?? json['ID']) as num?)?.toInt() ?? 0,
-      username: (json['username'] ?? json['Username'] ?? '').toString(),
+      username: username,
+      fullName: (normalizedFullName != null && normalizedFullName.isNotEmpty)
+          ? normalizedFullName
+          : null,
+      phoneNumber: phoneNumber,
       role: _normalizeHelpdeskUserRole(
         (json['role'] ?? json['Role'])?.toString(),
       ),
@@ -708,6 +730,8 @@ class HelpdeskUser extends Equatable {
   Map<String, dynamic> toJson() => {
         'id': id,
         'username': username,
+        if (fullName != null) 'fullName': fullName,
+        'phone': phoneNumber,
         'role': role,
         'department': department,
         if (createdAt != null) 'createdAt': createdAt!.toIso8601String(),
