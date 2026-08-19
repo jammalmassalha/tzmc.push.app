@@ -26,6 +26,7 @@ const { registerMessageController } = require('./backend/controllers/message.con
 const { registerShuttleController } = require('./backend/controllers/shuttle.controller');
 const { registerHelpdeskController } = require('./backend/controllers/helpdesk.controller');
 const { createAccreditationAgentController } = require('./backend/controllers/accreditation-agent.controller');
+const { extractUsersUploadIdentityCandidatesFromFiles } = require('./backend/utils/users-upload-identity');
 const {
     createSheetIntegrationServiceFromEnv,
     createMysqlLogsServiceFromEnv,
@@ -488,6 +489,9 @@ function resolveUploadSubdirectory(req) {
 }
 function collectUsersUploadIdentityCandidates(req) {
    const body = req && req.body && typeof req.body === 'object' ? req.body : {};
+   const files = req && req.files && typeof req.files === 'object'
+       ? Object.values(req.files).flat()
+       : [];
    const rawValues = [
        req && req.resolvedUser,
        req && req.authorizedUser,
@@ -497,7 +501,8 @@ function collectUsersUploadIdentityCandidates(req) {
        body.phone,
        body.user_id,
        body.id,
-       body.device_id
+       body.device_id,
+       ...extractUsersUploadIdentityCandidatesFromFiles(files)
    ];
    return Array.from(new Set(
        rawValues
