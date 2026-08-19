@@ -1634,11 +1634,9 @@ function registerHelpdeskController(app, deps = {}) {
                         [newStatus, targetId]
                     );
                 } else {
-                    [result] = await pool.execute(
-                        'SELECT `id` FROM `helpdesk_users` WHERE `id` = ? LIMIT 1',
-                        [targetId]
-                    );
-                    result = { affectedRows: result.length ? 1 : 0 };
+                    const unavailableError = new Error('Helpdesk user status column is unavailable');
+                    unavailableError.httpStatus = 503;
+                    throw unavailableError;
                 }
             }
             if (result.affectedRows === 0) {
@@ -1648,6 +1646,9 @@ function registerHelpdeskController(app, deps = {}) {
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to update user status';
             console.error('[HELPDESK] Update user status error:', message);
+            if (error && error.httpStatus === 503) {
+                return res.status(503).json({ result: 'error', message: 'לא ניתן לעדכן סטטוס משתמש כרגע' });
+            }
             return res.status(500).json({ result: 'error', message: 'שגיאה בעדכון סטטוס המשתמש' });
         }
     });
