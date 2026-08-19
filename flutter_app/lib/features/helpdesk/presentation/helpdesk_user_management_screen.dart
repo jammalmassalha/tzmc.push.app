@@ -7,9 +7,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../../../core/api/chat_api_service.dart';
+import '../../../core/models/chat_models.dart';
 import '../../../core/models/helpdesk_models.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../../core/utils/toast_utils.dart';
+import '../../../shared/theme/app_theme.dart';
+import '../../../shared/widgets/authenticated_image.dart';
 
 class HelpdeskUserManagementScreen extends ConsumerStatefulWidget {
   final String currentUser;
@@ -442,7 +445,7 @@ class HelpdeskUserFormData {
   });
 }
 
-class HelpdeskUserFormDialog extends StatefulWidget {
+class HelpdeskUserFormDialog extends ConsumerStatefulWidget {
   final List<HelpdeskDepartment> departments;
   final List<HelpdeskUser> users;
   final HelpdeskUser? existing;
@@ -457,13 +460,17 @@ class HelpdeskUserFormDialog extends StatefulWidget {
   });
 
   @override
-  State<HelpdeskUserFormDialog> createState() =>
+  ConsumerState<HelpdeskUserFormDialog> createState() =>
       _HelpdeskUserFormDialogState();
 }
 
-class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
+class _HelpdeskUserFormDialogState
+    extends ConsumerState<HelpdeskUserFormDialog> {
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
-  late final TextEditingController _usernameController;
+  final TextEditingController _searchController = TextEditingController();
+  String _query = '';
+  Contact? _selectedContact;
+  late String _selectedUsername;
   late String _role;
   late String _department;
   late bool _isActive;
@@ -474,9 +481,6 @@ class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
   @override
   void initState() {
     super.initState();
-    _usernameController = TextEditingController(
-      text: widget.existing?.username ?? '',
-    );
     _role = widget.existing?.role ?? 'Editor';
     final departmentNames = widget.departments.map((d) => d.name).toSet();
     final existingDepartment = widget.existing?.department;
@@ -485,39 +489,79 @@ class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
         ? existingDepartment
         : widget.departments.first.name;
     _isActive = widget.existing?.isActive ?? true;
+    _selectedUsername = widget.existing?.username ?? '';
+
+    _searchController.addListener(() {
+      setState(() => _query = _searchController.text.trim().toLowerCase());
+    });
   }
 
   @override
   void dispose() {
-    _usernameController.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
-  List<HelpdeskUser> _departmentUserSuggestions() {
-    final query = _usernameController.text.trim().toLowerCase();
-    final candidates = widget.users.where(
-      (user) => user.department.trim() == _department.trim(),
-    );
-    final filtered = query.isEmpty
-        ? candidates
-        : candidates.where(
-            (user) =>
-                user.username.toLowerCase().contains(query) ||
-                (user.fullName?.toLowerCase().contains(query) ?? false) ||
-                user.phoneNumber.toLowerCase().contains(query),
-          );
-    return filtered.take(8).toList();
+  void _selectContact(Contact contact) {
+    final departmentNames = widget.departments.map((d) => d.name).toSet();
+    String? matched;
+    if (contact.info != null && contact.info!.isNotEmpty) {
+      final infoLower = contact.info!.toLowerCase();
+      for (final dept in widget.departments) {
+        if (infoLower.contains(dept.name.toLowerCase())) {
+          matched = dept.name;
+          break;
+        }
+      }
+    }
+    setState(() {
+      _selectedContact = contact;
+      _selectedUsername = contact.username;
+      _query = '';
+      _searchController.clear();
+      if (matched != null && departmentNames.contains(matched)) {
+        _department = matched;
+      }
+    });
+  }
+
+  void _clearContact() {
+    setState(() {
+      _selectedContact = null;
+      _selectedUsername = '';
+      _query = '';
+      _searchController.clear();
+    });
+  }
+
+  List<Contact> _filteredContacts() {
+    final contacts = ref.read(chatStoreProvider).contacts;
+    final me = ref.read(chatStoreProvider.notifier).currentUser;
+    return contacts.values.where((c) {
+      if (me != null && c.username.trim().toLowerCase() == me) return false;
+      if (c.status == 0) return false;
+      if (_query.isEmpty) return true;
+      final info = (c.info ?? '').toLowerCase();
+      final phone = (c.phone ?? '').toLowerCase();
+      return c.displayName.toLowerCase().contains(_query) ||
+          c.username.toLowerCase().contains(_query) ||
+          info.contains(_query) ||
+          phone.contains(_query);
+    }).toList()
+      ..sort((a, b) => a.displayName.compareTo(b.displayName));
   }
 
   Future<void> _submit() async {
     final formState = _formKey.currentState;
     if (formState == null || !formState.validate()) return;
+    final username = _selectedUsername.trim();
+    if (username.isEmpty) return;
 
     setState(() => _isSubmitting = true);
     try {
       await widget.onSubmit(
         HelpdeskUserFormData(
-          username: _usernameController.text.trim(),
+          username: username,
           role: _role,
           department: _department,
           status: _isActive ? 'Active' : 'Inactive',
@@ -551,53 +595,68 @@ class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
-                  TextFormField(
-                    controller: _usernameController,
-                    textDirection: ui.TextDirection.rtl,
-                    enabled: !_isSubmitting,
-                    decoration: const InputDecoration(
-                      labelText: 'שם משתמש',
-                      hintText: 'חפש משתמש לפי מחלקה נבחרת',
-                      border: OutlineInputBorder(),
+                  if (_isEdit) ...<Widget>[
+                    // Edit mode: show username as read-only label
+                    InputDecorator(
+                      decoration: const InputDecoration(
+                        labelText: 'שם משתמש',
+                        border: OutlineInputBorder(),
+                      ),
+                      child: Text(
+                        _selectedUsername,
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
                     ),
-                    onChanged: (_) => setState(() {}),
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return 'יש להזין שם משתמש';
-                      }
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 8),
-                  Builder(
-                    builder: (context) {
-                      final suggestions = _departmentUserSuggestions();
-                      if (suggestions.isEmpty) return const SizedBox.shrink();
-                      return Align(
-                        alignment: AlignmentDirectional.centerStart,
-                        child: Wrap(
-                          spacing: 6,
-                          runSpacing: 6,
-                          children: suggestions.map((candidate) {
-                            final label = _helpdeskUserDisplayLabel(
-                              username: candidate.username,
-                              fullName: candidate.fullName,
-                              phoneNumber: candidate.phoneNumber,
+                  ] else if (_selectedContact != null) ...<Widget>[
+                    // Contact selected: show tile + clear button
+                    _SelectedContactTile(
+                      contact: _selectedContact!,
+                      onClear: _isSubmitting ? null : _clearContact,
+                    ),
+                  ] else ...<Widget>[
+                    // Contact search picker
+                    TextField(
+                      controller: _searchController,
+                      textDirection: ui.TextDirection.rtl,
+                      enabled: !_isSubmitting,
+                      decoration: const InputDecoration(
+                        hintText: 'חיפוש איש קשר לפי שם, מחלקה, טלפון',
+                        prefixIcon: Icon(Icons.search),
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 220),
+                      child: Builder(
+                        builder: (context) {
+                          final filtered = _filteredContacts();
+                          if (filtered.isEmpty) {
+                            return const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 16),
+                              child: Center(
+                                child: Text('לא נמצאו אנשי קשר'),
+                              ),
                             );
-                            return ActionChip(
-                              label: Text(label),
-                              onPressed: _isSubmitting
-                                  ? null
-                                  : () {
-                                      _usernameController.text = candidate.username;
-                                      setState(() {});
-                                    },
-                            );
-                          }).toList(),
-                        ),
-                      );
-                    },
-                  ),
+                          }
+                          return ListView.builder(
+                            shrinkWrap: true,
+                            itemCount: filtered.length,
+                            itemBuilder: (context, index) {
+                              final contact = filtered[index];
+                              return _ContactPickerTile(
+                                contact: contact,
+                                onTap: _isSubmitting
+                                    ? null
+                                    : () => _selectContact(contact),
+                              );
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
                     value: _role,
@@ -635,20 +694,7 @@ class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
                         ? null
                         : (value) {
                             if (value == null) return;
-                            setState(() {
-                              _department = value;
-                              final username = _usernameController.text.trim();
-                              if (username.isEmpty) return;
-                              final existsInDepartment = widget.users.any(
-                                (user) =>
-                                    user.department.trim() == _department.trim() &&
-                                    user.username.trim().toLowerCase() ==
-                                        username.toLowerCase(),
-                              );
-                              if (!existsInDepartment && widget.existing == null) {
-                                _usernameController.clear();
-                              }
-                            });
+                            setState(() => _department = value);
                           },
                   ),
                   const SizedBox(height: 12),
@@ -671,7 +717,10 @@ class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
             child: const Text('ביטול'),
           ),
           ElevatedButton(
-            onPressed: _isSubmitting ? null : _submit,
+            onPressed: (_isSubmitting ||
+                    (!_isEdit && _selectedContact == null))
+                ? null
+                : _submit,
             child: _isSubmitting
                 ? const SizedBox(
                     width: 18,
@@ -682,6 +731,107 @@ class _HelpdeskUserFormDialogState extends State<HelpdeskUserFormDialog> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _SelectedContactTile extends StatelessWidget {
+  final Contact contact;
+  final VoidCallback? onClear;
+
+  const _SelectedContactTile({required this.contact, this.onClear});
+
+  @override
+  Widget build(BuildContext context) {
+    final initial = contact.displayName.isNotEmpty
+        ? contact.displayName[0].toUpperCase()
+        : '?';
+    final fallback = CircleAvatar(
+      backgroundColor: AppColors.primary,
+      radius: 20,
+      child: Text(
+        initial,
+        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+      ),
+    );
+    final Widget avatar = (contact.upic != null && contact.upic!.isNotEmpty)
+        ? AuthenticatedCircleAvatar(
+            url: contact.upic,
+            radius: 20,
+            fallback: fallback,
+          )
+        : fallback;
+
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: AppColors.primary.withOpacity(0.4)),
+        borderRadius: BorderRadius.circular(8),
+        color: AppColors.primary.withOpacity(0.05),
+      ),
+      child: ListTile(
+        leading: avatar,
+        title: Text(
+          contact.displayName,
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
+        subtitle: contact.info != null && contact.info!.isNotEmpty
+            ? Text(
+                contact.info!,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              )
+            : null,
+        trailing: onClear != null
+            ? IconButton(
+                icon: const Icon(Icons.close),
+                tooltip: 'שנה משתמש',
+                onPressed: onClear,
+              )
+            : null,
+      ),
+    );
+  }
+}
+
+class _ContactPickerTile extends StatelessWidget {
+  final Contact contact;
+  final VoidCallback? onTap;
+
+  const _ContactPickerTile({required this.contact, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final initial = contact.displayName.isNotEmpty
+        ? contact.displayName[0].toUpperCase()
+        : '?';
+    final fallback = CircleAvatar(
+      backgroundColor: AppColors.primary,
+      child: Text(
+        initial,
+        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+      ),
+    );
+    final Widget avatar = (contact.upic != null && contact.upic!.isNotEmpty)
+        ? AuthenticatedCircleAvatar(
+            url: contact.upic,
+            radius: 20,
+            fallback: fallback,
+          )
+        : fallback;
+
+    return ListTile(
+      onTap: onTap,
+      leading: avatar,
+      title: Text(contact.displayName, style: theme.textTheme.bodyLarge),
+      subtitle: contact.info != null && contact.info!.isNotEmpty
+          ? Text(
+              contact.info!,
+              style: theme.textTheme.bodySmall,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            )
+          : null,
     );
   }
 }
