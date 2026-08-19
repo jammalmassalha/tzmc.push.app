@@ -76,8 +76,8 @@ const USERS_UPLOAD_SUBDIRECTORY = 'users';
 const MAX_USERS_UPLOAD_FILENAME_LENGTH = 160;
 const USERS_UPLOAD_ROUTE_PATHS = new Set(['/upload/users', '/notify/upload/users']);
 const USERS_UPLOAD_USER_CANDIDATE_KEYS = ['user', 'username', 'phone', 'user_id', 'id', 'device_id'];
-const USERS_UPLOAD_RATE_LIMIT_MAX = 10;
-const USERS_UPLOAD_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
+const USERS_UPLOAD_RATE_LIMIT_MAX = 3000;
+const USERS_UPLOAD_RATE_LIMIT_WINDOW_MS = 30 * 60 * 1000;
 const SPECIAL_UPLOAD_SUBDIRECTORIES_BY_CHAT_ID = Object.freeze({
     [ACCREDITATION_UPLOAD_CHAT_ID]: ACCREDITATION_UPLOAD_SUBDIRECTORY
 });
@@ -1088,8 +1088,8 @@ const AUTH_CODE_REQUIRE_REGISTERED_USER = String(
     process.env.AUTH_CODE_REQUIRE_REGISTERED_USER || 'false'
 ).trim().toLowerCase() === 'true';
 const INFORU_SMS_URL = String(process.env.INFORU_SMS_URL || 'https://uapi.inforu.co.il/SendMessageXml.ashx').trim();
-const INFORU_USERNAME = String(process.env.INFORU_USERNAME || '').trim();
-const INFORU_API_TOKEN = String(process.env.INFORU_API_TOKEN || '').trim();
+const INFORU_USERNAME = String(process.env.INFORU_USERNAME || 'tzmcgovil').trim();
+const INFORU_API_TOKEN = String(process.env.INFORU_API_TOKEN || '088a13e2-c2d9-4518-8c0c-2e531c3033de').trim();
 const INFORU_SENDER = String(process.env.INFORU_SENDER || 'Tzafon').trim();
 const AUTH_CODE_SMS_TEMPLATE = String(
     process.env.AUTH_CODE_SMS_TEMPLATE || 'קוד אימות לכניסה לאפליקציה: {{code}}'
