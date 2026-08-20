@@ -54,6 +54,14 @@ class ChatApiService {
     return normalized.isNotEmpty ? normalized : fallback;
   }
 
+  List<Map<String, dynamic>> _coerceMapList(dynamic value) {
+    if (value is! List) return const <Map<String, dynamic>>[];
+    return value
+        .map(_coerceJsonMap)
+        .where((entry) => entry.isNotEmpty)
+        .toList();
+  }
+
   String _normalizeHelpdeskRoleValue(String role) {
     return role.trim().toLowerCase() == 'admin' ? 'Admin' : 'Editor';
   }
@@ -1271,19 +1279,26 @@ class ChatApiService {
 
 
   Future<List<HelpdeskDepartmentEntry>> getActiveHelpdeskDepartments() async {
-    final response = await _client.get<Map<String, dynamic>>(
-      ApiEndpoints.helpdeskDepartmentsActive,
-      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
-    );
+    try {
+      final response = await _client.get<dynamic>(
+        ApiEndpoints.helpdeskDepartmentsActive,
+        retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+      );
 
-    if (!response.isSuccessful) {
-      throw ApiException('Fetch active departments failed with ${response.statusCode}');
+      if (!response.isSuccessful) {
+        throw ApiException(
+          _extractErrorMessage(response.data, 'שגיאה בטעינת המחלקות'),
+        );
+      }
+
+      final data = _coerceJsonMap(response.data);
+      final list = _coerceMapList(data['departments']);
+      return list.map(HelpdeskDepartmentEntry.fromJson).toList();
+    } on ApiException {
+      rethrow;
+    } catch (e) {
+      throw ApiException('שגיאה בעיבוד נתוני המחלקות');
     }
-
-    final list = response.data?['departments'] as List? ?? [];
-    return list
-        .map((e) => HelpdeskDepartmentEntry.fromJson(e as Map<String, dynamic>))
-        .toList();
   }
 
   /// Get all helpdesk departments (Admin only).
@@ -1423,29 +1438,29 @@ class ChatApiService {
   }) async {
     final normalizedDepartment = department?.trim();
 
-    final response = await _client.get<Map<String, dynamic>>(
-      ApiEndpoints.helpdeskUsers,
-      queryParameters: {
-        if (normalizedDepartment != null && normalizedDepartment.isNotEmpty)
-          'department': normalizedDepartment,
-      },
-      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
-    );
-    if (!response.isSuccessful) {
-      throw ApiException(
-        _extractErrorMessage(response.data, 'שגיאה בטעינת משתמשי המוקד'),
+    try {
+      final response = await _client.get<dynamic>(
+        ApiEndpoints.helpdeskUsers,
+        queryParameters: {
+          if (normalizedDepartment != null && normalizedDepartment.isNotEmpty)
+            'department': normalizedDepartment,
+        },
+        retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
       );
-    }
+      if (!response.isSuccessful) {
+        throw ApiException(
+          _extractErrorMessage(response.data, 'שגיאה בטעינת משתמשי המוקד'),
+        );
+      }
 
-    final data = response.data ?? {};
-    final rawList = data['users'] ?? data['helpdeskUsers'] ?? data['data'];
-    if (rawList is! List) return [];
-    return rawList
-        .whereType<Map>()
-        .map((e) => HelpdeskUser.fromJson(
-              e.map((key, value) => MapEntry(key.toString(), value)),
-            ))
-        .toList();
+      final data = _coerceJsonMap(response.data);
+      final rawList = data['users'] ?? data['helpdeskUsers'] ?? data['data'];
+      return _coerceMapList(rawList).map(HelpdeskUser.fromJson).toList();
+    } on ApiException {
+      rethrow;
+    } catch (e) {
+      throw ApiException('שגיאה בעיבוד נתוני משתמשי המוקד');
+    }
   }
 
   /// Create a helpdesk user.

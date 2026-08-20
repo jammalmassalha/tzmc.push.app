@@ -150,6 +150,16 @@
     })();
   </script>
 
+  <!-- sql.js runtime for Drift Web (required by drift/web IndexedDB storage). -->
+  <script>
+    window.sqlJsConfig = {
+      locateFile: function (file) {
+        return new URL(file, document.baseURI).toString();
+      }
+    };
+  </script>
+  <script src="sql-wasm.js"></script>
+
   <!--
     Firebase JS SDK (compat) — required so the FCM web SDK used by
     `package:firebase_messaging` can register the

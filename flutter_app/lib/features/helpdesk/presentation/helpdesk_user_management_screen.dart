@@ -41,6 +41,11 @@ class _HelpdeskUserManagementScreenState
     _loadData();
   }
 
+  String _normalizeError(Object error) {
+    final raw = error.toString().replaceFirst('ApiException: ', '').trim();
+    return raw.isNotEmpty ? raw : 'שגיאה בטעינת המשתמשים';
+  }
+
   Future<void> _loadData({bool showLoader = true}) async {
     if (!mounted) return;
     setState(() {
@@ -50,34 +55,49 @@ class _HelpdeskUserManagementScreenState
       _error = null;
     });
 
+    final api = ref.read(chatApiServiceProvider);
+    String? usersError;
+    String? departmentsError;
+
+    List<HelpdeskUser> users = <HelpdeskUser>[];
     try {
-      final api = ref.read(chatApiServiceProvider);
-      final results = await Future.wait(<Future<Object>>[
-        api.fetchHelpdeskUsers(),
-        api.getActiveHelpdeskDepartments(),
-      ]);
-      final users = (results[0] as List<HelpdeskUser>).toList()
+      final fetchedUsers = await api.fetchHelpdeskUsers();
+      users = fetchedUsers.toList()
         ..sort(
           (a, b) =>
               a.username.toLowerCase().compareTo(b.username.toLowerCase()),
         );
-      final departments = (results[1] as List<HelpdeskDepartmentEntry>)
+    } catch (e) {
+      debugPrint('Failed to load helpdesk users: $e');
+      usersError = _normalizeError(e);
+    }
+
+    List<HelpdeskDepartment> departments = <HelpdeskDepartment>[];
+    try {
+      final entries = await api.getActiveHelpdeskDepartments();
+      departments = entries
           .map(HelpdeskDepartment.fromEntry)
+          .where((department) => department.name.trim().isNotEmpty)
           .toList()
         ..sort((a, b) => a.name.compareTo(b.name));
-
-      if (!mounted) return;
-      setState(() {
-        _users = users;
-        _departments = departments;
-        _isLoading = false;
-      });
     } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.toString().replaceFirst('ApiException: ', '');
-        _isLoading = false;
-      });
+      debugPrint('Failed to load helpdesk departments: $e');
+      departmentsError = _normalizeError(e);
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _users = users;
+      _departments = departments;
+      _error = usersError;
+      _isLoading = false;
+    });
+    if (usersError == null && departmentsError != null && mounted) {
+      showTopToast(
+        context,
+        departmentsError!,
+        backgroundColor: Theme.of(context).colorScheme.error,
+      );
     }
   }
 
@@ -87,22 +107,38 @@ class _HelpdeskUserManagementScreenState
       return;
     }
 
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => HelpdeskUserFormDialog(
-        departments: _departments,
-        users: _users,
-        existing: existing,
-        onSubmit: (formData) async {
-          final api = ref.read(chatApiServiceProvider);
-          if (existing == null) {
+    if (existing == null) {
+      // --- Add flow: single dialog with embedded contact picker ---
+      final contacts = _availableContacts();
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => _HelpdeskUserDetailsDialog(
+          contacts: contacts,
+          departments: _departments,
+          onSubmit: (formData) async {
+            final api = ref.read(chatApiServiceProvider);
             await api.createHelpdeskUser(
               username: formData.username,
               role: formData.role,
               department: formData.department,
               status: formData.status,
             );
-          } else {
+            await _loadData(showLoader: false);
+            if (!mounted) return;
+            showTopToast(context, 'המשתמש נוסף בהצלחה');
+          },
+        ),
+      );
+    } else {
+      // --- Edit flow: single step ---
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => HelpdeskUserFormDialog(
+          departments: _departments,
+          existing: existing,
+          onSubmit: (formData) async {
+            final api = ref.read(chatApiServiceProvider);
             await api.updateHelpdeskUser(
               existing.id,
               username: formData.username,
@@ -110,16 +146,29 @@ class _HelpdeskUserManagementScreenState
               department: formData.department,
               status: formData.status,
             );
-          }
-          await _loadData(showLoader: false);
-          if (!mounted) return;
-          showTopToast(
-            context,
-            existing == null ? 'המשתמש נוסף בהצלחה' : 'המשתמש עודכן בהצלחה',
-          );
-        },
-      ),
-    );
+            await _loadData(showLoader: false);
+            if (!mounted) return;
+            showTopToast(context, 'המשתמש עודכן בהצלחה');
+          },
+        ),
+      );
+    }
+  }
+
+  List<Contact> _availableContacts() {
+    final contacts = ref.read(chatStoreProvider).contacts;
+    final me = ref.read(chatStoreProvider.notifier).currentUser;
+    final existingUsernames =
+        _users.map((u) => u.username.trim().toLowerCase()).toSet();
+    return contacts.values.where((c) {
+      if (me != null && c.username.trim().toLowerCase() == me) return false;
+      if (c.status == 0) return false;
+      if (existingUsernames.contains(c.username.trim().toLowerCase())) {
+        return false;
+      }
+      return true;
+    }).toList()
+      ..sort((a, b) => a.displayName.compareTo(b.displayName));
   }
 
   Future<void> _toggleStatus(HelpdeskUser user) async {
@@ -447,15 +496,13 @@ class HelpdeskUserFormData {
 
 class HelpdeskUserFormDialog extends ConsumerStatefulWidget {
   final List<HelpdeskDepartment> departments;
-  final List<HelpdeskUser> users;
-  final HelpdeskUser? existing;
+  final HelpdeskUser existing;
   final Future<void> Function(HelpdeskUserFormData data) onSubmit;
 
   const HelpdeskUserFormDialog({
     required this.departments,
-    required this.users,
+    required this.existing,
     required this.onSubmit,
-    this.existing,
     super.key,
   });
 
@@ -467,101 +514,32 @@ class HelpdeskUserFormDialog extends ConsumerStatefulWidget {
 class _HelpdeskUserFormDialogState
     extends ConsumerState<HelpdeskUserFormDialog> {
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
-  final TextEditingController _searchController = TextEditingController();
-  String _query = '';
-  Contact? _selectedContact;
-  late String _selectedUsername;
   late String _role;
   late String _department;
   late bool _isActive;
   bool _isSubmitting = false;
 
-  bool get _isEdit => widget.existing != null;
-
   @override
   void initState() {
     super.initState();
-    _role = widget.existing?.role ?? 'Editor';
+    _role = widget.existing.role;
     final departmentNames = widget.departments.map((d) => d.name).toSet();
-    final existingDepartment = widget.existing?.department;
-    _department = existingDepartment != null &&
-            departmentNames.contains(existingDepartment)
+    final existingDepartment = widget.existing.department;
+    _department = departmentNames.contains(existingDepartment)
         ? existingDepartment
         : widget.departments.first.name;
-    _isActive = widget.existing?.isActive ?? true;
-    _selectedUsername = widget.existing?.username ?? '';
-
-    _searchController.addListener(() {
-      setState(() => _query = _searchController.text.trim().toLowerCase());
-    });
-  }
-
-  @override
-  void dispose() {
-    _searchController.dispose();
-    super.dispose();
-  }
-
-  void _selectContact(Contact contact) {
-    final departmentNames = widget.departments.map((d) => d.name).toSet();
-    String? matched;
-    if (contact.info != null && contact.info!.isNotEmpty) {
-      final infoLower = contact.info!.toLowerCase();
-      for (final dept in widget.departments) {
-        if (infoLower.contains(dept.name.toLowerCase())) {
-          matched = dept.name;
-          break;
-        }
-      }
-    }
-    setState(() {
-      _selectedContact = contact;
-      _selectedUsername = contact.username;
-      _query = '';
-      _searchController.clear();
-      if (matched != null && departmentNames.contains(matched)) {
-        _department = matched;
-      }
-    });
-  }
-
-  void _clearContact() {
-    setState(() {
-      _selectedContact = null;
-      _selectedUsername = '';
-      _query = '';
-      _searchController.clear();
-    });
-  }
-
-  List<Contact> _filteredContacts() {
-    final contacts = ref.watch(chatStoreProvider).contacts;
-    final me = ref.watch(chatStoreProvider.notifier).currentUser;
-    return contacts.values.where((c) {
-      if (me != null && c.username.trim().toLowerCase() == me) return false;
-      if (c.status == 0) return false;
-      if (_query.isEmpty) return true;
-      final info = (c.info ?? '').toLowerCase();
-      final phone = (c.phone ?? '').toLowerCase();
-      return c.displayName.toLowerCase().contains(_query) ||
-          c.username.toLowerCase().contains(_query) ||
-          info.contains(_query) ||
-          phone.contains(_query);
-    }).toList()
-      ..sort((a, b) => a.displayName.compareTo(b.displayName));
+    _isActive = widget.existing.isActive;
   }
 
   Future<void> _submit() async {
     final formState = _formKey.currentState;
     if (formState == null || !formState.validate()) return;
-    final username = _selectedUsername.trim();
-    if (username.isEmpty) return;
 
     setState(() => _isSubmitting = true);
     try {
       await widget.onSubmit(
         HelpdeskUserFormData(
-          username: username,
+          username: widget.existing.username,
           role: _role,
           department: _department,
           status: _isActive ? 'Active' : 'Inactive',
@@ -585,7 +563,7 @@ class _HelpdeskUserFormDialogState
     return Directionality(
       textDirection: ui.TextDirection.rtl,
       child: AlertDialog(
-        title: Text(_isEdit ? 'ערוך משתמש מוקד' : 'הוסף משתמש מוקד'),
+        title: const Text('ערוך משתמש מוקד'),
         content: Form(
           key: _formKey,
           child: SizedBox(
@@ -595,68 +573,17 @@ class _HelpdeskUserFormDialogState
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
-                  if (_isEdit) ...<Widget>[
-                    // Edit mode: show username as read-only label
-                    InputDecorator(
-                      decoration: const InputDecoration(
-                        labelText: 'שם משתמש',
-                        border: OutlineInputBorder(),
-                      ),
-                      child: Text(
-                        _selectedUsername,
-                        style: Theme.of(context).textTheme.bodyMedium,
-                      ),
+                  // Read-only username label
+                  InputDecorator(
+                    decoration: const InputDecoration(
+                      labelText: 'שם משתמש',
+                      border: OutlineInputBorder(),
                     ),
-                  ] else if (_selectedContact != null) ...<Widget>[
-                    // Contact selected: show tile + clear button
-                    _SelectedContactTile(
-                      contact: _selectedContact!,
-                      onClear: _isSubmitting ? null : _clearContact,
+                    child: Text(
+                      widget.existing.username,
+                      style: Theme.of(context).textTheme.bodyMedium,
                     ),
-                  ] else ...<Widget>[
-                    // Contact search picker
-                    TextField(
-                      controller: _searchController,
-                      textDirection: ui.TextDirection.rtl,
-                      enabled: !_isSubmitting,
-                      decoration: const InputDecoration(
-                        hintText: 'חיפוש איש קשר לפי שם, מחלקה, טלפון',
-                        prefixIcon: Icon(Icons.search),
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxHeight: 220),
-                      child: Builder(
-                        builder: (context) {
-                          final filtered = _filteredContacts();
-                          if (filtered.isEmpty) {
-                            return const Padding(
-                              padding: EdgeInsets.symmetric(vertical: 16),
-                              child: Center(
-                                child: Text('לא נמצאו אנשי קשר'),
-                              ),
-                            );
-                          }
-                          return ListView.builder(
-                            shrinkWrap: true,
-                            itemCount: filtered.length,
-                            itemBuilder: (context, index) {
-                              final contact = filtered[index];
-                              return _ContactPickerTile(
-                                contact: contact,
-                                onTap: _isSubmitting
-                                    ? null
-                                    : () => _selectContact(contact),
-                              );
-                            },
-                          );
-                        },
-                      ),
-                    ),
-                  ],
+                  ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
                     value: _role,
@@ -717,8 +644,226 @@ class _HelpdeskUserFormDialogState
             child: const Text('ביטול'),
           ),
           ElevatedButton(
-            onPressed: (_isSubmitting ||
-                    (!_isEdit && _selectedContact == null))
+            onPressed: _isSubmitting ? null : _submit,
+            child: _isSubmitting
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Text('שמור'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Add-user dialog: contact picker + role, department, status.
+class _HelpdeskUserDetailsDialog extends StatefulWidget {
+  final List<Contact> contacts;
+
+  final List<HelpdeskDepartment> departments;
+  final Future<void> Function(HelpdeskUserFormData data) onSubmit;
+
+  const _HelpdeskUserDetailsDialog({
+    required this.contacts,
+    required this.departments,
+    required this.onSubmit,
+  });
+
+  @override
+  State<_HelpdeskUserDetailsDialog> createState() =>
+      _HelpdeskUserDetailsDialogState();
+}
+
+class _HelpdeskUserDetailsDialogState
+    extends State<_HelpdeskUserDetailsDialog> {
+  late String _role;
+  late String _department;
+  bool _isActive = true;
+  bool _isSubmitting = false;
+
+  Contact? _selectedContact;
+  final TextEditingController _contactTextController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _role = 'Editor';
+    _department = widget.departments.first.name;
+  }
+
+  @override
+  void dispose() {
+    _contactTextController.dispose();
+    super.dispose();
+  }
+
+  void _applyContactDepartment(Contact contact) {
+    final departmentNames = widget.departments.map((d) => d.name).toSet();
+    final info = (contact.info ?? '').toLowerCase();
+    String? matched;
+    if (info.isNotEmpty) {
+      for (final dept in widget.departments) {
+        if (info.contains(dept.name.toLowerCase())) {
+          matched = dept.name;
+          break;
+        }
+      }
+    }
+    if (matched != null && departmentNames.contains(matched)) {
+      _department = matched;
+    }
+  }
+
+  Future<void> _submit() async {
+    final contact = _selectedContact;
+    if (contact == null) return;
+    setState(() => _isSubmitting = true);
+    try {
+      await widget.onSubmit(
+        HelpdeskUserFormData(
+          username: contact.username,
+          role: _role,
+          department: _department,
+          status: _isActive ? 'Active' : 'Inactive',
+        ),
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop();
+    } catch (e) {
+      if (!mounted) return;
+      showTopToast(
+        context,
+        e.toString().replaceFirst('ApiException: ', ''),
+        backgroundColor: Theme.of(context).colorScheme.error,
+      );
+      setState(() => _isSubmitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: ui.TextDirection.rtl,
+      child: AlertDialog(
+        title: const Text('הוסף משתמש מוקד'),
+        content: SizedBox(
+          width: 420,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                // Tap-to-pick contact field
+                TextFormField(
+                  controller: _contactTextController,
+                  readOnly: true,
+                  decoration: InputDecoration(
+                    labelText: 'איש קשר',
+                    hintText: 'לחץ לבחירת איש קשר...',
+                    prefixIcon: const Icon(Icons.person_search),
+                    suffixIcon: _selectedContact != null
+                        ? IconButton(
+                            icon: const Icon(Icons.clear),
+                            onPressed: _isSubmitting
+                                ? null
+                                : () {
+                                    setState(() {
+                                      _selectedContact = null;
+                                      _contactTextController.clear();
+                                    });
+                                  },
+                          )
+                        : const Icon(Icons.arrow_drop_down),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  onTap: _isSubmitting
+                      ? null
+                      : () async {
+                          final picked = await showDialog<Contact>(
+                            context: context,
+                            builder: (ctx) => _UserPickerDialog(
+                              contacts: widget.contacts,
+                            ),
+                          );
+                          if (picked != null) {
+                            setState(() {
+                              _selectedContact = picked;
+                              final contactInfo = (picked.info ?? '').trim();
+                              _contactTextController.text =
+                                  contactInfo.isNotEmpty
+                                      ? '${picked.displayName} ($contactInfo)'
+                                      : picked.displayName;
+                              _applyContactDepartment(picked);
+                            });
+                          }
+                        },
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: _role,
+                  decoration: const InputDecoration(
+                    labelText: 'תפקיד',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: const <DropdownMenuItem<String>>[
+                    DropdownMenuItem(value: 'Admin', child: Text('Admin')),
+                    DropdownMenuItem(value: 'Editor', child: Text('Editor')),
+                  ],
+                  onChanged: _isSubmitting
+                      ? null
+                      : (value) {
+                          if (value == null) return;
+                          setState(() => _role = value);
+                        },
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: _department,
+                  decoration: const InputDecoration(
+                    labelText: 'מחלקה',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: widget.departments
+                      .map(
+                        (department) => DropdownMenuItem<String>(
+                          value: department.name,
+                          child: Text(department.name),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: _isSubmitting
+                      ? null
+                      : (value) {
+                          if (value == null) return;
+                          setState(() => _department = value);
+                        },
+                ),
+                const SizedBox(height: 12),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('משתמש פעיל'),
+                  value: _isActive,
+                  onChanged: _isSubmitting
+                      ? null
+                      : (value) => setState(() => _isActive = value),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed:
+                _isSubmitting ? null : () => Navigator.of(context).pop(),
+            child: const Text('ביטול'),
+          ),
+          ElevatedButton(
+            onPressed: _isSubmitting || _selectedContact == null
                 ? null
                 : _submit,
             child: _isSubmitting
@@ -727,7 +872,7 @@ class _HelpdeskUserFormDialogState
                     height: 18,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : Text(_isEdit ? 'שמור' : 'הוסף'),
+                : const Text('הוסף'),
           ),
         ],
       ),
@@ -735,59 +880,117 @@ class _HelpdeskUserFormDialogState
   }
 }
 
-class _SelectedContactTile extends StatelessWidget {
-  final Contact contact;
-  final VoidCallback? onClear;
+class _UserPickerDialog extends StatefulWidget {
+  final List<Contact> contacts;
 
-  const _SelectedContactTile({required this.contact, this.onClear});
+  const _UserPickerDialog({required this.contacts});
+
+  @override
+  State<_UserPickerDialog> createState() => _UserPickerDialogState();
+}
+
+class _UserPickerDialogState extends State<_UserPickerDialog> {
+  final TextEditingController _searchController = TextEditingController();
+  List<Contact> _filteredContacts = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _filteredContacts = widget.contacts;
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _onSearchChanged(String query) {
+    final q = query.trim().toLowerCase();
+    setState(() {
+      if (q.isEmpty) {
+        _filteredContacts = widget.contacts;
+      } else {
+        _filteredContacts = widget.contacts.where((contact) {
+          final info = (contact.info ?? '').toLowerCase();
+          final phone = (contact.phone ?? '').toLowerCase();
+          return contact.displayName.toLowerCase().contains(q) ||
+              contact.username.toLowerCase().contains(q) ||
+              info.contains(q) ||
+              phone.contains(q);
+        }).toList();
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    final initial = contact.displayName.isNotEmpty
-        ? contact.displayName[0].toUpperCase()
-        : '?';
-    final fallback = CircleAvatar(
-      backgroundColor: AppColors.primary,
-      radius: 20,
-      child: Text(
-        initial,
-        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-      ),
-    );
-    final Widget avatar = (contact.upic != null && contact.upic!.isNotEmpty)
-        ? AuthenticatedCircleAvatar(
-            url: contact.upic,
-            radius: 20,
-            fallback: fallback,
-          )
-        : fallback;
-
-    return Container(
-      decoration: BoxDecoration(
-        border: Border.all(color: AppColors.primary.withOpacity(0.4)),
-        borderRadius: BorderRadius.circular(8),
-        color: AppColors.primary.withOpacity(0.05),
-      ),
-      child: ListTile(
-        leading: avatar,
-        title: Text(
-          contact.displayName,
-          style: const TextStyle(fontWeight: FontWeight.w600),
+    return Directionality(
+      textDirection: ui.TextDirection.rtl,
+      child: Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Container(
+          width: 480,
+          height: 540,
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: <Widget>[
+                  const Text(
+                    'בחירת איש קשר',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.of(context).pop(null),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _searchController,
+                textDirection: ui.TextDirection.rtl,
+                autofocus: true,
+                decoration: InputDecoration(
+                  hintText: 'חיפוש איש קשר לפי שם, מחלקה, טלפון...',
+                  prefixIcon: const Icon(Icons.search),
+                  filled: true,
+                  fillColor: Colors.grey.shade100,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: Colors.grey.shade300),
+                  ),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                ),
+                onChanged: _onSearchChanged,
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: _filteredContacts.isEmpty
+                    ? const Center(child: Text('לא נמצאו תוצאות'))
+                    : ListView.separated(
+                        itemCount: _filteredContacts.length,
+                        separatorBuilder: (_, __) =>
+                            const Divider(height: 1),
+                        itemBuilder: (context, index) {
+                          final contact = _filteredContacts[index];
+                          return _ContactPickerTile(
+                            contact: contact,
+                            onTap: () =>
+                                Navigator.of(context).pop(contact),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
         ),
-        subtitle: contact.info != null && contact.info!.isNotEmpty
-            ? Text(
-                contact.info!,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              )
-            : null,
-        trailing: onClear != null
-            ? IconButton(
-                icon: const Icon(Icons.close),
-                tooltip: 'שנה משתמש',
-                onPressed: onClear,
-              )
-            : null,
       ),
     );
   }

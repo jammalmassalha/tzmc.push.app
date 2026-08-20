@@ -70,6 +70,27 @@ enum HelpdeskTicketFormInputType {
   }
 }
 
+Map<String, dynamic>? _asStringDynamicMap(dynamic value) {
+  if (value is Map<String, dynamic>) return value;
+  if (value is Map) {
+    return value.map((key, val) => MapEntry(key.toString(), val));
+  }
+  return null;
+}
+
+String _asString(dynamic value, {String fallback = ''}) {
+  if (value == null) return fallback;
+  final normalized = value.toString().trim();
+  return normalized.isEmpty ? fallback : normalized;
+}
+
+int _asInt(dynamic value, {int fallback = 0}) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  if (value is String) return int.tryParse(value.trim()) ?? fallback;
+  return fallback;
+}
+
 /// Visibility settings for the built-in initial helpdesk form inputs.
 class HelpdeskInitialFormConfig extends Equatable {
   final bool showTitle;
@@ -293,20 +314,20 @@ class HelpdeskDepartmentEntry extends Equatable {
     final rawForm = json['ticketForm'] ?? json['ticket_form'];
     final ticketForm = rawForm is List
         ? rawForm
+            .map(_asStringDynamicMap)
             .whereType<Map<String, dynamic>>()
-            .map((f) => HelpdeskTicketFormField.fromJson(f))
+            .map(HelpdeskTicketFormField.fromJson)
             .toList()
         : <HelpdeskTicketFormField>[];
+    final initialFormMap = _asStringDynamicMap(json['initialForm']);
     return HelpdeskDepartmentEntry(
-      id: (json['id'] as num?)?.toInt() ?? 0,
-      name: json['name'] as String? ?? '',
-      icon: json['icon'] as String?,
-      status: json['status'] as String? ?? 'active',
-      sortOrder: (json['sortOrder'] ?? json['sort_order'] as num?)?.toInt() ?? 0,
+      id: _asInt(json['id'], fallback: 0),
+      name: _asString(json['name']),
+      icon: _asString(json['icon']).isEmpty ? null : _asString(json['icon']),
+      status: _asString(json['status'], fallback: 'active'),
+      sortOrder: _asInt(json['sortOrder'] ?? json['sort_order'], fallback: 0),
       ticketForm: ticketForm,
-      initialForm: HelpdeskInitialFormConfig.fromJson(
-        json['initialForm'] as Map<String, dynamic>?,
-      ),
+      initialForm: HelpdeskInitialFormConfig.fromJson(initialFormMap),
     );
   }
 
@@ -708,7 +729,7 @@ class HelpdeskUser extends Equatable {
     final username = (json['username'] ?? json['Username'] ?? '').toString();
     final phoneNumber = (json['phone'] ?? json['PhoneNumber'] ?? '').toString().trim();
     return HelpdeskUser(
-      id: ((json['id'] ?? json['ID']) as num?)?.toInt() ?? 0,
+      id: _asInt(json['id'] ?? json['ID'], fallback: 0),
       username: username,
       fullName: (normalizedFullName != null && normalizedFullName.isNotEmpty)
           ? normalizedFullName

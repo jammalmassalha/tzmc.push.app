@@ -58,6 +58,12 @@ bool get _isNativePlatform {
   return true;
 }
 
+bool _isPermissionBlockedError(FirebaseException error) {
+  final plugin = error.plugin.toLowerCase();
+  final code = error.code.toLowerCase();
+  return plugin == 'firebase_messaging' && code == 'permission-blocked';
+}
+
 // Platform-specific helpers (only used on native)
 String _getPlatformName() {
   if (kIsWeb) return 'web';
@@ -199,57 +205,63 @@ class PushNotificationService {
   /// `await`, so callers should pass a context that belongs to a mounted
   /// widget.
   Future<void> ensurePermissionAndRegister(BuildContext context) async {
-    // iOS must trigger Apple's UNUserNotificationCenter authorization prompt.
-    // Once that prompt has been requested, iOS adds the Notifications entry to
-    // the app's Settings page. Keep Android on permission_handler below
-    // because firebase_messaging's `getNotificationSettings()` is unreliable
-    // there (it reports denied before the runtime permission is requested).
-    if (_isIOSPlatform()) {
-      await _ensureIOSPermissionViaFirebaseMessaging(context);
-      return;
-    }
-
-    if (_isAndroidPlatform()) {
-      await _ensurePermissionViaPermissionHandler(context);
-      return;
-    }
-
-    // Web path — Firebase Messaging is required for browser push.
-    if (_messaging == null) {
-      debugPrint(
-          '[PushNotificationService] FirebaseMessaging not available on web — '
-          'check Firebase JS SDK config / firebase_options.');
-      return;
-    }
-
-    NotificationSettings settings;
     try {
-      settings = await _messaging!.getNotificationSettings();
+      // iOS must trigger Apple's UNUserNotificationCenter authorization prompt.
+      // Once that prompt has been requested, iOS adds the Notifications entry to
+      // the app's Settings page. Keep Android on permission_handler below
+      // because firebase_messaging's `getNotificationSettings()` is unreliable
+      // there (it reports denied before the runtime permission is requested).
+      if (_isIOSPlatform()) {
+        await _ensureIOSPermissionViaFirebaseMessaging(context);
+        return;
+      }
+
+      if (_isAndroidPlatform()) {
+        await _ensurePermissionViaPermissionHandler(context);
+        return;
+      }
+
+      // Web path — Firebase Messaging is required for browser push.
+      if (_messaging == null) {
+        debugPrint(
+            '[PushNotificationService] FirebaseMessaging not available on web — '
+            'check Firebase JS SDK config / firebase_options.');
+        return;
+      }
+
+      NotificationSettings settings;
+      try {
+        settings = await _messaging!.getNotificationSettings();
+      } catch (e) {
+        debugPrint('[PushNotificationService] getNotificationSettings error: $e');
+        return;
+      }
+
+      final status = settings.authorizationStatus;
+      if (_isAuthorized(status)) {
+        // User previously granted permission — clear any stale "open
+        // settings" nag flag so we'll prompt again if they later revoke
+        // and re-deny on a future install.
+        await _clearSettingsNagFlag();
+        await _getAndRegisterToken();
+        return;
+      }
+
+      if (status == AuthorizationStatus.notDetermined) {
+        if (!context.mounted) return;
+        final accepted = await _showRationaleDialog(context);
+        if (accepted != true) return;
+        await _requestPermissionAndRegister();
+        return;
+      }
+
+      // status == denied
+      await _maybeShowOpenSettingsDialog(context);
     } catch (e) {
-      debugPrint('[PushNotificationService] getNotificationSettings error: $e');
-      return;
+      debugPrint(
+        '[PushNotificationService] Suppressed permission/token init error: $e',
+      );
     }
-
-    final status = settings.authorizationStatus;
-    if (_isAuthorized(status)) {
-      // User previously granted permission — clear any stale "open
-      // settings" nag flag so we'll prompt again if they later revoke
-      // and re-deny on a future install.
-      await _clearSettingsNagFlag();
-      await _getAndRegisterToken();
-      return;
-    }
-
-    if (status == AuthorizationStatus.notDetermined) {
-      if (!context.mounted) return;
-      final accepted = await _showRationaleDialog(context);
-      if (accepted != true) return;
-      await _requestPermissionAndRegister();
-      return;
-    }
-
-    // status == denied
-    await _maybeShowOpenSettingsDialog(context);
   }
 
   /// iOS permission flow.
@@ -716,6 +728,26 @@ class PushNotificationService {
         );
         _scheduleTokenRegistrationRetry();
       }
+    } on FirebaseException catch (e) {
+      if (_isPermissionBlockedError(e)) {
+        debugPrint(
+          '[PushNotificationService] Notification permission blocked - '
+          'skipping token registration.',
+        );
+        _logIOSRegistrationStep(
+          'ios_fcm_token_permission_blocked',
+          'denied',
+          message: e.message ?? e.toString(),
+        );
+        return;
+      }
+      debugPrint('[PushNotificationService] Error getting token: $e');
+      _logIOSRegistrationStep(
+        'ios_fcm_token_error',
+        'error',
+        message: e.toString(),
+      );
+      _scheduleTokenRegistrationRetry();
     } catch (e) {
       debugPrint('[PushNotificationService] Error getting token: $e');
       _logIOSRegistrationStep(
