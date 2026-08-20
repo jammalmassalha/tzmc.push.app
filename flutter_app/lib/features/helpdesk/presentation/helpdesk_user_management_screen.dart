@@ -108,21 +108,13 @@ class _HelpdeskUserManagementScreenState
     }
 
     if (existing == null) {
-      // --- Add flow: two steps ---
-      // Step 1: pick a contact.
+      // --- Add flow: single dialog with embedded contact picker ---
       final contacts = _availableContacts();
       if (!mounted) return;
-      final contact = await showDialog<Contact>(
-        context: context,
-        builder: (ctx) => _HelpdeskContactPickerDialog(contacts: contacts),
-      );
-      if (contact == null || !mounted) return;
-
-      // Step 2: fill in role / department / status.
       await showDialog<void>(
         context: context,
         builder: (ctx) => _HelpdeskUserDetailsDialog(
-          contact: contact,
+          contacts: contacts,
           departments: _departments,
           onSubmit: (formData) async {
             final api = ref.read(chatApiServiceProvider);
@@ -669,12 +661,18 @@ class _HelpdeskUserFormDialogState
 
 // Step-2 dialog for add-user flow: role, department, status.
 class _HelpdeskUserDetailsDialog extends StatefulWidget {
-  final Contact contact;
+  /// Used in the add flow (no pre-selected contact).
+  final List<Contact>? contacts;
+
+  /// Used in the edit flow (no contact picker needed).
+  final Contact? contact;
+
   final List<HelpdeskDepartment> departments;
   final Future<void> Function(HelpdeskUserFormData data) onSubmit;
 
   const _HelpdeskUserDetailsDialog({
-    required this.contact,
+    this.contacts,
+    this.contact,
     required this.departments,
     required this.onSubmit,
   });
@@ -691,13 +689,46 @@ class _HelpdeskUserDetailsDialogState
   bool _isActive = true;
   bool _isSubmitting = false;
 
+  /// Only used in add flow.
+  Contact? _selectedContact;
+  final TextEditingController _contactTextController = TextEditingController();
+
   @override
   void initState() {
     super.initState();
     _role = 'Editor';
-    // Pre-fill department if contact info matches one.
     final departmentNames = widget.departments.map((d) => d.name).toSet();
-    final info = (widget.contact.info ?? '').toLowerCase();
+
+    // Edit flow: pre-fill from existing contact.
+    final preContact = widget.contact;
+    if (preContact != null) {
+      final info = (preContact.info ?? '').toLowerCase();
+      String? matched;
+      if (info.isNotEmpty) {
+        for (final dept in widget.departments) {
+          if (info.contains(dept.name.toLowerCase())) {
+            matched = dept.name;
+            break;
+          }
+        }
+      }
+      _department = (matched != null && departmentNames.contains(matched))
+          ? matched
+          : widget.departments.first.name;
+    } else {
+      _department = widget.departments.first.name;
+    }
+  }
+
+  @override
+  void dispose() {
+    _contactTextController.dispose();
+    super.dispose();
+  }
+
+  void _applyContactDepartment(Contact contact) {
+    final departmentNames = widget.departments.map((d) => d.name).toSet();
+    final info = (contact.info ?? '').toLowerCase();
     String? matched;
     if (info.isNotEmpty) {
       for (final dept in widget.departments) {
@@ -707,17 +738,19 @@ class _HelpdeskUserDetailsDialogState
         }
       }
     }
-    _department = (matched != null && departmentNames.contains(matched))
-        ? matched
-        : widget.departments.first.name;
+    if (matched != null && departmentNames.contains(matched)) {
+      _department = matched;
+    }
   }
 
   Future<void> _submit() async {
+    final contact = widget.contact ?? _selectedContact;
+    if (contact == null) return;
     setState(() => _isSubmitting = true);
     try {
       await widget.onSubmit(
         HelpdeskUserFormData(
-          username: widget.contact.username,
+          username: contact.username,
           role: _role,
           department: _department,
           status: _isActive ? 'Active' : 'Inactive',
@@ -738,17 +771,24 @@ class _HelpdeskUserDetailsDialogState
 
   @override
   Widget build(BuildContext context) {
-    final contact = widget.contact;
-    final subtitle = (contact.info ?? '').trim().isNotEmpty
-        ? contact.info!.trim()
-        : (contact.phone ?? '').trim().isNotEmpty
-            ? contact.phone!.trim()
-            : contact.username;
+    final isAddFlow = widget.contacts != null;
+    final contact = widget.contact ?? _selectedContact;
+
+    // Build subtitle for edit flow
+    String? editSubtitle;
+    if (!isAddFlow && contact != null) {
+      final s = (contact.info ?? '').trim().isNotEmpty
+          ? contact.info!.trim()
+          : (contact.phone ?? '').trim().isNotEmpty
+              ? contact.phone!.trim()
+              : contact.username;
+      editSubtitle = s;
+    }
 
     return Directionality(
       textDirection: ui.TextDirection.rtl,
       child: AlertDialog(
-        title: const Text('הוסף משתמש מוקד'),
+        title: Text(isAddFlow ? 'הוסף משתמש מוקד' : 'ערוך משתמש מוקד'),
         content: SizedBox(
           width: 420,
           child: SingleChildScrollView(
@@ -756,29 +796,80 @@ class _HelpdeskUserDetailsDialogState
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: <Widget>[
-                // Selected contact summary (read-only)
-                InputDecorator(
-                  decoration: const InputDecoration(
-                    labelText: 'משתמש נבחר',
-                    border: OutlineInputBorder(),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      Text(
-                        contact.displayName,
-                        style: const TextStyle(fontWeight: FontWeight.w600),
+                if (isAddFlow) ...<Widget>[
+                  // Tap-to-pick contact field (add flow)
+                  TextFormField(
+                    controller: _contactTextController,
+                    readOnly: true,
+                    decoration: InputDecoration(
+                      labelText: 'איש קשר',
+                      hintText: 'לחץ לבחירת איש קשר...',
+                      prefixIcon: const Icon(Icons.person_search),
+                      suffixIcon: _selectedContact != null
+                          ? IconButton(
+                              icon: const Icon(Icons.clear),
+                              onPressed: _isSubmitting
+                                  ? null
+                                  : () {
+                                      setState(() {
+                                        _selectedContact = null;
+                                        _contactTextController.clear();
+                                      });
+                                    },
+                            )
+                          : const Icon(Icons.arrow_drop_down),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
                       ),
-                      if (subtitle.isNotEmpty) ...<Widget>[
-                        const SizedBox(height: 2),
-                        Text(
-                          subtitle,
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      ],
-                    ],
+                    ),
+                    onTap: _isSubmitting
+                        ? null
+                        : () async {
+                            final picked = await showDialog<Contact>(
+                              context: context,
+                              builder: (ctx) => _UserPickerDialog(
+                                contacts: widget.contacts!,
+                              ),
+                            );
+                            if (picked != null) {
+                              setState(() {
+                                _selectedContact = picked;
+                                final dept = (picked.info ?? '').trim();
+                                _contactTextController.text =
+                                    dept.isNotEmpty
+                                        ? '${picked.displayName} ($dept)'
+                                        : picked.displayName;
+                                _applyContactDepartment(picked);
+                              });
+                            }
+                          },
                   ),
-                ),
+                ] else ...<Widget>[
+                  // Read-only username label (edit flow)
+                  InputDecorator(
+                    decoration: const InputDecoration(
+                      labelText: 'משתמש נבחר',
+                      border: OutlineInputBorder(),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text(
+                          contact!.displayName,
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        if (editSubtitle != null &&
+                            editSubtitle.isNotEmpty) ...<Widget>[
+                          const SizedBox(height: 2),
+                          Text(
+                            editSubtitle,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
                   value: _role,
@@ -839,14 +930,16 @@ class _HelpdeskUserDetailsDialogState
             child: const Text('ביטול'),
           ),
           ElevatedButton(
-            onPressed: _isSubmitting ? null : _submit,
+            onPressed: _isSubmitting || (isAddFlow && _selectedContact == null)
+                ? null
+                : _submit,
             child: _isSubmitting
                 ? const SizedBox(
                     width: 18,
                     height: 18,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : const Text('הוסף'),
+                : Text(isAddFlow ? 'הוסף' : 'שמור'),
           ),
         ],
       ),
@@ -854,29 +947,23 @@ class _HelpdeskUserDetailsDialogState
   }
 }
 
-class _HelpdeskContactPickerDialog extends StatefulWidget {
+class _UserPickerDialog extends StatefulWidget {
   final List<Contact> contacts;
 
-  const _HelpdeskContactPickerDialog({required this.contacts});
+  const _UserPickerDialog({required this.contacts});
 
   @override
-  State<_HelpdeskContactPickerDialog> createState() =>
-      _HelpdeskContactPickerDialogState();
+  State<_UserPickerDialog> createState() => _UserPickerDialogState();
 }
 
-class _HelpdeskContactPickerDialogState
-    extends State<_HelpdeskContactPickerDialog> {
+class _UserPickerDialogState extends State<_UserPickerDialog> {
   final TextEditingController _searchController = TextEditingController();
-  String _query = '';
+  List<Contact> _filteredContacts = [];
 
   @override
   void initState() {
     super.initState();
-    _searchController.addListener(() {
-      setState(() {
-        _query = _searchController.text.trim().toLowerCase();
-      });
-    });
+    _filteredContacts = widget.contacts;
   }
 
   @override
@@ -885,70 +972,92 @@ class _HelpdeskContactPickerDialogState
     super.dispose();
   }
 
-  List<Contact> _filteredContacts() {
-    if (_query.isEmpty) return widget.contacts;
-    return widget.contacts.where((contact) {
-      final info = (contact.info ?? '').toLowerCase();
-      final phone = (contact.phone ?? '').toLowerCase();
-      return contact.displayName.toLowerCase().contains(_query) ||
-          contact.username.toLowerCase().contains(_query) ||
-          info.contains(_query) ||
-          phone.contains(_query);
-    }).toList();
+  void _onSearchChanged(String query) {
+    final q = query.trim().toLowerCase();
+    setState(() {
+      if (q.isEmpty) {
+        _filteredContacts = widget.contacts;
+      } else {
+        _filteredContacts = widget.contacts.where((contact) {
+          final info = (contact.info ?? '').toLowerCase();
+          final phone = (contact.phone ?? '').toLowerCase();
+          return contact.displayName.toLowerCase().contains(q) ||
+              contact.username.toLowerCase().contains(q) ||
+              info.contains(q) ||
+              phone.contains(q);
+        }).toList();
+      }
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final filtered = _filteredContacts();
     return Directionality(
       textDirection: ui.TextDirection.rtl,
-      child: AlertDialog(
-        title: const Text('בחירת איש קשר'),
-        content: SizedBox(
-          width: 460,
+      child: Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Container(
+          width: 480,
+          height: 540,
+          padding: const EdgeInsets.all(16),
           child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: <Widget>[
+                  const Text(
+                    'בחירת איש קשר',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.of(context).pop(null),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
               TextField(
                 controller: _searchController,
                 textDirection: ui.TextDirection.rtl,
                 autofocus: true,
-                decoration: const InputDecoration(
-                  hintText: 'חיפוש איש קשר לפי שם, מחלקה, טלפון',
-                  prefixIcon: Icon(Icons.search),
-                  border: OutlineInputBorder(),
-                  isDense: true,
+                decoration: InputDecoration(
+                  hintText: 'חיפוש איש קשר לפי שם, מחלקה, טלפון...',
+                  prefixIcon: const Icon(Icons.search),
+                  filled: true,
+                  fillColor: Colors.grey.shade100,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: Colors.grey.shade300),
+                  ),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
                 ),
+                onChanged: _onSearchChanged,
               ),
-              const SizedBox(height: 8),
-              Flexible(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 360),
-                  child: filtered.isEmpty
-                      ? const Center(child: Text('לא נמצאו אנשי קשר'))
-                      : ListView.builder(
-                          shrinkWrap: true,
-                          itemCount: filtered.length,
-                          itemBuilder: (context, index) {
-                            final contact = filtered[index];
-                            return _ContactPickerTile(
-                              contact: contact,
-                              onTap: () => Navigator.of(context).pop(contact),
-                            );
-                          },
-                        ),
-                ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: _filteredContacts.isEmpty
+                    ? const Center(child: Text('לא נמצאו תוצאות'))
+                    : ListView.separated(
+                        itemCount: _filteredContacts.length,
+                        separatorBuilder: (_, __) =>
+                            const Divider(height: 1),
+                        itemBuilder: (context, index) {
+                          final contact = _filteredContacts[index];
+                          return _ContactPickerTile(
+                            contact: contact,
+                            onTap: () =>
+                                Navigator.of(context).pop(contact),
+                          );
+                        },
+                      ),
               ),
             ],
           ),
         ),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('ביטול'),
-          ),
-        ],
       ),
     );
   }
