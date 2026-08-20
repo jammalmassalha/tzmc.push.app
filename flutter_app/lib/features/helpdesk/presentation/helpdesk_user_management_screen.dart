@@ -659,20 +659,15 @@ class _HelpdeskUserFormDialogState
   }
 }
 
-// Step-2 dialog for add-user flow: role, department, status.
+// Add-user dialog: contact picker + role, department, status.
 class _HelpdeskUserDetailsDialog extends StatefulWidget {
-  /// Used in the add flow (no pre-selected contact).
-  final List<Contact>? contacts;
-
-  /// Used in the edit flow (no contact picker needed).
-  final Contact? contact;
+  final List<Contact> contacts;
 
   final List<HelpdeskDepartment> departments;
   final Future<void> Function(HelpdeskUserFormData data) onSubmit;
 
   const _HelpdeskUserDetailsDialog({
-    this.contacts,
-    this.contact,
+    required this.contacts,
     required this.departments,
     required this.onSubmit,
   });
@@ -689,7 +684,6 @@ class _HelpdeskUserDetailsDialogState
   bool _isActive = true;
   bool _isSubmitting = false;
 
-  /// Only used in add flow.
   Contact? _selectedContact;
   final TextEditingController _contactTextController = TextEditingController();
 
@@ -697,27 +691,7 @@ class _HelpdeskUserDetailsDialogState
   void initState() {
     super.initState();
     _role = 'Editor';
-    final departmentNames = widget.departments.map((d) => d.name).toSet();
-
-    // Edit flow: pre-fill from existing contact.
-    final preContact = widget.contact;
-    if (preContact != null) {
-      final info = (preContact.info ?? '').toLowerCase();
-      String? matched;
-      if (info.isNotEmpty) {
-        for (final dept in widget.departments) {
-          if (info.contains(dept.name.toLowerCase())) {
-            matched = dept.name;
-            break;
-          }
-        }
-      }
-      _department = (matched != null && departmentNames.contains(matched))
-          ? matched
-          : widget.departments.first.name;
-    } else {
-      _department = widget.departments.first.name;
-    }
+    _department = widget.departments.first.name;
   }
 
   @override
@@ -744,7 +718,7 @@ class _HelpdeskUserDetailsDialogState
   }
 
   Future<void> _submit() async {
-    final contact = widget.contact ?? _selectedContact;
+    final contact = _selectedContact;
     if (contact == null) return;
     setState(() => _isSubmitting = true);
     try {
@@ -771,24 +745,10 @@ class _HelpdeskUserDetailsDialogState
 
   @override
   Widget build(BuildContext context) {
-    final isAddFlow = widget.contacts != null;
-    final contact = widget.contact ?? _selectedContact;
-
-    // Build subtitle for edit flow
-    String? editSubtitle;
-    if (!isAddFlow && contact != null) {
-      final s = (contact.info ?? '').trim().isNotEmpty
-          ? contact.info!.trim()
-          : (contact.phone ?? '').trim().isNotEmpty
-              ? contact.phone!.trim()
-              : contact.username;
-      editSubtitle = s;
-    }
-
     return Directionality(
       textDirection: ui.TextDirection.rtl,
       child: AlertDialog(
-        title: Text(isAddFlow ? 'הוסף משתמש מוקד' : 'ערוך משתמש מוקד'),
+        title: const Text('הוסף משתמש מוקד'),
         content: SizedBox(
           width: 420,
           child: SingleChildScrollView(
@@ -796,80 +756,53 @@ class _HelpdeskUserDetailsDialogState
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: <Widget>[
-                if (isAddFlow) ...<Widget>[
-                  // Tap-to-pick contact field (add flow)
-                  TextFormField(
-                    controller: _contactTextController,
-                    readOnly: true,
-                    decoration: InputDecoration(
-                      labelText: 'איש קשר',
-                      hintText: 'לחץ לבחירת איש קשר...',
-                      prefixIcon: const Icon(Icons.person_search),
-                      suffixIcon: _selectedContact != null
-                          ? IconButton(
-                              icon: const Icon(Icons.clear),
-                              onPressed: _isSubmitting
-                                  ? null
-                                  : () {
-                                      setState(() {
-                                        _selectedContact = null;
-                                        _contactTextController.clear();
-                                      });
-                                    },
-                            )
-                          : const Icon(Icons.arrow_drop_down),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                    onTap: _isSubmitting
-                        ? null
-                        : () async {
-                            final picked = await showDialog<Contact>(
-                              context: context,
-                              builder: (ctx) => _UserPickerDialog(
-                                contacts: widget.contacts!,
-                              ),
-                            );
-                            if (picked != null) {
-                              setState(() {
-                                _selectedContact = picked;
-                                final dept = (picked.info ?? '').trim();
-                                _contactTextController.text =
-                                    dept.isNotEmpty
-                                        ? '${picked.displayName} ($dept)'
-                                        : picked.displayName;
-                                _applyContactDepartment(picked);
-                              });
-                            }
-                          },
-                  ),
-                ] else ...<Widget>[
-                  // Read-only username label (edit flow)
-                  InputDecorator(
-                    decoration: const InputDecoration(
-                      labelText: 'משתמש נבחר',
-                      border: OutlineInputBorder(),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: <Widget>[
-                        Text(
-                          contact!.displayName,
-                          style: const TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                        if (editSubtitle != null &&
-                            editSubtitle.isNotEmpty) ...<Widget>[
-                          const SizedBox(height: 2),
-                          Text(
-                            editSubtitle,
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                        ],
-                      ],
+                // Tap-to-pick contact field
+                TextFormField(
+                  controller: _contactTextController,
+                  readOnly: true,
+                  decoration: InputDecoration(
+                    labelText: 'איש קשר',
+                    hintText: 'לחץ לבחירת איש קשר...',
+                    prefixIcon: const Icon(Icons.person_search),
+                    suffixIcon: _selectedContact != null
+                        ? IconButton(
+                            icon: const Icon(Icons.clear),
+                            onPressed: _isSubmitting
+                                ? null
+                                : () {
+                                    setState(() {
+                                      _selectedContact = null;
+                                      _contactTextController.clear();
+                                    });
+                                  },
+                          )
+                        : const Icon(Icons.arrow_drop_down),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
                     ),
                   ),
-                ],
+                  onTap: _isSubmitting
+                      ? null
+                      : () async {
+                          final picked = await showDialog<Contact>(
+                            context: context,
+                            builder: (ctx) => _UserPickerDialog(
+                              contacts: widget.contacts,
+                            ),
+                          );
+                          if (picked != null) {
+                            setState(() {
+                              _selectedContact = picked;
+                              final contactInfo = (picked.info ?? '').trim();
+                              _contactTextController.text =
+                                  contactInfo.isNotEmpty
+                                      ? '${picked.displayName} ($contactInfo)'
+                                      : picked.displayName;
+                              _applyContactDepartment(picked);
+                            });
+                          }
+                        },
+                ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
                   value: _role,
@@ -930,7 +863,7 @@ class _HelpdeskUserDetailsDialogState
             child: const Text('ביטול'),
           ),
           ElevatedButton(
-            onPressed: _isSubmitting || (isAddFlow && _selectedContact == null)
+            onPressed: _isSubmitting || _selectedContact == null
                 ? null
                 : _submit,
             child: _isSubmitting
@@ -939,7 +872,7 @@ class _HelpdeskUserDetailsDialogState
                     height: 18,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : Text(isAddFlow ? 'הוסף' : 'שמור'),
+                : const Text('הוסף'),
           ),
         ],
       ),
