@@ -1405,6 +1405,78 @@ class ChatApiService {
     }
   }
 
+  /// Get permission entries for a department (Admin only).
+  Future<List<DepartmentUserPermission>> getDepartmentPermissions(
+      String user, int deptId) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) throw ApiException('User is required');
+
+    try {
+      final response = await _client.get<dynamic>(
+        '${ApiEndpoints.helpdeskDepartments}/$deptId/permissions',
+        queryParameters: {'user': normalizedUser},
+        retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+      );
+      if (!response.isSuccessful) {
+        throw ApiException(
+          _extractErrorMessage(response.data, 'שגיאה בטעינת הרשאות המחלקה'),
+        );
+      }
+      final data = _coerceJsonMap(response.data);
+      return _coerceMapList(data['permissions'])
+          .map(DepartmentUserPermission.fromJson)
+          .toList();
+    } on ApiException {
+      rethrow;
+    } catch (e) {
+      throw ApiException('שגיאה בעיבוד הרשאות המחלקה');
+    }
+  }
+
+  /// Replace permission entries for a department (Admin only).
+  Future<void> setDepartmentPermissions(
+      String user, int deptId, List<DepartmentUserPermission> permissions) async {
+    final normalizedUser = user.trim();
+    if (normalizedUser.isEmpty) throw ApiException('User is required');
+
+    final response = await _client.post<dynamic>(
+      '${ApiEndpoints.helpdeskDepartments}/$deptId/permissions',
+      data: {
+        'user': normalizedUser,
+        'permissions': permissions.map((p) => p.toJson()).toList(),
+      },
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException(
+        _extractErrorMessage(response.data, 'שגיאה בשמירת הרשאות המחלקה'),
+      );
+    }
+  }
+
+  /// Get departments accessible to the current user, with per-department role.
+  Future<List<HelpdeskDepartmentEntry>> getUserAccessibleDepartments() async {
+    try {
+      final response = await _client.get<dynamic>(
+        ApiEndpoints.helpdeskUserDepartments,
+        retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+      );
+      if (!response.isSuccessful) {
+        throw ApiException(
+          _extractErrorMessage(response.data, 'שגיאה בטעינת המחלקות'),
+        );
+      }
+      final data = _coerceJsonMap(response.data);
+      return _coerceMapList(data['departments'])
+          .map(HelpdeskDepartmentEntry.fromJson)
+          .toList();
+    } on ApiException {
+      rethrow;
+    } catch (e) {
+      throw ApiException('שגיאה בעיבוד נתוני המחלקות');
+    }
+  }
+
   /// Get helpdesk departments for admin CRUD flows.
   Future<List<HelpdeskDepartment>> fetchHelpdeskDepartments(String user) async {
     final normalizedUser = user.trim();

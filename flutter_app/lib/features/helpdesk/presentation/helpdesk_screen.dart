@@ -223,7 +223,10 @@ class HelpdeskNotifier extends Notifier<HelpdeskState> {
     try {
       final results = await Future.wait([
         _api.getHelpdeskDashboard(_currentUser!),
-        _api.getActiveHelpdeskDepartments().catchError((_) => <HelpdeskDepartmentEntry>[]),
+        _api.getUserAccessibleDepartments().catchError(
+              (_) => _api
+                  .getActiveHelpdeskDepartments()
+                  .catchError((__) => <HelpdeskDepartmentEntry>[])),
       ]);
       final dashboard = results[0] as HelpdeskDashboard;
       final departments = results[1] as List<HelpdeskDepartmentEntry>;
@@ -297,7 +300,9 @@ class HelpdeskNotifier extends Notifier<HelpdeskState> {
     }
 
     try {
-      final departments = await _api.getActiveHelpdeskDepartments();
+      final departments = await _api
+          .getUserAccessibleDepartments()
+          .catchError((_) => _api.getActiveHelpdeskDepartments());
       state = state.copyWith(departments: departments, error: null);
       return departments;
     } catch (e) {
@@ -2814,6 +2819,26 @@ class _DepartmentSettingsScreenState
     HelpdeskInitialFormConfig initialForm =
         existing?.initialForm ?? const HelpdeskInitialFormConfig();
 
+    // --- Permissions: pre-load before showing the dialog ---
+    final api = ref.read(chatApiServiceProvider);
+    List<DepartmentUserPermission> deptPermissions = <DepartmentUserPermission>[];
+    List<HelpdeskUser> allHelpdeskUsers = <HelpdeskUser>[];
+    try {
+      final results = await Future.wait<dynamic>([
+        api.fetchHelpdeskUsers(),
+        if (existing != null)
+          api.getDepartmentPermissions(widget.currentUser, existing.id)
+        else
+          Future<List<DepartmentUserPermission>>.value([]),
+      ]);
+      allHelpdeskUsers = (results[0] as List<HelpdeskUser>?) ?? [];
+      deptPermissions = List<DepartmentUserPermission>.from(
+          (results[1] as List<DepartmentUserPermission>?) ?? []);
+    } catch (_) {
+      // Non-fatal: show dialog without pre-loaded permissions
+    }
+    final permUserSearchCtrl = TextEditingController();
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -3008,6 +3033,126 @@ class _DepartmentSettingsScreenState
                         ),
                       );
                     }),
+                  // --- Permissions section ---
+                  const SizedBox(height: 12),
+                  const Divider(),
+                  const Align(
+                    alignment: Alignment.centerRight,
+                    child: Text(
+                      'הרשאות משתמשים ותפקידים',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'השאר ריק כדי לאפשר גישה לכלל המשתמשים. בבחירת משתמשים, רק המשתמשים הנבחרים יוכלו לראות ולנהל קריאות במחלקה זו לפי התפקיד שהוגדר.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 8),
+                  Builder(builder: (bctx) {
+                    final query =
+                        permUserSearchCtrl.text.trim().toLowerCase();
+                    final addedIds = deptPermissions
+                        .map((p) => p.userId.toLowerCase())
+                        .toSet();
+                    final candidates = allHelpdeskUsers
+                        .where((u) =>
+                            !addedIds.contains(u.username.toLowerCase()))
+                        .where((u) =>
+                            query.isEmpty ||
+                            u.username.toLowerCase().contains(query) ||
+                            (u.fullName ?? '')
+                                .toLowerCase()
+                                .contains(query))
+                        .take(5)
+                        .toList();
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        TextField(
+                          controller: permUserSearchCtrl,
+                          decoration: const InputDecoration(
+                            labelText: 'חפש והוסף משתמש',
+                            prefixIcon: Icon(Icons.search),
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                          onChanged: (_) => setSt(() {}),
+                        ),
+                        if (query.isNotEmpty)
+                          ...candidates.map(
+                            (u) => ListTile(
+                              dense: true,
+                              title: Text(u.username),
+                              subtitle: (u.fullName ?? '').isNotEmpty
+                                  ? Text(u.fullName!)
+                                  : null,
+                              trailing:
+                                  const Icon(Icons.add_circle_outline),
+                              onTap: () => setSt(() {
+                                deptPermissions = [
+                                  ...deptPermissions,
+                                  DepartmentUserPermission(
+                                      userId: u.username,
+                                      role: 'Editor'),
+                                ];
+                                permUserSearchCtrl.clear();
+                              }),
+                            ),
+                          ),
+                      ],
+                    );
+                  }),
+                  ...deptPermissions.asMap().entries.map((entry) {
+                    final idx = entry.key;
+                    final perm = entry.value;
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              perm.userId,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          DropdownButton<String>(
+                            value: perm.role,
+                            isDense: true,
+                            items: const [
+                              DropdownMenuItem(
+                                  value: 'Admin',
+                                  child: Text('Admin')),
+                              DropdownMenuItem(
+                                  value: 'Editor',
+                                  child: Text('Editor')),
+                              DropdownMenuItem(
+                                  value: 'Viewer',
+                                  child: Text('Viewer')),
+                            ],
+                            onChanged: (v) => setSt(() {
+                              final updated =
+                                  List<DepartmentUserPermission>.from(
+                                      deptPermissions);
+                              updated[idx] = perm.copyWith(role: v);
+                              deptPermissions = updated;
+                            }),
+                          ),
+                          IconButton(
+                            icon: const Icon(
+                                Icons.remove_circle_outline,
+                                color: Colors.red,
+                                size: 20),
+                            onPressed: () => setSt(() {
+                              deptPermissions = [...deptPermissions]
+                                ..removeAt(idx);
+                            }),
+                          ),
+                        ],
+                      ),
+                    );
+                  }),
                 ],
               ),
             ),
@@ -3030,10 +3175,9 @@ class _DepartmentSettingsScreenState
       return;
     }
 
-    final api = ref.read(chatApiServiceProvider);
     try {
       if (existing == null) {
-        await api.addHelpdeskDepartment(
+        final newId = await api.addHelpdeskDepartment(
           widget.currentUser,
           name: nameCtrl.text.trim(),
           icon: selectedIconKey,
@@ -3042,6 +3186,10 @@ class _DepartmentSettingsScreenState
           ticketForm: ticketForm,
           initialForm: initialForm,
         );
+        if (newId > 0) {
+          await api.setDepartmentPermissions(
+              widget.currentUser, newId, deptPermissions);
+        }
         if (mounted) showTopToast(context, 'המחלקה נוספה בהצלחה');
       } else {
         await api.updateHelpdeskDepartment(
@@ -3054,6 +3202,8 @@ class _DepartmentSettingsScreenState
           ticketForm: ticketForm,
           initialForm: initialForm,
         );
+        await api.setDepartmentPermissions(
+            widget.currentUser, existing.id, deptPermissions);
         if (mounted) showTopToast(context, 'המחלקה עודכנה בהצלחה');
       }
       await _fetchDepartments();
