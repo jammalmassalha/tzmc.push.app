@@ -2837,8 +2837,6 @@ class _DepartmentSettingsScreenState
     } catch (_) {
       // Non-fatal: show dialog without pre-loaded permissions
     }
-    final permUserSearchCtrl = TextEditingController();
-
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -3050,54 +3048,48 @@ class _DepartmentSettingsScreenState
                   ),
                   const SizedBox(height: 8),
                   Builder(builder: (bctx) {
-                    final query =
-                        permUserSearchCtrl.text.trim().toLowerCase();
                     final addedIds = deptPermissions
                         .map((p) => p.userId.toLowerCase())
                         .toSet();
-                    final candidates = allHelpdeskUsers
-                        .where((u) =>
-                            !addedIds.contains(u.username.toLowerCase()))
-                        .where((u) =>
-                            query.isEmpty ||
-                            u.username.toLowerCase().contains(query) ||
-                            (u.fullName ?? '')
-                                .toLowerCase()
-                                .contains(query))
-                        .take(5)
-                        .toList();
+                    final hasAvailableUsers = allHelpdeskUsers.any((u) =>
+                        !addedIds.contains(u.username.toLowerCase()));
                     return Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        TextField(
-                          controller: permUserSearchCtrl,
-                          decoration: const InputDecoration(
-                            labelText: 'חפש והוסף משתמש',
-                            prefixIcon: Icon(Icons.search),
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                          ),
-                          onChanged: (_) => setSt(() {}),
+                        OutlinedButton.icon(
+                          onPressed: !hasAvailableUsers
+                              ? null
+                              : () async {
+                                  final selectedUser =
+                                      await _showPermissionUserPickerDialog(
+                                    ctx,
+                                    allUsers: allHelpdeskUsers,
+                                    excludedUserIds: addedIds,
+                                  );
+                                  if (selectedUser == null) return;
+                                  setSt(() {
+                                    final exists = deptPermissions.any((p) =>
+                                        p.userId.toLowerCase() ==
+                                        selectedUser.username.toLowerCase());
+                                    if (!exists) {
+                                      deptPermissions = [
+                                        ...deptPermissions,
+                                        DepartmentUserPermission(
+                                            userId: selectedUser.username,
+                                            role: 'Editor'),
+                                      ];
+                                    }
+                                  });
+                                },
+                          icon: const Icon(Icons.person_add_alt_1),
+                          label: const Text('בחר משתמש להוספה'),
                         ),
-                        if (query.isNotEmpty)
-                          ...candidates.map(
-                            (u) => ListTile(
-                              dense: true,
-                              title: Text(u.username),
-                              subtitle: (u.fullName ?? '').isNotEmpty
-                                  ? Text(u.fullName!)
-                                  : null,
-                              trailing:
-                                  const Icon(Icons.add_circle_outline),
-                              onTap: () => setSt(() {
-                                deptPermissions = [
-                                  ...deptPermissions,
-                                  DepartmentUserPermission(
-                                      userId: u.username,
-                                      role: 'Editor'),
-                                ];
-                                permUserSearchCtrl.clear();
-                              }),
+                        if (!hasAvailableUsers)
+                          const Padding(
+                            padding: EdgeInsets.only(top: 6),
+                            child: Text(
+                              'כל המשתמשים כבר נוספו',
+                              style: TextStyle(fontSize: 12, color: Colors.grey),
                             ),
                           ),
                       ],
@@ -3214,6 +3206,88 @@ class _DepartmentSettingsScreenState
         showTopToast(context, 'שגיאה: ${e.toString()}',
             backgroundColor: Theme.of(context).colorScheme.error);
       }
+    }
+  }
+
+  Future<HelpdeskUser?> _showPermissionUserPickerDialog(
+    BuildContext context, {
+    required List<HelpdeskUser> allUsers,
+    required Set<String> excludedUserIds,
+  }) async {
+    final searchCtrl = TextEditingController();
+    try {
+      return await showDialog<HelpdeskUser>(
+        context: context,
+        builder: (ctx) => StatefulBuilder(
+          builder: (ctx, setSt) {
+            final query = searchCtrl.text.trim().toLowerCase();
+            final users = allUsers
+                .where((u) => !excludedUserIds.contains(u.username.toLowerCase()))
+                .where((u) {
+              if (query.isEmpty) return true;
+              return u.username.toLowerCase().contains(query) ||
+                  (u.fullName ?? '').toLowerCase().contains(query);
+            }).toList();
+            return Directionality(
+              textDirection: ui.TextDirection.rtl,
+              child: AlertDialog(
+                title: const Text('בחירת משתמש'),
+                content: SizedBox(
+                  width: 420,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextField(
+                        controller: searchCtrl,
+                        decoration: const InputDecoration(
+                          labelText: 'חיפוש משתמש',
+                          prefixIcon: Icon(Icons.search),
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                        onChanged: (_) => setSt(() {}),
+                      ),
+                      const SizedBox(height: 10),
+                      Flexible(
+                        child: users.isEmpty
+                            ? const Center(
+                                child: Text(
+                                  'לא נמצאו משתמשים',
+                                  style: TextStyle(color: Colors.grey),
+                                ),
+                              )
+                            : ListView.builder(
+                                shrinkWrap: true,
+                                itemCount: users.length,
+                                itemBuilder: (context, index) {
+                                  final user = users[index];
+                                  final fullName = (user.fullName ?? '').trim();
+                                  return ListTile(
+                                    dense: true,
+                                    title: Text(user.username),
+                                    subtitle:
+                                        fullName.isNotEmpty ? Text(fullName) : null,
+                                    onTap: () => Navigator.of(ctx).pop(user),
+                                  );
+                                },
+                              ),
+                      ),
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    child: const Text('סגור'),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      );
+    } finally {
+      searchCtrl.dispose();
     }
   }
 
