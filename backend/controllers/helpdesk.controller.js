@@ -1974,7 +1974,8 @@ function registerHelpdeskController(app, deps = {}) {
             await setDepartmentPermissionsWithRoles(pool, deptId, permissions);
             return res.json({ result: 'success' });
         } catch (error) {
-            if (error && error.message && error.message.startsWith('Invalid role')) {
+            if (error && error.message &&
+                (error.message.startsWith('Invalid role') || error.message.startsWith('Each permission entry'))) {
                 return res.status(400).json({ result: 'error', message: error.message });
             }
             const message = error && error.message ? error.message : 'Failed to set permissions';

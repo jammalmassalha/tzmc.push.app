@@ -135,23 +135,23 @@ async function canUserAccessDepartment(pool, userId, globalRole, departmentId) {
         return { allowed: true, role: 'Admin' };
     }
 
-    const [permRows] = await pool.query(
-        'SELECT COUNT(*) AS cnt FROM `helpdesk_department_permissions` WHERE `department_id` = ?',
-        [departmentId]
+    // Single-pass: count all rows for the dept and find the user's role if present
+    const [rows] = await pool.query(
+        `SELECT COUNT(*) AS total,
+                MAX(CASE WHEN \`user_id\` = ? THEN \`role\` END) AS user_role
+         FROM \`helpdesk_department_permissions\`
+         WHERE \`department_id\` = ?`,
+        [userId, departmentId]
     );
-    const totalPerms = permRows[0] && permRows[0].cnt ? Number(permRows[0].cnt) : 0;
+    const total = rows[0] && rows[0].total ? Number(rows[0].total) : 0;
+    const userRole = rows[0] && rows[0].user_role ? rows[0].user_role : null;
 
-    if (totalPerms === 0) {
-        // Open department
+    if (total === 0) {
+        // Open department — no ACL entries
         return { allowed: true, role: 'Editor' };
     }
-
-    const [userRow] = await pool.query(
-        'SELECT `role` FROM `helpdesk_department_permissions` WHERE `department_id` = ? AND `user_id` = ? LIMIT 1',
-        [departmentId, userId]
-    );
-    if (userRow.length > 0) {
-        return { allowed: true, role: userRow[0].role };
+    if (userRole) {
+        return { allowed: true, role: userRole };
     }
     return { allowed: false, role: null };
 }
