@@ -63,7 +63,10 @@ const double _kDesktopShellBreakpoint = 1100;
 
 /// Chat shell screen widget
 class ChatShellScreen extends ConsumerStatefulWidget {
-  const ChatShellScreen({super.key});
+  /// Optional path to navigate to on first render (e.g. `/helpdesk`).
+  final String? initialPath;
+
+  const ChatShellScreen({super.key, this.initialPath});
 
   @override
   ConsumerState<ChatShellScreen> createState() => _ChatShellScreenState();
@@ -86,6 +89,9 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    if (widget.initialPath != null) {
+      _currentTab = _tabForPath(widget.initialPath);
+    }
     _initializeServices();
     unawaited(_refreshTabPermissions());
   }
