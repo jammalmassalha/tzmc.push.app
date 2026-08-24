@@ -579,9 +579,13 @@ async function finalizeUsersUploadedFile(file) {
            await fsPromises.unlink(sourcePath);
        } catch (error) {
            if (error && error.code === 'EEXIST') {
-               const conflictError = new Error('A file with this name already exists in users uploads');
-               conflictError.statusCode = 409;
-               throw conflictError;
+               // File already exists at the target path — clean up the temp
+               // source and reuse the existing file instead of erroring.
+               try { await fsPromises.unlink(sourcePath); } catch (_) { /* best-effort */ }
+               file.destination = targetDir;
+               file.filename = targetFilename;
+               file.path = targetPath;
+               return file;
            }
            throw error;
        }

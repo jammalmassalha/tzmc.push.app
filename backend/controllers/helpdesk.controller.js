@@ -1,5 +1,10 @@
 const mysql = require('mysql2/promise');
 const rateLimit = require('express-rate-limit');
+const {
+    getDepartmentAllowedUsersWithRoles,
+    setDepartmentPermissionsWithRoles,
+    getUserPermittedDepartmentsWithRole
+} = require('../services/helpdesk-permissions.service');
 
 function toTrimmedString(value) {
     return String(value === null || value === undefined ? '' : value).trim();
@@ -487,6 +492,20 @@ async function ensureHelpdeskTables(pool) {
             console.error('[HELPDESK] Migration department ticket_form_config column error:', err && err.message ? err.message : err);
         }
     }
+
+    await safeCreateTable(`
+        CREATE TABLE IF NOT EXISTS \`helpdesk_department_permissions\` (
+            \`id\` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            \`department_id\` INT UNSIGNED NOT NULL,
+            \`user_id\` VARCHAR(100) NOT NULL,
+            \`role\` VARCHAR(50) NOT NULL DEFAULT 'Editor',
+            \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (\`id\`),
+            UNIQUE INDEX \`idx_dept_user\` (\`department_id\`, \`user_id\`),
+            CONSTRAINT \`fk_hdp_department\`
+                FOREIGN KEY (\`department_id\`) REFERENCES \`helpdesk_departments\` (\`id\`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `, 'helpdesk_department_permissions');
 }
 
 function mapTicketRow(row) {
@@ -1911,6 +1930,75 @@ function registerHelpdeskController(app, deps = {}) {
             const message = error && error.message ? error.message : 'Failed to delete department';
             console.error('[HELPDESK] Delete department error:', message);
             return res.status(500).json({ result: 'error', message: 'שגיאה במחיקת המחלקה' });
+        }
+    });
+
+    // GET /helpdesk/departments/:id/permissions - Admin: list per-department ACL
+    app.get(['/helpdesk/departments/:id/permissions', '/notify/helpdesk/departments/:id/permissions'], requireUser, helpdeskAdminMutationIpRateLimit, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
+        const user = toTrimmedString(req.resolvedUser || '');
+        if (!user) return res.status(401).json({ result: 'error', message: 'Authentication required' });
+        const deptId = toPositiveInteger(req.params && req.params.id, null);
+        if (!deptId) return res.status(400).json({ result: 'error', message: 'מזהה מחלקה לא תקין' });
+
+        try {
+            await getTablesReady();
+            const editorRole = await getHelpdeskUserRole(pool, user);
+            if (!editorRole || editorRole.role !== 'Admin') {
+                return res.status(403).json({ result: 'error', message: 'אין הרשאה' });
+            }
+            const permissions = await getDepartmentAllowedUsersWithRoles(pool, deptId);
+            return res.json({ result: 'success', permissions });
+        } catch (error) {
+            const message = error && error.message ? error.message : 'Failed to load permissions';
+            console.error('[HELPDESK] Get department permissions error:', message);
+            return res.status(500).json({ result: 'error', message: 'שגיאה בטעינת ההרשאות' });
+        }
+    });
+
+    // POST /helpdesk/departments/:id/permissions - Admin: replace per-department ACL
+    app.post(['/helpdesk/departments/:id/permissions', '/notify/helpdesk/departments/:id/permissions'], requireUser, helpdeskAdminMutationIpRateLimit, helpdeskRateLimit(10, 60 * 1000), async (req, res) => {
+        const user = toTrimmedString(req.resolvedUser || '');
+        if (!user) return res.status(401).json({ result: 'error', message: 'Authentication required' });
+        const deptId = toPositiveInteger(req.params && req.params.id, null);
+        if (!deptId) return res.status(400).json({ result: 'error', message: 'מזהה מחלקה לא תקין' });
+
+        const body = req.body && typeof req.body === 'object' ? req.body : {};
+        const permissions = Array.isArray(body.permissions) ? body.permissions : [];
+
+        try {
+            await getTablesReady();
+            const editorRole = await getHelpdeskUserRole(pool, user);
+            if (!editorRole || editorRole.role !== 'Admin') {
+                return res.status(403).json({ result: 'error', message: 'אין הרשאה' });
+            }
+            await setDepartmentPermissionsWithRoles(pool, deptId, permissions);
+            return res.json({ result: 'success' });
+        } catch (error) {
+            if (error && error.message &&
+                (error.message.startsWith('Invalid role') || error.message.startsWith('Each permission entry'))) {
+                return res.status(400).json({ result: 'error', message: error.message });
+            }
+            const message = error && error.message ? error.message : 'Failed to set permissions';
+            console.error('[HELPDESK] Set department permissions error:', message);
+            return res.status(500).json({ result: 'error', message: 'שגיאה בשמירת ההרשאות' });
+        }
+    });
+
+    // GET /helpdesk/user-departments - any authenticated helpdesk user
+    app.get(['/helpdesk/user-departments', '/notify/helpdesk/user-departments'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
+        const user = toTrimmedString(req.resolvedUser || '');
+        if (!user) return res.status(401).json({ result: 'error', message: 'Authentication required' });
+
+        try {
+            await getTablesReady();
+            const helpdeskUser = await getHelpdeskUserRole(pool, user);
+            const globalRole = helpdeskUser ? helpdeskUser.role : 'Editor';
+            const departments = await getUserPermittedDepartmentsWithRole(pool, user, globalRole);
+            return res.json({ result: 'success', departments });
+        } catch (error) {
+            const message = error && error.message ? error.message : 'Failed to load user departments';
+            console.error('[HELPDESK] Get user departments error:', message);
+            return res.status(500).json({ result: 'error', message: 'שגיאה בטעינת המחלקות' });
         }
     });
 }

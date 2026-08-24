@@ -293,6 +293,8 @@ class HelpdeskDepartmentEntry extends Equatable {
   final int sortOrder;
   final List<HelpdeskTicketFormField> ticketForm;
   final HelpdeskInitialFormConfig initialForm;
+  final List<DepartmentUserPermission> permissions;
+  final String? resolvedRole;
 
   const HelpdeskDepartmentEntry({
     required this.id,
@@ -302,13 +304,15 @@ class HelpdeskDepartmentEntry extends Equatable {
     this.sortOrder = 0,
     this.ticketForm = const [],
     this.initialForm = const HelpdeskInitialFormConfig(),
+    this.permissions = const [],
+    this.resolvedRole,
   });
 
   bool get isActive => status == 'active';
 
   @override
   List<Object?> get props =>
-      [id, name, icon, status, sortOrder, ticketForm, initialForm];
+      [id, name, icon, status, sortOrder, ticketForm, initialForm, permissions, resolvedRole];
 
   factory HelpdeskDepartmentEntry.fromJson(Map<String, dynamic> json) {
     final rawForm = json['ticketForm'] ?? json['ticket_form'];
@@ -320,6 +324,14 @@ class HelpdeskDepartmentEntry extends Equatable {
             .toList()
         : <HelpdeskTicketFormField>[];
     final initialFormMap = _asStringDynamicMap(json['initialForm']);
+    final rawPerms = json['permissions'];
+    final permissions = rawPerms is List
+        ? rawPerms
+            .map(_asStringDynamicMap)
+            .whereType<Map<String, dynamic>>()
+            .map(DepartmentUserPermission.fromJson)
+            .toList()
+        : <DepartmentUserPermission>[];
     return HelpdeskDepartmentEntry(
       id: _asInt(json['id'], fallback: 0),
       name: _asString(json['name']),
@@ -328,6 +340,8 @@ class HelpdeskDepartmentEntry extends Equatable {
       sortOrder: _asInt(json['sortOrder'] ?? json['sort_order'], fallback: 0),
       ticketForm: ticketForm,
       initialForm: HelpdeskInitialFormConfig.fromJson(initialFormMap),
+      permissions: permissions,
+      resolvedRole: _asString(json['resolvedRole']).isEmpty ? null : _asString(json['resolvedRole']),
     );
   }
 
@@ -339,7 +353,33 @@ class HelpdeskDepartmentEntry extends Equatable {
         'sortOrder': sortOrder,
         'ticketForm': ticketForm.map((f) => f.toJson()).toList(),
         'initialForm': initialForm.toJson(),
+        'permissions': permissions.map((p) => p.toJson()).toList(),
+        if (resolvedRole != null) 'resolvedRole': resolvedRole,
       };
+
+  HelpdeskDepartmentEntry copyWith({
+    int? id,
+    String? name,
+    String? icon,
+    String? status,
+    int? sortOrder,
+    List<HelpdeskTicketFormField>? ticketForm,
+    HelpdeskInitialFormConfig? initialForm,
+    List<DepartmentUserPermission>? permissions,
+    String? resolvedRole,
+  }) {
+    return HelpdeskDepartmentEntry(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      icon: icon ?? this.icon,
+      status: status ?? this.status,
+      sortOrder: sortOrder ?? this.sortOrder,
+      ticketForm: ticketForm ?? this.ticketForm,
+      initialForm: initialForm ?? this.initialForm,
+      permissions: permissions ?? this.permissions,
+      resolvedRole: resolvedRole ?? this.resolvedRole,
+    );
+  }
 }
 
 /// Lightweight department model used by admin/helpdesk CRUD flows.
@@ -918,6 +958,43 @@ class HelpdeskHandlerHistoryEntry extends Equatable {
       createdAt: DateTime.tryParse(
               (json['createdAt'] ?? json['created_at']) as String? ?? '') ??
           DateTime.now(),
+    );
+  }
+}
+
+/// Department-level user permission entry.
+///
+/// A department with no permission entries is open to all helpdesk users.
+/// When entries are present, only the listed users (plus global Admins) can
+/// access that department.
+class DepartmentUserPermission extends Equatable {
+  final String userId;
+  final String role; // 'Admin' | 'Editor' | 'Viewer'
+
+  const DepartmentUserPermission({
+    required this.userId,
+    required this.role,
+  });
+
+  @override
+  List<Object?> get props => [userId, role];
+
+  factory DepartmentUserPermission.fromJson(Map<String, dynamic> json) {
+    return DepartmentUserPermission(
+      userId: _asString(json['userId'] ?? json['user_id']),
+      role: _asString(json['role'], fallback: 'Editor'),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'userId': userId,
+        'role': role,
+      };
+
+  DepartmentUserPermission copyWith({String? userId, String? role}) {
+    return DepartmentUserPermission(
+      userId: userId ?? this.userId,
+      role: role ?? this.role,
     );
   }
 }
