@@ -89,9 +89,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    if (widget.initialPath != null) {
-      _currentTab = _tabForPath(widget.initialPath);
-    }
+    _currentTab = _tabForPath(widget.initialPath);
     _initializeServices();
     unawaited(_refreshTabPermissions());
   }
