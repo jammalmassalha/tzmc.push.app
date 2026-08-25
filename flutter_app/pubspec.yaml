@@ -82,8 +82,11 @@ dependencies:
 # additional artifact downloads.
 dependency_overrides:
   shared_preferences_android: 2.4.2
-  # Keep build_runner on a Dart 3.6-compatible patch that also supports
-  # retrofit_generator 9.7.x (requires build_runner >=2.4.14 via dart_style 3).
+  # retrofit_generator 9.7.0 requires build ^2.5.4, but build_runner 2.4.14
+  # (the highest Dart 3.6-compatible runner) only accepts build <2.5.0.
+  # Override both so pub's version solver accepts the pair; build_runner 2.4.14
+  # is API-compatible at runtime with build 2.5.4.
+  build: 2.5.4
   build_runner: 2.4.14
 
 dev_dependencies:
