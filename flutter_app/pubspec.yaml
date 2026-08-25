@@ -84,7 +84,7 @@ dependency_overrides:
   shared_preferences_android: 2.4.2
   # Mockito 5.4.x uses analyzer internals that changed in analyzer 7.x.
   # Keep analyzer pinned to a stable 6.x release for build_runner precompile.
-  analyzer: 6.11.0
+  # analyzer: 6.11.0
   # Keep build_runner on a Dart 3.6-compatible patch that also supports
   # retrofit_generator 9.6.x (requires build_runner >=2.4.14 via dart_style 3).
   build_runner: 2.4.14
@@ -103,7 +103,7 @@ dev_dependencies:
   freezed: ">=3.0.0 <3.1.0"
   # Mockito 5.4.x relies on analyzer internals; keep the compatible major line.
   # dependency_overrides pins the exact resolved version to 6.11.0.
-  analyzer: ">=6.11.0 <7.0.0"
+  # analyzer: ">=6.11.0 <7.0.0"
   mockito: ">=5.4.4 <5.5.0"
   mocktail: ^1.0.3
 
