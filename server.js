@@ -338,7 +338,8 @@ app.use('/notify', express.static(path.join(__dirname, 'public')));
 const flutterWebDir = path.join(__dirname, 'dist', 'web');
 app.use('/fluttertest', express.static(flutterWebDir));
 // SPA fallback: return index.html for any /fluttertest/* path not matched by a static file
-app.get('/fluttertest/*splat', (req, res) => {
+const flutterSpaLimiter = rateLimit({ windowMs: 60 * 1000, max: 120 });
+app.get('/fluttertest/*splat', flutterSpaLimiter, (req, res) => {
     const indexPath = path.join(flutterWebDir, 'index.html');
     res.sendFile(indexPath);
 });
