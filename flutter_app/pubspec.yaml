@@ -82,16 +82,8 @@ dependencies:
 # additional artifact downloads.
 dependency_overrides:
   shared_preferences_android: 2.4.2
-  # retrofit_generator 9.6.x requires UseCallAdapter and BodyExtra (added in
-  # ~4.7.x) but its switch statements are not exhaustive over Parser.DartMappable
-  # (added in 4.10.0), causing build script precompile failures. Pin to 4.9.1,
-  # the last release before Parser.DartMappable was introduced.
-  retrofit: 4.9.1
-  # Mockito 5.4.x uses analyzer internals that changed in analyzer 7.x.
-  # Keep analyzer pinned to a stable 6.x release for build_runner precompile.
-  # analyzer: 6.11.0
   # Keep build_runner on a Dart 3.6-compatible patch that also supports
-  # retrofit_generator 9.6.x (requires build_runner >=2.4.14 via dart_style 3).
+  # retrofit_generator 9.7.x (requires build_runner >=2.4.14 via dart_style 3).
   build_runner: 2.4.14
 
 dev_dependencies:
@@ -99,16 +91,13 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^5.0.0
   # Keep build_runner on the Dart 3.6-compatible line (>=2.4.14 for retrofit);
-  # exact resolution is
-  # enforced above via dependency_overrides.
+  # exact resolution is enforced above via dependency_overrides.
   build_runner: ">=2.4.14 <2.5.0"
   json_serializable: ^6.7.1
-  retrofit_generator: ">=9.6.0 <9.7.0"
+  retrofit_generator: ">=9.7.0 <9.8.0"
   drift_dev: ^2.15.0
   freezed: ">=3.0.0 <3.1.0"
   # Mockito 5.4.x relies on analyzer internals; keep the compatible major line.
-  # dependency_overrides pins the exact resolved version to 6.11.0.
-  # analyzer: ">=6.11.0 <7.0.0"
   mockito: ">=5.4.4 <5.5.0"
   mocktail: ^1.0.3
 
