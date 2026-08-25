@@ -178,7 +178,7 @@ class HelpdeskDepartmentTicketFormConfig extends Equatable {
     return HelpdeskDepartmentTicketFormConfig(
       fields: rawFields
           .whereType<Map<String, dynamic>>()
-          .map((e) => HelpdeskTicketFormField.fromJson(e))
+          .map(HelpdeskTicketFormField.fromJson)
           .toList(),
       initialForm: HelpdeskInitialFormConfig.fromJson(
         json['initialForm'] as Map<String, dynamic>?,

@@ -806,7 +806,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
           }
 
           // Build dynamic field widgets
-          List<Widget> dynamicFieldWidgets = [];
+          final List<Widget> dynamicFieldWidgets = [];
           for (final f in formFields) {
             dynamicFieldWidgets.add(const SizedBox(height: 16));
             switch (f.type) {
@@ -1004,7 +1004,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                   ],
                   if (initialForm.showPriority) ...[
                     DropdownButtonFormField<String>(
-                      value: priority,
+                      initialValue: priority,
                       decoration: const InputDecoration(
                           labelText: 'דחיפות', border: OutlineInputBorder()),
                       items: const [
@@ -1756,7 +1756,9 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
     if (_ticket.creatorUsername == _currentUser) return true;
     if (_ticket.handlerUsername == _currentUser) return true;
     if (widget.myRole != null &&
-        widget.myRole!.department == _ticket.department) return true;
+        widget.myRole!.department == _ticket.department) {
+      return true;
+    }
     return false;
   }
 
@@ -2165,7 +2167,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                     Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                       Expanded(
                         child: DropdownButtonFormField<int>(
-                          value: _selectedDepartmentId,
+                          initialValue: _selectedDepartmentId,
                           decoration: const InputDecoration(
                               labelText: 'מחלקת יעד',
                               border: OutlineInputBorder()),
@@ -2228,7 +2230,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                     Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                       Expanded(
                         child: DropdownButtonFormField<String?>(
-                          value: _selectedHandler,
+                          initialValue: _selectedHandler,
                           decoration: const InputDecoration(
                               labelText: 'בחר מטפל',
                               border: OutlineInputBorder()),
@@ -2282,7 +2284,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                     Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                       Expanded(
                         child: DropdownButtonFormField<String>(
-                          value: _selectedStatus,
+                          initialValue: _selectedStatus,
                           decoration: const InputDecoration(
                               labelText: 'סטטוס',
                               border: OutlineInputBorder()),
@@ -2858,7 +2860,7 @@ class _DepartmentSettingsScreenState
                   ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
-                    value: selectedIconKey,
+                    initialValue: selectedIconKey,
                     decoration: const InputDecoration(
                         labelText: 'אייקון מחלקה', border: OutlineInputBorder()),
                     items: [
@@ -2897,7 +2899,7 @@ class _DepartmentSettingsScreenState
                   ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
-                    value: status,
+                    initialValue: status,
                     decoration: const InputDecoration(
                         labelText: 'סטטוס', border: OutlineInputBorder()),
                     items: const [
@@ -3350,7 +3352,7 @@ class _DepartmentSettingsScreenState
                   ),
                   const SizedBox(height: 10),
                   DropdownButtonFormField<HelpdeskTicketFormFieldType>(
-                    value: fieldType,
+                    initialValue: fieldType,
                     decoration: const InputDecoration(
                         labelText: 'סוג שדה',
                         border: OutlineInputBorder()),
@@ -3366,7 +3368,7 @@ class _DepartmentSettingsScreenState
                   if (fieldType == HelpdeskTicketFormFieldType.input) ...[
                     const SizedBox(height: 10),
                     DropdownButtonFormField<HelpdeskTicketFormInputType>(
-                      value: inputType,
+                      initialValue: inputType,
                       decoration: const InputDecoration(
                           labelText: 'סוג קלט',
                           border: OutlineInputBorder()),
@@ -3538,7 +3540,7 @@ class _DepartmentSettingsScreenState
           ],
         ),
         floatingActionButton: FloatingActionButton(
-          onPressed: () => _showAddEditDialog(),
+          onPressed: _showAddEditDialog,
           child: const Icon(Icons.add),
         ),
         body: _loading

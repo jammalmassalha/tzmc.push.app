@@ -58,7 +58,7 @@ class XFile {
       return _bytes!;
     }
     if (_bytesLoader != null) {
-      _bytes = await _bytesLoader!();
+      _bytes = await _bytesLoader();
       return _bytes!;
     }
     throw StateError('XFile has no bytes and no loader');

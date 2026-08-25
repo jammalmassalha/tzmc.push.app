@@ -30,7 +30,7 @@ class AdminCommunityGroup {
   });
 
   factory AdminCommunityGroup.fromMap(Map<String, dynamic> map) {
-    List<String> _toStringList(dynamic v) {
+    List<String> toStringList(dynamic v) {
       if (v is List) return v.map((e) => e.toString()).toList();
       if (v is String && v.isNotEmpty) return v.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
       return [];
@@ -39,8 +39,8 @@ class AdminCommunityGroup {
     return AdminCommunityGroup(
       groupId: map['groupId']?.toString() ?? '',
       groupName: map['groupName']?.toString() ?? '',
-      members: _toStringList(map['members']),
-      writers: _toStringList(map['writers']),
+      members: toStringList(map['members']),
+      writers: toStringList(map['writers']),
       isEnabled: map['isEnabled'] != false && map['isEnabled'] != 0 &&
           map['isEnabled'] != 'false' && map['isEnabled'] != '0',
     );
@@ -212,7 +212,7 @@ class _AdminGroupsScreenState extends ConsumerState<AdminGroupsScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _openEditDialog(),
+        onPressed: _openEditDialog,
         icon: const Icon(Icons.add),
         label: const Text('קבוצה חדשה'),
         backgroundColor: AppColors.primary,
@@ -249,7 +249,7 @@ class _AdminGroupsScreenState extends ConsumerState<AdminGroupsScreen> {
             const Text('אין קבוצות קהילה', style: TextStyle(color: Colors.grey)),
             const SizedBox(height: 12),
             ElevatedButton.icon(
-              onPressed: () => _openEditDialog(),
+              onPressed: _openEditDialog,
               icon: const Icon(Icons.add),
               label: const Text('צור קבוצה'),
             ),

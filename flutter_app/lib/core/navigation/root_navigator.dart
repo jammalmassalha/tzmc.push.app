@@ -105,7 +105,7 @@ class AppRouteRequest {
   });
 
   factory AppRouteRequest.fromName(String? routeName) {
-    final fallback = const AppRouteRequest(path: AppRoutes.home);
+    const fallback = AppRouteRequest(path: AppRoutes.home);
     if (routeName == null || routeName.trim().isEmpty) {
       return fallback;
     }

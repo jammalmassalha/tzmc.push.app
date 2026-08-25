@@ -432,54 +432,54 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
             }
           },
           itemBuilder: (context) => [
-            PopupMenuItem(
+            const PopupMenuItem(
               value: 'refresh',
               child: Row(
                 children: [
-                  const Icon(Icons.refresh, size: 20),
-                  const SizedBox(width: 12),
-                  const Text('רענון'),
+                  Icon(Icons.refresh, size: 20),
+                  SizedBox(width: 12),
+                  Text('רענון'),
                 ],
               ),
             ),
-            PopupMenuItem(
+            const PopupMenuItem(
               value: 'fullsync',
               child: Row(
                 children: [
-                  const Icon(Icons.sync, size: 20),
-                  const SizedBox(width: 12),
-                  const Text('סנכרון הודעות'),
+                  Icon(Icons.sync, size: 20),
+                  SizedBox(width: 12),
+                  Text('סנכרון הודעות'),
                 ],
               ),
             ),
-            PopupMenuItem(
+            const PopupMenuItem(
               value: 'settings',
               child: Row(
                 children: [
-                  const Icon(Icons.settings_outlined, size: 20),
-                  const SizedBox(width: 12),
-                  const Text('הגדרות'),
+                  Icon(Icons.settings_outlined, size: 20),
+                  SizedBox(width: 12),
+                  Text('הגדרות'),
                 ],
               ),
             ),
-            PopupMenuItem(
+            const PopupMenuItem(
               value: 'accreditation',
               child: Row(
                 children: [
-                  const Icon(Icons.auto_awesome_outlined, size: 20),
-                  const SizedBox(width: 12),
-                  const Text('סוכן אקרדיטציה'),
+                  Icon(Icons.auto_awesome_outlined, size: 20),
+                  SizedBox(width: 12),
+                  Text('סוכן אקרדיטציה'),
                 ],
               ),
             ),
             if (_canAccessAdminGroups)
-              PopupMenuItem(
+              const PopupMenuItem(
                 value: 'secretaries_admin',
                 child: Row(
                   children: [
-                    const Icon(Icons.settings_phone, size: 20),
-                    const SizedBox(width: 12),
-                    const Text('ניהול מזכירויות מחלקתיות'),
+                    Icon(Icons.settings_phone, size: 20),
+                    SizedBox(width: 12),
+                    Text('ניהול מזכירויות מחלקתיות'),
                   ],
                 ),
               ),

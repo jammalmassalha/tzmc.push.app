@@ -67,7 +67,7 @@ String _sanitizeSaveFilename(String name) {
 Future<File> _createUniqueFile(String filename) async {
   final dir = await getApplicationDocumentsDirectory();
   final safeName = _sanitizeSaveFilename(filename);
-  var file = File('${dir.path}/$safeName');
+  final file = File('${dir.path}/$safeName');
   if (!await file.exists()) return file;
 
   final dot = safeName.lastIndexOf('.');

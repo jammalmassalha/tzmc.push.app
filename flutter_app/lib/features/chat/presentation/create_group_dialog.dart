@@ -155,7 +155,7 @@ class _CreateGroupDialogState extends ConsumerState<_CreateGroupDialog> {
                     ),
                     const SizedBox(height: 12),
                     DropdownButtonFormField<GroupType>(
-                      value: _type,
+                      initialValue: _type,
                       decoration: const InputDecoration(
                         labelText: 'סוג קבוצה',
                         border: OutlineInputBorder(),

@@ -95,7 +95,7 @@ class _HelpdeskUserManagementScreenState
     if (usersError == null && departmentsError != null && mounted) {
       showTopToast(
         context,
-        departmentsError!,
+        departmentsError,
         backgroundColor: Theme.of(context).colorScheme.error,
       );
     }
@@ -233,13 +233,13 @@ class _HelpdeskUserManagementScreenState
           actions: <Widget>[
             IconButton(
               tooltip: 'רענן',
-              onPressed: _isLoading ? null : () => _loadData(),
+              onPressed: _isLoading ? null : _loadData,
               icon: const Icon(Icons.refresh),
             ),
           ],
         ),
         floatingActionButton: FloatingActionButton.extended(
-          onPressed: _isLoading ? null : () => _openUserForm(),
+          onPressed: _isLoading ? null : _openUserForm,
           icon: const Icon(Icons.person_add_alt_1_outlined),
           label: const Text('הוסף משתמש'),
         ),
@@ -264,7 +264,7 @@ class _HelpdeskUserManagementScreenState
               Text(_error!, textAlign: TextAlign.center),
               const SizedBox(height: 12),
               ElevatedButton(
-                onPressed: () => _loadData(),
+                onPressed: _loadData,
                 child: const Text('נסה שוב'),
               ),
             ],
@@ -287,7 +287,7 @@ class _HelpdeskUserManagementScreenState
               ),
               const SizedBox(height: 12),
               ElevatedButton.icon(
-                onPressed: () => _openUserForm(),
+                onPressed: _openUserForm,
                 icon: const Icon(Icons.add),
                 label: const Text('הוסף משתמש'),
               ),
@@ -298,7 +298,7 @@ class _HelpdeskUserManagementScreenState
     }
 
     return RefreshIndicator(
-      onRefresh: () => _loadData(),
+      onRefresh: _loadData,
       child: ListView.separated(
         padding: const EdgeInsets.fromLTRB(12, 12, 12, 88),
         itemCount: _users.length,
@@ -586,7 +586,7 @@ class _HelpdeskUserFormDialogState
                   ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
-                    value: _role,
+                    initialValue: _role,
                     decoration: const InputDecoration(
                       labelText: 'תפקיד',
                       border: OutlineInputBorder(),
@@ -604,7 +604,7 @@ class _HelpdeskUserFormDialogState
                   ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
-                    value: _department,
+                    initialValue: _department,
                     decoration: const InputDecoration(
                       labelText: 'מחלקה',
                       border: OutlineInputBorder(),
@@ -805,7 +805,7 @@ class _HelpdeskUserDetailsDialogState
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
-                  value: _role,
+                  initialValue: _role,
                   decoration: const InputDecoration(
                     labelText: 'תפקיד',
                     border: OutlineInputBorder(),
@@ -823,7 +823,7 @@ class _HelpdeskUserDetailsDialogState
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
-                  value: _department,
+                  initialValue: _department,
                   decoration: const InputDecoration(
                     labelText: 'מחלקה',
                     border: OutlineInputBorder(),

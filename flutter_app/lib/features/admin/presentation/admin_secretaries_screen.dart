@@ -208,7 +208,7 @@ class _AdminSecretariesScreenState extends ConsumerState<AdminSecretariesScreen>
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _openEditDialog(),
+        onPressed: _openEditDialog,
         icon: const Icon(Icons.add),
         label: const Text('מזכירות חדשה'),
         backgroundColor: AppColors.primary,
@@ -245,7 +245,7 @@ class _AdminSecretariesScreenState extends ConsumerState<AdminSecretariesScreen>
             const Text('אין מזכירויות להצגה', style: TextStyle(color: Colors.grey)),
             const SizedBox(height: 12),
             ElevatedButton.icon(
-              onPressed: () => _openEditDialog(),
+              onPressed: _openEditDialog,
               icon: const Icon(Icons.add),
               label: const Text('הוסף מזכירות'),
             ),

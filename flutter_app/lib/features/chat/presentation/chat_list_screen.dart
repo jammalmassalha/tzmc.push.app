@@ -209,6 +209,15 @@ class _ChatListTile extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(14),
+      overlayColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.pressed)) {
+          return _kPressedChatTileColor;
+        }
+        if (states.contains(WidgetState.hovered)) {
+          return _kHoverChatTileColor;
+        }
+        return null;
+      }),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
@@ -333,15 +342,6 @@ class _ChatListTile extends StatelessWidget {
           ],
         ),
       ),
-      overlayColor: WidgetStateProperty.resolveWith((states) {
-        if (states.contains(WidgetState.pressed)) {
-          return _kPressedChatTileColor;
-        }
-        if (states.contains(WidgetState.hovered)) {
-          return _kHoverChatTileColor;
-        }
-        return null;
-      }),
     );
   }
 
@@ -575,9 +575,9 @@ class _GroupListTile extends StatelessWidget {
                   Row(
                     children: [
                       if (group.type == GroupType.community)
-                        Padding(
-                          padding: const EdgeInsets.only(left: 4),
-                          child: Icon(
+                        const Padding(
+                          padding: EdgeInsets.only(left: 4),
+                          child: const Icon(
                             Icons.public,
                             size: 14,
                             color: AppColors.communityColor,

@@ -244,8 +244,8 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
                         ),
                         border: InputBorder.none,
                         // Emoji/sticker icon on the right (start in RTL)
-                        suffixIcon: IconButton(
-                          icon: const Icon(
+                        suffixIcon: const IconButton(
+                          icon: Icon(
                             Icons.emoji_emotions_outlined,
                             color: iconColor,
                             size: 24,

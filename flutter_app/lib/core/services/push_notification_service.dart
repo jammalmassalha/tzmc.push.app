@@ -667,7 +667,7 @@ class PushNotificationService {
         // `messaging/token-subscribe-failed`. The key is configured in
         // [DefaultFirebaseOptions.webVapidKey] — log a clear hint when
         // it's still empty so misconfiguration is easy to diagnose.
-        final vapidKey = DefaultFirebaseOptions.webVapidKey;
+        const vapidKey = DefaultFirebaseOptions.webVapidKey;
         if (vapidKey.isEmpty) {
           debugPrint(
               '[PushNotificationService] No web VAPID key configured — '
@@ -830,7 +830,7 @@ class PushNotificationService {
         if (e.code == 'apns-token-not-set') {
           debugPrint(
             '[PushNotificationService] getAPNSToken: APNs token not yet available '
-            '(attempt $attemptNumber/${_kAPNSTokenMaxAttempts}) — will retry.',
+            '(attempt $attemptNumber/$_kAPNSTokenMaxAttempts) — will retry.',
           );
           _logIOSRegistrationStep(
             'ios_apns_gettoken_not_set',
@@ -1415,9 +1415,7 @@ final pushNotificationServiceProvider = Provider<PushNotificationService>((ref) 
   final api = ref.watch(chatApiServiceProvider);
   final service = PushNotificationService(api, ref);
   
-  ref.onDispose(() {
-    service.dispose();
-  });
+  ref.onDispose(service.dispose);
 
   return service;
 });
@@ -1447,7 +1445,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   // These payload types carry server-side actions (edits, deletes, reactions,
   // read receipts) rather than new user messages, so they must not increment
   // the unread tray counter.
-  const _actionOnlyTypes = {
+  const actionOnlyTypes = {
     'read-receipt', 'read',
     'delete-action', 'delete',
     'edit-action', 'edit',
@@ -1455,7 +1453,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   };
   final skipNotification = data['skipNotification'] == true ||
       data['skipNotification'] == 'true';
-  if (skipNotification || _actionOnlyTypes.contains(type)) return;
+  if (skipNotification || actionOnlyTypes.contains(type)) return;
 
   // Resolve the chatId using the same priority as PushNotificationService
   // does when routing a foreground message: groupId first, then sender.
