@@ -157,9 +157,18 @@ class TzmcPushApp extends ConsumerWidget {
 
   String _initialRouteName() {
     if (kIsWeb) {
-      final path = Uri.base.path;
-      if (path.isNotEmpty && path != AppRoutes.home) {
-        return AppRoutes.normalizePath(path);
+      // Uri.base.path is the full server path, e.g. "/fluttertest/helpdesk".
+      // Strip the deployed sub-directory prefix (from <base href>) to get the
+      // in-app route, e.g. "/helpdesk". Uri.base.resolve('.') gives the base
+      // directory, e.g. "/fluttertest/", regardless of the current page path.
+      final rawPath = Uri.base.path;
+      final basePath = Uri.base.resolve('.').path; // e.g. "/fluttertest/"
+      String appPath = rawPath;
+      if (basePath.length > 1 && rawPath.startsWith(basePath)) {
+        appPath = '/${rawPath.substring(basePath.length)}';
+      }
+      if (appPath.isNotEmpty && appPath != AppRoutes.home) {
+        return AppRoutes.normalizePath(appPath);
       }
     }
     return AppRoutes.home;
