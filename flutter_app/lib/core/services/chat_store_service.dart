@@ -1693,7 +1693,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       return s.isEmpty ? null : s;
     }
 
-    int? int(dynamic v) {
+    int? parseInt(dynamic v) {
       if (v == null) return null;
       if (v is int) return v;
       if (v is num) return v.toInt();
@@ -1734,7 +1734,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           final msg = IncomingServerMessage(
             type: type,
             messageIds: ids,
-            readAt: int(data['readAt']),
+            readAt: parseInt(data['readAt']),
             sender: str(data['sender']),
           );
           _handleReadReceipt(msg);
@@ -1751,7 +1751,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           final msg = IncomingServerMessage(
             type: type,
             targetMessageId: targetId,
-            deletedAt: int(data['deletedAt']) ?? int(data['timestamp']),
+            deletedAt: parseInt(data['deletedAt']) ?? parseInt(data['timestamp']),
             sender: str(data['sender']),
           );
           _handleDelete(msg);
@@ -1767,7 +1767,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
             type: type,
             targetMessageId: targetId,
             body: str(data['body']),
-            editedAt: int(data['editedAt']) ?? int(data['timestamp']),
+            editedAt: parseInt(data['editedAt']) ?? parseInt(data['timestamp']),
             sender: str(data['sender']),
           );
           _handleEdit(msg);
@@ -1785,7 +1785,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
             groupMembers: strList(data['groupMembers']),
             groupCreatedBy: str(data['groupCreatedBy']),
             groupAdmins: strList(data['groupAdmins']),
-            groupUpdatedAt: int(data['groupUpdatedAt']),
+            groupUpdatedAt: parseInt(data['groupUpdatedAt']),
             groupType: str(data['groupType']),
             sender: str(data['sender']),
           );
@@ -1897,7 +1897,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final senderDisplayName = rawGroupSenderName.isNotEmpty
         ? getDisplayName(rawGroupSenderName)
         : (senderIsGroupId ? null : getDisplayName(sender));
-    final timestamp = int(data['timestamp']) ?? DateTime.now().millisecondsSinceEpoch;
+    final timestamp = parseInt(data['timestamp']) ?? DateTime.now().millisecondsSinceEpoch;
 
     final message = ChatMessage(
       id: messageId,
