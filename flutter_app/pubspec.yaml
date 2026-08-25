@@ -82,11 +82,11 @@ dependencies:
 # additional artifact downloads.
 dependency_overrides:
   shared_preferences_android: 2.4.2
-  # retrofit 4.10.0 added Parser.DartMappable which retrofit_generator 9.6.x
-  # does not handle (non-exhaustive switch), causing build script precompile
-  # failures. Pin to the last compatible release until retrofit_generator is
-  # updated.
-  retrofit: 4.4.1
+  # retrofit_generator 9.6.x requires UseCallAdapter and BodyExtra (added in
+  # ~4.7.x) but its switch statements are not exhaustive over Parser.DartMappable
+  # (added in 4.10.0), causing build script precompile failures. Pin to 4.9.1,
+  # the last release before Parser.DartMappable was introduced.
+  retrofit: 4.9.1
   # Mockito 5.4.x uses analyzer internals that changed in analyzer 7.x.
   # Keep analyzer pinned to a stable 6.x release for build_runner precompile.
   # analyzer: 6.11.0
