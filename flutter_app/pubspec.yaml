@@ -17,8 +17,8 @@ dependencies:
   intl: ">=0.19.0 <0.21.0"
 
   # State Management
-  riverpod: ^2.6.1
-  flutter_riverpod: ^2.6.1
+  riverpod: ^3.4.2
+  flutter_riverpod: ^3.4.2
 
   # Networking
   dio: ^5.4.0
@@ -27,26 +27,26 @@ dependencies:
   retrofit: ^4.6.0
   # connectivity_plus 7.1.0+ references NWPath.isUltraConstrained in iOS code,
   # which fails to compile on the current CI Xcode SDK. Keep below 7.1.0.
-  connectivity_plus: ">=7.0.0 <7.1.0"
+  connectivity_plus: ^7.3.1
 
   # Local Storage
   drift: ^2.20.0
-  sqlite3_flutter_libs: ^0.5.24
+  sqlite3_flutter_libs: ^0.6.0+eol
   # drift_flutter 0.2.8+ pulls drift 2.30+, which forces drift_dev onto
   # source_gen 3.x; keep below that threshold.
-  drift_flutter: ^0.2.7  # Cross-platform database support (includes web)
+  drift_flutter: ^0.3.1  # Cross-platform database support (includes web)
   shared_preferences: ^2.2.2
-  flutter_secure_storage: ^10.0.0
+  flutter_secure_storage: ^11.0.0
   path: ^1.8.3
 
   # Realtime
-  socket_io_client: ^2.0.3+1
+  socket_io_client: ^3.1.6
   web_socket_channel: ^3.0.1
 
   # Push Notifications
   firebase_core: ^4.7.0
   firebase_messaging: ^16.2.0
-  flutter_local_notifications: ^19.5.0
+  flutter_local_notifications: ^22.3.0
 
   # Image Handling
   image_picker: ^1.0.7
@@ -56,20 +56,20 @@ dependencies:
   json_annotation: ^4.8.1
   # Flutter CI runs on Flutter 3.27.4 / Dart 3.6.2, so keep freezed on the
   # last range that does not pull in Dart >=3.7 build dependencies.
-  freezed_annotation: ">=3.0.0 <3.1.0"
+  freezed_annotation: ^3.1.0
   equatable: ^2.0.5
   collection: ^1.18.0
   path_provider: ^2.1.2
   logger: ^2.0.2+1
-  permission_handler: ^12.0.1
-  geolocator: ^13.0.2
+  permission_handler: ^13.0.1
+  geolocator: ^14.0.3
   url_launcher: ^6.3.0
-  file_picker: ^8.0.0
+  file_picker: ^12.0.0
   open_filex: ^4.7.0
 
   # UI
   flutter_svg: ^2.0.10
-  shimmer: ^3.0.0
+  shimmer: ^4.0.0
 
 # Pin transitive Flutter plugin Android modules to versions whose buildscript
 # uses the Kotlin Gradle plugin 2.1.0 (matching `android/settings.gradle.kts`).
@@ -95,17 +95,14 @@ dependency_overrides:
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^5.0.0
-  build_runner: ^2.4.14
-  json_serializable: ^6.7.1
-  # retrofit_generator is overridden to the local no-op stub (see
-  # dependency_overrides above) — any version constraint here is superseded.
-  retrofit_generator: any
-  drift_dev: ^2.15.0
-  freezed: ">=3.0.0 <3.1.0"
-  # Mockito 5.4.x relies on analyzer internals; keep the compatible major line.
-  mockito: ">=5.4.4 <5.5.0"
-  mocktail: ^1.0.3
+  flutter_lints: ^6.0.0
+  build_runner: ^2.4.15
+  json_serializable: ^6.9.0
+  retrofit_generator: ^9.1.0  # or ^9.6.0+ if using latest major
+  drift_dev: ^2.20.0
+  freezed: ^4.0.0             # or ^3.0.0 if using freezed v3
+  mockito: ^5.4.5
+  mocktail: ^1.0.4
 
 flutter:
   uses-material-design: true
