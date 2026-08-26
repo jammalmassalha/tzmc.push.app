@@ -75,7 +75,7 @@ class ChatShellScreen extends ConsumerStatefulWidget {
 class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     with WidgetsBindingObserver {
   MainTab _currentTab = MainTab.chats;
-  final _pageController = PageController();
+  late final PageController _pageController;
   bool _canAccessShuttle = false;
   bool _canAccessTicketManager = false;
   bool _canAccessAdminGroups = false;
@@ -90,6 +90,13 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _currentTab = _tabForPath(widget.initialPath);
+    // Start the PageView at the correct tab immediately so there is no
+    // visible flash of the chats page while _refreshTabPermissions() completes
+    // its async shuttle-employees HTTP call.
+    final startIndex = _visibleTabs.indexOf(_currentTab);
+    _pageController = PageController(
+      initialPage: startIndex < 0 ? 0 : startIndex,
+    );
     _initializeServices();
     unawaited(_refreshTabPermissions());
   }

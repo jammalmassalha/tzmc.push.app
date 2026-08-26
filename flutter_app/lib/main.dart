@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
 import 'core/api/http_client.dart';
@@ -25,6 +26,13 @@ import 'features/chat/presentation/chat_shell_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Use path-based URL strategy on web so that deep links like
+  // /fluttertest/helpdesk are read from the URL *pathname* rather than the
+  // hash fragment.  Without this, Flutter web's default hash strategy fires
+  // an initial pushRoute('/') from the empty hash, overriding the /helpdesk
+  // initialRoute and showing the home/chats page instead of helpdesk.
+  if (kIsWeb) usePathUrlStrategy();
 
   // Initialize Hebrew (and default) date formatting symbols so DateFormat
   // calls like DateFormat.yMd('he') don't throw LocaleDataException at build
