@@ -10,7 +10,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
 import 'core/api/http_client.dart';
@@ -26,13 +25,6 @@ import 'features/chat/presentation/chat_shell_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  // Use path-based URL strategy on web so that deep links like
-  // /fluttertest/helpdesk are read from the URL *pathname* rather than the
-  // hash fragment.  Without this, Flutter web's default hash strategy fires
-  // an initial pushRoute('/') from the empty hash, overriding the /helpdesk
-  // initialRoute and showing the home/chats page instead of helpdesk.
-  if (kIsWeb) usePathUrlStrategy();
 
   // Initialize Hebrew (and default) date formatting symbols so DateFormat
   // calls like DateFormat.yMd('he') don't throw LocaleDataException at build
@@ -165,18 +157,14 @@ class TzmcPushApp extends ConsumerWidget {
 
   String _initialRouteName() {
     if (kIsWeb) {
-      // Uri.base.path is the full server path, e.g. "/fluttertest/helpdesk".
-      // Strip the deployed sub-directory prefix (from <base href>) to get the
-      // in-app route, e.g. "/helpdesk". Uri.base.resolve('.') gives the base
-      // directory, e.g. "/fluttertest/", regardless of the current page path.
-      final rawPath = Uri.base.path;
-      final basePath = Uri.base.resolve('.').path; // e.g. "/fluttertest/"
-      String appPath = rawPath;
-      if (basePath.length > 1 && rawPath.startsWith(basePath)) {
-        appPath = '/${rawPath.substring(basePath.length)}';
-      }
-      if (appPath.isNotEmpty && appPath != AppRoutes.home) {
-        return AppRoutes.normalizePath(appPath);
+      // With hash-based routing (Flutter's default web URL strategy) the
+      // in-app route is stored in window.location.hash.  The JS snippet in
+      // index.html converts plain path deep-links (/fluttertest/helpdesk) into
+      // hash form (#/helpdesk) before Flutter boots, so Uri.base.fragment
+      // already contains the correct route when we get here.
+      final fragment = Uri.base.fragment; // e.g. "/helpdesk"
+      if (fragment.isNotEmpty && fragment != AppRoutes.home) {
+        return AppRoutes.normalizePath(fragment);
       }
     }
     return AppRoutes.home;

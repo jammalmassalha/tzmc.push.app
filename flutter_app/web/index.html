@@ -161,6 +161,55 @@
   <script src="sql-wasm.js"></script>
 
   <!--
+    Path-to-hash redirect for deep links.
+
+    Flutter web uses hash-based routing (#/route).  When an external link
+    shares a clean path URL like https://example.com/base/helpdesk, the server
+    serves index.html correctly but Flutter sees an empty hash and routes to
+    home.  This snippet runs before Flutter boots: if the URL has a path
+    segment beyond the <base href> and no hash fragment, it rewrites the hash
+    to match the path segment so Flutter's router sees #/helpdesk.
+
+    e.g.  /fluttertest/helpdesk  (no hash)
+      →   /fluttertest/helpdesk#/helpdesk  (Flutter reads #/helpdesk)
+  -->
+  <script>
+    (function () {
+      // Only run when there is no hash already (hash router already handles
+      // those URLs correctly on its own).
+      if (window.location.hash && window.location.hash !== '#') return;
+
+      var base = document.querySelector('base');
+      var baseHref = base ? base.getAttribute('href') : '/';
+      if (!baseHref) baseHref = '/';
+
+      // Normalize: ensure trailing slash for prefix comparison.
+      if (!baseHref.endsWith('/')) baseHref += '/';
+
+      var path = window.location.pathname;
+
+      // Strip the base-href prefix to get the in-app route.
+      var appPath = path;
+      if (baseHref.length > 1 && path.startsWith(baseHref)) {
+        // e.g. path="/fluttertest/helpdesk", baseHref="/fluttertest/"
+        //      → appPath = "helpdesk"
+        appPath = path.slice(baseHref.length);
+      } else if (baseHref === '/' && path.startsWith('/')) {
+        appPath = path.slice(1);
+      }
+
+      // If there is a meaningful in-app segment, set it as the hash so that
+      // Flutter's hash router receives it as the initial route.
+      if (appPath && appPath !== '' && appPath !== '/') {
+        var hash = '/' + appPath;
+        // Use replaceState so the redirect doesn't add a history entry, but
+        // also update location.hash so Flutter's router reads it on startup.
+        window.history.replaceState(null, '', window.location.pathname + '#' + hash);
+      }
+    })();
+  </script>
+
+  <!--
     Firebase JS SDK (compat) — required so the FCM web SDK used by
     `package:firebase_messaging` can register the
     `firebase-messaging-sw.js` service worker for background push
