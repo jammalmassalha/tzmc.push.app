@@ -12,7 +12,7 @@
 Future<void> callInitialize(
   Object? plugin,
   Object? settings, {
-  Function(Object?)? onTapped,
+  Function? onTapped,
 }) async {}
 
 Future<void> callShow(

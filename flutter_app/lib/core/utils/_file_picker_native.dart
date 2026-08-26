@@ -3,6 +3,8 @@
 /// Uses the real file_picker package which works on Android, iOS, macOS,
 /// Windows, and Linux.
 
+import 'dart:typed_data';
+
 import 'package:file_picker/file_picker.dart';
 
 /// Minimal file-data carrier for the platform-agnostic shim API.
@@ -15,7 +17,7 @@ class PickedFileData {
   });
   final String name;
   final String? extension;
-  final List<int>? bytes;
+  final Uint8List? bytes;
   final String? path;
 }
 
@@ -32,7 +34,7 @@ Future<PickedFileData?> pickPdfFile() async {
   return PickedFileData(
     name: picked.name,
     extension: picked.extension,
-    bytes: picked.bytes != null ? List<int>.from(picked.bytes!) : null,
+    bytes: picked.bytes,
     path: picked.path,
   );
 }

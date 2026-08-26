@@ -8,7 +8,6 @@
 
 import 'dart:async';
 import 'dart:js_interop';
-import 'dart:js_interop_unsafe';
 import 'dart:typed_data';
 
 import 'package:web/web.dart';
@@ -23,7 +22,7 @@ class PickedFileData {
   });
   final String name;
   final String? extension;
-  final List<int>? bytes;
+  final Uint8List? bytes;
   final String? path;
 }
 
@@ -37,49 +36,62 @@ Future<PickedFileData?> pickPdfFile() async {
     ..accept = '.pdf,application/pdf'
     ..style.display = 'none';
 
-  input.onChange.listen((_) async {
-    final files = input.files;
-    if (files == null || files.length == 0) {
-      if (!completer.isCompleted) completer.complete(null);
-      return;
-    }
-    final file = files.item(0)!;
-    final reader = FileReader();
-    reader.onLoad.listen((_) {
-      List<int>? bytes;
-      final result = reader.result;
-      if (result != null) {
-        final arrayBuffer = (result as JSObject)['byteLength'] != null
-            ? result as JSArrayBuffer
-            : null;
-        if (arrayBuffer != null) {
-          final view = Uint8List.view(arrayBuffer.toDart);
-          bytes = view.toList();
-        }
+  input.addEventListener(
+    'change',
+    (Event _) {
+      final files = input.files;
+      if (files == null || files.length == 0) {
+        if (!completer.isCompleted) completer.complete(null);
+        return;
       }
-      final name = file.name;
-      final ext = name.contains('.') ? name.split('.').last : null;
-      if (!completer.isCompleted) {
-        completer.complete(PickedFileData(
-          name: name,
-          extension: ext,
-          bytes: bytes,
-        ));
-      }
-    });
-    reader.onError.listen((_) {
-      if (!completer.isCompleted) completer.complete(null);
-    });
-    reader.readAsArrayBuffer(file);
-  });
+      final file = files.item(0)!;
+      final reader = FileReader();
 
-  // Append to body, trigger click, then remove.
+      reader.addEventListener(
+        'loadend',
+        (Event _) {
+          Uint8List? bytes;
+          final result = reader.result;
+          if (result != null && result.typeofEquals('object')) {
+            final buf = result as JSArrayBuffer;
+            bytes = Uint8List.view(buf.toDart);
+          }
+          final name = file.name;
+          final ext = name.contains('.') ? name.split('.').last : null;
+          if (!completer.isCompleted) {
+            completer.complete(PickedFileData(
+              name: name,
+              extension: ext,
+              bytes: bytes,
+            ));
+          }
+        }.toJS,
+      );
+
+      reader.addEventListener(
+        'error',
+        (Event _) {
+          if (!completer.isCompleted) completer.complete(null);
+        }.toJS,
+      );
+
+      reader.readAsArrayBuffer(file);
+    }.toJS,
+  );
+
   document.body!.appendChild(input);
   input.click();
-  // Give the dialog time to open; clean up after.
-  Future.delayed(const Duration(milliseconds: 500), () {
-    input.remove();
-  });
+
+  // Detect cancel: focus returns to window without a 'change' event firing.
+  window.addEventListener(
+    'focus',
+    (Event _) {
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (!completer.isCompleted) completer.complete(null);
+        input.remove();
+      });
+    }.toJS,
+  );
 
   return completer.future;
 }
