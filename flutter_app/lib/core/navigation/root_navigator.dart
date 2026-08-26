@@ -112,7 +112,9 @@ class AppRouteRequest {
     final uri = Uri.tryParse(routeName);
     if (uri == null) return fallback;
     final path = AppRoutes.normalizePath(uri.path);
-    final redirectPath = AppRoutes.normalizePath(uri.queryParameters['redirect']);
+    final rawRedirect = uri.queryParameters['redirect'];
+    final redirectPath =
+        rawRedirect != null ? AppRoutes.normalizePath(rawRedirect) : null;
     return AppRouteRequest(path: path, redirectPath: redirectPath);
   }
 }
