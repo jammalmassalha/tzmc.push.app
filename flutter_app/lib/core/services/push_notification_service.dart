@@ -14,6 +14,13 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+// Conditional shims isolate the positional-arg initialize/show calls from
+// dart2js type-checking.  flutter_local_notifications 19.x has no web
+// platform entry; Flutter 3.38+ generates a zero-arg web stub that conflicts
+// at compile time with the real API.  The stubs are no-ops because the
+// service-worker handles web push.
+import '_notif_shim_stub.dart'
+    if (dart.library.io) '_notif_shim_native.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -528,9 +535,10 @@ class PushNotificationService {
       iOS: iosSettings,
     );
 
-    await _localNotifications!.initialize(
+    await callInitialize(
+      _localNotifications!,
       initSettings,
-      onDidReceiveNotificationResponse: _onNotificationTapped,
+      onTapped: _onNotificationTapped,
     );
 
     // Pre-create the notification channel with IMPORTANCE_HIGH on Android 8+
@@ -1190,7 +1198,8 @@ class PushNotificationService {
       notificationPayload = '$chatId:$messageId';
     }
 
-    await _localNotifications!.show(
+    await callShow(
+      _localNotifications!,
       message.hashCode,
       notification.title,
       (() {
@@ -1229,7 +1238,8 @@ class PushNotificationService {
         // notifications play their own sound/vibration.
         groupAlertBehavior: GroupAlertBehavior.children,
       );
-      await _localNotifications!.show(
+      await callShow(
+        _localNotifications!,
         _kGroupSummaryNotificationId,
         'הודעות חדשות',
         '',

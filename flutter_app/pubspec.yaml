@@ -70,6 +70,8 @@ dependencies:
   # UI
   flutter_svg: ^2.0.10
   shimmer: ^3.0.0
+  # Web browser APIs for the web-platform file-picker shim.
+  web: ^1.1.1
 
 # Pin transitive Flutter plugin Android modules to versions whose buildscript
 # uses the Kotlin Gradle plugin 2.1.0 (matching `android/settings.gradle.kts`).
