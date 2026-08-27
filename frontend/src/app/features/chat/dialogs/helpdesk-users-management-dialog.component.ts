@@ -82,10 +82,19 @@ export class HelpdeskUsersManagementDialogComponent implements OnInit {
   private async loadDepartments(): Promise<void> {
     this.isLoadingDepts.set(true);
     try {
-      const depts = await this.api.getHelpdeskActiveDepartments();
-      this.departments.set(depts);
+      const depts = await this.api.getHelpdeskDepartments();
+      this.departments.set(
+        depts
+          .filter((dept) => dept.status === 'active')
+          .map((dept) => ({ name: dept.name, icon: dept.icon }))
+      );
     } catch {
-      this.departments.set([]);
+      try {
+        const depts = await this.api.getHelpdeskActiveDepartments();
+        this.departments.set(depts);
+      } catch {
+        this.departments.set([]);
+      }
     } finally {
       this.isLoadingDepts.set(false);
     }

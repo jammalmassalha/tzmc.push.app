@@ -8,6 +8,7 @@ import {
   EditMessagePayload,
   GroupUpdatePayload,
   HelpdeskAdminUser,
+  HelpdeskDepartmentEntry,
   HelpdeskDashboard,
   HelpdeskManagedUser,
   HelpdeskMyRole,
@@ -1590,6 +1591,16 @@ export class ChatApiService {
       { name: 'בית מרקחת', icon: '💊' },
       { name: 'הנדסה רפואית', icon: '🏥' }
     ];
+  }
+
+  async getHelpdeskDepartments(): Promise<HelpdeskDepartmentEntry[]> {
+    const url = `${this.notifyBaseUrl}/helpdesk/departments?_ts=${Date.now()}&ngsw-bypass=1`;
+    const response = await this.fetchWithRetry(url, { cache: 'no-store' }, { retries: 1, timeoutMs: 8000 });
+    const body = await response.json() as { result?: string; message?: string; departments?: HelpdeskDepartmentEntry[] };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה בטעינת המחלקות'));
+    }
+    return Array.isArray(body.departments) ? body.departments : [];
   }
 
   async getHelpdeskDepartmentTicketForm(department: string): Promise<HelpdeskTicketFormField[]> {
