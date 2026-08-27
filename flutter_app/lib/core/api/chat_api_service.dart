@@ -962,15 +962,19 @@ class ChatApiService {
   /// Update helpdesk ticket status
   /// 
   /// [user] is required for backend authorization when session cookies are not available.
-  Future<void> updateHelpdeskTicketStatus(int ticketId, HelpdeskStatus status, String user) async {
+  Future<void> updateHelpdeskTicketStatus(int ticketId, String status, String user) async {
     final normalizedUser = user.trim();
+    final normalizedStatus = status.trim();
     if (normalizedUser.isEmpty) {
       throw ApiException('User is required for helpdesk ticket status update');
+    }
+    if (normalizedStatus.isEmpty) {
+      throw ApiException('Status is required for helpdesk ticket status update');
     }
     
     final response = await _client.put<Map<String, dynamic>>(
       '${ApiEndpoints.helpdeskTickets}/$ticketId/status',
-      data: {'status': status.toApiValue(), 'user': normalizedUser},
+      data: {'status': normalizedStatus, 'user': normalizedUser},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
@@ -1332,6 +1336,7 @@ class ChatApiService {
     String? icon,
     String status = 'active',
     int sortOrder = 0,
+    List<HelpdeskTicketStatus> ticketStatuses = const [],
     List<HelpdeskTicketFormField> ticketForm = const [],
     HelpdeskInitialFormConfig initialForm = const HelpdeskInitialFormConfig(),
   }) async {
@@ -1346,6 +1351,7 @@ class ChatApiService {
         'icon': icon,
         'status': status,
         'sortOrder': sortOrder,
+        'ticketStatuses': ticketStatuses.map((status) => status.toJson()).toList(),
         'ticketForm': ticketForm.map((f) => f.toJson()).toList(),
         'initialForm': initialForm.toJson(),
       },
@@ -1365,6 +1371,7 @@ class ChatApiService {
     String? icon,
     String? status,
     int? sortOrder,
+    List<HelpdeskTicketStatus>? ticketStatuses,
     List<HelpdeskTicketFormField>? ticketForm,
     HelpdeskInitialFormConfig? initialForm,
   }) async {
@@ -1376,6 +1383,10 @@ class ChatApiService {
     if (icon != null) data['icon'] = icon;
     if (status != null) data['status'] = status;
     if (sortOrder != null) data['sortOrder'] = sortOrder;
+    if (ticketStatuses != null) {
+      data['ticketStatuses'] =
+          ticketStatuses.map((status) => status.toJson()).toList();
+    }
     if (ticketForm != null) {
       data['ticketForm'] = ticketForm.map((f) => f.toJson()).toList();
     }
