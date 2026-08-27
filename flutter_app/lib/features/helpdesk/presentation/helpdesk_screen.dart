@@ -580,8 +580,9 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
       ...state.ongoing,
       ...assignedExtras.where(
         (ticket) => !_isTerminalStatusForDepartment(
-          ticket.status,
+          state.departments,
           _departmentForTicket(ticket, state.departments),
+          ticket.status,
         ),
       ),
     ];
@@ -589,8 +590,9 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
       ...state.past,
       ...assignedExtras.where(
         (ticket) => _isTerminalStatusForDepartment(
-          ticket.status,
+          state.departments,
           _departmentForTicket(ticket, state.departments),
+          ticket.status,
         ),
       ),
     ];
