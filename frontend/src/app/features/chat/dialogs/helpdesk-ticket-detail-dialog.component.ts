@@ -83,6 +83,7 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
   readonly currentTicketStatus = signal<HelpdeskStatus>(this.data.ticket.status);
 
   private changed = false;
+  private readonly handlerDebugSource = '/home/runner/work/tzmc.push.app/tzmc.push.app/frontend/src/app/features/chat/dialogs/helpdesk-ticket-detail-dialog.component.ts';
 
   readonly noteControl = new FormControl('', [Validators.maxLength(1000)]);
 
@@ -123,13 +124,23 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
 
   get availableHandlers(): HelpdeskManagedUser[] {
     const ticketDepartment = this.data.ticket.department.trim();
-    return this.handlers().filter((handler) => {
+    const filteredHandlers = this.handlers().filter((handler) => {
       if (handler.role === 'Viewer') return false;
       const departments = Array.isArray(handler.departments) && handler.departments.length
         ? handler.departments
         : [handler.department];
       return departments.map((department) => department.trim()).includes(ticketDepartment);
     });
+    console.log('[HelpdeskDebug][TicketDetail.availableHandlers] filtered', {
+      source: this.handlerDebugSource,
+      ticketId: this.data.ticket.id,
+      ticketDepartment,
+      handlersCount: this.handlers().length,
+      availableCount: filteredHandlers.length,
+      handlers: this.handlers(),
+      availableHandlers: filteredHandlers
+    });
+    return filteredHandlers;
   }
 
   get creatorContact(): { displayName: string; info?: string; phone?: string } {
@@ -142,6 +153,13 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
   }
 
   ngOnInit(): void {
+    console.log('[HelpdeskDebug][TicketDetail.ngOnInit] open dialog', {
+      source: this.handlerDebugSource,
+      ticketId: this.data.ticket.id,
+      ticketDepartment: this.data.ticket.department,
+      initialHandlersCount: (this.data.handlers ?? []).length,
+      initialHandlers: this.data.handlers ?? []
+    });
     this.loadNotes();
     this.loadHistory();
     this.loadHandlers();
@@ -150,23 +168,61 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
   private async loadHandlers(): Promise<void> {
     const department = this.data.ticket.department.trim();
     if (!department || !this.canManageHandler) {
+      console.log('[HelpdeskDebug][TicketDetail.loadHandlers] skipped', {
+        source: this.handlerDebugSource,
+        ticketId: this.data.ticket.id,
+        department,
+        canManageHandler: this.canManageHandler
+      });
       return;
     }
     this.isLoadingHandlers.set(true);
     try {
       const users = await this.api.getHelpdeskAdminUsers(department);
-      this.handlers.set(
-        users
-          .filter((user) => user.status === 'Active' && user.role !== 'Viewer')
-          .map((user) => ({
-            username: user.username,
-            role: user.role,
-            department: user.department,
-            departments: Array.isArray(user.departments) ? user.departments : []
-          }))
-      );
+      const apiHandlers = users
+        .filter((user) => user.status === 'Active' && user.role !== 'Viewer')
+        .map((user) => ({
+          username: user.username,
+          role: user.role,
+          department: user.department,
+          departments: Array.isArray(user.departments) ? user.departments : []
+        }));
+      const fallbackHandlers = (this.data.handlers ?? []).filter((handler) => {
+        if (handler.role === 'Viewer') return false;
+        const departments = Array.isArray(handler.departments) && handler.departments.length
+          ? handler.departments
+          : [handler.department];
+        return departments.map((departmentName) => departmentName.trim()).includes(department);
+      });
+      const mergedHandlers = [...apiHandlers];
+      for (const handler of fallbackHandlers) {
+        if (!mergedHandlers.some((entry) => entry.username === handler.username)) {
+          mergedHandlers.push(handler);
+        }
+      }
+      console.log('[HelpdeskDebug][TicketDetail.loadHandlers] resolved', {
+        source: this.handlerDebugSource,
+        ticketId: this.data.ticket.id,
+        department,
+        requestPath: '/helpdesk/users?department=<ticket department>',
+        apiUsersCount: users.length,
+        apiUsers: users,
+        apiHandlersCount: apiHandlers.length,
+        apiHandlers,
+        fallbackHandlersCount: fallbackHandlers.length,
+        fallbackHandlers,
+        mergedHandlersCount: mergedHandlers.length,
+        mergedHandlers
+      });
+      this.handlers.set(mergedHandlers);
     } catch (error) {
-      console.warn('Failed to load helpdesk handlers for ticket department.', error);
+      console.log('[HelpdeskDebug][TicketDetail.loadHandlers] request failed', {
+        source: this.handlerDebugSource,
+        ticketId: this.data.ticket.id,
+        department,
+        requestPath: '/helpdesk/users?department=<ticket department>',
+        error
+      });
       this.handlers.set(this.data.handlers ?? []);
     } finally {
       this.isLoadingHandlers.set(false);

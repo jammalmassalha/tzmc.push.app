@@ -1673,8 +1673,24 @@ export class ChatApiService {
       params.set('department', normalizedDepartment);
     }
     const url = `${this.notifyBaseUrl}/helpdesk/users?${params.toString()}`;
+    console.log('[HelpdeskDebug][ChatApiService.getHelpdeskAdminUsers] request', {
+      source: '/home/runner/work/tzmc.push.app/tzmc.push.app/frontend/src/app/core/services/chat-api.service.ts',
+      department: normalizedDepartment || null,
+      url
+    });
     const response = await this.fetchWithRetry(url, { cache: 'no-store' }, { retries: 1, timeoutMs: 8000 });
     const body = await response.json() as { result?: string; message?: string; users?: HelpdeskAdminUser[] };
+    console.log('[HelpdeskDebug][ChatApiService.getHelpdeskAdminUsers] response', {
+      source: '/home/runner/work/tzmc.push.app/tzmc.push.app/frontend/src/app/core/services/chat-api.service.ts',
+      department: normalizedDepartment || null,
+      url,
+      status: response.status,
+      ok: response.ok,
+      result: body.result,
+      message: body.message ?? null,
+      usersCount: Array.isArray(body.users) ? body.users.length : 0,
+      users: body.users ?? []
+    });
     if (!response.ok || body.result !== 'success') {
       throw new Error(String(body.message || 'שגיאה בטעינת המשתמשים'));
     }
