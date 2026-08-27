@@ -573,6 +573,28 @@ async function setUserDepartments(conn, userId, departments) {
     }
 }
 
+function getHelpdeskRoleDepartments(roleInfo) {
+    if (!roleInfo) return [];
+    if (Array.isArray(roleInfo.departments) && roleInfo.departments.length) {
+        return roleInfo.departments.map((department) => toTrimmedString(department)).filter(Boolean);
+    }
+    const primaryDepartment = toTrimmedString(roleInfo.department || '');
+    return primaryDepartment ? [primaryDepartment] : [];
+}
+
+function canViewDepartmentTickets(roleInfo, departmentName) {
+    if (!roleInfo) return false;
+    if (roleInfo.role === 'Admin') return true;
+    const ticketDepartment = toTrimmedString(departmentName);
+    return getHelpdeskRoleDepartments(roleInfo).includes(ticketDepartment);
+}
+
+function canManageDepartmentTickets(roleInfo, departmentName) {
+    if (!roleInfo) return false;
+    if (roleInfo.role !== 'Admin' && roleInfo.role !== 'Editor') return false;
+    return canViewDepartmentTickets(roleInfo, departmentName);
+}
+
 function mapTicketRow(row) {
     return {
         id: row.id,
@@ -604,28 +626,6 @@ async function getHelpdeskUserRole(pool, username) {
         let departments = await getUserDepartments(pool, row.id);
         if (departments.length === 0 && row.department) {
             departments = [row.department];
-        }
-
-        function getHelpdeskRoleDepartments(roleInfo) {
-            if (!roleInfo) return [];
-            if (Array.isArray(roleInfo.departments) && roleInfo.departments.length) {
-                return roleInfo.departments.map((department) => toTrimmedString(department)).filter(Boolean);
-            }
-            const primaryDepartment = toTrimmedString(roleInfo.department || '');
-            return primaryDepartment ? [primaryDepartment] : [];
-        }
-
-        function canViewDepartmentTickets(roleInfo, departmentName) {
-            if (!roleInfo) return false;
-            if (roleInfo.role === 'Admin') return true;
-            const ticketDepartment = toTrimmedString(departmentName);
-            return getHelpdeskRoleDepartments(roleInfo).includes(ticketDepartment);
-        }
-
-        function canManageDepartmentTickets(roleInfo, departmentName) {
-            if (!roleInfo) return false;
-            if (roleInfo.role !== 'Admin' && roleInfo.role !== 'Editor') return false;
-            return canViewDepartmentTickets(roleInfo, departmentName);
         }
         return { username: row.username, role: row.role, department: row.department, departments };
     } catch (err) {
@@ -2250,4 +2250,11 @@ function registerHelpdeskController(app, deps = {}) {
     });
 }
 
-module.exports = { registerHelpdeskController };
+module.exports = {
+    registerHelpdeskController,
+    __test__: {
+        getHelpdeskRoleDepartments,
+        canViewDepartmentTickets,
+        canManageDepartmentTickets
+    }
+};
