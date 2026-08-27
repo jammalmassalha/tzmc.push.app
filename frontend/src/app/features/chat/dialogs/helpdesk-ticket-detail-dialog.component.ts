@@ -88,7 +88,7 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
 
   get canManageHandler(): boolean {
     const { myRole, ticket } = this.data;
-    return Boolean(myRole && myRole.department === ticket.department);
+    return Boolean(myRole && (myRole.role === 'Admin' || myRole.department === ticket.department));
   }
 
   get canChangeStatus(): boolean {
@@ -100,7 +100,8 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
   }
 
   get availableHandlers(): HelpdeskManagedUser[] {
-    return this.data.handlers ?? [];
+    const ticketDepartment = this.data.ticket.department.trim();
+    return (this.data.handlers ?? []).filter((handler) => handler.department.trim() === ticketDepartment);
   }
 
   get creatorContact(): { displayName: string; info?: string; phone?: string } {

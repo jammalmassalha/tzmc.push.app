@@ -1738,8 +1738,9 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
       return _ticket.creatorUsername == _currentUser ||
           _ticket.handlerUsername == _currentUser;
     }
-    // editor / admin: allowed for any ticket in their department
-    return widget.myRole!.department == _ticket.department;
+    // admin can manage any ticket; editor is limited to own department
+    return widget.myRole!.role == HelpdeskRole.admin ||
+        widget.myRole!.department == _ticket.department;
   }
 
   bool get _canTransferDepartment {
