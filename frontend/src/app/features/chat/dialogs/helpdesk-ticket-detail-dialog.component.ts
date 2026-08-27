@@ -193,7 +193,12 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
           ? handler.departments
           : [handler.department];
         return departments.map((departmentName) => departmentName.trim()).includes(department);
-      });
+      }).map((handler) => ({
+        username: handler.username,
+        role: handler.role,
+        department: handler.department,
+        departments: Array.isArray(handler.departments) ? handler.departments : []
+      }));
       const mergedHandlers = [...apiHandlers];
       for (const handler of fallbackHandlers) {
         if (!mergedHandlers.some((entry) => entry.username === handler.username)) {
