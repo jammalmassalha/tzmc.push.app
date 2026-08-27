@@ -88,7 +88,8 @@ export class HelpdeskUsersManagementDialogComponent implements OnInit {
           .filter((dept) => dept.status === 'active')
           .map((dept) => ({ name: dept.name, icon: dept.icon }))
       );
-    } catch {
+    } catch (error) {
+      console.warn('Failed to load admin departments, falling back to active departments.', error);
       try {
         const depts = await this.api.getHelpdeskActiveDepartments();
         this.departments.set(depts);
