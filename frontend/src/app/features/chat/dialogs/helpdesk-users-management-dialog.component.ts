@@ -2,6 +2,7 @@ import { CommonModule } from '@angular/common';
 import { Component, inject, signal, OnInit } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
+import { MatChipsModule } from '@angular/material/chips';
 import { MatDialogModule, MatDialogRef, MatDialog } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
@@ -29,7 +30,8 @@ import { ConfirmMessageActionDialogComponent } from './confirm-message-action-di
     MatProgressSpinnerModule,
     MatSelectModule,
     MatSnackBarModule,
-    MatTooltipModule
+    MatTooltipModule,
+    MatChipsModule
   ],
   templateUrl: './helpdesk-users-management-dialog.component.html',
   styleUrl: './helpdesk-users-management-dialog.component.scss'
@@ -52,9 +54,11 @@ export class HelpdeskUsersManagementDialogComponent implements OnInit {
 
   readonly ROLES = ['Admin', 'Editor'] as const;
   readonly STATUSES = ['Active', 'Inactive'] as const;
+
+  readonly userForm = this.fb.group({
     username: ['', [Validators.required, Validators.minLength(1), Validators.maxLength(64)]],
     role: ['Editor', Validators.required],
-    department: ['', Validators.required],
+    departments: [[] as string[], Validators.required],
     status: ['Active', Validators.required]
   });
 
@@ -89,17 +93,20 @@ export class HelpdeskUsersManagementDialogComponent implements OnInit {
 
   startEdit(user: HelpdeskAdminUser): void {
     this.editingUserId.set(user.id);
+    const userDepts = Array.isArray(user.departments) && user.departments.length
+      ? user.departments
+      : (user.department ? [user.department] : []);
     this.userForm.reset({
       username: user.username,
       role: user.role,
-      department: user.department,
+      departments: userDepts,
       status: user.status
     });
   }
 
   cancelForm(): void {
     this.editingUserId.set(null);
-    this.userForm.reset({ username: '', role: 'Editor', department: '', status: 'Active' });
+    this.userForm.reset({ username: '', role: 'Editor', departments: [], status: 'Active' });
   }
 
   async saveUser(): Promise<void> {
@@ -107,15 +114,15 @@ export class HelpdeskUsersManagementDialogComponent implements OnInit {
       this.userForm.markAllAsTouched();
       return;
     }
-    const { username, role, department, status } = this.userForm.getRawValue();
+    const { username, role, departments, status } = this.userForm.getRawValue();
     const id = this.editingUserId();
     this.isSaving.set(true);
     try {
       if (id !== null) {
-        await this.api.updateHelpdeskAdminUser(id, { username, role, department, status });
+        await this.api.updateHelpdeskAdminUser(id, { username: username!, role: role!, departments: departments ?? [], status: status! });
         this.showSuccess('המשתמש עודכן בהצלחה');
       } else {
-        await this.api.addHelpdeskAdminUser({ username, role, department, status });
+        await this.api.addHelpdeskAdminUser({ username: username!, role: role!, departments: departments ?? [], status: status! });
         this.showSuccess('המשתמש נוסף בהצלחה');
       }
       this.cancelForm();
@@ -169,6 +176,13 @@ export class HelpdeskUsersManagementDialogComponent implements OnInit {
     } catch (err) {
       this.showError(err instanceof Error ? err.message : 'שגיאה בהסרת המשתמש');
     }
+  }
+
+  getUserDepartmentsDisplay(user: HelpdeskAdminUser): string {
+    const depts = Array.isArray(user.departments) && user.departments.length
+      ? user.departments
+      : (user.department ? [user.department] : []);
+    return depts.join(' | ');
   }
 
   roleBadgeClass(role: string): string {

@@ -106,7 +106,7 @@ class Contact extends Equatable {
     if (value.isEmpty) return (name: '', info: null);
 
     final infoParts = <String>[];
-    var withoutParentheses = value.replaceAllMapped(
+    final withoutParentheses = value.replaceAllMapped(
       RegExp(r'\(([^()]*)\)'),
       (match) {
         final group = match.group(1)?.replaceAll(RegExp(r'\s+'), ' ').trim() ?? '';

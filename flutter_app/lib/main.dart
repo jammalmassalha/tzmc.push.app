@@ -155,7 +155,20 @@ class TzmcPushApp extends ConsumerWidget {
     );
   }
 
-  String _initialRouteName() => AppRoutes.home;
+  String _initialRouteName() {
+    if (kIsWeb) {
+      // With hash-based routing (Flutter's default web URL strategy) the
+      // in-app route is stored in window.location.hash.  The JS snippet in
+      // index.html converts plain path deep-links (/fluttertest/helpdesk) into
+      // hash form (#/helpdesk) before Flutter boots, so Uri.base.fragment
+      // already contains the correct route when we get here.
+      final fragment = Uri.base.fragment; // e.g. "/helpdesk"
+      if (fragment.isNotEmpty && fragment != AppRoutes.home) {
+        return AppRoutes.normalizePath(fragment);
+      }
+    }
+    return AppRoutes.home;
+  }
 }
 
 /// Router that shows appropriate screen based on auth state
@@ -198,7 +211,8 @@ class _AuthRouterState extends ConsumerState<AuthRouter> {
   }
 
   Widget _buildAuthenticated() {
-    return const ChatShellScreen();
+    final targetPath = widget.redirectPath ?? widget.requestedPath;
+    return ChatShellScreen(initialPath: targetPath);
   }
 
   void _scheduleNavigation(String routeName) {

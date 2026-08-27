@@ -105,14 +105,16 @@ class AppRouteRequest {
   });
 
   factory AppRouteRequest.fromName(String? routeName) {
-    final fallback = const AppRouteRequest(path: AppRoutes.home);
+    const fallback = AppRouteRequest(path: AppRoutes.home);
     if (routeName == null || routeName.trim().isEmpty) {
       return fallback;
     }
     final uri = Uri.tryParse(routeName);
     if (uri == null) return fallback;
     final path = AppRoutes.normalizePath(uri.path);
-    final redirectPath = AppRoutes.normalizePath(uri.queryParameters['redirect']);
+    final rawRedirect = uri.queryParameters['redirect'];
+    final redirectPath =
+        rawRedirect != null ? AppRoutes.normalizePath(rawRedirect) : null;
     return AppRouteRequest(path: path, redirectPath: redirectPath);
   }
 }

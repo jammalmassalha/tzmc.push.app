@@ -14,6 +14,13 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+// Conditional shims isolate the positional-arg initialize/show calls from
+// dart2js type-checking.  flutter_local_notifications 19.x has no web
+// platform entry; Flutter 3.38+ generates a zero-arg web stub that conflicts
+// at compile time with the real API.  The stubs are no-ops because the
+// service-worker handles web push.
+import '_notif_shim_stub.dart'
+    if (dart.library.io) '_notif_shim_native.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -528,9 +535,10 @@ class PushNotificationService {
       iOS: iosSettings,
     );
 
-    await _localNotifications!.initialize(
+    await callInitialize(
+      _localNotifications!,
       initSettings,
-      onDidReceiveNotificationResponse: _onNotificationTapped,
+      onTapped: _onNotificationTapped,
     );
 
     // Pre-create the notification channel with IMPORTANCE_HIGH on Android 8+
@@ -667,7 +675,7 @@ class PushNotificationService {
         // `messaging/token-subscribe-failed`. The key is configured in
         // [DefaultFirebaseOptions.webVapidKey] — log a clear hint when
         // it's still empty so misconfiguration is easy to diagnose.
-        final vapidKey = DefaultFirebaseOptions.webVapidKey;
+        const vapidKey = DefaultFirebaseOptions.webVapidKey;
         if (vapidKey.isEmpty) {
           debugPrint(
               '[PushNotificationService] No web VAPID key configured — '
@@ -830,7 +838,7 @@ class PushNotificationService {
         if (e.code == 'apns-token-not-set') {
           debugPrint(
             '[PushNotificationService] getAPNSToken: APNs token not yet available '
-            '(attempt $attemptNumber/${_kAPNSTokenMaxAttempts}) — will retry.',
+            '(attempt $attemptNumber/$_kAPNSTokenMaxAttempts) — will retry.',
           );
           _logIOSRegistrationStep(
             'ios_apns_gettoken_not_set',
@@ -1190,7 +1198,8 @@ class PushNotificationService {
       notificationPayload = '$chatId:$messageId';
     }
 
-    await _localNotifications!.show(
+    await callShow(
+      _localNotifications!,
       message.hashCode,
       notification.title,
       (() {
@@ -1229,7 +1238,8 @@ class PushNotificationService {
         // notifications play their own sound/vibration.
         groupAlertBehavior: GroupAlertBehavior.children,
       );
-      await _localNotifications!.show(
+      await callShow(
+        _localNotifications!,
         _kGroupSummaryNotificationId,
         'הודעות חדשות',
         '',
@@ -1415,9 +1425,7 @@ final pushNotificationServiceProvider = Provider<PushNotificationService>((ref) 
   final api = ref.watch(chatApiServiceProvider);
   final service = PushNotificationService(api, ref);
   
-  ref.onDispose(() {
-    service.dispose();
-  });
+  ref.onDispose(service.dispose);
 
   return service;
 });
@@ -1447,7 +1455,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   // These payload types carry server-side actions (edits, deletes, reactions,
   // read receipts) rather than new user messages, so they must not increment
   // the unread tray counter.
-  const _actionOnlyTypes = {
+  const actionOnlyTypes = {
     'read-receipt', 'read',
     'delete-action', 'delete',
     'edit-action', 'edit',
@@ -1455,7 +1463,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   };
   final skipNotification = data['skipNotification'] == true ||
       data['skipNotification'] == 'true';
-  if (skipNotification || _actionOnlyTypes.contains(type)) return;
+  if (skipNotification || actionOnlyTypes.contains(type)) return;
 
   // Resolve the chatId using the same priority as PushNotificationService
   // does when routing a foreground message: groupId first, then sender.

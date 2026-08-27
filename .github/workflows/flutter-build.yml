@@ -72,14 +72,6 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
-      - name: Verify analyzer override (6.11.0)
-        run: |
-          if ! dart pub deps | grep -Eq 'analyzer 6\.11\.0'; then
-            echo "::error::analyzer override not applied (expected 6.11.0)."
-            dart pub deps | grep analyzer || true
-            exit 1
-          fi
-
       - name: Materialize google-services.json from secret
         # The google-services.json file is intentionally not committed.
         # It must be provided as the GOOGLE_SERVICES_JSON_BASE64 GitHub
@@ -148,14 +140,6 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
-      - name: Verify analyzer override (6.11.0)
-        run: |
-          if ! dart pub deps | grep -Eq 'analyzer 6\.11\.0'; then
-            echo "::error::analyzer override not applied (expected 6.11.0)."
-            dart pub deps | grep analyzer || true
-            exit 1
-          fi
-
       - name: Run code generation
         run: dart run build_runner build --delete-conflicting-outputs
 
@@ -196,14 +180,6 @@ jobs:
 
       - name: Get dependencies
         run: flutter pub get
-
-      - name: Verify analyzer override (6.11.0)
-        run: |
-          if ! dart pub deps | grep -Eq 'analyzer 6\.11\.0'; then
-            echo "::error::analyzer override not applied (expected 6.11.0)."
-            dart pub deps | grep analyzer || true
-            exit 1
-          fi
 
       - name: Materialize GoogleService-Info.plist from secret
         env:

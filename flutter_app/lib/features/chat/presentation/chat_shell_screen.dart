@@ -63,7 +63,10 @@ const double _kDesktopShellBreakpoint = 1100;
 
 /// Chat shell screen widget
 class ChatShellScreen extends ConsumerStatefulWidget {
-  const ChatShellScreen({super.key});
+  /// Optional path to navigate to on first render (e.g. `/helpdesk`).
+  final String? initialPath;
+
+  const ChatShellScreen({super.key, this.initialPath});
 
   @override
   ConsumerState<ChatShellScreen> createState() => _ChatShellScreenState();
@@ -72,7 +75,7 @@ class ChatShellScreen extends ConsumerStatefulWidget {
 class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     with WidgetsBindingObserver {
   MainTab _currentTab = MainTab.chats;
-  final _pageController = PageController();
+  late final PageController _pageController;
   bool _canAccessShuttle = false;
   bool _canAccessTicketManager = false;
   bool _canAccessAdminGroups = false;
@@ -86,6 +89,14 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _currentTab = _tabForPath(widget.initialPath);
+    // Start the PageView at the correct tab immediately so there is no
+    // visible flash of the chats page while _refreshTabPermissions() completes
+    // its async shuttle-employees HTTP call.
+    final startIndex = _visibleTabs.indexOf(_currentTab);
+    _pageController = PageController(
+      initialPage: startIndex < 0 ? 0 : startIndex,
+    );
     _initializeServices();
     unawaited(_refreshTabPermissions());
   }
@@ -428,54 +439,54 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
             }
           },
           itemBuilder: (context) => [
-            PopupMenuItem(
+            const PopupMenuItem(
               value: 'refresh',
               child: Row(
                 children: [
-                  const Icon(Icons.refresh, size: 20),
-                  const SizedBox(width: 12),
-                  const Text('רענון'),
+                  Icon(Icons.refresh, size: 20),
+                  SizedBox(width: 12),
+                  Text('רענון'),
                 ],
               ),
             ),
-            PopupMenuItem(
+            const PopupMenuItem(
               value: 'fullsync',
               child: Row(
                 children: [
-                  const Icon(Icons.sync, size: 20),
-                  const SizedBox(width: 12),
-                  const Text('סנכרון הודעות'),
+                  Icon(Icons.sync, size: 20),
+                  SizedBox(width: 12),
+                  Text('סנכרון הודעות'),
                 ],
               ),
             ),
-            PopupMenuItem(
+            const PopupMenuItem(
               value: 'settings',
               child: Row(
                 children: [
-                  const Icon(Icons.settings_outlined, size: 20),
-                  const SizedBox(width: 12),
-                  const Text('הגדרות'),
+                  Icon(Icons.settings_outlined, size: 20),
+                  SizedBox(width: 12),
+                  Text('הגדרות'),
                 ],
               ),
             ),
-            PopupMenuItem(
+            const PopupMenuItem(
               value: 'accreditation',
               child: Row(
                 children: [
-                  const Icon(Icons.auto_awesome_outlined, size: 20),
-                  const SizedBox(width: 12),
-                  const Text('סוכן אקרדיטציה'),
+                  Icon(Icons.auto_awesome_outlined, size: 20),
+                  SizedBox(width: 12),
+                  Text('סוכן אקרדיטציה'),
                 ],
               ),
             ),
             if (_canAccessAdminGroups)
-              PopupMenuItem(
+              const PopupMenuItem(
                 value: 'secretaries_admin',
                 child: Row(
                   children: [
-                    const Icon(Icons.settings_phone, size: 20),
-                    const SizedBox(width: 12),
-                    const Text('ניהול מזכירויות מחלקתיות'),
+                    Icon(Icons.settings_phone, size: 20),
+                    SizedBox(width: 12),
+                    Text('ניהול מזכירויות מחלקתיות'),
                   ],
                 ),
               ),

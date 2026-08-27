@@ -1,0 +1,9 @@
+RewriteEngine On
+
+# Keep existing files and directories untouched (JS, CSS, images, etc.).
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Rewrite all other requests to index.html so Flutter web handles routing.
+RewriteRule ^ index.html [L]

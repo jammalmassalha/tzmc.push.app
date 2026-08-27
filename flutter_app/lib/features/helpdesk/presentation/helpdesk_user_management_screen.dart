@@ -95,7 +95,7 @@ class _HelpdeskUserManagementScreenState
     if (usersError == null && departmentsError != null && mounted) {
       showTopToast(
         context,
-        departmentsError!,
+        departmentsError,
         backgroundColor: Theme.of(context).colorScheme.error,
       );
     }
@@ -121,7 +121,7 @@ class _HelpdeskUserManagementScreenState
             await api.createHelpdeskUser(
               username: formData.username,
               role: formData.role,
-              department: formData.department,
+              departments: formData.departments,
               status: formData.status,
             );
             await _loadData(showLoader: false);
@@ -143,7 +143,7 @@ class _HelpdeskUserManagementScreenState
               existing.id,
               username: formData.username,
               role: formData.role,
-              department: formData.department,
+              departments: formData.departments,
               status: formData.status,
             );
             await _loadData(showLoader: false);
@@ -233,13 +233,13 @@ class _HelpdeskUserManagementScreenState
           actions: <Widget>[
             IconButton(
               tooltip: 'רענן',
-              onPressed: _isLoading ? null : () => _loadData(),
+              onPressed: _isLoading ? null : _loadData,
               icon: const Icon(Icons.refresh),
             ),
           ],
         ),
         floatingActionButton: FloatingActionButton.extended(
-          onPressed: _isLoading ? null : () => _openUserForm(),
+          onPressed: _isLoading ? null : _openUserForm,
           icon: const Icon(Icons.person_add_alt_1_outlined),
           label: const Text('הוסף משתמש'),
         ),
@@ -264,7 +264,7 @@ class _HelpdeskUserManagementScreenState
               Text(_error!, textAlign: TextAlign.center),
               const SizedBox(height: 12),
               ElevatedButton(
-                onPressed: () => _loadData(),
+                onPressed: _loadData,
                 child: const Text('נסה שוב'),
               ),
             ],
@@ -287,7 +287,7 @@ class _HelpdeskUserManagementScreenState
               ),
               const SizedBox(height: 12),
               ElevatedButton.icon(
-                onPressed: () => _openUserForm(),
+                onPressed: _openUserForm,
                 icon: const Icon(Icons.add),
                 label: const Text('הוסף משתמש'),
               ),
@@ -298,7 +298,7 @@ class _HelpdeskUserManagementScreenState
     }
 
     return RefreshIndicator(
-      onRefresh: () => _loadData(),
+      onRefresh: _loadData,
       child: ListView.separated(
         padding: const EdgeInsets.fromLTRB(12, 12, 12, 88),
         itemCount: _users.length,
@@ -383,12 +383,9 @@ class _HelpdeskUserCard extends ConsumerWidget {
                         spacing: 8,
                         runSpacing: 8,
                         children: <Widget>[
-                          _InfoChip(
-                            label: user.role,
-                            isPrimary: user.role == 'Admin',
-                          ),
+                          _InfoChip(label: user.role, isPrimary: user.role == 'Admin'),
                           _InfoChip(label: user.status, isSuccess: user.isActive),
-                          _InfoChip(label: user.department),
+                          ...user.allDepartments.map((d) => _InfoChip(label: d)),
                         ],
                       ),
                     ],
@@ -483,13 +480,13 @@ class _InfoChip extends StatelessWidget {
 class HelpdeskUserFormData {
   final String username;
   final String role;
-  final String department;
+  final List<String> departments;
   final String status;
 
   const HelpdeskUserFormData({
     required this.username,
     required this.role,
-    required this.department,
+    required this.departments,
     required this.status,
   });
 }
@@ -515,7 +512,7 @@ class _HelpdeskUserFormDialogState
     extends ConsumerState<HelpdeskUserFormDialog> {
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   late String _role;
-  late String _department;
+  late List<String> _selectedDepartments;
   late bool _isActive;
   bool _isSubmitting = false;
 
@@ -523,17 +520,28 @@ class _HelpdeskUserFormDialogState
   void initState() {
     super.initState();
     _role = widget.existing.role;
-    final departmentNames = widget.departments.map((d) => d.name).toSet();
-    final existingDepartment = widget.existing.department;
-    _department = departmentNames.contains(existingDepartment)
-        ? existingDepartment
-        : widget.departments.first.name;
+    final deptNames = widget.departments.map((d) => d.name).toSet();
+    // Prefer multi-department list; fall back to legacy single department.
+    final existing = widget.existing.allDepartments
+        .where(deptNames.contains)
+        .toList();
+    _selectedDepartments = existing.isNotEmpty
+        ? existing
+        : (deptNames.isNotEmpty ? [widget.departments.first.name] : []);
     _isActive = widget.existing.isActive;
   }
 
   Future<void> _submit() async {
     final formState = _formKey.currentState;
     if (formState == null || !formState.validate()) return;
+    if (_selectedDepartments.isEmpty) {
+      showTopToast(
+        context,
+        'יש לבחור לפחות מחלקה אחת',
+        backgroundColor: Theme.of(context).colorScheme.error,
+      );
+      return;
+    }
 
     setState(() => _isSubmitting = true);
     try {
@@ -541,7 +549,7 @@ class _HelpdeskUserFormDialogState
         HelpdeskUserFormData(
           username: widget.existing.username,
           role: _role,
-          department: _department,
+          departments: _selectedDepartments,
           status: _isActive ? 'Active' : 'Inactive',
         ),
       );
@@ -586,7 +594,7 @@ class _HelpdeskUserFormDialogState
                   ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
-                    value: _role,
+                    initialValue: _role,
                     decoration: const InputDecoration(
                       labelText: 'תפקיד',
                       border: OutlineInputBorder(),
@@ -603,26 +611,55 @@ class _HelpdeskUserFormDialogState
                           },
                   ),
                   const SizedBox(height: 12),
-                  DropdownButtonFormField<String>(
-                    value: _department,
+                  // Multi-select departments
+                  InputDecorator(
                     decoration: const InputDecoration(
-                      labelText: 'מחלקה',
+                      labelText: 'מחלקות',
                       border: OutlineInputBorder(),
                     ),
-                    items: widget.departments
-                        .map(
-                          (department) => DropdownMenuItem<String>(
-                            value: department.name,
-                            child: Text(department.name),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 4,
+                          children: widget.departments.map((dept) {
+                            final selected = _selectedDepartments.contains(dept.name);
+                            return FilterChip(
+                              label: Text(dept.name),
+                              selected: selected,
+                              onSelected: _isSubmitting
+                                  ? null
+                                  : (checked) {
+                                      setState(() {
+                                        if (checked) {
+                                          _selectedDepartments = [
+                                            ..._selectedDepartments,
+                                            dept.name,
+                                          ];
+                                        } else {
+                                          _selectedDepartments = _selectedDepartments
+                                              .where((d) => d != dept.name)
+                                              .toList();
+                                        }
+                                      });
+                                    },
+                            );
+                          }).toList(),
+                        ),
+                        if (_selectedDepartments.isEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text(
+                              'יש לבחור לפחות מחלקה אחת',
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.error,
+                                fontSize: 12,
+                              ),
+                            ),
                           ),
-                        )
-                        .toList(),
-                    onChanged: _isSubmitting
-                        ? null
-                        : (value) {
-                            if (value == null) return;
-                            setState(() => _department = value);
-                          },
+                      ],
+                    ),
                   ),
                   const SizedBox(height: 12),
                   SwitchListTile(
@@ -680,7 +717,7 @@ class _HelpdeskUserDetailsDialog extends StatefulWidget {
 class _HelpdeskUserDetailsDialogState
     extends State<_HelpdeskUserDetailsDialog> {
   late String _role;
-  late String _department;
+  late List<String> _selectedDepartments;
   bool _isActive = true;
   bool _isSubmitting = false;
 
@@ -691,7 +728,9 @@ class _HelpdeskUserDetailsDialogState
   void initState() {
     super.initState();
     _role = 'Editor';
-    _department = widget.departments.first.name;
+    _selectedDepartments = widget.departments.isNotEmpty
+        ? [widget.departments.first.name]
+        : [];
   }
 
   @override
@@ -701,32 +740,36 @@ class _HelpdeskUserDetailsDialogState
   }
 
   void _applyContactDepartment(Contact contact) {
-    final departmentNames = widget.departments.map((d) => d.name).toSet();
     final info = (contact.info ?? '').toLowerCase();
-    String? matched;
-    if (info.isNotEmpty) {
-      for (final dept in widget.departments) {
-        if (info.contains(dept.name.toLowerCase())) {
-          matched = dept.name;
-          break;
+    if (info.isEmpty) return;
+    for (final dept in widget.departments) {
+      if (info.contains(dept.name.toLowerCase())) {
+        if (!_selectedDepartments.contains(dept.name)) {
+          _selectedDepartments = [..._selectedDepartments, dept.name];
         }
+        break;
       }
-    }
-    if (matched != null && departmentNames.contains(matched)) {
-      _department = matched;
     }
   }
 
   Future<void> _submit() async {
     final contact = _selectedContact;
     if (contact == null) return;
+    if (_selectedDepartments.isEmpty) {
+      showTopToast(
+        context,
+        'יש לבחור לפחות מחלקה אחת',
+        backgroundColor: Theme.of(context).colorScheme.error,
+      );
+      return;
+    }
     setState(() => _isSubmitting = true);
     try {
       await widget.onSubmit(
         HelpdeskUserFormData(
           username: contact.username,
           role: _role,
-          department: _department,
+          departments: _selectedDepartments,
           status: _isActive ? 'Active' : 'Inactive',
         ),
       );
@@ -805,7 +848,7 @@ class _HelpdeskUserDetailsDialogState
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
-                  value: _role,
+                  initialValue: _role,
                   decoration: const InputDecoration(
                     labelText: 'תפקיד',
                     border: OutlineInputBorder(),
@@ -822,26 +865,55 @@ class _HelpdeskUserDetailsDialogState
                         },
                 ),
                 const SizedBox(height: 12),
-                DropdownButtonFormField<String>(
-                  value: _department,
+                // Multi-select departments
+                InputDecorator(
                   decoration: const InputDecoration(
-                    labelText: 'מחלקה',
+                    labelText: 'מחלקות',
                     border: OutlineInputBorder(),
                   ),
-                  items: widget.departments
-                      .map(
-                        (department) => DropdownMenuItem<String>(
-                          value: department.name,
-                          child: Text(department.name),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 4,
+                        children: widget.departments.map((dept) {
+                          final selected = _selectedDepartments.contains(dept.name);
+                          return FilterChip(
+                            label: Text(dept.name),
+                            selected: selected,
+                            onSelected: _isSubmitting
+                                ? null
+                                : (checked) {
+                                    setState(() {
+                                      if (checked) {
+                                        _selectedDepartments = [
+                                          ..._selectedDepartments,
+                                          dept.name,
+                                        ];
+                                      } else {
+                                        _selectedDepartments = _selectedDepartments
+                                            .where((d) => d != dept.name)
+                                            .toList();
+                                      }
+                                    });
+                                  },
+                          );
+                        }).toList(),
+                      ),
+                      if (_selectedDepartments.isEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            'יש לבחור לפחות מחלקה אחת',
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.error,
+                              fontSize: 12,
+                            ),
+                          ),
                         ),
-                      )
-                      .toList(),
-                  onChanged: _isSubmitting
-                      ? null
-                      : (value) {
-                          if (value == null) return;
-                          setState(() => _department = value);
-                        },
+                    ],
+                  ),
                 ),
                 const SizedBox(height: 12),
                 SwitchListTile(

@@ -720,7 +720,7 @@ class _ShuttleScreenState extends ConsumerState<ShuttleScreen>
             backgroundColor: theme.colorScheme.errorContainer,
             actions: [
               TextButton(
-                onPressed: () => notifier.loadData(),
+                onPressed: notifier.loadData,
                 child: Text(notifier.text('נסה שוב', 'Повторить')),
               ),
             ],
@@ -741,7 +741,7 @@ class _ShuttleScreenState extends ConsumerState<ShuttleScreen>
               const Spacer(),
               // Refresh button
               IconButton(
-                onPressed: () => notifier.loadData(),
+                onPressed: notifier.loadData,
                 icon: state.isLoading
                     ? SizedBox(
                         width: 20,

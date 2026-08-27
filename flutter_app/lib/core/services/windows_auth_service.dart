@@ -22,7 +22,7 @@ Future<String?> tryWindowsAutoLogin(ChatApiService apiService) async {
   // Only run on the Windows desktop platform (not web, not other OS).
   if (kIsWeb || !Platform.isWindows) return null;
 
-  final appToken = AppConfig.windowsAppToken;
+  const appToken = AppConfig.windowsAppToken;
   if (appToken.isEmpty) {
     debugPrint('[WindowsAuth] WINDOWS_APP_SERVER_TOKEN not configured — skipping auto-login');
     return null;

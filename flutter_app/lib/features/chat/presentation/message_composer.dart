@@ -8,7 +8,8 @@ import 'dart:async';
 import 'dart:io' as io;
 import 'dart:typed_data';
 
-import 'package:file_picker/file_picker.dart';
+import '../../../core/utils/_file_picker_web.dart'
+    if (dart.library.io) '../../../core/utils/_file_picker_native.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -244,8 +245,8 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
                         ),
                         border: InputBorder.none,
                         // Emoji/sticker icon on the right (start in RTL)
-                        suffixIcon: IconButton(
-                          icon: const Icon(
+                        suffixIcon: const IconButton(
+                          icon: Icon(
                             Icons.emoji_emotions_outlined,
                             color: iconColor,
                             size: 24,
@@ -404,18 +405,13 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
 
   Future<void> _pickFile() async {
     try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['pdf'],
-        withData: kIsWeb,
-      );
-      if (result == null || result.files.isEmpty) return;
-      final picked = result.files.first;
+      final picked = await pickPdfFile();
+      if (picked == null) return;
 
       final mimeType =
           xfile.XFileUtils.mimeTypeFromExtension(picked.extension ?? 'pdf');
       late final xfile.XFile selectedFile;
-      if (!kIsWeb && picked.path != null && picked.path!.trim().isNotEmpty) {
+      if (picked.path != null && picked.path!.trim().isNotEmpty) {
         selectedFile = xfile.XFileUtils.fromNativePath(
           picked.path!,
           () => io.File(picked.path!).readAsBytes(),

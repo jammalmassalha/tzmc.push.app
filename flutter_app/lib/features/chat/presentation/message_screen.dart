@@ -354,7 +354,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                 ),
                 title: GestureDetector(
                   onTap: chatInfo.isGroup
-                      ? () => _openGroupInfo()
+                      ? _openGroupInfo
                       : (chatInfo.avatarUrl != null
                           ? () => _showAvatarPreview(
                               context, chatInfo.title, chatInfo.avatarUrl!)
@@ -1311,7 +1311,7 @@ Future<File> _createUniqueSaveFile(String filename) async {
   dir ??= await getApplicationDocumentsDirectory();
 
   final safeName = _sanitizeSaveFilename(filename);
-  var file = File('${dir.path}/$safeName');
+  final file = File('${dir.path}/$safeName');
   if (!await file.exists()) return file;
 
   final dot = safeName.lastIndexOf('.');
@@ -1900,8 +1900,8 @@ class _MessageBubble extends StatelessWidget {
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHighest.withAlpha((255 * 0.5).round()),
         borderRadius: BorderRadius.circular(8),
-        border: Border(
-          right: BorderSide(
+        border: const Border(
+          right: const BorderSide(
             color: AppColors.primary,
             width: 3,
           ),
@@ -1912,7 +1912,7 @@ class _MessageBubble extends StatelessWidget {
         children: [
           Text(
             replyTo.senderDisplayName ?? replyTo.sender,
-            style: TextStyle(
+            style: const TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.bold,
               color: AppColors.primary,
@@ -2156,7 +2156,7 @@ class _ReplyPreview extends StatelessWidget {
               children: [
                 Text(
                   'מגיב ל: ${replyTo.senderDisplayName ?? replyTo.sender}',
-                  style: TextStyle(
+                  style: const TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.bold,
                     color: AppColors.primary,
@@ -2208,16 +2208,16 @@ class _EditPreview extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(Icons.edit, size: 20, color: AppColors.primary),
+          const Icon(Icons.edit, size: 20, color: AppColors.primary),
           const SizedBox(width: 8),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
+                const Text(
                   'עריכת הודעה',
-                  style: TextStyle(
+                  style: const TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.bold,
                     color: AppColors.primary,
@@ -2272,7 +2272,7 @@ class _TypingIndicatorRow extends StatelessWidget {
       child: Row(
         children: [
           // Animated three-dot indicator
-          _DotsAnimation(),
+          const _DotsAnimation(),
           const SizedBox(width: 8),
           Text(
             label,
@@ -2479,14 +2479,14 @@ class _LocationButton extends StatelessWidget {
             color: AppColors.primary.withAlpha((255 * 0.3).round()),
           ),
         ),
-        child: Row(
+        child: const Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.location_on, color: AppColors.primary, size: 20),
-            const SizedBox(width: 6),
-            Text(
+            const Icon(Icons.location_on, color: AppColors.primary, size: 20),
+            SizedBox(width: 6),
+            const Text(
               'המיקום שלי',
-              style: TextStyle(
+              style: const TextStyle(
                 color: AppColors.primary,
                 fontWeight: FontWeight.w600,
               ),
@@ -2701,11 +2701,11 @@ class _PhoneButton extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.phone, size: 14, color: AppColors.primary),
+            const Icon(Icons.phone, size: 14, color: AppColors.primary),
             const SizedBox(width: 4),
             Text(
               display,
-              style: TextStyle(
+              style: const TextStyle(
                 color: AppColors.primary,
                 fontWeight: FontWeight.w600,
                 fontSize: 13,
@@ -2742,10 +2742,10 @@ class _PhoneButton extends StatelessWidget {
               },
             ),
             ListTile(
-              leading: Icon(Icons.phone, color: AppColors.primary),
-              title: Text(
+              leading: const Icon(Icons.phone, color: AppColors.primary),
+              title: const Text(
                 'חייג עכשיו',
-                style: TextStyle(color: AppColors.primary),
+                style: const TextStyle(color: AppColors.primary),
               ),
               onTap: () async {
                 Navigator.of(ctx).pop();
@@ -2800,15 +2800,15 @@ class _LinkButton extends StatelessWidget {
           border: Border.all(
               color: AppColors.primary.withAlpha((255 * 0.3).round())),
         ),
-        child: Row(
+        child: const Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.link, color: AppColors.primary, size: 20),
-            const SizedBox(width: 6),
-            Flexible(
-              child: Text(
+            const Icon(Icons.link, color: AppColors.primary, size: 20),
+            SizedBox(width: 6),
+            const Flexible(
+              child: const Text(
                 'לחץ כאן לפתיחת קובץ/קישור',
-                style: TextStyle(
+                style: const TextStyle(
                   color: AppColors.primary,
                   fontWeight: FontWeight.w600,
                 ),

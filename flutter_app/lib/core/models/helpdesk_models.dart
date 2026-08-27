@@ -178,7 +178,7 @@ class HelpdeskDepartmentTicketFormConfig extends Equatable {
     return HelpdeskDepartmentTicketFormConfig(
       fields: rawFields
           .whereType<Map<String, dynamic>>()
-          .map((e) => HelpdeskTicketFormField.fromJson(e))
+          .map(HelpdeskTicketFormField.fromJson)
           .toList(),
       initialForm: HelpdeskInitialFormConfig.fromJson(
         json['initialForm'] as Map<String, dynamic>?,
@@ -732,6 +732,7 @@ class HelpdeskUser extends Equatable {
   final String phoneNumber;
   final String role;
   final String department;
+  final List<String> departments;
   final DateTime? createdAt;
   final String status;
 
@@ -742,11 +743,16 @@ class HelpdeskUser extends Equatable {
     required this.phoneNumber,
     required this.role,
     required this.department,
+    this.departments = const [],
     this.createdAt,
     required this.status,
   });
 
   bool get isActive => status == 'Active';
+
+  /// All departments: prefer multi-department list; fall back to single.
+  List<String> get allDepartments =>
+      departments.isNotEmpty ? departments : (department.isNotEmpty ? [department] : []);
 
   @override
   List<Object?> get props => [
@@ -756,6 +762,7 @@ class HelpdeskUser extends Equatable {
         phoneNumber,
         role,
         department,
+        departments,
         createdAt,
         status,
       ];
@@ -768,6 +775,19 @@ class HelpdeskUser extends Equatable {
     final normalizedFullName = rawFullName?.toString().trim();
     final username = (json['username'] ?? json['Username'] ?? '').toString();
     final phoneNumber = (json['phone'] ?? json['PhoneNumber'] ?? '').toString().trim();
+    final primaryDepartment =
+        (json['department'] ?? json['departName'] ?? json['Department'] ?? '')
+            .toString();
+    // Parse multi-department list (preferred) falling back to single dept.
+    final rawDepts = json['departments'];
+    final List<String> departments;
+    if (rawDepts is List && rawDepts.isNotEmpty) {
+      departments = rawDepts.map((e) => e.toString()).toList();
+    } else if (primaryDepartment.isNotEmpty) {
+      departments = [primaryDepartment];
+    } else {
+      departments = const [];
+    }
     return HelpdeskUser(
       id: _asInt(json['id'] ?? json['ID'], fallback: 0),
       username: username,
@@ -778,9 +798,8 @@ class HelpdeskUser extends Equatable {
       role: _normalizeHelpdeskUserRole(
         (json['role'] ?? json['Role'])?.toString(),
       ),
-      department:
-          (json['department'] ?? json['departName'] ?? json['Department'] ?? '')
-              .toString(),
+      department: primaryDepartment,
+      departments: departments,
       createdAt: createdAtRaw is String && createdAtRaw.trim().isNotEmpty
           ? DateTime.tryParse(createdAtRaw)
           : null,
@@ -795,6 +814,7 @@ class HelpdeskUser extends Equatable {
         'phone': phoneNumber,
         'role': role,
         'department': department,
+        'departments': allDepartments,
         if (createdAt != null) 'createdAt': createdAt!.toIso8601String(),
         'status': status,
       };
@@ -804,19 +824,35 @@ class HelpdeskUser extends Equatable {
 class HelpdeskMyRole extends Equatable {
   final HelpdeskRole role;
   final String department;
+  final List<String> departments;
 
   const HelpdeskMyRole({
     required this.role,
     required this.department,
+    this.departments = const [],
   });
 
+  List<String> get allDepartments =>
+      departments.isNotEmpty ? departments : (department.isNotEmpty ? [department] : []);
+
   @override
-  List<Object?> get props => [role, department];
+  List<Object?> get props => [role, department, departments];
 
   factory HelpdeskMyRole.fromJson(Map<String, dynamic> json) {
+    final dept = json['department'] as String? ?? '';
+    final rawDepts = json['departments'];
+    final List<String> depts;
+    if (rawDepts is List && rawDepts.isNotEmpty) {
+      depts = rawDepts.map((e) => e.toString()).toList();
+    } else if (dept.isNotEmpty) {
+      depts = [dept];
+    } else {
+      depts = const [];
+    }
     return HelpdeskMyRole(
       role: HelpdeskRole.fromString(json['role'] as String? ?? 'editor'),
-      department: json['department'] as String? ?? '',
+      department: dept,
+      departments: depts,
     );
   }
 }

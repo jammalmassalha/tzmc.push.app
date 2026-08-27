@@ -317,6 +317,7 @@ export interface HelpdeskAdminUser {
   username: string;
   role: HelpdeskRole;
   department: string;
+  departments: string[];
   status: 'Active' | 'Inactive';
   createdAt: string;
 }
@@ -324,6 +325,7 @@ export interface HelpdeskAdminUser {
 export interface HelpdeskMyRole {
   role: HelpdeskRole;
   department: string;
+  departments: string[];
 }
 
 export interface HelpdeskDashboard {

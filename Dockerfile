@@ -21,6 +21,9 @@ COPY favicon.ico ./
 # Copy pre-built frontend (build locally or in CI before docker build)
 COPY frontend/dist/ frontend/dist/
 
+# Copy pre-built Flutter web app (run flutter_app/build_all.sh before docker build)
+COPY dist/web/ dist/web/
+
 EXPOSE 3000
 
 CMD ["node", "server.js"]

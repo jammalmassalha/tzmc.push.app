@@ -604,7 +604,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // "username". Don't overwrite a real contact with a placeholder.
     final existing = state.contacts.entries.firstWhere(
       (e) => e.key.trim().toLowerCase() == normalized,
-      orElse: () => MapEntry('', const Contact(username: '', displayName: '')),
+      orElse: () => const MapEntry('', Contact(username: '', displayName: '')),
     );
 
     String chatId;
@@ -1002,9 +1002,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// Schedule push recovery pulls (for truncated push payloads)
   void schedulePushRecoveryPulls() {
     for (final delayMs in pushRecoveryPullDelaysMs) {
-      Future.delayed(Duration(milliseconds: delayMs), () {
-        pullMessages();
-      });
+      Future.delayed(Duration(milliseconds: delayMs), pullMessages);
     }
   }
 
@@ -1316,7 +1314,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // groupSenderName comes exclusively from the server field — never extracted
     // from the message body.  The display name in the bubble is resolved via
     // getDisplayName(groupSenderName) so it reflects the device contact name.
-    String groupSenderName = (msg.groupSenderName ?? '').trim();
+    final String groupSenderName = (msg.groupSenderName ?? '').trim();
     String body = rawBody;
 
     // If groupSenderName was provided by the backend, strip any matching prefix
@@ -1656,7 +1654,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           if (localHasRealName && dbNameLooksLikeId) {
             groupsById[dbGroup.id] = ChatGroup(
               id: dbGroup.id,
-              name: existing!.name,
+              name: existing.name,
               members: dbGroup.members,
               admins: dbGroup.admins,
               createdBy: dbGroup.createdBy,
@@ -1689,13 +1687,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   void applyIncomingFromPushPayload(Map<String, dynamic> data) {
     if (data.isEmpty) return;
 
-    String? _str(dynamic v) {
+    String? str(dynamic v) {
       if (v == null) return null;
       final s = v.toString().trim();
       return s.isEmpty ? null : s;
     }
 
-    int? _int(dynamic v) {
+    int? parseInt(dynamic v) {
       if (v == null) return null;
       if (v is int) return v;
       if (v is num) return v.toInt();
@@ -1704,7 +1702,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     // Helper: FCM coerces all data values to strings on Android; arrays are
     // JSON-encoded strings like '["id1","id2"]'. Decode them back to a list.
-    List<String>? _strList(dynamic v) {
+    List<String>? strList(dynamic v) {
       if (v == null) return null;
       if (v is List) return v.map((e) => e.toString()).toList();
       final s = v.toString().trim();
@@ -1720,7 +1718,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       }
     }
 
-    final type = (_str(data['type']) ?? '').toLowerCase();
+    final type = (str(data['type']) ?? '').toLowerCase();
 
     // ── Action / housekeeping payloads ────────────────────────────────────
     // These should never create a new ChatMessage or increment the unread
@@ -1731,13 +1729,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       case 'read-receipt':
       case 'read':
         {
-          final ids = _strList(data['messageIds']);
+          final ids = strList(data['messageIds']);
           if (ids == null || ids.isEmpty) return;
           final msg = IncomingServerMessage(
             type: type,
             messageIds: ids,
-            readAt: _int(data['readAt']),
-            sender: _str(data['sender']),
+            readAt: parseInt(data['readAt']),
+            sender: str(data['sender']),
           );
           _handleReadReceipt(msg);
           return;
@@ -1748,13 +1746,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         {
           // The server sends `messageId` (the deleted message's ID).
           // `_handleDelete` expects `targetMessageId`.
-          final targetId = _str(data['messageId']) ?? _str(data['targetMessageId']);
+          final targetId = str(data['messageId']) ?? str(data['targetMessageId']);
           if (targetId == null) return;
           final msg = IncomingServerMessage(
             type: type,
             targetMessageId: targetId,
-            deletedAt: _int(data['deletedAt']) ?? _int(data['timestamp']),
-            sender: _str(data['sender']),
+            deletedAt: parseInt(data['deletedAt']) ?? parseInt(data['timestamp']),
+            sender: str(data['sender']),
           );
           _handleDelete(msg);
           return;
@@ -1763,14 +1761,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       case 'edit-action':
       case 'edit':
         {
-          final targetId = _str(data['messageId']) ?? _str(data['targetMessageId']);
+          final targetId = str(data['messageId']) ?? str(data['targetMessageId']);
           if (targetId == null) return;
           final msg = IncomingServerMessage(
             type: type,
             targetMessageId: targetId,
-            body: _str(data['body']),
-            editedAt: _int(data['editedAt']) ?? _int(data['timestamp']),
-            sender: _str(data['sender']),
+            body: str(data['body']),
+            editedAt: parseInt(data['editedAt']) ?? parseInt(data['timestamp']),
+            sender: str(data['sender']),
           );
           _handleEdit(msg);
           return;
@@ -1778,18 +1776,18 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
       case 'group-update':
         {
-          final groupId = _str(data['groupId']);
+          final groupId = str(data['groupId']);
           if (groupId == null) return;
           final msg = IncomingServerMessage(
             type: type,
             groupId: groupId,
-            groupName: _str(data['groupName']),
-            groupMembers: _strList(data['groupMembers']),
-            groupCreatedBy: _str(data['groupCreatedBy']),
-            groupAdmins: _strList(data['groupAdmins']),
-            groupUpdatedAt: _int(data['groupUpdatedAt']),
-            groupType: _str(data['groupType']),
-            sender: _str(data['sender']),
+            groupName: str(data['groupName']),
+            groupMembers: strList(data['groupMembers']),
+            groupCreatedBy: str(data['groupCreatedBy']),
+            groupAdmins: strList(data['groupAdmins']),
+            groupUpdatedAt: parseInt(data['groupUpdatedAt']),
+            groupType: str(data['groupType']),
+            sender: str(data['sender']),
           );
           _handleGroupUpdate(msg);
           return;
@@ -1803,15 +1801,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           // Reaction pushes must update the emoji on the target message, not
           // create a new chat bubble. Route through the same handler used by
           // socket/SSE so the UI reflects the change silently.
-          final targetId = _str(data['targetMessageId']) ?? _str(data['messageId']);
+          final targetId = str(data['targetMessageId']) ?? str(data['messageId']);
           if (targetId == null) return;
           final msg = IncomingServerMessage(
             type: type,
             targetMessageId: targetId,
-            emoji: _str(data['emoji']),
-            reactor: _str(data['reactor']) ?? _str(data['sender']),
-            reactorName: _str(data['reactorName']),
-            sender: _str(data['sender']),
+            emoji: str(data['emoji']),
+            reactor: str(data['reactor']) ?? str(data['sender']),
+            reactorName: str(data['reactorName']),
+            sender: str(data['sender']),
           );
           _handleReaction(msg);
           return;
@@ -1819,8 +1817,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
 
     // ── Regular chat message ───────────────────────────────────────────────
-    final messageId = _str(data['messageId']);
-    final sender = _str(data['sender']) ?? _str(data['fromUser']);
+    final messageId = str(data['messageId']);
+    final sender = str(data['sender']) ?? str(data['fromUser']);
     if (messageId == null || sender == null) return;
 
     // Self-echo: the server sends a copy to the sender's other devices with
@@ -1829,7 +1827,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final skipNotification = data['skipNotification'] == true ||
         data['skipNotification'] == 'true';
 
-    final groupId = _str(data['groupId']);
+    final groupId = str(data['groupId']);
     final isGroup = groupId != null;
 
     // For self-echo push notifications (skipNotification: true), the server
@@ -1853,7 +1851,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       chatId = groupId;
     } else if (isSelfEcho || skipNotification) {
       // Use only toUser — never fall back to recipient for self-echo messages.
-      final toUser = (_str(data['toUser']) ?? '').trim().toLowerCase();
+      final toUser = (str(data['toUser']) ?? '').trim().toLowerCase();
       // Discard if there is no deterministic chat partner: this can happen with
       // old self-echo DB log entries where ToUser == sender (self-chat artifact).
       if (toUser.isEmpty || toUser == meNorm || toUser == senderNorm) return;
@@ -1865,21 +1863,21 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // Backend may include either the full body (messageText) or a truncated
     // groupMessageText. Prefer the longer one — _hydrateExistingMessage will
     // still keep the longer body if a fresher pull replaces it.
-    final messageText = _str(data['messageText']);
-    final groupMessageText = _str(data['groupMessageText']);
+    final messageText = str(data['messageText']);
+    final groupMessageText = str(data['groupMessageText']);
     final rawBody = (messageText != null && groupMessageText != null)
         ? (messageText.length >= groupMessageText.length ? messageText : groupMessageText)
-        : (messageText ?? groupMessageText ?? _str(data['body']) ?? _str(data['message']) ?? '');
-    final locationUrl = _str(data['locationUrl']) ?? _str(data['location']);
-    final lat = _str(data['latitude']) ?? _str(data['lat']);
-    final lon = _str(data['longitude']) ?? _str(data['lng']) ?? _str(data['lon']);
+        : (messageText ?? groupMessageText ?? str(data['body']) ?? str(data['message']) ?? '');
+    final locationUrl = str(data['locationUrl']) ?? str(data['location']);
+    final lat = str(data['latitude']) ?? str(data['lat']);
+    final lon = str(data['longitude']) ?? str(data['lng']) ?? str(data['lon']);
     final body = rawBody.isNotEmpty
         ? rawBody
         : ((lat != null && lon != null)
             ? '📍 https://www.google.com/maps?q=$lat,$lon'
             : (locationUrl ?? ''));
 
-    final groupTypeRaw = _str(data['groupType']);
+    final groupTypeRaw = str(data['groupType']);
     final groupType = groupTypeRaw == 'community'
         ? GroupType.community
         : (isGroup ? GroupType.group : null);
@@ -1895,11 +1893,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // sourced from MessageActivities.Sender).  Always run it through
     // getDisplayName so the bubble shows the contact name when available;
     // getDisplayName returns the input unchanged when no match is found.
-    final rawGroupSenderName = _str(data['groupSenderName']) ?? '';
+    final rawGroupSenderName = str(data['groupSenderName']) ?? '';
     final senderDisplayName = rawGroupSenderName.isNotEmpty
         ? getDisplayName(rawGroupSenderName)
         : (senderIsGroupId ? null : getDisplayName(sender));
-    final timestamp = _int(data['timestamp']) ?? DateTime.now().millisecondsSinceEpoch;
+    final timestamp = parseInt(data['timestamp']) ?? DateTime.now().millisecondsSinceEpoch;
 
     final message = ChatMessage(
       id: messageId,
@@ -1908,13 +1906,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       sender: sender,
       senderDisplayName: senderDisplayName,
       body: body,
-      imageUrl: _str(data['image']) ?? _str(data['imageUrl']) ?? _str(data['imageURL']),
-      fileUrl: _str(data['fileUrl']) ?? _str(data['file']) ?? _str(data['attachmentUrl']) ?? _str(data['url']),
+      imageUrl: str(data['image']) ?? str(data['imageUrl']) ?? str(data['imageURL']),
+      fileUrl: str(data['fileUrl']) ?? str(data['file']) ?? str(data['attachmentUrl']) ?? str(data['url']),
       direction: (isSelfEcho || skipNotification) ? MessageDirection.outgoing : MessageDirection.incoming,
       timestamp: timestamp,
       deliveryStatus: (isSelfEcho || skipNotification) ? DeliveryStatus.sent : DeliveryStatus.delivered,
       groupId: groupId,
-      groupName: _str(data['groupName']),
+      groupName: str(data['groupName']),
       groupType: groupType,
     );
 
@@ -2674,7 +2672,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       chatId = msg.groupId!;
     } else if (isFromMe) {
       final toUser = (msg.toUser ?? '').trim().toLowerCase();
-      final mePhone = me?.trim().toLowerCase() ?? '';
+      final mePhone = me.trim().toLowerCase() ?? '';
       // If toUser is absent or equals the sender (a self-chat DB artifact from
       // old self-echo log entries where ToUser = sender), skip this message.
       if (toUser.isEmpty || (mePhone.isNotEmpty && toUser == mePhone)) return null;

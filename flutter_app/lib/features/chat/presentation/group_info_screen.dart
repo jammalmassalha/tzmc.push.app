@@ -282,7 +282,7 @@ class _GroupInfoScreenState extends ConsumerState<GroupInfoScreen> {
                           visualDensity: VisualDensity.compact,
                           backgroundColor:
                               AppColors.primary.withAlpha(30),
-                          labelStyle: TextStyle(
+                          labelStyle: const TextStyle(
                             color: AppColors.primary,
                             fontSize: 11,
                           ),
@@ -426,7 +426,7 @@ class _GroupHeader extends StatelessWidget {
             Chip(
               label: const Text('קבוצת קהילה'),
               backgroundColor: AppColors.primary.withAlpha(20),
-              labelStyle: TextStyle(color: AppColors.primary, fontSize: 12),
+              labelStyle: const TextStyle(color: AppColors.primary, fontSize: 12),
               visualDensity: VisualDensity.compact,
             ),
           ],

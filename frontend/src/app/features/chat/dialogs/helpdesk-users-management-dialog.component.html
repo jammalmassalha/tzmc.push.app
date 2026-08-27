@@ -45,11 +45,11 @@
         </div>
 
         <div class="form-row">
-          <!-- Department -->
-          <mat-form-field appearance="outline" class="form-field">
-            <mat-label>מחלקה</mat-label>
+          <!-- Departments (multi-select) -->
+          <mat-form-field appearance="outline" class="form-field form-field-full">
+            <mat-label>מחלקות</mat-label>
             <mat-icon matPrefix>apartment</mat-icon>
-            <mat-select formControlName="department">
+            <mat-select formControlName="departments" multiple>
               @if (isLoadingDepts()) {
                 <mat-option disabled>טוען מחלקות...</mat-option>
               } @else {
@@ -58,8 +58,8 @@
                 }
               }
             </mat-select>
-            @if (userForm.get('department')?.invalid && userForm.get('department')?.touched) {
-              <mat-error>יש לבחור מחלקה</mat-error>
+            @if (userForm.get('departments')?.invalid && userForm.get('departments')?.touched) {
+              <mat-error>יש לבחור לפחות מחלקה אחת</mat-error>
             }
           </mat-form-field>
 
@@ -139,7 +139,7 @@
                   <td>
                     <span [class]="roleBadgeClass(user.role)">{{ user.role }}</span>
                   </td>
-                  <td>{{ user.department }}</td>
+                  <td>{{ getUserDepartmentsDisplay(user) }}</td>
                   <td>
                     <span [class]="statusBadgeClass(user.status)">
                       {{ user.status === 'Active' ? 'פעיל' : 'לא פעיל' }}
