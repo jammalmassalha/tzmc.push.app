@@ -1663,8 +1663,16 @@ export class ChatApiService {
     };
   }
 
-  async getHelpdeskAdminUsers(): Promise<HelpdeskAdminUser[]> {
-    const url = `${this.notifyBaseUrl}/helpdesk/users?_ts=${Date.now()}&ngsw-bypass=1`;
+  async getHelpdeskAdminUsers(department?: string): Promise<HelpdeskAdminUser[]> {
+    const params = new URLSearchParams({
+      _ts: String(Date.now()),
+      'ngsw-bypass': '1'
+    });
+    const normalizedDepartment = String(department || '').trim();
+    if (normalizedDepartment) {
+      params.set('department', normalizedDepartment);
+    }
+    const url = `${this.notifyBaseUrl}/helpdesk/users?${params.toString()}`;
     const response = await this.fetchWithRetry(url, { cache: 'no-store' }, { retries: 1, timeoutMs: 8000 });
     const body = await response.json() as { result?: string; message?: string; users?: HelpdeskAdminUser[] };
     if (!response.ok || body.result !== 'success') {

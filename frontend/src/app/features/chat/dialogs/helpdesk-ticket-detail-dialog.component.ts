@@ -72,8 +72,10 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
   readonly isLoadingHistory = signal(true);
 
   readonly isAssigningHandler = signal(false);
+  readonly isLoadingHandlers = signal(false);
   readonly handlerError = signal<string | null>(null);
   selectedHandler: string | null = this.data.ticket.handlerUsername ?? null;
+  readonly handlers = signal<HelpdeskManagedUser[]>(this.data.handlers ?? []);
 
   readonly isUpdatingStatus = signal(false);
   readonly statusError = signal<string | null>(null);
@@ -101,7 +103,7 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
 
   get availableHandlers(): HelpdeskManagedUser[] {
     const ticketDepartment = this.data.ticket.department.trim();
-    return (this.data.handlers ?? []).filter((handler) => {
+    return this.handlers().filter((handler) => {
       const departments = Array.isArray(handler.departments) && handler.departments.length
         ? handler.departments
         : [handler.department];
@@ -121,6 +123,33 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
   ngOnInit(): void {
     this.loadNotes();
     this.loadHistory();
+    this.loadHandlers();
+  }
+
+  private async loadHandlers(): Promise<void> {
+    const department = this.data.ticket.department.trim();
+    if (!department || !this.canManageHandler) {
+      return;
+    }
+    this.isLoadingHandlers.set(true);
+    try {
+      const users = await this.api.getHelpdeskAdminUsers(department);
+      this.handlers.set(
+        users
+          .filter((user) => user.status === 'Active')
+          .map((user) => ({
+            username: user.username,
+            role: user.role,
+            department: user.department,
+            departments: Array.isArray(user.departments) ? user.departments : []
+          }))
+      );
+    } catch (error) {
+      console.warn('Failed to load helpdesk handlers for ticket department.', error);
+      this.handlers.set(this.data.handlers ?? []);
+    } finally {
+      this.isLoadingHandlers.set(false);
+    }
   }
 
   private async loadHistory(): Promise<void> {
@@ -229,7 +258,7 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
   }
 
   async saveHandler(): Promise<void> {
-    if (this.isAssigningHandler()) return;
+    if (this.isAssigningHandler() || this.isLoadingHandlers()) return;
     this.handlerError.set(null);
     this.isAssigningHandler.set(true);
     try {

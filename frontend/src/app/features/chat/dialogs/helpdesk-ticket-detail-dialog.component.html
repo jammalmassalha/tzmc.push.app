@@ -173,10 +173,14 @@
         <div class="handler-row">
           <mat-form-field appearance="outline" class="handler-select-field">
             <mat-label>בחר מטפל</mat-label>
-            <mat-select [(ngModel)]="selectedHandler" [ngModelOptions]="{standalone: true}">
+            <mat-select [(ngModel)]="selectedHandler" [ngModelOptions]="{standalone: true}" [disabled]="isLoadingHandlers()">
               <mat-option [value]="null">— ללא מטפל —</mat-option>
-              @for (h of availableHandlers; track h.username) {
-                <mat-option [value]="h.username">{{ resolveDisplay(h.username) }}</mat-option>
+              @if (isLoadingHandlers()) {
+                <mat-option disabled>טוען מטפלים...</mat-option>
+              } @else {
+                @for (h of availableHandlers; track h.username) {
+                  <mat-option [value]="h.username">{{ resolveDisplay(h.username) }}</mat-option>
+                }
               }
             </mat-select>
           </mat-form-field>
@@ -184,7 +188,7 @@
             mat-flat-button
             color="accent"
             class="handler-save-btn"
-            [disabled]="isAssigningHandler()"
+            [disabled]="isAssigningHandler() || isLoadingHandlers()"
             (click)="saveHandler()">
             @if (isAssigningHandler()) {
               <mat-spinner diameter="18" class="btn-spinner"></mat-spinner>
