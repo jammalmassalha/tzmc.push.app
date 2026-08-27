@@ -895,18 +895,7 @@ function registerHelpdeskController(app, deps = {}) {
                     ? roleInfo.departments
                     : [roleInfo.department];
 
-                if (roleInfo.role === 'Admin') {
-                    const [editorTicketRows, handlerRows] = await Promise.all([
-                        pool.query(
-                            'SELECT * FROM `helpdesk_tickets` ORDER BY `created_at` DESC LIMIT 200'
-                        ),
-                        pool.query(
-                            'SELECT `id`, `username`, `role`, `department` FROM `helpdesk_users` ORDER BY `username` ASC'
-                        )
-                    ]);
-                    editorTickets = editorTicketRows[0].map(mapTicketRow);
-                    handlers = handlerRows[0].map((r) => ({ username: r.username, role: r.role, department: r.department }));
-                } else if (userDepts.length === 1) {
+                if (userDepts.length === 1) {
                     const [editorTicketRows, handlerRows] = await Promise.all([
                         pool.query(
                             'SELECT * FROM `helpdesk_tickets` WHERE `department` = ? ORDER BY `created_at` DESC LIMIT 200',
