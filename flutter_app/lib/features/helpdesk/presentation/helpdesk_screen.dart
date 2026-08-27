@@ -34,18 +34,6 @@ class _HelpdeskDepartmentIconOption {
   const _HelpdeskDepartmentIconOption(this.key, this.label, this.icon);
 }
 
-void _syncSelectedStatusWithDepartment() {
-  final availableStatuses = _availableStatusesForTicketDepartment();
-  final allowedStatuses = availableStatuses.map((status) => status.key).toSet();
-  if (!allowedStatuses.contains(_selectedStatus)) {
-    final defaultStatus = availableStatuses.firstWhere(
-      (status) => status.isDefault,
-      orElse: () => availableStatuses.first,
-    );
-    _selectedStatus = defaultStatus.key;
-  }
-}
-
 const List<_HelpdeskDepartmentIconOption> _kHelpdeskDepartmentIconOptions = [
   _HelpdeskDepartmentIconOption('computer', 'מחשבים / מערכות מידע', Icons.computer),
   _HelpdeskDepartmentIconOption('build', 'אחזקה / כלים', Icons.build),
@@ -1857,8 +1845,7 @@ class _TicketDetailSheet extends ConsumerStatefulWidget {
 }
 
 class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
-  static const String _handlerDebugSource =
-      '/home/runner/work/tzmc.push.app/tzmc.push.app/flutter_app/lib/features/helpdesk/presentation/helpdesk_screen.dart';
+  static const String _handlerDebugSource = 'HelpdeskScreen';
   List<HelpdeskStatusHistoryEntry>? _history;
   List<HelpdeskHandlerHistoryEntry>? _handlerHistory;
   List<HelpdeskNote>? _notes;
@@ -2037,6 +2024,18 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
       'selectedHandler': _selectedHandler,
       'eligibleUsernames': eligibleUsernames.toList(),
     });
+  }
+
+  void _syncSelectedStatusWithDepartment() {
+    final availableStatuses = _availableStatusesForTicketDepartment();
+    final allowedStatuses = availableStatuses.map((status) => status.key).toSet();
+    if (!allowedStatuses.contains(_selectedStatus)) {
+      final defaultStatus = availableStatuses.firstWhere(
+        (status) => status.isDefault,
+        orElse: () => availableStatuses.first,
+      );
+      _selectedStatus = defaultStatus.key;
+    }
   }
 
   Future<void> _loadHandlersForDepartment(String departmentName) async {
