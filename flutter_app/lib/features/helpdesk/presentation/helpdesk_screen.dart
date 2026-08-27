@@ -578,9 +578,22 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
 
     final openTickets = [
       ...state.ongoing,
-      ...assignedExtras,
+      ...assignedExtras.where(
+        (ticket) => !_isTerminalStatusForDepartment(
+          ticket.status,
+          _departmentForTicket(ticket, state.departments),
+        ),
+      ),
     ];
-    final pastTickets = [...state.past];
+    final pastTickets = [
+      ...state.past,
+      ...assignedExtras.where(
+        (ticket) => _isTerminalStatusForDepartment(
+          ticket.status,
+          _departmentForTicket(ticket, state.departments),
+        ),
+      ),
+    ];
 
     return Directionality(
       textDirection: ui.TextDirection.rtl,

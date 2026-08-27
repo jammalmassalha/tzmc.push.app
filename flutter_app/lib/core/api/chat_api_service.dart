@@ -1527,10 +1527,11 @@ class ChatApiService {
     String? department,
   }) async {
     final normalizedDepartment = department?.trim();
+    const handlerDebugSource = 'ChatApiService';
     if (kDebugMode) {
       debugPrint(
         '[HelpdeskDebug][ChatApiService.fetchHelpdeskUsers] request '
-        '{source: /home/runner/work/tzmc.push.app/tzmc.push.app/flutter_app/lib/core/api/chat_api_service.dart, '
+        '{source: $handlerDebugSource, '
         'department: ${normalizedDepartment?.isNotEmpty == true ? normalizedDepartment : 'null'}, '
         'path: ${ApiEndpoints.helpdeskUsers}}',
       );
@@ -1555,7 +1556,7 @@ class ChatApiService {
       if (kDebugMode) {
         debugPrint(
           '[HelpdeskDebug][ChatApiService.fetchHelpdeskUsers] response '
-          '{source: /home/runner/work/tzmc.push.app/tzmc.push.app/flutter_app/lib/core/api/chat_api_service.dart, '
+          '{source: $handlerDebugSource, '
           'department: ${normalizedDepartment?.isNotEmpty == true ? normalizedDepartment : 'null'}, '
           'uri: ${response.requestOptions.uri}, status: ${response.statusCode}, '
           'result: ${data['result']}, message: ${data['message']}, body: $data}',
@@ -1571,7 +1572,7 @@ class ChatApiService {
       if (kDebugMode) {
         debugPrint(
           '[HelpdeskDebug][ChatApiService.fetchHelpdeskUsers] parsed '
-          '{source: /home/runner/work/tzmc.push.app/tzmc.push.app/flutter_app/lib/core/api/chat_api_service.dart, '
+          '{source: $handlerDebugSource, '
           'department: ${normalizedDepartment?.isNotEmpty == true ? normalizedDepartment : 'null'}, '
           'usersCount: ${users.length}, users: $users}',
         );
@@ -1583,7 +1584,7 @@ class ChatApiService {
       if (kDebugMode) {
         debugPrint(
           '[HelpdeskDebug][ChatApiService.fetchHelpdeskUsers] error '
-          '{source: /home/runner/work/tzmc.push.app/tzmc.push.app/flutter_app/lib/core/api/chat_api_service.dart, '
+          '{source: $handlerDebugSource, '
           'department: ${normalizedDepartment?.isNotEmpty == true ? normalizedDepartment : 'null'}, error: $e}',
         );
       }
