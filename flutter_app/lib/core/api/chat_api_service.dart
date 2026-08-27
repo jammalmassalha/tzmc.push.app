@@ -1539,7 +1539,7 @@ class ChatApiService {
   Future<void> createHelpdeskUser({
     required String username,
     required String role,
-    required String department,
+    required List<String> departments,
     required String status,
   }) async {
     final response = await _client.post<Map<String, dynamic>>(
@@ -1547,7 +1547,7 @@ class ChatApiService {
       data: {
         'username': username.trim(),
         'role': _normalizeHelpdeskRoleValue(role),
-        'department': department.trim(),
+        'departments': departments.map((d) => d.trim()).toList(),
         'status': _normalizeHelpdeskStatusValue(status),
       },
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
@@ -1564,7 +1564,7 @@ class ChatApiService {
     int id, {
     required String username,
     required String role,
-    required String department,
+    required List<String> departments,
     required String status,
   }) async {
     final response = await _client.put<Map<String, dynamic>>(
@@ -1572,7 +1572,7 @@ class ChatApiService {
       data: {
         'username': username.trim(),
         'role': _normalizeHelpdeskRoleValue(role),
-        'department': department.trim(),
+        'departments': departments.map((d) => d.trim()).toList(),
         'status': _normalizeHelpdeskStatusValue(status),
       },
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),

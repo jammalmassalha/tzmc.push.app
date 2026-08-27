@@ -1662,7 +1662,7 @@ export class ChatApiService {
     return Array.isArray(body.users) ? body.users : [];
   }
 
-  async addHelpdeskAdminUser(payload: { username: string; role: string; department: string; status: string }): Promise<void> {
+  async addHelpdeskAdminUser(payload: { username: string; role: string; departments: string[]; status: string }): Promise<void> {
     const url = `${this.notifyBaseUrl}/helpdesk/users`;
     const response = await this.fetchWithRetry(
       url,
@@ -1675,7 +1675,7 @@ export class ChatApiService {
     }
   }
 
-  async updateHelpdeskAdminUser(id: number, payload: { username: string; role: string; department: string; status: string }): Promise<void> {
+  async updateHelpdeskAdminUser(id: number, payload: { username: string; role: string; departments: string[]; status: string }): Promise<void> {
     const url = `${this.notifyBaseUrl}/helpdesk/users/${encodeURIComponent(String(id))}`;
     const response = await this.fetchWithRetry(
       url,

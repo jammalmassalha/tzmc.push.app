@@ -506,6 +506,71 @@ async function ensureHelpdeskTables(pool) {
                 FOREIGN KEY (\`department_id\`) REFERENCES \`helpdesk_departments\` (\`id\`) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `, 'helpdesk_department_permissions');
+
+    // Many-to-many: a helpdesk user can belong to multiple departments.
+    await safeCreateTable(`
+        CREATE TABLE IF NOT EXISTS \`helpdesk_user_departments\` (
+            \`user_id\` INT UNSIGNED NOT NULL,
+            \`department\` VARCHAR(64) NOT NULL,
+            PRIMARY KEY (\`user_id\`, \`department\`),
+            CONSTRAINT \`fk_hud_user\`
+                FOREIGN KEY (\`user_id\`) REFERENCES \`helpdesk_users\` (\`id\`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `, 'helpdesk_user_departments');
+
+    // Seed helpdesk_user_departments from the legacy single-department column so
+    // existing users keep their current department after the migration.
+    try {
+        await pool.execute(
+            'INSERT IGNORE INTO `helpdesk_user_departments` (`user_id`, `department`) SELECT `id`, `department` FROM `helpdesk_users` WHERE `department` != \'\''
+        );
+    } catch (err) {
+        if (!(err && err.errno === 1146)) {
+            console.error('[HELPDESK] Seed helpdesk_user_departments error:', err && err.message ? err.message : err);
+        }
+    }
+}
+
+/**
+ * Return all department names assigned to a helpdesk user.
+ * Falls back to the legacy `helpdesk_users.department` column if the
+ * junction table is not yet populated.
+ * @param {import('mysql2/promise').Pool} pool
+ * @param {number} userId
+ * @returns {Promise<string[]>}
+ */
+async function getUserDepartments(pool, userId) {
+    try {
+        const [rows] = await pool.query(
+            'SELECT `department` FROM `helpdesk_user_departments` WHERE `user_id` = ? ORDER BY `department`',
+            [userId]
+        );
+        return rows.map((r) => r.department);
+    } catch (err) {
+        if (err && err.errno === 1146) return []; // table not yet created
+        throw err;
+    }
+}
+
+/**
+ * Replace all department rows for a user inside an existing connection
+ * (so it can participate in the caller's transaction).
+ * @param {import('mysql2/promise').PoolConnection} conn
+ * @param {number} userId
+ * @param {string[]} departments  Non-empty, validated department names.
+ */
+async function setUserDepartments(conn, userId, departments) {
+    await conn.execute(
+        'DELETE FROM `helpdesk_user_departments` WHERE `user_id` = ?',
+        [userId]
+    );
+    if (departments.length > 0) {
+        const values = departments.map((d) => [userId, d]);
+        await conn.query(
+            'INSERT INTO `helpdesk_user_departments` (`user_id`, `department`) VALUES ?',
+            [values]
+        );
+    }
 }
 
 function mapTicketRow(row) {
@@ -530,11 +595,17 @@ async function getHelpdeskUserRole(pool, username) {
     if (!username) return null;
     try {
         const [rows] = await pool.query(
-            'SELECT `username`, `role`, `department` FROM `helpdesk_users` WHERE `username` = ? LIMIT 1',
+            'SELECT `id`, `username`, `role`, `department` FROM `helpdesk_users` WHERE `username` = ? LIMIT 1',
             [username]
         );
         if (!rows.length) return null;
-        return { username: rows[0].username, role: rows[0].role, department: rows[0].department };
+        const row = rows[0];
+        // Load multi-department list; fall back to the legacy single-dept column.
+        let departments = await getUserDepartments(pool, row.id);
+        if (departments.length === 0 && row.department) {
+            departments = [row.department];
+        }
+        return { username: row.username, role: row.role, department: row.department, departments };
     } catch (err) {
         // ER_NO_SUCH_TABLE (1146) — table doesn't exist yet, treat as no role.
         if (err && err.errno === 1146) return null;
@@ -814,24 +885,44 @@ function registerHelpdeskController(app, deps = {}) {
             const past = myTickets.filter((t) => !ONGOING_STATUSES.has(t.status));
             const assigned = assignedRows[0].map(mapTicketRow);
 
-            const myRole = roleInfo ? { role: roleInfo.role, department: roleInfo.department } : null;
+            const myRole = roleInfo ? { role: roleInfo.role, department: roleInfo.department, departments: roleInfo.departments || [roleInfo.department] } : null;
 
-            // If user is an Editor or Admin, also fetch their department's tickets and available handlers
+            // If user is an Editor or Admin, fetch tickets from ALL of their departments.
             let editorTickets = null;
             let handlers = null;
             if (roleInfo) {
-                const [editorTicketRows, handlerRows] = await Promise.all([
-                    pool.query(
-                        'SELECT * FROM `helpdesk_tickets` WHERE `department` = ? ORDER BY `created_at` DESC LIMIT 200',
-                        [roleInfo.department]
-                    ),
-                    pool.query(
-                        'SELECT `username`, `role`, `department` FROM `helpdesk_users` WHERE `department` = ? ORDER BY `username` ASC',
-                        [roleInfo.department]
-                    )
-                ]);
-                editorTickets = editorTicketRows[0].map(mapTicketRow);
-                handlers = handlerRows[0].map((r) => ({ username: r.username, role: r.role, department: r.department }));
+                const userDepts = roleInfo.departments && roleInfo.departments.length
+                    ? roleInfo.departments
+                    : [roleInfo.department];
+
+                if (userDepts.length === 1) {
+                    const [editorTicketRows, handlerRows] = await Promise.all([
+                        pool.query(
+                            'SELECT * FROM `helpdesk_tickets` WHERE `department` = ? ORDER BY `created_at` DESC LIMIT 200',
+                            [userDepts[0]]
+                        ),
+                        pool.query(
+                            'SELECT hu.`id`, hu.`username`, hu.`role`, hu.`department` FROM `helpdesk_users` hu INNER JOIN `helpdesk_user_departments` hud ON hud.`user_id` = hu.`id` WHERE hud.`department` = ? ORDER BY hu.`username` ASC',
+                            [userDepts[0]]
+                        )
+                    ]);
+                    editorTickets = editorTicketRows[0].map(mapTicketRow);
+                    handlers = handlerRows[0].map((r) => ({ username: r.username, role: r.role, department: r.department }));
+                } else {
+                    const deptsPlaceholders = userDepts.map(() => '?').join(', ');
+                    const [editorTicketRows, handlerRows] = await Promise.all([
+                        pool.query(
+                            `SELECT * FROM \`helpdesk_tickets\` WHERE \`department\` IN (${deptsPlaceholders}) ORDER BY \`created_at\` DESC LIMIT 200`,
+                            userDepts
+                        ),
+                        pool.query(
+                            `SELECT DISTINCT hu.\`id\`, hu.\`username\`, hu.\`role\`, hu.\`department\` FROM \`helpdesk_users\` hu INNER JOIN \`helpdesk_user_departments\` hud ON hud.\`user_id\` = hu.\`id\` WHERE hud.\`department\` IN (${deptsPlaceholders}) ORDER BY hu.\`username\` ASC`,
+                            userDepts
+                        )
+                    ]);
+                    editorTickets = editorTicketRows[0].map(mapTicketRow);
+                    handlers = handlerRows[0].map((r) => ({ username: r.username, role: r.role, department: r.department }));
+                }
             }
 
             return res.json({ result: 'success', ongoing, past, assigned, myRole, editorTickets, handlers });
@@ -866,7 +957,7 @@ function registerHelpdeskController(app, deps = {}) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאת עורך' });
             }
 
-            // Verify ticket exists and belongs to editor's department
+            // Verify ticket exists and that the editor can access its department
             const [ticketRows] = await pool.query(
                 'SELECT `id`, `title`, `department`, `handler_username` FROM `helpdesk_tickets` WHERE `id` = ?',
                 [ticketId]
@@ -874,14 +965,24 @@ function registerHelpdeskController(app, deps = {}) {
             if (!ticketRows.length) {
                 return res.status(404).json({ result: 'error', message: 'קריאה לא נמצאה' });
             }
-            if (ticketRows[0].department !== editorRole.department) {
+            const ticketDept = ticketRows[0].department;
+            const editorDepts = editorRole.departments && editorRole.departments.length
+                ? editorRole.departments
+                : [editorRole.department];
+            if (!editorDepts.includes(ticketDept)) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה לקריאה ממחלקה אחרת' });
             }
 
-            // If assigning a handler, verify handler is an Editor in the same department
+            // If assigning a handler, verify handler has access to the ticket's department
             if (handlerUsername) {
                 const handlerRole = await getHelpdeskUserRole(pool, handlerUsername);
-                if (!handlerRole || handlerRole.department !== editorRole.department) {
+                if (!handlerRole) {
+                    return res.status(400).json({ result: 'error', message: 'המטפל חייב להיות עורך באותה מחלקה' });
+                }
+                const handlerDepts = handlerRole.departments && handlerRole.departments.length
+                    ? handlerRole.departments
+                    : [handlerRole.department];
+                if (!handlerDepts.includes(ticketDept)) {
                     return res.status(400).json({ result: 'error', message: 'המטפל חייב להיות עורך באותה מחלקה' });
                 }
             }
@@ -1500,8 +1601,37 @@ function registerHelpdeskController(app, deps = {}) {
                 role: r.role,
                 department: r.department,
                 status: r.status || 'Active',
-                createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at || '')
+                createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at || ''),
+                departments: [] // filled below
             }));
+
+            // Enrich each user with their multi-department list in one query.
+            if (users.length > 0) {
+                const userIds = users.map((u) => u.id);
+                try {
+                    const placeholders = userIds.map(() => '?').join(', ');
+                    const [deptRows] = await pool.query(
+                        `SELECT \`user_id\`, \`department\` FROM \`helpdesk_user_departments\` WHERE \`user_id\` IN (${placeholders}) ORDER BY \`department\``,
+                        userIds
+                    );
+                    const deptsByUserId = {};
+                    for (const dr of deptRows) {
+                        if (!deptsByUserId[dr.user_id]) deptsByUserId[dr.user_id] = [];
+                        deptsByUserId[dr.user_id].push(dr.department);
+                    }
+                    for (const u of users) {
+                        const depts = deptsByUserId[u.id];
+                        u.departments = depts && depts.length ? depts : (u.department ? [u.department] : []);
+                    }
+                } catch (deptErr) {
+                    // helpdesk_user_departments table may not exist on first startup;
+                    // fall back to single-department from helpdesk_users.
+                    for (const u of users) {
+                        u.departments = u.department ? [u.department] : [];
+                    }
+                }
+            }
+
             return res.json({ result: 'success', users });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to load users';
@@ -1525,40 +1655,70 @@ function registerHelpdeskController(app, deps = {}) {
         const body = req.body && typeof req.body === 'object' ? req.body : {};
         const targetUsername = toTrimmedString(body.username || '');
         const role = toTrimmedString(body.role || '');
-        const department = toTrimmedString(body.department || '');
         const status = toTrimmedString(body.status || 'Active');
+
+        // Accept multi-department (preferred) or fall back to single department field.
+        const rawDepartments = Array.isArray(body.departments) ? body.departments
+            : (body.department ? [body.department] : []);
+        const departments = rawDepartments.map((d) => toTrimmedString(d)).filter(Boolean);
+        // Use first department as the legacy primary department column.
+        const primaryDepartment = departments[0] || '';
 
         if (!targetUsername) return res.status(400).json({ result: 'error', message: 'יש להזין שם משתמש' });
         if (!VALID_ROLES.includes(role)) return res.status(400).json({ result: 'error', message: 'תפקיד לא תקין' });
         if (!['Active', 'Inactive'].includes(status)) return res.status(400).json({ result: 'error', message: 'סטטוס לא תקין' });
+        if (departments.length === 0) return res.status(400).json({ result: 'error', message: 'יש לבחור לפחות מחלקה אחת' });
 
         try {
             await getTablesReady();
             const allDepts = await getActiveDepartments(pool);
-            if (!allDepts.some((d) => d.name === department)) return res.status(400).json({ result: 'error', message: 'מחלקה לא תקינה' });
+            const allDeptNames = new Set(allDepts.map((d) => d.name));
+            const invalidDept = departments.find((d) => !allDeptNames.has(d));
+            if (invalidDept) return res.status(400).json({ result: 'error', message: `מחלקה לא תקינה: ${invalidDept}` });
             const editorRole = await getHelpdeskUserRole(pool, user);
             if (!editorRole || editorRole.role !== 'Admin') {
                 return res.status(403).json({ result: 'error', message: 'רק מנהל יכול להוסיף משתמשים' });
             }
+
+            const conn = await pool.getConnection();
             try {
-                await pool.execute(
-                    'INSERT INTO `helpdesk_users` (`username`, `role`, `department`, `status`) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE `role` = VALUES(`role`), `department` = VALUES(`department`), `status` = VALUES(`status`)',
-                    [targetUsername, role, department, status]
-                );
-            } catch (err) {
-                if (!isMissingHelpdeskUsersStatusColumnError(err)) throw err;
-                const added = await tryAddHelpdeskUsersStatusColumn(pool);
-                if (added) {
-                    await pool.execute(
+                await conn.beginTransaction();
+                let insertResult;
+                try {
+                    [insertResult] = await conn.execute(
                         'INSERT INTO `helpdesk_users` (`username`, `role`, `department`, `status`) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE `role` = VALUES(`role`), `department` = VALUES(`department`), `status` = VALUES(`status`)',
-                        [targetUsername, role, department, status]
+                        [targetUsername, role, primaryDepartment, status]
                     );
-                } else {
-                    await pool.execute(
-                        'INSERT INTO `helpdesk_users` (`username`, `role`, `department`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `role` = VALUES(`role`), `department` = VALUES(`department`)',
-                        [targetUsername, role, department]
-                    );
+                } catch (err) {
+                    if (!isMissingHelpdeskUsersStatusColumnError(err)) throw err;
+                    const added = await tryAddHelpdeskUsersStatusColumn(pool);
+                    if (added) {
+                        [insertResult] = await conn.execute(
+                            'INSERT INTO `helpdesk_users` (`username`, `role`, `department`, `status`) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE `role` = VALUES(`role`), `department` = VALUES(`department`), `status` = VALUES(`status`)',
+                            [targetUsername, role, primaryDepartment, status]
+                        );
+                    } else {
+                        [insertResult] = await conn.execute(
+                            'INSERT INTO `helpdesk_users` (`username`, `role`, `department`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `role` = VALUES(`role`), `department` = VALUES(`department`)',
+                            [targetUsername, role, primaryDepartment]
+                        );
+                    }
                 }
+                // Resolve the user id (INSERT gives insertId; ON DUPLICATE KEY gives 0 — look up).
+                let userId = insertResult.insertId;
+                if (!userId) {
+                    const [idRows] = await conn.query('SELECT `id` FROM `helpdesk_users` WHERE `username` = ? LIMIT 1', [targetUsername]);
+                    userId = idRows.length ? idRows[0].id : null;
+                }
+                if (userId) {
+                    await setUserDepartments(conn, userId, departments);
+                }
+                await conn.commit();
+            } catch (err) {
+                await conn.rollback();
+                throw err;
+            } finally {
+                conn.release();
             }
             return res.status(201).json({ result: 'success' });
         } catch (error) {
@@ -1606,44 +1766,65 @@ function registerHelpdeskController(app, deps = {}) {
         const body = req.body && typeof req.body === 'object' ? req.body : {};
         const targetUsername = toTrimmedString(body.username || '');
         const role = toTrimmedString(body.role || '');
-        const department = toTrimmedString(body.department || '');
         const status = toTrimmedString(body.status || '');
+
+        // Accept multi-department (preferred) or fall back to single department field.
+        const rawDepartments = Array.isArray(body.departments) ? body.departments
+            : (body.department ? [body.department] : []);
+        const departments = rawDepartments.map((d) => toTrimmedString(d)).filter(Boolean);
+        const primaryDepartment = departments[0] || '';
 
         if (!targetUsername) return res.status(400).json({ result: 'error', message: 'יש להזין שם משתמש' });
         if (!VALID_ROLES.includes(role)) return res.status(400).json({ result: 'error', message: 'תפקיד לא תקין' });
         if (!['Active', 'Inactive'].includes(status)) return res.status(400).json({ result: 'error', message: 'סטטוס לא תקין' });
+        if (departments.length === 0) return res.status(400).json({ result: 'error', message: 'יש לבחור לפחות מחלקה אחת' });
 
         try {
             await getTablesReady();
             const allDepts = await getActiveDepartments(pool);
-            if (!allDepts.some((d) => d.name === department)) return res.status(400).json({ result: 'error', message: 'מחלקה לא תקינה' });
+            const allDeptNames = new Set(allDepts.map((d) => d.name));
+            const invalidDept = departments.find((d) => !allDeptNames.has(d));
+            if (invalidDept) return res.status(400).json({ result: 'error', message: `מחלקה לא תקינה: ${invalidDept}` });
             const editorRole = await getHelpdeskUserRole(pool, user);
             if (!editorRole || editorRole.role !== 'Admin') {
                 return res.status(403).json({ result: 'error', message: 'רק מנהל יכול לעדכן משתמשים' });
             }
-            let result;
+
+            const conn = await pool.getConnection();
             try {
-                [result] = await pool.execute(
-                    'UPDATE `helpdesk_users` SET `username` = ?, `role` = ?, `department` = ?, `status` = ? WHERE `id` = ?',
-                    [targetUsername, role, department, status, targetId]
-                );
-            } catch (err) {
-                if (!isMissingHelpdeskUsersStatusColumnError(err)) throw err;
-                const added = await tryAddHelpdeskUsersStatusColumn(pool);
-                if (added) {
-                    [result] = await pool.execute(
+                await conn.beginTransaction();
+                let updateResult;
+                try {
+                    [updateResult] = await conn.execute(
                         'UPDATE `helpdesk_users` SET `username` = ?, `role` = ?, `department` = ?, `status` = ? WHERE `id` = ?',
-                        [targetUsername, role, department, status, targetId]
+                        [targetUsername, role, primaryDepartment, status, targetId]
                     );
-                } else {
-                    [result] = await pool.execute(
-                        'UPDATE `helpdesk_users` SET `username` = ?, `role` = ?, `department` = ? WHERE `id` = ?',
-                        [targetUsername, role, department, targetId]
-                    );
+                } catch (err) {
+                    if (!isMissingHelpdeskUsersStatusColumnError(err)) throw err;
+                    const added = await tryAddHelpdeskUsersStatusColumn(pool);
+                    if (added) {
+                        [updateResult] = await conn.execute(
+                            'UPDATE `helpdesk_users` SET `username` = ?, `role` = ?, `department` = ?, `status` = ? WHERE `id` = ?',
+                            [targetUsername, role, primaryDepartment, status, targetId]
+                        );
+                    } else {
+                        [updateResult] = await conn.execute(
+                            'UPDATE `helpdesk_users` SET `username` = ?, `role` = ?, `department` = ? WHERE `id` = ?',
+                            [targetUsername, role, primaryDepartment, targetId]
+                        );
+                    }
                 }
-            }
-            if (result.affectedRows === 0) {
-                return res.status(404).json({ result: 'error', message: 'משתמש לא נמצא' });
+                if (updateResult.affectedRows === 0) {
+                    await conn.rollback();
+                    return res.status(404).json({ result: 'error', message: 'משתמש לא נמצא' });
+                }
+                await setUserDepartments(conn, targetId, departments);
+                await conn.commit();
+            } catch (err) {
+                await conn.rollback();
+                throw err;
+            } finally {
+                conn.release();
             }
             return res.json({ result: 'success' });
         } catch (error) {
