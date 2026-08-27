@@ -33,7 +33,7 @@ function toNonNegativeInteger(value, fallbackValue) {
 }
 
 const VALID_STATUSES = ['open', 'in_progress', 'resolved', 'closed'];
-const VALID_ROLES = ['Admin', 'Editor'];
+const VALID_ROLES = ['Admin', 'Editor', 'Viewer'];
 const VALID_FORM_FIELD_TYPES = new Set(['input', 'textarea', 'radio', 'select']);
 const VALID_INPUT_TYPES = new Set(['text', 'tel', 'number']);
 const DEFAULT_INITIAL_FORM_VISIBILITY = Object.freeze({
@@ -605,6 +605,28 @@ async function getHelpdeskUserRole(pool, username) {
         if (departments.length === 0 && row.department) {
             departments = [row.department];
         }
+
+        function getHelpdeskRoleDepartments(roleInfo) {
+            if (!roleInfo) return [];
+            if (Array.isArray(roleInfo.departments) && roleInfo.departments.length) {
+                return roleInfo.departments.map((department) => toTrimmedString(department)).filter(Boolean);
+            }
+            const primaryDepartment = toTrimmedString(roleInfo.department || '');
+            return primaryDepartment ? [primaryDepartment] : [];
+        }
+
+        function canViewDepartmentTickets(roleInfo, departmentName) {
+            if (!roleInfo) return false;
+            if (roleInfo.role === 'Admin') return true;
+            const ticketDepartment = toTrimmedString(departmentName);
+            return getHelpdeskRoleDepartments(roleInfo).includes(ticketDepartment);
+        }
+
+        function canManageDepartmentTickets(roleInfo, departmentName) {
+            if (!roleInfo) return false;
+            if (roleInfo.role !== 'Admin' && roleInfo.role !== 'Editor') return false;
+            return canViewDepartmentTickets(roleInfo, departmentName);
+        }
         return { username: row.username, role: row.role, department: row.department, departments };
     } catch (err) {
         // ER_NO_SUCH_TABLE (1146) — table doesn't exist yet, treat as no role.
@@ -994,7 +1016,7 @@ function registerHelpdeskController(app, deps = {}) {
             await getTablesReady();
             // Verify editor role for this user
             const editorRole = await getHelpdeskUserRole(pool, user);
-            if (!editorRole) {
+            if (!editorRole || (editorRole.role !== 'Admin' && editorRole.role !== 'Editor')) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאת עורך' });
             }
 
@@ -1007,24 +1029,14 @@ function registerHelpdeskController(app, deps = {}) {
                 return res.status(404).json({ result: 'error', message: 'קריאה לא נמצאה' });
             }
             const ticketDept = ticketRows[0].department;
-            const editorDepts = editorRole.departments && editorRole.departments.length
-                ? editorRole.departments
-                : [editorRole.department];
-            const canManageTicketDepartment = editorRole.role === 'Admin' || editorDepts.includes(ticketDept);
-            if (!canManageTicketDepartment) {
+            if (!canManageDepartmentTickets(editorRole, ticketDept)) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה לקריאה ממחלקה אחרת' });
             }
 
             // If assigning a handler, verify handler has access to the ticket's department
             if (handlerUsername) {
                 const handlerRole = await getHelpdeskUserRole(pool, handlerUsername);
-                if (!handlerRole) {
-                    return res.status(400).json({ result: 'error', message: 'המטפל חייב להיות עורך באותה מחלקה' });
-                }
-                const handlerDepts = handlerRole.departments && handlerRole.departments.length
-                    ? handlerRole.departments
-                    : [handlerRole.department];
-                if (!handlerDepts.includes(ticketDept)) {
+                if (!handlerRole || !canManageDepartmentTickets(handlerRole, ticketDept)) {
                     return res.status(400).json({ result: 'error', message: 'המטפל חייב להיות עורך באותה מחלקה' });
                 }
             }
@@ -1102,7 +1114,7 @@ function registerHelpdeskController(app, deps = {}) {
         try {
             await getTablesReady();
             const editorRole = await getHelpdeskUserRole(pool, user);
-            if (!editorRole) {
+            if (!editorRole || (editorRole.role !== 'Admin' && editorRole.role !== 'Editor')) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאת עורך' });
             }
 
@@ -1114,7 +1126,7 @@ function registerHelpdeskController(app, deps = {}) {
                 return res.status(404).json({ result: 'error', message: 'קריאה לא נמצאה' });
             }
             const ticket = ticketRows[0];
-            if (editorRole.role !== 'Admin' && ticket.department !== editorRole.department) {
+            if (!canManageDepartmentTickets(editorRole, ticket.department)) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה להעביר קריאה ממחלקה אחרת' });
             }
 
@@ -1199,7 +1211,7 @@ function registerHelpdeskController(app, deps = {}) {
 
         try {
             await getTablesReady();
-            // Verify the ticket exists and the user is authorized (creator, handler, or Editor of same dept)
+            // Verify the ticket exists and the user is authorized (creator, handler, or Editor/Admin of same dept)
             const [ticketRows] = await pool.query(
                 'SELECT `id`, `title`, `creator_username`, `handler_username`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
                 [ticketId]
@@ -1212,7 +1224,7 @@ function registerHelpdeskController(app, deps = {}) {
             let isAuthorized = isDirectUser;
             if (!isAuthorized) {
                 const editorRole = await getHelpdeskUserRole(pool, user);
-                isAuthorized = Boolean(editorRole && editorRole.department === ticket.department);
+                isAuthorized = canManageDepartmentTickets(editorRole, ticket.department);
             }
             if (!isAuthorized) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה להוסיף הערה לקריאה זו' });
@@ -1331,7 +1343,7 @@ function registerHelpdeskController(app, deps = {}) {
             let isAuthorized = isDirectUser;
             if (!isAuthorized) {
                 const editorRole = await getHelpdeskUserRole(pool, user);
-                isAuthorized = Boolean(editorRole && editorRole.department === ticket.department);
+                isAuthorized = canViewDepartmentTickets(editorRole, ticket.department);
             }
             if (!isAuthorized) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה לצפות בהערות קריאה זו' });
@@ -1383,11 +1395,11 @@ function registerHelpdeskController(app, deps = {}) {
                 return res.status(404).json({ result: 'error', message: 'קריאה לא נמצאה' });
             }
             const ticket = ticketRows[0];
-            // Allow creator, assigned handler, or Editor of the same department to change status
+            // Allow creator, assigned handler, or Editor/Admin of the same department to change status
             let isAuthorized = ticket.creator_username === user || ticket.handler_username === user;
             if (!isAuthorized) {
                 const editorRole = await getHelpdeskUserRole(pool, user);
-                isAuthorized = Boolean(editorRole && editorRole.department === ticket.department);
+                isAuthorized = canManageDepartmentTickets(editorRole, ticket.department);
             }
             if (!isAuthorized) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה לשנות את הסטטוס' });
@@ -1464,7 +1476,7 @@ function registerHelpdeskController(app, deps = {}) {
             let isAuthorized = isDirectUser;
             if (!isAuthorized) {
                 const editorRole = await getHelpdeskUserRole(pool, user);
-                isAuthorized = Boolean(editorRole && editorRole.department === ticket.department);
+                isAuthorized = canViewDepartmentTickets(editorRole, ticket.department);
             }
             if (!isAuthorized) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה לצפות בהיסטוריית הקריאה' });
@@ -1506,7 +1518,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // GET /helpdesk/tickets/:id/handler-history - Get handler assignment history for a ticket
-    // Accessible to the ticket creator, assigned handler, and any Editor in the same department.
+    // Accessible to the ticket creator, assigned handler, and any helpdesk user in the same department.
     app.get(['/helpdesk/tickets/:id/handler-history', '/notify/helpdesk/tickets/:id/handler-history'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) {
@@ -1531,7 +1543,7 @@ function registerHelpdeskController(app, deps = {}) {
             let isAuthorized = isDirectUser;
             if (!isAuthorized) {
                 const editorRole = await getHelpdeskUserRole(pool, user);
-                isAuthorized = Boolean(editorRole && editorRole.department === ticket.department);
+                isAuthorized = canViewDepartmentTickets(editorRole, ticket.department);
             }
             if (!isAuthorized) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה לצפות בהיסטוריית המטפלים' });

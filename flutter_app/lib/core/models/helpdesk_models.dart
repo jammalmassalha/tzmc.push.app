@@ -470,6 +470,7 @@ enum HelpdeskStatus {
 enum HelpdeskRole {
   admin,
   editor,
+  viewer,
   relatedUser;
 
   static HelpdeskRole fromString(String value) {
@@ -478,6 +479,8 @@ enum HelpdeskRole {
         return HelpdeskRole.admin;
       case 'editor':
         return HelpdeskRole.editor;
+      case 'viewer':
+        return HelpdeskRole.viewer;
       case 'relateduser':
       case 'related_user':
       case 'related':
@@ -716,6 +719,8 @@ String _normalizeHelpdeskUserRole(String? value) {
       return 'Admin';
     case 'editor':
       return 'Editor';
+    case 'viewer':
+      return 'Viewer';
     default:
       return 'Editor';
   }

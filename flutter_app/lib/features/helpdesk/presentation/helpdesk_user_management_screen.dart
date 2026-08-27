@@ -622,6 +622,7 @@ class _HelpdeskUserFormDialogState
                     items: const <DropdownMenuItem<String>>[
                       DropdownMenuItem(value: 'Admin', child: Text('Admin')),
                       DropdownMenuItem(value: 'Editor', child: Text('Editor')),
+                      DropdownMenuItem(value: 'Viewer', child: Text('Viewer')),
                     ],
                     onChanged: _isSubmitting
                         ? null
@@ -876,6 +877,7 @@ class _HelpdeskUserDetailsDialogState
                   items: const <DropdownMenuItem<String>>[
                     DropdownMenuItem(value: 'Admin', child: Text('Admin')),
                     DropdownMenuItem(value: 'Editor', child: Text('Editor')),
+                    DropdownMenuItem(value: 'Viewer', child: Text('Viewer')),
                   ],
                   onChanged: _isSubmitting
                       ? null

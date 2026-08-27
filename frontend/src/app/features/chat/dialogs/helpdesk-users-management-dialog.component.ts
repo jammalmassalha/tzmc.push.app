@@ -52,7 +52,7 @@ export class HelpdeskUsersManagementDialogComponent implements OnInit {
 
   readonly editingUserId = signal<number | null>(null);
 
-  readonly ROLES = ['Admin', 'Editor'] as const;
+  readonly ROLES = ['Admin', 'Editor', 'Viewer'] as const;
   readonly STATUSES = ['Active', 'Inactive'] as const;
 
   readonly userForm = this.fb.group({
@@ -192,7 +192,9 @@ export class HelpdeskUsersManagementDialogComponent implements OnInit {
   }
 
   roleBadgeClass(role: string): string {
-    return role === 'Admin' ? 'role-badge admin' : 'role-badge editor';
+    if (role === 'Admin') return 'role-badge admin';
+    if (role === 'Viewer') return 'role-badge viewer';
+    return 'role-badge editor';
   }
 
   statusBadgeClass(status: string): string {

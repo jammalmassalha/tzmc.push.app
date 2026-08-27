@@ -1407,6 +1407,9 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
       case HelpdeskRole.relatedUser:
         roleLabel = 'RelatedUser';
         break;
+      case HelpdeskRole.viewer:
+        roleLabel = 'Viewer';
+        break;
       default:
         roleLabel = 'Editor';
     }
@@ -1733,6 +1736,8 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
     if (!widget.isManagerView) return false;
     if (_ticket.status == 'closed') return false;
     if (widget.myRole == null) return false;
+    if (widget.myRole!.role == HelpdeskRole.viewer) return false;
+    final departments = widget.myRole!.allDepartments;
     // relatedUser: allowed only for tickets they created or are handling
     if (widget.myRole!.role == HelpdeskRole.relatedUser) {
       return _ticket.creatorUsername == _currentUser ||
@@ -1740,7 +1745,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
     }
     // admin can manage any ticket; editor is limited to own department
     return widget.myRole!.role == HelpdeskRole.admin ||
-        widget.myRole!.department == _ticket.department;
+        departments.contains(_ticket.department);
   }
 
   bool get _canTransferDepartment {
@@ -1748,7 +1753,8 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
     if (_ticket.status == 'closed') return false;
     final myRole = widget.myRole;
     if (myRole == null || myRole.role == HelpdeskRole.relatedUser) return false;
-    return myRole.role == HelpdeskRole.admin || myRole.department == _ticket.department;
+    if (myRole.role == HelpdeskRole.viewer) return false;
+    return myRole.role == HelpdeskRole.admin || myRole.allDepartments.contains(_ticket.department);
   }
 
   bool get _canChangeStatus {
@@ -1757,10 +1763,20 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
     if (_ticket.creatorUsername == _currentUser) return true;
     if (_ticket.handlerUsername == _currentUser) return true;
     if (widget.myRole != null &&
-        widget.myRole!.department == _ticket.department) {
+        widget.myRole!.role != HelpdeskRole.viewer &&
+        widget.myRole!.allDepartments.contains(_ticket.department)) {
       return true;
     }
     return false;
+  }
+
+  bool get _canAddNote {
+    if (_ticket.creatorUsername == _currentUser) return true;
+    if (_ticket.handlerUsername == _currentUser) return true;
+    final myRole = widget.myRole;
+    if (myRole == null || myRole.role == HelpdeskRole.viewer) return false;
+    return myRole.role == HelpdeskRole.admin ||
+        myRole.allDepartments.contains(_ticket.department);
   }
 
   @override
@@ -1799,9 +1815,11 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
     if (targetDepartment.isEmpty) return const <HelpdeskManagedUser>[];
     return _allHandlers
         .where(
-          (handler) => handler.allDepartments
-              .map((department) => department.trim())
-              .contains(targetDepartment),
+          (handler) =>
+              handler.role != HelpdeskRole.viewer &&
+              handler.allDepartments
+                  .map((department) => department.trim())
+                  .contains(targetDepartment),
         )
         .toList()
       ..sort(
@@ -1830,7 +1848,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
       if (!mounted) return;
       setState(() {
         _allHandlers = users
-            .where((user) => user.isActive)
+            .where((user) => user.isActive && user.role != 'Viewer')
             .map(
               (user) => HelpdeskManagedUser(
                 username: user.username,
@@ -1959,6 +1977,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
   }
 
   Future<void> _submitNote() async {
+    if (!_canAddNote) return;
     final text = _noteCtrl.text.trim();
     if (text.length < 2) return;
     setState(() { _submittingNote = true; _noteError = null; });
@@ -2348,37 +2367,39 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                         isOwn: n.authorUsername == _currentUser,
                         resolveDisplay: _resolveDisplay)),
 
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _noteCtrl,
-                    textDirection: ui.TextDirection.rtl,
-                    maxLines: 3,
-                    decoration: const InputDecoration(
-                        labelText: 'הערה חדשה',
-                        hintText: 'כתוב הערה...',
-                        border: OutlineInputBorder()),
-                  ),
-                  if (_noteError != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Text(_noteError!,
-                          style: TextStyle(
-                              color: theme.colorScheme.error, fontSize: 12)),
+                  if (_canAddNote) ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _noteCtrl,
+                      textDirection: ui.TextDirection.rtl,
+                      maxLines: 3,
+                      decoration: const InputDecoration(
+                          labelText: 'הערה חדשה',
+                          hintText: 'כתוב הערה...',
+                          border: OutlineInputBorder()),
                     ),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: _submittingNote ? null : _submitNote,
-                      icon: _submittingNote
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2))
-                          : const Icon(Icons.send),
-                      label: const Text('שלח הערה'),
+                    if (_noteError != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(_noteError!,
+                            style: TextStyle(
+                                color: theme.colorScheme.error, fontSize: 12)),
+                      ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: _submittingNote ? null : _submitNote,
+                        icon: _submittingNote
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.send),
+                        label: const Text('שלח הערה'),
+                      ),
                     ),
-                  ),
+                  ],
 
                   const SizedBox(height: 16),
                   OutlinedButton(

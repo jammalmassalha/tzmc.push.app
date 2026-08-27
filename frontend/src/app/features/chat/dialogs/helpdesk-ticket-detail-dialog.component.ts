@@ -90,20 +90,41 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
 
   get canManageHandler(): boolean {
     const { myRole, ticket } = this.data;
-    return Boolean(myRole && (myRole.role === 'Admin' || myRole.department === ticket.department));
+    if (!myRole) return false;
+    if (myRole.role === 'Viewer') return false;
+    const departments = Array.isArray(myRole.departments) && myRole.departments.length
+      ? myRole.departments
+      : [myRole.department];
+    return myRole.role === 'Admin' || departments.includes(ticket.department);
   }
 
   get canChangeStatus(): boolean {
     const { currentUsername, myRole, ticket } = this.data;
     if (ticket.creatorUsername === currentUsername) return true;
     if (ticket.handlerUsername === currentUsername) return true;
-    if (myRole && myRole.department === ticket.department) return true;
+    if (!myRole || myRole.role === 'Viewer') return false;
+    const departments = Array.isArray(myRole.departments) && myRole.departments.length
+      ? myRole.departments
+      : [myRole.department];
+    if (myRole.role === 'Admin' || departments.includes(ticket.department)) return true;
     return false;
+  }
+
+  get canAddNote(): boolean {
+    const { currentUsername, myRole, ticket } = this.data;
+    if (ticket.creatorUsername === currentUsername) return true;
+    if (ticket.handlerUsername === currentUsername) return true;
+    if (!myRole || myRole.role === 'Viewer') return false;
+    const departments = Array.isArray(myRole.departments) && myRole.departments.length
+      ? myRole.departments
+      : [myRole.department];
+    return myRole.role === 'Admin' || departments.includes(ticket.department);
   }
 
   get availableHandlers(): HelpdeskManagedUser[] {
     const ticketDepartment = this.data.ticket.department.trim();
     return this.handlers().filter((handler) => {
+      if (handler.role === 'Viewer') return false;
       const departments = Array.isArray(handler.departments) && handler.departments.length
         ? handler.departments
         : [handler.department];
@@ -136,7 +157,7 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
       const users = await this.api.getHelpdeskAdminUsers(department);
       this.handlers.set(
         users
-          .filter((user) => user.status === 'Active')
+          .filter((user) => user.status === 'Active' && user.role !== 'Viewer')
           .map((user) => ({
             username: user.username,
             role: user.role,
@@ -177,7 +198,7 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
   }
 
   async submitNote(): Promise<void> {
-    if (this.isSubmittingNote()) return;
+    if (this.isSubmittingNote() || !this.canAddNote) return;
     const text = (this.noteControl.value ?? '').trim();
     const attachmentUrl = this.pendingAttachmentUrl();
     if (!text && !attachmentUrl) return;
@@ -251,6 +272,7 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
   }
 
   get canSubmitNote(): boolean {
+    if (!this.canAddNote) return false;
     const text = (this.noteControl.value ?? '').trim();
     const hasAttachment = Boolean(this.pendingAttachmentUrl());
     if (hasAttachment) return true;
