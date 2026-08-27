@@ -1798,7 +1798,11 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
     final targetDepartment = _selectedDepartmentName().trim();
     if (targetDepartment.isEmpty) return const <HelpdeskManagedUser>[];
     return _allHandlers
-        .where((handler) => handler.department.trim() == targetDepartment)
+        .where(
+          (handler) => handler.allDepartments
+              .map((department) => department.trim())
+              .contains(targetDepartment),
+        )
         .toList()
       ..sort(
         (a, b) => _resolveDisplay(a.username)
@@ -1832,6 +1836,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                 username: user.username,
                 role: HelpdeskRole.fromString(user.role),
                 department: user.department,
+                departments: user.allDepartments,
               ),
             )
             .toList();

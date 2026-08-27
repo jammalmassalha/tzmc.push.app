@@ -887,6 +887,47 @@ function registerHelpdeskController(app, deps = {}) {
 
             const myRole = roleInfo ? { role: roleInfo.role, department: roleInfo.department, departments: roleInfo.departments || [roleInfo.department] } : null;
 
+            async function mapHandlersWithDepartments(rows) {
+                const handlers = (Array.isArray(rows) ? rows : []).map((r) => ({
+                    id: r.id,
+                    username: r.username,
+                    role: r.role,
+                    department: r.department,
+                    departments: []
+                }));
+                if (handlers.length === 0) {
+                    return [];
+                }
+                try {
+                    const userIds = handlers.map((handler) => handler.id);
+                    const placeholders = userIds.map(() => '?').join(', ');
+                    const [deptRows] = await pool.query(
+                        `SELECT \`user_id\`, \`department\` FROM \`helpdesk_user_departments\` WHERE \`user_id\` IN (${placeholders}) ORDER BY \`department\``,
+                        userIds
+                    );
+                    const deptsByUserId = {};
+                    for (const row of deptRows) {
+                        if (!deptsByUserId[row.user_id]) deptsByUserId[row.user_id] = [];
+                        deptsByUserId[row.user_id].push(row.department);
+                    }
+                    return handlers.map((handler) => ({
+                        username: handler.username,
+                        role: handler.role,
+                        department: handler.department,
+                        departments: deptsByUserId[handler.id] && deptsByUserId[handler.id].length
+                            ? deptsByUserId[handler.id]
+                            : (handler.department ? [handler.department] : [])
+                    }));
+                } catch (_error) {
+                    return handlers.map((handler) => ({
+                        username: handler.username,
+                        role: handler.role,
+                        department: handler.department,
+                        departments: handler.department ? [handler.department] : []
+                    }));
+                }
+            }
+
             // If user is an Editor or Admin, fetch tickets from ALL of their departments.
             let editorTickets = null;
             let handlers = null;
@@ -907,7 +948,7 @@ function registerHelpdeskController(app, deps = {}) {
                         )
                     ]);
                     editorTickets = editorTicketRows[0].map(mapTicketRow);
-                    handlers = handlerRows[0].map((r) => ({ username: r.username, role: r.role, department: r.department }));
+                    handlers = await mapHandlersWithDepartments(handlerRows[0]);
                 } else {
                     const deptsPlaceholders = userDepts.map(() => '?').join(', ');
                     const [editorTicketRows, handlerRows] = await Promise.all([
@@ -921,7 +962,7 @@ function registerHelpdeskController(app, deps = {}) {
                         )
                     ]);
                     editorTickets = editorTicketRows[0].map(mapTicketRow);
-                    handlers = handlerRows[0].map((r) => ({ username: r.username, role: r.role, department: r.department }));
+                    handlers = await mapHandlersWithDepartments(handlerRows[0]);
                 }
             }
 
@@ -1557,21 +1598,30 @@ function registerHelpdeskController(app, deps = {}) {
             const statusSelectWithJoin = withStatusColumn ? 'hu.`status`' : '\'Active\' AS `status`';
             const statusSelectNoJoin = withStatusColumn ? '`status`' : '\'Active\' AS `status`';
             const adminWithDepartment = Boolean(editorRole.role === 'Admin' && departmentFilter);
+            const ownedDepartments = editorRole.departments && editorRole.departments.length
+                ? editorRole.departments
+                : [editorRole.department];
             const usersDepartment = editorRole.role === 'Admin'
                 ? (departmentFilter || '')
-                : editorRole.department;
+                : (departmentFilter || editorRole.department);
             const shouldFilterDepartment = adminWithDepartment || editorRole.role !== 'Admin';
             const params = shouldFilterDepartment ? [usersDepartment] : null;
 
+            if (editorRole.role !== 'Admin' && departmentFilter && !ownedDepartments.includes(departmentFilter)) {
+                const error = new Error('אין הרשאה למחלקה זו');
+                error.statusCode = 403;
+                throw error;
+            }
+
             const withJoinSql = shouldFilterDepartment
-                ? `SELECT hu.\`id\`, hu.\`username\`, hu.\`role\`, hu.\`department\`, ${statusSelectWithJoin}, hu.\`created_at\`, NULLIF(TRIM(s.\`FullName\`), '') AS \`full_name\` FROM \`helpdesk_users\` hu LEFT JOIN \`Subscribe\` s ON s.\`User\` COLLATE utf8mb4_unicode_ci = hu.\`username\` WHERE hu.\`department\` = ? ORDER BY hu.\`username\``
+                ? `SELECT DISTINCT hu.\`id\`, hu.\`username\`, hu.\`role\`, hu.\`department\`, ${statusSelectWithJoin}, hu.\`created_at\`, NULLIF(TRIM(s.\`FullName\`), '') AS \`full_name\` FROM \`helpdesk_users\` hu INNER JOIN \`helpdesk_user_departments\` hud ON hud.\`user_id\` = hu.\`id\` AND hud.\`department\` = ? LEFT JOIN \`Subscribe\` s ON s.\`User\` COLLATE utf8mb4_unicode_ci = hu.\`username\` ORDER BY hu.\`username\``
                 : `SELECT hu.\`id\`, hu.\`username\`, hu.\`role\`, hu.\`department\`, ${statusSelectWithJoin}, hu.\`created_at\`, NULLIF(TRIM(s.\`FullName\`), '') AS \`full_name\` FROM \`helpdesk_users\` hu LEFT JOIN \`Subscribe\` s ON s.\`User\` COLLATE utf8mb4_unicode_ci = hu.\`username\` ORDER BY hu.\`department\`, hu.\`username\``;
 
             let rows = await queryUsers(true, withJoinSql, params);
             if (rows !== null) return rows;
 
             const noJoinSql = shouldFilterDepartment
-                ? `SELECT \`id\`, \`username\`, \`role\`, \`department\`, ${statusSelectNoJoin}, \`created_at\`, NULL AS \`full_name\` FROM \`helpdesk_users\` WHERE \`department\` = ? ORDER BY \`username\``
+                ? `SELECT DISTINCT hu.\`id\`, hu.\`username\`, hu.\`role\`, hu.\`department\`, ${statusSelectNoJoin}, hu.\`created_at\`, NULL AS \`full_name\` FROM \`helpdesk_users\` hu INNER JOIN \`helpdesk_user_departments\` hud ON hud.\`user_id\` = hu.\`id\` AND hud.\`department\` = ? ORDER BY hu.\`username\``
                 : `SELECT \`id\`, \`username\`, \`role\`, \`department\`, ${statusSelectNoJoin}, \`created_at\`, NULL AS \`full_name\` FROM \`helpdesk_users\` ORDER BY \`department\`, \`username\``;
             [rows] = params ? await pool.query(noJoinSql, params) : await pool.query(noJoinSql);
             return rows;
@@ -1635,6 +1685,9 @@ function registerHelpdeskController(app, deps = {}) {
 
             return res.json({ result: 'success', users });
         } catch (error) {
+            if (error && error.statusCode === 403) {
+                return res.status(403).json({ result: 'error', message: error.message || 'אין הרשאה' });
+            }
             const message = error && error.message ? error.message : 'Failed to load users';
             console.error('[HELPDESK] Load users error (errno ' + (error && error.errno) + '):', message);
             return res.status(500).json({

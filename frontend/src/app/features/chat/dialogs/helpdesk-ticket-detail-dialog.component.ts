@@ -101,7 +101,12 @@ export class HelpdeskTicketDetailDialogComponent implements OnInit {
 
   get availableHandlers(): HelpdeskManagedUser[] {
     const ticketDepartment = this.data.ticket.department.trim();
-    return (this.data.handlers ?? []).filter((handler) => handler.department.trim() === ticketDepartment);
+    return (this.data.handlers ?? []).filter((handler) => {
+      const departments = Array.isArray(handler.departments) && handler.departments.length
+        ? handler.departments
+        : [handler.department];
+      return departments.map((department) => department.trim()).includes(ticketDepartment);
+    });
   }
 
   get creatorContact(): { displayName: string; info?: string; phone?: string } {

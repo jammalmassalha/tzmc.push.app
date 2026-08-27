@@ -680,21 +680,32 @@ class HelpdeskManagedUser extends Equatable {
   final String username;
   final HelpdeskRole role;
   final String department;
+  final List<String> departments;
 
   const HelpdeskManagedUser({
     required this.username,
     required this.role,
     required this.department,
+    this.departments = const [],
   });
 
+  List<String> get allDepartments =>
+      departments.isNotEmpty ? departments : (department.isNotEmpty ? [department] : []);
+
   @override
-  List<Object?> get props => [username, role, department];
+  List<Object?> get props => [username, role, department, departments];
 
   factory HelpdeskManagedUser.fromJson(Map<String, dynamic> json) {
+    final primaryDepartment = json['department'] as String? ?? '';
+    final rawDepartments = json['departments'];
+    final departments = rawDepartments is List
+        ? rawDepartments.map((entry) => entry.toString()).where((entry) => entry.trim().isNotEmpty).toList()
+        : <String>[];
     return HelpdeskManagedUser(
       username: json['username'] as String? ?? '',
       role: HelpdeskRole.fromString(json['role'] as String? ?? 'editor'),
-      department: json['department'] as String? ?? '',
+      department: primaryDepartment,
+      departments: departments,
     );
   }
 }

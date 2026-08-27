@@ -310,6 +310,7 @@ export interface HelpdeskManagedUser {
   username: string;
   role: HelpdeskRole;
   department: string;
+  departments?: string[];
 }
 
 export interface HelpdeskAdminUser {
