@@ -63,7 +63,14 @@ class ChatApiService {
   }
 
   String _normalizeHelpdeskRoleValue(String role) {
-    return role.trim().toLowerCase() == 'admin' ? 'Admin' : 'Editor';
+    switch (role.trim().toLowerCase()) {
+      case 'admin':
+        return 'Admin';
+      case 'viewer':
+        return 'Viewer';
+      default:
+        return 'Editor';
+    }
   }
 
   String _normalizeHelpdeskStatusValue(String status) {
@@ -1509,6 +1516,14 @@ class ChatApiService {
     String? department,
   }) async {
     final normalizedDepartment = department?.trim();
+    if (kDebugMode) {
+      debugPrint(
+        '[HelpdeskDebug][ChatApiService.fetchHelpdeskUsers] request '
+        '{source: /home/runner/work/tzmc.push.app/tzmc.push.app/flutter_app/lib/core/api/chat_api_service.dart, '
+        'department: ${normalizedDepartment?.isNotEmpty == true ? normalizedDepartment : 'null'}, '
+        'path: ${ApiEndpoints.helpdeskUsers}}',
+      );
+    }
 
     try {
       final response = await _client.get<dynamic>(
@@ -1526,11 +1541,41 @@ class ChatApiService {
       }
 
       final data = _coerceJsonMap(response.data);
+      if (kDebugMode) {
+        debugPrint(
+          '[HelpdeskDebug][ChatApiService.fetchHelpdeskUsers] response '
+          '{source: /home/runner/work/tzmc.push.app/tzmc.push.app/flutter_app/lib/core/api/chat_api_service.dart, '
+          'department: ${normalizedDepartment?.isNotEmpty == true ? normalizedDepartment : 'null'}, '
+          'uri: ${response.requestOptions.uri}, status: ${response.statusCode}, '
+          'result: ${data['result']}, message: ${data['message']}, body: $data}',
+        );
+      }
+      if (data['result'] == 'error') {
+        throw ApiException(
+          _extractErrorMessage(data, 'שגיאה בטעינת משתמשי המוקד'),
+        );
+      }
       final rawList = data['users'] ?? data['helpdeskUsers'] ?? data['data'];
-      return _coerceMapList(rawList).map(HelpdeskUser.fromJson).toList();
+      final users = _coerceMapList(rawList).map(HelpdeskUser.fromJson).toList();
+      if (kDebugMode) {
+        debugPrint(
+          '[HelpdeskDebug][ChatApiService.fetchHelpdeskUsers] parsed '
+          '{source: /home/runner/work/tzmc.push.app/tzmc.push.app/flutter_app/lib/core/api/chat_api_service.dart, '
+          'department: ${normalizedDepartment?.isNotEmpty == true ? normalizedDepartment : 'null'}, '
+          'usersCount: ${users.length}, users: $users}',
+        );
+      }
+      return users;
     } on ApiException {
       rethrow;
     } catch (e) {
+      if (kDebugMode) {
+        debugPrint(
+          '[HelpdeskDebug][ChatApiService.fetchHelpdeskUsers] error '
+          '{source: /home/runner/work/tzmc.push.app/tzmc.push.app/flutter_app/lib/core/api/chat_api_service.dart, '
+          'department: ${normalizedDepartment?.isNotEmpty == true ? normalizedDepartment : 'null'}, error: $e}',
+        );
+      }
       throw ApiException('שגיאה בעיבוד נתוני משתמשי המוקד');
     }
   }

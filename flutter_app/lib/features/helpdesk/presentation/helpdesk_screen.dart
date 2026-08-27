@@ -1706,6 +1706,8 @@ class _TicketDetailSheet extends ConsumerStatefulWidget {
 }
 
 class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
+  static const String _handlerDebugSource =
+      '/home/runner/work/tzmc.push.app/tzmc.push.app/flutter_app/lib/features/helpdesk/presentation/helpdesk_screen.dart';
   List<HelpdeskStatusHistoryEntry>? _history;
   List<HelpdeskHandlerHistoryEntry>? _handlerHistory;
   List<HelpdeskNote>? _notes;
@@ -1786,6 +1788,13 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
     _selectedDepartmentId = _findDepartmentIdByName(_ticket.department);
     _selectedStatus = _ticket.status;
     _allHandlers = List<HelpdeskManagedUser>.from(widget.handlers);
+    _logHandlerDebug('TicketDetail.initState', {
+      'ticketId': _ticket.id,
+      'ticketDepartment': _ticket.department,
+      'currentUser': _currentUser,
+      'initialHandlersCount': widget.handlers.length,
+      'initialHandlers': widget.handlers,
+    });
     _syncSelectedHandlerWithDepartment();
     _loadData();
   }
@@ -1810,10 +1819,15 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
     return _findSelectedDepartment()?.name ?? _ticket.department;
   }
 
+  void _logHandlerDebug(String event, Map<String, Object?> payload) {
+    if (!kDebugMode) return;
+    debugPrint('[HelpdeskDebug][$event] {source: $_handlerDebugSource, ${payload.entries.map((entry) => '${entry.key}: ${entry.value}').join(', ')}}');
+  }
+
   List<HelpdeskManagedUser> _eligibleHandlersForDepartment() {
     final targetDepartment = _selectedDepartmentName().trim();
     if (targetDepartment.isEmpty) return const <HelpdeskManagedUser>[];
-    return _allHandlers
+    final eligibleHandlers = _allHandlers
         .where(
           (handler) =>
               handler.role != HelpdeskRole.viewer &&
@@ -1827,41 +1841,104 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
             .toLowerCase()
             .compareTo(_resolveDisplay(b.username).toLowerCase()),
       );
+    _logHandlerDebug('TicketDetail.eligibleHandlers', {
+      'ticketId': _ticket.id,
+      'targetDepartment': targetDepartment,
+      'allHandlersCount': _allHandlers.length,
+      'eligibleHandlersCount': eligibleHandlers.length,
+      'allHandlers': _allHandlers,
+      'eligibleHandlers': eligibleHandlers,
+    });
+    return eligibleHandlers;
   }
 
   void _syncSelectedHandlerWithDepartment() {
     final eligibleUsernames = _eligibleHandlersForDepartment()
         .map((handler) => handler.username)
         .toSet();
+    final previousSelectedHandler = _selectedHandler;
     if (_selectedHandler != null && !eligibleUsernames.contains(_selectedHandler)) {
       _selectedHandler = null;
     }
+    _logHandlerDebug('TicketDetail.syncSelectedHandler', {
+      'ticketId': _ticket.id,
+      'department': _selectedDepartmentName().trim(),
+      'previousSelectedHandler': previousSelectedHandler,
+      'selectedHandler': _selectedHandler,
+      'eligibleUsernames': eligibleUsernames.toList(),
+    });
   }
 
   Future<void> _loadHandlersForDepartment(String departmentName) async {
     final normalizedDepartment = departmentName.trim();
-    if (normalizedDepartment.isEmpty) return;
+    if (normalizedDepartment.isEmpty) {
+      _logHandlerDebug('TicketDetail.loadHandlers.skipped', {
+        'ticketId': _ticket.id,
+        'department': normalizedDepartment,
+        'reason': 'empty department',
+      });
+      return;
+    }
     try {
       final users = await ref
           .read(chatApiServiceProvider)
           .fetchHelpdeskUsers(department: normalizedDepartment);
+      final apiHandlers = users
+          .where((user) => user.isActive && user.role != 'Viewer')
+          .map(
+            (user) => HelpdeskManagedUser(
+              username: user.username,
+              role: HelpdeskRole.fromString(user.role),
+              department: user.department,
+              departments: user.allDepartments,
+            ),
+          )
+          .toList();
+      final fallbackHandlers = widget.handlers.where((handler) {
+        if (handler.role == HelpdeskRole.viewer) return false;
+        return handler.allDepartments
+            .map((department) => department.trim())
+            .contains(normalizedDepartment);
+      }).map((handler) => HelpdeskManagedUser(
+            username: handler.username,
+            role: handler.role,
+            department: handler.department,
+            departments: handler.departments,
+          ))
+          .toList();
+      final mergedHandlers = <HelpdeskManagedUser>[...apiHandlers];
+      for (final handler in fallbackHandlers) {
+        if (!mergedHandlers.any((entry) => entry.username == handler.username)) {
+          mergedHandlers.add(handler);
+        }
+      }
+      _logHandlerDebug('TicketDetail.loadHandlers.resolved', {
+        'ticketId': _ticket.id,
+        'department': normalizedDepartment,
+        'requestPath': '/helpdesk/users?department=<ticket department>',
+        'apiUsersCount': users.length,
+        'apiUsers': users,
+        'apiHandlersCount': apiHandlers.length,
+        'apiHandlers': apiHandlers,
+        'fallbackHandlersCount': fallbackHandlers.length,
+        'fallbackHandlers': fallbackHandlers,
+        'mergedHandlersCount': mergedHandlers.length,
+        'mergedHandlers': mergedHandlers,
+      });
       if (!mounted) return;
       setState(() {
-        _allHandlers = users
-            .where((user) => user.isActive && user.role != 'Viewer')
-            .map(
-              (user) => HelpdeskManagedUser(
-                username: user.username,
-                role: HelpdeskRole.fromString(user.role),
-                department: user.department,
-                departments: user.allDepartments,
-              ),
-            )
-            .toList();
+        _allHandlers = mergedHandlers;
         _syncSelectedHandlerWithDepartment();
       });
-    } catch (_) {
-      // Keep department-local handlers from dashboard if loading all handlers fails.
+    } catch (error) {
+      _logHandlerDebug('TicketDetail.loadHandlers.failed', {
+        'ticketId': _ticket.id,
+        'department': normalizedDepartment,
+        'requestPath': '/helpdesk/users?department=<ticket department>',
+        'error': error,
+        'fallbackHandlersCount': widget.handlers.length,
+        'fallbackHandlers': widget.handlers,
+      });
     }
   }
 
