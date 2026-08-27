@@ -52,7 +52,11 @@ function normalizeHelpdeskStatusKey(value) {
             previousUnderscore = true;
         }
     }
-    return result.replace(/^_+|_+$/g, '');
+    let start = 0;
+    let end = result.length;
+    while (start < end && result[start] === '_') start += 1;
+    while (end > start && result[end - 1] === '_') end -= 1;
+    return result.slice(start, end);
 }
 
 function normalizeHelpdeskStatusColor(value) {
