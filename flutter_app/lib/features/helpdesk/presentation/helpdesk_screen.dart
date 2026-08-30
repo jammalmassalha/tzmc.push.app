@@ -1467,6 +1467,7 @@ class _ManagementTab extends ConsumerStatefulWidget {
 class _ManagementTabState extends ConsumerState<_ManagementTab>
     with SingleTickerProviderStateMixin {
   late TabController _subTabController;
+  String? _selectedDepartmentFilter;
 
   @override
   void initState() {
@@ -1517,14 +1518,38 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
         : widget.editorTickets;
 
     final departmentEntries = ref.watch(helpdeskProvider).departments;
-    final newTickets = visibleTickets
+    final availableDepartments = {
+      for (final ticket in visibleTickets)
+        if (ticket.department.trim().isNotEmpty) ticket.department.trim(),
+    }.toList();
+    availableDepartments.sort((a, b) {
+      final aIndex = departmentEntries.indexWhere((department) => department.name.trim() == a);
+      final bIndex = departmentEntries.indexWhere((department) => department.name.trim() == b);
+      if (aIndex == -1 && bIndex == -1) {
+        return a.compareTo(b);
+      }
+      if (aIndex == -1) return 1;
+      if (bIndex == -1) return -1;
+      return aIndex.compareTo(bIndex);
+    });
+
+    final selectedDepartmentFilter = availableDepartments.contains(_selectedDepartmentFilter)
+        ? _selectedDepartmentFilter
+        : null;
+    final filteredTickets = selectedDepartmentFilter == null
+        ? visibleTickets
+        : visibleTickets
+            .where((ticket) => ticket.department.trim() == selectedDepartmentFilter)
+            .toList();
+
+    final newTickets = filteredTickets
         .where((t) => _isDefaultStatusForDepartment(
               departmentEntries,
               t.department,
               t.status,
             ))
         .toList();
-    final inProgressTickets = visibleTickets
+    final inProgressTickets = filteredTickets
         .where((t) =>
             !_isDefaultStatusForDepartment(
               departmentEntries,
@@ -1537,7 +1562,7 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
               t.status,
             ))
         .toList();
-    final closedTickets = visibleTickets
+    final closedTickets = filteredTickets
         .where((t) => _isTerminalStatusForDepartment(
               departmentEntries,
               t.department,
@@ -1595,6 +1620,35 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
               ),
           ]),
         ),
+        if (availableDepartments.length > 1)
+         Padding(
+           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+           child: DropdownButtonFormField<String?>(
+             value: selectedDepartmentFilter,
+             decoration: const InputDecoration(
+               labelText: 'סינון לפי מחלקה',
+               border: OutlineInputBorder(),
+               isDense: true,
+             ),
+             items: [
+               const DropdownMenuItem<String?>(
+                 value: null,
+                 child: Text('כל המחלקות'),
+               ),
+               ...availableDepartments.map(
+                 (department) => DropdownMenuItem<String?>(
+                   value: department,
+                   child: Text(department),
+                 ),
+               ),
+             ],
+             onChanged: (value) {
+               setState(() {
+                 _selectedDepartmentFilter = value;
+               });
+             },
+           ),
+         ),
         TabBar(
           controller: _subTabController,
           tabs: [
