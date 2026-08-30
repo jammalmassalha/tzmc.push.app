@@ -1689,73 +1689,81 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
                    ],
                  ),
                  const SizedBox(height: 10),
-                 Wrap(
-                   spacing: 10,
-                   runSpacing: 10,
-                   children: [
-                     if (showDepartmentFilter)
-                       SizedBox(
-                         width: 260,
-                         child: DropdownButtonFormField<String?>(
-                           value: selectedDepartmentFilter,
-                           decoration: const InputDecoration(
-                             labelText: 'מחלקה',
-                             border: OutlineInputBorder(),
-                             isDense: true,
-                             prefixIcon: Icon(Icons.apartment_outlined),
-                           ),
-                           items: [
-                             const DropdownMenuItem<String?>(
-                               value: null,
-                               child: Text('כל המחלקות'),
-                             ),
-                             ...availableDepartments.map(
-                               (department) => DropdownMenuItem<String?>(
-                                 value: department,
-                                 child: Text(department),
+                 LayoutBuilder(
+                   builder: (context, constraints) {
+                     final fieldWidth = constraints.maxWidth < 560
+                         ? constraints.maxWidth
+                         : (constraints.maxWidth - 10) / 2;
+                     return Wrap(
+                       spacing: 10,
+                       runSpacing: 10,
+                       children: [
+                         if (showDepartmentFilter)
+                           SizedBox(
+                             width: fieldWidth,
+                             child: DropdownButtonFormField<String?>(
+                               value: selectedDepartmentFilter,
+                               decoration: const InputDecoration(
+                                 labelText: 'מחלקה',
+                                 border: OutlineInputBorder(),
+                                 isDense: true,
+                                 prefixIcon: Icon(Icons.apartment_outlined),
                                ),
+                               items: [
+                                 const DropdownMenuItem<String?>(
+                                   value: null,
+                                   child: Text('כל המחלקות'),
+                                 ),
+                                 ...availableDepartments.map(
+                                   (department) => DropdownMenuItem<String?>(
+                                     value: department,
+                                     child: Text(department),
+                                   ),
+                                 ),
+                               ],
+                               onChanged: (value) {
+                                 setState(() {
+                                   _selectedDepartmentFilter = value;
+                                   _selectedStatusFilter = null;
+                                 });
+                               },
                              ),
-                           ],
-                           onChanged: (value) {
-                             setState(() {
-                               _selectedDepartmentFilter = value;
-                               _selectedStatusFilter = null;
-                             });
-                           },
-                         ),
-                       ),
-                     if (showStatusFilter)
-                       SizedBox(
-                         width: 260,
-                         child: DropdownButtonFormField<String?>(
-                           value: selectedStatusFilter,
-                           decoration: const InputDecoration(
-                             labelText: 'סטטוס',
-                             border: OutlineInputBorder(),
-                             isDense: true,
-                             prefixIcon: Icon(Icons.flag_outlined),
                            ),
-                           items: [
-                             const DropdownMenuItem<String?>(
-                               value: null,
-                               child: Text('כל הסטטוסים'),
-                             ),
-                             ...availableStatusKeys.map(
-                               (statusKey) => DropdownMenuItem<String?>(
-                                 value: statusKey,
-                                 child: Text(
-                                     availableStatuses[statusKey] ?? statusKey),
+                         if (showStatusFilter)
+                           SizedBox(
+                             width: fieldWidth,
+                             child: DropdownButtonFormField<String?>(
+                               value: selectedStatusFilter,
+                               decoration: const InputDecoration(
+                                 labelText: 'סטטוס',
+                                 border: OutlineInputBorder(),
+                                 isDense: true,
+                                 prefixIcon: Icon(Icons.flag_outlined),
                                ),
+                               items: [
+                                 const DropdownMenuItem<String?>(
+                                   value: null,
+                                   child: Text('כל הסטטוסים'),
+                                 ),
+                                 ...availableStatusKeys.map(
+                                   (statusKey) => DropdownMenuItem<String?>(
+                                     value: statusKey,
+                                     child: Text(
+                                         availableStatuses[statusKey] ??
+                                             statusKey),
+                                   ),
+                                 ),
+                               ],
+                               onChanged: (value) {
+                                 setState(() {
+                                   _selectedStatusFilter = value;
+                                 });
+                               },
                              ),
-                           ],
-                           onChanged: (value) {
-                             setState(() {
-                               _selectedStatusFilter = value;
-                             });
-                           },
-                         ),
-                       ),
-                   ],
+                           ),
+                       ],
+                     );
+                   },
                  ),
                ],
              ),
