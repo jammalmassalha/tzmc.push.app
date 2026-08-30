@@ -1621,7 +1621,7 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
           ]),
         ),
         if (availableDepartments.length > 1)
-         Padding(
+          Padding(
            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
            child: DropdownButtonFormField<String?>(
              value: selectedDepartmentFilter,
@@ -2032,10 +2032,12 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
     return _findSelectedDepartment()?.name ?? _ticket.department;
   }
 
-  List<HelpdeskTicketStatus> _availableStatusesForTicketDepartment() {
+  List<HelpdeskTicketStatus> _availableStatusesForTicketDepartment([
+    String? departmentName,
+  ]) {
     final selectedDepartment = _findDepartmentByName(
       widget.departments,
-      _ticket.department,
+      (departmentName ?? _selectedDepartmentName()).trim(),
     );
     if (selectedDepartment != null && selectedDepartment.ticketStatuses.isNotEmpty) {
       return List<HelpdeskTicketStatus>.from(selectedDepartment.ticketStatuses)
@@ -2095,7 +2097,8 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
   }
 
   void _syncSelectedStatusWithDepartment() {
-    final availableStatuses = _availableStatusesForTicketDepartment();
+    final availableStatuses =
+        _availableStatusesForTicketDepartment(_selectedDepartmentName());
     final allowedStatuses = availableStatuses.map((status) => status.key).toSet();
     if (!allowedStatuses.contains(_selectedStatus)) {
       final defaultStatus = availableStatuses.firstWhere(
