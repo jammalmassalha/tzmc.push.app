@@ -2009,7 +2009,6 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
       'initialHandlers': widget.handlers,
     });
     _syncSelectedHandlerWithDepartment();
-    _syncSelectedStatusWithDepartment();
     _loadData();
   }
 
@@ -2527,6 +2526,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                             setState(() {
                               _selectedDepartmentId = value;
                               _syncSelectedHandlerWithDepartment();
+                              _syncSelectedStatusWithDepartment();
                               _handlerError = null;
                             });
                             if (value != null) {
