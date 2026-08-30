@@ -1672,7 +1672,7 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
              },
            ),
          ),
-        if (availableStatusKeys.length > 1)
+        if (availableStatusKeys.isNotEmpty)
          Padding(
            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
            child: DropdownButtonFormField<String?>(
