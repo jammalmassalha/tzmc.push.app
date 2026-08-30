@@ -1667,6 +1667,7 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
              onChanged: (value) {
                setState(() {
                  _selectedDepartmentFilter = value;
+                 _selectedStatusFilter = null;
                });
              },
            ),
