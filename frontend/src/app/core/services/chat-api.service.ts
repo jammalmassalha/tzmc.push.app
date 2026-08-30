@@ -1,4 +1,4 @@
-import { Injectable, Signal, resource, ResourceRef } from '@angular/core';
+import { Injectable, Signal, isDevMode, resource, ResourceRef } from '@angular/core';
 import { getNotifyBaseUrl, runtimeConfig } from '../config/runtime-config';
 import {
   ChatGroup,
@@ -8,6 +8,7 @@ import {
   EditMessagePayload,
   GroupUpdatePayload,
   HelpdeskAdminUser,
+  HelpdeskDepartmentEntry,
   HelpdeskDashboard,
   HelpdeskManagedUser,
   HelpdeskMyRole,
@@ -1592,6 +1593,16 @@ export class ChatApiService {
     ];
   }
 
+  async getHelpdeskDepartments(): Promise<HelpdeskDepartmentEntry[]> {
+    const url = `${this.notifyBaseUrl}/helpdesk/departments?_ts=${Date.now()}&ngsw-bypass=1`;
+    const response = await this.fetchWithRetry(url, { cache: 'no-store' }, { retries: 1, timeoutMs: 8000 });
+    const body = await response.json() as { result?: string; message?: string; departments?: HelpdeskDepartmentEntry[] };
+    if (!response.ok || body.result !== 'success') {
+      throw new Error(String(body.message || 'שגיאה בטעינת המחלקות'));
+    }
+    return Array.isArray(body.departments) ? body.departments : [];
+  }
+
   async getHelpdeskDepartmentTicketForm(department: string): Promise<HelpdeskTicketFormField[]> {
     const safeDepartment = encodeURIComponent(String(department || '').trim());
     if (!safeDepartment) {
@@ -1652,10 +1663,38 @@ export class ChatApiService {
     };
   }
 
-  async getHelpdeskAdminUsers(): Promise<HelpdeskAdminUser[]> {
-    const url = `${this.notifyBaseUrl}/helpdesk/users?_ts=${Date.now()}&ngsw-bypass=1`;
+  async getHelpdeskAdminUsers(department?: string): Promise<HelpdeskAdminUser[]> {
+    const params = new URLSearchParams({
+      _ts: String(Date.now()),
+      'ngsw-bypass': '1'
+    });
+    const normalizedDepartment = String(department || '').trim();
+    if (normalizedDepartment) {
+      params.set('department', normalizedDepartment);
+    }
+    const url = `${this.notifyBaseUrl}/helpdesk/users?${params.toString()}`;
+    if (isDevMode()) {
+      console.log('[HelpdeskDebug][ChatApiService.getHelpdeskAdminUsers] request', {
+        source: 'ChatApiService',
+        department: normalizedDepartment || null,
+        url
+      });
+    }
     const response = await this.fetchWithRetry(url, { cache: 'no-store' }, { retries: 1, timeoutMs: 8000 });
     const body = await response.json() as { result?: string; message?: string; users?: HelpdeskAdminUser[] };
+    if (isDevMode()) {
+      console.log('[HelpdeskDebug][ChatApiService.getHelpdeskAdminUsers] response', {
+        source: 'ChatApiService',
+        department: normalizedDepartment || null,
+        url,
+        status: response.status,
+        ok: response.ok,
+        result: body.result,
+        message: body.message ?? null,
+        usersCount: Array.isArray(body.users) ? body.users.length : 0,
+        users: body.users ?? []
+      });
+    }
     if (!response.ok || body.result !== 'success') {
       throw new Error(String(body.message || 'שגיאה בטעינת המשתמשים'));
     }

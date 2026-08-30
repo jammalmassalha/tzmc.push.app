@@ -52,7 +52,7 @@ export class HelpdeskUsersManagementDialogComponent implements OnInit {
 
   readonly editingUserId = signal<number | null>(null);
 
-  readonly ROLES = ['Admin', 'Editor'] as const;
+  readonly ROLES = ['Admin', 'Editor', 'Viewer'] as const;
   readonly STATUSES = ['Active', 'Inactive'] as const;
 
   readonly userForm = this.fb.group({
@@ -82,10 +82,16 @@ export class HelpdeskUsersManagementDialogComponent implements OnInit {
   private async loadDepartments(): Promise<void> {
     this.isLoadingDepts.set(true);
     try {
-      const depts = await this.api.getHelpdeskActiveDepartments();
-      this.departments.set(depts);
-    } catch {
-      this.departments.set([]);
+      const depts = await this.api.getHelpdeskDepartments();
+      this.departments.set(this.toDepartmentOptions(depts.filter((dept) => dept.status === 'active')));
+    } catch (error) {
+      console.warn('Failed to load admin departments, falling back to active departments.', error);
+      try {
+        const depts = await this.api.getHelpdeskActiveDepartments();
+        this.departments.set(this.toDepartmentOptions(depts));
+      } catch {
+        this.departments.set([]);
+      }
     } finally {
       this.isLoadingDepts.set(false);
     }
@@ -186,7 +192,9 @@ export class HelpdeskUsersManagementDialogComponent implements OnInit {
   }
 
   roleBadgeClass(role: string): string {
-    return role === 'Admin' ? 'role-badge admin' : 'role-badge editor';
+    if (role === 'Admin') return 'role-badge admin';
+    if (role === 'Viewer') return 'role-badge viewer';
+    return 'role-badge editor';
   }
 
   statusBadgeClass(status: string): string {
@@ -207,5 +215,9 @@ export class HelpdeskUsersManagementDialogComponent implements OnInit {
 
   private showError(message: string): void {
     this.snackBar.open(message, 'סגור', { duration: 5000, panelClass: ['snack-error'] });
+  }
+
+  private toDepartmentOptions(departments: ReadonlyArray<{ name: string; icon: string | null }>): { name: string; icon: string | null }[] {
+    return departments.map((dept) => ({ name: dept.name, icon: dept.icon }));
   }
 }

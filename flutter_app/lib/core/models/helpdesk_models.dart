@@ -284,6 +284,77 @@ class HelpdeskTicketFormField extends Equatable {
 // Department
 // ---------------------------------------------------------------------------
 
+class HelpdeskTicketStatus extends Equatable {
+  final int id;
+  final String key;
+  final String label;
+  final String colorHex;
+  final int sortOrder;
+  final bool isTerminal;
+  final bool isDefault;
+
+  const HelpdeskTicketStatus({
+    this.id = 0,
+    required this.key,
+    required this.label,
+    this.colorHex = '#757575',
+    this.sortOrder = 0,
+    this.isTerminal = false,
+    this.isDefault = false,
+  });
+
+  @override
+  List<Object?> get props =>
+      [id, key, label, colorHex, sortOrder, isTerminal, isDefault];
+
+  factory HelpdeskTicketStatus.fromJson(Map<String, dynamic> json) {
+    return HelpdeskTicketStatus(
+      id: _asInt(json['id'], fallback: 0),
+      key: _asString(json['key'] ?? json['statusKey'] ?? json['status_key']),
+      label: _asString(
+        json['label'] ?? json['displayLabel'] ?? json['display_label'],
+      ),
+      colorHex: _asString(
+        json['colorHex'] ?? json['color_hex'],
+        fallback: '#757575',
+      ),
+      sortOrder: _asInt(json['sortOrder'] ?? json['sort_order'], fallback: 0),
+      isTerminal: json['isTerminal'] == true || json['is_terminal'] == true,
+      isDefault: json['isDefault'] == true || json['is_default'] == true,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        if (id > 0) 'id': id,
+        'key': key,
+        'label': label,
+        'colorHex': colorHex,
+        'sortOrder': sortOrder,
+        'isTerminal': isTerminal,
+        'isDefault': isDefault,
+      };
+
+  HelpdeskTicketStatus copyWith({
+    int? id,
+    String? key,
+    String? label,
+    String? colorHex,
+    int? sortOrder,
+    bool? isTerminal,
+    bool? isDefault,
+  }) {
+    return HelpdeskTicketStatus(
+      id: id ?? this.id,
+      key: key ?? this.key,
+      label: label ?? this.label,
+      colorHex: colorHex ?? this.colorHex,
+      sortOrder: sortOrder ?? this.sortOrder,
+      isTerminal: isTerminal ?? this.isTerminal,
+      isDefault: isDefault ?? this.isDefault,
+    );
+  }
+}
+
 /// A single helpdesk department as returned by the API.
 class HelpdeskDepartmentEntry extends Equatable {
   final int id;
@@ -291,6 +362,7 @@ class HelpdeskDepartmentEntry extends Equatable {
   final String? icon;
   final String status;
   final int sortOrder;
+  final List<HelpdeskTicketStatus> ticketStatuses;
   final List<HelpdeskTicketFormField> ticketForm;
   final HelpdeskInitialFormConfig initialForm;
   final List<DepartmentUserPermission> permissions;
@@ -302,6 +374,7 @@ class HelpdeskDepartmentEntry extends Equatable {
     this.icon,
     this.status = 'active',
     this.sortOrder = 0,
+    this.ticketStatuses = const [],
     this.ticketForm = const [],
     this.initialForm = const HelpdeskInitialFormConfig(),
     this.permissions = const [],
@@ -312,9 +385,17 @@ class HelpdeskDepartmentEntry extends Equatable {
 
   @override
   List<Object?> get props =>
-      [id, name, icon, status, sortOrder, ticketForm, initialForm, permissions, resolvedRole];
+      [id, name, icon, status, sortOrder, ticketStatuses, ticketForm, initialForm, permissions, resolvedRole];
 
   factory HelpdeskDepartmentEntry.fromJson(Map<String, dynamic> json) {
+    final rawStatuses = json['ticketStatuses'] ?? json['ticket_statuses'];
+    final ticketStatuses = rawStatuses is List
+        ? rawStatuses
+            .map(_asStringDynamicMap)
+            .whereType<Map<String, dynamic>>()
+            .map(HelpdeskTicketStatus.fromJson)
+            .toList()
+        : <HelpdeskTicketStatus>[];
     final rawForm = json['ticketForm'] ?? json['ticket_form'];
     final ticketForm = rawForm is List
         ? rawForm
@@ -338,6 +419,7 @@ class HelpdeskDepartmentEntry extends Equatable {
       icon: _asString(json['icon']).isEmpty ? null : _asString(json['icon']),
       status: _asString(json['status'], fallback: 'active'),
       sortOrder: _asInt(json['sortOrder'] ?? json['sort_order'], fallback: 0),
+      ticketStatuses: ticketStatuses,
       ticketForm: ticketForm,
       initialForm: HelpdeskInitialFormConfig.fromJson(initialFormMap),
       permissions: permissions,
@@ -351,6 +433,7 @@ class HelpdeskDepartmentEntry extends Equatable {
         'icon': icon,
         'status': status,
         'sortOrder': sortOrder,
+        'ticketStatuses': ticketStatuses.map((status) => status.toJson()).toList(),
         'ticketForm': ticketForm.map((f) => f.toJson()).toList(),
         'initialForm': initialForm.toJson(),
         'permissions': permissions.map((p) => p.toJson()).toList(),
@@ -363,6 +446,7 @@ class HelpdeskDepartmentEntry extends Equatable {
     String? icon,
     String? status,
     int? sortOrder,
+    List<HelpdeskTicketStatus>? ticketStatuses,
     List<HelpdeskTicketFormField>? ticketForm,
     HelpdeskInitialFormConfig? initialForm,
     List<DepartmentUserPermission>? permissions,
@@ -374,6 +458,7 @@ class HelpdeskDepartmentEntry extends Equatable {
       icon: icon ?? this.icon,
       status: status ?? this.status,
       sortOrder: sortOrder ?? this.sortOrder,
+      ticketStatuses: ticketStatuses ?? this.ticketStatuses,
       ticketForm: ticketForm ?? this.ticketForm,
       initialForm: initialForm ?? this.initialForm,
       permissions: permissions ?? this.permissions,
@@ -470,6 +555,7 @@ enum HelpdeskStatus {
 enum HelpdeskRole {
   admin,
   editor,
+  viewer,
   relatedUser;
 
   static HelpdeskRole fromString(String value) {
@@ -478,6 +564,8 @@ enum HelpdeskRole {
         return HelpdeskRole.admin;
       case 'editor':
         return HelpdeskRole.editor;
+      case 'viewer':
+        return HelpdeskRole.viewer;
       case 'relateduser':
       case 'related_user':
       case 'related':
@@ -680,21 +768,32 @@ class HelpdeskManagedUser extends Equatable {
   final String username;
   final HelpdeskRole role;
   final String department;
+  final List<String> departments;
 
   const HelpdeskManagedUser({
     required this.username,
     required this.role,
     required this.department,
+    this.departments = const [],
   });
 
+  List<String> get allDepartments =>
+      departments.isNotEmpty ? departments : (department.isNotEmpty ? [department] : []);
+
   @override
-  List<Object?> get props => [username, role, department];
+  List<Object?> get props => [username, role, department, departments];
 
   factory HelpdeskManagedUser.fromJson(Map<String, dynamic> json) {
+    final primaryDepartment = json['department'] as String? ?? '';
+    final rawDepartments = json['departments'];
+    final departments = rawDepartments is List
+        ? rawDepartments.map((entry) => entry.toString()).where((entry) => entry.trim().isNotEmpty).toList()
+        : <String>[];
     return HelpdeskManagedUser(
       username: json['username'] as String? ?? '',
       role: HelpdeskRole.fromString(json['role'] as String? ?? 'editor'),
-      department: json['department'] as String? ?? '',
+      department: primaryDepartment,
+      departments: departments,
     );
   }
 }
@@ -705,6 +804,8 @@ String _normalizeHelpdeskUserRole(String? value) {
       return 'Admin';
     case 'editor':
       return 'Editor';
+    case 'viewer':
+      return 'Viewer';
     default:
       return 'Editor';
   }

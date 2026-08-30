@@ -27,11 +27,6 @@ import 'helpdesk_user_management_screen.dart';
 // Helpdesk State
 // ---------------------------------------------------------------------------
 
-/// Status values that count as "ongoing" tickets in the Angular workflow
-/// (chat-store.service.ts `ongoingStatuses`). Anything else is considered
-/// "past" so that no tickets are silently dropped from the UI.
-const Set<String> kHelpdeskOngoingStatuses = {'open', 'in_progress'};
-
 class _HelpdeskDepartmentIconOption {
   final String key;
   final String label;
@@ -350,8 +345,7 @@ class HelpdeskNotifier extends Notifier<HelpdeskState> {
   /// Update the status of a ticket.
   Future<void> updateTicketStatus(int ticketId, String status) async {
     if (_currentUser == null) throw Exception('יש להתחבר תחילה');
-    final helpdeskStatus = HelpdeskStatus.fromString(status);
-    await _api.updateHelpdeskTicketStatus(ticketId, helpdeskStatus, _currentUser!);
+    await _api.updateHelpdeskTicketStatus(ticketId, status, _currentUser!);
     await loadTickets(force: true);
   }
 
@@ -371,7 +365,83 @@ final helpdeskProvider = NotifierProvider<HelpdeskNotifier, HelpdeskState>(() {
 // Helpers
 // ---------------------------------------------------------------------------
 
-String _statusLabel(String status) {
+HelpdeskDepartmentEntry? _findDepartmentByName(
+  List<HelpdeskDepartmentEntry> departments,
+  String departmentName,
+) {
+  final normalizedDepartment = departmentName.trim();
+  for (final department in departments) {
+    if (department.name.trim() == normalizedDepartment) {
+      return department;
+    }
+  }
+  return null;
+}
+
+HelpdeskTicketStatus? _findStatusDefinition(
+  List<HelpdeskDepartmentEntry> departments,
+  String departmentName,
+  String statusKey,
+) {
+  final department = _findDepartmentByName(departments, departmentName);
+  if (department == null) return null;
+  final normalizedStatusKey = statusKey.trim();
+  for (final status in department.ticketStatuses) {
+    if (status.key.trim() == normalizedStatusKey) {
+      return status;
+    }
+  }
+  return null;
+}
+
+bool _isTerminalStatusForDepartment(
+  List<HelpdeskDepartmentEntry> departments,
+  String departmentName,
+  String statusKey,
+) {
+  final status = _findStatusDefinition(departments, departmentName, statusKey);
+  if (status != null) return status.isTerminal;
+  return statusKey == 'closed' || statusKey == 'resolved';
+}
+
+bool _isDefaultStatusForDepartment(
+  List<HelpdeskDepartmentEntry> departments,
+  String departmentName,
+  String statusKey,
+) {
+  final department = _findDepartmentByName(departments, departmentName);
+  final normalizedStatusKey = statusKey.trim();
+  if (department != null && department.ticketStatuses.isNotEmpty) {
+    for (final status in department.ticketStatuses) {
+      if (status.isDefault) {
+        return status.key.trim() == normalizedStatusKey;
+      }
+    }
+    return department.ticketStatuses.first.key.trim() == normalizedStatusKey;
+  }
+  return normalizedStatusKey == 'open';
+}
+
+Color _statusColorFromHex(String? colorHex) {
+  final normalized = (colorHex ?? '').trim();
+  if (normalized.length == 7 && normalized.startsWith('#')) {
+    final parsed = int.tryParse(normalized.substring(1), radix: 16);
+    if (parsed != null) {
+      return Color(0xFF000000 | parsed);
+    }
+  }
+  return const Color(0xFF757575);
+}
+
+String _statusLabel(
+  List<HelpdeskDepartmentEntry> departments,
+  String departmentName,
+  String status,
+) {
+  final resolved = _findStatusDefinition(departments, departmentName, status);
+  if (resolved != null && resolved.label.trim().isNotEmpty) {
+    return resolved.label;
+  }
   switch (status) {
     case 'open':
       return 'פתוחה';
@@ -386,29 +456,72 @@ String _statusLabel(String status) {
   }
 }
 
-Color _statusColor(String status) {
+Color _statusColor(
+  List<HelpdeskDepartmentEntry> departments,
+  String departmentName,
+  String status,
+) {
+  final resolved = _findStatusDefinition(departments, departmentName, status);
+  if (resolved != null) {
+    return _statusColorFromHex(resolved.colorHex);
+  }
   switch (status) {
     case 'open':
-      return const Color(0xFF2E7D32); // green.shade800
+      return const Color(0xFF2E7D32);
     case 'in_progress':
-      return const Color(0xFFE65100); // deepOrange.shade900
+      return const Color(0xFFE65100);
     case 'resolved':
-      return const Color(0xFF1565C0); // blue.shade900
+      return const Color(0xFF1565C0);
     case 'closed':
-      return const Color(0xFF757575); // grey.shade600
+      return const Color(0xFF757575);
     default:
       return const Color(0xFF757575);
   }
 }
 
-String _totalDurationLabel(List<HelpdeskStatusHistoryEntry> history) {
+List<HelpdeskTicketStatus> _defaultDepartmentTicketStatuses() =>
+    const <HelpdeskTicketStatus>[
+      HelpdeskTicketStatus(
+        key: 'open',
+        label: 'פתוחה',
+        colorHex: '#2E7D32',
+        sortOrder: 0,
+        isDefault: true,
+      ),
+      HelpdeskTicketStatus(
+        key: 'in_progress',
+        label: 'בטיפול',
+        colorHex: '#E65100',
+        sortOrder: 1,
+      ),
+      HelpdeskTicketStatus(
+        key: 'resolved',
+        label: 'טופלה',
+        colorHex: '#1565C0',
+        sortOrder: 2,
+        isTerminal: true,
+      ),
+      HelpdeskTicketStatus(
+        key: 'closed',
+        label: 'סגורה',
+        colorHex: '#757575',
+        sortOrder: 3,
+        isTerminal: true,
+      ),
+    ];
+
+String _totalDurationLabel(
+  List<HelpdeskStatusHistoryEntry> history,
+  List<HelpdeskDepartmentEntry> departments,
+  String departmentName,
+) {
   if (history.isEmpty) return '';
   // History is ordered newest-first (DESC). The opening entry is the last one.
   final openTime = history.last.createdAt;
   HelpdeskStatusHistoryEntry? closedEntry;
-  // Iterate from newest to oldest to find the most recent closed/resolved entry.
+  // Iterate from newest to oldest to find the most recent terminal entry.
   for (final h in history) {
-    if (h.newStatus == 'closed' || h.newStatus == 'resolved') {
+    if (_isTerminalStatusForDepartment(departments, departmentName, h.newStatus)) {
       closedEntry = h;
       break;
     }
@@ -465,11 +578,23 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
 
     final openTickets = [
       ...state.ongoing,
-      ...assignedExtras.where((t) => kHelpdeskOngoingStatuses.contains(t.status)),
+      ...assignedExtras.where(
+        (ticket) => !_isTerminalStatusForDepartment(
+          state.departments,
+          ticket.department,
+          ticket.status,
+        ),
+      ),
     ];
     final pastTickets = [
       ...state.past,
-      ...assignedExtras.where((t) => !kHelpdeskOngoingStatuses.contains(t.status)),
+      ...assignedExtras.where(
+        (ticket) => _isTerminalStatusForDepartment(
+          state.departments,
+          ticket.department,
+          ticket.status,
+        ),
+      ),
     ];
 
     return Directionality(
@@ -1342,6 +1467,7 @@ class _ManagementTab extends ConsumerStatefulWidget {
 class _ManagementTabState extends ConsumerState<_ManagementTab>
     with SingleTickerProviderStateMixin {
   late TabController _subTabController;
+  String? _selectedDepartmentFilter;
 
   @override
   void initState() {
@@ -1391,12 +1517,57 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
             .toList()
         : widget.editorTickets;
 
-    final newTickets =
-        visibleTickets.where((t) => t.status == 'open').toList();
-    final inProgressTickets =
-        visibleTickets.where((t) => t.status == 'in_progress').toList();
-    final closedTickets = visibleTickets
-        .where((t) => !kHelpdeskOngoingStatuses.contains(t.status))
+    final departmentEntries = ref.watch(helpdeskProvider).departments;
+    final availableDepartments = {
+      for (final ticket in visibleTickets)
+        if (ticket.department.trim().isNotEmpty) ticket.department.trim(),
+    }.toList();
+    availableDepartments.sort((a, b) {
+      final aIndex = departmentEntries.indexWhere((department) => department.name.trim() == a);
+      final bIndex = departmentEntries.indexWhere((department) => department.name.trim() == b);
+      if (aIndex == -1 && bIndex == -1) {
+        return a.compareTo(b);
+      }
+      if (aIndex == -1) return 1;
+      if (bIndex == -1) return -1;
+      return aIndex.compareTo(bIndex);
+    });
+
+    final selectedDepartmentFilter = availableDepartments.contains(_selectedDepartmentFilter)
+        ? _selectedDepartmentFilter
+        : null;
+    final filteredTickets = selectedDepartmentFilter == null
+        ? visibleTickets
+        : visibleTickets
+            .where((ticket) => ticket.department.trim() == selectedDepartmentFilter)
+            .toList();
+
+    final newTickets = filteredTickets
+        .where((t) => _isDefaultStatusForDepartment(
+              departmentEntries,
+              t.department,
+              t.status,
+            ))
+        .toList();
+    final inProgressTickets = filteredTickets
+        .where((t) =>
+            !_isDefaultStatusForDepartment(
+              departmentEntries,
+              t.department,
+              t.status,
+            ) &&
+            !_isTerminalStatusForDepartment(
+              departmentEntries,
+              t.department,
+              t.status,
+            ))
+        .toList();
+    final closedTickets = filteredTickets
+        .where((t) => _isTerminalStatusForDepartment(
+              departmentEntries,
+              t.department,
+              t.status,
+            ))
         .toList();
 
     final String roleLabel;
@@ -1406,6 +1577,9 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
         break;
       case HelpdeskRole.relatedUser:
         roleLabel = 'RelatedUser';
+        break;
+      case HelpdeskRole.viewer:
+        roleLabel = 'Viewer';
         break;
       default:
         roleLabel = 'Editor';
@@ -1446,6 +1620,35 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
               ),
           ]),
         ),
+        if (availableDepartments.length > 1)
+          Padding(
+           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+           child: DropdownButtonFormField<String?>(
+             value: selectedDepartmentFilter,
+             decoration: const InputDecoration(
+               labelText: 'סינון לפי מחלקה',
+               border: OutlineInputBorder(),
+               isDense: true,
+             ),
+             items: [
+               const DropdownMenuItem<String?>(
+                 value: null,
+                 child: Text('כל המחלקות'),
+               ),
+               ...availableDepartments.map(
+                 (department) => DropdownMenuItem<String?>(
+                   value: department,
+                   child: Text(department),
+                 ),
+               ),
+             ],
+             onChanged: (value) {
+               setState(() {
+                 _selectedDepartmentFilter = value;
+               });
+             },
+           ),
+         ),
         TabBar(
           controller: _subTabController,
           tabs: [
@@ -1580,7 +1783,10 @@ class _TicketCard extends ConsumerWidget {
               // Status badge (right-aligned in RTL)
               Align(
                 alignment: Alignment.topLeft,
-                child: _StatusChip(status: ticket.status),
+                child: _StatusChip(
+                  status: ticket.status,
+                  departmentName: ticket.department,
+                ),
               ),
               const SizedBox(height: 6),
               _MetaRow(label: 'כותרת', value: ticket.subject, bold: true),
@@ -1620,15 +1826,20 @@ class _TicketCard extends ConsumerWidget {
 // Ticket card sub-widgets
 // ---------------------------------------------------------------------------
 
-class _StatusChip extends StatelessWidget {
+class _StatusChip extends ConsumerWidget {
   final String status;
+  final String departmentName;
 
-  const _StatusChip({required this.status});
+  const _StatusChip({
+    required this.status,
+    required this.departmentName,
+  });
 
   @override
-  Widget build(BuildContext context) {
-    final color = _statusColor(status);
-    final label = _statusLabel(status);
+  Widget build(BuildContext context, WidgetRef ref) {
+    final departments = ref.watch(helpdeskProvider).departments;
+    final color = _statusColor(departments, departmentName, status);
+    final label = _statusLabel(departments, departmentName, status);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
       decoration: BoxDecoration(
@@ -1703,6 +1914,7 @@ class _TicketDetailSheet extends ConsumerStatefulWidget {
 }
 
 class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
+  static const String _handlerDebugSource = 'HelpdeskScreen';
   List<HelpdeskStatusHistoryEntry>? _history;
   List<HelpdeskHandlerHistoryEntry>? _handlerHistory;
   List<HelpdeskNote>? _notes;
@@ -1731,35 +1943,55 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
 
   bool get _canManageHandler {
     if (!widget.isManagerView) return false;
-    if (_ticket.status == 'closed') return false;
+    if (_isTerminalStatusForDepartment(widget.departments, _ticket.department, _ticket.status)) {
+      return false;
+    }
     if (widget.myRole == null) return false;
+    if (widget.myRole!.role == HelpdeskRole.viewer) return false;
+    final departments = widget.myRole!.allDepartments;
     // relatedUser: allowed only for tickets they created or are handling
     if (widget.myRole!.role == HelpdeskRole.relatedUser) {
       return _ticket.creatorUsername == _currentUser ||
           _ticket.handlerUsername == _currentUser;
     }
-    // editor / admin: allowed for any ticket in their department
-    return widget.myRole!.department == _ticket.department;
+    // admin can manage any ticket; editor is limited to own department
+    return widget.myRole!.role == HelpdeskRole.admin ||
+        departments.contains(_ticket.department);
   }
 
   bool get _canTransferDepartment {
     if (!widget.isManagerView) return false;
-    if (_ticket.status == 'closed') return false;
+    if (_isTerminalStatusForDepartment(widget.departments, _ticket.department, _ticket.status)) {
+      return false;
+    }
     final myRole = widget.myRole;
     if (myRole == null || myRole.role == HelpdeskRole.relatedUser) return false;
-    return myRole.role == HelpdeskRole.admin || myRole.department == _ticket.department;
+    if (myRole.role == HelpdeskRole.viewer) return false;
+    return myRole.role == HelpdeskRole.admin || myRole.allDepartments.contains(_ticket.department);
   }
 
   bool get _canChangeStatus {
     if (!widget.isManagerView) return false;
-    if (_ticket.status == 'closed') return false;
+    if (_isTerminalStatusForDepartment(widget.departments, _ticket.department, _ticket.status)) {
+      return false;
+    }
     if (_ticket.creatorUsername == _currentUser) return true;
     if (_ticket.handlerUsername == _currentUser) return true;
     if (widget.myRole != null &&
-        widget.myRole!.department == _ticket.department) {
+        widget.myRole!.role != HelpdeskRole.viewer &&
+        widget.myRole!.allDepartments.contains(_ticket.department)) {
       return true;
     }
     return false;
+  }
+
+  bool get _canAddNote {
+    if (_ticket.creatorUsername == _currentUser) return true;
+    if (_ticket.handlerUsername == _currentUser) return true;
+    final myRole = widget.myRole;
+    if (myRole == null || myRole.role == HelpdeskRole.viewer) return false;
+    return myRole.role == HelpdeskRole.admin ||
+        myRole.allDepartments.contains(_ticket.department);
   }
 
   @override
@@ -1769,6 +2001,13 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
     _selectedDepartmentId = _findDepartmentIdByName(_ticket.department);
     _selectedStatus = _ticket.status;
     _allHandlers = List<HelpdeskManagedUser>.from(widget.handlers);
+    _logHandlerDebug('TicketDetail.initState', {
+      'ticketId': _ticket.id,
+      'ticketDepartment': _ticket.department,
+      'currentUser': _currentUser,
+      'initialHandlersCount': widget.handlers.length,
+      'initialHandlers': widget.handlers,
+    });
     _syncSelectedHandlerWithDepartment();
     _loadData();
   }
@@ -1793,51 +2032,153 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
     return _findSelectedDepartment()?.name ?? _ticket.department;
   }
 
+  List<HelpdeskTicketStatus> _availableStatusesForTicketDepartment([
+    String? departmentName,
+  ]) {
+    final selectedDepartment = _findDepartmentByName(
+      widget.departments,
+      (departmentName ?? _selectedDepartmentName()).trim(),
+    );
+    if (selectedDepartment != null && selectedDepartment.ticketStatuses.isNotEmpty) {
+      return List<HelpdeskTicketStatus>.from(selectedDepartment.ticketStatuses)
+        ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    }
+    return _defaultDepartmentTicketStatuses();
+  }
+
+  void _logHandlerDebug(String event, Map<String, Object?> payload) {
+    if (!kDebugMode) return;
+    debugPrint('[HelpdeskDebug][$event] {source: $_handlerDebugSource, ${payload.entries.map((entry) => '${entry.key}: ${entry.value}').join(', ')}}');
+  }
+
   List<HelpdeskManagedUser> _eligibleHandlersForDepartment() {
     final targetDepartment = _selectedDepartmentName().trim();
     if (targetDepartment.isEmpty) return const <HelpdeskManagedUser>[];
-    return _allHandlers
-        .where((handler) => handler.department.trim() == targetDepartment)
+    final eligibleHandlers = _allHandlers
+        .where(
+          (handler) =>
+              handler.role != HelpdeskRole.viewer &&
+              handler.allDepartments
+                  .map((department) => department.trim())
+                  .contains(targetDepartment),
+        )
         .toList()
       ..sort(
         (a, b) => _resolveDisplay(a.username)
             .toLowerCase()
             .compareTo(_resolveDisplay(b.username).toLowerCase()),
       );
+    _logHandlerDebug('TicketDetail.eligibleHandlers', {
+      'ticketId': _ticket.id,
+      'targetDepartment': targetDepartment,
+      'allHandlersCount': _allHandlers.length,
+      'eligibleHandlersCount': eligibleHandlers.length,
+      'allHandlers': _allHandlers,
+      'eligibleHandlers': eligibleHandlers,
+    });
+    return eligibleHandlers;
   }
 
   void _syncSelectedHandlerWithDepartment() {
     final eligibleUsernames = _eligibleHandlersForDepartment()
         .map((handler) => handler.username)
         .toSet();
+    final previousSelectedHandler = _selectedHandler;
     if (_selectedHandler != null && !eligibleUsernames.contains(_selectedHandler)) {
       _selectedHandler = null;
+    }
+    _logHandlerDebug('TicketDetail.syncSelectedHandler', {
+      'ticketId': _ticket.id,
+      'department': _selectedDepartmentName().trim(),
+      'previousSelectedHandler': previousSelectedHandler,
+      'selectedHandler': _selectedHandler,
+      'eligibleUsernames': eligibleUsernames.toList(),
+    });
+  }
+
+  void _syncSelectedStatusWithDepartment() {
+    final availableStatuses =
+        _availableStatusesForTicketDepartment(_selectedDepartmentName());
+    final allowedStatuses = availableStatuses.map((status) => status.key).toSet();
+    if (!allowedStatuses.contains(_selectedStatus)) {
+      final defaultStatus = availableStatuses.firstWhere(
+        (status) => status.isDefault,
+        orElse: () => availableStatuses.first,
+      );
+      _selectedStatus = defaultStatus.key;
     }
   }
 
   Future<void> _loadHandlersForDepartment(String departmentName) async {
     final normalizedDepartment = departmentName.trim();
-    if (normalizedDepartment.isEmpty) return;
+    if (normalizedDepartment.isEmpty) {
+      _logHandlerDebug('TicketDetail.loadHandlers.skipped', {
+        'ticketId': _ticket.id,
+        'department': normalizedDepartment,
+        'reason': 'empty department',
+      });
+      return;
+    }
     try {
       final users = await ref
           .read(chatApiServiceProvider)
           .fetchHelpdeskUsers(department: normalizedDepartment);
+      final apiHandlers = users
+          .where((user) => user.isActive && user.role != 'Viewer')
+          .map(
+            (user) => HelpdeskManagedUser(
+              username: user.username,
+              role: HelpdeskRole.fromString(user.role),
+              department: user.department,
+              departments: user.allDepartments,
+            ),
+          )
+          .toList();
+      final fallbackHandlers = widget.handlers.where((handler) {
+        if (handler.role == HelpdeskRole.viewer) return false;
+        return handler.allDepartments
+            .map((department) => department.trim())
+            .contains(normalizedDepartment);
+      }).map((handler) => HelpdeskManagedUser(
+            username: handler.username,
+            role: handler.role,
+            department: handler.department,
+            departments: handler.departments,
+          ))
+          .toList();
+      final mergedHandlers = <HelpdeskManagedUser>[...apiHandlers];
+      for (final handler in fallbackHandlers) {
+        if (!mergedHandlers.any((entry) => entry.username == handler.username)) {
+          mergedHandlers.add(handler);
+        }
+      }
+      _logHandlerDebug('TicketDetail.loadHandlers.resolved', {
+        'ticketId': _ticket.id,
+        'department': normalizedDepartment,
+        'requestPath': '/helpdesk/users?department=<ticket department>',
+        'apiUsersCount': users.length,
+        'apiUsers': users,
+        'apiHandlersCount': apiHandlers.length,
+        'apiHandlers': apiHandlers,
+        'fallbackHandlersCount': fallbackHandlers.length,
+        'fallbackHandlers': fallbackHandlers,
+        'mergedHandlersCount': mergedHandlers.length,
+        'mergedHandlers': mergedHandlers,
+      });
       if (!mounted) return;
       setState(() {
-        _allHandlers = users
-            .where((user) => user.isActive)
-            .map(
-              (user) => HelpdeskManagedUser(
-                username: user.username,
-                role: HelpdeskRole.fromString(user.role),
-                department: user.department,
-              ),
-            )
-            .toList();
+        _allHandlers = mergedHandlers;
         _syncSelectedHandlerWithDepartment();
       });
-    } catch (_) {
-      // Keep department-local handlers from dashboard if loading all handlers fails.
+    } catch (error) {
+      _logHandlerDebug('TicketDetail.loadHandlers.failed', {
+        'ticketId': _ticket.id,
+        'department': normalizedDepartment,
+        'requestPath': '/helpdesk/users?department=<ticket department>',
+        'error': error,
+        'fallbackHandlersCount': widget.handlers.length,
+        'fallbackHandlers': widget.handlers,
+      });
     }
   }
 
@@ -1953,6 +2294,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
   }
 
   Future<void> _submitNote() async {
+    if (!_canAddNote) return;
     final text = _noteCtrl.text.trim();
     if (text.length < 2) return;
     setState(() { _submittingNote = true; _noteError = null; });
@@ -1988,8 +2330,9 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final durationLabel =
-        _history != null ? _totalDurationLabel(_history!) : '';
+        _history != null ? _totalDurationLabel(_history!, widget.departments, _ticket.department) : '';
     final eligibleHandlers = _eligibleHandlersForDepartment();
+    final availableStatuses = _availableStatusesForTicketDepartment();
 
     return Directionality(
       textDirection: ui.TextDirection.rtl,
@@ -2023,7 +2366,10 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                       overflow: TextOverflow.ellipsis),
                 ),
                 const SizedBox(width: 8),
-                _StatusChip(status: _selectedStatus),
+                _StatusChip(
+                  status: _selectedStatus,
+                  departmentName: _ticket.department,
+                ),
               ]),
             ),
             const Divider(height: 1),
@@ -2126,6 +2472,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                     ..._history!.reversed.map((h) => _HistoryEntry(
                           entry: h,
                           displayName: _resolveDisplay(h.changedBy),
+                          departmentName: _ticket.department,
                         )),
 
                   // Handler assignment history (visible to all users)
@@ -2182,6 +2529,7 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                             setState(() {
                               _selectedDepartmentId = value;
                               _syncSelectedHandlerWithDepartment();
+                              _syncSelectedStatusWithDepartment();
                               _handlerError = null;
                             });
                             if (value != null) {
@@ -2288,9 +2636,16 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                           decoration: const InputDecoration(
                               labelText: 'סטטוס',
                               border: OutlineInputBorder()),
-                          items: ['open', 'in_progress', 'resolved', 'closed']
-                              .map((s) => DropdownMenuItem(
-                                  value: s, child: Text(_statusLabel(s))))
+                          items: availableStatuses
+                              .map((statusEntry) => DropdownMenuItem(
+                                  value: statusEntry.key,
+                                  child: Text(
+                                    _statusLabel(
+                                      widget.departments,
+                                      _ticket.department,
+                                      statusEntry.key,
+                                    ),
+                                  )))
                               .toList(),
                           onChanged: (v) => setState(
                               () => _selectedStatus = v ?? _selectedStatus),
@@ -2342,37 +2697,39 @@ class _TicketDetailSheetState extends ConsumerState<_TicketDetailSheet> {
                         isOwn: n.authorUsername == _currentUser,
                         resolveDisplay: _resolveDisplay)),
 
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _noteCtrl,
-                    textDirection: ui.TextDirection.rtl,
-                    maxLines: 3,
-                    decoration: const InputDecoration(
-                        labelText: 'הערה חדשה',
-                        hintText: 'כתוב הערה...',
-                        border: OutlineInputBorder()),
-                  ),
-                  if (_noteError != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Text(_noteError!,
-                          style: TextStyle(
-                              color: theme.colorScheme.error, fontSize: 12)),
+                  if (_canAddNote) ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _noteCtrl,
+                      textDirection: ui.TextDirection.rtl,
+                      maxLines: 3,
+                      decoration: const InputDecoration(
+                          labelText: 'הערה חדשה',
+                          hintText: 'כתוב הערה...',
+                          border: OutlineInputBorder()),
                     ),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: _submittingNote ? null : _submitNote,
-                      icon: _submittingNote
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2))
-                          : const Icon(Icons.send),
-                      label: const Text('שלח הערה'),
+                    if (_noteError != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(_noteError!,
+                            style: TextStyle(
+                                color: theme.colorScheme.error, fontSize: 12)),
+                      ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: _submittingNote ? null : _submitNote,
+                        icon: _submittingNote
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.send),
+                        label: const Text('שלח הערה'),
+                      ),
                     ),
-                  ),
+                  ],
 
                   const SizedBox(height: 16),
                   OutlinedButton(
@@ -2427,8 +2784,13 @@ class _DetailRow extends StatelessWidget {
 class _HistoryEntry extends StatelessWidget {
   final HelpdeskStatusHistoryEntry entry;
   final String displayName;
+  final String departmentName;
 
-  const _HistoryEntry({required this.entry, required this.displayName});
+  const _HistoryEntry({
+    required this.entry,
+    required this.displayName,
+    required this.departmentName,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -2471,19 +2833,28 @@ class _HistoryEntry extends StatelessWidget {
                 const SizedBox(height: 4),
                 Row(children: [
                   if (entry.oldStatus != null && entry.oldStatus!.isNotEmpty) ...[
-                    _MiniStatusChip(status: entry.oldStatus!),
+                    _MiniStatusChip(
+                      status: entry.oldStatus!,
+                       departmentName: departmentName,
+                    ),
                     const Padding(
                       padding: EdgeInsets.symmetric(horizontal: 4),
                       child: Icon(Icons.arrow_forward, size: 14),
                     ),
-                    _MiniStatusChip(status: entry.newStatus),
+                    _MiniStatusChip(
+                      status: entry.newStatus,
+                      departmentName: departmentName,
+                    ),
                   ] else ...[
                     const Padding(
                       padding: EdgeInsets.only(left: 4),
                       child: Icon(Icons.add_circle_outline, size: 14),
                     ),
                     const SizedBox(width: 4),
-                    _MiniStatusChip(status: entry.newStatus),
+                    _MiniStatusChip(
+                      status: entry.newStatus,
+                      departmentName: departmentName,
+                    ),
                   ],
                 ]),
               ],
@@ -2495,14 +2866,19 @@ class _HistoryEntry extends StatelessWidget {
   }
 }
 
-class _MiniStatusChip extends StatelessWidget {
+class _MiniStatusChip extends ConsumerWidget {
   final String status;
+  final String departmentName;
 
-  const _MiniStatusChip({required this.status});
+  const _MiniStatusChip({
+    required this.status,
+    required this.departmentName,
+  });
 
   @override
-  Widget build(BuildContext context) {
-    final color = _statusColor(status);
+  Widget build(BuildContext context, WidgetRef ref) {
+    final departments = ref.watch(helpdeskProvider).departments;
+    final color = _statusColor(departments, departmentName, status);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
@@ -2510,7 +2886,7 @@ class _MiniStatusChip extends StatelessWidget {
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: color.withAlpha(80)),
       ),
-      child: Text(_statusLabel(status),
+      child: Text(_statusLabel(departments, departmentName, status),
           style: TextStyle(
               color: color, fontSize: 11, fontWeight: FontWeight.bold)),
     );
@@ -2816,6 +3192,12 @@ class _DepartmentSettingsScreenState
         ? legacyIcon
         : _kHelpdeskDepartmentIconOptions.first.key;
     // Working copy of ticket form fields — mutable during the dialog session.
+    List<HelpdeskTicketStatus> ticketStatuses =
+        List<HelpdeskTicketStatus>.from(
+      existing?.ticketStatuses.isNotEmpty == true
+          ? existing!.ticketStatuses
+          : _defaultDepartmentTicketStatuses(),
+    );
     List<HelpdeskTicketFormField> ticketForm =
         List<HelpdeskTicketFormField>.from(existing?.ticketForm ?? []);
     HelpdeskInitialFormConfig initialForm =
@@ -2909,6 +3291,118 @@ class _DepartmentSettingsScreenState
                     ],
                     onChanged: (v) => setSt(() => status = v ?? 'active'),
                   ),
+                  const SizedBox(height: 16),
+                  const Divider(),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('סטטוסי קריאה',
+                          style: TextStyle(fontWeight: FontWeight.bold)),
+                      TextButton.icon(
+                        onPressed: () async {
+                          final added =
+                              await _showTicketStatusEditorDialog(ctx, null);
+                          if (added != null) {
+                            setSt(() {
+                              final updated = [...ticketStatuses, added]
+                                ..sort((a, b) =>
+                                    a.sortOrder.compareTo(b.sortOrder));
+                              if (!updated.any((status) => status.isDefault)) {
+                                updated[0] = updated[0].copyWith(isDefault: true);
+                              }
+                              ticketStatuses = updated;
+                            });
+                          }
+                        },
+                        icon: const Icon(Icons.add, size: 18),
+                        label: const Text('הוסף סטטוס'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  if (ticketStatuses.isEmpty)
+                    const Text('אין סטטוסים מוגדרים',
+                        style: TextStyle(fontSize: 13, color: Colors.grey))
+                  else
+                    ...ticketStatuses.asMap().entries.map((entry) {
+                      final index = entry.key;
+                      final ticketStatus = entry.value;
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 6),
+                        child: ListTile(
+                          dense: true,
+                          leading: CircleAvatar(
+                            radius: 10,
+                            backgroundColor:
+                                _statusColorFromHex(ticketStatus.colorHex),
+                          ),
+                          title: Text(ticketStatus.label),
+                          subtitle: Text(
+                            '${ticketStatus.key}'
+                            '${ticketStatus.isDefault ? ' • ברירת מחדל' : ''}'
+                            '${ticketStatus.isTerminal ? ' • סופי' : ''}',
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.edit, size: 18),
+                                onPressed: () async {
+                                  final edited =
+                                      await _showTicketStatusEditorDialog(
+                                    ctx,
+                                    ticketStatus,
+                                  );
+                                  if (edited != null) {
+                                    setSt(() {
+                                      final updated =
+                                          List<HelpdeskTicketStatus>.from(
+                                              ticketStatuses);
+                                      updated[index] = edited;
+                                      if (edited.isDefault) {
+                                        for (var i = 0;
+                                            i < updated.length;
+                                            i++) {
+                                          if (i != index) {
+                                            updated[i] = updated[i]
+                                                .copyWith(isDefault: false);
+                                          }
+                                        }
+                                      }
+                                      if (!updated.any(
+                                          (status) => status.isDefault)) {
+                                        updated[0] = updated[0]
+                                            .copyWith(isDefault: true);
+                                      }
+                                      ticketStatuses = updated
+                                        ..sort((a, b) => a.sortOrder
+                                            .compareTo(b.sortOrder));
+                                    });
+                                  }
+                                },
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete_outline,
+                                    size: 18, color: Colors.red),
+                                onPressed: ticketStatuses.length <= 1
+                                    ? null
+                                    : () => setSt(() {
+                                          final updated = [
+                                            ...ticketStatuses
+                                          ]..removeAt(index);
+                                          if (!updated.any(
+                                              (status) => status.isDefault)) {
+                                            updated[0] = updated[0]
+                                                .copyWith(isDefault: true);
+                                          }
+                                          ticketStatuses = updated;
+                                        }),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }),
                   const SizedBox(height: 16),
                   const Divider(),
                   const Align(
@@ -3177,6 +3671,7 @@ class _DepartmentSettingsScreenState
           icon: selectedIconKey,
           status: status,
           sortOrder: int.tryParse(sortCtrl.text.trim()) ?? 0,
+          ticketStatuses: ticketStatuses,
           ticketForm: ticketForm,
           initialForm: initialForm,
         );
@@ -3193,6 +3688,7 @@ class _DepartmentSettingsScreenState
           icon: selectedIconKey,
           status: status,
           sortOrder: int.tryParse(sortCtrl.text.trim()) ?? existing.sortOrder,
+          ticketStatuses: ticketStatuses,
           ticketForm: ticketForm,
           initialForm: initialForm,
         );
@@ -3304,6 +3800,133 @@ class _DepartmentSettingsScreenState
       case HelpdeskTicketFormFieldType.select:
         return 'רשימה עם חיפוש';
     }
+  }
+
+  String _normalizeTicketStatusKey(String value) {
+    final normalized = value
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^_+|_+$'), '');
+    return normalized.length > 64 ? normalized.substring(0, 64) : normalized;
+  }
+
+  Future<HelpdeskTicketStatus?> _showTicketStatusEditorDialog(
+    BuildContext ctx,
+    HelpdeskTicketStatus? existing,
+  ) async {
+    final keyCtrl = TextEditingController(text: existing?.key ?? '');
+    final labelCtrl = TextEditingController(text: existing?.label ?? '');
+    final colorCtrl =
+        TextEditingController(text: existing?.colorHex ?? '#757575');
+    final sortOrderCtrl = TextEditingController(
+      text: (existing?.sortOrder ?? 0).toString(),
+    );
+    bool isTerminal = existing?.isTerminal ?? false;
+    bool isDefault = existing?.isDefault ?? false;
+
+    final result = await showDialog<HelpdeskTicketStatus>(
+      context: ctx,
+      builder: (_) => StatefulBuilder(
+        builder: (ctx2, setSt2) => Directionality(
+          textDirection: ui.TextDirection.rtl,
+          child: AlertDialog(
+            title: Text(existing == null ? 'הוסף סטטוס' : 'ערוך סטטוס'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: labelCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'שם תצוגה *',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: keyCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'מזהה סטטוס (אנגלית) *',
+                      hintText: 'awaiting_parts',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: colorCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'צבע HEX',
+                      hintText: '#757575',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: sortOrderCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'סדר מיון',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  SwitchListTile(
+                    value: isDefault,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('סטטוס ברירת מחדל'),
+                    onChanged: (value) => setSt2(() => isDefault = value),
+                  ),
+                  SwitchListTile(
+                    value: isTerminal,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('סטטוס סופי'),
+                    onChanged: (value) => setSt2(() => isTerminal = value),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx2).pop(),
+                child: const Text('ביטול'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  final label = labelCtrl.text.trim();
+                  final key = _normalizeTicketStatusKey(keyCtrl.text);
+                  final color = colorCtrl.text.trim().isEmpty
+                      ? '#757575'
+                      : colorCtrl.text.trim();
+                  if (label.isEmpty || key.isEmpty) {
+                    return;
+                  }
+                  Navigator.of(ctx2).pop(
+                    HelpdeskTicketStatus(
+                      id: existing?.id ?? 0,
+                      key: key,
+                      label: label,
+                      colorHex: color,
+                      sortOrder: int.tryParse(sortOrderCtrl.text.trim()) ?? 0,
+                      isTerminal: isTerminal,
+                      isDefault: isDefault,
+                    ),
+                  );
+                },
+                child: const Text('אישור'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    keyCtrl.dispose();
+    labelCtrl.dispose();
+    colorCtrl.dispose();
+    sortOrderCtrl.dispose();
+    return result;
   }
 
   /// Opens a dialog to add or edit a [HelpdeskTicketFormField].
@@ -3574,7 +4197,9 @@ class _DepartmentSettingsScreenState
                             title: Text(dept.name,
                                 style: const TextStyle(
                                     fontWeight: FontWeight.bold)),
-                            subtitle: Text('סדר: ${dept.sortOrder}'),
+                            subtitle: Text(
+                              'סדר: ${dept.sortOrder} • סטטוסים: ${dept.ticketStatuses.isNotEmpty ? dept.ticketStatuses.length : _defaultDepartmentTicketStatuses().length}',
+                            ),
                             trailing: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [

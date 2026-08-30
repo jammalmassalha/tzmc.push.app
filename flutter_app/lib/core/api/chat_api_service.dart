@@ -63,7 +63,14 @@ class ChatApiService {
   }
 
   String _normalizeHelpdeskRoleValue(String role) {
-    return role.trim().toLowerCase() == 'admin' ? 'Admin' : 'Editor';
+    switch (role.trim().toLowerCase()) {
+      case 'admin':
+        return 'Admin';
+      case 'viewer':
+        return 'Viewer';
+      default:
+        return 'Editor';
+    }
   }
 
   String _normalizeHelpdeskStatusValue(String status) {
@@ -955,15 +962,19 @@ class ChatApiService {
   /// Update helpdesk ticket status
   /// 
   /// [user] is required for backend authorization when session cookies are not available.
-  Future<void> updateHelpdeskTicketStatus(int ticketId, HelpdeskStatus status, String user) async {
+  Future<void> updateHelpdeskTicketStatus(int ticketId, String status, String user) async {
     final normalizedUser = user.trim();
+    final normalizedStatus = status.trim();
     if (normalizedUser.isEmpty) {
       throw ApiException('User is required for helpdesk ticket status update');
+    }
+    if (normalizedStatus.isEmpty) {
+      throw ApiException('Status is required for helpdesk ticket status update');
     }
     
     final response = await _client.put<Map<String, dynamic>>(
       '${ApiEndpoints.helpdeskTickets}/$ticketId/status',
-      data: {'status': status.toApiValue(), 'user': normalizedUser},
+      data: {'status': normalizedStatus, 'user': normalizedUser},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
@@ -1325,6 +1336,7 @@ class ChatApiService {
     String? icon,
     String status = 'active',
     int sortOrder = 0,
+    List<HelpdeskTicketStatus> ticketStatuses = const [],
     List<HelpdeskTicketFormField> ticketForm = const [],
     HelpdeskInitialFormConfig initialForm = const HelpdeskInitialFormConfig(),
   }) async {
@@ -1339,6 +1351,7 @@ class ChatApiService {
         'icon': icon,
         'status': status,
         'sortOrder': sortOrder,
+        'ticketStatuses': ticketStatuses.map((status) => status.toJson()).toList(),
         'ticketForm': ticketForm.map((f) => f.toJson()).toList(),
         'initialForm': initialForm.toJson(),
       },
@@ -1358,6 +1371,7 @@ class ChatApiService {
     String? icon,
     String? status,
     int? sortOrder,
+    List<HelpdeskTicketStatus>? ticketStatuses,
     List<HelpdeskTicketFormField>? ticketForm,
     HelpdeskInitialFormConfig? initialForm,
   }) async {
@@ -1369,6 +1383,10 @@ class ChatApiService {
     if (icon != null) data['icon'] = icon;
     if (status != null) data['status'] = status;
     if (sortOrder != null) data['sortOrder'] = sortOrder;
+    if (ticketStatuses != null) {
+      data['ticketStatuses'] =
+          ticketStatuses.map((status) => status.toJson()).toList();
+    }
     if (ticketForm != null) {
       data['ticketForm'] = ticketForm.map((f) => f.toJson()).toList();
     }
@@ -1509,6 +1527,15 @@ class ChatApiService {
     String? department,
   }) async {
     final normalizedDepartment = department?.trim();
+    const handlerDebugSource = 'ChatApiService';
+    if (kDebugMode) {
+      debugPrint(
+        '[HelpdeskDebug][ChatApiService.fetchHelpdeskUsers] request '
+        '{source: $handlerDebugSource, '
+        'department: ${normalizedDepartment?.isNotEmpty == true ? normalizedDepartment : 'null'}, '
+        'path: ${ApiEndpoints.helpdeskUsers}}',
+      );
+    }
 
     try {
       final response = await _client.get<dynamic>(
@@ -1526,11 +1553,41 @@ class ChatApiService {
       }
 
       final data = _coerceJsonMap(response.data);
+      if (kDebugMode) {
+        debugPrint(
+          '[HelpdeskDebug][ChatApiService.fetchHelpdeskUsers] response '
+          '{source: $handlerDebugSource, '
+          'department: ${normalizedDepartment?.isNotEmpty == true ? normalizedDepartment : 'null'}, '
+          'uri: ${response.requestOptions.uri}, status: ${response.statusCode}, '
+          'result: ${data['result']}, message: ${data['message']}, body: $data}',
+        );
+      }
+      if (data['result'] == 'error') {
+        throw ApiException(
+          _extractErrorMessage(data, 'שגיאה בטעינת משתמשי המוקד'),
+        );
+      }
       final rawList = data['users'] ?? data['helpdeskUsers'] ?? data['data'];
-      return _coerceMapList(rawList).map(HelpdeskUser.fromJson).toList();
+      final users = _coerceMapList(rawList).map(HelpdeskUser.fromJson).toList();
+      if (kDebugMode) {
+        debugPrint(
+          '[HelpdeskDebug][ChatApiService.fetchHelpdeskUsers] parsed '
+          '{source: $handlerDebugSource, '
+          'department: ${normalizedDepartment?.isNotEmpty == true ? normalizedDepartment : 'null'}, '
+          'usersCount: ${users.length}, users: $users}',
+        );
+      }
+      return users;
     } on ApiException {
       rethrow;
     } catch (e) {
+      if (kDebugMode) {
+        debugPrint(
+          '[HelpdeskDebug][ChatApiService.fetchHelpdeskUsers] error '
+          '{source: $handlerDebugSource, '
+          'department: ${normalizedDepartment?.isNotEmpty == true ? normalizedDepartment : 'null'}, error: $e}',
+        );
+      }
       throw ApiException('שגיאה בעיבוד נתוני משתמשי המוקד');
     }
   }

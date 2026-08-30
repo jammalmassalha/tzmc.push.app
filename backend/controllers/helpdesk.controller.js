@@ -26,14 +26,123 @@ function toPositiveInteger(value, fallbackValue) {
     return Math.floor(parsed);
 }
 
+function toBoolean(value) {
+    if (value === true || value === 1) return true;
+    const normalized = toTrimmedString(value).toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
+}
+
+function normalizeHelpdeskStatusKey(value) {
+    const raw = toTrimmedString(value).toLowerCase();
+    if (!raw) return '';
+    let result = '';
+    let previousUnderscore = false;
+    for (let i = 0; i < raw.length && result.length < 64; i++) {
+        const ch = raw[i];
+        const code = ch.charCodeAt(0);
+        const isLetter = code >= 97 && code <= 122;
+        const isNumber = code >= 48 && code <= 57;
+        if (isLetter || isNumber) {
+            result += ch;
+            previousUnderscore = false;
+            continue;
+        }
+        if ((ch === '_' || ch === '-' || ch === ' ') && result.length > 0 && !previousUnderscore) {
+            result += '_';
+            previousUnderscore = true;
+        }
+    }
+    let start = 0;
+    let end = result.length;
+    while (start < end && result[start] === '_') start += 1;
+    while (end > start && result[end - 1] === '_') end -= 1;
+    return result.slice(start, end);
+}
+
+function normalizeHelpdeskStatusColor(value) {
+    const raw = toTrimmedString(value);
+    if (!raw) return null;
+    const normalized = raw.startsWith('#') ? raw.toUpperCase() : `#${raw.toUpperCase()}`;
+    return /^#[0-9A-F]{6}$/.test(normalized) ? normalized : null;
+}
+
+function cloneDefaultHelpdeskTicketStatuses() {
+    return DEFAULT_HELPDESK_TICKET_STATUSES.map((status) => ({ ...status }));
+}
+
+function normalizeHelpdeskTicketStatuses(rawStatuses) {
+    if (!Array.isArray(rawStatuses) || rawStatuses.length === 0) {
+        return cloneDefaultHelpdeskTicketStatuses();
+    }
+    const normalizedStatuses = [];
+    const seenKeys = new Set();
+    for (let i = 0; i < rawStatuses.length && normalizedStatuses.length < 50; i++) {
+        const entry = rawStatuses[i];
+        if (!entry || typeof entry !== 'object') continue;
+        const key = normalizeHelpdeskStatusKey(
+            entry.key || entry.statusKey || entry.status_key || entry.name || entry.status
+        );
+        const label = toTrimmedString(
+            entry.label || entry.displayLabel || entry.display_label || key
+        ).slice(0, 120);
+        if (!key || !label) {
+            throw new Error('כל סטטוס חייב לכלול מזהה ושם תצוגה');
+        }
+        if (seenKeys.has(key)) {
+            throw new Error(`סטטוס כפול אינו תקין: ${key}`);
+        }
+        seenKeys.add(key);
+        normalizedStatuses.push({
+            id: toPositiveInteger(entry.id, null),
+            key,
+            label,
+            colorHex: normalizeHelpdeskStatusColor(entry.colorHex || entry.color_hex || entry.color) || '#757575',
+            sortOrder: toNonNegativeInteger(entry.sortOrder ?? entry.sort_order, normalizedStatuses.length),
+            isTerminal: toBoolean(entry.isTerminal ?? entry.is_terminal),
+            isDefault: toBoolean(entry.isDefault ?? entry.is_default)
+        });
+    }
+    if (normalizedStatuses.length === 0) {
+        return cloneDefaultHelpdeskTicketStatuses();
+    }
+    let defaultAssigned = false;
+    for (const status of normalizedStatuses) {
+        if (status.isDefault && !defaultAssigned) {
+            defaultAssigned = true;
+        } else {
+            status.isDefault = false;
+        }
+    }
+    if (!defaultAssigned) {
+        const firstNonTerminal = normalizedStatuses.find((status) => !status.isTerminal);
+        (firstNonTerminal || normalizedStatuses[0]).isDefault = true;
+    }
+    normalizedStatuses.sort((a, b) => {
+        if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+        return a.key.localeCompare(b.key);
+    });
+    return normalizedStatuses;
+}
+
+function mapHelpdeskTicketStatusRow(row) {
+    return {
+        id: row.id,
+        key: toTrimmedString(row.status_key || row.key || row.status),
+        label: toTrimmedString(row.display_label || row.label || row.status_key || row.status),
+        colorHex: normalizeHelpdeskStatusColor(row.color_hex || row.colorHex || row.color) || '#757575',
+        sortOrder: toNonNegativeInteger(row.sort_order, 0),
+        isTerminal: Boolean(row.is_terminal),
+        isDefault: Boolean(row.is_default)
+    };
+}
+
 function toNonNegativeInteger(value, fallbackValue) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed < 0) return fallbackValue;
     return Math.floor(parsed);
 }
 
-const VALID_STATUSES = ['open', 'in_progress', 'resolved', 'closed'];
-const VALID_ROLES = ['Admin', 'Editor'];
+const VALID_ROLES = ['Admin', 'Editor', 'Viewer'];
 const VALID_FORM_FIELD_TYPES = new Set(['input', 'textarea', 'radio', 'select']);
 const VALID_INPUT_TYPES = new Set(['text', 'tel', 'number']);
 const DEFAULT_INITIAL_FORM_VISIBILITY = Object.freeze({
@@ -50,7 +159,12 @@ const DEFAULT_DEPARTMENTS = [
     { name: 'בית מרקחת',   icon: 'local_pharmacy' },
     { name: 'הנדסה רפואית', icon: 'biotech' }
 ];
-const ONGOING_STATUSES = new Set(['open', 'in_progress']);
+const DEFAULT_HELPDESK_TICKET_STATUSES = Object.freeze([
+    { key: 'open', label: 'פתוחה', colorHex: '#2E7D32', sortOrder: 0, isTerminal: false, isDefault: true },
+    { key: 'in_progress', label: 'בטיפול', colorHex: '#E65100', sortOrder: 1, isTerminal: false, isDefault: false },
+    { key: 'resolved', label: 'טופלה', colorHex: '#1565C0', sortOrder: 2, isTerminal: true, isDefault: false },
+    { key: 'closed', label: 'סגורה', colorHex: '#757575', sortOrder: 3, isTerminal: true, isDefault: false }
+]);
 
 // Simple rate limiting store (per-user, in-memory)
 const helpdeskRateLimitStore = new Map();
@@ -529,6 +643,49 @@ async function ensureHelpdeskTables(pool) {
             console.error('[HELPDESK] Seed helpdesk_user_departments error:', err && err.message ? err.message : err);
         }
     }
+
+    await safeCreateTable(`
+        CREATE TABLE IF NOT EXISTS \`helpdesk_tickets_statuses\` (
+            \`id\` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            \`department_id\` INT UNSIGNED NOT NULL,
+            \`status_key\` VARCHAR(64) NOT NULL,
+            \`display_label\` VARCHAR(120) NOT NULL,
+            \`color_hex\` VARCHAR(7) NOT NULL DEFAULT '#757575',
+            \`sort_order\` INT NOT NULL DEFAULT 0,
+            \`is_terminal\` TINYINT(1) NOT NULL DEFAULT 0,
+            \`is_default\` TINYINT(1) NOT NULL DEFAULT 0,
+            \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (\`id\`),
+            UNIQUE INDEX \`idx_department_status_key\` (\`department_id\`, \`status_key\`),
+            INDEX \`idx_department_sort\` (\`department_id\`, \`sort_order\`, \`id\`),
+            CONSTRAINT \`fk_helpdesk_ticket_status_department\`
+                FOREIGN KEY (\`department_id\`) REFERENCES \`helpdesk_departments\` (\`id\`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `, 'helpdesk_tickets_statuses');
+
+    try {
+        const [departmentRows] = await pool.query('SELECT `id` FROM `helpdesk_departments` ORDER BY `id`');
+        for (const row of departmentRows) {
+            const departmentId = toPositiveInteger(row.id, 0);
+            if (!departmentId) continue;
+            const [statusCountRows] = await pool.query(
+                'SELECT COUNT(*) AS cnt FROM `helpdesk_tickets_statuses` WHERE `department_id` = ?',
+                [departmentId]
+            );
+            const count = statusCountRows[0] && statusCountRows[0].cnt ? Number(statusCountRows[0].cnt) : 0;
+            if (count > 0) continue;
+            for (const status of DEFAULT_HELPDESK_TICKET_STATUSES) {
+                await pool.execute(
+                    'INSERT IGNORE INTO `helpdesk_tickets_statuses` (`department_id`, `status_key`, `display_label`, `color_hex`, `sort_order`, `is_terminal`, `is_default`) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    [departmentId, status.key, status.label, status.colorHex, status.sortOrder, status.isTerminal ? 1 : 0, status.isDefault ? 1 : 0]
+                );
+            }
+        }
+    } catch (err) {
+        if (!(err && err.errno === 1146)) {
+            console.error('[HELPDESK] Seed helpdesk_tickets_statuses error:', err && err.message ? err.message : err);
+        }
+    }
 }
 
 /**
@@ -571,6 +728,179 @@ async function setUserDepartments(conn, userId, departments) {
             [values]
         );
     }
+}
+
+async function getTicketStatusesByDepartmentIds(poolOrConn, departmentIds) {
+    const uniqueDepartmentIds = [...new Set((Array.isArray(departmentIds) ? departmentIds : [])
+        .map((departmentId) => toPositiveInteger(departmentId, 0))
+        .filter(Boolean))];
+    if (uniqueDepartmentIds.length === 0) return new Map();
+    const placeholders = uniqueDepartmentIds.map(() => '?').join(', ');
+    const [rows] = await poolOrConn.query(
+        `SELECT \`id\`, \`department_id\`, \`status_key\`, \`display_label\`, \`color_hex\`, \`sort_order\`, \`is_terminal\`, \`is_default\`
+         FROM \`helpdesk_tickets_statuses\`
+         WHERE \`department_id\` IN (${placeholders})
+         ORDER BY \`department_id\`, \`sort_order\`, \`id\``,
+        uniqueDepartmentIds
+    );
+    const statusesByDepartmentId = new Map();
+    for (const departmentId of uniqueDepartmentIds) {
+        statusesByDepartmentId.set(departmentId, []);
+    }
+    for (const row of rows) {
+        const departmentId = toPositiveInteger(row.department_id, 0);
+        if (!departmentId || !statusesByDepartmentId.has(departmentId)) continue;
+        statusesByDepartmentId.get(departmentId).push(mapHelpdeskTicketStatusRow(row));
+    }
+    for (const departmentId of uniqueDepartmentIds) {
+        const statuses = statusesByDepartmentId.get(departmentId);
+        statusesByDepartmentId.set(
+            departmentId,
+            Array.isArray(statuses) && statuses.length ? normalizeHelpdeskTicketStatuses(statuses) : cloneDefaultHelpdeskTicketStatuses()
+        );
+    }
+    return statusesByDepartmentId;
+}
+
+async function getDepartmentTicketStatuses(poolOrConn, departmentId) {
+    const statusesByDepartmentId = await getTicketStatusesByDepartmentIds(poolOrConn, [departmentId]);
+    return statusesByDepartmentId.get(toPositiveInteger(departmentId, 0)) || cloneDefaultHelpdeskTicketStatuses();
+}
+
+async function enrichDepartmentsWithTicketStatuses(poolOrConn, departments) {
+    const source = Array.isArray(departments) ? departments : [];
+    if (source.length === 0) return [];
+    const departmentIds = source.map((department) => department.id);
+    const statusesByDepartmentId = await getTicketStatusesByDepartmentIds(poolOrConn, departmentIds);
+    return source.map((department) => ({
+        ...department,
+        ticketStatuses: statusesByDepartmentId.get(toPositiveInteger(department.id, 0)) || cloneDefaultHelpdeskTicketStatuses()
+    }));
+}
+
+async function getDepartmentStatusLookupByName(poolOrConn, departmentNames) {
+    const normalizedNames = [...new Set((Array.isArray(departmentNames) ? departmentNames : [])
+        .map((departmentName) => toTrimmedString(departmentName))
+        .filter(Boolean))];
+    const lookup = new Map();
+    if (normalizedNames.length === 0) return lookup;
+    const placeholders = normalizedNames.map(() => '?').join(', ');
+    const [departmentRows] = await poolOrConn.query(
+        `SELECT \`id\`, \`name\` FROM \`helpdesk_departments\` WHERE \`name\` IN (${placeholders})`,
+        normalizedNames
+    );
+    const statusesByDepartmentId = await getTicketStatusesByDepartmentIds(
+        poolOrConn,
+        departmentRows.map((row) => row.id)
+    );
+    for (const departmentRow of departmentRows) {
+        lookup.set(
+            departmentRow.name,
+            statusesByDepartmentId.get(toPositiveInteger(departmentRow.id, 0)) || cloneDefaultHelpdeskTicketStatuses()
+        );
+    }
+    for (const departmentName of normalizedNames) {
+        if (!lookup.has(departmentName)) {
+            lookup.set(departmentName, cloneDefaultHelpdeskTicketStatuses());
+        }
+    }
+    return lookup;
+}
+
+function getDefaultTicketStatusKey(statuses) {
+    const source = Array.isArray(statuses) && statuses.length ? statuses : cloneDefaultHelpdeskTicketStatuses();
+    const defaultStatus = source.find((status) => status.isDefault) || source.find((status) => !status.isTerminal) || source[0];
+    return defaultStatus ? defaultStatus.key : 'open';
+}
+
+function isTerminalTicketStatus(statuses, statusKey) {
+    const normalizedStatusKey = toTrimmedString(statusKey);
+    const match = (Array.isArray(statuses) ? statuses : []).find((status) => status.key === normalizedStatusKey);
+    if (match) return Boolean(match.isTerminal);
+    return normalizedStatusKey === 'closed' || normalizedStatusKey === 'resolved';
+}
+
+function getTicketStatusLabel(statuses, statusKey) {
+    const normalizedStatusKey = toTrimmedString(statusKey);
+    const match = (Array.isArray(statuses) ? statuses : []).find((status) => status.key === normalizedStatusKey);
+    return match ? match.label : normalizedStatusKey;
+}
+
+async function replaceDepartmentTicketStatuses(conn, departmentId, departmentName, rawStatuses) {
+    const nextStatuses = normalizeHelpdeskTicketStatuses(rawStatuses);
+    const [existingRows] = await conn.query(
+        'SELECT `id`, `status_key` FROM `helpdesk_tickets_statuses` WHERE `department_id` = ? ORDER BY `sort_order`, `id`',
+        [departmentId]
+    );
+    const existingById = new Map();
+    for (const row of existingRows) {
+        existingById.set(toPositiveInteger(row.id, 0), toTrimmedString(row.status_key));
+    }
+    const nextIds = new Set(nextStatuses.map((status) => toPositiveInteger(status.id, 0)).filter(Boolean));
+    const nextDefaultStatusKey = getDefaultTicketStatusKey(nextStatuses);
+    for (const status of nextStatuses) {
+        const existingKey = existingById.get(toPositiveInteger(status.id, 0));
+        if (existingKey && existingKey !== status.key) {
+            await conn.execute(
+                'UPDATE `helpdesk_tickets` SET `status` = ? WHERE `department` = ? AND `status` = ?',
+                [status.key, departmentName, existingKey]
+            );
+        }
+    }
+    for (const row of existingRows) {
+        const existingId = toPositiveInteger(row.id, 0);
+        const existingKey = toTrimmedString(row.status_key);
+        if (existingId && nextIds.has(existingId)) continue;
+        await conn.execute(
+            'UPDATE `helpdesk_tickets` SET `status` = ? WHERE `department` = ? AND `status` = ?',
+            [nextDefaultStatusKey, departmentName, existingKey]
+        );
+    }
+    for (const status of nextStatuses) {
+        if (toPositiveInteger(status.id, 0)) {
+            await conn.execute(
+                'UPDATE `helpdesk_tickets_statuses` SET `status_key` = ?, `display_label` = ?, `color_hex` = ?, `sort_order` = ?, `is_terminal` = ?, `is_default` = ? WHERE `id` = ? AND `department_id` = ?',
+                [status.key, status.label, status.colorHex, status.sortOrder, status.isTerminal ? 1 : 0, status.isDefault ? 1 : 0, status.id, departmentId]
+            );
+        } else {
+            await conn.execute(
+                'INSERT INTO `helpdesk_tickets_statuses` (`department_id`, `status_key`, `display_label`, `color_hex`, `sort_order`, `is_terminal`, `is_default`) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                [departmentId, status.key, status.label, status.colorHex, status.sortOrder, status.isTerminal ? 1 : 0, status.isDefault ? 1 : 0]
+            );
+        }
+    }
+    const removableIds = existingRows
+        .map((row) => toPositiveInteger(row.id, 0))
+        .filter((existingId) => existingId && !nextIds.has(existingId));
+    if (removableIds.length > 0) {
+        const deletePlaceholders = removableIds.map(() => '?').join(', ');
+        await conn.query(
+            `DELETE FROM \`helpdesk_tickets_statuses\` WHERE \`department_id\` = ? AND \`id\` IN (${deletePlaceholders})`,
+            [departmentId, ...removableIds]
+        );
+    }
+}
+
+function getHelpdeskRoleDepartments(roleInfo) {
+    if (!roleInfo) return [];
+    if (Array.isArray(roleInfo.departments) && roleInfo.departments.length) {
+        return roleInfo.departments.map((department) => toTrimmedString(department)).filter(Boolean);
+    }
+    const primaryDepartment = toTrimmedString(roleInfo.department || '');
+    return primaryDepartment ? [primaryDepartment] : [];
+}
+
+function canViewDepartmentTickets(roleInfo, departmentName) {
+    if (!roleInfo) return false;
+    if (roleInfo.role === 'Admin') return true;
+    const ticketDepartment = toTrimmedString(departmentName);
+    return getHelpdeskRoleDepartments(roleInfo).includes(ticketDepartment);
+}
+
+function canManageDepartmentTickets(roleInfo, departmentName) {
+    if (!roleInfo) return false;
+    if (roleInfo.role !== 'Admin' && roleInfo.role !== 'Editor') return false;
+    return canViewDepartmentTickets(roleInfo, departmentName);
 }
 
 function mapTicketRow(row) {
@@ -778,17 +1108,23 @@ function registerHelpdeskController(app, deps = {}) {
             if (!activeDepts.some((d) => d.name === department)) {
                 return res.status(400).json({ result: 'error', message: 'מחלקה לא תקינה' });
             }
+            let departmentId = 0;
+            let departmentStatuses = cloneDefaultHelpdeskTicketStatuses();
             let departmentFormFields = [];
             let initialFormVisibility = { ...DEFAULT_INITIAL_FORM_VISIBILITY };
             try {
                 const [departmentRows] = await pool.query(
-                    'SELECT `ticket_form_config` FROM `helpdesk_departments` WHERE `name` = ? LIMIT 1',
+                    'SELECT `id`, `ticket_form_config` FROM `helpdesk_departments` WHERE `name` = ? LIMIT 1',
                     [department]
                 );
                 if (departmentRows.length) {
+                    departmentId = toPositiveInteger(departmentRows[0].id, 0);
                     const parsedConfig = parseDepartmentTicketFormConfigDetails(departmentRows[0].ticket_form_config);
                     departmentFormFields = parsedConfig.fields;
                     initialFormVisibility = parsedConfig.initialForm;
+                    if (departmentId) {
+                        departmentStatuses = await getDepartmentTicketStatuses(pool, departmentId);
+                    }
                 }
             } catch (deptConfigErr) {
                 if (!(deptConfigErr && deptConfigErr.errno === 1146)) {
@@ -813,18 +1149,19 @@ function registerHelpdeskController(app, deps = {}) {
                 : null;
             const normalizedTitle = title || `פנייה למחלקה ${department}`;
             const normalizedDescription = description || 'ללא תיאור';
+            const initialStatusKey = getDefaultTicketStatusKey(departmentStatuses);
             const [result] = await pool.execute(
                 'INSERT INTO `helpdesk_tickets` (`creator_username`, `department`, `title`, `description`, `location`, `phone`, `attachment_url`, `custom_fields_json`, `status`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [user, department, normalizedTitle, normalizedDescription, location, phone, attachmentUrl, customFieldsJson, 'open']
+                [user, department, normalizedTitle, normalizedDescription, location, phone, attachmentUrl, customFieldsJson, initialStatusKey]
             );
             const insertId = result.insertId;
-            // Record initial "open" status in history.  Awaited so the entry is
+            // Record initial status in history. Awaited so the entry is
             // guaranteed to exist before the response is sent, even if this is the
             // only way the ticket gets a history entry (e.g. status is never changed).
             try {
                 await pool.execute(
                     'INSERT INTO `helpdesk_status_history` (`ticket_id`, `old_status`, `new_status`, `changed_by`) VALUES (?, NULL, ?, ?)',
-                    [insertId, 'open', user]
+                    [insertId, initialStatusKey, user]
                 );
             } catch (histErr) {
                 console.error('[HELPDESK] Insert status history error:', histErr && histErr.message ? histErr.message : histErr);
@@ -875,17 +1212,64 @@ function registerHelpdeskController(app, deps = {}) {
                     [user]
                 ),
                 pool.query(
-                    'SELECT * FROM `helpdesk_tickets` WHERE `handler_username` = ? AND `status` != ? ORDER BY `created_at` DESC LIMIT 100',
-                    [user, 'closed']
+                    'SELECT * FROM `helpdesk_tickets` WHERE `handler_username` = ? ORDER BY `created_at` DESC LIMIT 100',
+                    [user]
                 )
             ]);
 
             const myTickets = ticketRows[0].map(mapTicketRow);
-            const ongoing = myTickets.filter((t) => ONGOING_STATUSES.has(t.status));
-            const past = myTickets.filter((t) => !ONGOING_STATUSES.has(t.status));
-            const assigned = assignedRows[0].map(mapTicketRow);
+            const assignedTickets = assignedRows[0].map(mapTicketRow);
+            const statusLookupByDepartment = await getDepartmentStatusLookupByName(
+                pool,
+                [...new Set([...myTickets, ...assignedTickets].map((ticket) => ticket.department))]
+            );
+            const ongoing = myTickets.filter((ticket) => !isTerminalTicketStatus(statusLookupByDepartment.get(ticket.department), ticket.status));
+            const past = myTickets.filter((ticket) => isTerminalTicketStatus(statusLookupByDepartment.get(ticket.department), ticket.status));
+            const assigned = assignedTickets.filter((ticket) => !isTerminalTicketStatus(statusLookupByDepartment.get(ticket.department), ticket.status));
 
             const myRole = roleInfo ? { role: roleInfo.role, department: roleInfo.department, departments: roleInfo.departments || [roleInfo.department] } : null;
+
+            async function mapHandlersWithDepartments(rows) {
+                const handlers = (Array.isArray(rows) ? rows : []).map((r) => ({
+                    id: r.id,
+                    username: r.username,
+                    role: r.role,
+                    department: r.department,
+                    departments: []
+                }));
+                if (handlers.length === 0) {
+                    return [];
+                }
+
+                try {
+                    const userIds = handlers.map((handler) => handler.id);
+                    const placeholders = userIds.map(() => '?').join(', ');
+                    const [deptRows] = await pool.query(
+                        `SELECT \`user_id\`, \`department\` FROM \`helpdesk_user_departments\` WHERE \`user_id\` IN (${placeholders}) ORDER BY \`department\``,
+                        userIds
+                    );
+                    const deptsByUserId = {};
+                    for (const row of deptRows) {
+                        if (!deptsByUserId[row.user_id]) deptsByUserId[row.user_id] = [];
+                        deptsByUserId[row.user_id].push(row.department);
+                    }
+                    return handlers.map((handler) => ({
+                        username: handler.username,
+                        role: handler.role,
+                        department: handler.department,
+                        departments: deptsByUserId[handler.id] && deptsByUserId[handler.id].length
+                            ? deptsByUserId[handler.id]
+                            : (handler.department ? [handler.department] : [])
+                    }));
+                } catch (_error) {
+                    return handlers.map((handler) => ({
+                        username: handler.username,
+                        role: handler.role,
+                        department: handler.department,
+                        departments: handler.department ? [handler.department] : []
+                    }));
+                }
+            }
 
             // If user is an Editor or Admin, fetch tickets from ALL of their departments.
             let editorTickets = null;
@@ -907,7 +1291,7 @@ function registerHelpdeskController(app, deps = {}) {
                         )
                     ]);
                     editorTickets = editorTicketRows[0].map(mapTicketRow);
-                    handlers = handlerRows[0].map((r) => ({ username: r.username, role: r.role, department: r.department }));
+                    handlers = await mapHandlersWithDepartments(handlerRows[0]);
                 } else {
                     const deptsPlaceholders = userDepts.map(() => '?').join(', ');
                     const [editorTicketRows, handlerRows] = await Promise.all([
@@ -921,7 +1305,7 @@ function registerHelpdeskController(app, deps = {}) {
                         )
                     ]);
                     editorTickets = editorTicketRows[0].map(mapTicketRow);
-                    handlers = handlerRows[0].map((r) => ({ username: r.username, role: r.role, department: r.department }));
+                    handlers = await mapHandlersWithDepartments(handlerRows[0]);
                 }
             }
 
@@ -953,7 +1337,7 @@ function registerHelpdeskController(app, deps = {}) {
             await getTablesReady();
             // Verify editor role for this user
             const editorRole = await getHelpdeskUserRole(pool, user);
-            if (!editorRole) {
+            if (!editorRole || (editorRole.role !== 'Admin' && editorRole.role !== 'Editor')) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאת עורך' });
             }
 
@@ -966,23 +1350,14 @@ function registerHelpdeskController(app, deps = {}) {
                 return res.status(404).json({ result: 'error', message: 'קריאה לא נמצאה' });
             }
             const ticketDept = ticketRows[0].department;
-            const editorDepts = editorRole.departments && editorRole.departments.length
-                ? editorRole.departments
-                : [editorRole.department];
-            if (!editorDepts.includes(ticketDept)) {
+            if (!canManageDepartmentTickets(editorRole, ticketDept)) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה לקריאה ממחלקה אחרת' });
             }
 
             // If assigning a handler, verify handler has access to the ticket's department
             if (handlerUsername) {
                 const handlerRole = await getHelpdeskUserRole(pool, handlerUsername);
-                if (!handlerRole) {
-                    return res.status(400).json({ result: 'error', message: 'המטפל חייב להיות עורך באותה מחלקה' });
-                }
-                const handlerDepts = handlerRole.departments && handlerRole.departments.length
-                    ? handlerRole.departments
-                    : [handlerRole.department];
-                if (!handlerDepts.includes(ticketDept)) {
+                if (!handlerRole || !canManageDepartmentTickets(handlerRole, ticketDept)) {
                     return res.status(400).json({ result: 'error', message: 'המטפל חייב להיות עורך באותה מחלקה' });
                 }
             }
@@ -1060,7 +1435,7 @@ function registerHelpdeskController(app, deps = {}) {
         try {
             await getTablesReady();
             const editorRole = await getHelpdeskUserRole(pool, user);
-            if (!editorRole) {
+            if (!editorRole || (editorRole.role !== 'Admin' && editorRole.role !== 'Editor')) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאת עורך' });
             }
 
@@ -1072,7 +1447,7 @@ function registerHelpdeskController(app, deps = {}) {
                 return res.status(404).json({ result: 'error', message: 'קריאה לא נמצאה' });
             }
             const ticket = ticketRows[0];
-            if (editorRole.role !== 'Admin' && ticket.department !== editorRole.department) {
+            if (!canManageDepartmentTickets(editorRole, ticket.department)) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה להעביר קריאה ממחלקה אחרת' });
             }
 
@@ -1157,7 +1532,7 @@ function registerHelpdeskController(app, deps = {}) {
 
         try {
             await getTablesReady();
-            // Verify the ticket exists and the user is authorized (creator, handler, or Editor of same dept)
+            // Verify the ticket exists and the user is authorized (creator, handler, or Editor/Admin of same dept)
             const [ticketRows] = await pool.query(
                 'SELECT `id`, `title`, `creator_username`, `handler_username`, `department` FROM `helpdesk_tickets` WHERE `id` = ?',
                 [ticketId]
@@ -1170,7 +1545,7 @@ function registerHelpdeskController(app, deps = {}) {
             let isAuthorized = isDirectUser;
             if (!isAuthorized) {
                 const editorRole = await getHelpdeskUserRole(pool, user);
-                isAuthorized = Boolean(editorRole && editorRole.department === ticket.department);
+                isAuthorized = canManageDepartmentTickets(editorRole, ticket.department);
             }
             if (!isAuthorized) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה להוסיף הערה לקריאה זו' });
@@ -1289,7 +1664,7 @@ function registerHelpdeskController(app, deps = {}) {
             let isAuthorized = isDirectUser;
             if (!isAuthorized) {
                 const editorRole = await getHelpdeskUserRole(pool, user);
-                isAuthorized = Boolean(editorRole && editorRole.department === ticket.department);
+                isAuthorized = canViewDepartmentTickets(editorRole, ticket.department);
             }
             if (!isAuthorized) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה לצפות בהערות קריאה זו' });
@@ -1327,7 +1702,7 @@ function registerHelpdeskController(app, deps = {}) {
         }
         const body = req.body && typeof req.body === 'object' ? req.body : {};
         const status = toTrimmedString(body.status || '');
-        if (!VALID_STATUSES.includes(status)) {
+        if (!status) {
             return res.status(400).json({ result: 'error', message: 'סטטוס לא תקין' });
         }
 
@@ -1341,14 +1716,19 @@ function registerHelpdeskController(app, deps = {}) {
                 return res.status(404).json({ result: 'error', message: 'קריאה לא נמצאה' });
             }
             const ticket = ticketRows[0];
-            // Allow creator, assigned handler, or Editor of the same department to change status
+            // Allow creator, assigned handler, or Editor/Admin of the same department to change status
             let isAuthorized = ticket.creator_username === user || ticket.handler_username === user;
             if (!isAuthorized) {
                 const editorRole = await getHelpdeskUserRole(pool, user);
-                isAuthorized = Boolean(editorRole && editorRole.department === ticket.department);
+                isAuthorized = canManageDepartmentTickets(editorRole, ticket.department);
             }
             if (!isAuthorized) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה לשנות את הסטטוס' });
+            }
+            const departmentStatusLookup = await getDepartmentStatusLookupByName(pool, [ticket.department]);
+            const departmentStatuses = departmentStatusLookup.get(ticket.department) || cloneDefaultHelpdeskTicketStatuses();
+            if (!departmentStatuses.some((entry) => entry.key === status)) {
+                return res.status(400).json({ result: 'error', message: 'סטטוס לא תקין למחלקה זו' });
             }
 
             const previousStatus = ticket.status;
@@ -1368,8 +1748,7 @@ function registerHelpdeskController(app, deps = {}) {
 
             // Notify creator and/or handler of the status change under 'מוקד איחוד' chat
             if (typeof sendPushNotificationToUser === 'function') {
-                const statusLabels = { open: 'פתוח', in_progress: 'בתהליך', resolved: 'פתור', closed: 'סגור' };
-                const statusLabel = statusLabels[status] || status;
+                const statusLabel = getTicketStatusLabel(departmentStatuses, status);
                 const ticketTitle = toTrimmedString(ticket.title || '');
                 const statusMsgText = `Ticket #${ticketId}${ticketTitle ? ' - ' + ticketTitle : ''}: סטטוס → ${statusLabel}`;
                 const statusNotifData = {
@@ -1422,7 +1801,7 @@ function registerHelpdeskController(app, deps = {}) {
             let isAuthorized = isDirectUser;
             if (!isAuthorized) {
                 const editorRole = await getHelpdeskUserRole(pool, user);
-                isAuthorized = Boolean(editorRole && editorRole.department === ticket.department);
+                isAuthorized = canViewDepartmentTickets(editorRole, ticket.department);
             }
             if (!isAuthorized) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה לצפות בהיסטוריית הקריאה' });
@@ -1464,7 +1843,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // GET /helpdesk/tickets/:id/handler-history - Get handler assignment history for a ticket
-    // Accessible to the ticket creator, assigned handler, and any Editor in the same department.
+    // Accessible to the ticket creator, assigned handler, and any helpdesk user in the same department.
     app.get(['/helpdesk/tickets/:id/handler-history', '/notify/helpdesk/tickets/:id/handler-history'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) {
@@ -1489,7 +1868,7 @@ function registerHelpdeskController(app, deps = {}) {
             let isAuthorized = isDirectUser;
             if (!isAuthorized) {
                 const editorRole = await getHelpdeskUserRole(pool, user);
-                isAuthorized = Boolean(editorRole && editorRole.department === ticket.department);
+                isAuthorized = canViewDepartmentTickets(editorRole, ticket.department);
             }
             if (!isAuthorized) {
                 return res.status(403).json({ result: 'error', message: 'אין הרשאה לצפות בהיסטוריית המטפלים' });
@@ -1556,21 +1935,30 @@ function registerHelpdeskController(app, deps = {}) {
             const statusSelectWithJoin = withStatusColumn ? 'hu.`status`' : '\'Active\' AS `status`';
             const statusSelectNoJoin = withStatusColumn ? '`status`' : '\'Active\' AS `status`';
             const adminWithDepartment = Boolean(editorRole.role === 'Admin' && departmentFilter);
+            const ownedDepartments = editorRole.departments && editorRole.departments.length
+                ? editorRole.departments
+                : [editorRole.department];
             const usersDepartment = editorRole.role === 'Admin'
                 ? (departmentFilter || '')
-                : editorRole.department;
+                : (departmentFilter || editorRole.department);
             const shouldFilterDepartment = adminWithDepartment || editorRole.role !== 'Admin';
             const params = shouldFilterDepartment ? [usersDepartment] : null;
 
+            if (editorRole.role !== 'Admin' && departmentFilter && !ownedDepartments.includes(departmentFilter)) {
+                const error = new Error('אין הרשאה למחלקה זו');
+                error.statusCode = 403;
+                throw error;
+            }
+
             const withJoinSql = shouldFilterDepartment
-                ? `SELECT hu.\`id\`, hu.\`username\`, hu.\`role\`, hu.\`department\`, ${statusSelectWithJoin}, hu.\`created_at\`, NULLIF(TRIM(s.\`FullName\`), '') AS \`full_name\` FROM \`helpdesk_users\` hu LEFT JOIN \`Subscribe\` s ON s.\`User\` COLLATE utf8mb4_unicode_ci = hu.\`username\` WHERE hu.\`department\` = ? ORDER BY hu.\`username\``
+                ? `SELECT DISTINCT hu.\`id\`, hu.\`username\`, hu.\`role\`, hu.\`department\`, ${statusSelectWithJoin}, hu.\`created_at\`, NULLIF(TRIM(s.\`FullName\`), '') AS \`full_name\` FROM \`helpdesk_users\` hu INNER JOIN \`helpdesk_user_departments\` hud ON hud.\`user_id\` = hu.\`id\` AND hud.\`department\` = ? LEFT JOIN \`Subscribe\` s ON s.\`User\` COLLATE utf8mb4_unicode_ci = hu.\`username\` ORDER BY hu.\`username\``
                 : `SELECT hu.\`id\`, hu.\`username\`, hu.\`role\`, hu.\`department\`, ${statusSelectWithJoin}, hu.\`created_at\`, NULLIF(TRIM(s.\`FullName\`), '') AS \`full_name\` FROM \`helpdesk_users\` hu LEFT JOIN \`Subscribe\` s ON s.\`User\` COLLATE utf8mb4_unicode_ci = hu.\`username\` ORDER BY hu.\`department\`, hu.\`username\``;
 
             let rows = await queryUsers(true, withJoinSql, params);
             if (rows !== null) return rows;
 
             const noJoinSql = shouldFilterDepartment
-                ? `SELECT \`id\`, \`username\`, \`role\`, \`department\`, ${statusSelectNoJoin}, \`created_at\`, NULL AS \`full_name\` FROM \`helpdesk_users\` WHERE \`department\` = ? ORDER BY \`username\``
+                ? `SELECT DISTINCT hu.\`id\`, hu.\`username\`, hu.\`role\`, hu.\`department\`, ${statusSelectNoJoin}, hu.\`created_at\`, NULL AS \`full_name\` FROM \`helpdesk_users\` hu INNER JOIN \`helpdesk_user_departments\` hud ON hud.\`user_id\` = hu.\`id\` AND hud.\`department\` = ? ORDER BY hu.\`username\``
                 : `SELECT \`id\`, \`username\`, \`role\`, \`department\`, ${statusSelectNoJoin}, \`created_at\`, NULL AS \`full_name\` FROM \`helpdesk_users\` ORDER BY \`department\`, \`username\``;
             [rows] = params ? await pool.query(noJoinSql, params) : await pool.query(noJoinSql);
             return rows;
@@ -1634,6 +2022,9 @@ function registerHelpdeskController(app, deps = {}) {
 
             return res.json({ result: 'success', users });
         } catch (error) {
+            if (error && error.statusCode === 403) {
+                return res.status(403).json({ result: 'error', message: error.message || 'אין הרשאה' });
+            }
             const message = error && error.message ? error.message : 'Failed to load users';
             console.error('[HELPDESK] Load users error (errno ' + (error && error.errno) + '):', message);
             return res.status(500).json({
@@ -1894,7 +2285,7 @@ function registerHelpdeskController(app, deps = {}) {
     app.get(['/helpdesk/departments/active', '/notify/helpdesk/departments/active'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (_req, res) => {
         try {
             await getTablesReady();
-            const depts = await getActiveDepartments(pool);
+            const depts = await enrichDepartmentsWithTicketStatuses(pool, await getActiveDepartments(pool));
             return res.json({ result: 'success', departments: depts });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to load departments';
@@ -1920,11 +2311,13 @@ function registerHelpdeskController(app, deps = {}) {
                 return res.status(404).json({ result: 'error', message: 'מחלקה לא נמצאה' });
             }
             const parsedConfig = parseDepartmentTicketFormConfigDetails(rows[0].ticket_form_config);
+            const departmentStatuses = await getDepartmentStatusLookupByName(pool, [rows[0].name]);
             return res.json({
                 result: 'success',
                 department: rows[0].name,
                 fields: parsedConfig.fields,
-                initialForm: parsedConfig.initialForm
+                initialForm: parsedConfig.initialForm,
+                ticketStatuses: departmentStatuses.get(rows[0].name) || cloneDefaultHelpdeskTicketStatuses()
             });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to load ticket form';
@@ -1946,7 +2339,7 @@ function registerHelpdeskController(app, deps = {}) {
             const [rows] = await pool.query(
                 'SELECT `id`, `name`, `icon`, `status`, `sort_order`, `ticket_form_config`, `created_at` FROM `helpdesk_departments` ORDER BY `sort_order`, `id`'
             );
-            const departments = rows.map((r) => ({
+            const departments = await enrichDepartmentsWithTicketStatuses(pool, rows.map((r) => ({
                 id: r.id,
                 name: r.name,
                 icon: r.icon || null,
@@ -1955,7 +2348,7 @@ function registerHelpdeskController(app, deps = {}) {
                 ticketForm: parseDepartmentTicketFormConfig(r.ticket_form_config),
                 initialForm: parseDepartmentInitialFormVisibility(r.ticket_form_config),
                 createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at || '')
-            }));
+            })));
             return res.json({ result: 'success', departments });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to load departments';
@@ -1979,22 +2372,38 @@ function registerHelpdeskController(app, deps = {}) {
         const initialForm = sanitizeInitialFormVisibility(
             body.initialForm !== undefined ? body.initialForm : body.initial_form
         );
+        const rawTicketStatuses = body.ticketStatuses !== undefined ? body.ticketStatuses : body.ticket_statuses;
 
         if (!name) return res.status(400).json({ result: 'error', message: 'יש להזין שם מחלקה' });
         if (!['active', 'inactive'].includes(status)) return res.status(400).json({ result: 'error', message: 'סטטוס לא תקין' });
 
         try {
             await getTablesReady();
+            const ticketStatuses = normalizeHelpdeskTicketStatuses(rawTicketStatuses);
             const editorRole = await getHelpdeskUserRole(pool, user);
             if (!editorRole || editorRole.role !== 'Admin') {
                 return res.status(403).json({ result: 'error', message: 'רק מנהל יכול לנהל מחלקות' });
             }
-            const [result] = await pool.execute(
-                'INSERT INTO `helpdesk_departments` (`name`, `icon`, `status`, `sort_order`, `ticket_form_config`) VALUES (?, ?, ?, ?, ?)',
-                [name, icon, status, sortOrder, serializeDepartmentTicketFormConfig(ticketForm, initialForm)]
-            );
-            return res.status(201).json({ result: 'success', id: result.insertId });
+            const conn = await pool.getConnection();
+            try {
+                await conn.beginTransaction();
+                const [result] = await conn.execute(
+                    'INSERT INTO `helpdesk_departments` (`name`, `icon`, `status`, `sort_order`, `ticket_form_config`) VALUES (?, ?, ?, ?, ?)',
+                    [name, icon, status, sortOrder, serializeDepartmentTicketFormConfig(ticketForm, initialForm)]
+                );
+                await replaceDepartmentTicketStatuses(conn, result.insertId, name, ticketStatuses);
+                await conn.commit();
+                return res.status(201).json({ result: 'success', id: result.insertId });
+            } catch (err) {
+                await conn.rollback();
+                throw err;
+            } finally {
+                conn.release();
+            }
         } catch (error) {
+            if (error && error.message && (error.message.startsWith('כל סטטוס') || error.message.startsWith('סטטוס כפול'))) {
+                return res.status(400).json({ result: 'error', message: error.message });
+            }
             if (error && error.code === 'ER_DUP_ENTRY') {
                 return res.status(409).json({ result: 'error', message: 'מחלקה בשם זה כבר קיימת' });
             }
@@ -2024,6 +2433,7 @@ function registerHelpdeskController(app, deps = {}) {
         const initialForm = (body.initialForm !== undefined || body.initial_form !== undefined)
             ? sanitizeInitialFormVisibility(body.initialForm !== undefined ? body.initialForm : body.initial_form)
             : undefined;
+        const rawTicketStatuses = body.ticketStatuses !== undefined ? body.ticketStatuses : body.ticket_statuses;
 
         if (status !== undefined && !['active', 'inactive'].includes(status)) {
             return res.status(400).json({ result: 'error', message: 'סטטוס לא תקין' });
@@ -2031,42 +2441,88 @@ function registerHelpdeskController(app, deps = {}) {
 
         try {
             await getTablesReady();
+            const ticketStatuses = (body.ticketStatuses !== undefined || body.ticket_statuses !== undefined)
+                ? normalizeHelpdeskTicketStatuses(rawTicketStatuses)
+                : undefined;
             const editorRole = await getHelpdeskUserRole(pool, user);
             if (!editorRole || editorRole.role !== 'Admin') {
                 return res.status(403).json({ result: 'error', message: 'רק מנהל יכול לנהל מחלקות' });
             }
 
-            const setClauses = [];
-            const params = [];
-            if (name) { setClauses.push('`name` = ?'); params.push(name); }
-            if (icon !== undefined) { setClauses.push('`icon` = ?'); params.push(icon); }
-            if (status !== undefined) { setClauses.push('`status` = ?'); params.push(status); }
-            if (sortOrder !== undefined) { setClauses.push('`sort_order` = ?'); params.push(sortOrder); }
-            if (ticketForm !== undefined || initialForm !== undefined) {
-                const [existingRows] = await pool.query(
-                    'SELECT `ticket_form_config` FROM `helpdesk_departments` WHERE `id` = ? LIMIT 1',
+            const conn = await pool.getConnection();
+            try {
+                await conn.beginTransaction();
+                const [existingRows] = await conn.query(
+                    'SELECT `name`, `ticket_form_config` FROM `helpdesk_departments` WHERE `id` = ? LIMIT 1',
                     [deptId]
                 );
                 if (!existingRows.length) {
+                    await conn.rollback();
                     return res.status(404).json({ result: 'error', message: 'מחלקה לא נמצאה' });
                 }
-                const parsedExisting = parseDepartmentTicketFormConfigDetails(existingRows[0].ticket_form_config);
-                const nextTicketForm = ticketForm !== undefined ? ticketForm : parsedExisting.fields;
-                const nextInitialForm = initialForm !== undefined ? initialForm : parsedExisting.initialForm;
-                setClauses.push('`ticket_form_config` = ?');
-                params.push(serializeDepartmentTicketFormConfig(nextTicketForm, nextInitialForm));
+                const existingDepartment = existingRows[0];
+                const setClauses = [];
+                const params = [];
+                if (name) { setClauses.push('`name` = ?'); params.push(name); }
+                if (icon !== undefined) { setClauses.push('`icon` = ?'); params.push(icon); }
+                if (status !== undefined) { setClauses.push('`status` = ?'); params.push(status); }
+                if (sortOrder !== undefined) { setClauses.push('`sort_order` = ?'); params.push(sortOrder); }
+                if (ticketForm !== undefined || initialForm !== undefined) {
+                    const parsedExisting = parseDepartmentTicketFormConfigDetails(existingDepartment.ticket_form_config);
+                    const nextTicketForm = ticketForm !== undefined ? ticketForm : parsedExisting.fields;
+                    const nextInitialForm = initialForm !== undefined ? initialForm : parsedExisting.initialForm;
+                    setClauses.push('`ticket_form_config` = ?');
+                    params.push(serializeDepartmentTicketFormConfig(nextTicketForm, nextInitialForm));
+                }
+                if (!setClauses.length && ticketStatuses === undefined) {
+                    await conn.rollback();
+                    return res.status(400).json({ result: 'error', message: 'לא הועברו שדות לעדכון' });
+                }
+                if (setClauses.length) {
+                    params.push(deptId);
+                    const [result] = await conn.execute(
+                        `UPDATE \`helpdesk_departments\` SET ${setClauses.join(', ')} WHERE \`id\` = ?`,
+                        params
+                    );
+                    if (result.affectedRows === 0) {
+                        await conn.rollback();
+                        return res.status(404).json({ result: 'error', message: 'מחלקה לא נמצאה' });
+                    }
+                    if (name && name !== existingDepartment.name) {
+                        await conn.execute(
+                            'UPDATE `helpdesk_tickets` SET `department` = ? WHERE `department` = ?',
+                            [name, existingDepartment.name]
+                        );
+                        await conn.execute(
+                            'UPDATE `helpdesk_user_departments` SET `department` = ? WHERE `department` = ?',
+                            [name, existingDepartment.name]
+                        );
+                        await conn.execute(
+                            'UPDATE `helpdesk_users` SET `department` = ? WHERE `department` = ?',
+                            [name, existingDepartment.name]
+                        );
+                    }
+                }
+                if (ticketStatuses !== undefined) {
+                    await replaceDepartmentTicketStatuses(
+                        conn,
+                        deptId,
+                        name || existingDepartment.name,
+                        ticketStatuses
+                    );
+                }
+                await conn.commit();
+                return res.json({ result: 'success' });
+            } catch (err) {
+                await conn.rollback();
+                throw err;
+            } finally {
+                conn.release();
             }
-
-            if (!setClauses.length) return res.status(400).json({ result: 'error', message: 'לא הועברו שדות לעדכון' });
-
-            params.push(deptId);
-            const [result] = await pool.execute(
-                `UPDATE \`helpdesk_departments\` SET ${setClauses.join(', ')} WHERE \`id\` = ?`,
-                params
-            );
-            if (result.affectedRows === 0) return res.status(404).json({ result: 'error', message: 'מחלקה לא נמצאה' });
-            return res.json({ result: 'success' });
         } catch (error) {
+            if (error && error.message && (error.message.startsWith('כל סטטוס') || error.message.startsWith('סטטוס כפול'))) {
+                return res.status(400).json({ result: 'error', message: error.message });
+            }
             if (error && error.code === 'ER_DUP_ENTRY') {
                 return res.status(409).json({ result: 'error', message: 'מחלקה בשם זה כבר קיימת' });
             }
@@ -2174,7 +2630,10 @@ function registerHelpdeskController(app, deps = {}) {
             await getTablesReady();
             const helpdeskUser = await getHelpdeskUserRole(pool, user);
             const globalRole = helpdeskUser ? helpdeskUser.role : 'Editor';
-            const departments = await getUserPermittedDepartmentsWithRole(pool, user, globalRole);
+            const departments = await enrichDepartmentsWithTicketStatuses(
+                pool,
+                await getUserPermittedDepartmentsWithRole(pool, user, globalRole)
+            );
             return res.json({ result: 'success', departments });
         } catch (error) {
             const message = error && error.message ? error.message : 'Failed to load user departments';
@@ -2184,4 +2643,15 @@ function registerHelpdeskController(app, deps = {}) {
     });
 }
 
-module.exports = { registerHelpdeskController };
+module.exports = {
+    registerHelpdeskController,
+    __test__: {
+        getHelpdeskRoleDepartments,
+        canViewDepartmentTickets,
+        canManageDepartmentTickets,
+        normalizeHelpdeskStatusKey,
+        normalizeHelpdeskTicketStatuses,
+        getDefaultTicketStatusKey,
+        isTerminalTicketStatus
+    }
+};

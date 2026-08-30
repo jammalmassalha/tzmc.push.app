@@ -74,12 +74,7 @@ class _HelpdeskUserManagementScreenState
 
     List<HelpdeskDepartment> departments = <HelpdeskDepartment>[];
     try {
-      final entries = await api.getActiveHelpdeskDepartments();
-      departments = entries
-          .map(HelpdeskDepartment.fromEntry)
-          .where((department) => department.name.trim().isNotEmpty)
-          .toList()
-        ..sort((a, b) => a.name.compareTo(b.name));
+      departments = await _loadAvailableDepartments(api);
     } catch (e) {
       debugPrint('Failed to load helpdesk departments: $e');
       departmentsError = _normalizeError(e);
@@ -99,6 +94,31 @@ class _HelpdeskUserManagementScreenState
         backgroundColor: Theme.of(context).colorScheme.error,
       );
     }
+  }
+
+  Future<List<HelpdeskDepartment>> _loadAvailableDepartments(
+    ChatApiService api,
+  ) async {
+    List<HelpdeskDepartment> mapDepartments(
+      Iterable<HelpdeskDepartmentEntry> entries,
+    ) {
+      final departments = entries
+          .where((department) => department.name.trim().isNotEmpty)
+          .map(HelpdeskDepartment.fromEntry)
+          .toList()
+        ..sort((a, b) => a.name.compareTo(b.name));
+      return departments;
+    }
+
+    try {
+      final entries = await api.getAllHelpdeskDepartments();
+      return mapDepartments(entries.where((department) => department.isActive));
+    } catch (e) {
+      debugPrint('Failed to load all helpdesk departments, falling back to active endpoint: $e');
+    }
+
+    final entries = await api.getActiveHelpdeskDepartments();
+    return mapDepartments(entries);
   }
 
   Future<void> _openUserForm({HelpdeskUser? existing}) async {
@@ -602,6 +622,7 @@ class _HelpdeskUserFormDialogState
                     items: const <DropdownMenuItem<String>>[
                       DropdownMenuItem(value: 'Admin', child: Text('Admin')),
                       DropdownMenuItem(value: 'Editor', child: Text('Editor')),
+                      DropdownMenuItem(value: 'Viewer', child: Text('Viewer')),
                     ],
                     onChanged: _isSubmitting
                         ? null
@@ -856,6 +877,7 @@ class _HelpdeskUserDetailsDialogState
                   items: const <DropdownMenuItem<String>>[
                     DropdownMenuItem(value: 'Admin', child: Text('Admin')),
                     DropdownMenuItem(value: 'Editor', child: Text('Editor')),
+                    DropdownMenuItem(value: 'Viewer', child: Text('Viewer')),
                   ],
                   onChanged: _isSubmitting
                       ? null

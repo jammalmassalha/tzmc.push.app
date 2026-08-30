@@ -255,7 +255,7 @@ export type OutboxItem = OutboxDirectItem | OutboxGroupItem | OutboxGroupUpdateI
 
 export type HelpdeskDepartment = string;
 export type HelpdeskStatus = 'open' | 'in_progress' | 'resolved' | 'closed';
-export type HelpdeskRole = 'Admin' | 'Editor';
+export type HelpdeskRole = 'Admin' | 'Editor' | 'Viewer';
 
 export interface HelpdeskDepartmentEntry {
   id: number;
@@ -310,6 +310,7 @@ export interface HelpdeskManagedUser {
   username: string;
   role: HelpdeskRole;
   department: string;
+  departments?: string[];
 }
 
 export interface HelpdeskAdminUser {

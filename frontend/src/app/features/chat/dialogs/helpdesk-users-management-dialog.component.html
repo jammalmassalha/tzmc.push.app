@@ -35,7 +35,9 @@
             <mat-label>תפקיד</mat-label>
             <mat-select formControlName="role">
               @for (r of ROLES; track r) {
-                <mat-option [value]="r">{{ r === 'Admin' ? 'מנהל (Admin)' : 'עורך (Editor)' }}</mat-option>
+                <mat-option [value]="r">
+                  {{ r === 'Admin' ? 'מנהל (Admin)' : r === 'Viewer' ? 'צפייה (Viewer)' : 'עורך (Editor)' }}
+                </mat-option>
               }
             </mat-select>
             @if (userForm.get('role')?.invalid && userForm.get('role')?.touched) {
