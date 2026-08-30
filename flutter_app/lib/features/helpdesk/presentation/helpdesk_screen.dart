@@ -1466,6 +1466,8 @@ class _ManagementTab extends ConsumerStatefulWidget {
 
 class _ManagementTabState extends ConsumerState<_ManagementTab>
     with SingleTickerProviderStateMixin {
+  static const double _filterFieldBreakpoint = 560;
+  static const double _filterFieldSpacing = 10;
   late TabController _subTabController;
   String? _selectedDepartmentFilter;
   String? _selectedStatusFilter;
@@ -1558,43 +1560,37 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
     final selectedStatusFilter = availableStatusKeys.contains(_selectedStatusFilter)
         ? _selectedStatusFilter
         : null;
-    final filteredTickets = selectedStatusFilter == null
-        ? departmentFilteredTickets
-        : departmentFilteredTickets
-            .where((ticket) => ticket.status.trim() == selectedStatusFilter)
-            .toList();
     final showDepartmentFilter = availableDepartments.length > 1;
     final showStatusFilter = availableStatusKeys.isNotEmpty;
     final hasActiveFilter =
         selectedDepartmentFilter != null || selectedStatusFilter != null;
 
-    final newTickets = filteredTickets
-        .where((t) => _isDefaultStatusForDepartment(
-              departmentEntries,
-              t.department,
-              t.status,
-            ))
-        .toList();
-    final inProgressTickets = filteredTickets
-        .where((t) =>
-            !_isDefaultStatusForDepartment(
-              departmentEntries,
-              t.department,
-              t.status,
-            ) &&
-            !_isTerminalStatusForDepartment(
-              departmentEntries,
-              t.department,
-              t.status,
-            ))
-        .toList();
-    final closedTickets = filteredTickets
-        .where((t) => _isTerminalStatusForDepartment(
-              departmentEntries,
-              t.department,
-              t.status,
-            ))
-        .toList();
+    final newTickets = <HelpdeskTicket>[];
+    final inProgressTickets = <HelpdeskTicket>[];
+    final closedTickets = <HelpdeskTicket>[];
+    for (final ticket in departmentFilteredTickets) {
+      final statusKey = ticket.status.trim();
+      if (selectedStatusFilter != null && statusKey != selectedStatusFilter) {
+        continue;
+      }
+      final isDefault = _isDefaultStatusForDepartment(
+        departmentEntries,
+        ticket.department,
+        ticket.status,
+      );
+      final isTerminal = _isTerminalStatusForDepartment(
+        departmentEntries,
+        ticket.department,
+        ticket.status,
+      );
+      if (isDefault) {
+        newTickets.add(ticket);
+      } else if (isTerminal) {
+        closedTickets.add(ticket);
+      } else {
+        inProgressTickets.add(ticket);
+      }
+    }
 
     final String roleLabel;
     switch (role.role) {
@@ -1691,12 +1687,12 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
                  const SizedBox(height: 10),
                  LayoutBuilder(
                    builder: (context, constraints) {
-                     final fieldWidth = constraints.maxWidth < 560
+                     final fieldWidth = constraints.maxWidth < _filterFieldBreakpoint
                          ? constraints.maxWidth
-                         : (constraints.maxWidth - 10) / 2;
+                         : (constraints.maxWidth - _filterFieldSpacing) / 2;
                      return Wrap(
-                       spacing: 10,
-                       runSpacing: 10,
+                       spacing: _filterFieldSpacing,
+                       runSpacing: _filterFieldSpacing,
                        children: [
                          if (showDepartmentFilter)
                            SizedBox(
