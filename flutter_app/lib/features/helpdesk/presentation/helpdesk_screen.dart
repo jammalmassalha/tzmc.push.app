@@ -1563,6 +1563,10 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
         : departmentFilteredTickets
             .where((ticket) => ticket.status.trim() == selectedStatusFilter)
             .toList();
+    final showDepartmentFilter = availableDepartments.length > 1;
+    final showStatusFilter = availableStatusKeys.isNotEmpty;
+    final hasActiveFilter =
+        selectedDepartmentFilter != null || selectedStatusFilter != null;
 
     final newTickets = filteredTickets
         .where((t) => _isDefaultStatusForDepartment(
@@ -1642,63 +1646,119 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
               ),
           ]),
         ),
-        if (availableDepartments.length > 1)
+        if (showDepartmentFilter || showStatusFilter)
           Padding(
-           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-           child: DropdownButtonFormField<String?>(
-             value: selectedDepartmentFilter,
-             decoration: const InputDecoration(
-               labelText: 'סינון לפי מחלקה',
-               border: OutlineInputBorder(),
-               isDense: true,
+           padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+           child: Container(
+             padding: const EdgeInsets.all(12),
+             decoration: BoxDecoration(
+               color: theme.colorScheme.primary.withAlpha(18),
+               borderRadius: BorderRadius.circular(12),
+               border:
+                   Border.all(color: theme.colorScheme.primary.withAlpha(45)),
              ),
-             items: [
-               const DropdownMenuItem<String?>(
-                 value: null,
-                 child: Text('כל המחלקות'),
-               ),
-               ...availableDepartments.map(
-                 (department) => DropdownMenuItem<String?>(
-                   value: department,
-                   child: Text(department),
+             child: Column(
+               crossAxisAlignment: CrossAxisAlignment.start,
+               children: [
+                 Row(
+                   children: [
+                     Icon(Icons.tune, size: 18, color: theme.colorScheme.primary),
+                     const SizedBox(width: 6),
+                     Text(
+                       'סינון קריאות',
+                       style: theme.textTheme.titleSmall?.copyWith(
+                         fontWeight: FontWeight.w700,
+                         color: theme.colorScheme.primary,
+                       ),
+                     ),
+                     const Spacer(),
+                     if (hasActiveFilter)
+                       TextButton.icon(
+                         onPressed: () {
+                           setState(() {
+                             _selectedDepartmentFilter = null;
+                             _selectedStatusFilter = null;
+                           });
+                         },
+                         icon: const Icon(Icons.restart_alt, size: 18),
+                         label: const Text('נקה סינון'),
+                         style: TextButton.styleFrom(
+                           visualDensity: VisualDensity.compact,
+                         ),
+                       ),
+                   ],
                  ),
-               ),
-             ],
-             onChanged: (value) {
-               setState(() {
-                 _selectedDepartmentFilter = value;
-                 _selectedStatusFilter = null;
-               });
-             },
-           ),
-         ),
-        if (availableStatusKeys.isNotEmpty)
-         Padding(
-           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-           child: DropdownButtonFormField<String?>(
-             value: selectedStatusFilter,
-             decoration: const InputDecoration(
-               labelText: 'סינון לפי סטטוס',
-               border: OutlineInputBorder(),
-               isDense: true,
+                 const SizedBox(height: 10),
+                 Wrap(
+                   spacing: 10,
+                   runSpacing: 10,
+                   children: [
+                     if (showDepartmentFilter)
+                       SizedBox(
+                         width: 260,
+                         child: DropdownButtonFormField<String?>(
+                           value: selectedDepartmentFilter,
+                           decoration: const InputDecoration(
+                             labelText: 'מחלקה',
+                             border: OutlineInputBorder(),
+                             isDense: true,
+                             prefixIcon: Icon(Icons.apartment_outlined),
+                           ),
+                           items: [
+                             const DropdownMenuItem<String?>(
+                               value: null,
+                               child: Text('כל המחלקות'),
+                             ),
+                             ...availableDepartments.map(
+                               (department) => DropdownMenuItem<String?>(
+                                 value: department,
+                                 child: Text(department),
+                               ),
+                             ),
+                           ],
+                           onChanged: (value) {
+                             setState(() {
+                               _selectedDepartmentFilter = value;
+                               _selectedStatusFilter = null;
+                             });
+                           },
+                         ),
+                       ),
+                     if (showStatusFilter)
+                       SizedBox(
+                         width: 260,
+                         child: DropdownButtonFormField<String?>(
+                           value: selectedStatusFilter,
+                           decoration: const InputDecoration(
+                             labelText: 'סטטוס',
+                             border: OutlineInputBorder(),
+                             isDense: true,
+                             prefixIcon: Icon(Icons.flag_outlined),
+                           ),
+                           items: [
+                             const DropdownMenuItem<String?>(
+                               value: null,
+                               child: Text('כל הסטטוסים'),
+                             ),
+                             ...availableStatusKeys.map(
+                               (statusKey) => DropdownMenuItem<String?>(
+                                 value: statusKey,
+                                 child: Text(
+                                     availableStatuses[statusKey] ?? statusKey),
+                               ),
+                             ),
+                           ],
+                           onChanged: (value) {
+                             setState(() {
+                               _selectedStatusFilter = value;
+                             });
+                           },
+                         ),
+                       ),
+                   ],
+                 ),
+               ],
              ),
-             items: [
-               const DropdownMenuItem<String?>(
-                 value: null,
-                 child: Text('כל הסטטוסים'),
-               ),
-               ...availableStatusKeys.map(
-                 (statusKey) => DropdownMenuItem<String?>(
-                   value: statusKey,
-                   child: Text(availableStatuses[statusKey] ?? statusKey),
-                 ),
-               ),
-             ],
-             onChanged: (value) {
-               setState(() {
-                 _selectedStatusFilter = value;
-               });
-             },
            ),
          ),
         TabBar(
