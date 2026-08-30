@@ -1468,6 +1468,7 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
     with SingleTickerProviderStateMixin {
   late TabController _subTabController;
   String? _selectedDepartmentFilter;
+  String? _selectedStatusFilter;
 
   @override
   void initState() {
@@ -1536,10 +1537,31 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
     final selectedDepartmentFilter = availableDepartments.contains(_selectedDepartmentFilter)
         ? _selectedDepartmentFilter
         : null;
-    final filteredTickets = selectedDepartmentFilter == null
+    final departmentFilteredTickets = selectedDepartmentFilter == null
         ? visibleTickets
         : visibleTickets
             .where((ticket) => ticket.department.trim() == selectedDepartmentFilter)
+            .toList();
+
+    final availableStatuses = <String, String>{};
+    for (final ticket in departmentFilteredTickets) {
+      final statusKey = ticket.status.trim();
+      if (statusKey.isEmpty) continue;
+      availableStatuses.putIfAbsent(
+        statusKey,
+        () => _statusLabel(departmentEntries, ticket.department, statusKey),
+      );
+    }
+    final availableStatusKeys = availableStatuses.keys.toList()
+      ..sort((a, b) => (availableStatuses[a] ?? a).compareTo(availableStatuses[b] ?? b));
+
+    final selectedStatusFilter = availableStatusKeys.contains(_selectedStatusFilter)
+        ? _selectedStatusFilter
+        : null;
+    final filteredTickets = selectedStatusFilter == null
+        ? departmentFilteredTickets
+        : departmentFilteredTickets
+            .where((ticket) => ticket.status.trim() == selectedStatusFilter)
             .toList();
 
     final newTickets = filteredTickets
@@ -1645,6 +1667,35 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
              onChanged: (value) {
                setState(() {
                  _selectedDepartmentFilter = value;
+               });
+             },
+           ),
+         ),
+        if (availableStatusKeys.length > 1)
+         Padding(
+           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+           child: DropdownButtonFormField<String?>(
+             value: selectedStatusFilter,
+             decoration: const InputDecoration(
+               labelText: 'סינון לפי סטטוס',
+               border: OutlineInputBorder(),
+               isDense: true,
+             ),
+             items: [
+               const DropdownMenuItem<String?>(
+                 value: null,
+                 child: Text('כל הסטטוסים'),
+               ),
+               ...availableStatusKeys.map(
+                 (statusKey) => DropdownMenuItem<String?>(
+                   value: statusKey,
+                   child: Text(availableStatuses[statusKey] ?? statusKey),
+                 ),
+               ),
+             ],
+             onChanged: (value) {
+               setState(() {
+                 _selectedStatusFilter = value;
                });
              },
            ),
