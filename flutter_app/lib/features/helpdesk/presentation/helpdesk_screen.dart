@@ -1687,7 +1687,12 @@ class _ManagementTabState extends ConsumerState<_ManagementTab>
                  const SizedBox(height: 10),
                  LayoutBuilder(
                    builder: (context, constraints) {
-                     final fieldWidth = constraints.maxWidth < _filterFieldBreakpoint
+                     final visibleFilterCount =
+                         (showDepartmentFilter ? 1 : 0) +
+                         (showStatusFilter ? 1 : 0);
+                     final useTwoColumns = visibleFilterCount > 1 &&
+                         constraints.maxWidth >= _filterFieldBreakpoint;
+                     final fieldWidth = !useTwoColumns
                          ? constraints.maxWidth
                          : (constraints.maxWidth - _filterFieldSpacing) / 2;
                      return Wrap(
