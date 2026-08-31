@@ -2184,6 +2184,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         forwarded: forwarded,
         forwardedFrom: forwardedFrom,
         forwardedFromName: forwardedFromName,
+        deviceId: _transport.deviceId,
       );
       await _sendReply(payload);
 
@@ -2266,6 +2267,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         replyToSenderName: replyTo?.senderDisplayName,
         replyToBody: replyTo?.body,
         replyToImageUrl: replyTo?.imageUrl,
+        deviceId: _transport.deviceId,
       );
       await _sendReply(payload);
 

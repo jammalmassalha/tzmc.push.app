@@ -16,6 +16,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import '../config/app_config.dart';
 import '../config/environment.dart';
 import '../models/chat_models.dart';
+import '../utils/device_id.dart';
 
 final _logger = Logger(
   printer: PrettyPrinter(methodCount: 0, errorMethodCount: 5, lineLength: 80),
@@ -74,6 +75,16 @@ class RealtimeTransportService {
   String? _activeUser;
   bool Function()? _isNetworkReachable;
 
+  /// Stable per-install identifier sent in the socket handshake.
+  ///
+  /// Resolved asynchronously on [connect]; empty until it lands (and if
+  /// SharedPreferences is unavailable), in which case echo suppression is
+  /// simply skipped and `messageId` dedup handles duplicates as before.
+  String _deviceId = '';
+
+  /// The device id used for the current socket handshake, or `''`.
+  String get deviceId => _deviceId;
+
   /// Human-readable label for current transport mode
   String get transportLabel {
     switch (_transportMode) {
@@ -94,6 +105,14 @@ class RealtimeTransportService {
     disconnect();
     _activeUser = user;
     _isNetworkReachable = isNetworkReachable ?? () => true;
+
+    // Resolve (and persist) the device id in the background.  The first
+    // connection may go out without it; the id is only an optimisation, and
+    // every later reconnect will carry it.
+    _deviceId = cachedDeviceId;
+    if (_deviceId.isEmpty) {
+      unawaited(ensureDeviceId().then((value) => _deviceId = value));
+    }
 
     // Start the poll timer as a universal fallback. _handlePollTick on the
     // ChatStoreNotifier side skips the actual HTTP pull when socket/SSE is
@@ -260,7 +279,9 @@ class RealtimeTransportService {
       socket.on('chat:message', (incoming) {
         if (incoming == null) return;
         try {
-          final msg = IncomingServerMessage.fromJson(incoming as Map<String, dynamic>);
+          final raw = incoming as Map<String, dynamic>;
+          if (_isOwnEcho(raw)) return;
+          final msg = IncomingServerMessage.fromJson(raw);
           _messageController.add(msg);
         } catch (e) {
           _logger.w('Failed to parse socket message: $e');
@@ -324,6 +345,20 @@ class RealtimeTransportService {
     }
   }
 
+  /// Whether [raw] is the server's echo of a message this very device sent.
+  ///
+  /// The backend stamps `originDeviceId` on the self-echo it fans out to the
+  /// sender's other sessions.  Suppressing it here avoids re-running the whole
+  /// apply/persist pipeline for a bubble that is already on screen (and was
+  /// already deduped by `messageId`), so this is an optimisation rather than a
+  /// correctness guarantee — it is a no-op whenever the id is unknown.
+  bool _isOwnEcho(Map<String, dynamic> raw) {
+    if (_deviceId.isEmpty) return false;
+    final origin = raw['originDeviceId'];
+    if (origin == null) return false;
+    return origin.toString() == _deviceId;
+  }
+
   socket_io.Socket _createSocket(String user) {
     final serverUrl = Env.current.baseUrl.replaceAll('/notify', '');
 
@@ -333,8 +368,8 @@ class RealtimeTransportService {
           .setPath(Env.current.socketPath)
           .setTransports(['polling', 'websocket'])
           .disableReconnection()
-          .setAuth({'user': user})
-          .setQuery({'user': user})
+          .setAuth({'user': user, if (_deviceId.isNotEmpty) 'deviceId': _deviceId})
+          .setQuery({'user': user, if (_deviceId.isNotEmpty) 'deviceId': _deviceId})
           .disableAutoConnect()
           .build(),
     );
@@ -394,6 +429,7 @@ class RealtimeTransportService {
             try {
               final parsed = jsonDecode(data);
               if (parsed is Map<String, dynamic>) {
+                if (_isOwnEcho(parsed)) return;
                 final msg = IncomingServerMessage.fromJson(parsed);
                 _messageController.add(msg);
               }

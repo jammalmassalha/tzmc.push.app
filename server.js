@@ -696,49 +696,17 @@ webpush.setVapidDetails(
 // [NEW] 4. POLLING MAILBOX (REDIS STREAMS + FALLBACK MEMORY)
 // ======================================================
 let messageQueue = {}; 
-const sseClients = new Map();
-const websocketClients = new Map();
-
-function addWebsocketClient(username, socket) {
-    if (!username || !socket) return;
-    const existing = websocketClients.get(username) || new Set();
-    existing.add(socket);
-    websocketClients.set(username, existing);
-}
-
-function removeWebsocketClient(username, socket) {
-    if (!username || !socket) return;
-    const existing = websocketClients.get(username);
-    if (!existing) return;
-    existing.delete(socket);
-    if (existing.size === 0) {
-        websocketClients.delete(username);
-    }
-}
-
-function notifySseClients(username, messageObj) {
-    const clientSet = sseClients.get(username);
-    if (!clientSet) return;
-    const payload = `event: message\ndata: ${JSON.stringify(messageObj)}\n\n`;
-    clientSet.forEach(res => res.write(payload));
-}
-
-function notifyWebsocketClients(username, messageObj) {
-    const clientSet = websocketClients.get(username);
-    if (!clientSet || !clientSet.size) return;
-    clientSet.forEach((socket) => {
-        try {
-            socket.emit('chat:message', messageObj);
-        } catch (error) {
-            // Ignore per-socket emission failures and continue.
-        }
-    });
-}
-
-function notifyRealtimeClients(username, messageObj) {
-    notifySseClients(username, messageObj);
-    notifyWebsocketClients(username, messageObj);
-}
+// Realtime client registry + fan-out helpers live in their own module so the
+// multi-device delivery rules can be unit tested without booting the server.
+const {
+    sseClients,
+    websocketClients,
+    addWebsocketClient,
+    removeWebsocketClient,
+    notifyRealtimeClients,
+    normalizeDeviceId,
+    buildSelfEchoMessage
+} = require('./backend/services/realtime-fanout');
 
 function dispatchRegisteredWebhookAsync(messageObj) {
     const webhookUrl = webhookRegistryService.resolveFromMessage(messageObj);
@@ -2211,6 +2179,13 @@ function createHttpError(status, message) {
     return error;
 }
 
+function resolveSocketDeviceId(socket) {
+    const handshake = socket && socket.handshake ? socket.handshake : {};
+    const auth = handshake.auth && typeof handshake.auth === 'object' ? handshake.auth : {};
+    const query = handshake.query && typeof handshake.query === 'object' ? handshake.query : {};
+    return normalizeDeviceId(auth.deviceId || query.deviceId || '');
+}
+
 function resolveSocketAuthorizedUser(socket) {
     const handshake = socket && socket.handshake ? socket.handshake : {};
     const headers = handshake && handshake.headers ? handshake.headers : {};
@@ -2352,8 +2327,12 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         replyToImageUrl,
         forwarded,
         forwardedFrom,
-        forwardedFromName
+        forwardedFromName,
+        deviceId
     } = rawPayload || {};
+    // Identifies the device that composed this message so the self-echo below
+    // can be tagged and that device can skip re-applying its own bubble.
+    const originDeviceId = normalizeDeviceId(deviceId);
     const user = normalizeUserKey(resolvedUser || rawPayload.user || '');
     if (!user) {
         throw createHttpError(400, 'Missing user');
@@ -2736,10 +2715,12 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
 
         // ── Self-echo: notify sender's other devices so sent messages appear in real time ──
         if (senderUserKey) {
-            const selfEchoMessage = {
-                ...pollingMessage,
-                toUser: isGroup ? undefined : (normalizeUserKey(originalSender) || undefined)
-            };
+            const selfEchoMessage = buildSelfEchoMessage({
+                pollingMessage,
+                isGroup,
+                recipientKey: normalizeUserKey(originalSender),
+                originDeviceId
+            });
             void addToQueue(senderUserKey, selfEchoMessage).catch(() => {});
 
             const selfEchoNotification = {
@@ -2751,6 +2732,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
                     ...(notificationExtraData || {}),
                     skipNotification: true,
                     toUser: isGroup ? undefined : (normalizeUserKey(originalSender) || undefined),
+                    ...(originDeviceId ? { originDeviceId } : {}),
                     messageText: reply || null,
                     imageUrl: imageUrl || null,
                     fileUrl: fileUrl || null
@@ -5519,6 +5501,9 @@ io.use((socket, next) => {
             return next(new Error('Authentication required'));
         }
         socket.data.user = user;
+        // Diagnostic only: lets /delivery-telemetry/status correlate a live
+        // connection with the device id carried on outbound messages.
+        socket.data.deviceId = resolveSocketDeviceId(socket);
         return next();
     } catch (error) {
         return next(error);

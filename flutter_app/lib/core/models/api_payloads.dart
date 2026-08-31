@@ -34,6 +34,12 @@ class ReplyPayload extends Equatable {
   final String? forwardedFrom;
   final String? forwardedFromName;
 
+  /// Stable per-install id of the device that composed this message.
+  ///
+  /// Echoed back by the server as `originDeviceId` on the sender self-echo so
+  /// this device can skip re-applying its own message.
+  final String? deviceId;
+
   const ReplyPayload({
     required this.user,
     required this.senderName,
@@ -59,6 +65,7 @@ class ReplyPayload extends Equatable {
     this.forwarded = false,
     this.forwardedFrom,
     this.forwardedFromName,
+    this.deviceId,
   });
 
   @override
@@ -87,6 +94,7 @@ class ReplyPayload extends Equatable {
         forwarded,
         forwardedFrom,
         forwardedFromName,
+        deviceId,
       ];
 
   Map<String, dynamic> toJson() => {
@@ -114,6 +122,7 @@ class ReplyPayload extends Equatable {
         if (forwarded) 'forwarded': forwarded,
         if (forwardedFrom != null) 'forwardedFrom': forwardedFrom,
         if (forwardedFromName != null) 'forwardedFromName': forwardedFromName,
+        if (deviceId != null && deviceId!.isNotEmpty) 'deviceId': deviceId,
       };
 }
 
