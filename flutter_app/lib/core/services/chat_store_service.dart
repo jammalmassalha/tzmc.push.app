@@ -2512,7 +2512,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     unawaited(_clearChatFromPendingTray(chatId));
 
     try {
-      await _api.markMessagesAsRead(chatId, messageIds, _currentUser ?? '');
+      await _api.markMessagesAsRead(
+        chatId,
+        messageIds,
+        _currentUser ?? '',
+        deviceId: _transport.deviceId,
+      );
       await markChatSeen(chatId);
     } catch (e) {
       // Silent failure
@@ -2541,7 +2546,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final normalizedChatId = chatId.trim().toLowerCase();
     if (user.isEmpty || normalizedChatId.isEmpty) return;
     try {
-      await _api.markMessagesSeen(user, normalizedChatId);
+      await _api.markMessagesSeen(user, normalizedChatId, deviceId: _transport.deviceId);
     } catch (_) {
       // Best-effort.
     }
@@ -2925,9 +2930,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         final newUnread = Map<String, int>.from(state.unreadByChat);
         newUnread[chatId] = 0;
         state = state.copyWith(unreadByChat: newUnread);
-        _db.clearUnreadCount(chatId).catchError((_) {});
         _schedulePersistence();
       }
+      // The two persisted unread sources are cleared unconditionally, not only
+      // when the in-memory badge is non-zero.  A device that was backgrounded
+      // when the messages arrived holds the count *only* in the FCM pending
+      // tray (the background isolate never touches `state`), and a device that
+      // was offline may hold a stale row in the local database.  Skipping
+      // these writes because the in-memory count happens to be 0 is what let
+      // the badge survive the read and re-appear on the next cold start.
+      _db.clearUnreadCount(chatId).catchError((_) {});
+      unawaited(_clearChatFromPendingTray(chatId));
       return;
     }
 

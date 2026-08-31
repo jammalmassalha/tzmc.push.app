@@ -653,7 +653,7 @@ class ChatApiService {
   }
 
   /// Mark messages as seen
-  Future<int> markMessagesSeen(String user, String chatId) async {
+  Future<int> markMessagesSeen(String user, String chatId, {String? deviceId}) async {
     final normalized = user.trim().toLowerCase();
 
     final response = await _client.post<Map<String, dynamic>>(
@@ -661,6 +661,7 @@ class ChatApiService {
       data: {
         'user': normalized,
         'chatId': chatId.trim().toLowerCase(),
+        if (deviceId != null && deviceId.isNotEmpty) 'deviceId': deviceId,
       },
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 8)),
     );
@@ -2101,12 +2102,18 @@ class ChatApiService {
   }
 
   /// Mark messages as read
-  Future<void> markMessagesAsRead(String chatId, List<String> messageIds, String user) async {
+  Future<void> markMessagesAsRead(
+    String chatId,
+    List<String> messageIds,
+    String user, {
+    String? deviceId,
+  }) async {
     final payload = ReadReceiptPayload(
       reader: user,
       sender: chatId, // The chat/sender we're marking as read
       messageIds: messageIds,
       readAt: DateTime.now().millisecondsSinceEpoch,
+      deviceId: deviceId,
     );
     await sendReadReceipt(payload);
   }

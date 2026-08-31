@@ -108,6 +108,36 @@ function buildSelfEchoMessage({
     };
 }
 
+/**
+ * Build the payload that tells a reader's *own* other devices that this user
+ * has just read a chat, so they can clear their unread badge.
+ *
+ * The presence of `chatId` is what distinguishes this "self-read-clear" from
+ * an ordinary read receipt (where the peer read *our* messages), which the
+ * clients key off. `originDeviceId` lets the device that performed the read
+ * recognise and drop its own echo; devices that send no device id keep
+ * receiving the clear, which is idempotent.
+ */
+function buildSelfReadClearMessage({
+    chatId,
+    messageIds = [],
+    readAt = Date.now(),
+    sender = '',
+    originDeviceId = '',
+    timestamp = Date.now(),
+} = {}) {
+    const normalizedOrigin = normalizeDeviceId(originDeviceId);
+    return {
+        type: 'read-receipt',
+        chatId: String(chatId || '').trim(),
+        ...(Array.isArray(messageIds) && messageIds.length ? { messageIds } : {}),
+        readAt,
+        ...(sender ? { sender: String(sender).trim() } : {}),
+        timestamp,
+        ...(normalizedOrigin ? { originDeviceId: normalizedOrigin } : {}),
+    };
+}
+
 module.exports = {
     sseClients,
     websocketClients,
@@ -118,5 +148,6 @@ module.exports = {
     notifyRealtimeClients,
     normalizeDeviceId,
     buildSelfEchoMessage,
+    buildSelfReadClearMessage,
     DEVICE_ID_MAX_LENGTH,
 };

@@ -705,7 +705,8 @@ const {
     removeWebsocketClient,
     notifyRealtimeClients,
     normalizeDeviceId,
-    buildSelfEchoMessage
+    buildSelfEchoMessage,
+    buildSelfReadClearMessage
 } = require('./backend/services/realtime-fanout');
 
 function dispatchRegisteredWebhookAsync(messageObj) {
@@ -6442,6 +6443,7 @@ app.post(['/mark-seen', '/notify/mark-seen'],
             return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
         }
         const chatId = String(req.body && req.body.chatId || '').trim().toLowerCase();
+        const originDeviceId = normalizeDeviceId(req.body && req.body.deviceId);
         if (!chatId) {
             return res.status(400).json({ error: 'Missing chatId' });
         }
@@ -6449,11 +6451,10 @@ app.post(['/mark-seen', '/notify/mark-seen'],
             const affected = await mysqlLogsService.markMessagesSeen(user, chatId);
             // Notify the same user's other connected devices to clear local
             // unread counters for this chat (cross-device badge sync).
-            void addToQueue(user, {
-                type: 'read-receipt',
+            void addToQueue(user, buildSelfReadClearMessage({
                 chatId,
-                timestamp: Date.now()
-            }).catch((err) => {
+                originDeviceId
+            })).catch((err) => {
                 console.warn('[MARK-SEEN] Self-clear queue failed:', err && err.message ? err.message : err);
             });
             void sendPushNotificationToUser(user, {
@@ -6461,7 +6462,8 @@ app.post(['/mark-seen', '/notify/mark-seen'],
                 body: { shortText: '', longText: '' },
                 data: {
                     type: 'read-receipt',
-                    chatId
+                    chatId,
+                    ...(originDeviceId ? { originDeviceId } : {})
                 }
             }, chatId, { skipBadge: true, singlePerUser: true, allowSecondAttempt: false }).catch((err) => {
                 console.warn('[MARK-SEEN] Self-clear push failed:', err && err.message ? err.message : err);
@@ -7786,7 +7788,7 @@ app.post(
     }),
     async (req, res) => {
     try {
-        const { reader: requestedReader, sender, messageIds, readAt } = req.body;
+        const { reader: requestedReader, sender, messageIds, readAt, deviceId } = req.body;
         if (!requestedReader || !sender || !Array.isArray(messageIds) || messageIds.length === 0) {
             return res.status(400).json({ status: 'error', message: 'Missing fields' });
         }
@@ -7804,6 +7806,7 @@ app.post(
         }
 
         const effectiveReadAt = Number(readAt) || Date.now();
+        const originDeviceId = normalizeDeviceId(deviceId);
 
         const payload = {
             title: '',
@@ -7836,14 +7839,13 @@ app.post(
         // count for this chat (cross-device read sync).
         // The payload includes `chatId` so the Flutter app can distinguish a
         // "self-read-clear" event from a regular "sender was read" receipt.
-        await addToQueue(normalizedReader, {
-            type: 'read-receipt',
+        await addToQueue(normalizedReader, buildSelfReadClearMessage({
             chatId: normalizedSender,
             messageIds: uniqueMessageIds,
             readAt: effectiveReadAt,
             sender: normalizedSender,
-            timestamp: Date.now()
-        });
+            originDeviceId
+        }));
         void sendPushNotificationToUser(normalizedReader, {
             title: '',
             body: { shortText: '', longText: '' },
@@ -7852,7 +7854,8 @@ app.post(
                 chatId: normalizedSender,
                 messageIds: uniqueMessageIds,
                 readAt: effectiveReadAt,
-                sender: normalizedSender
+                sender: normalizedSender,
+                ...(originDeviceId ? { originDeviceId } : {})
             }
         }, normalizedSender, { skipBadge: true }).catch((err) => {
             console.warn('[SELF-READ-CLEAR] Push to reader\'s own devices failed:', err && err.message ? err.message : err);

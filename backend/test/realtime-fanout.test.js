@@ -9,6 +9,7 @@ const {
   notifyRealtimeClients,
   normalizeDeviceId,
   buildSelfEchoMessage,
+  buildSelfReadClearMessage,
   DEVICE_ID_MAX_LENGTH,
 } = require('../services/realtime-fanout');
 
@@ -157,4 +158,55 @@ test('device ids are trimmed and bounded', () => {
   assert.equal(normalizeDeviceId(undefined), '');
   assert.equal(normalizeDeviceId({ evil: true }), '');
   assert.equal(normalizeDeviceId('x'.repeat(500)).length, DEVICE_ID_MAX_LENGTH);
+});
+
+test('self-read-clear carries the chat id so clients distinguish it from a peer receipt', () => {
+  const clear = buildSelfReadClearMessage({
+    chatId: 'group-42',
+    messageIds: ['m1', 'm2'],
+    readAt: 1000,
+    sender: 'group-42',
+    timestamp: 2000,
+  });
+
+  assert.equal(clear.type, 'read-receipt');
+  assert.equal(clear.chatId, 'group-42');
+  assert.deepEqual(clear.messageIds, ['m1', 'm2']);
+  assert.equal(clear.readAt, 1000);
+  assert.equal(clear.timestamp, 2000);
+});
+
+test('self-read-clear propagates a normalized originDeviceId', () => {
+  const clear = buildSelfReadClearMessage({
+    chatId: 'alice',
+    originDeviceId: '  dev-web  ',
+  });
+
+  assert.equal(clear.originDeviceId, 'dev-web');
+});
+
+test('self-read-clear omits originDeviceId when the reader sent none', () => {
+  const clear = buildSelfReadClearMessage({ chatId: 'alice' });
+
+  assert.equal('originDeviceId' in clear, false);
+  assert.equal('messageIds' in clear, false);
+});
+
+test('self-read-clear reaches every other session of the reader', () => {
+  resetRegistries();
+  const web = createFakeSocket();
+  const mobile = createFakeSocket();
+  addWebsocketClient('alice', web);
+  addWebsocketClient('alice', mobile);
+
+  notifyRealtimeClients('alice', buildSelfReadClearMessage({
+    chatId: 'bob',
+    originDeviceId: 'dev-web',
+  }));
+
+  for (const socket of [web, mobile]) {
+    assert.equal(socket.received.length, 1);
+    assert.equal(socket.received[0].payload.chatId, 'bob');
+    assert.equal(socket.received[0].payload.originDeviceId, 'dev-web');
+  }
 });

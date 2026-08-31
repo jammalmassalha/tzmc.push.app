@@ -279,21 +279,28 @@ class ReadReceiptPayload extends Equatable {
   final List<String> messageIds;
   final int readAt;
 
+  /// Identifies the device that performed the read, so the backend can stamp
+  /// `originDeviceId` on the cross-device clear and this device can skip its
+  /// own echo.
+  final String? deviceId;
+
   const ReadReceiptPayload({
     required this.reader,
     required this.sender,
     required this.messageIds,
     required this.readAt,
+    this.deviceId,
   });
 
   @override
-  List<Object?> get props => [reader, sender, messageIds, readAt];
+  List<Object?> get props => [reader, sender, messageIds, readAt, deviceId];
 
   Map<String, dynamic> toJson() => {
         'reader': reader,
         'sender': sender,
         'messageIds': messageIds,
         'readAt': readAt,
+        if (deviceId != null && deviceId!.isNotEmpty) 'deviceId': deviceId,
       };
 }
 
