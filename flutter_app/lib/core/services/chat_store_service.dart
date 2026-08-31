@@ -3264,6 +3264,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// [_persistState] still writes the [WebChatStorage] snapshot.
   void _writeMessageThrough(ChatMessage message) {
     try {
+      // `catchError` covers async failures; the surrounding `try` covers the
+      // synchronous throw Drift raises when its lazy executor cannot open
+      // (e.g. Web without `sqlite3.wasm`).
       _db.upsertMessage(message).catchError((Object _) {});
     } catch (_) {
       // Drift unavailable — the debounced snapshot fallback covers this.

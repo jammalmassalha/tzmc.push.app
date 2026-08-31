@@ -65,11 +65,19 @@ void main() {
 
     await db.persistState(PersistedChatState(messages: [message]));
     await db.persistState(PersistedChatState(messages: [message]));
-    await db.upsertMessage(message);
 
     final stored = await db.getAllMessages();
     expect(stored.length, 1);
     expect(stored.single.id, 'm1');
+  });
+
+  test('upserting the same message twice produces a single row', () async {
+    final message = buildMessage(id: 'm1', chatId: 'chat-a', timestamp: 1000);
+
+    await db.upsertMessage(message);
+    await db.upsertMessage(message);
+
+    expect((await db.getAllMessages()).length, 1);
   });
 
   test('persisting an updated message replaces the stored row', () async {
@@ -115,6 +123,9 @@ void main() {
 
     final recent = await db.getRecentMessages(limit: 2);
     expect(recent.map((m) => m.id).toList(), ['m2', 'm3']);
+    // The oldest message is trimmed by the limit but stays on disk.
+    expect(recent.map((m) => m.id), isNot(contains('m1')));
+    expect((await db.getAllMessages()).length, 3);
   });
 
   test('contacts and groups absent from the snapshot are pruned', () async {
