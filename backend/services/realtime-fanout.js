@@ -1,11 +1,13 @@
 'use strict';
 
-/// Realtime fan-out registry and helpers.
-///
-/// Extracted from `server.js` so the multi-device delivery rules — every
-/// active connection of a user receives each message, and the sender's own
-/// other devices receive a self-echo tagged with the originating device — can
-/// be unit tested without booting the whole HTTP server.
+/**
+ * Realtime fan-out registry and helpers.
+ *
+ * Extracted from `server.js` so the multi-device delivery rules — every
+ * active connection of a user receives each message, and the sender's own
+ * other devices receive a self-echo tagged with the originating device — can
+ * be unit tested without booting the whole HTTP server.
+ */
 
 /** Active SSE responses keyed by normalized username. */
 const sseClients = new Map();
@@ -55,9 +57,11 @@ function notifyWebsocketClients(username, messageObj) {
     });
 }
 
-/// Deliver `messageObj` to every active connection of `username`, across both
-/// transports. Multi-device sync depends on this fanning out to *all*
-/// connections rather than a single "primary" one.
+/**
+ * Deliver `messageObj` to every active connection of `username`, across both
+ * transports. Multi-device sync depends on this fanning out to *all*
+ * connections rather than a single "primary" one.
+ */
 function notifyRealtimeClients(username, messageObj) {
     notifySseClients(username, messageObj);
     notifyWebsocketClients(username, messageObj);
@@ -66,24 +70,28 @@ function notifyRealtimeClients(username, messageObj) {
 /** Max stored length of a client-supplied device id. */
 const DEVICE_ID_MAX_LENGTH = 120;
 
-/// Normalize a client-supplied device id to a bounded, trimmed string.
-/// Returns '' for anything unusable so callers can treat it as "unknown".
+/**
+ * Normalize a client-supplied device id to a bounded, trimmed string.
+ * Returns '' for anything unusable so callers can treat it as "unknown".
+ */
 function normalizeDeviceId(value) {
     if (value === null || value === undefined) return '';
     if (typeof value === 'object') return '';
     return String(value).trim().slice(0, DEVICE_ID_MAX_LENGTH);
 }
 
-/// Build the copy of an outbound message that is echoed back to the sender's
-/// own other devices.
-///
-/// For direct messages `toUser` is rewritten to the recipient so the echo
-/// lands in the peer's chat as an outgoing bubble; for group messages it is
-/// left unset because the group id already identifies the chat.
-///
-/// `originDeviceId` lets the device that composed the message recognise its
-/// own echo and skip re-applying it. Devices that don't send a device id, and
-/// older clients that ignore the field, keep relying on `messageId` dedup.
+/**
+ * Build the copy of an outbound message that is echoed back to the sender's
+ * own other devices.
+ *
+ * For direct messages `toUser` is rewritten to the recipient so the echo
+ * lands in the peer's chat as an outgoing bubble; for group messages it is
+ * left unset because the group id already identifies the chat.
+ *
+ * `originDeviceId` lets the device that composed the message recognise its
+ * own echo and skip re-applying it. Devices that don't send a device id, and
+ * older clients that ignore the field, keep relying on `messageId` dedup.
+ */
 function buildSelfEchoMessage({
     pollingMessage,
     isGroup = false,

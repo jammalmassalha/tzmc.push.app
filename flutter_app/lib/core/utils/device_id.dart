@@ -14,6 +14,7 @@ library;
 
 import 'dart:math';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// SharedPreferences key holding the generated identifier.
@@ -63,3 +64,9 @@ Future<String> ensureDeviceId() async {
 /// Synchronous so it can be used inside hot paths (socket packet handlers)
 /// without awaiting.
 String get cachedDeviceId => _cachedDeviceId ?? '';
+
+/// Drops the in-memory cache so each test starts from a clean slate.
+@visibleForTesting
+void resetDeviceIdCacheForTesting() {
+  _cachedDeviceId = null;
+}
