@@ -1495,6 +1495,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     final prevLastTimestampMs = prevLastTimestamp is int
         ? prevLastTimestamp
         : int.tryParse(prevLastTimestamp?.toString() ?? '');
+    final prevLastMessageId = (prev?['lastMessageId'] ?? '').toString().trim();
 
     pending[chatId] = {
       'unreadCount': ((prev?['unreadCount'] as int?) ?? 0) + 1,
@@ -1510,7 +1511,12 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
           (prevLastTimestampMs != null && prevLastTimestampMs > ts)
               ? prevLastTimestampMs
               : ts,
-      if (messageId.isNotEmpty) 'lastMessageId': messageId,
+      if (messageId.isNotEmpty)
+        'lastMessageId': messageId
+      else if (prevLastMessageId.isNotEmpty)
+        // A push without a messageId must not erase the identity recorded by
+        // an earlier one — the whole entry is replaced, not merged.
+        'lastMessageId': prevLastMessageId,
     };
 
     await prefs.setString(kPendingChatUpdatesKey, jsonEncode(pending));
