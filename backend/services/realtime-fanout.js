@@ -121,19 +121,20 @@ function buildSelfEchoMessage({
 function buildSelfReadClearMessage({
     chatId,
     messageIds = [],
-    readAt = Date.now(),
+    readAt,
     sender = '',
     originDeviceId = '',
-    timestamp = Date.now(),
+    timestamp,
 } = {}) {
+    const now = Date.now();
     const normalizedOrigin = normalizeDeviceId(originDeviceId);
     return {
         type: 'read-receipt',
         chatId: String(chatId || '').trim(),
         ...(Array.isArray(messageIds) && messageIds.length ? { messageIds } : {}),
-        readAt,
+        readAt: readAt === undefined ? now : readAt,
         ...(sender ? { sender: String(sender).trim() } : {}),
-        timestamp,
+        timestamp: timestamp === undefined ? now : timestamp,
         ...(normalizedOrigin ? { originDeviceId: normalizedOrigin } : {}),
     };
 }
