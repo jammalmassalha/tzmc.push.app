@@ -356,6 +356,45 @@ class ChatApiService {
     }
   }
 
+  /// Web Integrated Windows Authentication (SSO).
+  ///
+  /// Sends **no body at all** — the username is derived server-side from the
+  /// Negotiate handshake terminated by the reverse proxy. Deliberately does not
+  /// carry [AppConfig.windowsAppToken]: on the web that token would be readable
+  /// inside `main.dart.js`, so a token-gated endpoint that accepts a
+  /// client-supplied username would let anyone mint a session for any account.
+  ///
+  /// Returns the matched user identifier, or null when the browser did not
+  /// participate in the handshake, the user is off the domain, or the account
+  /// is not registered. Callers should treat null as "show the SMS login
+  /// screen" rather than as an error.
+  Future<String?> windowsSsoLogin() async {
+    try {
+      final response = await _client.post<Map<String, dynamic>>(
+        ApiEndpoints.windowsSso,
+        retryOptions: const RetryOptions(retries: 0, timeout: NetworkTimeouts.sessionTimeout),
+      );
+
+      if (!response.isSuccessful) return null;
+
+      final body = _coerceJsonMap(response.data);
+      if (body['authenticated'] != true) return null;
+
+      final sessionUser = (body['user'] as String?)?.trim().toLowerCase();
+      if (sessionUser == null || sessionUser.isEmpty) return null;
+
+      final csrfToken = body['csrfToken'] as String?;
+      if (csrfToken != null && csrfToken.isNotEmpty) {
+        _client.setCsrfToken(csrfToken);
+      }
+
+      return sessionUser;
+    } catch (e) {
+      debugPrint('windowsSsoLogin error: $e');
+      return null;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Contacts & Groups
   // ---------------------------------------------------------------------------

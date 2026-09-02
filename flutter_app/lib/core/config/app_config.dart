@@ -49,6 +49,7 @@ class ApiEndpoints {
   static const String requestCode = '/auth/session/request-code';
   static const String verifyCode = '/auth/session/verify-code';
   static const String windowsLogin = '/auth/session/windows-login';
+  static const String windowsSso = '/auth/session/windows-sso';
 
   // Contacts & Groups
   static const String contacts = '/contacts';

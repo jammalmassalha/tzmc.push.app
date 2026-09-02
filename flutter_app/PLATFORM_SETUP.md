@@ -127,6 +127,125 @@ to the build step:
    screen — the login screen is never shown.
 5. If the username is not registered, the normal login screen is displayed.
 
+## Flutter Web — Windows SSO (Integrated Windows Authentication)
+
+The web build can also skip the SMS login for domain-joined machines, but the
+mechanism is completely different from the desktop one above, for a security
+reason worth stating plainly.
+
+> **Why the web build does not reuse `/auth/session/windows-login`.**
+> That endpoint trusts a **client-supplied** `windowsUser` and is gated only by
+> the shared `APP_SERVER_TOKEN`. That is defensible for the desktop build, where
+> the token is baked into a distributed binary. On the web the token would sit in
+> a `--dart-define` inside `main.dart.js`, readable by anyone who opens devtools —
+> at which point any user could POST `{"windowsUser": "someone_else"}` and receive
+> a valid session cookie for that account. A full authentication bypass.
+>
+> The web path therefore uses a **separate** endpoint,
+> `POST /auth/session/windows-sso`, which takes **no request body** and derives
+> the username server-side only. Do not widen the desktop endpoint instead.
+
+The browser sandbox exposes no API for the OS login name, so the username has to
+come from a reverse proxy that terminates the Negotiate (Kerberos/NTLM)
+handshake and passes the result to Node.
+
+### 1. Choose where the Negotiate handshake terminates
+
+The deployment image is `node:20-alpine`, which constrains the options:
+
+- **A — IIS in front of Node (easiest with existing Windows infrastructure).**
+  Enable Windows Authentication on the site, disable Anonymous, and reverse-proxy
+  to Node via ARR or `iisnode`. Least code, best-trodden path in a Microsoft shop.
+- **B — Apache or nginx with `mod_auth_gssapi` / SPNEGO (Linux-native).** Fits the
+  container setup. Requires a keytab for the service account and an SPN registered
+  in AD.
+- **C — Node does it natively. Not viable here.** `node-expose-sspi` only runs on
+  Windows hosts, so it is out for Alpine. **Do not use `express-ntlm`** — it does
+  not validate against a domain controller, so it accepts any claimed username,
+  which is the same spoofing hole described above.
+
+Prefer A if IIS is available, otherwise B.
+
+### 2. Pass the identity to Node without letting clients forge it
+
+Whichever proxy is used, it ends up injecting a header such as
+`X-Remote-User: DOMAIN\jmassalha`. Two guards are **non-negotiable**:
+
+- **Strip the header on ingress.** If the proxy forwards a client-supplied
+  `X-Remote-User` instead of overwriting it, anyone can send it directly and
+  impersonate any user. Explicitly *unset* then *set* it — for example
+  `RequestHeader unset X-Remote-User` before `RequestHeader set ...` in Apache, or
+  `proxy_set_header X-Remote-User $remote_user;` in nginx (which replaces rather
+  than appends).
+- **Bind Node to localhost or the internal network only,** so nobody can bypass
+  the proxy and hit Express directly with a forged header.
+
+If the proxy and Node are **not** on the same host, also set
+`WINDOWS_SSO_SIGNATURE_SECRET` and have the proxy send an HMAC-SHA256 (hex) of
+the normalized, lowercased account name in `X-Remote-User-Signature`. The server
+rejects the request when the signature is absent or does not match.
+
+### 3. Backend configuration
+
+SSO is **off by default** and the identity header is ignored entirely until it is
+switched on, so a deployment with no proxy in front of it cannot be tricked into
+trusting a client-supplied header:
+
+```
+WINDOWS_SSO_ENABLED=true
+WINDOWS_SSO_USER_HEADER=X-Remote-User
+# Optional, for a non-colocated proxy:
+WINDOWS_SSO_SIGNATURE_HEADER=X-Remote-User-Signature
+WINDOWS_SSO_SIGNATURE_SECRET=<shared-with-proxy>
+```
+
+`POST /auth/session/windows-sso` reads the header, strips the `DOMAIN\` prefix or
+UPN suffix, lowercases the result, and then joins the *existing* desktop flow:
+look up column O of the Subscribe sheet → check the restricted flag → create the
+session token → set the session cookie. The response shape matches
+`/auth/session/windows-login`. It returns **401** (not 403) when no identity is
+present, so the client can cleanly fall back to the SMS login screen.
+
+### 4. Client-side prerequisites — this is where these projects usually stall
+
+Auto-login is only *silent* if the browser already trusts the site. Otherwise the
+user gets a **native username/password popup**, which is worse UX than the
+existing login screen:
+
+- The site must be in the **Local Intranet zone** (Edge/IE) or listed in Chrome
+  and Edge's `AuthServerAllowlist` policy — push this via GPO.
+- It must be reached by **hostname, not IP**, or Kerberos falls back to NTLM.
+- The **SPN** (e.g. `HTTP/tzmc.co.il`) must be registered to the service account,
+  with **no duplicates** — duplicate SPNs are the classic silent-failure cause.
+- Firefox needs `network.negotiate-auth.trusted-uris` set separately.
+- Safari/macOS and mobile browsers will generally not participate at all.
+
+The Flutter side needs no further work: the Dio web adapter already sets
+`withCredentials = true` (see `lib/core/api/cookie_setup_web.dart`) so the session
+cookie sticks, and the attempt is made silently inside the existing "no session
+found" branch of `auth_state.dart`. Any failure falls through to the normal login
+screen, which is what off-network and BYOD users will always see.
+
+### 5. Verifying
+
+CI cannot exercise any of this, so verify by hand:
+
+1. From a domain-joined Windows machine in Edge, open the app — it should reach
+   the chat screen with no prompt. Check the server log for
+   `[WINDOWS SSO] Auto-login successful for windowsUser: ...` with the expected
+   account.
+2. From a machine outside the domain, confirm the SMS login screen appears —
+   not an error and not a native credentials popup.
+3. From a normal client, POST `/auth/session/windows-sso` with a forged
+   `X-Remote-User` header and confirm it is rejected with 401.
+
+### Fallback if the infrastructure work is not worth it
+
+If you do not control the reverse proxy or AD, the pragmatic alternative is to
+skip IWA entirely and give web users a long-lived remember-me cookie after a
+single SMS login. Much less work, no domain dependency, and for a chat app it
+removes the repeated-login friction that is usually the actual motivation.
+
 ## Android Setup
 
 After initializing the Flutter project with `flutter create`, configure:
