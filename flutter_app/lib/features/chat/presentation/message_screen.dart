@@ -1322,8 +1322,36 @@ Future<File> _createUniqueSaveFile(String filename) async {
   return File('${dir.path}/${base}_$suffix$ext');
 }
 
+/// Image file extensions that must never be written to the device.
+///
+/// Deliberately broader than [_isImageUrl] (which only decides how to *render*
+/// a link inline): an attachment sent through the file picker keeps its
+/// original extension, so formats like HEIC or TIFF reach `fileUrl` even
+/// though they are never rendered as an inline `_ImagePart`.
+const Set<String> _kBlockedSaveExtensions = {
+  'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'heif',
+  'tif', 'tiff', 'avif', 'svg', 'ico',
+};
+
+/// Whether [url] points at an image, which users are not allowed to save.
+///
+/// Images may be viewed in the app but not exported to the device. This is the
+/// single choke point for that rule — the UI hides the save affordances, and
+/// this guard makes sure a caller cannot bypass them.
+bool _isSaveBlockedUrl(String url) {
+  final path = Uri.tryParse(resolveToAbsoluteUrl(url))?.path ?? url;
+  final lastSegment = path.split('/').last;
+  final dot = lastSegment.lastIndexOf('.');
+  if (dot < 0 || dot == lastSegment.length - 1) return false;
+  return _kBlockedSaveExtensions.contains(
+    lastSegment.substring(dot + 1).toLowerCase(),
+  );
+}
+
 /// Downloads [url] with the authenticated HTTP client and saves the bytes
 /// to the Downloads directory when available (fallback: app documents dir).
+///
+/// Images are refused — see [_isSaveBlockedUrl].
 ///
 /// On web the file is opened in a new tab instead (no local file system).
 /// The caller should pre-capture any context-sensitive objects before the
@@ -1333,6 +1361,8 @@ Future<void> _saveFileToDevice(
   String url, {
   bool openAfterSave = false,
 }) async {
+  if (_isSaveBlockedUrl(url)) return;
+
   if (kIsWeb) {
     final uri = Uri.tryParse(url);
     if (uri != null) {
@@ -1427,20 +1457,6 @@ void _showFullScreenImage(BuildContext context, String imageUrl) {
               onPressed: () => Navigator.of(ctx).pop(),
               icon: const Icon(Icons.close, color: Colors.white, size: 28),
               style: IconButton.styleFrom(backgroundColor: Colors.black38),
-            ),
-          ),
-          Positioned(
-            top: MediaQuery.of(ctx).padding.top + 4,
-            left: 4,
-            child: IconButton(
-              onPressed: () => _saveFileToDevice(
-                ctx,
-                resolveToAbsoluteUrl(imageUrl),
-                openAfterSave: false,
-              ),
-              icon: const Icon(Icons.download, color: Colors.white, size: 28),
-              style: IconButton.styleFrom(backgroundColor: Colors.black38),
-              tooltip: 'שמור תמונה',
             ),
           ),
         ],
@@ -2069,7 +2085,8 @@ class _MessageBubble extends StatelessWidget {
                 },
               ),
             if (message.deletedAt == null &&
-                (message.imageUrl != null || message.fileUrl != null))
+                message.fileUrl != null &&
+                !_isSaveBlockedUrl(message.fileUrl!))
               ListTile(
                 leading: const Icon(Icons.download),
                 title: const Text('שמור במכשיר'),
@@ -2077,7 +2094,7 @@ class _MessageBubble extends StatelessWidget {
                   Navigator.of(context).pop();
                   _saveFileToDevice(
                     context,
-                    message.imageUrl ?? message.fileUrl!,
+                    message.fileUrl!,
                     openAfterSave: false,
                   );
                 },
@@ -2777,6 +2794,14 @@ class _LinkButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       onTap: () async {
+        // An image whose extension isn't recognised by `_isImageUrl` (HEIC,
+        // BMP, …) is parsed as a plain link rather than an inline image.
+        // Opening it externally would write it to disk, so route it to the
+        // in-app viewer instead.
+        if (_isSaveBlockedUrl(url)) {
+          _showFullScreenImage(context, url);
+          return;
+        }
         if (_isAuthenticatedUploadUrl(url)) {
           final opened = await openAuthenticatedFileExternally(context, url);
           if (!opened) {
