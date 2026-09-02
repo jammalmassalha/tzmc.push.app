@@ -8,6 +8,8 @@ const {
   signWindowsPrincipal,
   resolveWindowsSsoConfig,
   resolveWindowsSsoUser,
+  sanitizeForLog,
+  describeSsoHeaders,
 } = require('../services/windows-sso');
 
 test('normalizeWindowsPrincipal strips the DOMAIN prefix and lowercases', () => {
@@ -155,4 +157,71 @@ test('signWindowsPrincipal is stable across equivalent principal spellings', () 
   assert.equal(signWindowsPrincipal('JMassalha@tzmc.co.il', secret), expected);
   assert.equal(signWindowsPrincipal('jmassalha', ''), '');
   assert.equal(signWindowsPrincipal('', secret), '');
+});
+
+// ─── Diagnostic logging helpers ─────────────────────────────────────────────
+
+test('sanitizeForLog strips newlines so headers cannot forge log entries', () => {
+  // Without this a caller could inject a fake "[WINDOWS SSO] authenticated" line.
+  assert.equal(sanitizeForLog('jmassalha\r\n[WINDOWS SSO] fake entry'), 'jmassalha [WINDOWS SSO] fake entry');
+  assert.equal(sanitizeForLog('a\tb'), 'a b');
+  assert.equal(sanitizeForLog('plain'), 'plain');
+  assert.equal(sanitizeForLog(null), '');
+  assert.equal(sanitizeForLog(undefined), '');
+  assert.equal(sanitizeForLog(['a', 'b']), 'a,b');
+});
+
+test('sanitizeForLog truncates overlong values', () => {
+  const out = sanitizeForLog('x'.repeat(500));
+  assert.ok(out.length < 200);
+  assert.match(out, /truncated/);
+});
+
+test('describeSsoHeaders reports when no identity header arrived', () => {
+  const config = resolveWindowsSsoConfig({ WINDOWS_SSO_ENABLED: '1' });
+  const summary = describeSsoHeaders({ host: 'tzmc.co.il' }, config);
+  assert.equal(summary.expectedHeader, 'x-remote-user');
+  assert.equal(summary.expectedHeaderPresent, false);
+  assert.deepEqual(summary.identityHeadersPresent, []);
+  assert.equal(summary.expectedHeaderValue, '');
+});
+
+test('describeSsoHeaders surfaces an identity header sent under a different name', () => {
+  // The common misconfiguration: the proxy injects something, but not the name
+  // WINDOWS_SSO_USER_HEADER is watching.
+  const config = resolveWindowsSsoConfig({ WINDOWS_SSO_ENABLED: '1' });
+  const summary = describeSsoHeaders({ 'x-forwarded-user': 'TZMC\\jmassalha' }, config);
+  assert.equal(summary.expectedHeaderPresent, false);
+  assert.deepEqual(summary.identityHeadersPresent, ['x-forwarded-user']);
+});
+
+test('describeSsoHeaders sanitizes the reported header value', () => {
+  const config = resolveWindowsSsoConfig({ WINDOWS_SSO_ENABLED: '1' });
+  const summary = describeSsoHeaders({ 'x-remote-user': 'evil\r\ninjected' }, config);
+  assert.equal(summary.expectedHeaderPresent, true);
+  assert.doesNotMatch(summary.expectedHeaderValue, /[\r\n]/);
+});
+
+test('describeSsoHeaders reports signature presence without leaking its value', () => {
+  const config = resolveWindowsSsoConfig({
+    WINDOWS_SSO_ENABLED: '1',
+    WINDOWS_SSO_SIGNATURE_SECRET: 'shhh',
+  });
+  const summary = describeSsoHeaders(
+    { 'x-remote-user': 'TZMC\\jmassalha', 'x-remote-user-signature': 'abc123' },
+    config
+  );
+  assert.equal(summary.signatureRequired, true);
+  assert.equal(summary.signatureHeaderPresent, true);
+  assert.equal(JSON.stringify(summary).includes('abc123'), false);
+});
+
+test('describeSsoHeaders includes a custom expected header in the candidate set', () => {
+  const config = resolveWindowsSsoConfig({
+    WINDOWS_SSO_ENABLED: '1',
+    WINDOWS_SSO_USER_HEADER: 'X-Custom-User',
+  });
+  const summary = describeSsoHeaders({ 'x-custom-user': 'TZMC\\jmassalha' }, config);
+  assert.equal(summary.expectedHeaderPresent, true);
+  assert.deepEqual(summary.identityHeadersPresent, ['x-custom-user']);
 });

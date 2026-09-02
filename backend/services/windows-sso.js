@@ -192,12 +192,78 @@ function resolveWindowsSsoUser(headers, config) {
     return { user: principal, reason: 'ok' };
 }
 
+/**
+ * Header names a reverse proxy might use to carry the authenticated principal.
+ *
+ * Purely diagnostic: knowing which of these actually arrived is the fastest way
+ * to tell "the proxy is not injecting anything" apart from "it injects under a
+ * different name than WINDOWS_SSO_USER_HEADER expects".
+ */
+const KNOWN_IDENTITY_HEADERS = [
+    'x-remote-user',
+    'x-forwarded-user',
+    'x-iis-remote-user',
+    'x-authenticated-user',
+    'remote-user',
+    'auth-user',
+    'x-user',
+];
+
+/**
+ * Make an untrusted value safe to write to a log line.
+ *
+ * Header values are attacker-controlled, so CR/LF must be stripped or a caller
+ * could forge extra log entries, and the length must be bounded.
+ */
+function sanitizeForLog(value, maxLength = 120) {
+    if (value === null || value === undefined) return '';
+    const flattened = Array.isArray(value) ? value.join(',') : String(value);
+    const cleaned = flattened
+        .replace(/[\r\n\t\u0000-\u001f\u007f]/g, ' ')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+    if (cleaned.length <= maxLength) return cleaned;
+    return `${cleaned.slice(0, maxLength)}…(truncated)`;
+}
+
+/**
+ * Summarize the identity-related headers on a request, for logging.
+ *
+ * Returns the names of any recognised identity headers that are present, the
+ * sanitized value of the configured one, and whether a signature accompanied
+ * it. The signature value itself is never included — only whether it exists.
+ */
+function describeSsoHeaders(headers, config) {
+    const settings = config || resolveWindowsSsoConfig();
+    const source = headers && typeof headers === 'object' ? headers : {};
+
+    const candidates = new Set([...KNOWN_IDENTITY_HEADERS, settings.userHeader]);
+    const present = [];
+    for (const name of candidates) {
+        if (source[name] !== undefined && source[name] !== null && source[name] !== '') {
+            present.push(name);
+        }
+    }
+
+    return {
+        expectedHeader: settings.userHeader,
+        expectedHeaderPresent: source[settings.userHeader] !== undefined,
+        expectedHeaderValue: sanitizeForLog(source[settings.userHeader]),
+        identityHeadersPresent: present.sort(),
+        signatureRequired: Boolean(settings.signatureSecret),
+        signatureHeaderPresent: source[settings.signatureHeader] !== undefined,
+    };
+}
+
 module.exports = {
     DEFAULT_SSO_USER_HEADER,
     DEFAULT_SSO_SIGNATURE_HEADER,
     MAX_PRINCIPAL_LENGTH,
+    KNOWN_IDENTITY_HEADERS,
     normalizeWindowsPrincipal,
     signWindowsPrincipal,
     resolveWindowsSsoConfig,
     resolveWindowsSsoUser,
+    sanitizeForLog,
+    describeSsoHeaders,
 };

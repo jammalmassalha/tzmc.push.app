@@ -369,28 +369,55 @@ class ChatApiService {
   /// is not registered. Callers should treat null as "show the SMS login
   /// screen" rather than as an error.
   Future<String?> windowsSsoLogin() async {
+    debugPrint('[WindowsSSO] [2/5] POST ${ApiEndpoints.windowsSso} (no body, cookies included)');
     try {
       final response = await _client.post<Map<String, dynamic>>(
         ApiEndpoints.windowsSso,
         retryOptions: const RetryOptions(retries: 0, timeout: NetworkTimeouts.sessionTimeout),
       );
 
-      if (!response.isSuccessful) return null;
+      debugPrint('[WindowsSSO] [3/5] Response status: ${response.statusCode}');
+
+      if (!response.isSuccessful) {
+        if (response.statusCode == 401) {
+          debugPrint(
+            '[WindowsSSO] [3/5] 401 — the server has no Windows identity for this '
+            'connection. Either SSO is disabled (WINDOWS_SSO_ENABLED) or no reverse '
+            'proxy injected an identity header. Falling back to the login screen.',
+          );
+        } else if (response.statusCode == 403) {
+          debugPrint(
+            '[WindowsSSO] [3/5] 403 — the Windows account was recognised by the proxy '
+            'but is not registered in column O of the Subscribe sheet.',
+          );
+        }
+        return null;
+      }
 
       final body = _coerceJsonMap(response.data);
-      if (body['authenticated'] != true) return null;
+      if (body['authenticated'] != true) {
+        debugPrint('[WindowsSSO] [4/5] 200 but authenticated != true — treating as failure.');
+        return null;
+      }
 
       final sessionUser = (body['user'] as String?)?.trim().toLowerCase();
-      if (sessionUser == null || sessionUser.isEmpty) return null;
+      if (sessionUser == null || sessionUser.isEmpty) {
+        debugPrint('[WindowsSSO] [4/5] 200 but no user in the response body — treating as failure.');
+        return null;
+      }
 
       final csrfToken = body['csrfToken'] as String?;
       if (csrfToken != null && csrfToken.isNotEmpty) {
         _client.setCsrfToken(csrfToken);
+        debugPrint('[WindowsSSO] [4/5] CSRF token stored.');
+      } else {
+        debugPrint('[WindowsSSO] [4/5] WARNING: no csrfToken in the response.');
       }
 
+      debugPrint('[WindowsSSO] [5/5] Authenticated as: $sessionUser (isRestricted: ${body['isRestricted']})');
       return sessionUser;
     } catch (e) {
-      debugPrint('windowsSsoLogin error: $e');
+      debugPrint('[WindowsSSO] [3/5] Request failed: $e');
       return null;
     }
   }

@@ -22,15 +22,18 @@ import '../api/chat_api_service.dart';
 /// not configured, the browser did not authenticate, or the Windows account is
 /// not registered in column O of the Subscribe sheet.
 Future<String?> tryWindowsAutoLogin(ChatApiService apiService) async {
+  debugPrint('[WindowsSSO] [1/5] No existing session — attempting silent Windows SSO (web).');
   try {
     final user = await apiService.windowsSsoLogin();
     if (user != null) {
-      debugPrint('[WindowsAuth] Web SSO succeeded: $user');
+      debugPrint('[WindowsSSO] [5/5] Web SSO succeeded: $user');
+    } else {
+      debugPrint('[WindowsSSO] [5/5] Web SSO did not authenticate — showing the SMS login screen.');
     }
     return user;
   } catch (e) {
     // Never block the login flow — fall through to the SMS screen.
-    debugPrint('[WindowsAuth] Web SSO unavailable: $e');
+    debugPrint('[WindowsSSO] [5/5] Web SSO unavailable: $e — showing the SMS login screen.');
     return null;
   }
 }
