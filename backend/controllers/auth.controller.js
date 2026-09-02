@@ -500,8 +500,32 @@ function registerAuthController(app, deps = {}) {
         }
     };
 
+    // Both Windows login endpoints hit the Subscribe-sheet lookup, so cap them
+    // per IP to keep them from being used to enumerate accounts or to hammer
+    // the upstream sheet. The limit is deliberately generous: a whole office
+    // sits behind a single NAT address, and every browser tab makes one SSO
+    // attempt on startup, so a tight cap would lock out legitimate users at the
+    // start of the working day.
+    const windowsLoginIpRateLimit = rateLimit({
+        windowMs: 60 * 1000,
+        limit: 120,
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: (req) => getClientIpAddress(req),
+        handler: (_req, res, _next, options) => {
+            const retryAfterSeconds = Math.ceil(options.windowMs / 1000);
+            res.setHeader('Retry-After', String(retryAfterSeconds));
+            res.status(429).json({
+                status: 'error',
+                message: 'Too many login attempts. Please try again later.',
+                retryAfterSeconds
+            });
+        }
+    });
+
     app.post(
         ['/auth/session/windows-login', '/notify/auth/session/windows-login'],
+        windowsLoginIpRateLimit,
         async (req, res) => {
             const payload = req.body && typeof req.body === 'object' ? req.body : {};
             const windowsUser = String(payload.windowsUser || '').trim();
@@ -535,6 +559,7 @@ function registerAuthController(app, deps = {}) {
     const ssoConfig = windowsSsoConfig || resolveWindowsSsoConfig();
     app.post(
         ['/auth/session/windows-sso', '/notify/auth/session/windows-sso'],
+        windowsLoginIpRateLimit,
         async (req, res) => {
             const resolution = resolveWindowsSsoUser(req.headers, ssoConfig);
             if (!resolution.user) {
