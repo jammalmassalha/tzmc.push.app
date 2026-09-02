@@ -303,6 +303,45 @@ The build is configured without a service worker to prevent aggressive caching. 
 - No need to manually clear browser cache
 - Faster iteration during development and updates
 
+## Screenshot &amp; Screen-Capture Protection
+
+Implemented natively, with no extra Dart dependency, so there is nothing to
+enable at runtime — protection is on from the first frame.
+
+| Platform | Enforceable? | What is blocked |
+| --- | --- | --- |
+| Android | Yes, by the OS | Screenshots are refused ("Can't take screenshot due to security policy"); screen recordings, casting and any other non-secure display render black; the recent-apps preview is blank. |
+| iOS | Partially | The app-switcher snapshot and active screen recording / AirPlay mirroring / QuickTime capture are blurred. The physical Power + Volume Up screenshot **cannot** be blocked — iOS exposes no API for it. |
+| Web | No | Browsers are sandboxed with no OS-level capture hooks. Print Screen, the Snipping Tool, extensions and OS recorders all work regardless. |
+
+### Android
+
+`MainActivity.onCreate` sets `WindowManager.LayoutParams.FLAG_SECURE`. This is
+enforced by the system window manager rather than by app code, so it cannot be
+bypassed from within the app.
+
+### iOS
+
+`PrivacyShield` in `ios/Runner/AppDelegate.swift` adds a blurred
+`UIVisualEffectView` over the window:
+
+- on `applicationWillResignActive`, before the system captures the snapshot the
+  app switcher displays, and
+- whenever `UIScreen.capturedDidChangeNotification` reports `isCaptured`, which
+  covers screen recording and mirroring for as long as they run.
+
+`SceneDelegate` carries the same hooks. It is dormant today because `Info.plist`
+declares no `UIApplicationSceneManifest`, but with scenes enabled the
+`UIApplication` lifecycle callbacks stop firing and `AppDelegate.window` becomes
+nil, which would otherwise silently disable the shield.
+
+### Web
+
+No obfuscation is attempted. Keyboard-event or window-blur overlays only cover
+one of many capture routes, so they add UX cost and a false sense of security
+without meaningfully protecting anything. Treat anything rendered in the web
+client as capturable.
+
 ## Environment Variables
 
 Create a `.env` file (not committed) with:

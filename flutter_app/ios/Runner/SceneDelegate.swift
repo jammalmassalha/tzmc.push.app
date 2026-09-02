@@ -34,4 +34,18 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     self.window = window
     window.makeKeyAndVisible()
   }
+
+  // `Info.plist` currently declares no `UIApplicationSceneManifest`, so this
+  // delegate is dormant and `AppDelegate` owns the window and the privacy
+  // shield. These hooks exist so that enabling scenes later does not silently
+  // disable the shield: with scenes active the `UIApplication` lifecycle
+  // callbacks on `AppDelegate` stop firing and `AppDelegate.window` is nil, so
+  // the app-switcher snapshot would once again expose chat content.
+  func sceneWillResignActive(_ scene: UIScene) {
+    PrivacyShield.shared.cover(window)
+  }
+
+  func sceneDidBecomeActive(_ scene: UIScene) {
+    PrivacyShield.shared.uncoverIfNotCaptured()
+  }
 }
