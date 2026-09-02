@@ -47,6 +47,14 @@ export interface SessionServiceConfig {
   cookieTtlMs: number;
   cookieSameSite: string;
   cookieSecure: boolean;
+  /**
+   * Optional cookie `Domain`. Leave empty for a host-only cookie.
+   *
+   * Set this to share one session between the apex domain and `www` (e.g.
+   * `tzmc.co.il`), which otherwise keep separate cookie jars and force users to
+   * log in again whenever they switch hostname.
+   */
+  cookieDomain?: string;
   jweService?: JweService | null;
   looksLikeJweCompactToken?: (token: string) => boolean;
 }
@@ -82,6 +90,7 @@ export class SessionService {
   private readonly cookieTtlMs: number;
   private readonly cookieSameSite: string;
   private readonly cookieSecure: boolean;
+  private readonly cookieDomain: string;
   private readonly jweService: JweService | null;
   private readonly looksLikeJweCompactToken: (token: string) => boolean;
   private readonly deps: SessionServiceDeps;
@@ -92,6 +101,7 @@ export class SessionService {
     this.cookieTtlMs = Math.max(5 * 60 * 1000, config.cookieTtlMs);
     this.cookieSameSite = config.cookieSameSite || 'Lax';
     this.cookieSecure = config.cookieSecure !== false;
+    this.cookieDomain = normalizeHostValue(config.cookieDomain || '').replace(/^\./, '');
     this.jweService = config.jweService ?? null;
     this.looksLikeJweCompactToken = config.looksLikeJweCompactToken ?? (() => false);
     this.deps = deps;
@@ -261,9 +271,28 @@ export class SessionService {
     return !['localhost', '127.0.0.1', '::1'].includes(hostname);
   }
 
+  /**
+   * Resolve the `Domain` attribute to emit for this request.
+   *
+   * A browser silently discards a cookie whose `Domain` does not cover the
+   * request host, which would present as an endless login loop rather than an
+   * error. So the attribute is only emitted when the request really is for that
+   * domain (or a subdomain of it); anything else falls back to a host-only
+   * cookie, which always works.
+   */
+  private resolveCookieDomain(req: { headers?: { host?: string } }): string {
+    if (!this.cookieDomain) return '';
+    const hostname = this.normalizeCookieHost(req?.headers?.host || '');
+    if (!hostname) return '';
+    if (hostname === this.cookieDomain) return this.cookieDomain;
+    if (hostname.endsWith(`.${this.cookieDomain}`)) return this.cookieDomain;
+    return '';
+  }
+
   setSessionCookie(res: { setHeader(name: string, value: string): void }, req: { headers?: { host?: string } }, tokenValue: string, expiresAt: number): void {
     const sameSite = this.normalizeSameSiteValue();
     const secure = this.shouldUseSecureCookie(req);
+    const domain = this.resolveCookieDomain(req);
     const maxAgeSeconds = Math.max(1, Math.floor((Number(expiresAt) - Date.now()) / 1000));
     const cookieParts = [
       `${this.cookieName}=${encodeURIComponent(String(tokenValue || ''))}`,
@@ -273,6 +302,7 @@ export class SessionService {
       `Max-Age=${maxAgeSeconds}`,
       `Expires=${new Date(Date.now() + maxAgeSeconds * 1000).toUTCString()}`
     ];
+    if (domain) cookieParts.push(`Domain=${domain}`);
     if (secure) cookieParts.push('Secure');
     res.setHeader('Set-Cookie', cookieParts.join('; '));
   }
@@ -280,6 +310,7 @@ export class SessionService {
   clearSessionCookie(res: { setHeader(name: string, value: string): void }, req: { headers?: { host?: string } }): void {
     const sameSite = this.normalizeSameSiteValue();
     const secure = this.shouldUseSecureCookie(req);
+    const domain = this.resolveCookieDomain(req);
     const cookieParts = [
       `${this.cookieName}=`,
       'Path=/',
@@ -288,6 +319,10 @@ export class SessionService {
       'Max-Age=0',
       'Expires=Thu, 01 Jan 1970 00:00:00 GMT'
     ];
+    // Must mirror setSessionCookie exactly: a cookie is identified by
+    // name+domain+path, so clearing without the Domain would leave the
+    // domain-scoped cookie in place and logout would appear to do nothing.
+    if (domain) cookieParts.push(`Domain=${domain}`);
     if (secure) cookieParts.push('Secure');
     res.setHeader('Set-Cookie', cookieParts.join('; '));
   }

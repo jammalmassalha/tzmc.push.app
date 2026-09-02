@@ -990,6 +990,11 @@ const SESSION_COOKIE_TTL_MS = Math.max(
 const SESSION_RENEWAL_THRESHOLD_MS = Math.floor(SESSION_COOKIE_TTL_MS / 2);
 const SESSION_COOKIE_SAME_SITE = String(process.env.SESSION_COOKIE_SAMESITE || 'Lax').trim();
 const SESSION_COOKIE_SECURE = String(process.env.SESSION_COOKIE_SECURE || 'true').trim().toLowerCase() !== 'false';
+// Optional cookie `Domain`. Empty (the default) yields a host-only cookie.
+// Setting it to `tzmc.co.il` lets one session cover both the apex domain and
+// `www.tzmc.co.il`, which otherwise keep separate cookie jars and make users
+// log in again whenever they switch between the two hostnames.
+const SESSION_COOKIE_DOMAIN = String(process.env.SESSION_COOKIE_DOMAIN || '').trim();
 const SESSION_SIGNING_SECRET = String(
     process.env.SESSION_SIGNING_SECRET ||
     APP_SERVER_TOKEN ||
@@ -1013,6 +1018,7 @@ const sessionService = new SessionService(
         cookieTtlMs: SESSION_COOKIE_TTL_MS,
         cookieSameSite: SESSION_COOKIE_SAME_SITE,
         cookieSecure: SESSION_COOKIE_SECURE,
+        cookieDomain: SESSION_COOKIE_DOMAIN,
         jweService: sessionTokenJweService,
         looksLikeJweCompactToken
     },

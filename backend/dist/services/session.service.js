@@ -29,6 +29,7 @@ class SessionService {
     cookieTtlMs;
     cookieSameSite;
     cookieSecure;
+    cookieDomain;
     jweService;
     looksLikeJweCompactToken;
     deps;
@@ -38,6 +39,7 @@ class SessionService {
         this.cookieTtlMs = Math.max(5 * 60 * 1000, config.cookieTtlMs);
         this.cookieSameSite = config.cookieSameSite || 'Lax';
         this.cookieSecure = config.cookieSecure !== false;
+        this.cookieDomain = normalizeHostValue(config.cookieDomain || '').replace(/^\./, '');
         this.jweService = config.jweService ?? null;
         this.looksLikeJweCompactToken = config.looksLikeJweCompactToken ?? (() => false);
         this.deps = deps;
@@ -206,9 +208,31 @@ class SessionService {
             return true;
         return !['localhost', '127.0.0.1', '::1'].includes(hostname);
     }
+    /**
+     * Resolve the `Domain` attribute to emit for this request.
+     *
+     * A browser silently discards a cookie whose `Domain` does not cover the
+     * request host, which would present as an endless login loop rather than an
+     * error. So the attribute is only emitted when the request really is for that
+     * domain (or a subdomain of it); anything else falls back to a host-only
+     * cookie, which always works.
+     */
+    resolveCookieDomain(req) {
+        if (!this.cookieDomain)
+            return '';
+        const hostname = this.normalizeCookieHost(req?.headers?.host || '');
+        if (!hostname)
+            return '';
+        if (hostname === this.cookieDomain)
+            return this.cookieDomain;
+        if (hostname.endsWith(`.${this.cookieDomain}`))
+            return this.cookieDomain;
+        return '';
+    }
     setSessionCookie(res, req, tokenValue, expiresAt) {
         const sameSite = this.normalizeSameSiteValue();
         const secure = this.shouldUseSecureCookie(req);
+        const domain = this.resolveCookieDomain(req);
         const maxAgeSeconds = Math.max(1, Math.floor((Number(expiresAt) - Date.now()) / 1000));
         const cookieParts = [
             `${this.cookieName}=${encodeURIComponent(String(tokenValue || ''))}`,
@@ -218,6 +242,8 @@ class SessionService {
             `Max-Age=${maxAgeSeconds}`,
             `Expires=${new Date(Date.now() + maxAgeSeconds * 1000).toUTCString()}`
         ];
+        if (domain)
+            cookieParts.push(`Domain=${domain}`);
         if (secure)
             cookieParts.push('Secure');
         res.setHeader('Set-Cookie', cookieParts.join('; '));
@@ -225,6 +251,7 @@ class SessionService {
     clearSessionCookie(res, req) {
         const sameSite = this.normalizeSameSiteValue();
         const secure = this.shouldUseSecureCookie(req);
+        const domain = this.resolveCookieDomain(req);
         const cookieParts = [
             `${this.cookieName}=`,
             'Path=/',
@@ -233,6 +260,11 @@ class SessionService {
             'Max-Age=0',
             'Expires=Thu, 01 Jan 1970 00:00:00 GMT'
         ];
+        // Must mirror setSessionCookie exactly: a cookie is identified by
+        // name+domain+path, so clearing without the Domain would leave the
+        // domain-scoped cookie in place and logout would appear to do nothing.
+        if (domain)
+            cookieParts.push(`Domain=${domain}`);
         if (secure)
             cookieParts.push('Secure');
         res.setHeader('Set-Cookie', cookieParts.join('; '));

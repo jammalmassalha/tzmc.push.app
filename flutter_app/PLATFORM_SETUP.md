@@ -239,12 +239,66 @@ CI cannot exercise any of this, so verify by hand:
 3. From a normal client, POST `/auth/session/windows-sso` with a forged
    `X-Remote-User` header and confirm it is rejected with 401.
 
-### Fallback if the infrastructure work is not worth it
+### Status on the current host: IWA is not achievable
 
-If you do not control the reverse proxy or AD, the pragmatic alternative is to
-skip IWA entirely and give web users a long-lived remember-me cookie after a
-single SMS login. Much less work, no domain dependency, and for a chat app it
-removes the repeated-login friction that is usually the actual motivation.
+The production deployment is **cPanel + OpenResty + Phusion Passenger with user
+level shell access only**. Terminating Negotiate there would require
+recompiling OpenResty with the SPNEGO module and installing a Kerberos keytab,
+neither of which is possible without root. `WINDOWS_SSO_ENABLED` therefore stays
+`false`, and `/auth/session/windows-sso` correctly returns `401` for every
+request.
+
+The code above remains in place and is inert; it becomes usable unchanged if the
+app is ever moved behind IIS or an Apache/nginx instance you control.
+
+> Note for anyone debugging that `401`: do **not** "fix" it by having Node send
+> `WWW-Authenticate: Negotiate`. That header is a promise to complete the
+> handshake, and Node here has no keytab and no GSSAPI library to complete it
+> with. The browser would send a ticket, get another 401, and fall back to a
+> native username/password prompt that can never succeed — strictly worse than
+> the SMS login screen, and it would fire for every public visitor too. The
+> challenge must come from a proxy that can actually finish the exchange.
+
+### The fallback: a long-lived session instead
+
+Rather than IWA, web users get one SMS login and then stay logged in. This is
+**already implemented** — see "Staying logged in" below.
+
+## Staying logged in (remember-me)
+
+There is no separate "remember me" checkbox or token; the ordinary session
+cookie is the remember-me mechanism:
+
+- **30-day TTL** (`SESSION_COOKIE_TTL_MS`, default `2592000000`).
+- **Persistent, not a browser-session cookie** — it carries `Max-Age`/`Expires`,
+  so it survives closing the browser or rebooting the PC.
+- **Sliding renewal** — once a session passes the halfway point (15 days) the
+  next request transparently issues a fresh 30-day token, keeping the same
+  `sessionId` and CSRF token. An active user is effectively never logged out.
+- **Stable signing secret**, so a Passenger restart does not invalidate anyone.
+
+### If users still get logged out: check the cookie domain
+
+The cookie is **host-only** by default, and this deployment answers on both
+`tzmc.co.il` and `www.tzmc.co.il`. Those are two separate cookie jars, so a user
+who logs in on one and later lands on the other is asked to log in again.
+
+Set the apex domain so a single login covers both:
+
+```
+SESSION_COOKIE_DOMAIN=tzmc.co.il
+```
+
+No leading dot and no scheme. The value is applied to both the login and the
+logout cookie, so signing out still works. If a request arrives on a host
+outside that domain (localhost, a staging hostname) the attribute is omitted
+automatically and the cookie stays host-only — emitting a mismatched `Domain`
+would make the browser silently discard it, which presents as an endless login
+loop rather than an error.
+
+Restart the app after changing it; the value is read once at startup, and on
+Passenger it must be exported into the app's environment (a `.env` file only
+read by local tooling will not reach the process).
 
 ## Android Setup
 
