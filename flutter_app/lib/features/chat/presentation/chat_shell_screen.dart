@@ -888,7 +888,6 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       if (_canAccessShuttle) MainTab.shuttle,
       MainTab.helpdesk,
       if (_canAccessTicketManager) MainTab.ticketManager,
-      if (!kIsWeb) MainTab.passwordReset,
       MainTab.accessibility,
       if (_canAccessAdminGroups) MainTab.adminGroups,
     ];

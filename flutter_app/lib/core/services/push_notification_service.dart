@@ -1486,11 +1486,37 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     final prev = pending[chatId] as Map<String, dynamic>?;
     final ts = int.tryParse(data['timestamp']?.toString() ?? '') ??
         DateTime.now().millisecondsSinceEpoch;
+    final messageId = (data['messageId'] ?? '').toString().trim();
+    final prevPendingSince = prev?['pendingSince'];
+    final prevPendingSinceMs = prevPendingSince is int
+        ? prevPendingSince
+        : int.tryParse(prevPendingSince?.toString() ?? '');
+    final prevLastTimestamp = prev?['lastTimestamp'];
+    final prevLastTimestampMs = prevLastTimestamp is int
+        ? prevLastTimestamp
+        : int.tryParse(prevLastTimestamp?.toString() ?? '');
+    final prevLastMessageId = (prev?['lastMessageId'] ?? '').toString().trim();
 
     pending[chatId] = {
       'unreadCount': ((prev?['unreadCount'] as int?) ?? 0) + 1,
       // Keep the earliest timestamp so delta-fetch can use it as a lower bound.
-      'pendingSince': prev?['pendingSince'] ?? ts,
+      'pendingSince': (prevPendingSinceMs != null && prevPendingSinceMs > 0)
+          ? (prevPendingSinceMs < ts ? prevPendingSinceMs : ts)
+          : ts,
+      // Newest push seen for this chat.  The message itself is not written to
+      // the local database from this isolate, so recording its identity and
+      // timestamp lets the resume-time delta pull position its cursor
+      // correctly instead of relying on the (stale) local message table.
+      'lastTimestamp':
+          (prevLastTimestampMs != null && prevLastTimestampMs > ts)
+              ? prevLastTimestampMs
+              : ts,
+      if (messageId.isNotEmpty)
+        'lastMessageId': messageId
+      else if (prevLastMessageId.isNotEmpty)
+        // A push without a messageId must not erase the identity recorded by
+        // an earlier one — the whole entry is replaced, not merged.
+        'lastMessageId': prevLastMessageId,
     };
 
     await prefs.setString(kPendingChatUpdatesKey, jsonEncode(pending));

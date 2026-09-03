@@ -62,6 +62,15 @@ const String kPendingChatUpdatesKey = 'tzmc_pending_chat_updates_v1';
 /// arrive after the stored delete timestamp.
 const String kDeletedChatsKeyPrefix = 'tzmc_deleted_chats_v1';
 
+/// SharedPreferences key prefix for the incremental-sync high-water mark.
+///
+/// Stores the newest message timestamp this device has ever applied, keyed by
+/// user.  It is used as a floor for the `since` cursor of the delta pulls so a
+/// trimmed, partially written, or unavailable local message table can never
+/// silently reset the cursor to `0` (which would trigger a full history
+/// re-download and, on the incremental path, an unread-count storm).
+const String kSyncCursorKeyPrefix = 'tzmc_sync_cursor_v1';
+
 // ---------------------------------------------------------------------------
 // Community group seed data (mirrors Angular's SEED_COMMUNITY_GROUPS)
 // ---------------------------------------------------------------------------
@@ -279,6 +288,16 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   int _lastGapAnalysisTime = 0;
   String? _currentUser;
 
+  /// Newest message timestamp ever applied on this device (see
+  /// [kSyncCursorKeyPrefix]).  Persisted alongside the state snapshot.
+  int _syncCursorMs = 0;
+
+  /// Lower bound for the next delta pull, derived from the FCM background
+  /// tray.  Messages delivered while the app was backgrounded are only known
+  /// through the tray, so the resume-time pull must start no later than the
+  /// oldest pending push.  Cleared once it has been consumed.
+  int? _pendingSyncFloorMs;
+
   /// Community group configs loaded from the server; seeded with defaults.
   /// Mirrors Angular's `communityGroupConfigs` field.
   List<CommunityGroupConfig> _communityGroupConfigs = List.unmodifiable(_kSeedCommunityGroups);
@@ -375,6 +394,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     try {
       final deletedChats = await _readDeletedChats(normalized);
       state = state.copyWith(deletedChats: deletedChats);
+
+      // Load the persisted incremental-sync high-water mark and the oldest
+      // pending background push, so the recovery pull below starts from a
+      // cursor that survives a trimmed or partially written message table.
+      _syncCursorMs = await _readSyncCursor(normalized);
+      _pendingSyncFloorMs = await _readPendingTrayFloor();
 
       // 1. Restore from local database (best-effort).
       //
@@ -476,6 +501,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // was queried).  We take the MAX so we never downgrade a count that
       // the pull already computed correctly.
       final tray = await _readAndClearPendingTray();
+      // The pending floor has now been consumed by the recovery pull above;
+      // clear it so subsequent delta pulls use the normal high-water mark.
+      _pendingSyncFloorMs = null;
       if (hadLocalHistory && tray.isNotEmpty) {
         final merged = Map<String, int>.from(state.unreadByChat);
         for (final entry in tray.entries) {
@@ -517,9 +545,16 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     for (final message in messages) {
       (result[message.chatId] ??= []).add(message);
     }
-    // Sort each chat's messages by timestamp descending
+    // Sort each chat's messages by timestamp descending and keep only the most
+    // recent [maxMessagesPerChat].  Persistence is non-destructive, so the
+    // local DB retains history beyond the in-memory cap; trimming here keeps
+    // the working set bounded while the full history stays on disk.
     for (final chatId in result.keys) {
-      result[chatId]!.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+      final msgs = result[chatId]!;
+      msgs.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+      if (msgs.length > maxMessagesPerChat) {
+        result[chatId] = msgs.sublist(0, maxMessagesPerChat);
+      }
     }
     return result;
   }
@@ -909,12 +944,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       if (since != null) {
         latestTimestamp = since;
       } else {
-        try {
-          latestTimestamp = await _db.getLatestMessageTimestamp();
-        } catch (_) {
-          // DB unavailable on web; use in-memory state.
-          latestTimestamp = _latestTimestampFromState();
-        }
+        // Derive the cursor from the persisted high-water mark combined with
+        // the local table, so a trimmed / unavailable / partially written
+        // message table can't silently reset the cursor to 0 and stop the
+        // polling fallback from making progress.
+        latestTimestamp = await _resolveSyncCursor();
       }
 
       // Never use the incremental pull path as a full-history download.
@@ -960,16 +994,22 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _lastGapAnalysisTime = now;
 
     try {
-      int latestTimestamp;
+      // The branch decision is based on whether this device has any local
+      // history at all; a device with an empty message table must always take
+      // the batch-import path so a full history load never inflates the unread
+      // badges.  The incremental branch uses the resolved cursor (which also
+      // accounts for the persisted high-water mark and the FCM background
+      // tray) rather than the raw table maximum.
+      int localLatest;
       try {
-        latestTimestamp = await _db.getLatestMessageTimestamp();
+        localLatest = await _db.getLatestMessageTimestamp();
       } catch (_) {
         // DB unavailable (web without WASM files); derive the latest known
         // timestamp from the in-memory state so we still pull missed messages.
-        latestTimestamp = _latestTimestampFromState();
+        localLatest = _latestTimestampFromState();
       }
 
-      if (latestTimestamp == 0) {
+      if (localLatest == 0) {
         // No local history (first install or DB cleared): use the batch-import
         // path so that all historical messages are loaded without incrementing
         // unread counters. Treating the entire history as "unread" on first open
@@ -978,7 +1018,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // below is used — only genuinely new messages are counted as unread.
         final user = _currentUser;
         if (user != null && user.isNotEmpty) {
-          await _pullAllMessagesFromLogs(user: user, since: latestTimestamp);
+          await _pullAllMessagesFromLogs(user: user, since: 0);
         }
         // Explicitly clear any unread counts that may have been accumulated
         // from realtime messages (socket/SSE) that arrived concurrently during
@@ -992,7 +1032,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       } else {
         // Incremental update: use the normal per-message handler so that new
         // messages increment unread counts for the user.
-        await pullMessages(since: latestTimestamp);
+        await pullMessages(since: await _resolveSyncCursor());
       }
     } catch (e) {
       // Silent failure, will retry on next poll
@@ -1041,6 +1081,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // DB clear failed (e.g. sqlite3.wasm not available on web).
         // The in-memory state is still cleared in the copyWith below.
       }
+      // The full sync re-downloads the entire history, so the incremental
+      // high-water mark starts over and is rebuilt by the batch import below.
+      _syncCursorMs = 0;
+      _pendingSyncFloorMs = null;
       state = state.copyWith(
         messagesByChat: const {},
         unreadByChat: const {},
@@ -1468,6 +1512,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       if (msgs.length > maxMessagesPerChat) {
         newMessagesByChat[entry.key] = msgs.sublist(0, maxMessagesPerChat);
       }
+    }
+
+    for (final message in messages) {
+      _recordSyncCursor(message.timestamp);
     }
 
     state = state.copyWith(messagesByChat: newMessagesByChat);
@@ -1986,15 +2034,24 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     final isNew = existingIndex < 0;
 
+    final ChatMessage applied;
     if (!isNew) {
       // Hydrate existing message (keep longer body)
       final existing = chatMessages[existingIndex];
       final hydrated = _hydrateExistingMessage(existing, message);
       chatMessages[existingIndex] = hydrated;
+      applied = hydrated;
     } else {
       // Insert new message
       chatMessages.insert(0, message);
+      applied = message;
     }
+
+    // Write the applied message straight through to the local DB so a
+    // realtime delivery survives an immediate background/kill, and advance the
+    // incremental-sync high-water mark.
+    _writeMessageThrough(applied);
+    _recordSyncCursor(applied.timestamp);
 
     // Sort by timestamp descending
     chatMessages.sort((a, b) => b.timestamp.compareTo(a.timestamp));
@@ -2127,6 +2184,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         forwarded: forwarded,
         forwardedFrom: forwardedFrom,
         forwardedFromName: forwardedFromName,
+        deviceId: _transport.deviceId,
       );
       await _sendReply(payload);
 
@@ -2209,6 +2267,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         replyToSenderName: replyTo?.senderDisplayName,
         replyToBody: replyTo?.body,
         replyToImageUrl: replyTo?.imageUrl,
+        deviceId: _transport.deviceId,
       );
       await _sendReply(payload);
 
@@ -2227,7 +2286,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     for (final entry in state.messagesByChat.entries) {
       final chatMessages = entry.value.map((m) {
         if (m.messageId == messageId) {
-          return m.copyWith(deliveryStatus: status);
+          final updated = m.copyWith(deliveryStatus: status);
+          _writeMessageThrough(updated);
+          return updated;
         }
         return m;
       }).toList();
@@ -2451,7 +2512,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     unawaited(_clearChatFromPendingTray(chatId));
 
     try {
-      await _api.markMessagesAsRead(chatId, messageIds, _currentUser ?? '');
+      await _api.markMessagesAsRead(
+        chatId,
+        messageIds,
+        _currentUser ?? '',
+        deviceId: _transport.deviceId,
+      );
       await markChatSeen(chatId);
     } catch (e) {
       // Silent failure
@@ -2480,7 +2546,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final normalizedChatId = chatId.trim().toLowerCase();
     if (user.isEmpty || normalizedChatId.isEmpty) return;
     try {
-      await _api.markMessagesSeen(user, normalizedChatId);
+      await _api.markMessagesSeen(user, normalizedChatId, deviceId: _transport.deviceId);
     } catch (_) {
       // Best-effort.
     }
@@ -2864,9 +2930,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         final newUnread = Map<String, int>.from(state.unreadByChat);
         newUnread[chatId] = 0;
         state = state.copyWith(unreadByChat: newUnread);
-        _db.clearUnreadCount(chatId).catchError((_) {});
         _schedulePersistence();
       }
+      // The two persisted unread sources are cleared unconditionally, not only
+      // when the in-memory badge is non-zero.  A device that was backgrounded
+      // when the messages arrived holds the count *only* in the FCM pending
+      // tray (the background isolate never touches `state`), and a device that
+      // was offline may hold a stale row in the local database.  Skipping
+      // these writes because the in-memory count happens to be 0 is what let
+      // the badge survive the read and re-appear on the next cold start.
+      _db.clearUnreadCount(chatId).catchError((_) {});
+      unawaited(_clearChatFromPendingTray(chatId));
       return;
     }
 
@@ -3017,6 +3091,39 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
   }
 
+  /// Peek at the "pending chat updates" tray and return the oldest
+  /// `pendingSince` timestamp across all pending chats, or `null` when the
+  /// tray is empty.
+  ///
+  /// Messages that were delivered as FCM pushes while the app was backgrounded
+  /// are not in the local database, so the resume-time delta pull must start
+  /// no later than the oldest pending push.  The tray is *not* cleared here —
+  /// [_readAndClearPendingTray] still owns that, so unread badges are applied
+  /// exactly once.
+  Future<int?> _readPendingTrayFloor() async {
+    if (kIsWeb) return null;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final json = prefs.getString(kPendingChatUpdatesKey);
+      if (json == null || json.isEmpty) return null;
+      final decoded = jsonDecode(json);
+      if (decoded is! Map) return null;
+
+      int? floor;
+      for (final value in decoded.values) {
+        if (value is! Map) continue;
+        final raw = value['pendingSince'];
+        final ts = raw is int ? raw : int.tryParse(raw?.toString() ?? '');
+        if (ts == null || ts <= 0) continue;
+        if (floor == null || ts < floor) floor = ts;
+      }
+      return floor;
+    } catch (e) {
+      debugPrint('[ChatStore] Failed to read pending tray floor: $e');
+      return null;
+    }
+  }
+
   /// Removes [chatId] from the FCM "pending chat updates" tray in
   /// SharedPreferences.
   ///
@@ -3081,9 +3188,103 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         }
       }
       await _writeDeletedChats(user, state.deletedChats);
+      await _writeSyncCursor(user);
     } catch (_) {
       // Persistence failure is non-fatal – data remains available in memory
       // for the current session and will be retried on the next trigger.
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Incremental-sync cursor
+  // ---------------------------------------------------------------------------
+
+  String _syncCursorKeyForUser(String user) =>
+      '$kSyncCursorKeyPrefix:${user.trim().toLowerCase()}';
+
+  Future<int> _readSyncCursor(String user) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final stored = prefs.getInt(_syncCursorKeyForUser(user)) ?? 0;
+      return stored > 0 ? stored : 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  Future<void> _writeSyncCursor(String user) async {
+    if (_syncCursorMs <= 0) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_syncCursorKeyForUser(user), _syncCursorMs);
+    } catch (_) {
+      // Best-effort; the in-memory cursor still guards the current session.
+    }
+  }
+
+  Future<void> _clearSyncCursor(String user) async {
+    _syncCursorMs = 0;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_syncCursorKeyForUser(user));
+    } catch (_) {
+      // Best-effort.
+    }
+  }
+
+  /// Advance the high-water mark when a newer message is applied.
+  void _recordSyncCursor(int timestamp) {
+    if (timestamp > _syncCursorMs) {
+      _syncCursorMs = timestamp;
+    }
+  }
+
+  /// Resolve the `since` cursor for a delta pull.
+  ///
+  /// Uses the highest of the local message table, the in-memory state, and the
+  /// persisted high-water mark, then lowers it to the oldest pending
+  /// background push so messages that only arrived as FCM payloads are still
+  /// fetched on resume.
+  Future<int> _resolveSyncCursor() async {
+    int localLatest;
+    try {
+      localLatest = await _db.getLatestMessageTimestamp();
+    } catch (_) {
+      // DB unavailable (e.g. web without sqlite3.wasm).
+      localLatest = 0;
+    }
+    if (localLatest <= 0) {
+      localLatest = _latestTimestampFromState();
+    }
+
+    var cursor = localLatest > _syncCursorMs ? localLatest : _syncCursorMs;
+
+    final floor = _pendingSyncFloorMs;
+    if (floor != null && floor > 0 && cursor > floor) {
+      // Re-fetch from just before the oldest pending push so nothing that was
+      // delivered while backgrounded is skipped.
+      cursor = floor - 1;
+    }
+
+    return cursor > 0 ? cursor : 0;
+  }
+
+  /// Persist a single message to the local DB immediately.
+  ///
+  /// Realtime deliveries (socket / SSE / foreground FCM) and optimistic
+  /// outgoing bubbles would otherwise only reach SQLite through the 2-second
+  /// debounced [_persistState], so a message that arrives right before the app
+  /// is backgrounded or killed would be lost.  Failures are non-fatal: on Web
+  /// without `sqlite3.wasm` the Drift call throws and the debounced
+  /// [_persistState] still writes the [WebChatStorage] snapshot.
+  void _writeMessageThrough(ChatMessage message) {
+    try {
+      // `catchError` covers async failures; the surrounding `try` covers the
+      // synchronous throw Drift raises when its lazy executor cannot open
+      // (e.g. Web without `sqlite3.wasm`).
+      _db.upsertMessage(message).catchError((Object _) {});
+    } catch (_) {
+      // Drift unavailable — the debounced snapshot fallback covers this.
     }
   }
 
@@ -3156,8 +3357,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final previousUser = _currentUser;
     _currentUser = null;
     _lastGapAnalysisTime = 0;
+    _pendingSyncFloorMs = null;
+    _syncCursorMs = 0;
 
     await _db.clearAll();
+    if (previousUser != null && previousUser.trim().isNotEmpty) {
+      await _clearSyncCursor(previousUser);
+    }
     if (kIsWeb && previousUser != null && previousUser.trim().isNotEmpty) {
       await WebChatStorage.clear(previousUser);
     }

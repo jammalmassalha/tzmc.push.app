@@ -356,6 +356,72 @@ class ChatApiService {
     }
   }
 
+  /// Web Integrated Windows Authentication (SSO).
+  ///
+  /// Sends **no body at all** — the username is derived server-side from the
+  /// Negotiate handshake terminated by the reverse proxy. Deliberately does not
+  /// carry [AppConfig.windowsAppToken]: on the web that token would be readable
+  /// inside `main.dart.js`, so a token-gated endpoint that accepts a
+  /// client-supplied username would let anyone mint a session for any account.
+  ///
+  /// Returns the matched user identifier, or null when the browser did not
+  /// participate in the handshake, the user is off the domain, or the account
+  /// is not registered. Callers should treat null as "show the SMS login
+  /// screen" rather than as an error.
+  Future<String?> windowsSsoLogin() async {
+    debugPrint('[WindowsSSO] [2/5] POST ${ApiEndpoints.windowsSso} (no body, cookies included)');
+    try {
+      final response = await _client.post<Map<String, dynamic>>(
+        ApiEndpoints.windowsSso,
+        retryOptions: const RetryOptions(retries: 0, timeout: NetworkTimeouts.sessionTimeout),
+      );
+
+      debugPrint('[WindowsSSO] [3/5] Response status: ${response.statusCode}');
+
+      if (!response.isSuccessful) {
+        if (response.statusCode == 401) {
+          debugPrint(
+            '[WindowsSSO] [3/5] 401 — the server has no Windows identity for this '
+            'connection. Either SSO is disabled (WINDOWS_SSO_ENABLED) or no reverse '
+            'proxy injected an identity header. Falling back to the login screen.',
+          );
+        } else if (response.statusCode == 403) {
+          debugPrint(
+            '[WindowsSSO] [3/5] 403 — the Windows account was recognised by the proxy '
+            'but is not registered in column O of the Subscribe sheet.',
+          );
+        }
+        return null;
+      }
+
+      final body = _coerceJsonMap(response.data);
+      if (body['authenticated'] != true) {
+        debugPrint('[WindowsSSO] [4/5] 200 but authenticated != true — treating as failure.');
+        return null;
+      }
+
+      final sessionUser = (body['user'] as String?)?.trim().toLowerCase();
+      if (sessionUser == null || sessionUser.isEmpty) {
+        debugPrint('[WindowsSSO] [4/5] 200 but no user in the response body — treating as failure.');
+        return null;
+      }
+
+      final csrfToken = body['csrfToken'] as String?;
+      if (csrfToken != null && csrfToken.isNotEmpty) {
+        _client.setCsrfToken(csrfToken);
+        debugPrint('[WindowsSSO] [4/5] CSRF token stored.');
+      } else {
+        debugPrint('[WindowsSSO] [4/5] WARNING: no csrfToken in the response.');
+      }
+
+      debugPrint('[WindowsSSO] [5/5] Authenticated as: $sessionUser (isRestricted: ${body['isRestricted']})');
+      return sessionUser;
+    } catch (e) {
+      debugPrint('[WindowsSSO] [3/5] Request failed: $e');
+      return null;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Contacts & Groups
   // ---------------------------------------------------------------------------
@@ -653,7 +719,7 @@ class ChatApiService {
   }
 
   /// Mark messages as seen
-  Future<int> markMessagesSeen(String user, String chatId) async {
+  Future<int> markMessagesSeen(String user, String chatId, {String? deviceId}) async {
     final normalized = user.trim().toLowerCase();
 
     final response = await _client.post<Map<String, dynamic>>(
@@ -661,6 +727,7 @@ class ChatApiService {
       data: {
         'user': normalized,
         'chatId': chatId.trim().toLowerCase(),
+        if (deviceId != null && deviceId.isNotEmpty) 'deviceId': deviceId,
       },
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 8)),
     );
@@ -2101,12 +2168,18 @@ class ChatApiService {
   }
 
   /// Mark messages as read
-  Future<void> markMessagesAsRead(String chatId, List<String> messageIds, String user) async {
+  Future<void> markMessagesAsRead(
+    String chatId,
+    List<String> messageIds,
+    String user, {
+    String? deviceId,
+  }) async {
     final payload = ReadReceiptPayload(
       reader: user,
       sender: chatId, // The chat/sender we're marking as read
       messageIds: messageIds,
       readAt: DateTime.now().millisecondsSinceEpoch,
+      deviceId: deviceId,
     );
     await sendReadReceipt(payload);
   }

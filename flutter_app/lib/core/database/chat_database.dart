@@ -8,6 +8,7 @@ library;
 import 'dart:convert';
 
 import 'package:drift/drift.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/chat_models.dart';
@@ -27,6 +28,11 @@ part 'chat_database.g.dart';
 /// group-message body ("SenderName: message text" format).
 /// Must match _kGroupSenderPrefixMaxLength in chat_store_service.dart.
 const int _kMaxGroupSenderPrefixLength = 80;
+
+/// Maximum number of messages loaded back into memory when restoring the
+/// persisted state.  The on-disk history is unbounded (persistence never
+/// deletes messages), so the restore is capped to keep cold start predictable.
+const int restoreMessageLimit = 20000;
 
 /// Extracts a sender name from a legacy group-message body of the form
 /// "SenderName: message text".  Returns null when the body does not match
@@ -139,6 +145,11 @@ class OutboxItems extends Table {
 @DriftDatabase(tables: [Contacts, Groups, Messages, UnreadCounts, OutboxItems])
 class ChatDatabase extends _$ChatDatabase {
   ChatDatabase() : super(openConnection());
+
+  /// Test-only constructor that runs against an explicit executor (e.g.
+  /// `NativeDatabase.memory()`), bypassing the platform connection.
+  @visibleForTesting
+  ChatDatabase.forTesting(QueryExecutor executor) : super(executor);
 
   @override
   int get schemaVersion => 1;
@@ -280,6 +291,19 @@ class ChatDatabase extends _$ChatDatabase {
 
   Future<List<ChatMessage>> getAllMessages() async {
     final rows = await select(messages).get();
+    return rows.map(_messageFromRow).toList();
+  }
+
+  /// Newest [limit] messages across all chats, most recent first.
+  ///
+  /// Persistence is non-destructive, so the table keeps history beyond the
+  /// per-chat in-memory cap.  Restoring uses this bounded query to keep cold
+  /// start cost predictable while the full history stays available on disk.
+  Future<List<ChatMessage>> getRecentMessages({int limit = restoreMessageLimit}) async {
+    final query = select(messages)
+      ..orderBy([(t) => OrderingTerm.desc(t.timestamp)])
+      ..limit(limit);
+    final rows = await query.get();
     return rows.map(_messageFromRow).toList();
   }
 
@@ -443,7 +467,7 @@ class ChatDatabase extends _$ChatDatabase {
     final contactList = await getAllContacts();
     final groupList = await getAllGroups();
     final unread = await getAllUnreadCounts();
-    final messageList = await getAllMessages();
+    final messageList = await getRecentMessages();
 
     return PersistedChatState(
       contacts: contactList,
@@ -453,10 +477,32 @@ class ChatDatabase extends _$ChatDatabase {
     );
   }
 
+  /// Write an in-memory snapshot to disk.
+  ///
+  /// The snapshot is applied **idempotently**: every row is upserted
+  /// (`InsertMode.insertOrReplace`) and only rows that are genuinely absent
+  /// from the snapshot are deleted.  A previous implementation cleared each
+  /// table before re-inserting, which had two damaging consequences:
+  ///
+  ///  * The in-memory store keeps at most `maxMessagesPerChat` messages per
+  ///    chat, so every persist permanently dropped the older history that had
+  ///    been trimmed out of memory.
+  ///  * An interrupted write (browser tab closed on Web, process killed on
+  ///    mobile) could leave the tables empty, which in turn reset the
+  ///    incremental-sync cursor and forced a full re-pull.
+  ///
+  /// Messages are never deleted here: the snapshot is a trimmed view of the
+  /// history, not the authoritative set.  Rows are removed explicitly through
+  /// [deleteMessage] / [clearAll] instead.
+  ///
+  /// The whole snapshot is applied inside a single [batch] so it is atomic.
   Future<void> persistState(PersistedChatState state) async {
     await batch((batch) {
       // Contacts
-      batch.deleteAll(contacts);
+      final contactKeys = state.contacts.map((c) => c.username).toList();
+      if (contactKeys.isNotEmpty) {
+        batch.deleteWhere(contacts, (t) => t.username.isNotIn(contactKeys));
+      }
       for (final contact in state.contacts) {
         batch.insert(
           contacts,
@@ -469,11 +515,15 @@ class ChatDatabase extends _$ChatDatabase {
             status: Value(contact.status),
             updatedAt: DateTime.now().millisecondsSinceEpoch,
           ),
+          mode: InsertMode.insertOrReplace,
         );
       }
 
       // Groups
-      batch.deleteAll(groups);
+      final groupKeys = state.groups.map((g) => g.id).toList();
+      if (groupKeys.isNotEmpty) {
+        batch.deleteWhere(groups, (t) => t.id.isNotIn(groupKeys));
+      }
       for (final group in state.groups) {
         batch.insert(
           groups,
@@ -486,22 +536,33 @@ class ChatDatabase extends _$ChatDatabase {
             updatedAt: group.updatedAt,
             type: group.type == GroupType.community ? 'community' : 'group',
           ),
+          mode: InsertMode.insertOrReplace,
         );
       }
 
-      // Unread counts
-      batch.deleteAll(unreadCounts);
+      // Unread counts — chats missing from the snapshot have no unread
+      // messages, so their rows are dropped.
+      final unreadKeys = state.unreadByChat.keys.toList();
+      if (unreadKeys.isEmpty) {
+        batch.deleteAll(unreadCounts);
+      } else {
+        batch.deleteWhere(unreadCounts, (t) => t.chatId.isNotIn(unreadKeys));
+      }
       for (final entry in state.unreadByChat.entries) {
         batch.insert(
           unreadCounts,
           UnreadCountsCompanion.insert(chatId: entry.key, count: entry.value),
+          mode: InsertMode.insertOrReplace,
         );
       }
 
-      // Messages
-      batch.deleteAll(messages);
+      // Messages — upsert only, never delete (see doc comment above).
       for (final message in state.messages) {
-        batch.insert(messages, _messageToCompanion(message));
+        batch.insert(
+          messages,
+          _messageToCompanion(message),
+          mode: InsertMode.insertOrReplace,
+        );
       }
     });
   }

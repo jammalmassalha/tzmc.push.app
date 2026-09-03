@@ -127,6 +127,179 @@ to the build step:
    screen — the login screen is never shown.
 5. If the username is not registered, the normal login screen is displayed.
 
+## Flutter Web — Windows SSO (Integrated Windows Authentication)
+
+The web build can also skip the SMS login for domain-joined machines, but the
+mechanism is completely different from the desktop one above, for a security
+reason worth stating plainly.
+
+> **Why the web build does not reuse `/auth/session/windows-login`.**
+> That endpoint trusts a **client-supplied** `windowsUser` and is gated only by
+> the shared `APP_SERVER_TOKEN`. That is defensible for the desktop build, where
+> the token is baked into a distributed binary. On the web the token would sit in
+> a `--dart-define` inside `main.dart.js`, readable by anyone who opens devtools —
+> at which point any user could POST `{"windowsUser": "someone_else"}` and receive
+> a valid session cookie for that account. A full authentication bypass.
+>
+> The web path therefore uses a **separate** endpoint,
+> `POST /auth/session/windows-sso`, which takes **no request body** and derives
+> the username server-side only. Do not widen the desktop endpoint instead.
+
+The browser sandbox exposes no API for the OS login name, so the username has to
+come from a reverse proxy that terminates the Negotiate (Kerberos/NTLM)
+handshake and passes the result to Node.
+
+### 1. Choose where the Negotiate handshake terminates
+
+The deployment image is `node:20-alpine`, which constrains the options:
+
+- **A — IIS in front of Node (easiest with existing Windows infrastructure).**
+  Enable Windows Authentication on the site, disable Anonymous, and reverse-proxy
+  to Node via ARR or `iisnode`. Least code, best-trodden path in a Microsoft shop.
+- **B — Apache or nginx with `mod_auth_gssapi` / SPNEGO (Linux-native).** Fits the
+  container setup. Requires a keytab for the service account and an SPN registered
+  in AD.
+- **C — Node does it natively. Not viable here.** `node-expose-sspi` only runs on
+  Windows hosts, so it is out for Alpine. **Do not use `express-ntlm`** — it does
+  not validate against a domain controller, so it accepts any claimed username,
+  which is the same spoofing hole described above.
+
+Prefer A if IIS is available, otherwise B.
+
+### 2. Pass the identity to Node without letting clients forge it
+
+Whichever proxy is used, it ends up injecting a header such as
+`X-Remote-User: DOMAIN\jmassalha`. Two guards are **non-negotiable**:
+
+- **Strip the header on ingress.** If the proxy forwards a client-supplied
+  `X-Remote-User` instead of overwriting it, anyone can send it directly and
+  impersonate any user. Explicitly *unset* then *set* it — for example
+  `RequestHeader unset X-Remote-User` before `RequestHeader set ...` in Apache, or
+  `proxy_set_header X-Remote-User $remote_user;` in nginx (which replaces rather
+  than appends).
+- **Bind Node to localhost or the internal network only,** so nobody can bypass
+  the proxy and hit Express directly with a forged header.
+
+If the proxy and Node are **not** on the same host, also set
+`WINDOWS_SSO_SIGNATURE_SECRET` and have the proxy send an HMAC-SHA256 (hex) of
+the normalized, lowercased account name in `X-Remote-User-Signature`. The server
+rejects the request when the signature is absent or does not match.
+
+### 3. Backend configuration
+
+SSO is **off by default** and the identity header is ignored entirely until it is
+switched on, so a deployment with no proxy in front of it cannot be tricked into
+trusting a client-supplied header:
+
+```
+WINDOWS_SSO_ENABLED=true
+WINDOWS_SSO_USER_HEADER=X-Remote-User
+# Optional, for a non-colocated proxy:
+WINDOWS_SSO_SIGNATURE_HEADER=X-Remote-User-Signature
+WINDOWS_SSO_SIGNATURE_SECRET=<shared-with-proxy>
+```
+
+`POST /auth/session/windows-sso` reads the header, strips the `DOMAIN\` prefix or
+UPN suffix, lowercases the result, and then joins the *existing* desktop flow:
+look up column O of the Subscribe sheet → check the restricted flag → create the
+session token → set the session cookie. The response shape matches
+`/auth/session/windows-login`. It returns **401** (not 403) when no identity is
+present, so the client can cleanly fall back to the SMS login screen.
+
+### 4. Client-side prerequisites — this is where these projects usually stall
+
+Auto-login is only *silent* if the browser already trusts the site. Otherwise the
+user gets a **native username/password popup**, which is worse UX than the
+existing login screen:
+
+- The site must be in the **Local Intranet zone** (Edge/IE) or listed in Chrome
+  and Edge's `AuthServerAllowlist` policy — push this via GPO.
+- It must be reached by **hostname, not IP**, or Kerberos falls back to NTLM.
+- The **SPN** (e.g. `HTTP/tzmc.co.il`) must be registered to the service account,
+  with **no duplicates** — duplicate SPNs are the classic silent-failure cause.
+- Firefox needs `network.negotiate-auth.trusted-uris` set separately.
+- Safari/macOS and mobile browsers will generally not participate at all.
+
+The Flutter side needs no further work: the Dio web adapter already sets
+`withCredentials = true` (see `lib/core/api/cookie_setup_web.dart`) so the session
+cookie sticks, and the attempt is made silently inside the existing "no session
+found" branch of `auth_state.dart`. Any failure falls through to the normal login
+screen, which is what off-network and BYOD users will always see.
+
+### 5. Verifying
+
+CI cannot exercise any of this, so verify by hand:
+
+1. From a domain-joined Windows machine in Edge, open the app — it should reach
+   the chat screen with no prompt. Check the server log for
+   `[WINDOWS SSO] Auto-login successful for windowsUser: ...` with the expected
+   account.
+2. From a machine outside the domain, confirm the SMS login screen appears —
+   not an error and not a native credentials popup.
+3. From a normal client, POST `/auth/session/windows-sso` with a forged
+   `X-Remote-User` header and confirm it is rejected with 401.
+
+### Status on the current host: IWA is not achievable
+
+The production deployment is **cPanel + OpenResty + Phusion Passenger with user
+level shell access only**. Terminating Negotiate there would require
+recompiling OpenResty with the SPNEGO module and installing a Kerberos keytab,
+neither of which is possible without root. `WINDOWS_SSO_ENABLED` therefore stays
+`false`, and `/auth/session/windows-sso` correctly returns `401` for every
+request.
+
+The code above remains in place and is inert; it becomes usable unchanged if the
+app is ever moved behind IIS or an Apache/nginx instance you control.
+
+> Note for anyone debugging that `401`: do **not** "fix" it by having Node send
+> `WWW-Authenticate: Negotiate`. That header is a promise to complete the
+> handshake, and Node here has no keytab and no GSSAPI library to complete it
+> with. The browser would send a ticket, get another 401, and fall back to a
+> native username/password prompt that can never succeed — strictly worse than
+> the SMS login screen, and it would fire for every public visitor too. The
+> challenge must come from a proxy that can actually finish the exchange.
+
+### The fallback: a long-lived session instead
+
+Rather than IWA, web users get one SMS login and then stay logged in. This is
+**already implemented** — see "Staying logged in" below.
+
+## Staying logged in (remember-me)
+
+There is no separate "remember me" checkbox or token; the ordinary session
+cookie is the remember-me mechanism:
+
+- **30-day TTL** (`SESSION_COOKIE_TTL_MS`, default `2592000000`).
+- **Persistent, not a browser-session cookie** — it carries `Max-Age`/`Expires`,
+  so it survives closing the browser or rebooting the PC.
+- **Sliding renewal** — once a session passes the halfway point (15 days) the
+  next request transparently issues a fresh 30-day token, keeping the same
+  `sessionId` and CSRF token. An active user is effectively never logged out.
+- **Stable signing secret**, so a Passenger restart does not invalidate anyone.
+
+### If users still get logged out: check the cookie domain
+
+The cookie is **host-only** by default, and this deployment answers on both
+`tzmc.co.il` and `www.tzmc.co.il`. Those are two separate cookie jars, so a user
+who logs in on one and later lands on the other is asked to log in again.
+
+Set the apex domain so a single login covers both:
+
+```
+SESSION_COOKIE_DOMAIN=tzmc.co.il
+```
+
+No leading dot and no scheme. The value is applied to both the login and the
+logout cookie, so signing out still works. If a request arrives on a host
+outside that domain (localhost, a staging hostname) the attribute is omitted
+automatically and the cookie stays host-only — emitting a mismatched `Domain`
+would make the browser silently discard it, which presents as an endless login
+loop rather than an error.
+
+Restart the app after changing it; the value is read once at startup, and on
+Passenger it must be exported into the app's environment (a `.env` file only
+read by local tooling will not reach the process).
+
 ## Android Setup
 
 After initializing the Flutter project with `flutter create`, configure:
@@ -302,6 +475,45 @@ The build is configured without a service worker to prevent aggressive caching. 
 - Users will always load the latest version after deployment
 - No need to manually clear browser cache
 - Faster iteration during development and updates
+
+## Screenshot &amp; Screen-Capture Protection
+
+Implemented natively, with no extra Dart dependency, so there is nothing to
+enable at runtime — protection is on from the first frame.
+
+| Platform | Enforceable? | What is blocked |
+| --- | --- | --- |
+| Android | Yes, by the OS | Screenshots are refused ("Can't take screenshot due to security policy"); screen recordings, casting and any other non-secure display render black; the recent-apps preview is blank. |
+| iOS | Partially | The app-switcher snapshot and active screen recording / AirPlay mirroring / QuickTime capture are blurred. The physical Power + Volume Up screenshot **cannot** be blocked — iOS exposes no API for it. |
+| Web | No | Browsers are sandboxed with no OS-level capture hooks. Print Screen, the Snipping Tool, extensions and OS recorders all work regardless. |
+
+### Android
+
+`MainActivity.onCreate` sets `WindowManager.LayoutParams.FLAG_SECURE`. This is
+enforced by the system window manager rather than by app code, so it cannot be
+bypassed from within the app.
+
+### iOS
+
+`PrivacyShield` in `ios/Runner/AppDelegate.swift` adds a blurred
+`UIVisualEffectView` over the window:
+
+- on `applicationWillResignActive`, before the system captures the snapshot the
+  app switcher displays, and
+- whenever `UIScreen.capturedDidChangeNotification` reports `isCaptured`, which
+  covers screen recording and mirroring for as long as they run.
+
+`SceneDelegate` carries the same hooks. It is dormant today because `Info.plist`
+declares no `UIApplicationSceneManifest`, but with scenes enabled the
+`UIApplication` lifecycle callbacks stop firing and `AppDelegate.window` becomes
+nil, which would otherwise silently disable the shield.
+
+### Web
+
+No obfuscation is attempted. Keyboard-event or window-blur overlays only cover
+one of many capture routes, so they add UX cost and a false sense of security
+without meaningfully protecting anything. Treat anything rendered in the web
+client as capturable.
 
 ## Environment Variables
 

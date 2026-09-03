@@ -1,3 +1,10 @@
+const {
+    resolveWindowsSsoConfig,
+    resolveWindowsSsoUser,
+    describeSsoHeaders,
+    sanitizeForLog
+} = require('../services/windows-sso');
+
 function registerAuthController(app, deps = {}) {
     const {
         normalizeUserCandidate,
@@ -40,7 +47,8 @@ function registerAuthController(app, deps = {}) {
         APP_SERVER_TOKEN,
         BADGE_RESET_ALL_ALLOWED_USERS,
         lookupUserByWindowsUsername,
-        mysqlLogsService
+        mysqlLogsService,
+        windowsSsoConfig
     } = deps;
     const resetAllAllowedUserSet = new Set(
         (Array.isArray(BADGE_RESET_ALL_ALLOWED_USERS) ? BADGE_RESET_ALL_ALLOWED_USERS : [])
@@ -439,8 +447,95 @@ function registerAuthController(app, deps = {}) {
     // Windows desktop auto-login: looks up the Windows username in column O of
     // the Subscribe sheet and creates a session without requiring SMS verification.
     // Requires a valid APP_SERVER_TOKEN so only the trusted desktop build can use it.
+    //
+    // Shared tail of both Windows login flows: turn an already-authenticated
+    // Windows account name into a session cookie. `windowsUser` must never come
+    // straight from an untrusted request body — each caller is responsible for
+    // establishing that the account really belongs to the requester first.
+    const establishWindowsSession = async (req, res, windowsUser, logTag) => {
+        if (!SESSION_SIGNING_SECRET) {
+            console.error(`${logTag} [4/6] ABORT: SESSION_SIGNING_SECRET is not configured — cannot create a session.`);
+            return res.status(500).json({ status: 'error', message: 'Session configuration missing' });
+        }
+
+        try {
+            console.log(`${logTag} [4/6] Looking up windowsUser in the Subscribe sheet:`, windowsUser);
+            const lookupResult = await lookupUserByWindowsUsername(windowsUser);
+            if (!lookupResult || !lookupResult.user) {
+                console.warn(`${logTag} [4/6] No match for windowsUser:`, windowsUser, '→ responding 403. Check column O of the Subscribe sheet.');
+                return res.status(403).json({ status: 'error', message: 'Windows user not registered' });
+            }
+
+            const matchedUser = normalizeUserCandidate(lookupResult.user);
+            if (!matchedUser) {
+                console.warn(`${logTag} [4/6] Lookup returned an unusable user value for windowsUser:`, windowsUser, '→ responding 403.');
+                return res.status(403).json({ status: 'error', message: 'Windows user not registered' });
+            }
+            console.log(`${logTag} [4/6] Matched windowsUser`, windowsUser, '→ user:', matchedUser);
+
+            console.log(`${logTag} [5/6] Creating session token for user:`, matchedUser);
+            const sessionToken = createSessionToken(matchedUser);
+            if (!sessionToken) {
+                console.error(`${logTag} [5/6] ABORT: createSessionToken returned null for user:`, matchedUser);
+                return res.status(500).json({ status: 'error', message: 'Failed to create session' });
+            }
+
+            let isRestricted = false;
+            if (mysqlLogsService) {
+                try {
+                    const authResult = await mysqlLogsService.checkAuth(matchedUser);
+                    if (authResult && authResult.isRestricted) {
+                        isRestricted = true;
+                    }
+                } catch (err) {
+                    console.error(`${logTag} Error checking auth status during login:`, err);
+                }
+            }
+            console.log(`${logTag} [5/6] Session created. sessionId:`, sessionToken.sessionId, '| expiresAt:', new Date(sessionToken.expiresAt).toISOString(), '| isRestricted:', isRestricted);
+
+            setSessionCookie(res, req, sessionToken.token, sessionToken.expiresAt);
+            console.log(`${logTag} [6/6] Set-Cookie sent, responding 200 for user:`, matchedUser);
+            return res.json({
+                status: 'success',
+                authenticated: true,
+                user: matchedUser,
+                isRestricted,
+                expiresAt: sessionToken.expiresAt,
+                csrfToken: sessionToken.csrfToken
+            });
+        } catch (error) {
+            const reason = error && error.message ? String(error.message) : 'Windows login failed';
+            console.error(`${logTag} Error:`, reason);
+            return res.status(502).json({ status: 'error', message: reason });
+        }
+    };
+
+    // Both Windows login endpoints hit the Subscribe-sheet lookup, so cap them
+    // per IP to keep them from being used to enumerate accounts or to hammer
+    // the upstream sheet. The limit is deliberately generous: a whole office
+    // sits behind a single NAT address, and every browser tab makes one SSO
+    // attempt on startup, so a tight cap would lock out legitimate users at the
+    // start of the working day.
+    const windowsLoginIpRateLimit = rateLimit({
+        windowMs: 60 * 1000,
+        limit: 120,
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: (req) => getClientIpAddress(req),
+        handler: (_req, res, _next, options) => {
+            const retryAfterSeconds = Math.ceil(options.windowMs / 1000);
+            res.setHeader('Retry-After', String(retryAfterSeconds));
+            res.status(429).json({
+                status: 'error',
+                message: 'Too many login attempts. Please try again later.',
+                retryAfterSeconds
+            });
+        }
+    });
+
     app.post(
         ['/auth/session/windows-login', '/notify/auth/session/windows-login'],
+        windowsLoginIpRateLimit,
         async (req, res) => {
             const payload = req.body && typeof req.body === 'object' ? req.body : {};
             const windowsUser = String(payload.windowsUser || '').trim();
@@ -455,53 +550,71 @@ function registerAuthController(app, deps = {}) {
                 return res.status(403).json({ status: 'error', message: 'Invalid token' });
             }
 
-            if (!SESSION_SIGNING_SECRET) {
-                return res.status(500).json({ status: 'error', message: 'Session configuration missing' });
+            return establishWindowsSession(req, res, windowsUser, '[WINDOWS LOGIN]');
+        }
+    );
+
+    // Web Integrated Windows Authentication (SSO).
+    //
+    // Deliberately takes NO request body. The desktop endpoint above trusts a
+    // client-supplied `windowsUser` because the shared token is baked into a
+    // distributed binary; on the web that token would sit in main.dart.js for
+    // anyone to read, so accepting a username from the client there would be a
+    // straight authentication bypass. Here the identity comes only from the
+    // reverse proxy that terminated the Negotiate handshake, and is ignored
+    // entirely unless WINDOWS_SSO_ENABLED is set.
+    //
+    // Responds 401 (not 403) when there is no identity, so the client can
+    // silently fall back to the SMS login screen.
+    const ssoConfig = windowsSsoConfig || resolveWindowsSsoConfig();
+    // Logged once at startup so the first question when debugging — "is SSO even
+    // switched on, and which header is it watching?" — is answerable straight
+    // from the log without shell access to the environment.
+    console.log(
+        '[WINDOWS SSO] Config at startup — enabled:', ssoConfig.enabled,
+        '| expected header:', ssoConfig.userHeader,
+        '| signature required:', Boolean(ssoConfig.signatureSecret)
+    );
+    if (!ssoConfig.enabled) {
+        console.log('[WINDOWS SSO] Disabled (WINDOWS_SSO_ENABLED is not set): /auth/session/windows-sso will return 401 for every request, and identity headers are ignored entirely.');
+    }
+
+    app.post(
+        ['/auth/session/windows-sso', '/notify/auth/session/windows-sso'],
+        windowsLoginIpRateLimit,
+        async (req, res) => {
+            const clientIp = sanitizeForLog(
+                typeof getClientIpAddress === 'function' ? getClientIpAddress(req) : ''
+            );
+            console.log(
+                '[WINDOWS SSO] [1/6] Request received. host:', sanitizeForLog(req.headers && req.headers.host),
+                '| ip:', clientIp,
+                '| path:', sanitizeForLog(req.originalUrl || req.url)
+            );
+
+            const headerSummary = describeSsoHeaders(req.headers, ssoConfig);
+            console.log(
+                '[WINDOWS SSO] [2/6] Identity headers — expected:', headerSummary.expectedHeader,
+                '| present:', headerSummary.expectedHeaderPresent,
+                '| value:', headerSummary.expectedHeaderValue || '(none)',
+                '| other known identity headers seen:',
+                headerSummary.identityHeadersPresent.length ? headerSummary.identityHeadersPresent.join(', ') : '(none)',
+                '| signature required:', headerSummary.signatureRequired,
+                '| signature header present:', headerSummary.signatureHeaderPresent
+            );
+            if (!headerSummary.identityHeadersPresent.length) {
+                console.log('[WINDOWS SSO] [2/6] No identity header arrived at all — the reverse proxy in front of Node is not injecting one (the Negotiate handshake never happened).');
             }
 
-            try {
-                const lookupResult = await lookupUserByWindowsUsername(windowsUser);
-                if (!lookupResult || !lookupResult.user) {
-                    return res.status(403).json({ status: 'error', message: 'Windows user not registered' });
-                }
+            const resolution = resolveWindowsSsoUser(req.headers, ssoConfig);
+            console.log('[WINDOWS SSO] [3/6] Identity resolution result:', resolution.reason, '| user:', resolution.user || '(none)');
 
-                const matchedUser = normalizeUserCandidate(lookupResult.user);
-                if (!matchedUser) {
-                    return res.status(403).json({ status: 'error', message: 'Windows user not registered' });
-                }
-
-                const sessionToken = createSessionToken(matchedUser);
-                if (!sessionToken) {
-                    return res.status(500).json({ status: 'error', message: 'Failed to create session' });
-                }
-
-                let isRestricted = false;
-                if (mysqlLogsService) {
-                    try {
-                        const authResult = await mysqlLogsService.checkAuth(matchedUser);
-                        if (authResult && authResult.isRestricted) {
-                            isRestricted = true;
-                        }
-                    } catch (err) {
-                        console.error('[WINDOWS LOGIN] Error checking auth status during login:', err);
-                    }
-                }
-
-                setSessionCookie(res, req, sessionToken.token, sessionToken.expiresAt);
-                console.log('[WINDOWS LOGIN] Auto-login successful for windowsUser:', windowsUser, '→ user:', matchedUser);
-                return res.json({
-                    status: 'success',
-                    authenticated: true,
-                    user: matchedUser,
-                    isRestricted,
-                    expiresAt: sessionToken.expiresAt,
-                    csrfToken: sessionToken.csrfToken
-                });
-            } catch (error) {
-                const reason = error && error.message ? String(error.message) : 'Windows login failed';
-                console.error('[WINDOWS LOGIN] Error:', reason);
-                return res.status(502).json({ status: 'error', message: reason });
+            if (!resolution.user) {
+                console.warn('[WINDOWS SSO] [3/6] Responding 401 (reason:', resolution.reason + '). The client will fall back to the SMS login screen.');
+                return res.status(401).json({ status: 'error', message: 'Windows authentication unavailable' });
             }
+
+            return establishWindowsSession(req, res, resolution.user, '[WINDOWS SSO]');
         }
     );
 

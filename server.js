@@ -696,49 +696,18 @@ webpush.setVapidDetails(
 // [NEW] 4. POLLING MAILBOX (REDIS STREAMS + FALLBACK MEMORY)
 // ======================================================
 let messageQueue = {}; 
-const sseClients = new Map();
-const websocketClients = new Map();
-
-function addWebsocketClient(username, socket) {
-    if (!username || !socket) return;
-    const existing = websocketClients.get(username) || new Set();
-    existing.add(socket);
-    websocketClients.set(username, existing);
-}
-
-function removeWebsocketClient(username, socket) {
-    if (!username || !socket) return;
-    const existing = websocketClients.get(username);
-    if (!existing) return;
-    existing.delete(socket);
-    if (existing.size === 0) {
-        websocketClients.delete(username);
-    }
-}
-
-function notifySseClients(username, messageObj) {
-    const clientSet = sseClients.get(username);
-    if (!clientSet) return;
-    const payload = `event: message\ndata: ${JSON.stringify(messageObj)}\n\n`;
-    clientSet.forEach(res => res.write(payload));
-}
-
-function notifyWebsocketClients(username, messageObj) {
-    const clientSet = websocketClients.get(username);
-    if (!clientSet || !clientSet.size) return;
-    clientSet.forEach((socket) => {
-        try {
-            socket.emit('chat:message', messageObj);
-        } catch (error) {
-            // Ignore per-socket emission failures and continue.
-        }
-    });
-}
-
-function notifyRealtimeClients(username, messageObj) {
-    notifySseClients(username, messageObj);
-    notifyWebsocketClients(username, messageObj);
-}
+// Realtime client registry + fan-out helpers live in their own module so the
+// multi-device delivery rules can be unit tested without booting the server.
+const {
+    sseClients,
+    websocketClients,
+    addWebsocketClient,
+    removeWebsocketClient,
+    notifyRealtimeClients,
+    normalizeDeviceId,
+    buildSelfEchoMessage,
+    buildSelfReadClearMessage
+} = require('./backend/services/realtime-fanout');
 
 function dispatchRegisteredWebhookAsync(messageObj) {
     const webhookUrl = webhookRegistryService.resolveFromMessage(messageObj);
@@ -1021,6 +990,11 @@ const SESSION_COOKIE_TTL_MS = Math.max(
 const SESSION_RENEWAL_THRESHOLD_MS = Math.floor(SESSION_COOKIE_TTL_MS / 2);
 const SESSION_COOKIE_SAME_SITE = String(process.env.SESSION_COOKIE_SAMESITE || 'Lax').trim();
 const SESSION_COOKIE_SECURE = String(process.env.SESSION_COOKIE_SECURE || 'true').trim().toLowerCase() !== 'false';
+// Optional cookie `Domain`. Empty (the default) yields a host-only cookie.
+// Setting it to `tzmc.co.il` lets one session cover both the apex domain and
+// `www.tzmc.co.il`, which otherwise keep separate cookie jars and make users
+// log in again whenever they switch between the two hostnames.
+const SESSION_COOKIE_DOMAIN = String(process.env.SESSION_COOKIE_DOMAIN || '').trim();
 const SESSION_SIGNING_SECRET = String(
     process.env.SESSION_SIGNING_SECRET ||
     APP_SERVER_TOKEN ||
@@ -1044,6 +1018,7 @@ const sessionService = new SessionService(
         cookieTtlMs: SESSION_COOKIE_TTL_MS,
         cookieSameSite: SESSION_COOKIE_SAME_SITE,
         cookieSecure: SESSION_COOKIE_SECURE,
+        cookieDomain: SESSION_COOKIE_DOMAIN,
         jweService: sessionTokenJweService,
         looksLikeJweCompactToken
     },
@@ -2211,6 +2186,13 @@ function createHttpError(status, message) {
     return error;
 }
 
+function resolveSocketDeviceId(socket) {
+    const handshake = socket && socket.handshake ? socket.handshake : {};
+    const auth = handshake.auth && typeof handshake.auth === 'object' ? handshake.auth : {};
+    const query = handshake.query && typeof handshake.query === 'object' ? handshake.query : {};
+    return normalizeDeviceId(auth.deviceId || query.deviceId || '');
+}
+
 function resolveSocketAuthorizedUser(socket) {
     const handshake = socket && socket.handshake ? socket.handshake : {};
     const headers = handshake && handshake.headers ? handshake.headers : {};
@@ -2352,8 +2334,12 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         replyToImageUrl,
         forwarded,
         forwardedFrom,
-        forwardedFromName
+        forwardedFromName,
+        deviceId
     } = rawPayload || {};
+    // Identifies the device that composed this message so the self-echo below
+    // can be tagged and that device can skip re-applying its own bubble.
+    const originDeviceId = normalizeDeviceId(deviceId);
     const user = normalizeUserKey(resolvedUser || rawPayload.user || '');
     if (!user) {
         throw createHttpError(400, 'Missing user');
@@ -2736,10 +2722,12 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
 
         // ── Self-echo: notify sender's other devices so sent messages appear in real time ──
         if (senderUserKey) {
-            const selfEchoMessage = {
-                ...pollingMessage,
-                toUser: isGroup ? undefined : (normalizeUserKey(originalSender) || undefined)
-            };
+            const selfEchoMessage = buildSelfEchoMessage({
+                pollingMessage,
+                isGroup,
+                recipientKey: normalizeUserKey(originalSender),
+                originDeviceId
+            });
             void addToQueue(senderUserKey, selfEchoMessage).catch(() => {});
 
             const selfEchoNotification = {
@@ -2751,6 +2739,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
                     ...(notificationExtraData || {}),
                     skipNotification: true,
                     toUser: isGroup ? undefined : (normalizeUserKey(originalSender) || undefined),
+                    ...(originDeviceId ? { originDeviceId } : {}),
                     messageText: reply || null,
                     imageUrl: imageUrl || null,
                     fileUrl: fileUrl || null
@@ -5519,6 +5508,9 @@ io.use((socket, next) => {
             return next(new Error('Authentication required'));
         }
         socket.data.user = user;
+        // Diagnostic only: lets /delivery-telemetry/status correlate a live
+        // connection with the device id carried on outbound messages.
+        socket.data.deviceId = resolveSocketDeviceId(socket);
         return next();
     } catch (error) {
         return next(error);
@@ -6457,6 +6449,7 @@ app.post(['/mark-seen', '/notify/mark-seen'],
             return res.status(429).json({ error: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
         }
         const chatId = String(req.body && req.body.chatId || '').trim().toLowerCase();
+        const originDeviceId = normalizeDeviceId(req.body && req.body.deviceId);
         if (!chatId) {
             return res.status(400).json({ error: 'Missing chatId' });
         }
@@ -6464,11 +6457,10 @@ app.post(['/mark-seen', '/notify/mark-seen'],
             const affected = await mysqlLogsService.markMessagesSeen(user, chatId);
             // Notify the same user's other connected devices to clear local
             // unread counters for this chat (cross-device badge sync).
-            void addToQueue(user, {
-                type: 'read-receipt',
+            void addToQueue(user, buildSelfReadClearMessage({
                 chatId,
-                timestamp: Date.now()
-            }).catch((err) => {
+                originDeviceId
+            })).catch((err) => {
                 console.warn('[MARK-SEEN] Self-clear queue failed:', err && err.message ? err.message : err);
             });
             void sendPushNotificationToUser(user, {
@@ -6476,7 +6468,8 @@ app.post(['/mark-seen', '/notify/mark-seen'],
                 body: { shortText: '', longText: '' },
                 data: {
                     type: 'read-receipt',
-                    chatId
+                    chatId,
+                    ...(originDeviceId ? { originDeviceId } : {})
                 }
             }, chatId, { skipBadge: true, singlePerUser: true, allowSecondAttempt: false }).catch((err) => {
                 console.warn('[MARK-SEEN] Self-clear push failed:', err && err.message ? err.message : err);
@@ -7801,7 +7794,7 @@ app.post(
     }),
     async (req, res) => {
     try {
-        const { reader: requestedReader, sender, messageIds, readAt } = req.body;
+        const { reader: requestedReader, sender, messageIds, readAt, deviceId } = req.body;
         if (!requestedReader || !sender || !Array.isArray(messageIds) || messageIds.length === 0) {
             return res.status(400).json({ status: 'error', message: 'Missing fields' });
         }
@@ -7819,6 +7812,7 @@ app.post(
         }
 
         const effectiveReadAt = Number(readAt) || Date.now();
+        const originDeviceId = normalizeDeviceId(deviceId);
 
         const payload = {
             title: '',
@@ -7851,14 +7845,13 @@ app.post(
         // count for this chat (cross-device read sync).
         // The payload includes `chatId` so the Flutter app can distinguish a
         // "self-read-clear" event from a regular "sender was read" receipt.
-        await addToQueue(normalizedReader, {
-            type: 'read-receipt',
+        await addToQueue(normalizedReader, buildSelfReadClearMessage({
             chatId: normalizedSender,
             messageIds: uniqueMessageIds,
             readAt: effectiveReadAt,
             sender: normalizedSender,
-            timestamp: Date.now()
-        });
+            originDeviceId
+        }));
         void sendPushNotificationToUser(normalizedReader, {
             title: '',
             body: { shortText: '', longText: '' },
@@ -7867,7 +7860,8 @@ app.post(
                 chatId: normalizedSender,
                 messageIds: uniqueMessageIds,
                 readAt: effectiveReadAt,
-                sender: normalizedSender
+                sender: normalizedSender,
+                ...(originDeviceId ? { originDeviceId } : {})
             }
         }, normalizedSender, { skipBadge: true }).catch((err) => {
             console.warn('[SELF-READ-CLEAR] Push to reader\'s own devices failed:', err && err.message ? err.message : err);
