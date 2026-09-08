@@ -2272,9 +2272,23 @@ exports.MysqlLogsService = MysqlLogsService;
 function createMysqlLogsServiceFromEnv(env = process.env) {
     const host = toTrimmedString(env.LOGS_DB_HOST || env.MYSQL_HOST || env.DB_HOST || '127.0.0.1');
     const port = toPositiveInteger(env.LOGS_DB_PORT || env.MYSQL_PORT || env.DB_PORT, 3306);
-    const user = toTrimmedString(env.LOGS_DB_USER || env.MYSQL_USER || env.DB_USER || 'jmassalh_subscribes');
-    const password = toTrimmedString(env.LOGS_DB_PASSWORD || env.MYSQL_PASSWORD || env.DB_PASSWORD || 'jmassalh_subscribes!!@@!!');
-    const database = toTrimmedString(env.LOGS_DB_NAME || env.MYSQL_DATABASE || env.DB_NAME || 'jmassalh_subscribes');
+    // Credentials have no defaults on purpose: a missing/misconfigured .env must
+    // fail loudly at startup instead of silently connecting (or failing to
+    // connect) with stale credentials baked into the source.
+    const user = toTrimmedString(env.LOGS_DB_USER || env.MYSQL_USER || env.DB_USER);
+    const password = toTrimmedString(env.LOGS_DB_PASSWORD || env.MYSQL_PASSWORD || env.DB_PASSWORD);
+    const database = toTrimmedString(env.LOGS_DB_NAME || env.MYSQL_DATABASE || env.DB_NAME);
+    const missing = [];
+    if (!user)
+        missing.push('LOGS_DB_USER');
+    if (!password)
+        missing.push('LOGS_DB_PASSWORD');
+    if (!database)
+        missing.push('LOGS_DB_NAME');
+    if (missing.length > 0) {
+        throw new Error(`[MYSQL] Missing required database environment variable(s): ${missing.join(', ')}. ` +
+            'Set them in your .env file (see .env.example) before starting the server.');
+    }
     const table = normalizeTableName(env.LOGS_DB_TABLE || env.MYSQL_LOGS_TABLE || 'Logs');
     const connectionLimit = Math.max(1, Math.min(toPositiveInteger(env.LOGS_DB_CONNECTION_LIMIT || env.MYSQL_CONNECTION_LIMIT, 5), 30));
     return new MysqlLogsService({

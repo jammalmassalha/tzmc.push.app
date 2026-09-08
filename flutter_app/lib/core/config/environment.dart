@@ -1,6 +1,15 @@
 /// Environment-specific configuration
 library;
 
+import 'app_config.dart';
+
+/// API base URL derived from [AppConfig.defaultBackendOrigin].
+///
+/// Override the host at build time with
+/// `--dart-define=BACKEND_ORIGIN=https://your-host` (no trailing slash) so the
+/// app can be pointed at a different backend without editing source.
+const String kApiBaseUrl = '${AppConfig.defaultBackendOrigin}${AppConfig.notifyPath}';
+
 enum Environment {
   development,
   staging,
@@ -23,7 +32,7 @@ class EnvironmentConfig {
   /// Development environment pointing to production backend
   static const EnvironmentConfig development = EnvironmentConfig(
     environment: Environment.development,
-    baseUrl: 'https://www.tzmc.co.il/notify',
+    baseUrl: kApiBaseUrl,
     enableLogging: true,
     enableAnalytics: false,
   );
@@ -31,7 +40,7 @@ class EnvironmentConfig {
   /// Production environment
   static const EnvironmentConfig production = EnvironmentConfig(
     environment: Environment.production,
-    baseUrl: 'https://www.tzmc.co.il/notify',
+    baseUrl: kApiBaseUrl,
     enableLogging: false,
     enableAnalytics: true,
   );
@@ -40,7 +49,7 @@ class EnvironmentConfig {
   bool get isProduction => environment == Environment.production;
 
   /// Get the socket.io path for realtime connections
-  String get socketPath => '/notify/socket.io';
+  String get socketPath => '${AppConfig.notifyPath}/socket.io';
 
   /// Get the full URL for an endpoint
   String endpoint(String path) {

@@ -1,0 +1,59 @@
+# systemd unit for the TZMC Push App backend (Ubuntu 22.04 / 24.04 on EC2).
+#
+# Install:
+#   sudo cp deploy/tzmc-push.service /etc/systemd/system/tzmc-push.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tzmc-push
+#   sudo systemctl status tzmc-push
+#   journalctl -u tzmc-push -f
+#
+# Assumes the app is deployed to /opt/tzmc-push, owned by a non-login `tzmc`
+# system user, with a 0600 .env file in that directory.
+#
+# NOTE: systemd's EnvironmentFile is NOT a shell script. Use plain KEY=VALUE
+# lines with no `export`, and quote only when the value contains spaces.
+#
+# IMPORTANT: run exactly ONE instance. server.js starts in-process schedulers
+# (shuttle reminders, auth-refresh) that would double-fire if clustered.
+
+[Unit]
+Description=TZMC Push App (Node.js backend)
+Documentation=https://github.com/jmassalha/tzmc.push.app
+After=network-online.target mysql.service redis-server.service
+Wants=network-online.target
+# MySQL is required; Redis is optional (the app degrades gracefully without it).
+Requires=mysql.service
+
+[Service]
+Type=simple
+User=tzmc
+Group=tzmc
+WorkingDirectory=/opt/tzmc-push
+EnvironmentFile=/opt/tzmc-push/.env
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tzmc-push
+
+# --- Hardening -------------------------------------------------------------
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+# ProtectSystem=strict makes the whole filesystem read-only, so grant write
+# access to the upload directory the app writes into.
+ReadWritePaths=/opt/tzmc-push/uploads
+
+[Install]
+WantedBy=multi-user.target

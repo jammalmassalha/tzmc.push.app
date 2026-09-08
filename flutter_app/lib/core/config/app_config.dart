@@ -15,8 +15,16 @@ class AppConfig {
     defaultValue: '',
   );
 
-  /// Default backend origin (production)
-  static const String defaultBackendOrigin = 'https://www.tzmc.co.il';
+  /// Default backend origin (production).
+  ///
+  /// Override at build time when the backend moves to a different host, e.g.
+  /// `flutter build web --dart-define=BACKEND_ORIGIN=https://app.example.com`.
+  /// Must be an origin only (scheme + host [+ port]) with no trailing slash
+  /// and no path — [notifyPath] is appended to it to form the API base URL.
+  static const String defaultBackendOrigin = String.fromEnvironment(
+    'BACKEND_ORIGIN',
+    defaultValue: 'https://www.tzmc.co.il',
+  );
 
   /// VAPID public key for web push (not used in mobile, but kept for reference)
   static const String vapidPublicKey =
