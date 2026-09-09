@@ -5,6 +5,7 @@ const {
     setDepartmentPermissionsWithRoles,
     getUserPermittedDepartmentsWithRole
 } = require('../services/helpdesk-permissions.service');
+const { registerReadRoute, registerReadRouteWithPostAlias } = require('../utils/read-route');
 
 function toTrimmedString(value) {
     return String(value === null || value === undefined ? '' : value).trim();
@@ -1059,7 +1060,7 @@ function registerHelpdeskController(app, deps = {}) {
     }
 
     // GET /helpdesk/locations - Fetch locations from Google Sheet (HelpDeskLocation sheet, column A)
-    app.get(['/helpdesk/locations', '/notify/helpdesk/locations'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
+    registerReadRoute(app, ['/helpdesk/locations', '/notify/helpdesk/locations'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
         if (typeof buildGoogleSheetGetUrl !== 'function' || typeof fetchWithRetry !== 'function') {
             console.error('[HELPDESK] Missing buildGoogleSheetGetUrl or fetchWithRetry dependency');
             return res.status(500).json({ result: 'error', message: 'שגיאה בטעינת המיקומים' });
@@ -1198,7 +1199,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // GET /helpdesk/tickets/user - Get current user's tickets + role context
-    app.get(['/helpdesk/tickets/user', '/notify/helpdesk/tickets/user'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
+    registerReadRoute(app, ['/helpdesk/tickets/user', '/notify/helpdesk/tickets/user'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
@@ -1639,7 +1640,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // GET /helpdesk/tickets/:id/notes - Get notes for a ticket
-    app.get(['/helpdesk/tickets/:id/notes', '/notify/helpdesk/tickets/:id/notes'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
+    registerReadRouteWithPostAlias(app, ['/helpdesk/tickets/:id/notes', '/notify/helpdesk/tickets/:id/notes'], ['/helpdesk/tickets/:id/notes/list', '/notify/helpdesk/tickets/:id/notes/list'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
@@ -1776,7 +1777,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // GET /helpdesk/tickets/:id/history - Get status change history for a ticket
-    app.get(['/helpdesk/tickets/:id/history', '/notify/helpdesk/tickets/:id/history'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
+    registerReadRoute(app, ['/helpdesk/tickets/:id/history', '/notify/helpdesk/tickets/:id/history'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
@@ -1844,7 +1845,7 @@ function registerHelpdeskController(app, deps = {}) {
 
     // GET /helpdesk/tickets/:id/handler-history - Get handler assignment history for a ticket
     // Accessible to the ticket creator, assigned handler, and any helpdesk user in the same department.
-    app.get(['/helpdesk/tickets/:id/handler-history', '/notify/helpdesk/tickets/:id/handler-history'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
+    registerReadRoute(app, ['/helpdesk/tickets/:id/handler-history', '/notify/helpdesk/tickets/:id/handler-history'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) {
             return res.status(401).json({ result: 'error', message: 'Authentication required' });
@@ -1895,7 +1896,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // GET /helpdesk/users - Admin: list all helpdesk_users; Editor: list users in own department
-    app.get(['/helpdesk/users', '/notify/helpdesk/users'], requireUser, helpdeskReadIpRateLimit, helpdeskRateLimit(20, 60 * 1000), async (req, res) => {
+    registerReadRouteWithPostAlias(app, ['/helpdesk/users', '/notify/helpdesk/users'], ['/helpdesk/users/list', '/notify/helpdesk/users/list'], requireUser, helpdeskReadIpRateLimit, helpdeskRateLimit(20, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         const departmentQuery = req.query && req.query.department;
         const requestedDepartment = decodeQueryText(
@@ -2282,7 +2283,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // GET /helpdesk/departments/active - Public: list active departments (for dept picker)
-    app.get(['/helpdesk/departments/active', '/notify/helpdesk/departments/active'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (_req, res) => {
+    registerReadRoute(app, ['/helpdesk/departments/active', '/notify/helpdesk/departments/active'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (_req, res) => {
         try {
             await getTablesReady();
             const depts = await enrichDepartmentsWithTicketStatuses(pool, await getActiveDepartments(pool));
@@ -2295,7 +2296,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // GET /helpdesk/departments/:department/ticket-form - authenticated users: get department ticket form config
-    app.get(['/helpdesk/departments/:department/ticket-form', '/notify/helpdesk/departments/:department/ticket-form'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
+    registerReadRoute(app, ['/helpdesk/departments/:department/ticket-form', '/notify/helpdesk/departments/:department/ticket-form'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) return res.status(401).json({ result: 'error', message: 'Authentication required' });
         const department = toTrimmedString(decodeURIComponent(req.params && req.params.department || ''));
@@ -2327,7 +2328,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // GET /helpdesk/departments - Admin: list all departments (including inactive)
-    app.get(['/helpdesk/departments', '/notify/helpdesk/departments'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
+    registerReadRouteWithPostAlias(app, ['/helpdesk/departments', '/notify/helpdesk/departments'], ['/helpdesk/departments/list', '/notify/helpdesk/departments/list'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) return res.status(401).json({ result: 'error', message: 'Authentication required' });
         try {
@@ -2571,7 +2572,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // GET /helpdesk/departments/:id/permissions - Admin: list per-department ACL
-    app.get(['/helpdesk/departments/:id/permissions', '/notify/helpdesk/departments/:id/permissions'], requireUser, helpdeskAdminMutationIpRateLimit, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
+    registerReadRouteWithPostAlias(app, ['/helpdesk/departments/:id/permissions', '/notify/helpdesk/departments/:id/permissions'], ['/helpdesk/departments/:id/permissions/list', '/notify/helpdesk/departments/:id/permissions/list'], requireUser, helpdeskAdminMutationIpRateLimit, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) return res.status(401).json({ result: 'error', message: 'Authentication required' });
         const deptId = toPositiveInteger(req.params && req.params.id, null);
@@ -2622,7 +2623,7 @@ function registerHelpdeskController(app, deps = {}) {
     });
 
     // GET /helpdesk/user-departments - any authenticated helpdesk user
-    app.get(['/helpdesk/user-departments', '/notify/helpdesk/user-departments'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
+    registerReadRoute(app, ['/helpdesk/user-departments', '/notify/helpdesk/user-departments'], requireUser, helpdeskRateLimit(30, 60 * 1000), async (req, res) => {
         const user = toTrimmedString(req.resolvedUser || '');
         if (!user) return res.status(401).json({ result: 'error', message: 'Authentication required' });
 

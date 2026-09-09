@@ -1,3 +1,5 @@
+const { registerReadRoute } = require('../utils/read-route');
+
 function registerMessageController(app, deps = {}) {
     const {
         requireAuthorizedUser,
@@ -223,7 +225,8 @@ function registerMessageController(app, deps = {}) {
         return deduped;
     };
 
-    app.get(
+    registerReadRoute(
+        app,
         ['/contacts', '/notify/contacts', '/contacts/:user', '/notify/contacts/:user'],
         requireAuthorizedUser({
             required: true,
@@ -291,7 +294,8 @@ function registerMessageController(app, deps = {}) {
             .filter(Boolean);
     };
 
-    app.get(
+    registerReadRoute(
+        app,
         ['/groups', '/notify/groups'],
         requireAuthorizedUser({
             required: true,
@@ -343,7 +347,8 @@ function registerMessageController(app, deps = {}) {
         }
     );
 
-    app.get(
+    registerReadRoute(
+        app,
         ['/messages', '/notify/messages'],
         requireAuthorizedUser({
             required: true,
@@ -403,7 +408,8 @@ function registerMessageController(app, deps = {}) {
 
     // backend/controllers/message.controller.js
 
-    app.get(
+    registerReadRoute(
+        app,
         ['/messages/logs', '/notify/messages/logs'],
         requireAuthorizedUser({
             required: true,

@@ -4,6 +4,7 @@ const {
     describeSsoHeaders,
     sanitizeForLog
 } = require('../services/windows-sso');
+const { registerReadRoute, registerPostReadAlias } = require('../utils/read-route');
 
 function registerAuthController(app, deps = {}) {
     const {
@@ -67,7 +68,8 @@ function registerAuthController(app, deps = {}) {
         })
         : (_req, _res, next) => next();
 
-    app.get(
+    registerReadRoute(
+        app,
         ['/hr/steps', '/notify/hr/steps'],
         requireAuthorizedSheetUser,
         async (_req, res) => {
@@ -93,7 +95,8 @@ function registerAuthController(app, deps = {}) {
         }
     );
 
-    app.get(
+    registerReadRoute(
+        app,
         ['/hr/actions', '/notify/hr/actions'],
         requireAuthorizedSheetUser,
         async (req, res) => {
@@ -123,7 +126,8 @@ function registerAuthController(app, deps = {}) {
         }
     );
 
-    app.get(
+    registerReadRoute(
+        app,
         ['/subscriptions', '/notify/subscriptions'],
         requireAuthorizedSheetUser,
         async (req, res) => {
@@ -153,7 +157,11 @@ function registerAuthController(app, deps = {}) {
         }
     );
 
-    app.get(['/auth/session', '/notify/auth/session'], async (req, res) => {
+    // Session status. The Angular frontend keeps using `GET /auth/session`;
+    // the Flutter clients POST to `/auth/session/status` so no session data is
+    // ever carried in a URL. `POST /auth/session` itself stays reserved for the
+    // (disabled) legacy login below.
+    const sessionStatusHandler = async (req, res) => {
         const user = normalizeUserCandidate(req.authUser);
         const authSession = req.authSession && typeof req.authSession === 'object' ? req.authSession : null;
         if (!user) {
@@ -178,7 +186,28 @@ function registerAuthController(app, deps = {}) {
             isRestricted,
             csrfToken: authSession && authSession.csrfToken ? authSession.csrfToken : null
         });
+    };
+
+    // Session status is polled by every client and performs a DB lookup, so it
+    // gets a permissive per-IP cap that still stops a single host from
+    // hammering the endpoint. The limit is high because large sites share one
+    // NAT address; override it with AUTH_SESSION_STATUS_RATE_LIMIT_PER_IP.
+    const sessionStatusIpRateLimit = require('express-rate-limit')({
+        windowMs: 60 * 1000,
+        limit: Math.max(60, Number(process.env.AUTH_SESSION_STATUS_RATE_LIMIT_PER_IP) || 1200),
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: (req) => (typeof getClientIpAddress === 'function' ? getClientIpAddress(req) : (req.ip || '')),
+        handler: (_req, res) => res.status(429).json({ authenticated: false, user: null, error: 'Rate limited' })
     });
+
+    app.get(['/auth/session', '/notify/auth/session'], sessionStatusIpRateLimit, sessionStatusHandler);
+    registerPostReadAlias(
+        app,
+        ['/auth/session/status', '/notify/auth/session/status'],
+        sessionStatusIpRateLimit,
+        sessionStatusHandler
+    );
 
     app.post(['/auth/session', '/notify/auth/session'], (_req, res) => {
         return res.status(410).json({

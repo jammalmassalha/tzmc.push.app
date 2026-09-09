@@ -46,6 +46,9 @@ class ApiEndpoints {
 
   // Auth
   static const String session = '/auth/session';
+  // Read-only session status. `POST /auth/session` is reserved for the legacy
+  // (disabled) login endpoint, so the status twin lives on its own path.
+  static const String sessionStatus = '/auth/session/status';
   static const String requestCode = '/auth/session/request-code';
   static const String verifyCode = '/auth/session/verify-code';
   static const String windowsLogin = '/auth/session/windows-login';
@@ -113,6 +116,10 @@ class ApiEndpoints {
   static const String helpdeskDepartmentsActive = '/helpdesk/departments/active';
   static const String helpdeskDepartmentsTicketForm = '/helpdesk/departments';
   static const String helpdeskUsers = '/helpdesk/users';
+  // Read twins for helpdesk paths whose base path already serves a POST
+  // mutation (create user / create department / save permissions).
+  static const String helpdeskUsersList = '/helpdesk/users/list';
+  static const String helpdeskDepartmentsList = '/helpdesk/departments/list';
   static const String helpdeskUserDepartments = '/helpdesk/user-departments';
 
   // Password Reset Bot
@@ -126,9 +133,13 @@ class ApiEndpoints {
 
   // Admin: Community Group Management
   static const String adminCommunityGroups = '/admin/community-groups';
+  // Read twin: the base path already serves POST (create group).
+  static const String adminCommunityGroupsList = '/admin/community-groups/list';
 
   // Admin: Secretaries Management
   static const String adminSecretaries = '/api/admin/secretaries';
+  // Read twin: the base path already serves POST (create secretary).
+  static const String adminSecretariesList = '/api/admin/secretaries/list';
 
   // Accreditation AI Agent
   static const String accreditationAgent = '/accreditation/ask';

@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/services/otp_throttle_service.dart';
 import '../../../core/utils/toast_utils.dart';
 import 'auth_state.dart';
 
@@ -23,11 +24,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _codeController = TextEditingController();
   final _phoneFocusNode = FocusNode();
   final _codeFocusNode = FocusNode();
-  
-  // Countdown timer for SMS resend cooldown (120 seconds)
-  static const int _resendCooldownSeconds = 120;
+
+  // Countdown until another verification SMS may be requested. The authoritative
+  // state lives in OtpThrottleService (max 4 SMS per phone per hour, at least
+  // 120 s apart, persisted across restarts); this mirror only drives the UI.
   int _resendCountdown = 0;
+  bool _quotaExhausted = false;
   Timer? _resendTimer;
+  String _throttledPhone = '';
 
   // Set true while a verify-code request is in flight. The server holds the
   // request open for up to ~45 s while it waits for an external service to
@@ -41,7 +45,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   String? _verifyingPhoneNumber;
 
   @override
+  void initState() {
+    super.initState();
+    _phoneController.addListener(_handlePhoneChanged);
+    unawaited(_syncThrottleState());
+  }
+
+  @override
   void dispose() {
+    _phoneController.removeListener(_handlePhoneChanged);
     _phoneController.dispose();
     _codeController.dispose();
     _phoneFocusNode.dispose();
@@ -49,19 +61,61 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     _resendTimer?.cancel();
     super.dispose();
   }
-  
-  void _startResendCooldown() {
-    _resendCountdown = _resendCooldownSeconds;
-    _resendTimer?.cancel();
-    _resendTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (_resendCountdown > 0) {
-        setState(() {
-          _resendCountdown--;
-        });
-      } else {
-        timer.cancel();
-      }
+
+  void _handlePhoneChanged() {
+    final phone = normalizeOtpPhone(_phoneController.text);
+    if (phone == _throttledPhone) return;
+    unawaited(_syncThrottleState());
+  }
+
+  /// Reads the persisted throttle state for the phone currently in play and
+  /// starts (or clears) the countdown that disables the send button.
+  Future<void> _syncThrottleState() async {
+    final phone = _activePhoneNumber();
+    final decision = await ref.read(otpThrottleServiceProvider).check(phone);
+    if (!mounted) return;
+    setState(() {
+      _throttledPhone = normalizeOtpPhone(phone);
+      _quotaExhausted = decision.quotaExhausted;
+      _resendCountdown = decision.allowed ? 0 : decision.retryAfter.inSeconds + 1;
     });
+    _restartCountdownTimer();
+  }
+
+  void _restartCountdownTimer() {
+    _resendTimer?.cancel();
+    if (_resendCountdown <= 0) return;
+    _resendTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (_resendCountdown > 1) {
+        setState(() => _resendCountdown--);
+        return;
+      }
+      timer.cancel();
+      // Re-read the persisted state instead of trusting the local tick: the
+      // hourly quota may still block sending even though the 120s gap elapsed.
+      unawaited(_syncThrottleState());
+    });
+  }
+
+  /// The phone number the throttle applies to: the one awaiting a code when a
+  /// verification is in progress, otherwise whatever is typed in the field.
+  String _activePhoneNumber() {
+    final authState = ref.read(authStateProvider);
+    if (authState is AuthAwaitingCode) return authState.phoneNumber;
+    if (_verifyingPhoneNumber != null) return _verifyingPhoneNumber!;
+    return _phoneController.text.trim();
+  }
+
+  /// Human readable remaining wait, e.g. `95 שניות` or `12 דקות`.
+  String get _throttleWaitLabel {
+    if (_resendCountdown >= 120) {
+      return '${(_resendCountdown / 60).ceil()} דקות';
+    }
+    return '$_resendCountdown שניות';
   }
 
   @override
@@ -175,9 +229,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
                   const SizedBox(height: 24),
 
-                  // Login button
+                  // Login button — disabled while a code was recently sent to
+                  // this number or the hourly SMS quota is exhausted.
                   ElevatedButton(
-                    onPressed: isLoading ? null : _handleLogin,
+                    onPressed: (isLoading || _resendCountdown > 0) ? null : _handleLogin,
                     child: isLoading
                         ? const SizedBox(
                             height: 20,
@@ -187,8 +242,26 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                               valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                             ),
                           )
-                        : const Text('התחברות'),
+                        : Text(
+                            _resendCountdown > 0
+                                ? 'ניתן לשלוח שוב בעוד $_throttleWaitLabel'
+                                : 'התחברות',
+                          ),
                   ),
+
+                  if (_resendCountdown > 0) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      _quotaExhausted
+                          ? 'נשלחו $kOtpMaxSendsPerWindow קודי אימות בשעה האחרונה. '
+                              'ניתן לנסות שוב בעוד $_throttleWaitLabel.'
+                          : 'קוד אימות כבר נשלח למספר זה. ניתן לשלוח קוד נוסף בעוד $_throttleWaitLabel.',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.7).round()),
+                          ),
+                    ),
+                  ],
                 ],
 
                 // SMS code input
@@ -273,14 +346,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     child: const Text('חזרה'),
                   ),
 
-                  // Resend code
+                  // Resend code — blocked until the 120s gap elapsed and the
+                  // hourly quota still has room.
                   TextButton(
                     onPressed: isLoading || _resendCountdown > 0
                         ? null
-                        : () {
-                            ref.read(authStateProvider.notifier).requestCode(awaitingPhoneNumber);
-                            _startResendCooldown();
-                          },
+                        : () => _handleResendCode(awaitingPhoneNumber),
                     child: _resendCountdown > 0
                         ? Row(
                             mainAxisSize: MainAxisSize.min,
@@ -293,11 +364,22 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                 ),
                               ),
                               const SizedBox(width: 8),
-                              Text('שלח קוד שוב ($_resendCountdown שניות)'),
+                              Text('שלח קוד שוב ($_throttleWaitLabel)'),
                             ],
                           )
                         : const Text('שלח קוד שוב'),
                   ),
+
+                  if (_quotaExhausted && _resendCountdown > 0) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      'נשלחו $kOtpMaxSendsPerWindow קודי אימות בשעה האחרונה.',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.7).round()),
+                          ),
+                    ),
+                  ],
                 ],
 
                 const SizedBox(height: 48),
@@ -309,15 +391,22 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     );
   }
 
-  void _handleLogin() {
+  Future<void> _handleLogin() async {
     final phone = _phoneController.text.trim();
     if (phone.isEmpty) {
       showTopToast(context, 'יש להזין מספר טלפון');
       return;
     }
 
-    ref.read(authStateProvider.notifier).login(phone);
-    _startResendCooldown();
+    await ref.read(authStateProvider.notifier).login(phone);
+    // Re-read the persisted history so the countdown reflects the send that
+    // just happened (or the throttle that rejected it).
+    await _syncThrottleState();
+  }
+
+  Future<void> _handleResendCode(String phoneNumber) async {
+    await ref.read(authStateProvider.notifier).requestCode(phoneNumber);
+    await _syncThrottleState();
   }
 
   void _handleVerifyCode() {

@@ -11,6 +11,7 @@ import 'package:logger/logger.dart';
 
 import '../../../core/api/chat_api_service.dart';
 import '../../../core/services/chat_store_service.dart';
+import '../../../core/services/otp_throttle_service.dart';
 import '../../../core/services/push_notification_service.dart';
 import '../../../core/services/windows_auth_service.dart'
     // On web (dart.library.html is available) the stub is loaded instead,
@@ -80,6 +81,7 @@ final authStateProvider = NotifierProvider<AuthNotifier, AuthState>(() {
 /// Auth notifier for state management
 class AuthNotifier extends Notifier<AuthState> {
   late final ChatApiService _apiService;
+  late final OtpThrottleService _otpThrottle;
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
 
   static const _userKey = 'tzmc_current_user';
@@ -88,6 +90,7 @@ class AuthNotifier extends Notifier<AuthState> {
   @override
   AuthState build() {
     _apiService = ref.watch(chatApiServiceProvider);
+    _otpThrottle = ref.watch(otpThrottleServiceProvider);
     _checkExistingSession();
     return const AuthLoading();
   }
@@ -151,7 +154,7 @@ class AuthNotifier extends Notifier<AuthState> {
   }
 
   /// Login with phone number
-  /// 
+  ///
   /// Since direct login is disabled on the server, this method now
   /// directly requests an SMS verification code.
   Future<void> login(String phoneNumber) async {
@@ -160,7 +163,13 @@ class AuthNotifier extends Notifier<AuthState> {
     await requestCode(phoneNumber);
   }
 
-  /// Request SMS verification code
+  /// Request SMS verification code.
+  ///
+  /// Client-side throttling (see [OtpThrottleService]) caps the SMS traffic at
+  /// [kOtpMaxSendsPerWindow] messages per phone per rolling hour with at least
+  /// [kOtpMinInterval] between two messages. The check lives here — rather than
+  /// only in the UI — so every caller (login button, resend button, deep link)
+  /// is covered.
   Future<void> requestCode(String phoneNumber) async {
     // Guard against rapid duplicate submissions while a request is in flight.
     if (state is AuthLoading) {
@@ -168,10 +177,27 @@ class AuthNotifier extends Notifier<AuthState> {
     }
 
     final previousState = state;
+
+    final throttleDecision = await _otpThrottle.check(phoneNumber);
+    if (!throttleDecision.allowed) {
+      state = AuthError(
+        message: throttleDecision.message,
+        previousState: previousState is AuthLoading
+            ? const AuthUnauthenticated()
+            : previousState,
+      );
+      _logger.w(
+        'SMS code request throttled for $phoneNumber '
+        '(retry after ${throttleDecision.retryAfter.inSeconds}s)',
+      );
+      return;
+    }
+
     state = const AuthLoading();
 
     try {
       final expiresIn = await _apiService.requestSessionCode(phoneNumber);
+      await _otpThrottle.recordSend(phoneNumber);
       state = AuthAwaitingCode(
         phoneNumber: phoneNumber,
         expiresInSeconds: expiresIn,

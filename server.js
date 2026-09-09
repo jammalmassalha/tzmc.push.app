@@ -27,6 +27,7 @@ const { registerShuttleController } = require('./backend/controllers/shuttle.con
 const { registerHelpdeskController } = require('./backend/controllers/helpdesk.controller');
 const { createAccreditationAgentController } = require('./backend/controllers/accreditation-agent.controller');
 const { extractUsersUploadIdentityCandidatesFromFiles } = require('./backend/utils/users-upload-identity');
+const { registerReadRoute, registerReadRouteWithPostAlias } = require('./backend/utils/read-route');
 const {
     createSheetIntegrationServiceFromEnv,
     createMysqlLogsServiceFromEnv,
@@ -1132,7 +1133,9 @@ const AUTH_CODE_SHEET_TOKEN = String(
     CHECK_QUEUE_SERVER_TOKEN ||
     ''
 ).trim();
-const CSRF_PROTECTION_ENABLED = String('false').trim().toLowerCase() === 'true';
+const CSRF_PROTECTION_ENABLED = String(
+    process.env.CSRF_PROTECTION_ENABLED || 'false'
+).trim().toLowerCase() === 'true';
 const CSRF_HEADER_NAME = 'x-csrf-token';
 const DELIVERY_TELEMETRY_RETENTION_MS = Math.max(
     60 * 60 * 1000,
@@ -5638,7 +5641,7 @@ app.post(['/log', '/notify/log'], (req, res) => {
     res.json({ status: 'ok' });
 });
 
-app.get(['/delivery-telemetry/status', '/notify/delivery-telemetry/status'], (req, res) => {
+registerReadRoute(app, ['/delivery-telemetry/status', '/notify/delivery-telemetry/status'], (req, res) => {
     const token = String(
         (req.query && req.query.token) ||
         (req.headers && (req.headers['x-admin-token'] || req.headers['x-app-token'])) ||
@@ -5685,7 +5688,7 @@ app.get(['/delivery-telemetry/status', '/notify/delivery-telemetry/status'], (re
 // loaded, parseable, and accepted by Google. NEVER returns the private key.
 // Pass `?probe=1` to actually request an OAuth access token from Google
 // (slower but proves end-to-end that the key works).
-app.get(['/fcm-status', '/notify/fcm-status'], async (req, res) => {
+registerReadRoute(app, ['/fcm-status', '/notify/fcm-status'], async (req, res) => {
     if (!isSchedulerOpsRequestAuthorized(req)) {
         return res.status(403).json({ error: 'Forbidden' });
     }
@@ -6293,7 +6296,7 @@ app.get(['/', '/notify'], (req, res) => {
     res.send('TZMC Server Running (Push + Polling Supported - Case Insensitive)');
 });
 
-app.get(['/version', '/notify/version'], (req, res) => {
+registerReadRoute(app, ['/version', '/notify/version'], (req, res) => {
     res.set('Cache-Control', 'no-store');
     res.json({ version: SERVER_VERSION, notes: SERVER_RELEASE_NOTES });
 });
@@ -6354,7 +6357,7 @@ app.post(
     }
 );
 
-app.get(['/community-group-configs', '/notify/community-group-configs'],
+registerReadRoute(app, ['/community-group-configs', '/notify/community-group-configs'],
     requireAuthorizedUser({
         required: true,
         candidateKeys: ['user'],
@@ -6389,7 +6392,7 @@ app.get(['/community-group-configs', '/notify/community-group-configs'],
 
 const userGroupsRateLimitStore = new Map();
 
-app.get(['/user-chat-groups', '/notify/user-chat-groups'],
+registerReadRoute(app, ['/user-chat-groups', '/notify/user-chat-groups'],
     requireAuthorizedUser({
         required: true,
         candidateKeys: ['user'],
@@ -6544,8 +6547,10 @@ function toBooleanValue(value) {
 }
 
 // GET /admin/community-groups — list all groups (including disabled)
-app.get(
+registerReadRouteWithPostAlias(
+    app,
     ['/admin/community-groups', '/notify/admin/community-groups'],
+    ['/admin/community-groups/list', '/notify/admin/community-groups/list'],
     requireAuthorizedUser({
         required: true,
         candidateKeys: ['user'],
@@ -7107,8 +7112,10 @@ app.get(
 );
 
 // GET /api/admin/secretaries - list all secretaries
-app.get(
+registerReadRouteWithPostAlias(
+    app,
     ['/api/admin/secretaries', '/notify/api/admin/secretaries'],
+    ['/api/admin/secretaries/list', '/notify/api/admin/secretaries/list'],
     requireAuthorizedUser({
         required: true,
         candidateKeys: ['user'],
@@ -7233,7 +7240,7 @@ app.delete(
 );
 
 // --- Sync all MessageActivities (no filtering) ---
-app.get(['/message-activities', '/notify/message-activities'], async (_req, res) => {
+registerReadRoute(app, ['/message-activities', '/notify/message-activities'], async (_req, res) => {
     try {
         const activities = await mysqlLogsService.getAllMessageActivities();
         return res.json({ activities });
@@ -7243,7 +7250,7 @@ app.get(['/message-activities', '/notify/message-activities'], async (_req, res)
     }
 });
 
-app.get(['/webhook-registry', '/notify/webhook-registry'], (_req, res) => {
+registerReadRouteWithPostAlias(app, ['/webhook-registry', '/notify/webhook-registry'], ['/webhook-registry/list', '/notify/webhook-registry/list'], (_req, res) => {
     res.json({
         webhooks: webhookRegistryService.list()
     });
@@ -7265,7 +7272,7 @@ app.post(['/webhook-registry', '/notify/webhook-registry'], (req, res) => {
     });
 });
 
-app.get(['/refresh-subscribe-auth/status', '/notify/refresh-subscribe-auth/status'], (req, res) => {
+registerReadRoute(app, ['/refresh-subscribe-auth/status', '/notify/refresh-subscribe-auth/status'], (req, res) => {
     res.json({
         running: subscriptionAuthRefreshState.running,
         lastRunAt: subscriptionAuthRefreshState.lastRunAt || null,
@@ -7322,7 +7329,7 @@ app.post(['/refresh-subscribe-auth', '/notify/refresh-subscribe-auth'], (req, re
 
 // Temporary ops endpoint: one-time visible device prompt campaign to recover devices
 // that stopped receiving pushes until users reopen the app.
-app.get(['/mobile-reregister-campaign/status', '/notify/mobile-reregister-campaign/status'], (req, res) => {
+registerReadRoute(app, ['/mobile-reregister-campaign/status', '/notify/mobile-reregister-campaign/status'], (req, res) => {
     const campaignIdQuery = (req.query && typeof req.query.campaignId === 'string')
         ? sanitizeCampaignId(req.query.campaignId)
         : '';
@@ -7940,7 +7947,7 @@ function parseResetByUsernameRequestId(rawValue) {
     }
     return parsed;
 }
-app.get(['/employees-data', '/notify/employees-data'], async (req, res) => {
+registerReadRoute(app, ['/employees-data', '/notify/employees-data'], async (req, res) => {
     const targetUrl = 'https://script.googleusercontent.com/macros/echo?user_content_key=AUkAhnTUydpAW1Q15AGgHNAgbe-vuYzRHuwIUDoARvVv3GXjo9gpRsD8o7zLh6L1LlBBGG0B2V8Iw8teAhN5QvgvDmbw0ix55bmqJbHqknO6UjwMG3Qrq8UCBvSOJaODPV8-SvM2cbLsptLS1RNya90y0g2Pir5oOs_lvqOSjX8CV0ab8JFUbcx2RCbCbOxGdYUz76YBrW_VvHYE-uxzxZ5bUJs07HbvslRIE1WrTdAEBEO3E3ciyb92FGiG6csDd0qJUKu6vUBRbTriVnr9Ftx5JBXuIfX16SYabJDC1FZCeAPh9wDUbt2D_gQgUD92_w3LuPoGi8Rj&lib=M61tmyhqGdJnkdffHSdmCsRQIa2hFtaof';
 
     // 1. Get client IP address using existing server helper
@@ -8088,7 +8095,8 @@ app.post(
     }
 );
 
-app.get(
+registerReadRoute(
+    app,
     ['/reset-password/status', '/notify/reset-password/status'],
     authorizePasswordResetRequest('status', 60, 30, 60 * 1000),
     async (req, res) => {
@@ -8279,7 +8287,8 @@ app.post(
     }
 );
 
-app.get(
+registerReadRoute(
+    app,
     ['/reset-password/by-username/status', '/notify/reset-password/by-username/status'],
     authorizePasswordResetRequest('by-username-status', 60, 30, 60 * 1000),
     async (req, res) => {

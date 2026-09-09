@@ -1,3 +1,5 @@
+const { registerReadRoute } = require('../utils/read-route');
+
 function resolveTodayIsoDate() {
     const now = new Date();
     const year = now.getFullYear();
@@ -173,7 +175,8 @@ function registerShuttleController(app, deps = {}) {
         })
         : (_req, _res, next) => next();
 
-    app.get(
+    registerReadRoute(
+        app,
         ['/shuttle/employees', '/notify/shuttle/employees'],
         requireAuthorizedUserForOperations,
         async (_req, res) => {
@@ -198,7 +201,8 @@ function registerShuttleController(app, deps = {}) {
         }
     );
 
-    app.get(
+    registerReadRoute(
+        app,
         ['/shuttle/stations', '/notify/shuttle/stations'],
         requireAuthorizedUserForOperations,
         async (_req, res) => {
@@ -223,7 +227,8 @@ function registerShuttleController(app, deps = {}) {
         }
     );
 
-    app.get(
+    registerReadRoute(
+        app,
         ['/shuttle/orders/user', '/notify/shuttle/orders/user'],
         requireAuthorizedUserForOperations,
         async (req, res) => {
@@ -297,7 +302,8 @@ function registerShuttleController(app, deps = {}) {
         }
     );
 
-    app.get(
+    registerReadRoute(
+        app,
         ['/shuttle/orders/operations', '/notify/shuttle/orders/operations'],
         requireAuthorizedUserForOperations,
         async (req, res) => {
@@ -388,7 +394,7 @@ function registerShuttleController(app, deps = {}) {
         }
     );
 
-    app.get(['/shuttle-reminders/status', '/notify/shuttle-reminders/status'], (req, res) => {
+    registerReadRoute(app, ['/shuttle-reminders/status', '/notify/shuttle-reminders/status'], (req, res) => {
         if (!isSchedulerOpsRequestAuthorized(req)) {
             return res.status(403).json({ error: 'Forbidden' });
         }

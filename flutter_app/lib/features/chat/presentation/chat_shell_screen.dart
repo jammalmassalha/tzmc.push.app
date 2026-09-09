@@ -31,6 +31,7 @@ import 'chat_list_screen.dart';
 import 'create_group_dialog.dart';
 import 'message_screen.dart';
 import 'new_chat_dialog.dart';
+import 'pending_approval_screen.dart';
 
 /// Main tab enumeration
 enum MainTab {
@@ -99,6 +100,19 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     );
     _initializeServices();
     unawaited(_refreshTabPermissions());
+  }
+
+  /// Re-evaluates the shell when the account's approval status changes.
+  ///
+  /// A user approved mid-session (Status 0 → 1) must get the full navigation
+  /// immediately; the tab list computed while the account was still pending
+  /// only contained the chats tab.
+  void _handleRestrictionChanged(bool isRestricted) {
+    if (isRestricted) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(_refreshTabPermissions());
+    });
   }
 
   /// Called when the app returns to the foreground.
@@ -211,7 +225,20 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     final chatState = ref.watch(chatStoreProvider);
     // Watch restricted flag so the sidebar rebuilds if the user's restriction
     // status changes while the shell is visible.
-    ref.watch(isUserRestrictedProvider);
+    final isRestricted = ref.watch(isUserRestrictedProvider);
+    ref.listen<bool>(isUserRestrictedProvider, (previous, next) {
+      if (previous == next) return;
+      _handleRestrictionChanged(next);
+    });
+
+    // Accounts that are still pending approval (Subscribe.Staus = 0) get a
+    // blank home page instead of the chat shell: no chat list, no community /
+    // global groups and no entry point for creating chats or groups. The
+    // realtime status stream and the screen's own poll flip this back to the
+    // full shell the moment the status becomes 1.
+    if (isRestricted) {
+      return const PendingApprovalScreen();
+    }
 
     final isDesktopWeb =
         kIsWeb && MediaQuery.sizeOf(context).width >= _kDesktopShellBreakpoint;
