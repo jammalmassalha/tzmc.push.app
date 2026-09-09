@@ -4,7 +4,7 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.6.0 <4.0.0'
+  sdk: '>=3.13.0 <4.0.0'
 
 dependencies:
   flutter:
@@ -55,8 +55,6 @@ dependencies:
 
   # Utilities
   json_annotation: ^4.8.1
-  # Flutter CI runs on Flutter 3.27.4 / Dart 3.6.2, so keep freezed on the
-  # last range that does not pull in Dart >=3.7 build dependencies.
   freezed_annotation: ^3.1.0
   equatable: ^2.0.5
   collection: ^1.18.0
@@ -88,8 +86,7 @@ dependency_overrides:
   shared_preferences_android: 2.4.2
   # This app has no @RestApi-annotated classes, so retrofit_generator produces
   # no output.  Every published retrofit_generator version either requires
-  # build ^2.5.4 (incompatible with build_runner 2.4.x on Dart 3.6) or has
-  # analyzer compatibility issues.  The local stub at
+  # incompatible `build` versions or has analyzer compatibility issues.  The local stub at
   # tools/retrofit_generator_stub has no build.yaml and therefore registers no
   # builders; build_runner compiles a clean entrypoint and only Drift / freezed
   # / json_serializable codegen runs.
