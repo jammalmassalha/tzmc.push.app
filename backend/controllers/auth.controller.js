@@ -188,10 +188,24 @@ function registerAuthController(app, deps = {}) {
         });
     };
 
-    app.get(['/auth/session', '/notify/auth/session'], sessionStatusHandler);
+    // Session status is polled by every client and performs a DB lookup, so it
+    // gets a permissive per-IP cap that still stops a single host from
+    // hammering the endpoint. The limit is high because large sites share one
+    // NAT address; override it with AUTH_SESSION_STATUS_RATE_LIMIT_PER_IP.
+    const sessionStatusIpRateLimit = require('express-rate-limit')({
+        windowMs: 60 * 1000,
+        limit: Math.max(60, Number(process.env.AUTH_SESSION_STATUS_RATE_LIMIT_PER_IP) || 1200),
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: (req) => (typeof getClientIpAddress === 'function' ? getClientIpAddress(req) : (req.ip || '')),
+        handler: (_req, res) => res.status(429).json({ authenticated: false, user: null, error: 'Rate limited' })
+    });
+
+    app.get(['/auth/session', '/notify/auth/session'], sessionStatusIpRateLimit, sessionStatusHandler);
     registerPostReadAlias(
         app,
         ['/auth/session/status', '/notify/auth/session/status'],
+        sessionStatusIpRateLimit,
         sessionStatusHandler
     );
 
