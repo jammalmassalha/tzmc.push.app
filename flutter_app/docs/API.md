@@ -6,6 +6,46 @@ This document describes the backend API endpoints used by the Flutter mobile cli
 
 - **Production:** `https://www.tzmc.co.il/notify`
 
+## Request method policy (Flutter client)
+
+The Flutter app (Android, iOS, Web/PWA, Windows) sends **every API call as
+`POST`**, including data reads. Parameters that used to travel in the query
+string are now sent in the JSON request body, so user identifiers never appear
+in URLs (which leak into reverse-proxy access logs, browser history and
+referrer headers).
+
+Server side, each read endpoint is registered for **both** verbs:
+
+- `GET  <path>` – unchanged, still used by the Angular frontend.
+- `POST <path>` – same handler; the JSON body is merged into `req.query`
+  (scalars/arrays only, prototype-polluting keys rejected) and the response is
+  returned with `Cache-Control: no-store`.
+
+When a path already served a `POST` mutation, the read twin is mounted on a
+dedicated path instead:
+
+| Read (GET, web)                          | Read (POST, Flutter)                          |
+| ---------------------------------------- | --------------------------------------------- |
+| `GET /auth/session`                       | `POST /auth/session/status`                   |
+| `GET /helpdesk/users`                     | `POST /helpdesk/users/list`                   |
+| `GET /helpdesk/departments`               | `POST /helpdesk/departments/list`             |
+| `GET /helpdesk/departments/{id}/permissions` | `POST /helpdesk/departments/{id}/permissions/list` |
+| `GET /helpdesk/tickets/{id}/notes`        | `POST /helpdesk/tickets/{id}/notes/list`      |
+| `GET /admin/community-groups`             | `POST /admin/community-groups/list`           |
+| `GET /api/admin/secretaries`              | `POST /api/admin/secretaries/list`            |
+| `GET /webhook-registry`                   | `POST /webhook-registry/list`                 |
+
+Two endpoints intentionally stay `GET`-only, because they do not carry request
+parameters that could leak and cannot be expressed as a POST body:
+
+- `GET /stream` – Server-Sent Events fallback (streaming response).
+- Uploaded media/file downloads (`/uploads/...`) fetched as binary blobs.
+
+Mutating requests (`POST`/`PUT`/`DELETE`) also carry the acting user in the
+body rather than the query string, and every non-`GET` request sends the
+`X-CSRF-Token` header issued with the session (enforced server side when
+`CSRF_PROTECTION_ENABLED=true`).
+
 ## Authentication
 
 ### Session Management

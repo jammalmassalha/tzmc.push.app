@@ -93,8 +93,8 @@ class ChatApiService {
   /// Get current session user
   Future<String?> getSessionUser() async {
     try {
-      final response = await _client.get<Map<String, dynamic>>(
-        ApiEndpoints.session,
+      final response = await _client.post<Map<String, dynamic>>(
+        ApiEndpoints.sessionStatus,
         retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 8)),
       );
 
@@ -122,8 +122,8 @@ class ChatApiService {
   /// Get current session info (with isRestricted status)
   Future<SessionResponse?> getSessionInfo() async {
     try {
-      final response = await _client.get<Map<String, dynamic>>(
-        ApiEndpoints.session,
+      final response = await _client.post<Map<String, dynamic>>(
+        ApiEndpoints.sessionStatus,
         retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 8)),
       );
 
@@ -433,9 +433,9 @@ class ChatApiService {
     // Try multiple URL patterns for compatibility
     final queryParams = normalizedUser.isNotEmpty ? {'user': normalizedUser} : null;
 
-    final response = await _client.get<Map<String, dynamic>>(
+    final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.contacts,
-      queryParameters: queryParams,
+      data: queryParams,
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
@@ -478,9 +478,9 @@ class ChatApiService {
     final normalizedUser = user?.trim().toLowerCase() ?? '';
     final queryParams = normalizedUser.isNotEmpty ? {'user': normalizedUser} : null;
 
-    final response = await _client.get<Map<String, dynamic>>(
+    final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.groups,
-      queryParameters: queryParams,
+      data: queryParams,
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
@@ -498,7 +498,7 @@ class ChatApiService {
   /// Get user chat groups
   Future<List<ChatGroup>> getUserChatGroups() async {
     try {
-      final response = await _client.get<Map<String, dynamic>>(
+      final response = await _client.post<Map<String, dynamic>>(
         ApiEndpoints.userChatGroups,
         retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
       );
@@ -521,7 +521,7 @@ class ChatApiService {
   /// to an empty list on any error so the caller can use seed defaults.
   Future<List<CommunityGroupConfig>> getCommunityGroupConfigs() async {
     try {
-      final response = await _client.get<Map<String, dynamic>>(
+      final response = await _client.post<Map<String, dynamic>>(
         ApiEndpoints.communityGroupConfigs,
         retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
       );
@@ -547,9 +547,9 @@ class ChatApiService {
     final normalizedUser = user?.trim().toLowerCase() ?? '';
     final queryParams = normalizedUser.isNotEmpty ? {'user': normalizedUser} : null;
 
-    final response = await _client.get<Map<String, dynamic>>(
+    final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.messages,
-      queryParameters: queryParams,
+      data: queryParams,
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
@@ -574,9 +574,9 @@ class ChatApiService {
     final safeLimit = limit.clamp(1, 200000);
     final safeOffset = offset.clamp(0, 1000000);
 
-    final response = await _client.get<Map<String, dynamic>>(
+    final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.messagesLogs,
-      queryParameters: {
+      data: {
         'user': normalizedUser,
         'excludeSystem': '1',
         'limit': safeLimit.toString(),
@@ -807,9 +807,9 @@ class ChatApiService {
 
   /// Get server version
   Future<({String version, List<String> notes})> getVersion() async {
-    final response = await _client.get<Map<String, dynamic>>(
+    final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.version,
-      queryParameters: {'t': DateTime.now().millisecondsSinceEpoch.toString()},
+      data: {'t': DateTime.now().millisecondsSinceEpoch.toString()},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 8)),
     );
 
@@ -854,9 +854,9 @@ class ChatApiService {
       throw ApiException('User is required for shuttle employees request');
     }
     
-    final response = await _client.get<Map<String, dynamic>>(
+    final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.shuttleEmployees,
-      queryParameters: {
+      data: {
         'user': normalizedUser,
         '_ts': DateTime.now().millisecondsSinceEpoch.toString(),
       },
@@ -880,9 +880,9 @@ class ChatApiService {
       throw ApiException('User is required for shuttle stations request');
     }
     
-    final response = await _client.get<Map<String, dynamic>>(
+    final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.shuttleStations,
-      queryParameters: {
+      data: {
         'user': normalizedUser,
         '_ts': DateTime.now().millisecondsSinceEpoch.toString(),
       },
@@ -908,8 +908,9 @@ class ChatApiService {
 
     final response = await _client.post<String>(
       ApiEndpoints.shuttleOrders,
-      data: payload.toJson(),
-      queryParameters: {'user': normalizedUser},
+      // The caller identity travels in the body – never in the URL – so it
+      // cannot leak through proxy/access logs or browser history.
+      data: {...payload.toJson(), 'user': normalizedUser},
       retryOptions: const RetryOptions(retries: 2, timeout: Duration(seconds: 12)),
     );
 
@@ -942,9 +943,9 @@ class ChatApiService {
     final normalizedUser = user.trim();
     if (normalizedUser.isEmpty) return [];
 
-    final response = await _client.get<Map<String, dynamic>>(
+    final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.shuttleUserOrders,
-      queryParameters: {
+      data: {
         'user': normalizedUser,
         '_ts': DateTime.now().millisecondsSinceEpoch.toString(),
       },
@@ -972,9 +973,9 @@ class ChatApiService {
       throw ApiException('User is required for helpdesk dashboard request');
     }
     
-    final response = await _client.get<Map<String, dynamic>>(
+    final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.helpdeskUserTickets,
-      queryParameters: {'user': normalizedUser},
+      data: {'user': normalizedUser},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 15)),
     );
 
@@ -1135,9 +1136,9 @@ class ChatApiService {
       throw ApiException('User is required for helpdesk ticket history request');
     }
     
-    final response = await _client.get<Map<String, dynamic>>(
+    final response = await _client.post<Map<String, dynamic>>(
       '${ApiEndpoints.helpdeskTickets}/$ticketId/history',
-      queryParameters: {'user': normalizedUser},
+      data: {'user': normalizedUser},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
@@ -1166,9 +1167,9 @@ class ChatApiService {
       throw ApiException('User is required for helpdesk handler history request');
     }
 
-    final response = await _client.get<Map<String, dynamic>>(
+    final response = await _client.post<Map<String, dynamic>>(
       '${ApiEndpoints.helpdeskTickets}/$ticketId/handler-history',
-      queryParameters: {'user': normalizedUser},
+      data: {'user': normalizedUser},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
@@ -1197,9 +1198,9 @@ class ChatApiService {
       throw ApiException('User is required for helpdesk ticket notes request');
     }
     
-    final response = await _client.get<Map<String, dynamic>>(
-      '${ApiEndpoints.helpdeskTickets}/$ticketId/notes',
-      queryParameters: {'user': normalizedUser},
+    final response = await _client.post<Map<String, dynamic>>(
+      '${ApiEndpoints.helpdeskTickets}/$ticketId/notes/list',
+      data: {'user': normalizedUser},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
@@ -1284,9 +1285,9 @@ class ChatApiService {
       throw ApiException('User is required for helpdesk locations request');
     }
     
-    final response = await _client.get<Map<String, dynamic>>(
+    final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.helpdeskLocations,
-      queryParameters: {'user': normalizedUser},
+      data: {'user': normalizedUser},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
@@ -1330,9 +1331,9 @@ class ChatApiService {
       return const HelpdeskDepartmentTicketFormConfig();
     }
 
-    final response = await _client.get<Map<String, dynamic>>(
+    final response = await _client.post<Map<String, dynamic>>(
       '${ApiEndpoints.helpdeskDepartmentsTicketForm}/$encodedDept/ticket-form',
-      queryParameters: {'user': normalizedUser},
+      data: {'user': normalizedUser},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 8)),
     );
 
@@ -1358,7 +1359,7 @@ class ChatApiService {
 
   Future<List<HelpdeskDepartmentEntry>> getActiveHelpdeskDepartments() async {
     try {
-      final response = await _client.get<dynamic>(
+      final response = await _client.post<dynamic>(
         ApiEndpoints.helpdeskDepartmentsActive,
         retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
       );
@@ -1381,8 +1382,8 @@ class ChatApiService {
 
   /// Get all helpdesk departments (Admin only).
   Future<List<HelpdeskDepartmentEntry>> getAllHelpdeskDepartments() async {
-    final response = await _client.get<Map<String, dynamic>>(
-      ApiEndpoints.helpdeskDepartments,
+    final response = await _client.post<Map<String, dynamic>>(
+      ApiEndpoints.helpdeskDepartmentsList,
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
 
@@ -1497,9 +1498,9 @@ class ChatApiService {
     if (normalizedUser.isEmpty) throw ApiException('User is required');
 
     try {
-      final response = await _client.get<dynamic>(
-        '${ApiEndpoints.helpdeskDepartments}/$deptId/permissions',
-        queryParameters: {'user': normalizedUser},
+      final response = await _client.post<dynamic>(
+        '${ApiEndpoints.helpdeskDepartments}/$deptId/permissions/list',
+        data: {'user': normalizedUser},
         retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
       );
       if (!response.isSuccessful) {
@@ -1542,7 +1543,7 @@ class ChatApiService {
   /// Get departments accessible to the current user, with per-department role.
   Future<List<HelpdeskDepartmentEntry>> getUserAccessibleDepartments() async {
     try {
-      final response = await _client.get<dynamic>(
+      final response = await _client.post<dynamic>(
         ApiEndpoints.helpdeskUserDepartments,
         retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
       );
@@ -1567,9 +1568,9 @@ class ChatApiService {
     final normalizedUser = user.trim();
     if (normalizedUser.isEmpty) throw ApiException('User is required');
 
-    final response = await _client.get<Map<String, dynamic>>(
-      ApiEndpoints.helpdeskDepartments,
-      queryParameters: {'user': normalizedUser},
+    final response = await _client.post<Map<String, dynamic>>(
+      ApiEndpoints.helpdeskDepartmentsList,
+      data: {'user': normalizedUser},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
     if (!response.isSuccessful) {
@@ -1605,9 +1606,9 @@ class ChatApiService {
     }
 
     try {
-      final response = await _client.get<dynamic>(
-        ApiEndpoints.helpdeskUsers,
-        queryParameters: {
+      final response = await _client.post<dynamic>(
+        ApiEndpoints.helpdeskUsersList,
+        data: {
           if (normalizedDepartment != null && normalizedDepartment.isNotEmpty)
             'department': normalizedDepartment,
         },
@@ -2272,9 +2273,9 @@ class ChatApiService {
   /// Poll for the server response to a password reset request
   /// Returns null when still pending, or the response string when complete
   Future<String?> getPasswordResetStatus(String user) async {
-    final response = await _client.get<Map<String, dynamic>>(
+    final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.resetPasswordStatus,
-      queryParameters: {'user': user},
+      data: {'user': user},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 15)),
     );
     if (!response.isSuccessful) return null;
@@ -2384,9 +2385,9 @@ class ChatApiService {
 
   /// Poll for reset-password-by-username response by request id.
   Future<String?> getResetPasswordByUsernameStatus(String userRequested, int requestId) async {
-    final response = await _client.get<Map<String, dynamic>>(
+    final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.resetPasswordByUsernameStatus,
-      queryParameters: {'user': userRequested, 'requestId': requestId},
+      data: {'user': userRequested, 'requestId': requestId},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 15)),
     );
     if (!response.isSuccessful) return null;
@@ -2403,9 +2404,9 @@ class ChatApiService {
 
   /// List ALL community groups (including disabled) — super-admin only.
   Future<List<Map<String, dynamic>>> adminListCommunityGroups(String user) async {
-    final response = await _client.get<Map<String, dynamic>>(
-      ApiEndpoints.adminCommunityGroups,
-      queryParameters: {'user': user},
+    final response = await _client.post<Map<String, dynamic>>(
+      ApiEndpoints.adminCommunityGroupsList,
+      data: {'user': user},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
     if (!response.isSuccessful) {
@@ -2527,9 +2528,9 @@ class ChatApiService {
 
   /// List ALL secretaries — super-admin only.
   Future<List<Map<String, dynamic>>> adminListSecretaries(String user) async {
-    final response = await _client.get<Map<String, dynamic>>(
-      ApiEndpoints.adminSecretaries,
-      queryParameters: {'user': user},
+    final response = await _client.post<Map<String, dynamic>>(
+      ApiEndpoints.adminSecretariesList,
+      data: {'user': user},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
     if (!response.isSuccessful) {
@@ -2555,8 +2556,8 @@ class ChatApiService {
   }) async {
     final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.adminSecretaries,
-      queryParameters: {'user': user},
       data: {
+        'user': user,
         'DepartName': departName,
         'PhoneNumber': phoneNumber,
         'Status': status,
@@ -2580,8 +2581,8 @@ class ChatApiService {
   }) async {
     final response = await _client.put<Map<String, dynamic>>(
       '${ApiEndpoints.adminSecretaries}/$id',
-      queryParameters: {'user': user},
       data: {
+        'user': user,
         'DepartName': departName,
         'PhoneNumber': phoneNumber,
         'Status': status,
@@ -2599,7 +2600,7 @@ class ChatApiService {
   Future<void> adminDeleteSecretary(String user, int id) async {
     final response = await _client.delete<Map<String, dynamic>>(
       '${ApiEndpoints.adminSecretaries}/$id',
-      queryParameters: {'user': user},
+      data: {'user': user},
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
     );
     if (!response.isSuccessful) {

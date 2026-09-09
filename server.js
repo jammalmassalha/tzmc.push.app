@@ -27,7 +27,7 @@ const { registerShuttleController } = require('./backend/controllers/shuttle.con
 const { registerHelpdeskController } = require('./backend/controllers/helpdesk.controller');
 const { createAccreditationAgentController } = require('./backend/controllers/accreditation-agent.controller');
 const { extractUsersUploadIdentityCandidatesFromFiles } = require('./backend/utils/users-upload-identity');
-const { registerReadRoute, registerPostReadAlias } = require('./backend/utils/read-route');
+const { registerReadRoute, registerReadRouteWithPostAlias } = require('./backend/utils/read-route');
 const {
     createSheetIntegrationServiceFromEnv,
     createMysqlLogsServiceFromEnv,
@@ -6547,9 +6547,10 @@ function toBooleanValue(value) {
 }
 
 // GET /admin/community-groups — list all groups (including disabled)
-registerReadRoute(
+registerReadRouteWithPostAlias(
     app,
     ['/admin/community-groups', '/notify/admin/community-groups'],
+    ['/admin/community-groups/list', '/notify/admin/community-groups/list'],
     requireAuthorizedUser({
         required: true,
         candidateKeys: ['user'],
@@ -7111,9 +7112,10 @@ app.get(
 );
 
 // GET /api/admin/secretaries - list all secretaries
-registerReadRoute(
+registerReadRouteWithPostAlias(
     app,
     ['/api/admin/secretaries', '/notify/api/admin/secretaries'],
+    ['/api/admin/secretaries/list', '/notify/api/admin/secretaries/list'],
     requireAuthorizedUser({
         required: true,
         candidateKeys: ['user'],
@@ -7248,7 +7250,7 @@ registerReadRoute(app, ['/message-activities', '/notify/message-activities'], as
     }
 });
 
-registerReadRoute(app, ['/webhook-registry', '/notify/webhook-registry'], (_req, res) => {
+registerReadRouteWithPostAlias(app, ['/webhook-registry', '/notify/webhook-registry'], ['/webhook-registry/list', '/notify/webhook-registry/list'], (_req, res) => {
     res.json({
         webhooks: webhookRegistryService.list()
     });
