@@ -67,6 +67,12 @@ export interface ChatMessage {
   forwardedFrom?: string | null;
   forwardedFromName?: string | null;
   userReceivedTime?: number | null;
+  /** Sender dispatch time (epoch ms) — authoritative chronological key. */
+  sentDateTime?: number | null;
+  /** Server ingest time (epoch ms). */
+  receiveDateTime?: number | null;
+  /** Recipient read time (epoch ms). */
+  readDateTime?: number | null;
 }
 
 export interface ChatListItem {
@@ -118,6 +124,12 @@ export interface IncomingServerMessage {
   forwardedFrom?: string;
   forwardedFromName?: string;
   userReceivedTime?: number;
+  /** Sender dispatch time — epoch ms or ISO 8601 string. */
+  sentDateTime?: number | string | null;
+  /** Server ingest time — epoch ms or ISO 8601 string. */
+  receiveDateTime?: number | string | null;
+  /** Recipient read time — epoch ms or ISO 8601 string. */
+  readDateTime?: number | string | null;
 }
 
 export interface ReplyPayload {

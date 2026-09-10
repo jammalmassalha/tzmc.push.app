@@ -286,6 +286,16 @@ class ChatMessage extends Equatable {
   final String? forwardedFromName;
   final int? userReceivedTime;
 
+  /// Sender-side dispatch time. Authoritative key for chronological ordering
+  /// of messages inside a conversation (see [effectiveSentTime]).
+  final DateTime? sentDateTime;
+
+  /// Server ingest time.
+  final DateTime? receiveDateTime;
+
+  /// Recipient read time.
+  final DateTime? readDateTime;
+
   const ChatMessage({
     required this.id,
     required this.messageId,
@@ -311,7 +321,35 @@ class ChatMessage extends Equatable {
     this.forwardedFrom,
     this.forwardedFromName,
     this.userReceivedTime,
+    this.sentDateTime,
+    this.receiveDateTime,
+    this.readDateTime,
   });
+
+  /// Epoch milliseconds used for strict chronological ordering:
+  /// prefers [sentDateTime] and falls back to the legacy [timestamp].
+  int get effectiveSentTime => sentDateTime?.millisecondsSinceEpoch ?? timestamp;
+
+  /// Parses a flexible timestamp value (ISO 8601 string, epoch milliseconds as
+  /// int/num/string, or DateTime) into a UTC [DateTime]. Returns null when the
+  /// value is missing or unparseable.
+  static DateTime? parseFlexibleDateTime(dynamic value) {
+    if (value == null) return null;
+    if (value is DateTime) return value.toUtc();
+    if (value is num) {
+      final ms = value.toInt();
+      if (ms <= 0) return null;
+      return DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true);
+    }
+    final text = value.toString().trim();
+    if (text.isEmpty) return null;
+    final numeric = int.tryParse(text);
+    if (numeric != null) {
+      if (numeric <= 0) return null;
+      return DateTime.fromMillisecondsSinceEpoch(numeric, isUtc: true);
+    }
+    return DateTime.tryParse(text)?.toUtc();
+  }
 
   @override
   List<Object?> get props => [
@@ -339,6 +377,9 @@ class ChatMessage extends Equatable {
         forwardedFrom,
         forwardedFromName,
         userReceivedTime,
+        sentDateTime,
+        receiveDateTime,
+        readDateTime,
       ];
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) {
@@ -384,6 +425,9 @@ class ChatMessage extends Equatable {
       forwardedFrom: json['forwardedFrom'] as String?,
       forwardedFromName: json['forwardedFromName'] as String?,
       userReceivedTime: json['userReceivedTime'] as int?,
+      sentDateTime: parseFlexibleDateTime(json['sentDateTime']),
+      receiveDateTime: parseFlexibleDateTime(json['receiveDateTime']),
+      readDateTime: parseFlexibleDateTime(json['readDateTime']),
     );
   }
 
@@ -412,6 +456,9 @@ class ChatMessage extends Equatable {
         'forwardedFrom': forwardedFrom,
         'forwardedFromName': forwardedFromName,
         'userReceivedTime': userReceivedTime,
+        'sentDateTime': sentDateTime?.millisecondsSinceEpoch,
+        'receiveDateTime': receiveDateTime?.millisecondsSinceEpoch,
+        'readDateTime': readDateTime?.millisecondsSinceEpoch,
       };
 
   /// Create a copy with updated fields
@@ -440,6 +487,9 @@ class ChatMessage extends Equatable {
     String? forwardedFrom,
     String? forwardedFromName,
     int? userReceivedTime,
+    DateTime? sentDateTime,
+    DateTime? receiveDateTime,
+    DateTime? readDateTime,
   }) {
     return ChatMessage(
       id: id ?? this.id,
@@ -466,12 +516,29 @@ class ChatMessage extends Equatable {
       forwardedFrom: forwardedFrom ?? this.forwardedFrom,
       forwardedFromName: forwardedFromName ?? this.forwardedFromName,
       userReceivedTime: userReceivedTime ?? this.userReceivedTime,
+      sentDateTime: sentDateTime ?? this.sentDateTime,
+      receiveDateTime: receiveDateTime ?? this.receiveDateTime,
+      readDateTime: readDateTime ?? this.readDateTime,
     );
   }
 }
 
 /// Message direction
 enum MessageDirection { incoming, outgoing }
+
+/// Comparator ordering messages strictly chronologically by their effective
+/// sent time ([ChatMessage.effectiveSentTime], i.e. sentDateTime ASC with a
+/// legacy timestamp fallback). Ties break on messageId for stability.
+int compareMessagesBySentTimeAsc(ChatMessage a, ChatMessage b) {
+  final byTime = a.effectiveSentTime.compareTo(b.effectiveSentTime);
+  if (byTime != 0) return byTime;
+  return a.messageId.compareTo(b.messageId);
+}
+
+/// Reverse-chronological variant of [compareMessagesBySentTimeAsc], used by
+/// the in-memory store which keeps chat lists newest-first.
+int compareMessagesBySentTimeDesc(ChatMessage a, ChatMessage b) =>
+    compareMessagesBySentTimeAsc(b, a);
 
 /// Chat list item for displaying in the chat list
 class ChatListItem extends Equatable {
@@ -542,6 +609,15 @@ class IncomingServerMessage extends Equatable {
   final String? forwardedFromName;
   final int? userReceivedTime;
 
+  /// Sender dispatch time in epoch ms (parsed from ISO 8601 or epoch values).
+  final int? sentDateTime;
+
+  /// Server ingest time in epoch ms.
+  final int? receiveDateTime;
+
+  /// Recipient read time in epoch ms.
+  final int? readDateTime;
+
   const IncomingServerMessage({
     this.messageId,
     this.sender,
@@ -579,6 +655,9 @@ class IncomingServerMessage extends Equatable {
     this.forwardedFrom,
     this.forwardedFromName,
     this.userReceivedTime,
+    this.sentDateTime,
+    this.receiveDateTime,
+    this.readDateTime,
   });
 
   @override
@@ -619,6 +698,9 @@ class IncomingServerMessage extends Equatable {
         forwardedFrom,
         forwardedFromName,
         userReceivedTime,
+        sentDateTime,
+        receiveDateTime,
+        readDateTime,
       ];
 
   factory IncomingServerMessage.fromJson(Map<String, dynamic> json) {
@@ -698,6 +780,12 @@ class IncomingServerMessage extends Equatable {
       forwardedFrom: asString(json['forwardedFrom']),
       forwardedFromName: asString(json['forwardedFromName']),
       userReceivedTime: asInt(json['userReceivedTime']),
+      sentDateTime:
+          ChatMessage.parseFlexibleDateTime(json['sentDateTime'])?.millisecondsSinceEpoch,
+      receiveDateTime:
+          ChatMessage.parseFlexibleDateTime(json['receiveDateTime'])?.millisecondsSinceEpoch,
+      readDateTime:
+          ChatMessage.parseFlexibleDateTime(json['readDateTime'])?.millisecondsSinceEpoch,
     );
   }
 
@@ -738,6 +826,9 @@ class IncomingServerMessage extends Equatable {
         if (forwardedFrom != null) 'forwardedFrom': forwardedFrom,
         if (forwardedFromName != null) 'forwardedFromName': forwardedFromName,
         if (userReceivedTime != null) 'userReceivedTime': userReceivedTime,
+        if (sentDateTime != null) 'sentDateTime': sentDateTime,
+        if (receiveDateTime != null) 'receiveDateTime': receiveDateTime,
+        if (readDateTime != null) 'readDateTime': readDateTime,
       };
 }
 

@@ -40,6 +40,10 @@ class ReplyPayload extends Equatable {
   /// this device can skip re-applying its own message.
   final String? deviceId;
 
+  /// Sender-side dispatch time as an ISO 8601 string. Recorded by the server
+  /// in the `sentDateTime` column and used for chronological message ordering.
+  final String? sentDateTime;
+
   const ReplyPayload({
     required this.user,
     required this.senderName,
@@ -66,6 +70,7 @@ class ReplyPayload extends Equatable {
     this.forwardedFrom,
     this.forwardedFromName,
     this.deviceId,
+    this.sentDateTime,
   });
 
   @override
@@ -95,6 +100,7 @@ class ReplyPayload extends Equatable {
         forwardedFrom,
         forwardedFromName,
         deviceId,
+        sentDateTime,
       ];
 
   Map<String, dynamic> toJson() => {
@@ -123,6 +129,7 @@ class ReplyPayload extends Equatable {
         if (forwardedFrom != null) 'forwardedFrom': forwardedFrom,
         if (forwardedFromName != null) 'forwardedFromName': forwardedFromName,
         if (deviceId != null && deviceId!.isNotEmpty) 'deviceId': deviceId,
+        if (sentDateTime != null && sentDateTime!.isNotEmpty) 'sentDateTime': sentDateTime,
       };
 }
 

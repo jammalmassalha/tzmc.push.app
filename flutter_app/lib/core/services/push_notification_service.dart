@@ -29,6 +29,7 @@ import '../../features/auth/presentation/auth_state.dart';
 import '../../features/chat/presentation/message_screen.dart';
 import '../../firebase_options.dart';
 import '../api/chat_api_service.dart';
+import '../models/chat_models.dart' show ChatMessage;
 import '../navigation/root_navigator.dart';
 import '../services/chat_store_service.dart';
 
@@ -1484,7 +1485,11 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
         jsonDecode(existing) as Map<String, dynamic>;
 
     final prev = pending[chatId] as Map<String, dynamic>?;
-    final ts = int.tryParse(data['timestamp']?.toString() ?? '') ??
+    // Prefer the sender dispatch time so delta-fetch cursors reflect the true
+    // chronological position of the message, not its delivery time.
+    final ts = ChatMessage.parseFlexibleDateTime(data['sentDateTime'])
+            ?.millisecondsSinceEpoch ??
+        int.tryParse(data['timestamp']?.toString() ?? '') ??
         DateTime.now().millisecondsSinceEpoch;
     final messageId = (data['messageId'] ?? '').toString().trim();
     final prevPendingSince = prev?['pendingSince'];

@@ -551,7 +551,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // the working set bounded while the full history stays on disk.
     for (final chatId in result.keys) {
       final msgs = result[chatId]!;
-      msgs.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+      msgs.sort(compareMessagesBySentTimeDesc);
       if (msgs.length > maxMessagesPerChat) {
         result[chatId] = msgs.sublist(0, maxMessagesPerChat);
       }
@@ -575,7 +575,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
       final kept = entry.value.where((message) => message.timestamp > deletedAt).toList();
       if (kept.isNotEmpty) {
-        kept.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+        kept.sort(compareMessagesBySentTimeDesc);
         filtered[entry.key] = kept;
       }
     }
@@ -1508,7 +1508,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // Sort each chat descending by timestamp and trim to the per-chat cap.
     for (final entry in newMessagesByChat.entries) {
       final msgs = entry.value;
-      msgs.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+      msgs.sort(compareMessagesBySentTimeDesc);
       if (msgs.length > maxMessagesPerChat) {
         newMessagesByChat[entry.key] = msgs.sublist(0, maxMessagesPerChat);
       }
@@ -1945,7 +1945,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final senderDisplayName = rawGroupSenderName.isNotEmpty
         ? getDisplayName(rawGroupSenderName)
         : (senderIsGroupId ? null : getDisplayName(sender));
-    final timestamp = parseInt(data['timestamp']) ?? DateTime.now().millisecondsSinceEpoch;
+    // Prefer the explicit sender dispatch time from the payload; fall back to
+    // the legacy epoch-ms `timestamp`, then to receipt time. Without this, a
+    // notification tapped late is stamped with "now" and lands at the bottom
+    // of the chat instead of its true chronological position.
+    final sentDateTime = ChatMessage.parseFlexibleDateTime(data['sentDateTime']);
+    final timestamp = sentDateTime?.millisecondsSinceEpoch ??
+        parseInt(data['timestamp']) ??
+        DateTime.now().millisecondsSinceEpoch;
 
     final message = ChatMessage(
       id: messageId,
@@ -1962,6 +1969,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       groupId: groupId,
       groupName: str(data['groupName']),
       groupType: groupType,
+      sentDateTime: sentDateTime ??
+          DateTime.fromMillisecondsSinceEpoch(timestamp, isUtc: true),
     );
 
     final isNew = _applyIncomingMessage(message);
@@ -2053,8 +2062,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _writeMessageThrough(applied);
     _recordSyncCursor(applied.timestamp);
 
-    // Sort by timestamp descending
-    chatMessages.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+    // Sort strictly by effective sent time (sentDateTime, fallback timestamp)
+    // descending so a message delivered late — e.g. via an older notification
+    // tap — slots into its correct chronological position instead of the tail.
+    chatMessages.sort(compareMessagesBySentTimeDesc);
 
     // Trim to max messages
     if (chatMessages.length > maxMessagesPerChat) {
@@ -2100,6 +2111,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // message is created locally with replyTo from state, but the server
       // echo carries the canonically stored reference fields).
       replyTo: existing.replyTo ?? incoming.replyTo,
+      // Lifecycle timestamps: keep the earliest known dispatch time and fill
+      // in receive/read times as they become known.
+      sentDateTime: existing.sentDateTime ?? incoming.sentDateTime,
+      receiveDateTime: existing.receiveDateTime ?? incoming.receiveDateTime,
+      readDateTime: existing.readDateTime ?? incoming.readDateTime,
     );
   }
 
@@ -2159,6 +2175,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       forwarded: forwarded,
       forwardedFrom: forwardedFrom,
       forwardedFromName: forwardedFromName,
+      sentDateTime: DateTime.fromMillisecondsSinceEpoch(timestamp, isUtc: true),
     );
 
     // Add to state optimistically
@@ -2185,6 +2202,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         forwardedFrom: forwardedFrom,
         forwardedFromName: forwardedFromName,
         deviceId: _transport.deviceId,
+        sentDateTime:
+            DateTime.fromMillisecondsSinceEpoch(timestamp, isUtc: true).toIso8601String(),
       );
       await _sendReply(payload);
 
@@ -2228,6 +2247,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       groupName: group.name,
       groupType: group.type,
       replyTo: replyTo,
+      sentDateTime: DateTime.fromMillisecondsSinceEpoch(timestamp, isUtc: true),
     );
 
     // Add to state optimistically
@@ -2268,6 +2288,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         replyToBody: replyTo?.body,
         replyToImageUrl: replyTo?.imageUrl,
         deviceId: _transport.deviceId,
+        sentDateTime:
+            DateTime.fromMillisecondsSinceEpoch(timestamp, isUtc: true).toIso8601String(),
       );
       await _sendReply(payload);
 
@@ -2759,7 +2781,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // matching against an existing optimistic outgoing message in the same
     // chat by body+timestamp window.
     final body = msg.body ?? '';
-    final ts = msg.timestamp ?? DateTime.now().millisecondsSinceEpoch;
+    final ts = msg.sentDateTime ?? msg.timestamp ?? DateTime.now().millisecondsSinceEpoch;
     // Scan only recent outgoing messages (chatMessages are sorted newest-first
     // by _applyIncomingMessage), bailing out as soon as we step outside the
     // 30s dedup window so the lookup stays O(k) instead of O(n) on long chats.
@@ -2837,6 +2859,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       forwarded: msg.forwarded ?? false,
       forwardedFrom: msg.forwardedFrom,
       forwardedFromName: msg.forwardedFromName,
+      sentDateTime: msg.sentDateTime != null
+          ? DateTime.fromMillisecondsSinceEpoch(msg.sentDateTime!, isUtc: true)
+          : DateTime.fromMillisecondsSinceEpoch(ts, isUtc: true),
+      receiveDateTime: msg.receiveDateTime != null
+          ? DateTime.fromMillisecondsSinceEpoch(msg.receiveDateTime!, isUtc: true)
+          : null,
+      readDateTime: msg.readDateTime != null
+          ? DateTime.fromMillisecondsSinceEpoch(msg.readDateTime!, isUtc: true)
+          : null,
     );
   }
 
@@ -2946,12 +2977,19 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     if (msg.messageIds == null || msg.messageIds!.isEmpty) return;
 
+    final readAtDateTime = DateTime.fromMillisecondsSinceEpoch(
+      msg.readAt ?? DateTime.now().millisecondsSinceEpoch,
+      isUtc: true,
+    );
     final newMessagesByChat = <String, List<ChatMessage>>{};
 
     for (final entry in state.messagesByChat.entries) {
       final chatMessages = entry.value.map((m) {
         if (msg.messageIds!.contains(m.messageId)) {
-          return m.copyWith(deliveryStatus: DeliveryStatus.read);
+          return m.copyWith(
+            deliveryStatus: DeliveryStatus.read,
+            readDateTime: m.readDateTime ?? readAtDateTime,
+          );
         }
         return m;
       }).toList();

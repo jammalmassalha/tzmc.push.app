@@ -6235,7 +6235,8 @@ export class ChatStoreService {
       const incomingBody = this.resolveIncomingMessageBody(incoming);
       const incomingImageUrl = this.resolveIncomingImageUrl(incoming);
       const incomingFileUrl = this.resolveIncomingFileUrl(incoming);
-      const incomingTimestampRaw = Number(incoming.timestamp ?? Date.now());
+      const incomingSentDateTime = this.parseFlexibleEpochMs(incoming.sentDateTime);
+      const incomingTimestampRaw = Number(incomingSentDateTime ?? incoming.timestamp ?? Date.now());
       const incomingTimestamp = Number.isFinite(incomingTimestampRaw) && incomingTimestampRaw > 0
         ? incomingTimestampRaw
         : Date.now();
@@ -6375,6 +6376,9 @@ export class ChatStoreService {
         fileUrl: incomingFileUrl,
         direction: isOutgoingFromCurrentUser ? 'outgoing' : 'incoming',
         timestamp: incomingTimestamp,
+        sentDateTime: incomingSentDateTime ?? incomingTimestamp,
+        receiveDateTime: this.parseFlexibleEpochMs(incoming.receiveDateTime),
+        readDateTime: this.parseFlexibleEpochMs(incoming.readDateTime),
         deliveryStatus: 'delivered',
         groupId: normalizedGroupId || null,
         groupName: incoming.groupName ?? null,
@@ -6588,7 +6592,8 @@ export class ChatStoreService {
     const incomingBody = this.resolveIncomingMessageBody(incoming);
     const incomingImageUrl = this.resolveIncomingImageUrl(incoming);
     const incomingFileUrl = this.resolveIncomingFileUrl(incoming);
-    const incomingTimestampRaw = Number(incoming.timestamp ?? Date.now());
+    const incomingSentDateTime = this.parseFlexibleEpochMs(incoming.sentDateTime);
+    const incomingTimestampRaw = Number(incomingSentDateTime ?? incoming.timestamp ?? Date.now());
     const incomingTimestamp = Number.isFinite(incomingTimestampRaw) && incomingTimestampRaw > 0
       ? incomingTimestampRaw
       : Date.now();
@@ -6679,6 +6684,9 @@ export class ChatStoreService {
       fileUrl: incomingFileUrl,
       direction: isOutgoingFromCurrentUser ? 'outgoing' : 'incoming',
       timestamp: incomingTimestamp,
+      sentDateTime: incomingSentDateTime ?? incomingTimestamp,
+      receiveDateTime: this.parseFlexibleEpochMs(incoming.receiveDateTime),
+      readDateTime: this.parseFlexibleEpochMs(incoming.readDateTime),
       deliveryStatus: 'delivered',
       groupId: normalizedGroupId,
       groupName: incoming.groupName ?? null,
@@ -7587,6 +7595,23 @@ export class ChatStoreService {
     this.schedulePersist();
   }
 
+  private parseFlexibleEpochMs(value: number | string | null | undefined): number | null {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+    const numeric = typeof value === 'number' ? value : Number(value);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric;
+    }
+    if (typeof value === 'string') {
+      const parsed = Date.parse(value);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+    return null;
+  }
+
   private findMessageInsertIndexByTimestamp(list: ChatMessage[], timestamp: number): number {
     let low = 0;
     let high = list.length;
@@ -8284,6 +8309,9 @@ export class ChatStoreService {
           messageId: String(record.messageId || this.generateId('msg')),
           body: resolvedBody,
           timestamp: Number(record.timestamp ?? Date.now()),
+          sentDateTime: this.parseFlexibleEpochMs(record.sentDateTime),
+          receiveDateTime: this.parseFlexibleEpochMs(record.receiveDateTime),
+          readDateTime: this.parseFlexibleEpochMs(record.readDateTime),
           direction: record.direction === 'incoming' ? 'incoming' : 'outgoing',
           deliveryStatus: record.deliveryStatus ?? 'sent',
           groupId: normalizedGroupId,
@@ -8305,7 +8333,9 @@ export class ChatStoreService {
       }
 
       for (const list of Object.values(messageMap)) {
-        list.sort((a, b) => a.timestamp - b.timestamp);
+        list.sort(
+          (a, b) => (a.sentDateTime ?? a.timestamp) - (b.sentDateTime ?? b.timestamp)
+        );
       }
 
       this.unreadByChat.set(unreadByChat);
