@@ -305,12 +305,16 @@ function registerAuthController(app, deps = {}) {
                     expiresInSeconds: AUTH_CODE_TTL_SECONDS
                 });
             } catch (error) {
-                const reason = error && error.message ? String(error.message) : 'Unable to send verification code';
+                const rawReason = error && error.message ? String(error.message) : '';
+                const isAbort = (error && error.name === 'AbortError') || /abort/i.test(rawReason);
+                const reason = isAbort || !rawReason
+                    ? 'The verification service timed out. Please try again.'
+                    : rawReason;
                 if (consumedUserRateLimit && typeof rollbackRateLimitEntry === 'function' && requestedUser) {
                     rollbackRateLimitEntry(authCodeRequestRateLimitByUser, requestedUser);
                 }
-                console.error('[AUTH CODE] Failed to send verification code for user', requestedUser, 'error:', reason, error && error.stack ? error.stack : '');
-                return res.status(502).json({ status: 'error', message: reason });
+                console.error('[AUTH CODE] Failed to send verification code for user', requestedUser, 'error:', rawReason || reason, error && error.stack ? error.stack : '');
+                return res.status(isAbort ? 504 : 502).json({ status: 'error', message: reason });
             }
         }
     );
@@ -459,9 +463,13 @@ function registerAuthController(app, deps = {}) {
                     csrfToken: sessionToken.csrfToken
                 });
             } catch (error) {
-                const reason = error && error.message ? String(error.message) : 'Unable to verify code';
-                console.error('[AUTH CODE] Failed to verify code:', reason);
-                return res.status(502).json({ status: 'error', message: reason });
+                const rawReason = error && error.message ? String(error.message) : '';
+                const isAbort = (error && error.name === 'AbortError') || /abort/i.test(rawReason);
+                const reason = isAbort || !rawReason
+                    ? 'The verification service timed out. Please try again.'
+                    : rawReason;
+                console.error('[AUTH CODE] Failed to verify code:', rawReason || reason);
+                return res.status(isAbort ? 504 : 502).json({ status: 'error', message: reason });
             }
         }
     );

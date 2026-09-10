@@ -3072,6 +3072,72 @@ function generateAuthCode() {
     return String(min + Math.floor(Math.random() * (max - min + 1)));
 }
 
+// ── Local auth-code fallback store ───────────────────────────────────────────
+// The Google Apps Script sheet write can time out (fetchWithRetry aborts after
+// its timeout window on cold Apps Script executions), which previously failed
+// the whole request-code call with "This operation was aborted" even though
+// the SMS was dispatched. Codes are always mirrored here (hashed, TTL-bound,
+// attempt-limited) so verification still succeeds when the sheet is slow/down.
+const localAuthCodeStore = new Map(); // user -> { hash, salt, expiresAt, attemptsLeft }
+const AUTH_CODE_LOCAL_MAX_ATTEMPTS = 5;
+const AUTH_CODE_LOCAL_STORE_MAX_ENTRIES = 5000;
+
+function hashAuthCodeForStore(code, salt) {
+    return crypto.createHash('sha256').update(`${salt}:${code}`).digest('hex');
+}
+
+function pruneLocalAuthCodeStore() {
+    const now = Date.now();
+    for (const [user, entry] of localAuthCodeStore) {
+        if (!entry || entry.expiresAt <= now || entry.attemptsLeft <= 0) {
+            localAuthCodeStore.delete(user);
+        }
+    }
+    // Hard cap so the map can never grow unbounded under abuse.
+    while (localAuthCodeStore.size > AUTH_CODE_LOCAL_STORE_MAX_ENTRIES) {
+        const oldestKey = localAuthCodeStore.keys().next().value;
+        if (oldestKey === undefined) break;
+        localAuthCodeStore.delete(oldestKey);
+    }
+}
+
+function storeAuthCodeLocally(user, code) {
+    const normalizedUser = normalizeUserCandidate(user);
+    const normalizedCode = normalizeAuthCode(code);
+    if (!SESSION_USER_PATTERN.test(normalizedUser) || !AUTH_CODE_PATTERN.test(normalizedCode)) return;
+    pruneLocalAuthCodeStore();
+    const salt = crypto.randomBytes(16).toString('hex');
+    localAuthCodeStore.set(normalizedUser, {
+        salt,
+        hash: hashAuthCodeForStore(normalizedCode, salt),
+        expiresAt: Date.now() + AUTH_CODE_TTL_SECONDS * 1000,
+        attemptsLeft: AUTH_CODE_LOCAL_MAX_ATTEMPTS
+    });
+}
+
+function verifyAuthCodeLocally(user, code) {
+    const normalizedUser = normalizeUserCandidate(user);
+    const normalizedCode = normalizeAuthCode(code);
+    if (!SESSION_USER_PATTERN.test(normalizedUser) || !AUTH_CODE_PATTERN.test(normalizedCode)) return false;
+    const entry = localAuthCodeStore.get(normalizedUser);
+    if (!entry) return false;
+    if (entry.expiresAt <= Date.now() || entry.attemptsLeft <= 0) {
+        localAuthCodeStore.delete(normalizedUser);
+        return false;
+    }
+    entry.attemptsLeft -= 1;
+    const candidate = Buffer.from(hashAuthCodeForStore(normalizedCode, entry.salt), 'hex');
+    const expected = Buffer.from(entry.hash, 'hex');
+    const matched = candidate.length === expected.length && crypto.timingSafeEqual(candidate, expected);
+    if (matched) {
+        // Single-use: a verified code can never be replayed.
+        localAuthCodeStore.delete(normalizedUser);
+    } else if (entry.attemptsLeft <= 0) {
+        localAuthCodeStore.delete(normalizedUser);
+    }
+    return matched;
+}
+
 function escapeXmlValue(value) {
     return String(value || '')
         .replace(/&/g, '&amp;')
@@ -3221,27 +3287,39 @@ async function setAuthCodeOnSubscribeSheet(user, code) {
         return;
     }
 
-    const response = await fetchWithRetry(
-        GOOGLE_SHEET_URL,
-        {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                action: 'set_login_code',
-                user: normalizedUser,
-                code: normalizedCode,
-                ttlSeconds: AUTH_CODE_TTL_SECONDS,
-                token: AUTH_CODE_SHEET_TOKEN
-            })
-        },
-        { timeoutMs: 15000, retries: 2, backoffMs: 600 }
-    );
-    if (!response.ok) {
-        throw new Error(`Failed to persist verification code (${response.status})`);
-    }
-    const payload = await response.json();
-    if (!payload || payload.result !== 'success') {
-        throw new Error(payload && payload.message ? payload.message : 'Sheet update failed');
+    // Always mirror the code locally FIRST so a slow/aborted sheet write can
+    // never invalidate the code the user is about to receive by SMS.
+    storeAuthCodeLocally(normalizedUser, normalizedCode);
+
+    try {
+        const response = await fetchWithRetry(
+            GOOGLE_SHEET_URL,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'set_login_code',
+                    user: normalizedUser,
+                    code: normalizedCode,
+                    ttlSeconds: AUTH_CODE_TTL_SECONDS,
+                    token: AUTH_CODE_SHEET_TOKEN
+                })
+            },
+            { timeoutMs: 15000, retries: 2, backoffMs: 600 }
+        );
+        if (!response.ok) {
+            throw new Error(`Failed to persist verification code (${response.status})`);
+        }
+        const payload = await response.json();
+        if (!payload || payload.result !== 'success') {
+            throw new Error(payload && payload.message ? payload.message : 'Sheet update failed');
+        }
+    } catch (error) {
+        // Non-fatal: the code is verifiable from the local fallback store.
+        // Previously this bubbled the raw AbortError ("This operation was
+        // aborted") to the client even though the SMS was sent successfully.
+        const reason = error && error.message ? String(error.message) : 'unknown error';
+        console.warn(`[AUTH CODE] Sheet persistence failed for ***${normalizedUser.slice(-4)} (using local fallback): ${reason}`);
     }
 }
 
@@ -3258,25 +3336,50 @@ async function verifyAuthCodeFromSubscribeSheet(user, code) {
         return normalizedCode === staticCode;
     }
 
-    const response = await fetchWithRetry(
-        GOOGLE_SHEET_URL,
-        {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                action: 'verify_login_code',
-                user: normalizedUser,
-                code: normalizedCode,
-                token: AUTH_CODE_SHEET_TOKEN
-            })
-        },
-        { timeoutMs: 15000, retries: 1, backoffMs: 500 }
-    );
-    if (!response.ok) {
-        throw new Error(`Failed to verify code (${response.status})`);
+    let sheetError = null;
+    try {
+        const response = await fetchWithRetry(
+            GOOGLE_SHEET_URL,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'verify_login_code',
+                    user: normalizedUser,
+                    code: normalizedCode,
+                    token: AUTH_CODE_SHEET_TOKEN
+                })
+            },
+            { timeoutMs: 15000, retries: 1, backoffMs: 500 }
+        );
+        if (!response.ok) {
+            throw new Error(`Failed to verify code (${response.status})`);
+        }
+        const payload = await response.json();
+        if (payload && payload.result === 'success' && payload.verified === true) {
+            // Consume any mirrored local entry so the code is single-use everywhere.
+            localAuthCodeStore.delete(normalizedUser);
+            return true;
+        }
+    } catch (error) {
+        sheetError = error;
     }
-    const payload = await response.json();
-    return Boolean(payload && payload.result === 'success' && payload.verified === true);
+
+    // Fallback: the sheet write may have failed/timed out at request-code time
+    // (or the verify call itself timed out) — the local mirror still holds the
+    // code that was sent by SMS, so honor it.
+    if (verifyAuthCodeLocally(normalizedUser, normalizedCode)) {
+        if (sheetError) {
+            const reason = sheetError && sheetError.message ? String(sheetError.message) : 'unknown error';
+            console.warn(`[AUTH CODE] Sheet verification unavailable for ***${normalizedUser.slice(-4)} (verified via local fallback): ${reason}`);
+        }
+        return true;
+    }
+
+    if (sheetError) {
+        throw sheetError;
+    }
+    return false;
 }
 
 async function ensureRequestedUserCanAuthenticate(requestedUser) {
