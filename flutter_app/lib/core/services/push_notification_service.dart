@@ -126,6 +126,9 @@ class PushNotificationService {
   // Single-flight guard: prevents two concurrent _getAndRegisterToken() calls
   // from spawning interleaved APNs polling loops.
   bool _getAndRegisterTokenInProgress = false;
+  // Set once [initialize] has run so repeated calls don't re-subscribe the
+  // FCM listeners.
+  bool _initialized = false;
   StreamSubscription? _tokenRefreshSubscription;
   StreamSubscription? _messageSubscription;
 
@@ -140,6 +143,11 @@ class PushNotificationService {
   /// before the system dialog appears (and a "open settings" fallback if
   /// the user has previously denied the permission).
   Future<void> initialize() async {
+    // Idempotency guard: initialize() may be invoked both by the AI
+    // initialization screen (right after OTP login) and by ChatShellScreen on
+    // mount. Re-running it would duplicate the FCM listeners.
+    if (_initialized) return;
+    _initialized = true;
     try {
       // Firebase is initialized in main() with platform-specific
       // [DefaultFirebaseOptions]. Re-calling initializeApp here is safe
@@ -194,6 +202,8 @@ class PushNotificationService {
 
       debugPrint('[PushNotificationService] Initialized successfully');
     } catch (e) {
+      // Allow a later call to retry a failed initialization.
+      _initialized = false;
       debugPrint('[PushNotificationService] Initialization error: $e');
     }
   }
@@ -1415,6 +1425,7 @@ class PushNotificationService {
     _tokenRegistrationRetryTimer?.cancel();
     _tokenRefreshSubscription?.cancel();
     _messageSubscription?.cancel();
+    _initialized = false;
   }
 }
 
