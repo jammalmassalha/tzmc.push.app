@@ -288,8 +288,14 @@ function registerAuthController(app, deps = {}) {
                 }
 
                 const verificationCode = generateAuthCode();
-                await setAuthCodeOnSubscribeSheet(requestedUser, verificationCode);
-                await sendAuthCodeSms(requestedUser, verificationCode);
+                // Run the sheet write and the SMS send in parallel — running them
+                // sequentially could exceed the mobile client's request timeout
+                // even when both succeed, so the user would receive the SMS while
+                // the app showed a "server not responding" timeout error.
+                await Promise.all([
+                    setAuthCodeOnSubscribeSheet(requestedUser, verificationCode),
+                    sendAuthCodeSms(requestedUser, verificationCode)
+                ]);
 
                 return res.json({
                     status: 'success',
