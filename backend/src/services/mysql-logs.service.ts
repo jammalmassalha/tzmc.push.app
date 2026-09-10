@@ -325,6 +325,7 @@ export class MysqlLogsService {
   private communityGroupsTablesReady = false;
   private chatGroupsTablesReady = false;
   private messageActivitiesTableReady = false;
+  private messageActivitiesLifecycleReady = false;
   private serverStateTableReady = false;
   private flutterPushRegistrationDebugTableReady = false;
   private flutterPushRegistrationDebugActionColumnWidthReady = false;
@@ -1801,12 +1802,17 @@ export class MysqlLogsService {
           \`TargetMessageId\` VARCHAR(255) DEFAULT NULL,
           \`ActionTimestamp\` BIGINT NOT NULL,
           \`CreatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP,
+          \`sentDateTime\` DATETIME(3) NULL DEFAULT NULL,
+          \`receiveDateTime\` DATETIME(3) NULL DEFAULT NULL,
+          \`readDateTime\` DATETIME(3) NULL DEFAULT NULL,
           PRIMARY KEY (\`Id\`),
           INDEX \`idx_ma_sender\` (\`Sender\`(50)),
           INDEX \`idx_ma_action_type\` (\`ActionType\`),
           INDEX \`idx_ma_message_id\` (\`MessageId\`(100)),
           INDEX \`idx_ma_group_id\` (\`GroupId\`(100)),
-          INDEX \`idx_ma_created_at\` (\`CreatedAt\`)
+          INDEX \`idx_ma_created_at\` (\`CreatedAt\`),
+          INDEX \`idx_msg_chat_order\` (\`GroupId\`(100), \`Recipient\`(100), \`Sender\`(50), \`sentDateTime\`, \`Id\`),
+          INDEX \`idx_msg_status_lookup\` (\`Sender\`(50), \`Recipient\`(100), \`readDateTime\`, \`receiveDateTime\`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
       `);
       this.messageActivitiesTableReady = true;
@@ -1815,6 +1821,89 @@ export class MysqlLogsService {
       const message = String((err as { message?: string }).message || '');
       console.warn('[MYSQL] ensureMessageActivitiesTable warning:', message);
     }
+    await this.ensureMessageActivitiesLifecycleColumns();
+  }
+
+  /**
+   * Migration for pre-existing MessageActivities tables:
+   *   • Adds `sentDateTime` / `receiveDateTime` / `readDateTime` DATETIME(3)
+   *     lifecycle columns (safe no-op when they already exist).
+   *   • Backfills `sentDateTime` from the epoch-ms `ActionTimestamp` (falling
+   *     back to `CreatedAt`) so chronological ordering never drops history.
+   *   • Creates the critical indexes that stop full-table scans (and the
+   *     resulting `Lock wait timeout exceeded` errors) during bulk
+   *     delivery/read status updates:
+   *       - `idx_msg_messageid`     — instant `WHERE MessageId IN (...)` updates
+   *       - `idx_msg_chat_order`    — chronological chat retrieval w/o filesort
+   *       - `idx_msg_status_lookup` — bulk read/delivery watermark updates
+   * Status updates only touch receiveDateTime/readDateTime — never the
+   * `sentDateTime` / `ActionTimestamp` / `Id` sort keys.
+   */
+  private async ensureMessageActivitiesLifecycleColumns(): Promise<void> {
+    if (this.messageActivitiesLifecycleReady) return;
+    const columnStatements = [
+      `ALTER TABLE \`MessageActivities\` ADD COLUMN \`sentDateTime\` DATETIME(3) NULL DEFAULT NULL`,
+      `ALTER TABLE \`MessageActivities\` ADD COLUMN \`receiveDateTime\` DATETIME(3) NULL DEFAULT NULL`,
+      `ALTER TABLE \`MessageActivities\` ADD COLUMN \`readDateTime\` DATETIME(3) NULL DEFAULT NULL`
+    ];
+    for (const statement of columnStatements) {
+      try {
+        await this.pool.execute(statement);
+      } catch (err: unknown) {
+        const code = (err as { code?: string }).code;
+        const message = String((err as { message?: string }).message || '');
+        // ER_DUP_FIELDNAME = column already exists — expected on subsequent restarts.
+        if (code !== 'ER_DUP_FIELDNAME' && !message.includes('Duplicate column')) {
+          console.warn('[MYSQL] MessageActivities lifecycle column warning:', message);
+        }
+      }
+    }
+    try {
+      // Backfill legacy rows: ActionTimestamp is epoch milliseconds.
+      await this.pool.execute(
+        `UPDATE \`MessageActivities\`
+         SET \`sentDateTime\` = COALESCE(FROM_UNIXTIME(\`ActionTimestamp\` / 1000), \`CreatedAt\`, NOW(3))
+         WHERE \`sentDateTime\` IS NULL`
+      );
+    } catch (err: unknown) {
+      console.warn('[MYSQL] MessageActivities sentDateTime backfill warning:', String((err as { message?: string }).message || ''));
+    }
+    // Only create the dedicated MessageId index when no index already covers
+    // MessageId (fresh tables ship with `idx_ma_message_id` — avoid duplicates).
+    let hasMessageIdIndex = false;
+    try {
+      const [indexRows] = await this.pool.query(
+        `SHOW INDEX FROM \`MessageActivities\` WHERE \`Column_name\` = 'MessageId'`
+      );
+      hasMessageIdIndex = Array.isArray(indexRows) && indexRows.length > 0;
+    } catch (_idxErr: unknown) {
+      // SHOW INDEX failure — fall through and attempt creation (dup-safe below).
+    }
+    const indexStatements = [
+      // Fast chronological chat ordering without memory filesort.
+      `CREATE INDEX \`idx_msg_chat_order\` ON \`MessageActivities\` (\`GroupId\`(100), \`Recipient\`(100), \`Sender\`(50), \`sentDateTime\`, \`Id\`)`,
+      // Ultra-fast bulk read/delivery watermark updates.
+      `CREATE INDEX \`idx_msg_status_lookup\` ON \`MessageActivities\` (\`Sender\`(50), \`Recipient\`(100), \`readDateTime\`, \`receiveDateTime\`)`
+    ];
+    if (!hasMessageIdIndex) {
+      // Fast lookup by MessageId for instant status updates without table locks.
+      indexStatements.unshift(
+        `CREATE INDEX \`idx_msg_messageid\` ON \`MessageActivities\` (\`MessageId\`(100))`
+      );
+    }
+    for (const statement of indexStatements) {
+      try {
+        await this.pool.execute(statement);
+      } catch (err: unknown) {
+        const code = (err as { code?: string }).code;
+        const message = String((err as { message?: string }).message || '');
+        // ER_DUP_KEYNAME = index already exists — expected on subsequent restarts.
+        if (code !== 'ER_DUP_KEYNAME' && !message.includes('Duplicate key name')) {
+          console.warn('[MYSQL] MessageActivities index warning:', message);
+        }
+      }
+    }
+    this.messageActivitiesLifecycleReady = true;
   }
 
   async insertMessageActivity(activity: {
@@ -1842,16 +1931,91 @@ export class MysqlLogsService {
     const emoji = toTrimmedString(activity.emoji) || null;
     const targetMessageId = toTrimmedString(activity.targetMessageId) || null;
     const actionTimestamp = Number(activity.actionTimestamp) || Date.now();
+    // sentDateTime mirrors the sender's dispatch time (== ActionTimestamp) and
+    // is the immutable chronological sort key. receiveDateTime/readDateTime
+    // start NULL and are stamped later by delivery/read acknowledgments.
+    const sentDateTime = new Date(actionTimestamp);
     try {
       await this.pool.execute(
         `INSERT INTO \`MessageActivities\`
-           (\`ActionType\`, \`MessageId\`, \`Sender\`, \`Recipient\`, \`GroupId\`, \`Body\`, \`ImageUrl\`, \`FileUrl\`, \`Emoji\`, \`TargetMessageId\`, \`ActionTimestamp\`)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [actionType, messageId, sender, recipient, groupId, body, imageUrl, fileUrl, emoji, targetMessageId, actionTimestamp]
+           (\`ActionType\`, \`MessageId\`, \`Sender\`, \`Recipient\`, \`GroupId\`, \`Body\`, \`ImageUrl\`, \`FileUrl\`, \`Emoji\`, \`TargetMessageId\`, \`ActionTimestamp\`, \`sentDateTime\`)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [actionType, messageId, sender, recipient, groupId, body, imageUrl, fileUrl, emoji, targetMessageId, actionTimestamp, sentDateTime]
       );
     } catch (err: unknown) {
       const message = String((err as { message?: string }).message || '');
       console.error('[MYSQL] insertMessageActivity error:', message);
+    }
+  }
+
+  /**
+   * Batch delivery acknowledgment on the MessageActivities audit table.
+   * Stamps `receiveDateTime` for the given messageIds in ONE indexed query
+   * (uses the MessageId index) instead of N+1 per-message updates — this is
+   * what previously caused `Lock wait timeout exceeded` full-table scans.
+   * COALESCE preserves the earliest recorded delivery time, and the
+   * `sentDateTime`/`ActionTimestamp` sort keys are never touched.
+   */
+  async markActivitiesDelivered(recipient: string, messageIds: string[]): Promise<number> {
+    await this.ensureMessageActivitiesTable();
+    const safeRecipient = toTrimmedString(recipient).toLowerCase();
+    const safeIds = Array.isArray(messageIds)
+      ? [...new Set(messageIds.map((id) => toTrimmedString(id)).filter(Boolean))].slice(0, 500)
+      : [];
+    if (!safeRecipient || !safeIds.length) return 0;
+    try {
+      const placeholders = safeIds.map(() => '?').join(', ');
+      const sql = `UPDATE \`MessageActivities\`
+        SET \`receiveDateTime\` = COALESCE(\`receiveDateTime\`, NOW(3))
+        WHERE \`ActionType\` IN ('message', 'queue-message')
+          AND \`MessageId\` IN (${placeholders})
+          AND LOWER(\`Sender\`) != ?
+          AND \`receiveDateTime\` IS NULL`;
+      const [result] = await this.pool.execute(sql, [...safeIds, safeRecipient]);
+      return (result as any).affectedRows || 0;
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.warn('[MYSQL] markActivitiesDelivered error:', message);
+      return 0;
+    }
+  }
+
+  /**
+   * Watermark read acknowledgment on the MessageActivities audit table.
+   * When a user opens a chat, all pending messages addressed to them in that
+   * chat are marked read (and implicitly delivered) in ONE indexed query.
+   * Only `readDateTime`/`receiveDateTime` are mutated — never the
+   * `sentDateTime`/`ActionTimestamp`/`Id` sort keys, so message order can
+   * never reshuffle because of a status update.
+   */
+  async markActivitiesRead(reader: string, chatId: string): Promise<number> {
+    await this.ensureMessageActivitiesTable();
+    const safeReader = toTrimmedString(reader).toLowerCase();
+    const safeChatId = toTrimmedString(chatId).toLowerCase();
+    if (!safeReader || !safeChatId) return 0;
+    try {
+      // Chat semantics: for group messages GroupId = chatId; for direct
+      // messages Sender = chatId and Recipient contains the reader.
+      const sql = `UPDATE \`MessageActivities\`
+        SET \`readDateTime\` = COALESCE(\`readDateTime\`, NOW(3)),
+            \`receiveDateTime\` = COALESCE(\`receiveDateTime\`, NOW(3))
+        WHERE \`ActionType\` IN ('message', 'queue-message')
+          AND \`readDateTime\` IS NULL
+          AND LOWER(\`Sender\`) != ?
+          AND (
+            LOWER(\`GroupId\`) = ?
+            OR (LOWER(\`Sender\`) = ? AND (LOWER(\`Recipient\`) = ? OR \`Recipient\` LIKE ?))
+          )`;
+      const [result] = await this.pool.execute(sql, [
+        safeReader,
+        safeChatId,
+        safeChatId, safeReader, `%${safeReader}%`
+      ]);
+      return (result as any).affectedRows || 0;
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.warn('[MYSQL] markActivitiesRead error:', message);
+      return 0;
     }
   }
 
@@ -1920,7 +2084,10 @@ export class MysqlLogsService {
           \`FileUrl\`         AS fileUrl,
           \`Emoji\`           AS emoji,
           \`TargetMessageId\` AS targetMessageId,
-          \`ActionTimestamp\` AS actionTimestamp
+          \`ActionTimestamp\` AS actionTimestamp,
+          \`sentDateTime\`    AS sentDateTime,
+          \`receiveDateTime\` AS receiveDateTime,
+          \`readDateTime\`    AS readDateTime
         FROM \`MessageActivities\`
         WHERE \`ActionType\` IN (${actionTypePlaceholders})
           AND (\`Sender\` = ? OR \`Recipient\` = ? OR \`Recipient\` LIKE ?`;
@@ -1946,15 +2113,18 @@ export class MysqlLogsService {
 
       if (includeMessages) {
         // Full-sync mode paginates newest-first to mirror the historical Logs-table paging.
-        sql += ` ORDER BY \`ActionTimestamp\` DESC LIMIT ?, ?`;
+        // Secondary `Id` key keeps the order strictly monotonic and stable —
+        // status updates never mutate ActionTimestamp/sentDateTime/Id, so
+        // delivery/read receipts can never reshuffle message order.
+        sql += ` ORDER BY \`ActionTimestamp\` DESC, \`Id\` DESC LIMIT ?, ?`;
         params.push(offset, limit);
       } else if (offset > 0) {
         // Backward-compatible actions-only mode (used by incremental sync callers).
-        sql += ` ORDER BY \`ActionTimestamp\` ASC LIMIT ?, ?`;
+        sql += ` ORDER BY \`ActionTimestamp\` ASC, \`Id\` ASC LIMIT ?, ?`;
         params.push(offset, limit);
       } else {
         // Preserve historical ordering for existing callers that did not use offset.
-        sql += ` ORDER BY \`ActionTimestamp\` ASC LIMIT ?`;
+        sql += ` ORDER BY \`ActionTimestamp\` ASC, \`Id\` ASC LIMIT ?`;
         params.push(limit);
       }
 
@@ -1995,6 +2165,13 @@ export class MysqlLogsService {
           record.body = String(row.body || '').trim() || undefined;
           record.imageUrl = String(row.imageUrl || '').trim() || undefined;
           record.fileUrl = String(row.fileUrl || '').trim() || undefined;
+          // Lifecycle timestamps (epoch ms) drive the client's chronological
+          // sort (sentDateTime) and the sent/delivered/read tick state.
+          record.sentDateTime = parseFlexibleTimestamp(row.sentDateTime) || ts;
+          const receiveDateTime = parseFlexibleTimestamp(row.receiveDateTime);
+          if (receiveDateTime > 0) record.receiveDateTime = receiveDateTime;
+          const readDateTime = parseFlexibleTimestamp(row.readDateTime);
+          if (readDateTime > 0) record.readDateTime = readDateTime;
           if (groupId && sender) {
             record.groupSenderName = sender;
           }

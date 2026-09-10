@@ -90,3 +90,74 @@ test('markMessagesDelivered returns 0 for blank recipient or chat', async () => 
   assert.equal(await service.markMessagesDelivered('', 'someone'), 0);
   assert.equal(await service.markMessagesDelivered('someone', '  '), 0);
 });
+
+test('markActivitiesDelivered batch-updates receiveDateTime via indexed MessageId IN (...)', async () => {
+  const executeCalls = [];
+  const service = createService({
+    executeImpl: async (sql, params) => {
+      executeCalls.push({ sql, params });
+      return [{ affectedRows: 2 }, undefined];
+    },
+  });
+  service.messageActivitiesTableReady = true;
+  service.messageActivitiesLifecycleReady = true;
+
+  const affected = await service.markActivitiesDelivered(' 0546799693 ', ['msg-1', ' msg-2 ', 'msg-1', '']);
+
+  assert.equal(affected, 2);
+  const updateCall = executeCalls.find((call) => /UPDATE `MessageActivities`/.test(call.sql));
+  assert.ok(updateCall, 'expected an UPDATE statement');
+  assert.match(updateCall.sql, /`receiveDateTime` = COALESCE\(`receiveDateTime`, NOW\(3\)\)/);
+  assert.match(updateCall.sql, /`MessageId` IN \(\?, \?\)/);
+  assert.match(updateCall.sql, /`receiveDateTime` IS NULL/);
+  assert.ok(!/readDateTime` =/.test(updateCall.sql), 'must not touch readDateTime');
+  assert.ok(!/sentDateTime` =/.test(updateCall.sql), 'must never mutate the sort key');
+  assert.ok(!/ActionTimestamp` =/.test(updateCall.sql), 'must never mutate the sort key');
+  assert.deepEqual(updateCall.params, ['msg-1', 'msg-2', '0546799693']);
+});
+
+test('markActivitiesDelivered returns 0 for blank recipient or empty messageIds', async () => {
+  const service = createService();
+  service.messageActivitiesTableReady = true;
+  service.messageActivitiesLifecycleReady = true;
+
+  assert.equal(await service.markActivitiesDelivered('', ['msg-1']), 0);
+  assert.equal(await service.markActivitiesDelivered('0546799693', []), 0);
+});
+
+test('markActivitiesRead watermark-updates read and receive times in one query', async () => {
+  const executeCalls = [];
+  const service = createService({
+    executeImpl: async (sql, params) => {
+      executeCalls.push({ sql, params });
+      return [{ affectedRows: 5 }, undefined];
+    },
+  });
+  service.messageActivitiesTableReady = true;
+  service.messageActivitiesLifecycleReady = true;
+
+  const affected = await service.markActivitiesRead(' 0546799693 ', '0501234567');
+
+  assert.equal(affected, 5);
+  const updateCall = executeCalls.find((call) => /UPDATE `MessageActivities`/.test(call.sql));
+  assert.ok(updateCall, 'expected an UPDATE statement');
+  assert.match(updateCall.sql, /`readDateTime` = COALESCE\(`readDateTime`, NOW\(3\)\)/);
+  assert.match(updateCall.sql, /`receiveDateTime` = COALESCE\(`receiveDateTime`, NOW\(3\)\)/);
+  assert.match(updateCall.sql, /`readDateTime` IS NULL/);
+  assert.ok(!/sentDateTime` =/.test(updateCall.sql), 'must never mutate the sort key');
+  assert.ok(!/ActionTimestamp` =/.test(updateCall.sql), 'must never mutate the sort key');
+  assert.deepEqual(updateCall.params, [
+    '0546799693',
+    '0501234567',
+    '0501234567', '0546799693', '%0546799693%',
+  ]);
+});
+
+test('markActivitiesRead returns 0 for blank reader or chat', async () => {
+  const service = createService();
+  service.messageActivitiesTableReady = true;
+  service.messageActivitiesLifecycleReady = true;
+
+  assert.equal(await service.markActivitiesRead('', '0501234567'), 0);
+  assert.equal(await service.markActivitiesRead('0546799693', '  '), 0);
+});

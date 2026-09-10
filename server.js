@@ -6479,6 +6479,12 @@ app.post(['/mark-seen', '/notify/mark-seen'],
         }
         try {
             const affected = await mysqlLogsService.markMessagesSeen(user, chatId);
+            // Watermark read on the MessageActivities audit table (single indexed query).
+            if (typeof mysqlLogsService.markActivitiesRead === 'function') {
+                mysqlLogsService.markActivitiesRead(user, chatId).catch((err) => {
+                    console.warn('[MARK-SEEN] Failed to update MessageActivities readDateTime:', err && err.message ? err.message : err);
+                });
+            }
             // Notify the same user's other connected devices to clear local
             // unread counters for this chat (cross-device badge sync).
             void addToQueue(user, buildSelfReadClearMessage({
@@ -7866,6 +7872,12 @@ app.post(
         mysqlLogsService.markMessagesSeen(normalizedReader, normalizedSender).catch((err) => {
             console.warn('[READ RECEIPT] Failed to update SeenTime in DB:', err && err.message ? err.message : err);
         });
+        // Watermark read on the MessageActivities audit table (single indexed query).
+        if (typeof mysqlLogsService.markActivitiesRead === 'function') {
+            mysqlLogsService.markActivitiesRead(normalizedReader, normalizedSender).catch((err) => {
+                console.warn('[READ RECEIPT] Failed to update MessageActivities readDateTime:', err && err.message ? err.message : err);
+            });
+        }
 
         const result = await sendPushNotificationToUser(normalizedSender, payload, normalizedReader, { skipBadge: true });
 
@@ -7945,6 +7957,13 @@ app.post(
         mysqlLogsService.markMessagesDelivered(normalizedRecipient, normalizedSender).catch((err) => {
             console.warn('[DELIVERY RECEIPT] Failed to update receiveDateTime in DB:', err && err.message ? err.message : err);
         });
+        // Batch-stamp receiveDateTime on MessageActivities via the indexed
+        // MessageId lookup (one query for the whole batch — no N+1 updates).
+        if (typeof mysqlLogsService.markActivitiesDelivered === 'function') {
+            mysqlLogsService.markActivitiesDelivered(normalizedRecipient, uniqueMessageIds).catch((err) => {
+                console.warn('[DELIVERY RECEIPT] Failed to update MessageActivities receiveDateTime:', err && err.message ? err.message : err);
+            });
+        }
 
         const receiptData = {
             type: 'delivery-receipt',

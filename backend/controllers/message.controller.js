@@ -769,6 +769,12 @@ function registerMessageController(app, deps = {}) {
                         imageUrl,
                         fileUrl,
                         timestamp,
+                        // Lifecycle timestamps (epoch ms): sentDateTime is the
+                        // immutable chronological sort key; receive/read drive
+                        // the ✓✓ delivery and blue-✓✓ read tick states.
+                        sentDateTime: parseFlexibleTimestamp(message.sentDateTime) || timestamp,
+                        receiveDateTime: parseFlexibleTimestamp(message.receiveDateTime) || undefined,
+                        readDateTime: parseFlexibleTimestamp(message.readDateTime) || undefined,
                         groupId: resolvedGroupId || undefined,
                         groupName: resolvedGroupName || undefined,
                         groupType: resolvedGroupType,
