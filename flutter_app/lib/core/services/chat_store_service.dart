@@ -1315,6 +1315,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     const actionTypes = {
       'read',
       'read-receipt',
+      'delivered',
+      'delivery-receipt',
       'delete',
       'delete-action',
       'edit',
@@ -1865,6 +1867,21 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           return;
         }
 
+      case 'delivery-receipt':
+      case 'delivered':
+        {
+          final ids = strList(data['messageIds']);
+          if (ids == null || ids.isEmpty) return;
+          final msg = IncomingServerMessage(
+            type: type,
+            messageIds: ids,
+            deliveredAt: parseInt(data['deliveredAt']),
+            sender: str(data['sender']),
+          );
+          _handleDeliveryReceipt(msg);
+          return;
+        }
+
       case 'delete-action':
       case 'delete':
         {
@@ -2138,6 +2155,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _writeMessageThrough(applied);
     _recordSyncCursor(applied.timestamp);
 
+    // Acknowledge delivery back to the server (batched, best-effort) so the
+    // sender's ticks upgrade to delivered ✓✓.
+    if (isNew) _queueDeliveryAck(applied);
+
     // Sort strictly by effective sent time (sentDateTime, fallback timestamp)
     // descending so a message delivered late — e.g. via an older notification
     // tap — slots into its correct chronological position instead of the tail.
@@ -2152,6 +2173,64 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     state = state.copyWith(messagesByChat: newMessagesByChat);
 
     return isNew;
+  }
+
+  // ── Delivery acknowledgments ───────────────────────────────────────────────
+
+  /// Only recently sent messages are acknowledged; a cold full-history sync
+  /// must not spam the sender with delivery receipts for old messages.
+  static const int _deliveryAckMaxAgeMs = 48 * 60 * 60 * 1000;
+  static const int _deliveryAckDedupCap = 2000;
+
+  final Map<String, Set<String>> _pendingDeliveryAcks = {};
+  final Set<String> _ackedDeliveryMessageIds = <String>{};
+  Timer? _deliveryAckTimer;
+
+  /// Queue a delivery acknowledgment for a newly received direct message.
+  /// Acks are deduplicated per messageId and flushed in per-chat batches.
+  void _queueDeliveryAck(ChatMessage message) {
+    final me = (_currentUser ?? '').trim();
+    if (me.isEmpty) return;
+    if (message.direction != MessageDirection.incoming) return;
+    // Group delivery receipts are ambiguous (many recipients) — direct only.
+    if (message.groupId != null && message.groupId!.isNotEmpty) return;
+    final ageMs =
+        DateTime.now().millisecondsSinceEpoch - message.effectiveSentTime;
+    if (ageMs > _deliveryAckMaxAgeMs) return;
+    if (!_ackedDeliveryMessageIds.add(message.messageId)) return;
+    if (_ackedDeliveryMessageIds.length > _deliveryAckDedupCap) {
+      _ackedDeliveryMessageIds.remove(_ackedDeliveryMessageIds.first);
+    }
+    _pendingDeliveryAcks
+        .putIfAbsent(message.chatId, () => <String>{})
+        .add(message.messageId);
+    _deliveryAckTimer ??=
+        Timer(const Duration(milliseconds: 500), () => _flushDeliveryAcks());
+  }
+
+  Future<void> _flushDeliveryAcks() async {
+    _deliveryAckTimer = null;
+    final me = (_currentUser ?? '').trim();
+    if (me.isEmpty) {
+      _pendingDeliveryAcks.clear();
+      return;
+    }
+    final batches = Map<String, Set<String>>.from(_pendingDeliveryAcks);
+    _pendingDeliveryAcks.clear();
+    final deliveredAt = DateTime.now().millisecondsSinceEpoch;
+    for (final entry in batches.entries) {
+      try {
+        await _api.sendDeliveryReceipt(DeliveryReceiptPayload(
+          recipient: me,
+          sender: entry.key,
+          messageIds: entry.value.toList(),
+          deliveredAt: deliveredAt,
+        ));
+      } catch (_) {
+        // Best-effort — the server also stamps receiveDateTime at ingest, so
+        // a missed ack degrades gracefully to history-derived status.
+      }
+    }
   }
 
   /// Hydrate existing message with new data (pick longer body)
@@ -2766,6 +2845,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       case 'read-receipt':
         _handleReadReceipt(message);
         break;
+      case 'delivered':
+      case 'delivery-receipt':
+        _handleDeliveryReceipt(message);
+        break;
       case 'reaction':
         _handleReaction(message);
         break;
@@ -2918,8 +3001,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       fileUrl: msg.fileUrl,
       direction: direction,
       timestamp: ts,
-      deliveryStatus:
-          isOutgoing ? DeliveryStatus.sent : DeliveryStatus.delivered,
+      deliveryStatus: isOutgoing
+          // Derive the tick state from the lifecycle timestamps so ticks are
+          // correct after a history load instead of being stuck at `sent`.
+          ? (msg.readDateTime != null
+              ? DeliveryStatus.read
+              : (msg.receiveDateTime != null
+                  ? DeliveryStatus.delivered
+                  : DeliveryStatus.sent))
+          : DeliveryStatus.delivered,
       groupId: msg.groupId,
       groupName: msg.groupName,
       groupType: msg.groupType == 'community' ? GroupType.community : GroupType.group,
@@ -3073,6 +3163,39 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
 
     state = state.copyWith(messagesByChat: newMessagesByChat);
+    // Persist the upgraded receipt state so the blue ticks survive an app
+    // restart instead of reverting to the last stored status.
+    _schedulePersistence();
+  }
+
+  /// Handles a `delivery-receipt` event: the recipient's device confirmed it
+  /// received our outgoing messages, so upgrade their ticks to delivered ✓✓
+  /// (never downgrading a message that is already read).
+  void _handleDeliveryReceipt(IncomingServerMessage msg) {
+    if (msg.messageIds == null || msg.messageIds!.isEmpty) return;
+
+    final deliveredAtDateTime = DateTime.fromMillisecondsSinceEpoch(
+      msg.deliveredAt ?? DateTime.now().millisecondsSinceEpoch,
+      isUtc: true,
+    );
+    final newMessagesByChat = <String, List<ChatMessage>>{};
+
+    for (final entry in state.messagesByChat.entries) {
+      final chatMessages = entry.value.map((m) {
+        if (msg.messageIds!.contains(m.messageId)) {
+          return m.copyWith(
+            deliveryStatus:
+                _maxDeliveryStatus(m.deliveryStatus, DeliveryStatus.delivered),
+            receiveDateTime: m.receiveDateTime ?? deliveredAtDateTime,
+          );
+        }
+        return m;
+      }).toList();
+      newMessagesByChat[entry.key] = chatMessages;
+    }
+
+    state = state.copyWith(messagesByChat: newMessagesByChat);
+    _schedulePersistence();
   }
 
   void _handleReaction(IncomingServerMessage msg) {
@@ -3468,6 +3591,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // after the wipe.
     _persistTimer?.cancel();
     _persistTimer = null;
+
+    // Drop any queued delivery acknowledgments belonging to the previous user.
+    _deliveryAckTimer?.cancel();
+    _deliveryAckTimer = null;
+    _pendingDeliveryAcks.clear();
+    _ackedDeliveryMessageIds.clear();
 
     // Reset per-session tracking fields.
     final previousUser = _currentUser;

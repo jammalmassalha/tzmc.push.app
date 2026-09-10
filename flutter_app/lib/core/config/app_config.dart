@@ -73,6 +73,7 @@ class ApiEndpoints {
   static const String reaction = '/reaction';
   static const String typing = '/typing';
   static const String read = '/read';
+  static const String delivered = '/delivered';
   static const String edit = '/edit';
   static const String delete = '/delete';
   static const String upload = '/upload';

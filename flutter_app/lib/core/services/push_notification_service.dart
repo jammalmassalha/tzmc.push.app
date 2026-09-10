@@ -1124,6 +1124,8 @@ class PushNotificationService {
     const silentTypes = {
       'read-receipt',
       'read',
+      'delivery-receipt',
+      'delivered',
       'delete-action',
       'delete',
       'edit-action',
@@ -1469,6 +1471,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   // the unread tray counter.
   const actionOnlyTypes = {
     'read-receipt', 'read',
+    'delivery-receipt', 'delivered',
     'delete-action', 'delete',
     'edit-action', 'edit',
     'group-update', 'typing', 'reaction',

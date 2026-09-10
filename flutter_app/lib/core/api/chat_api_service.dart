@@ -692,6 +692,19 @@ class ChatApiService {
     }
   }
 
+  /// Send delivery acknowledgment for received messages
+  Future<void> sendDeliveryReceipt(DeliveryReceiptPayload payload) async {
+    final response = await _client.post(
+      ApiEndpoints.delivered,
+      data: payload.toJson(),
+      retryOptions: const RetryOptions(retries: 2, timeout: Duration(seconds: 10)),
+    );
+
+    if (!response.isSuccessful) {
+      throw ApiException('Delivery receipt failed with ${response.statusCode}');
+    }
+  }
+
   /// Edit message
   Future<void> editMessageForEveryone(EditMessagePayload payload) async {
     final response = await _client.post(

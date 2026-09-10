@@ -99,6 +99,8 @@ export interface IncomingServerMessage {
   deletedAt?: number;
   messageIds?: string[];
   readAt?: number;
+  /** Delivery acknowledgment time (epoch ms) carried by `delivery-receipt` events. */
+  deliveredAt?: number;
   targetMessageId?: string;
   emoji?: string;
   reactor?: string;

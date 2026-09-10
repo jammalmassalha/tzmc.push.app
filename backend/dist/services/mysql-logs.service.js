@@ -347,6 +347,18 @@ class MysqlLogsService {
                 console.warn('[MYSQL] idx_chat_sentDateTime warning:', message);
             }
         }
+        try {
+            // Index for receipt-status lookups (delivery/read receipt updates and
+            // per-chat unread/receipt aggregation).
+            await this.pool.execute(`CREATE INDEX \`idx_messages_receipt_status\` ON \`${this.tableName}\` (\`ToUser\`, \`From\`, \`readDateTime\`, \`receiveDateTime\`)`);
+        }
+        catch (err) {
+            const code = err.code;
+            const message = String(err.message || '');
+            if (code !== 'ER_DUP_KEYNAME' && !message.includes('Duplicate key name')) {
+                console.warn('[MYSQL] idx_messages_receipt_status warning:', message);
+            }
+        }
         this.lifecycleTimestampColumnsReady = true;
     }
     /**
@@ -896,6 +908,42 @@ class MysqlLogsService {
         catch (err) {
             const message = String(err.message || '');
             console.warn('[MYSQL] markMessagesSeen error:', message);
+            return 0;
+        }
+    }
+    /**
+     * Mark messages as delivered to a recipient's device.
+     * Sets `receiveDateTime` (delivery acknowledgment time) for messages sent to
+     * the recipient in the given chat that do not have one yet. Uses COALESCE so
+     * the earliest recorded delivery time is never overwritten.
+     */
+    async markMessagesDelivered(recipient, chatId) {
+        await this.ensureLifecycleTimestampColumns();
+        const safeRecipient = toTrimmedString(recipient).toLowerCase();
+        const safeChatId = toTrimmedString(chatId).toLowerCase();
+        if (!safeRecipient || !safeChatId)
+            return 0;
+        try {
+            // Mirrors markMessagesSeen chat semantics:
+            //   (ToUser = chatId AND From != recipient) — group msgs received
+            //   (ToUser = recipient AND From = chatId)  — DMs received from chatId
+            const sql = `UPDATE \`${this.tableName}\`
+        SET \`receiveDateTime\` = COALESCE(\`receiveDateTime\`, NOW(3))
+        WHERE \`receiveDateTime\` IS NULL
+          AND (
+            (LOWER(\`ToUser\`) = ? AND LOWER(\`From\`) != ?)
+            OR
+            (LOWER(\`ToUser\`) = ? AND LOWER(\`From\`) = ?)
+          )`;
+            const [result] = await this.pool.execute(sql, [
+                safeChatId, safeRecipient,
+                safeRecipient, safeChatId
+            ]);
+            return result.affectedRows || 0;
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.warn('[MYSQL] markMessagesDelivered error:', message);
             return 0;
         }
     }

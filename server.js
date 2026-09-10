@@ -7902,6 +7902,69 @@ app.post(
     }
 });
 
+// Delivery acknowledgment: a recipient device confirms it has received (stored
+// locally) the given messages. Persists `receiveDateTime` and fans out a
+// silent `delivery-receipt` to the original sender so their outgoing messages
+// upgrade from single grey tick (sent) to double grey tick (delivered).
+app.post(
+    ['/delivered', '/notify/delivered'],
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['recipient'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ status: 'error', message: resolution.error })
+    }),
+    async (req, res) => {
+    try {
+        const { recipient: requestedRecipient, sender, messageIds, deliveredAt } = req.body;
+        if (!requestedRecipient || !sender || !Array.isArray(messageIds) || messageIds.length === 0) {
+            return res.status(400).json({ status: 'error', message: 'Missing fields' });
+        }
+        const normalizedRecipient = req.resolvedUser;
+        const normalizedSender = String(sender).trim();
+        const uniqueMessageIds = Array.from(
+            new Set(
+                messageIds
+                    .map((id) => String(id || '').trim())
+                    .filter(Boolean)
+            )
+        );
+        if (!normalizedRecipient || !normalizedSender || uniqueMessageIds.length === 0) {
+            return res.status(400).json({ status: 'error', message: 'Invalid delivery receipt payload' });
+        }
+
+        const effectiveDeliveredAt = Number(deliveredAt) || Date.now();
+
+        // Persist the delivery time so history loads derive the correct tick.
+        mysqlLogsService.markMessagesDelivered(normalizedRecipient, normalizedSender).catch((err) => {
+            console.warn('[DELIVERY RECEIPT] Failed to update receiveDateTime in DB:', err && err.message ? err.message : err);
+        });
+
+        const receiptData = {
+            type: 'delivery-receipt',
+            messageIds: uniqueMessageIds,
+            deliveredAt: effectiveDeliveredAt,
+            sender: normalizedRecipient
+        };
+
+        // Queue as well so polling/SSE can recover if push is delayed/missed.
+        await addToQueue(normalizedSender, {
+            ...receiptData,
+            timestamp: Date.now()
+        });
+
+        const result = await sendPushNotificationToUser(normalizedSender, {
+            title: '',
+            body: { shortText: '', longText: '' },
+            data: receiptData
+        }, normalizedRecipient, { skipBadge: true });
+
+        res.json({ status: 'ok', details: result });
+    } catch (err) {
+        console.error('[DELIVERY RECEIPT] Failed:', err.message);
+        res.status(500).json({ status: 'error', message: err.message });
+    }
+});
+
 // --- PASSWORD RESET BOT ROUTES ---
 const resetPasswordRateLimitStore = new Map();
 const resetPasswordPreAuthRateLimitStore = new Map();

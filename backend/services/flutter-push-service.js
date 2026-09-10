@@ -329,6 +329,7 @@ function createFlutterPushService(options = {}) {
             payloadData.skipNotification === true ||
             payloadData.skipNotification === 'true' ||
             messageType === 'read-receipt' ||
+            messageType === 'delivery-receipt' ||
             messageType === 'group-update' ||
             messageType === 'delete-action' ||
             messageType === 'edit-action' ||

@@ -19,6 +19,14 @@ enum DeliveryStatus {
   read,
 }
 
+/// Receipt status of an outgoing message, derived from the lifecycle
+/// timestamps (see [ChatMessage.receiptStatus]):
+///   • sending   — not yet stored on the server (no tick / clock)
+///   • sent      — stored on the server (single grey tick ✓)
+///   • delivered — received on the recipient's device (double grey tick ✓✓)
+///   • read      — read by the recipient (double blue tick ✓✓)
+enum MessageReceiptStatus { sending, sent, delivered, read }
+
 /// Message reaction
 class MessageReaction extends Equatable {
   final String emoji;
@@ -330,6 +338,27 @@ class ChatMessage extends Equatable {
   /// prefers [sentDateTime] and falls back to the legacy [timestamp].
   int get effectiveSentTime => sentDateTime?.millisecondsSinceEpoch ?? timestamp;
 
+  /// Receipt status derived from the lifecycle timestamps, falling back to
+  /// [deliveryStatus] for optimistic/local messages that have no timestamps
+  /// yet. Timestamps and the transport-level status never downgrade each
+  /// other — the highest known state wins.
+  MessageReceiptStatus get receiptStatus {
+    if (readDateTime != null || deliveryStatus == DeliveryStatus.read) {
+      return MessageReceiptStatus.read;
+    }
+    if (receiveDateTime != null || deliveryStatus == DeliveryStatus.delivered) {
+      return MessageReceiptStatus.delivered;
+    }
+    if (sentDateTime != null &&
+        deliveryStatus != DeliveryStatus.pending &&
+        deliveryStatus != DeliveryStatus.queued &&
+        deliveryStatus != DeliveryStatus.failed) {
+      return MessageReceiptStatus.sent;
+    }
+    if (deliveryStatus == DeliveryStatus.sent) return MessageReceiptStatus.sent;
+    return MessageReceiptStatus.sending;
+  }
+
   /// Parses a flexible timestamp value (ISO 8601 string, epoch milliseconds as
   /// int/num/string, or DateTime) into a UTC [DateTime]. Returns null when the
   /// value is missing or unparseable.
@@ -583,6 +612,10 @@ class IncomingServerMessage extends Equatable {
   final int? deletedAt;
   final List<String>? messageIds;
   final int? readAt;
+
+  /// Delivery acknowledgment time (epoch ms) carried by `delivery-receipt`
+  /// events.
+  final int? deliveredAt;
   final String? targetMessageId;
   final String? emoji;
   final String? reactor;
@@ -630,6 +663,7 @@ class IncomingServerMessage extends Equatable {
     this.deletedAt,
     this.messageIds,
     this.readAt,
+    this.deliveredAt,
     this.targetMessageId,
     this.emoji,
     this.reactor,
@@ -673,6 +707,7 @@ class IncomingServerMessage extends Equatable {
         deletedAt,
         messageIds,
         readAt,
+        deliveredAt,
         targetMessageId,
         emoji,
         reactor,
@@ -755,6 +790,7 @@ class IncomingServerMessage extends Equatable {
       deletedAt: asInt(json['deletedAt']),
       messageIds: asStringList(json['messageIds']),
       readAt: asInt(json['readAt']),
+      deliveredAt: asInt(json['deliveredAt']),
       targetMessageId: asString(json['targetMessageId']),
       emoji: asString(json['emoji']),
       reactor: asString(json['reactor']),
@@ -801,6 +837,7 @@ class IncomingServerMessage extends Equatable {
         if (deletedAt != null) 'deletedAt': deletedAt,
         if (messageIds != null) 'messageIds': messageIds,
         if (readAt != null) 'readAt': readAt,
+        if (deliveredAt != null) 'deliveredAt': deliveredAt,
         if (targetMessageId != null) 'targetMessageId': targetMessageId,
         if (emoji != null) 'emoji': emoji,
         if (reactor != null) 'reactor': reactor,

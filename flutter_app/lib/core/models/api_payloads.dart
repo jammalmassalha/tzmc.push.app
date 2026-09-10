@@ -311,6 +311,32 @@ class ReadReceiptPayload extends Equatable {
       };
 }
 
+/// Delivery receipt payload — recipient device acknowledges it received and
+/// stored the given messages, so the sender's ticks upgrade to delivered ✓✓.
+class DeliveryReceiptPayload extends Equatable {
+  final String recipient;
+  final String sender;
+  final List<String> messageIds;
+  final int deliveredAt;
+
+  const DeliveryReceiptPayload({
+    required this.recipient,
+    required this.sender,
+    required this.messageIds,
+    required this.deliveredAt,
+  });
+
+  @override
+  List<Object?> get props => [recipient, sender, messageIds, deliveredAt];
+
+  Map<String, dynamic> toJson() => {
+        'recipient': recipient,
+        'sender': sender,
+        'messageIds': messageIds,
+        'deliveredAt': deliveredAt,
+      };
+}
+
 /// Edit message payload
 class EditMessagePayload extends Equatable {
   final String sender;

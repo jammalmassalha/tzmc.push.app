@@ -57,3 +57,36 @@ test('updateSubscribeUserProfilePicture returns null when no Subscribe row match
 
   assert.equal(result, null);
 });
+
+test('markMessagesDelivered stamps receiveDateTime only for undelivered messages in the chat', async () => {
+  const executeCalls = [];
+  const service = createService({
+    executeImpl: async (sql, params) => {
+      executeCalls.push({ sql, params });
+      return [{ affectedRows: 3 }, undefined];
+    },
+  });
+  service.tableName = 'Logs';
+  service.lifecycleTimestampColumnsReady = true;
+
+  const affected = await service.markMessagesDelivered(' 0546799693 ', '0501234567');
+
+  assert.equal(affected, 3);
+  const updateCall = executeCalls.find((call) => /UPDATE `Logs`/.test(call.sql));
+  assert.ok(updateCall, 'expected an UPDATE statement');
+  assert.match(updateCall.sql, /`receiveDateTime` = COALESCE\(`receiveDateTime`, NOW\(3\)\)/);
+  assert.match(updateCall.sql, /`receiveDateTime` IS NULL/);
+  assert.deepEqual(updateCall.params, [
+    '0501234567', '0546799693',
+    '0546799693', '0501234567',
+  ]);
+});
+
+test('markMessagesDelivered returns 0 for blank recipient or chat', async () => {
+  const service = createService();
+  service.tableName = 'Logs';
+  service.lifecycleTimestampColumnsReady = true;
+
+  assert.equal(await service.markMessagesDelivered('', 'someone'), 0);
+  assert.equal(await service.markMessagesDelivered('someone', '  '), 0);
+});
