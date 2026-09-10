@@ -7907,8 +7907,10 @@ app.post(
 // silent `delivery-receipt` to the original sender so their outgoing messages
 // upgrade from single grey tick (sent) to double grey tick (delivered).
 const deliveryReceiptRateLimitStore = new Map();
+const deliveryReceiptLimiter = rateLimit({ windowMs: 60 * 1000, max: 120 });
 app.post(
     ['/delivered', '/notify/delivered'],
+    deliveryReceiptLimiter,
     requireAuthorizedUser({
         required: true,
         candidateKeys: ['recipient'],
