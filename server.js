@@ -2521,6 +2521,17 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
     }
 
     const messageId = String(clientMessageId || generateMessageId()).trim() || generateMessageId();
+    // Sender dispatch time: accept a client-provided sentDateTime (ISO 8601
+    // string or epoch ms); default to server receipt time when missing/invalid.
+    const sentAtMs = (() => {
+        const raw = rawPayload.sentDateTime;
+        if (raw === undefined || raw === null || raw === '') return Date.now();
+        const numeric = Number(raw);
+        if (Number.isFinite(numeric) && numeric > 0) return numeric;
+        const parsed = Date.parse(String(raw));
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : Date.now();
+    })();
+    const sentDateTimeIso = new Date(sentAtMs).toISOString();
     console.log(`[REPLY] From: ${user} | To: ${originalSender}`);
 
     let groupRecord = null;
@@ -2651,7 +2662,13 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             ...(reply ? { messageText: reply } : {}),
             ...(imageUrl ? { imageUrl } : {}),
             ...(fileUrl ? { fileUrl } : {}),
-            ...messageMetadata
+            ...messageMetadata,
+            // Chronological-ordering metadata: lets clients slot the message
+            // into its correct position instead of appending it at the tail.
+            messageId,
+            chatId: groupId || user,
+            sentDateTime: sentDateTimeIso,
+            timestamp: sentAtMs
         };
         const notificationData = {
             messageId,
@@ -2668,7 +2685,8 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             messageId,
             sender: isGroup ? groupId : user,
             body: reply,
-            timestamp: Date.now(),
+            timestamp: sentAtMs,
+            sentDateTime: sentDateTimeIso,
             imageUrl: imageUrl || null,
             fileUrl: fileUrl || null,
             groupId: groupId || null,
@@ -2717,7 +2735,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             messageId,
             imageUrl || '',
             fileUrl || '',
-            { groupSenderName: isGroup ? senderLabel : '' }
+            { groupSenderName: isGroup ? senderLabel : '', sentDateTime: sentDateTimeIso }
         );
 
         const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, { messageId });
@@ -5191,7 +5209,10 @@ function logNotificationStatus(sender, recipient, messageShort, status, details,
         // For group messages the `sender` is the groupId, so the human display
         // name shown in the FCM notification is preserved separately and
         // returned again by /messages/logs (see mysql-logs.service.ts).
-        groupSenderName: String(options.groupSenderName || '').trim()
+        groupSenderName: String(options.groupSenderName || '').trim(),
+        // Sender-side dispatch time (ISO 8601 / epoch ms). Persisted in the
+        // dedicated sentDateTime DATETIME(3) column for chronological ordering.
+        sentDateTime: options.sentDateTime || undefined
     };
     const insertFn = options.dedup
         ? mysqlLogsService.insertLogIfNotDuplicate(logPayload)

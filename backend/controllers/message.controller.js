@@ -793,11 +793,14 @@ function registerMessageController(app, deps = {}) {
                     // Non-fatal: action records are supplementary
                 }
 
-                // Merge & sort by timestamp so the client processes them in
-                // chronological order (original messages first, then their edits).
+                // Merge & sort by sentDateTime (fallback timestamp) so the client
+                // processes them in strict chronological order (original messages
+                // first, then their edits).
+                const chronologicalTime = (entry) =>
+                    Number(entry && (entry.sentDateTime ?? entry.timestamp)) || 0;
                 const allMessages = actionRecords.length
                     ? [...dedupedMessages, ...actionRecords].sort(
-                        (a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0)
+                        (a, b) => chronologicalTime(a) - chronologicalTime(b)
                       )
                     : dedupedMessages;
 

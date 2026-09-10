@@ -28,6 +28,13 @@ export interface MysqlLogInsertPayload {
    * and must also appear inside the in-app group bubble.
    */
   groupSenderName?: string;
+  /**
+   * Sender-side dispatch time (ISO 8601 string, epoch ms or Date). When
+   * missing the send time defaults to the row `DateTime`/now. Stored in the
+   * dedicated `sentDateTime` DATETIME(3) column used for chronological
+   * ordering of chat messages.
+   */
+  sentDateTime?: unknown;
 }
 
 export interface MysqlLogsReadOptions {
@@ -95,6 +102,9 @@ interface MysqlLogRow extends RowDataPacket {
   imageUrl: string | null;
   fileUrl: string | null;
   seenTime: Date | string | number | null;
+  sentDateTime: Date | string | number | null;
+  receiveDateTime: Date | string | number | null;
+  readDateTime: Date | string | number | null;
   groupSenderName: string | null;
 }
 
@@ -216,6 +226,19 @@ function normalizeDateTimeForStorage(value: unknown): Date {
   return new Date(Math.floor(timestamp / 1000) * 1000);
 }
 
+/**
+ * Millisecond-precision variant used for the lifecycle timestamp columns
+ * (`sentDateTime` / `receiveDateTime` / `readDateTime`, DATETIME(3)).
+ * Falls back to the provided default when the value cannot be parsed.
+ */
+function normalizeLifecycleDateTimeForStorage(value: unknown, fallback: Date): Date {
+  const timestamp = parseFlexibleTimestamp(value);
+  if (!timestamp || !Number.isFinite(timestamp)) {
+    return fallback;
+  }
+  return new Date(timestamp);
+}
+
 function normalizeDateTimeKey(value: unknown): string {
   const timestamp = parseFlexibleTimestamp(value);
   if (!timestamp || !Number.isFinite(timestamp)) {
@@ -296,6 +319,7 @@ export class MysqlLogsService {
   private imageUrlColumnReady = false;
   private fileUrlColumnReady = false;
   private seenTimeColumnReady = false;
+  private lifecycleTimestampColumnsReady = false;
   private groupSenderNameColumnReady = false;
   private dedupIndexReady = false;
   private communityGroupsTablesReady = false;
@@ -330,9 +354,9 @@ export class MysqlLogsService {
 
   constructor(config: MysqlLogsConfig) {
     this.tableName = normalizeTableName(config.table);
-    // 11 columns / 11 parameters — keep in sync with insertLog() and insertLogsBulk()
-    this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`, \`GroupSenderName\`)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    // 13 columns / 13 parameters — keep in sync with insertLog() and insertLogsBulk()
+    this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`, \`GroupSenderName\`, \`sentDateTime\`, \`receiveDateTime\`)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     this.pool = mysql.createPool({
       host: config.host,
       port: config.port,
@@ -345,6 +369,7 @@ export class MysqlLogsService {
     void this.ensureImageUrlColumn();
     void this.ensureFileUrlColumn();
     void this.ensureSeenTimeColumn();
+    void this.ensureLifecycleTimestampColumns();
     void this.ensureGroupSenderNameColumn();
     void this.ensureSecretariesTable();
     void this.ensureBotSessionsTable();
@@ -397,6 +422,57 @@ export class MysqlLogsService {
       }
     }
     this.seenTimeColumnReady = true;
+  }
+
+  /**
+   * Ensures the message lifecycle timestamp columns exist:
+   *   • `sentDateTime`    — sender's dispatch time (client-provided, DATETIME(3))
+   *   • `receiveDateTime` — server ingest time (DATETIME(3))
+   *   • `readDateTime`    — recipient read time (DATETIME(3))
+   * Also backfills `sentDateTime` from the legacy `DateTime` column and
+   * creates an index optimized for chronological chat retrieval.
+   */
+  private async ensureLifecycleTimestampColumns(): Promise<void> {
+    if (this.lifecycleTimestampColumnsReady) return;
+    const columnStatements = [
+      `ALTER TABLE \`${this.tableName}\` ADD COLUMN \`sentDateTime\` DATETIME(3) NULL DEFAULT NULL`,
+      `ALTER TABLE \`${this.tableName}\` ADD COLUMN \`receiveDateTime\` DATETIME(3) NULL DEFAULT NULL`,
+      `ALTER TABLE \`${this.tableName}\` ADD COLUMN \`readDateTime\` DATETIME(3) NULL DEFAULT NULL`
+    ];
+    for (const statement of columnStatements) {
+      try {
+        await this.pool.execute(statement);
+      } catch (err: unknown) {
+        const code = (err as { code?: string }).code;
+        const message = String((err as { message?: string }).message || '');
+        // ER_DUP_FIELDNAME = column already exists — expected on subsequent restarts.
+        if (code !== 'ER_DUP_FIELDNAME' && !message.includes('Duplicate column')) {
+          console.warn('[MYSQL] ensureLifecycleTimestampColumns warning:', message);
+        }
+      }
+    }
+    try {
+      // Backfill legacy rows so ordering by sentDateTime never drops history.
+      await this.pool.execute(
+        `UPDATE \`${this.tableName}\` SET \`sentDateTime\` = \`DateTime\` WHERE \`sentDateTime\` IS NULL`
+      );
+    } catch (err: unknown) {
+      console.warn('[MYSQL] sentDateTime backfill warning:', String((err as { message?: string }).message || ''));
+    }
+    try {
+      // Index for optimized chronological message retrieval per chat partner.
+      await this.pool.execute(
+        `CREATE INDEX \`idx_chat_sentDateTime\` ON \`${this.tableName}\` (\`From\`, \`sentDateTime\`)`
+      );
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code;
+      const message = String((err as { message?: string }).message || '');
+      // ER_DUP_KEYNAME = index already exists — expected on subsequent restarts.
+      if (code !== 'ER_DUP_KEYNAME' && !message.includes('Duplicate key name')) {
+        console.warn('[MYSQL] idx_chat_sentDateTime warning:', message);
+      }
+    }
+    this.lifecycleTimestampColumnsReady = true;
   }
 
   /**
@@ -479,8 +555,10 @@ export class MysqlLogsService {
     const imageUrl = toTrimmedString(payload.imageUrl);
     const fileUrl = toTrimmedString(payload.fileUrl);
     const groupSenderName = toTrimmedString(payload.groupSenderName);
+    const sentDateTime = normalizeLifecycleDateTimeForStorage(payload.sentDateTime ?? payload.dateTime, dateTime);
+    const receiveDateTime = new Date();
 
-    await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null, groupSenderName || null]);
+    await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null, groupSenderName || null, sentDateTime, receiveDateTime]);
     return true;
   }
 
@@ -503,15 +581,17 @@ export class MysqlLogsService {
     const imageUrl = toTrimmedString(payload.imageUrl);
     const fileUrl = toTrimmedString(payload.fileUrl);
     const groupSenderName = toTrimmedString(payload.groupSenderName);
+    const sentDateTime = normalizeLifecycleDateTimeForStorage(payload.sentDateTime ?? payload.dateTime, dateTime);
+    const receiveDateTime = new Date();
 
     if (!recipient) {
       // Cannot deduplicate without recipient — fall back to normal insert
-      await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null, groupSenderName || null]);
+      await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null, groupSenderName || null, sentDateTime, receiveDateTime]);
       return true;
     }
 
-    const sql = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`, \`GroupSenderName\`)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    const sql = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`, \`GroupSenderName\`, \`sentDateTime\`, \`receiveDateTime\`)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
        FROM DUAL
        WHERE NOT EXISTS (
          SELECT 1 FROM \`${this.tableName}\`
@@ -519,7 +599,7 @@ export class MysqlLogsService {
          LIMIT 1
        )`;
     const [result] = await this.pool.execute(sql, [
-      dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null, groupSenderName || null,
+      dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null, groupSenderName || null, sentDateTime, receiveDateTime,
       sender, recipient, dateTime
     ]);
     const affectedRows = (result as { affectedRows?: number }).affectedRows ?? 0;
@@ -623,6 +703,8 @@ export class MysqlLogsService {
         const imageUrl = toTrimmedString(payload.imageUrl);
         const fileUrl = toTrimmedString(payload.fileUrl);
         const groupSenderName = toTrimmedString(payload.groupSenderName);
+        const sentDateTime = normalizeLifecycleDateTimeForStorage(payload.sentDateTime ?? payload.dateTime, dateTime);
+        const receiveDateTime = new Date();
         await connection.execute(this.insertQuery, [
           dateTime,
           recipient,
@@ -634,7 +716,9 @@ export class MysqlLogsService {
           recipientAuthJson,
           imageUrl || null,
           fileUrl || null,
-          groupSenderName || null
+          groupSenderName || null,
+          sentDateTime,
+          receiveDateTime
         ]);
       }
       await connection.commit();
@@ -734,6 +818,9 @@ export class MysqlLogsService {
           \`ImageUrl\` AS imageUrl,
           \`FileUrl\` AS fileUrl,
           \`SeenTime\` AS seenTime,
+          \`sentDateTime\` AS sentDateTime,
+          \`receiveDateTime\` AS receiveDateTime,
+          \`readDateTime\` AS readDateTime,
           \`GroupSenderName\` AS groupSenderName 
         FROM \`${this.tableName}\` 
         WHERE 1=1`;
@@ -850,6 +937,9 @@ export class MysqlLogsService {
         }
 
         const timestamp = parseFlexibleTimestamp(row.dateTime) || Date.now();
+        const sentDateTime = parseFlexibleTimestamp(row.sentDateTime) || timestamp;
+        const receiveDateTime = parseFlexibleTimestamp(row.receiveDateTime) || undefined;
+        const readDateTime = parseFlexibleTimestamp(row.readDateTime) || undefined;
         const msgIdFromRowOrDetails = toTrimmedString(
           row.msgId ||
           detailsMap.messageId ||
@@ -881,6 +971,9 @@ export class MysqlLogsService {
           imageUrl: imageUrl || undefined,
           fileUrl: fileUrl || undefined,
           timestamp,
+          sentDateTime,
+          receiveDateTime,
+          readDateTime,
           recipient: requestedUser,
           status,
           details,
@@ -909,7 +1002,15 @@ export class MysqlLogsService {
       }
     }
 
+    // Strict chronological order: sentDateTime ASC (fallback to DateTime),
+    // stable id tiebreak so equal timestamps keep their insertion order.
     messages.reverse();
+    messages.sort((a, b) => {
+      const aTime = Number(a.sentDateTime ?? a.timestamp) || 0;
+      const bTime = Number(b.sentDateTime ?? b.timestamp) || 0;
+      if (aTime !== bTime) return aTime - bTime;
+      return String(a.id || '').localeCompare(String(b.id || ''));
+    });
     return messages;
   }
 
@@ -959,6 +1060,7 @@ export class MysqlLogsService {
    */
   async markMessagesSeen(user: string, chatId: string): Promise<number> {
     await this.ensureSeenTimeColumn();
+    await this.ensureLifecycleTimestampColumns();
     const safeUser = toTrimmedString(user).toLowerCase();
     const safeChatId = toTrimmedString(chatId);
     if (!safeUser || !safeChatId) return 0;
@@ -969,7 +1071,7 @@ export class MysqlLogsService {
       //   (ToUser = chatId AND From != user)  — group msgs received
       //   (ToUser = user AND From = chatId)   — DMs received from chatId
       const sql = `UPDATE \`${this.tableName}\`
-        SET \`SeenTime\` = NOW()
+        SET \`SeenTime\` = NOW(), \`readDateTime\` = COALESCE(\`readDateTime\`, NOW(3))
         WHERE \`SeenTime\` IS NULL
           AND (
             (LOWER(\`ToUser\`) = ? AND LOWER(\`From\`) != ?)
