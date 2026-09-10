@@ -298,6 +298,18 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// oldest pending push.  Cleared once it has been consumed.
   int? _pendingSyncFloorMs;
 
+  /// True once the initial background server revalidation (contacts, groups,
+  /// gap-analysis recovery) has completed at least once for the current user.
+  /// Poll ticks are gated on this — NOT on [ChatState.isInitialized], which
+  /// with the cache-first flow flips to true as soon as the local cache is
+  /// rendered — so an early poll can never read latestTimestamp=0 from an
+  /// empty DB and mark all historical messages as unread.
+  bool _initialSyncCompleted = false;
+
+  /// Guards against launching two concurrent initial revalidations when
+  /// [initialize] is invoked again before the first background sync finishes.
+  bool _initialSyncInFlight = false;
+
   /// Community group configs loaded from the server; seeded with defaults.
   /// Mirrors Angular's `communityGroupConfigs` field.
   List<CommunityGroupConfig> _communityGroupConfigs = List.unmodifiable(_kSeedCommunityGroups);
@@ -357,7 +369,16 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   // Initialization
   // ---------------------------------------------------------------------------
 
-  /// Initialize chat store - restore from database and pull fresh data
+  /// Initialize chat store — cache-first (stale-while-revalidate).
+  ///
+  /// Phase 1 (awaited, local-only): restore the persisted snapshot from the
+  /// Drift/SQLite database and render it immediately.  When cached data
+  /// exists the store is marked initialized on frame 1, so the UI never
+  /// waits on the network.
+  ///
+  /// Phase 2 (fired without awaiting): pull fresh contacts, groups and
+  /// missed messages from the server in the background and merge them into
+  /// state as they arrive (see [_revalidateFromServer]).
   Future<void> initialize(String currentUser) async {
     final normalized = currentUser.trim().toLowerCase();
 
@@ -385,6 +406,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     if (state.isInitialized) {
       if (state.isRestricted != isRestricted) {
         state = state.copyWith(isRestricted: isRestricted);
+      }
+      // If the first background revalidation failed (e.g. no network on cold
+      // start), retry it now — the cached UI is already live, so this stays
+      // silent and non-blocking.
+      if (!_initialSyncCompleted && !_initialSyncInFlight) {
+        unawaited(_revalidateFromServer());
       }
       return;
     }
@@ -454,6 +481,42 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // State may be empty; the server pull below re-populates it.
       }
 
+      // Phase 1 complete — the cached snapshot is now in state.  When cached
+      // data exists, unblock the UI immediately (stale-while-revalidate): the
+      // chat list renders from the local cache on the very next frame while
+      // the server revalidation below runs silently in the background.
+      final hasCachedData = state.messagesByChat.isNotEmpty ||
+          state.contacts.isNotEmpty ||
+          state.groups.isNotEmpty;
+      if (hasCachedData) {
+        state = state.copyWith(isLoading: false, isInitialized: true);
+        // Keep periodic persistence running from the moment the UI is live.
+        _schedulePersistence();
+      }
+
+      // Phase 2: revalidate from the server WITHOUT awaiting, so first-frame
+      // rendering is never blocked by network latency (400ms–2000ms on slow
+      // links).  On a fresh install (no cache) isLoading stays true until the
+      // background sync completes, preserving the "loading chats" spinner
+      // instead of a misleading empty state.
+      unawaited(_revalidateFromServer());
+    } catch (e) {
+      state = state.copyWith(isLoading: false);
+      rethrow;
+    }
+  }
+
+  /// Background revalidation phase of the cache-first [initialize] flow:
+  /// pulls fresh contacts, groups, community configs and missed messages
+  /// from the server, merges the background-notification tray, persists the
+  /// result, and finally enables poll ticks via [_initialSyncCompleted].
+  ///
+  /// Never awaited by the UI; errors are logged and swallowed so a network
+  /// failure degrades to "cached data only" instead of an error screen.
+  Future<void> _revalidateFromServer() async {
+    if (_initialSyncInFlight) return;
+    _initialSyncInFlight = true;
+    try {
       // 2. Pull fresh contacts and groups
       await Future.wait([
         _pullContacts(),
@@ -518,7 +581,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         state = state.copyWith(unreadByChat: merged);
       }
 
-      // 5. Persist the fully-initialized state immediately so that if the user
+      // 5. Persist the fully-synced state immediately so that if the user
       // closes the app right after the first open (before the 2-second deferred
       // timer fires), the recovered messages are already in the DB and the chat
       // list is populated on the very next cold start without needing another
@@ -526,17 +589,26 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       await persistNow();
 
       // Mark initialization complete, keeping the freshly-accumulated unread
-      // counts (from recoverMissedMessages + tray) intact.
+      // counts (from recoverMissedMessages + tray) intact.  This is a no-op
+      // when the cache-first phase already flipped the flags.
       state = state.copyWith(
         isLoading: false,
         isInitialized: true,
       );
 
+      // Poll ticks are safe from this point on: the DB now holds the full
+      // recovered history, so pullMessages() can never see latestTimestamp=0.
+      _initialSyncCompleted = true;
+
       // 6. Schedule periodic persistence for subsequent state changes
       _schedulePersistence();
-    } catch (e) {
+    } catch (e, st) {
+      debugPrint('[ChatStore] Background revalidation failed: $e\n$st');
+      // Degrade gracefully to cached-only data; realtime transport events and
+      // subsequent reconnects will retry the recovery pull.
       state = state.copyWith(isLoading: false);
-      rethrow;
+    } finally {
+      _initialSyncInFlight = false;
     }
   }
 
@@ -1159,6 +1231,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         syncProgressPercent: 100,
         isInitialized: true,
       );
+      // A full sync is a comprehensive pull — the DB now holds complete
+      // history, so poll ticks are safe even if the cache-first initial
+      // revalidation never ran (e.g. sync triggered right after login).
+      _initialSyncCompleted = true;
     } finally {
       // Safety reset: ensure unread counters are always zero when a full sync
       // finishes, whether it succeeded or failed.  During the sync the local
@@ -3074,15 +3150,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       debugPrint('[ChatStore] Poll tick skipped — transport is ${_transport.transportMode.name}');
       return;
     }
-    // Do not poll before initialization is complete. Polling before initialize()
+    // Do not poll before the initial background revalidation is complete.
+    // With the cache-first flow state.isInitialized flips to true as soon as
+    // the cached snapshot renders, but polling before the recovery pull
     // finishes results in pullMessages() reading latestTimestamp=0 from an
     // empty DB, fetching ALL historical messages through the incremental path,
     // and marking every incoming message as unread. The batch-import path in
-    // recoverMissedMessages resets unreadByChat to {} at the end of initialize,
-    // but intermediate poll ticks during the several-second initialization
-    // window can still cause all chats to briefly (or permanently) show unread
-    // badges after an app update or reinstall.
-    if (!state.isInitialized) return;
+    // recoverMissedMessages resets unreadByChat to {} at the end of the sync,
+    // but intermediate poll ticks during the several-second sync window can
+    // still cause all chats to briefly (or permanently) show unread badges
+    // after an app update or reinstall.
+    if (!_initialSyncCompleted) return;
     // Do not poll during a full sync — the sync performs its own comprehensive
     // pull and polling with a cleared state would mark historical messages as
     // unread.
@@ -3397,6 +3475,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _lastGapAnalysisTime = 0;
     _pendingSyncFloorMs = null;
     _syncCursorMs = 0;
+    _initialSyncCompleted = false;
 
     await _db.clearAll();
     if (previousUser != null && previousUser.trim().isNotEmpty) {
