@@ -7906,6 +7906,7 @@ app.post(
 // locally) the given messages. Persists `receiveDateTime` and fans out a
 // silent `delivery-receipt` to the original sender so their outgoing messages
 // upgrade from single grey tick (sent) to double grey tick (delivered).
+const deliveryReceiptRateLimitStore = new Map();
 app.post(
     ['/delivered', '/notify/delivered'],
     requireAuthorizedUser({
@@ -7920,6 +7921,10 @@ app.post(
             return res.status(400).json({ status: 'error', message: 'Missing fields' });
         }
         const normalizedRecipient = req.resolvedUser;
+        const rateCheck = consumeRateLimitEntry(deliveryReceiptRateLimitStore, normalizedRecipient, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ status: 'error', message: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
         const normalizedSender = String(sender).trim();
         const uniqueMessageIds = Array.from(
             new Set(
