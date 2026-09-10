@@ -161,3 +161,83 @@ test('markActivitiesRead returns 0 for blank reader or chat', async () => {
   assert.equal(await service.markActivitiesRead('', '0501234567'), 0);
   assert.equal(await service.markActivitiesRead('0546799693', '  '), 0);
 });
+
+test('setAuthCode stores TTL-bound code in the Subscribe 2FA column', async () => {
+  const executeCalls = [];
+  const service = createService({
+    executeImpl: async (sql, params) => {
+      executeCalls.push({ sql, params });
+      return [{ affectedRows: 1 }, undefined];
+    },
+  });
+
+  const before = Date.now();
+  const ok = await service.setAuthCode('0546799693', '123456', 300);
+  const after = Date.now();
+
+  assert.equal(ok, true);
+  const updateCall = executeCalls.find((call) => /UPDATE `Subscribe` SET `2FA` = \?/.test(call.sql));
+  assert.ok(updateCall, 'expected an UPDATE on Subscribe.2FA');
+  const stored = String(updateCall.params[0]);
+  const [code, expiresRaw] = stored.split('|');
+  assert.equal(code, '123456');
+  const expiresAt = Number(expiresRaw);
+  assert.ok(expiresAt >= before + 300 * 1000 && expiresAt <= after + 300 * 1000, 'expiry must be ~TTL from now');
+  assert.ok(updateCall.params.includes('0546799693'));
+});
+
+test('setAuthCode returns false when no Subscribe row matches', async () => {
+  const service = createService({
+    executeImpl: async () => [{ affectedRows: 0 }, undefined],
+  });
+  assert.equal(await service.setAuthCode('0500000000', '123456', 300), false);
+});
+
+test('verifyAuthCode verifies an unexpired code and clears it (single-use)', async () => {
+  const executeCalls = [];
+  const futureExpiry = Date.now() + 60_000;
+  const service = createService({
+    queryImpl: async () => [[{ User: '0546799693', twoFA: `123456|${futureExpiry}` }], undefined],
+    executeImpl: async (sql, params) => {
+      executeCalls.push({ sql, params });
+      return [{ affectedRows: 1 }, undefined];
+    },
+  });
+
+  assert.equal(await service.verifyAuthCode('0546799693', '123456'), 'verified');
+  const clearCall = executeCalls.find((call) => /SET `2FA` = NULL/.test(call.sql));
+  assert.ok(clearCall, 'expected the 2FA column to be cleared after verification');
+  assert.deepEqual(clearCall.params, ['0546799693']);
+});
+
+test('verifyAuthCode accepts a bare code without expiry (external writer)', async () => {
+  const service = createService({
+    queryImpl: async () => [[{ User: '0546799693', twoFA: '654321' }], undefined],
+  });
+  assert.equal(await service.verifyAuthCode('0546799693', '654321'), 'verified');
+});
+
+test('verifyAuthCode rejects expired and mismatched codes', async () => {
+  const pastExpiry = Date.now() - 1000;
+  const serviceExpired = createService({
+    queryImpl: async () => [[{ User: '0546799693', twoFA: `123456|${pastExpiry}` }], undefined],
+  });
+  assert.equal(await serviceExpired.verifyAuthCode('0546799693', '123456'), 'mismatch');
+
+  const serviceWrong = createService({
+    queryImpl: async () => [[{ User: '0546799693', twoFA: `123456|${Date.now() + 60_000}` }], undefined],
+  });
+  assert.equal(await serviceWrong.verifyAuthCode('0546799693', '999999'), 'mismatch');
+});
+
+test('verifyAuthCode returns unavailable when no Subscribe row or DB error', async () => {
+  const serviceNoRow = createService({
+    queryImpl: async () => [[], undefined],
+  });
+  assert.equal(await serviceNoRow.verifyAuthCode('0500000000', '123456'), 'unavailable');
+
+  const serviceError = createService({
+    queryImpl: async () => { throw new Error('connection lost'); },
+  });
+  assert.equal(await serviceError.verifyAuthCode('0546799693', '123456'), 'unavailable');
+});

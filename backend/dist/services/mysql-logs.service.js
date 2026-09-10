@@ -2301,6 +2301,80 @@ class MysqlLogsService {
             return { status: 'error', message: 'Database query failed', isActive: false };
         }
     }
+    /**
+     * Store a login OTP code in the Subscribe table's `2FA` column.
+     * Format: "<code>|<expiresAtEpochMs>" so the code is TTL-bound.
+     * Much faster than the Google-Sheet round-trip and survives server restarts.
+     */
+    async setAuthCode(username, code, ttlSeconds) {
+        await this.ensureSubscribeTable();
+        const normalized = toTrimmedString(username);
+        const normalizedCode = toTrimmedString(code);
+        if (!normalized || !normalizedCode)
+            return false;
+        const ttl = Math.max(60, Number(ttlSeconds) || 300);
+        const expiresAt = Date.now() + ttl * 1000;
+        try {
+            const identifiers = Array.from(new Set([normalized, normalized.toLowerCase(), normalizePhone(normalized)].filter(Boolean)));
+            const placeholders = identifiers.map(() => '?').join(', ');
+            const [result] = await this.pool.execute(`UPDATE \`Subscribe\` SET \`2FA\` = ? WHERE \`User\` IN (${placeholders})`, [`${normalizedCode}|${expiresAt}`, ...identifiers]);
+            return (result.affectedRows || 0) > 0;
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.error('[MYSQL] setAuthCode error:', message);
+            return false;
+        }
+    }
+    /**
+     * Verify a login OTP code against the Subscribe table's `2FA` column.
+     * Accepts both the "<code>|<expiresAt>" format written by setAuthCode and a
+     * bare code written by external tooling (no expiry — treated as valid).
+     * Single-use: the column is cleared immediately after a successful match.
+     * Returns 'verified' | 'mismatch' | 'unavailable'.
+     */
+    async verifyAuthCode(username, code) {
+        await this.ensureSubscribeTable();
+        const normalized = toTrimmedString(username);
+        const normalizedCode = toTrimmedString(code);
+        if (!normalized || !normalizedCode)
+            return 'mismatch';
+        try {
+            const identifiers = Array.from(new Set([normalized, normalized.toLowerCase(), normalizePhone(normalized)].filter(Boolean)));
+            const placeholders = identifiers.map(() => '?').join(', ');
+            const [rows] = await this.pool.query(`SELECT \`User\`, \`2FA\` AS twoFA FROM \`Subscribe\` WHERE \`User\` IN (${placeholders})`, identifiers);
+            if (!rows || rows.length === 0)
+                return 'unavailable';
+            for (const row of rows) {
+                const stored = toTrimmedString(row.twoFA);
+                if (!stored)
+                    continue;
+                const separatorIndex = stored.indexOf('|');
+                const storedCode = separatorIndex >= 0 ? stored.slice(0, separatorIndex).trim() : stored;
+                const expiresAt = separatorIndex >= 0 ? Number(stored.slice(separatorIndex + 1)) : 0;
+                if (expiresAt > 0 && Date.now() > expiresAt) {
+                    continue; // expired code — treat as no match
+                }
+                if (storedCode && storedCode === normalizedCode) {
+                    // Single-use: clear the code so it can never be replayed.
+                    const matchedUser = toTrimmedString(row.User);
+                    try {
+                        await this.pool.execute('UPDATE `Subscribe` SET `2FA` = NULL WHERE `User` = ?', [matchedUser]);
+                    }
+                    catch (_clearErr) {
+                        // Non-fatal: expiry still bounds the code's lifetime.
+                    }
+                    return 'verified';
+                }
+            }
+            return 'mismatch';
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.error('[MYSQL] verifyAuthCode error:', message);
+            return 'unavailable';
+        }
+    }
     async lookupUserByWindowsUsername(windowsUser) {
         await this.ensureSubscribeTable();
         try {
