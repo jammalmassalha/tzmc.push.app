@@ -201,6 +201,10 @@ class RealtimeConfig {
   /// SSE stream retry delay
   static const Duration streamRetryDelay = Duration(seconds: 5);
 
+  /// Max time to wait for the SSE connection (response headers) to be
+  /// established before tearing down and falling back to polling.
+  static const Duration sseConnectTimeout = Duration(seconds: 15);
+
   /// Socket reconnect retry delay
   static const Duration socketRetryDelay = Duration(milliseconds: 3500);
 

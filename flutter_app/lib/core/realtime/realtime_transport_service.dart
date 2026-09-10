@@ -7,6 +7,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:logger/logger.dart';
 import 'package:socket_io_client/socket_io_client.dart' as socket_io;
@@ -387,11 +388,26 @@ class RealtimeTransportService {
       return;
     }
 
+    // On the web build `package:http`'s BrowserClient is backed by XHR and
+    // cannot stream a response: `send()` only completes once the WHOLE body
+    // has arrived, which for an infinite `/stream` SSE response is never.
+    // The request would hang forever without delivering a single event or
+    // error, and — because the transport used to report `sse` — the chat
+    // store's poll ticks were skipped, leaving the web client with no
+    // realtime updates at all. Skip SSE on web and rely on the polling
+    // fallback (socket reconnects keep being attempted independently).
+    if (kIsWeb) {
+      _logger.d('SSE fallback skipped on web — staying on polling');
+      if (!_socketConnected) {
+        _setTransportMode(RealtimeTransportMode.polling);
+      }
+      return;
+    }
+
     try {
       final streamUrl = '${Env.current.baseUrl}${ApiEndpoints.stream}?user=${Uri.encodeComponent(user)}';
       _sseClient = http.Client();
-      
-      _setTransportMode(RealtimeTransportMode.sse);
+
       _logger.d('Starting SSE connection');
 
       // Note: For production, use a proper SSE client library
@@ -409,14 +425,23 @@ class RealtimeTransportService {
       request.headers['Accept'] = 'text/event-stream';
       request.headers['Cache-Control'] = 'no-cache';
 
-      final response = await _sseClient!.send(request);
-      
+      // Guard the connection phase with a timeout so a stalled connect can
+      // never wedge the transport: until the stream is proven live the mode
+      // stays `polling`, and on timeout we tear down and retry.
+      final response = await _sseClient!
+          .send(request)
+          .timeout(RealtimeConfig.sseConnectTimeout);
+
       if (response.statusCode != 200) {
         _stopSseOnly();
         _scheduleStreamReconnect(user);
         return;
       }
 
+      // Only now — with the stream established — report the SSE transport
+      // mode. Flipping it before the connection succeeds would silence the
+      // polling fallback while no events can actually arrive.
+      _setTransportMode(RealtimeTransportMode.sse);
       _connectedController.add(true);
 
       _sseSubscription = response.stream
