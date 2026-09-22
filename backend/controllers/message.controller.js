@@ -20,6 +20,7 @@ function registerMessageController(app, deps = {}) {
         loadAllChatGroups,
         getActiveRedisStateStore,
         getMessageQueue,
+        getMailboxSequence,
         scheduleStateSave,
         sseClients,
         updateUserReceivedTime,
@@ -344,6 +345,40 @@ function registerMessageController(app, deps = {}) {
                     return res.status(502).json({ groups: [], error: 'Database fetch failed' });
                 }
             }
+        }
+    );
+
+    registerReadRoute(
+        app,
+        ['/messages/sync', '/notify/messages/sync'],
+        requireAuthorizedUser({
+            required: true,
+            candidateKeys: ['user'],
+            onError: (_req, res, resolution) =>
+                res.status(resolution.status).json({ messages: [], error: resolution.error })
+        }),
+        async (req, res) => {
+            const user = req.resolvedUser;
+            if (!user) return res.status(400).json({ messages: [], error: 'Missing user' });
+            const lastSequence = Math.max(0, Number(req.query && (req.query.last_seq || req.query.lastSeq)) || 0);
+            let messages = [];
+            const store = getActiveRedisStateStore();
+            if (store && store.isEnabled && typeof store.readQueueSince === 'function') {
+                try {
+                    messages = await store.readQueueSince(user, lastSequence);
+                } catch (error) {
+                    console.warn('[REDIS] Delta sync failed:', error && error.message ? error.message : error);
+                }
+            }
+            if (!messages.length) {
+                const mailbox = getMessageQueue()[user] || [];
+                messages = mailbox.filter((message) => Number(message && message.seq_id) > lastSequence);
+            }
+            messages.sort((a, b) => Number(a && a.seq_id) - Number(b && b.seq_id));
+            const currentSequence = typeof getMailboxSequence === 'function'
+                ? Number(getMailboxSequence(user)) || 0
+                : (messages.length ? Number(messages[messages.length - 1].seq_id) || 0 : lastSequence);
+            return res.json({ messages, last_seq: currentSequence });
         }
     );
 

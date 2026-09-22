@@ -82,6 +82,7 @@ export interface ChatListItem {
 }
 
 export interface IncomingServerMessage {
+  seq_id?: number;
   messageId?: string;
   sender?: string;
   toUser?: string;

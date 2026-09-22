@@ -697,6 +697,7 @@ webpush.setVapidDetails(
 // [NEW] 4. POLLING MAILBOX (REDIS STREAMS + FALLBACK MEMORY)
 // ======================================================
 let messageQueue = {}; 
+const mailboxSequenceByUser = new Map();
 // Realtime client registry + fan-out helpers live in their own module so the
 // multi-device delivery rules can be unit tested without booting the server.
 const {
@@ -774,20 +775,34 @@ async function addToQueue(targetUser, messageObj) {
     const queueWriteTasks = [];
     const deliveries = [];
 
-    recipients.forEach((user) => {
+    for (const user of recipients) {
         const normalizedUser = normalizeUserCandidate(user);
-        if (!normalizedUser) return;
+        if (!normalizedUser) continue;
+
+        const hasRedisQueue = Boolean(activeRedisStateStore && activeRedisStateStore.isEnabled);
+        let sequence = hasRedisQueue && typeof activeRedisStateStore.nextMailboxSequence === 'function'
+            ? await activeRedisStateStore.nextMailboxSequence(normalizedUser)
+            : 0;
+        if (!sequence) {
+            sequence = (mailboxSequenceByUser.get(normalizedUser) || 0) + 1;
+            mailboxSequenceByUser.set(normalizedUser, sequence);
+        } else {
+            mailboxSequenceByUser.set(
+                normalizedUser,
+                Math.max(mailboxSequenceByUser.get(normalizedUser) || 0, sequence)
+            );
+        }
 
         const queueEntry = (messageObj && typeof messageObj === 'object')
-            ? { ...messageObj, recipient: normalizedUser }
+            ? { ...messageObj, recipient: normalizedUser, seq_id: sequence }
             : {
                 recipient: normalizedUser,
                 body: String(messageObj || ''),
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                seq_id: sequence
             };
 
         deliveries.push({ normalizedUser, queueEntry });
-        const hasRedisQueue = Boolean(activeRedisStateStore && activeRedisStateStore.isEnabled);
         if (hasRedisQueue) {
             queueWriteTasks.push(
                 activeRedisStateStore.enqueueMessages(normalizedUser, [queueEntry]).catch((error) => {
@@ -805,7 +820,7 @@ async function addToQueue(targetUser, messageObj) {
             messageQueue[normalizedUser] = [];
         }
         messageQueue[normalizedUser].push(queueEntry);
-    });
+    }
 
     if (queueWriteTasks.length) {
         await Promise.allSettled(queueWriteTasks);
@@ -7460,6 +7475,7 @@ registerMessageController(app, {
     loadAllChatGroups: () => mysqlLogsService.loadAllChatGroups(),
     getActiveRedisStateStore: () => activeRedisStateStore,
     getMessageQueue: () => messageQueue,
+    getMailboxSequence: (user) => mailboxSequenceByUser.get(normalizeUserCandidate(user)) || 0,
     scheduleStateSave,
     sseClients,
     updateUserReceivedTime: (msgId, receivedAt) => mysqlLogsService.updateUserReceivedTime(msgId, receivedAt),
