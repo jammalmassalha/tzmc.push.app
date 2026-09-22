@@ -350,7 +350,7 @@ function registerMessageController(app, deps = {}) {
 
     registerReadRoute(
         app,
-        ['/messages/sync', '/notify/messages/sync'],
+        ['/messages/sync', '/notify/messages/sync', '/api/v1/chat/sync'],
         requireAuthorizedUser({
             required: true,
             candidateKeys: ['user'],
@@ -360,7 +360,9 @@ function registerMessageController(app, deps = {}) {
         async (req, res) => {
             const user = req.resolvedUser;
             if (!user) return res.status(400).json({ messages: [], error: 'Missing user' });
-            const lastSequence = Math.max(0, Number(req.query && (req.query.last_seq || req.query.lastSeq)) || 0);
+            const lastSequence = Math.max(0, Number(req.query && (
+                req.query.since_pts || req.query.last_seq || req.query.lastSeq
+            )) || 0);
             const requestedChatId = String(req.query && (req.query.chat_id || req.query.chatId) || '').trim();
             let messages = [];
             const store = getActiveRedisStateStore();

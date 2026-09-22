@@ -2691,6 +2691,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
 
         const pollingMessage = {
             messageId,
+            client_msg_id: String(clientMessageId || messageId),
             sender: isGroup ? groupId : user,
             body: reply,
             timestamp: Date.now(),
@@ -5624,13 +5625,9 @@ io.on('connection', (socket) => {
                 const messageId = String(payload.server_msg_id || payload.message_id || '').trim();
                 if (!messageId) return replyAck({ status: 'error', error: 'Missing server_msg_id' });
                 try {
-                    await mysqlLogsService.insertMessageActivity({
-                        actionType: 'delivered',
-                        messageId,
-                        sender: socketUser,
-                        recipient: String(payload.chat_id || '').trim(),
-                        actionTimestamp: Date.now()
-                    });
+                    if (typeof mysqlLogsService.markMessageDelivered === 'function') {
+                        await mysqlLogsService.markMessageDelivered(messageId);
+                    }
                     const sender = normalizeUserCandidate(payload.sender || payload.from_user || '');
                     if (sender) notifyRealtimeClients(sender, {
                         type: 'message:delivered',
@@ -5652,14 +5649,8 @@ io.on('connection', (socket) => {
                     : [String(payload.server_msg_id || payload.message_id || '').trim()].filter(Boolean);
                 if (!messageIds.length) return replyAck({ status: 'error', error: 'Missing message ids' });
                 try {
-                    for (const messageId of messageIds) {
-                        await mysqlLogsService.insertMessageActivity({
-                            actionType: 'read',
-                            messageId,
-                            sender: socketUser,
-                            recipient: String(payload.chat_id || '').trim(),
-                            actionTimestamp: Date.now()
-                        });
+                    if (typeof mysqlLogsService.markMessagesRead === 'function') {
+                        await mysqlLogsService.markMessagesRead(messageIds);
                     }
                     const sender = normalizeUserCandidate(payload.sender || payload.from_user || '');
                     if (sender) notifyRealtimeClients(sender, {

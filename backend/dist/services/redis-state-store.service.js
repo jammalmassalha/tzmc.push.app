@@ -46,6 +46,9 @@ class RedisStateStore {
     sequenceKeyForUser(user) {
         return `${this.keyPrefix}:sequence:${user}`;
     }
+    chatPtsKey(chatId) {
+        return `${this.keyPrefix}:chat:${chatId}:pts`;
+    }
     queueEventsChannel() {
         return `${this.keyPrefix}:queue:events`;
     }
@@ -152,6 +155,15 @@ class RedisStateStore {
         if (!normalizedUser)
             return 0;
         const value = await this.client.incr(this.sequenceKeyForUser(normalizedUser));
+        return Number(value) || 0;
+    }
+    async nextChatPts(chatId) {
+        if (!this.connected || !this.client)
+            return 0;
+        const normalizedChatId = toTrimmedString(chatId);
+        if (!normalizedChatId)
+            return 0;
+        const value = await this.client.incr(this.chatPtsKey(normalizedChatId));
         return Number(value) || 0;
     }
     /** Read retained mailbox events without consuming them. */

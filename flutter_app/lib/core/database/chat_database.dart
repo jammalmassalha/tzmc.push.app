@@ -83,6 +83,8 @@ class Groups extends Table {
 
 /// Messages table
 @DataClassName('MessagesData')
+@TableIndex(name: 'messages_client_msg_id_idx', columns: {#clientMsgId})
+@TableIndex(name: 'messages_chat_pts_idx', columns: {#chatId, #pts})
 class Messages extends Table {
   TextColumn get id => text()();
   TextColumn get messageId => text()();

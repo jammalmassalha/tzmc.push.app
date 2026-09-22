@@ -1731,8 +1731,9 @@ export class MysqlLogsService {
       const message = String((err as { message?: string }).message || '');
       console.error('[MYSQL] insertMessageActivity error:', message);
     }
+  }
 
-    async markMessageDelivered(messageId: string, deliveredAt = Date.now()): Promise<void> {
+  async markMessageDelivered(messageId: string, deliveredAt = Date.now()): Promise<void> {
       await this.ensureMessageActivitiesTable();
       await this.pool.execute(
         'UPDATE `MessageActivities` SET `Status` = IF(`Status` = "read", "read", "delivered"), `DeliveredAt` = COALESCE(`DeliveredAt`, ?) WHERE `MessageId` = ?',
@@ -1740,7 +1741,7 @@ export class MysqlLogsService {
       );
     }
 
-    async markMessagesRead(messageIds: string[], readAt = Date.now()): Promise<void> {
+  async markMessagesRead(messageIds: string[], readAt = Date.now()): Promise<void> {
       await this.ensureMessageActivitiesTable();
       const ids = messageIds.map((id) => toTrimmedString(id)).filter(Boolean);
       if (!ids.length) return;
@@ -1749,7 +1750,6 @@ export class MysqlLogsService {
         `UPDATE \`MessageActivities\` SET \`Status\` = 'read', \`ReadAt\` = COALESCE(\`ReadAt\`, ?) WHERE \`MessageId\` IN (${placeholders})`,
         [new Date(readAt), ...ids]
       );
-    }
   }
 
   async getAllMessageActivities(): Promise<Record<string, unknown>[]> {

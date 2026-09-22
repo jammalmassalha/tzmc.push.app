@@ -2125,17 +2125,18 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// inspecting session cookies or the `body.user` field.  When the socket
   /// is unavailable (not connected, or ack times out) we fall back to the
   /// regular HTTP path which uses the session cookie + `body.user`.
-  Future<void> _sendReply(ReplyPayload payload) async {
+  Future<Map<String, dynamic>?> _sendReply(ReplyPayload payload) async {
     // Try socket first.
     final socketResult = await _transport.emitWithAck(
       'chat:reply',
       payload.toJson(),
     );
     if (socketResult != null && socketResult['status'] == 'success') {
-      return; // Delivered via socket.io.
+      return socketResult;
     }
     // Socket not available, timed out, or returned an error — fall back to HTTP.
     await _api.sendDirectMessage(payload);
+    return null;
   }
 
   /// Send a direct message
@@ -2157,6 +2158,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final message = ChatMessage(
       id: messageId,
       messageId: messageId,
+      clientMsgId: messageId,
       chatId: recipient,
       sender: sender.isNotEmpty ? sender : 'me',
       body: body,
@@ -2196,7 +2198,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         forwardedFromName: forwardedFromName,
         deviceId: _transport.deviceId,
       );
-      await _sendReply(payload);
+      final ack = await _sendReply(payload);
+      final pts = ack?['pts'];
+      if (pts is num && pts > 0) {
+        _updateMessagePts(messageId, pts.toInt());
+      }
 
       // Update status to sent
       _updateMessageStatus(messageId, DeliveryStatus.sent);
@@ -2226,6 +2232,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final message = ChatMessage(
       id: messageId,
       messageId: messageId,
+      clientMsgId: messageId,
       chatId: groupId,
       sender: sender.isNotEmpty ? sender : 'me',
       body: body,
@@ -2279,7 +2286,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         replyToImageUrl: replyTo?.imageUrl,
         deviceId: _transport.deviceId,
       );
-      await _sendReply(payload);
+      final ack = await _sendReply(payload);
+      final pts = ack?['pts'];
+      if (pts is num && pts > 0) {
+        _updateMessagePts(messageId, pts.toInt());
+      }
 
       // Update status to sent
       _updateMessageStatus(messageId, DeliveryStatus.sent);
@@ -2300,12 +2311,27 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           _writeMessageThrough(updated);
           return updated;
         }
+
         return m;
       }).toList();
       newMessagesByChat[entry.key] = chatMessages;
     }
 
     state = state.copyWith(messagesByChat: newMessagesByChat);
+  }
+
+  void _updateMessagePts(String messageId, int pts) {
+    final messagesByChat = Map<String, List<ChatMessage>>.from(state.messagesByChat);
+    for (final entry in messagesByChat.entries) {
+      final index = entry.value.indexWhere((message) => message.messageId == messageId);
+      if (index < 0) continue;
+      final messages = List<ChatMessage>.from(entry.value);
+      messages[index] = messages[index].copyWith(pts: pts);
+      messagesByChat[entry.key] = messages;
+      state = state.copyWith(messagesByChat: messagesByChat);
+      _schedulePersistence();
+      return;
+    }
   }
 
   /// Returns the higher-ranked of two [DeliveryStatus] values so that status

@@ -122,7 +122,7 @@ function registerFlutterPushRoutes(app, deps = {}) {
     });
 
     app.post(
-        ['/messages/ack-delivery', '/notify/messages/ack-delivery'],
+        ['/messages/ack-delivery', '/notify/messages/ack-delivery', '/api/v1/messages/ack-delivery'],
         authMiddleware,
         async (req, res) => {
             const body = readBody(req);
