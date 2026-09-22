@@ -107,7 +107,7 @@ function logFlutterRegistrationDebug(deps, req, event) {
 }
 
 function registerFlutterPushRoutes(app, deps = {}) {
-    const { flutterPushService, requireAuthorizedUser } = deps;
+    const { flutterPushService, requireAuthorizedUser, mysqlLogsService } = deps;
     if (!app) throw new Error('flutter-push.routes: app is required');
     if (!flutterPushService) throw new Error('flutter-push.routes: flutterPushService is required');
     if (typeof requireAuthorizedUser !== 'function') {
@@ -120,6 +120,27 @@ function registerFlutterPushRoutes(app, deps = {}) {
         onError: (_req, res, resolution) =>
             res.status(resolution.status).json({ status: 'error', message: resolution.error })
     });
+
+    app.post(
+        ['/messages/ack-delivery', '/notify/messages/ack-delivery', '/api/v1/messages/ack-delivery'],
+        authMiddleware,
+        async (req, res) => {
+            const body = readBody(req);
+            const messageId = String(body.server_msg_id || body.messageId || '').trim();
+            if (!messageId || !mysqlLogsService || typeof mysqlLogsService.markMessageDelivered !== 'function') {
+                return res.status(400).json({ status: 'error', message: 'Missing server_msg_id' });
+            }
+            try {
+                await mysqlLogsService.markMessageDelivered(messageId);
+                return res.json({ status: 'success', messageId });
+            } catch (error) {
+                return res.status(502).json({
+                    status: 'error',
+                    message: error && error.message ? error.message : 'Delivery ACK failed'
+                });
+            }
+        }
+    );
 
 function readBody(req) {
     return (req && req.body && typeof req.body === 'object') ? req.body : {};

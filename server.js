@@ -697,6 +697,7 @@ webpush.setVapidDetails(
 // [NEW] 4. POLLING MAILBOX (REDIS STREAMS + FALLBACK MEMORY)
 // ======================================================
 let messageQueue = {}; 
+const mailboxSequenceByUser = new Map();
 // Realtime client registry + fan-out helpers live in their own module so the
 // multi-device delivery rules can be unit tested without booting the server.
 const {
@@ -774,20 +775,43 @@ async function addToQueue(targetUser, messageObj) {
     const queueWriteTasks = [];
     const deliveries = [];
 
-    recipients.forEach((user) => {
+    for (const user of recipients) {
         const normalizedUser = normalizeUserCandidate(user);
-        if (!normalizedUser) return;
+        if (!normalizedUser) continue;
+
+        const hasRedisQueue = Boolean(activeRedisStateStore && activeRedisStateStore.isEnabled);
+        let sequence = hasRedisQueue && typeof activeRedisStateStore.nextMailboxSequence === 'function'
+            ? await activeRedisStateStore.nextMailboxSequence(normalizedUser)
+            : 0;
+        if (!sequence) {
+            sequence = (mailboxSequenceByUser.get(normalizedUser) || 0) + 1;
+            mailboxSequenceByUser.set(normalizedUser, sequence);
+        } else {
+            mailboxSequenceByUser.set(
+                normalizedUser,
+                Math.max(mailboxSequenceByUser.get(normalizedUser) || 0, sequence)
+            );
+        }
+        const chatId = normalizeUserCandidate(
+            messageObj && typeof messageObj === 'object'
+                ? (messageObj.chatId || messageObj.groupId || messageObj.toUser || messageObj.recipient || normalizedUser)
+                : normalizedUser
+        );
+        const pts = hasRedisQueue && typeof activeRedisStateStore.nextChatPts === 'function'
+            ? await activeRedisStateStore.nextChatPts(chatId)
+            : 0;
 
         const queueEntry = (messageObj && typeof messageObj === 'object')
-            ? { ...messageObj, recipient: normalizedUser }
+            ? { ...messageObj, recipient: normalizedUser, seq_id: sequence, pts: pts || sequence }
             : {
                 recipient: normalizedUser,
                 body: String(messageObj || ''),
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                seq_id: sequence,
+                pts: pts || sequence
             };
 
         deliveries.push({ normalizedUser, queueEntry });
-        const hasRedisQueue = Boolean(activeRedisStateStore && activeRedisStateStore.isEnabled);
         if (hasRedisQueue) {
             queueWriteTasks.push(
                 activeRedisStateStore.enqueueMessages(normalizedUser, [queueEntry]).catch((error) => {
@@ -805,7 +829,7 @@ async function addToQueue(targetUser, messageObj) {
             messageQueue[normalizedUser] = [];
         }
         messageQueue[normalizedUser].push(queueEntry);
-    });
+    }
 
     if (queueWriteTasks.length) {
         await Promise.allSettled(queueWriteTasks);
@@ -816,6 +840,7 @@ async function addToQueue(targetUser, messageObj) {
         notifyRealtimeClients(normalizedUser, queueEntry);
     });
     scheduleStateSave();
+    return deliveries;
 }
 // ======================================================
 
@@ -2683,6 +2708,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
 
         const pollingMessage = {
             messageId,
+            client_msg_id: String(clientMessageId || messageId),
             sender: isGroup ? groupId : user,
             body: reply,
             timestamp: sentAtMs,
@@ -2709,10 +2735,12 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             body: reply || null,
             imageUrl: imageUrl || null,
             fileUrl: fileUrl || null,
+            clientMsgId: String(clientMessageId || messageId).slice(0, 64),
+            status: 'sent',
             actionTimestamp: Date.now()
         }).catch(() => {});
 
-        await addToQueue(targetToNotify, pollingMessage);
+        const queuedDeliveries = await addToQueue(targetToNotify, pollingMessage);
 
         const senderForPush = isGroup ? groupId : user;
 
@@ -2738,7 +2766,12 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             { groupSenderName: isGroup ? senderLabel : '', sentDateTime: sentDateTimeIso }
         );
 
-        const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, { messageId });
+        const firstRecipient = Array.isArray(targetToNotify) ? targetToNotify[0] : targetToNotify;
+        const recipientOnline = websocketClients.has(normalizeUserCandidate(firstRecipient));
+        const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, {
+            messageId,
+            silent: !recipientOnline
+        });
         recentProcessedReplyMessages.set(messageId, Date.now());
 
         // ── Self-echo: notify sender's other devices so sent messages appear in real time ──
@@ -2772,7 +2805,17 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             }).catch(() => {});
         }
 
-        return { status: 'success', details: result };
+        return {
+            status: 'success',
+            details: result,
+            event: 'message:sent_ack',
+            client_msg_id: String(clientMessageId || messageId),
+            server_msg_id: messageId,
+            pts: Number(queuedDeliveries && queuedDeliveries[0] && queuedDeliveries[0].queueEntry
+                ? queuedDeliveries[0].queueEntry.pts
+                : 0) || 0,
+            created_at: Number(pollingMessage.timestamp) || Date.now()
+        };
     } catch (error) {
         recentProcessedReplyMessages.delete(messageId);
         throw error;
@@ -5726,6 +5769,51 @@ io.on('connection', (socket) => {
                 status: 'error',
                 error: error && error.message ? error.message : 'Typing signal failed'
             });
+
+            socket.on('message:ack_delivery', async (payload = {}, ack) => {
+                const replyAck = typeof ack === 'function' ? ack : () => undefined;
+                const messageId = String(payload.server_msg_id || payload.message_id || '').trim();
+                if (!messageId) return replyAck({ status: 'error', error: 'Missing server_msg_id' });
+                try {
+                    if (typeof mysqlLogsService.markMessageDelivered === 'function') {
+                        await mysqlLogsService.markMessageDelivered(messageId);
+                    }
+                    const sender = normalizeUserCandidate(payload.sender || payload.from_user || '');
+                    if (sender) notifyRealtimeClients(sender, {
+                        type: 'message:delivered',
+                        messageId,
+                        server_msg_id: messageId,
+                        pts: Number(payload.pts) || 0,
+                        deliveredAt: Date.now()
+                    });
+                    replyAck({ status: 'success', messageId });
+                } catch (error) {
+                    replyAck({ status: 'error', error: error && error.message ? error.message : 'Delivery ACK failed' });
+                }
+            });
+
+            socket.on('message:ack_read', async (payload = {}, ack) => {
+                const replyAck = typeof ack === 'function' ? ack : () => undefined;
+                const messageIds = Array.isArray(payload.message_ids)
+                    ? payload.message_ids.map((id) => String(id || '').trim()).filter(Boolean)
+                    : [String(payload.server_msg_id || payload.message_id || '').trim()].filter(Boolean);
+                if (!messageIds.length) return replyAck({ status: 'error', error: 'Missing message ids' });
+                try {
+                    if (typeof mysqlLogsService.markMessagesRead === 'function') {
+                        await mysqlLogsService.markMessagesRead(messageIds);
+                    }
+                    const sender = normalizeUserCandidate(payload.sender || payload.from_user || '');
+                    if (sender) notifyRealtimeClients(sender, {
+                        type: 'message:read',
+                        messageIds,
+                        pts: Number(payload.read_up_to_pts || payload.pts) || 0,
+                        readAt: Date.now()
+                    });
+                    replyAck({ status: 'success', messageIds });
+                } catch (error) {
+                    replyAck({ status: 'error', error: error && error.message ? error.message : 'Read ACK failed' });
+                }
+            });
         }
     });
 
@@ -7616,6 +7704,7 @@ registerMessageController(app, {
     loadAllChatGroups: () => mysqlLogsService.loadAllChatGroups(),
     getActiveRedisStateStore: () => activeRedisStateStore,
     getMessageQueue: () => messageQueue,
+    getMailboxSequence: (user) => mailboxSequenceByUser.get(normalizeUserCandidate(user)) || 0,
     scheduleStateSave,
     sseClients,
     updateUserReceivedTime: (msgId, receivedAt) => mysqlLogsService.updateUserReceivedTime(msgId, receivedAt),

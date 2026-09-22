@@ -68,6 +68,7 @@ interface GroupsResponse {
 
 interface PollResponse {
   messages?: IncomingServerMessage[];
+  last_seq?: number;
 }
 
 interface LogsMessagesResponse {
@@ -619,10 +620,11 @@ export class ChatApiService {
     }
   }
 
-  async pollMessages(user?: string): Promise<IncomingServerMessage[]> {
+  async pollMessages(user?: string, lastSeq = 0): Promise<IncomingServerMessage[]> {
     const normalizedUser = String(user || '').trim().toLowerCase();
+    const cursor = Math.max(0, Math.floor(Number(lastSeq) || 0));
     const candidateUrls = normalizedUser
-      ? [`${this.messagesUrlBase}?user=${encodeURIComponent(normalizedUser)}`, this.messagesUrlBase]
+      ? [`${this.notifyBaseUrl}/messages/sync?user=${encodeURIComponent(normalizedUser)}&last_seq=${cursor}`, `${this.messagesUrlBase}?user=${encodeURIComponent(normalizedUser)}`, this.messagesUrlBase]
       : [this.messagesUrlBase];
 
     let response: Response | null = null;

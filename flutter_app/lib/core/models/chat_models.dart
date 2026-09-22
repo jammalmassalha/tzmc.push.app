@@ -271,7 +271,9 @@ class MessageReference extends Equatable {
 class ChatMessage extends Equatable {
   final String id;
   final String messageId;
+  final String? clientMsgId;
   final String chatId;
+  final int? pts;
   final String sender;
   final String? senderDisplayName;
   final String? recordType;
@@ -307,7 +309,9 @@ class ChatMessage extends Equatable {
   const ChatMessage({
     required this.id,
     required this.messageId,
+    this.clientMsgId,
     required this.chatId,
+    this.pts,
     required this.sender,
     this.senderDisplayName,
     this.recordType,
@@ -384,7 +388,9 @@ class ChatMessage extends Equatable {
   List<Object?> get props => [
         id,
         messageId,
+        clientMsgId,
         chatId,
+        pts,
         sender,
         senderDisplayName,
         recordType,
@@ -415,7 +421,9 @@ class ChatMessage extends Equatable {
     return ChatMessage(
       id: json['id'] as String,
       messageId: json['messageId'] as String,
+      clientMsgId: json['clientMsgId'] as String?,
       chatId: json['chatId'] as String,
+      pts: json['pts'] as int?,
       sender: json['sender'] as String,
       senderDisplayName: json['senderDisplayName'] as String?,
       recordType: json['recordType'] as String?,
@@ -463,7 +471,9 @@ class ChatMessage extends Equatable {
   Map<String, dynamic> toJson() => {
         'id': id,
         'messageId': messageId,
+        'clientMsgId': clientMsgId,
         'chatId': chatId,
+        'pts': pts,
         'sender': sender,
         'senderDisplayName': senderDisplayName,
         'recordType': recordType,
@@ -494,7 +504,9 @@ class ChatMessage extends Equatable {
   ChatMessage copyWith({
     String? id,
     String? messageId,
+    String? clientMsgId,
     String? chatId,
+    int? pts,
     String? sender,
     String? senderDisplayName,
     String? recordType,
@@ -523,7 +535,9 @@ class ChatMessage extends Equatable {
     return ChatMessage(
       id: id ?? this.id,
       messageId: messageId ?? this.messageId,
+      clientMsgId: clientMsgId ?? this.clientMsgId,
       chatId: chatId ?? this.chatId,
+      pts: pts ?? this.pts,
       sender: sender ?? this.sender,
       senderDisplayName: senderDisplayName ?? this.senderDisplayName,
       recordType: recordType ?? this.recordType,
@@ -602,6 +616,8 @@ class ChatListItem extends Equatable {
 /// Incoming server message (raw message from API)
 class IncomingServerMessage extends Equatable {
   final String? messageId;
+  final String? clientMsgId;
+  final int? pts;
   final String? sender;
   final String? toUser;
   final String? recipient;
@@ -653,6 +669,8 @@ class IncomingServerMessage extends Equatable {
 
   const IncomingServerMessage({
     this.messageId,
+    this.clientMsgId,
+    this.pts,
     this.sender,
     this.toUser,
     this.recipient,
@@ -697,6 +715,8 @@ class IncomingServerMessage extends Equatable {
   @override
   List<Object?> get props => [
         messageId,
+        clientMsgId,
+        pts,
         sender,
         toUser,
         recipient,
@@ -780,6 +800,8 @@ class IncomingServerMessage extends Equatable {
 
     return IncomingServerMessage(
       messageId: asString(json['messageId'] ?? json['msgId']),
+      clientMsgId: asString(json['client_msg_id'] ?? json['clientMsgId']),
+      pts: asInt(json['pts']),
       sender: asString(json['sender'] ?? json['from'] ?? json['fromUser']),
       toUser: asString(json['toUser'] ?? json['to']),
       recipient: asString(json['recipient']),
@@ -827,6 +849,8 @@ class IncomingServerMessage extends Equatable {
 
   Map<String, dynamic> toJson() => {
         if (messageId != null) 'messageId': messageId,
+        if (clientMsgId != null) 'client_msg_id': clientMsgId,
+        if (pts != null) 'pts': pts,
         if (sender != null) 'sender': sender,
         if (toUser != null) 'toUser': toUser,
         if (recipient != null) 'recipient': recipient,

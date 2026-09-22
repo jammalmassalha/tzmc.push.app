@@ -62,6 +62,7 @@ class ApiEndpoints {
 
   // Messages
   static const String messages = '/messages';
+  static const String chatSync = '/messages/sync';
   static const String messagesLogs = '/messages/logs';
   static const String messagesReceived = '/messages/received';
   static const String messagesReceivedBatch = '/messages/received-batch';

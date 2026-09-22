@@ -2050,7 +2050,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final message = ChatMessage(
       id: messageId,
       messageId: messageId,
+      clientMsgId: msg.clientMsgId,
       chatId: chatId,
+      pts: msg.pts,
       sender: sender,
       senderDisplayName: senderDisplayName,
       body: body,
@@ -2067,6 +2069,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     );
 
     final isNew = _applyIncomingMessage(message);
+    if (!isSelfEcho && message.messageId.isNotEmpty) {
+      unawaited(_transport.emitWithAck('message:ack_delivery', {
+        'server_msg_id': message.messageId,
+        'chat_id': chatId,
+        'pts': message.pts ?? 0,
+        'sender': message.sender,
+      }));
+    }
 
     // Update unread count if not the currently open chat.
     // Skip for self-echo messages (sender's own devices) to avoid
@@ -2286,17 +2296,18 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// inspecting session cookies or the `body.user` field.  When the socket
   /// is unavailable (not connected, or ack times out) we fall back to the
   /// regular HTTP path which uses the session cookie + `body.user`.
-  Future<void> _sendReply(ReplyPayload payload) async {
+  Future<Map<String, dynamic>?> _sendReply(ReplyPayload payload) async {
     // Try socket first.
     final socketResult = await _transport.emitWithAck(
       'chat:reply',
       payload.toJson(),
     );
     if (socketResult != null && socketResult['status'] == 'success') {
-      return; // Delivered via socket.io.
+      return socketResult;
     }
     // Socket not available, timed out, or returned an error — fall back to HTTP.
     await _api.sendDirectMessage(payload);
+    return null;
   }
 
   /// Send a direct message
@@ -2318,6 +2329,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final message = ChatMessage(
       id: messageId,
       messageId: messageId,
+      clientMsgId: messageId,
       chatId: recipient,
       sender: sender.isNotEmpty ? sender : 'me',
       body: body,
@@ -2360,7 +2372,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         sentDateTime:
             DateTime.fromMillisecondsSinceEpoch(timestamp, isUtc: true).toIso8601String(),
       );
-      await _sendReply(payload);
+      final ack = await _sendReply(payload);
+      final pts = ack?['pts'];
+      if (pts is num && pts > 0) {
+        _updateMessagePts(messageId, pts.toInt());
+      }
 
       // Update status to sent
       _updateMessageStatus(messageId, DeliveryStatus.sent);
@@ -2390,6 +2406,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final message = ChatMessage(
       id: messageId,
       messageId: messageId,
+      clientMsgId: messageId,
       chatId: groupId,
       sender: sender.isNotEmpty ? sender : 'me',
       body: body,
@@ -2446,7 +2463,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         sentDateTime:
             DateTime.fromMillisecondsSinceEpoch(timestamp, isUtc: true).toIso8601String(),
       );
-      await _sendReply(payload);
+      final ack = await _sendReply(payload);
+      final pts = ack?['pts'];
+      if (pts is num && pts > 0) {
+        _updateMessagePts(messageId, pts.toInt());
+      }
 
       // Update status to sent
       _updateMessageStatus(messageId, DeliveryStatus.sent);
@@ -2467,12 +2488,27 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           _writeMessageThrough(updated);
           return updated;
         }
+
         return m;
       }).toList();
       newMessagesByChat[entry.key] = chatMessages;
     }
 
     state = state.copyWith(messagesByChat: newMessagesByChat);
+  }
+
+  void _updateMessagePts(String messageId, int pts) {
+    final messagesByChat = Map<String, List<ChatMessage>>.from(state.messagesByChat);
+    for (final entry in messagesByChat.entries) {
+      final index = entry.value.indexWhere((message) => message.messageId == messageId);
+      if (index < 0) continue;
+      final messages = List<ChatMessage>.from(entry.value);
+      messages[index] = messages[index].copyWith(pts: pts);
+      messagesByChat[entry.key] = messages;
+      state = state.copyWith(messagesByChat: messagesByChat);
+      _schedulePersistence();
+      return;
+    }
   }
 
   /// Returns the higher-ranked of two [DeliveryStatus] values so that status
@@ -2689,6 +2725,16 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     unawaited(_clearChatFromPendingTray(chatId));
 
     try {
+      final messages = state.messagesByChat[chatId] ?? const <ChatMessage>[];
+      final readUpToPts = messages
+          .where((message) => messageIds.contains(message.messageId))
+          .map((message) => message.pts ?? 0)
+          .fold<int>(0, (maxPts, pts) => pts > maxPts ? pts : maxPts);
+      unawaited(_transport.emitWithAck('message:ack_read', {
+        'message_ids': messageIds,
+        'chat_id': chatId,
+        'read_up_to_pts': readUpToPts,
+      }));
       await _api.markMessagesAsRead(
         chatId,
         messageIds,
@@ -3260,8 +3306,28 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // recoverMissedMessages here would race with the sync's cleared state
       // and could mark historical messages as unread.
       if (state.isSyncing) return;
-      // Recover missed messages when reconnecting
-      recoverMissedMessages(force: true);
+      unawaited(_syncKnownChats());
+    }
+  }
+
+  Future<void> _syncKnownChats() async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty) return;
+    final chatIds = state.messagesByChat.keys.toList(growable: false);
+    for (final chatId in chatIds) {
+      try {
+        final sincePts = await _db.getHighestPts(chatId);
+        final diff = await _api.syncChat(
+          chatId: chatId,
+          sincePts: sincePts,
+          user: user,
+        );
+        for (final message in diff) {
+          _handleServerMessage(message);
+        }
+      } catch (_) {
+        // The existing recovery path remains available on the next poll tick.
+      }
     }
   }
 

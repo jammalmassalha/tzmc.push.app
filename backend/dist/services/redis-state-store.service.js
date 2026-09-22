@@ -43,6 +43,12 @@ class RedisStateStore {
     queueKeyForUser(user) {
         return `${this.keyPrefix}:queue:${user}`;
     }
+    sequenceKeyForUser(user) {
+        return `${this.keyPrefix}:sequence:${user}`;
+    }
+    chatPtsKey(chatId) {
+        return `${this.keyPrefix}:chat:${chatId}:pts`;
+    }
     queueEventsChannel() {
         return `${this.keyPrefix}:queue:events`;
     }
@@ -140,6 +146,42 @@ class RedisStateStore {
                 sourceId: this.publisherId
             }));
         }
+    }
+    /** Atomically allocate the next mailbox sequence for a user. */
+    async nextMailboxSequence(user) {
+        if (!this.connected || !this.client)
+            return 0;
+        const normalizedUser = toTrimmedString(user).toLowerCase();
+        if (!normalizedUser)
+            return 0;
+        const value = await this.client.incr(this.sequenceKeyForUser(normalizedUser));
+        return Number(value) || 0;
+    }
+    async nextChatPts(chatId) {
+        if (!this.connected || !this.client)
+            return 0;
+        const normalizedChatId = toTrimmedString(chatId);
+        if (!normalizedChatId)
+            return 0;
+        const value = await this.client.incr(this.chatPtsKey(normalizedChatId));
+        return Number(value) || 0;
+    }
+    /** Read retained mailbox events without consuming them. */
+    async readQueueSince(user, lastSequence = 0) {
+        if (!this.connected || !this.client)
+            return [];
+        const normalizedUser = toTrimmedString(user).toLowerCase();
+        if (!normalizedUser)
+            return [];
+        const rawEntries = await this.client.sendCommand([
+            'XRANGE', this.queueKeyForUser(normalizedUser), '-', '+'
+        ]);
+        return this.decodeStreamEntries(rawEntries).filter((entry) => {
+            const value = entry && typeof entry === 'object'
+                ? entry.seq_id
+                : undefined;
+            return Number(value) > Number(lastSequence);
+        });
     }
     async drainQueue(user) {
         if (!this.connected || !this.client) {
