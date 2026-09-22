@@ -284,7 +284,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     keyboardType: TextInputType.number,
                     textDirection: TextDirection.ltr,
                     textAlign: TextAlign.center,
-                    enabled: !isLoading,
+                    // Lock the input the instant a verification is submitted,
+                    // before the global auth state flips to AuthLoading.
+                    enabled: !isLoading && !_isVerifyingCode,
                     style: const TextStyle(
                       fontSize: 24,
                       letterSpacing: 8,
@@ -305,7 +307,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
                   // Verify button
                   ElevatedButton(
-                    onPressed: isLoading ? null : _handleVerifyCode,
+                    onPressed: (isLoading || _isVerifyingCode) ? null : _handleVerifyCode,
                     child: isLoading
                         ? const SizedBox(
                             height: 20,
@@ -410,6 +412,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   }
 
   void _handleVerifyCode() {
+    // Strict submission lock: the keyboard "done" action and the submit
+    // button can both fire for the same code entry. A second concurrent
+    // verify request would race the first one on the server (the code is
+    // single-use) and surface as an "operation aborted"/invalid-code error,
+    // so only ever allow one in-flight verification.
+    if (_isVerifyingCode || ref.read(authStateProvider) is AuthLoading) {
+      return;
+    }
+
     final code = _codeController.text.trim();
     if (code.length != 6) {
       showTopToast(context, 'יש להזין קוד בן 6 ספרות');

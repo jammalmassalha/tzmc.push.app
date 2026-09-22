@@ -298,6 +298,18 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// oldest pending push.  Cleared once it has been consumed.
   int? _pendingSyncFloorMs;
 
+  /// True once the initial background server revalidation (contacts, groups,
+  /// gap-analysis recovery) has completed at least once for the current user.
+  /// Poll ticks are gated on this — NOT on [ChatState.isInitialized], which
+  /// with the cache-first flow flips to true as soon as the local cache is
+  /// rendered — so an early poll can never read latestTimestamp=0 from an
+  /// empty DB and mark all historical messages as unread.
+  bool _initialSyncCompleted = false;
+
+  /// Guards against launching two concurrent initial revalidations when
+  /// [initialize] is invoked again before the first background sync finishes.
+  bool _initialSyncInFlight = false;
+
   /// Community group configs loaded from the server; seeded with defaults.
   /// Mirrors Angular's `communityGroupConfigs` field.
   List<CommunityGroupConfig> _communityGroupConfigs = List.unmodifiable(_kSeedCommunityGroups);
@@ -357,7 +369,16 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   // Initialization
   // ---------------------------------------------------------------------------
 
-  /// Initialize chat store - restore from database and pull fresh data
+  /// Initialize chat store — cache-first (stale-while-revalidate).
+  ///
+  /// Phase 1 (awaited, local-only): restore the persisted snapshot from the
+  /// Drift/SQLite database and render it immediately.  When cached data
+  /// exists the store is marked initialized on frame 1, so the UI never
+  /// waits on the network.
+  ///
+  /// Phase 2 (fired without awaiting): pull fresh contacts, groups and
+  /// missed messages from the server in the background and merge them into
+  /// state as they arrive (see [_revalidateFromServer]).
   Future<void> initialize(String currentUser) async {
     final normalized = currentUser.trim().toLowerCase();
 
@@ -385,6 +406,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     if (state.isInitialized) {
       if (state.isRestricted != isRestricted) {
         state = state.copyWith(isRestricted: isRestricted);
+      }
+      // If the first background revalidation failed (e.g. no network on cold
+      // start), retry it now — the cached UI is already live, so this stays
+      // silent and non-blocking.
+      if (!_initialSyncCompleted && !_initialSyncInFlight) {
+        unawaited(_revalidateFromServer());
       }
       return;
     }
@@ -454,6 +481,42 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // State may be empty; the server pull below re-populates it.
       }
 
+      // Phase 1 complete — the cached snapshot is now in state.  When cached
+      // data exists, unblock the UI immediately (stale-while-revalidate): the
+      // chat list renders from the local cache on the very next frame while
+      // the server revalidation below runs silently in the background.
+      final hasCachedData = state.messagesByChat.isNotEmpty ||
+          state.contacts.isNotEmpty ||
+          state.groups.isNotEmpty;
+      if (hasCachedData) {
+        state = state.copyWith(isLoading: false, isInitialized: true);
+        // Keep periodic persistence running from the moment the UI is live.
+        _schedulePersistence();
+      }
+
+      // Phase 2: revalidate from the server WITHOUT awaiting, so first-frame
+      // rendering is never blocked by network latency (400ms–2000ms on slow
+      // links).  On a fresh install (no cache) isLoading stays true until the
+      // background sync completes, preserving the "loading chats" spinner
+      // instead of a misleading empty state.
+      unawaited(_revalidateFromServer());
+    } catch (e) {
+      state = state.copyWith(isLoading: false);
+      rethrow;
+    }
+  }
+
+  /// Background revalidation phase of the cache-first [initialize] flow:
+  /// pulls fresh contacts, groups, community configs and missed messages
+  /// from the server, merges the background-notification tray, persists the
+  /// result, and finally enables poll ticks via [_initialSyncCompleted].
+  ///
+  /// Never awaited by the UI; errors are logged and swallowed so a network
+  /// failure degrades to "cached data only" instead of an error screen.
+  Future<void> _revalidateFromServer() async {
+    if (_initialSyncInFlight) return;
+    _initialSyncInFlight = true;
+    try {
       // 2. Pull fresh contacts and groups
       await Future.wait([
         _pullContacts(),
@@ -518,7 +581,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         state = state.copyWith(unreadByChat: merged);
       }
 
-      // 5. Persist the fully-initialized state immediately so that if the user
+      // 5. Persist the fully-synced state immediately so that if the user
       // closes the app right after the first open (before the 2-second deferred
       // timer fires), the recovered messages are already in the DB and the chat
       // list is populated on the very next cold start without needing another
@@ -526,17 +589,26 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       await persistNow();
 
       // Mark initialization complete, keeping the freshly-accumulated unread
-      // counts (from recoverMissedMessages + tray) intact.
+      // counts (from recoverMissedMessages + tray) intact.  This is a no-op
+      // when the cache-first phase already flipped the flags.
       state = state.copyWith(
         isLoading: false,
         isInitialized: true,
       );
 
+      // Poll ticks are safe from this point on: the DB now holds the full
+      // recovered history, so pullMessages() can never see latestTimestamp=0.
+      _initialSyncCompleted = true;
+
       // 6. Schedule periodic persistence for subsequent state changes
       _schedulePersistence();
-    } catch (e) {
+    } catch (e, st) {
+      debugPrint('[ChatStore] Background revalidation failed: $e\n$st');
+      // Degrade gracefully to cached-only data; realtime transport events and
+      // subsequent reconnects will retry the recovery pull.
       state = state.copyWith(isLoading: false);
-      rethrow;
+    } finally {
+      _initialSyncInFlight = false;
     }
   }
 
@@ -551,7 +623,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // the working set bounded while the full history stays on disk.
     for (final chatId in result.keys) {
       final msgs = result[chatId]!;
-      msgs.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+      msgs.sort(compareMessagesBySentTimeDesc);
       if (msgs.length > maxMessagesPerChat) {
         result[chatId] = msgs.sublist(0, maxMessagesPerChat);
       }
@@ -575,7 +647,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
       final kept = entry.value.where((message) => message.timestamp > deletedAt).toList();
       if (kept.isNotEmpty) {
-        kept.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+        kept.sort(compareMessagesBySentTimeDesc);
         filtered[entry.key] = kept;
       }
     }
@@ -1159,6 +1231,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         syncProgressPercent: 100,
         isInitialized: true,
       );
+      // A full sync is a comprehensive pull — the DB now holds complete
+      // history, so poll ticks are safe even if the cache-first initial
+      // revalidation never ran (e.g. sync triggered right after login).
+      _initialSyncCompleted = true;
     } finally {
       // Safety reset: ensure unread counters are always zero when a full sync
       // finishes, whether it succeeded or failed.  During the sync the local
@@ -1239,6 +1315,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     const actionTypes = {
       'read',
       'read-receipt',
+      'delivered',
+      'delivery-receipt',
       'delete',
       'delete-action',
       'edit',
@@ -1508,7 +1586,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // Sort each chat descending by timestamp and trim to the per-chat cap.
     for (final entry in newMessagesByChat.entries) {
       final msgs = entry.value;
-      msgs.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+      msgs.sort(compareMessagesBySentTimeDesc);
       if (msgs.length > maxMessagesPerChat) {
         newMessagesByChat[entry.key] = msgs.sublist(0, maxMessagesPerChat);
       }
@@ -1789,6 +1867,21 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           return;
         }
 
+      case 'delivery-receipt':
+      case 'delivered':
+        {
+          final ids = strList(data['messageIds']);
+          if (ids == null || ids.isEmpty) return;
+          final msg = IncomingServerMessage(
+            type: type,
+            messageIds: ids,
+            deliveredAt: parseInt(data['deliveredAt']),
+            sender: str(data['sender']),
+          );
+          _handleDeliveryReceipt(msg);
+          return;
+        }
+
       case 'delete-action':
       case 'delete':
         {
@@ -1945,7 +2038,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final senderDisplayName = rawGroupSenderName.isNotEmpty
         ? getDisplayName(rawGroupSenderName)
         : (senderIsGroupId ? null : getDisplayName(sender));
-    final timestamp = parseInt(data['timestamp']) ?? DateTime.now().millisecondsSinceEpoch;
+    // Prefer the explicit sender dispatch time from the payload; fall back to
+    // the legacy epoch-ms `timestamp`, then to receipt time. Without this, a
+    // notification tapped late is stamped with "now" and lands at the bottom
+    // of the chat instead of its true chronological position.
+    final sentDateTime = ChatMessage.parseFlexibleDateTime(data['sentDateTime']);
+    final timestamp = sentDateTime?.millisecondsSinceEpoch ??
+        parseInt(data['timestamp']) ??
+        DateTime.now().millisecondsSinceEpoch;
 
     final message = ChatMessage(
       id: messageId,
@@ -1964,6 +2064,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       groupId: groupId,
       groupName: str(data['groupName']),
       groupType: groupType,
+      sentDateTime: sentDateTime ??
+          DateTime.fromMillisecondsSinceEpoch(timestamp, isUtc: true),
     );
 
     final isNew = _applyIncomingMessage(message);
@@ -2063,8 +2165,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _writeMessageThrough(applied);
     _recordSyncCursor(applied.timestamp);
 
-    // Sort by timestamp descending
-    chatMessages.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+    // Acknowledge delivery back to the server (batched, best-effort) so the
+    // sender's ticks upgrade to delivered ✓✓.
+    if (isNew) _queueDeliveryAck(applied);
+
+    // Sort strictly by effective sent time (sentDateTime, fallback timestamp)
+    // descending so a message delivered late — e.g. via an older notification
+    // tap — slots into its correct chronological position instead of the tail.
+    chatMessages.sort(compareMessagesBySentTimeDesc);
 
     // Trim to max messages
     if (chatMessages.length > maxMessagesPerChat) {
@@ -2075,6 +2183,64 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     state = state.copyWith(messagesByChat: newMessagesByChat);
 
     return isNew;
+  }
+
+  // ── Delivery acknowledgments ───────────────────────────────────────────────
+
+  /// Only recently sent messages are acknowledged; a cold full-history sync
+  /// must not spam the sender with delivery receipts for old messages.
+  static const int _deliveryAckMaxAgeMs = 48 * 60 * 60 * 1000;
+  static const int _deliveryAckDedupCap = 2000;
+
+  final Map<String, Set<String>> _pendingDeliveryAcks = {};
+  final Set<String> _ackedDeliveryMessageIds = <String>{};
+  Timer? _deliveryAckTimer;
+
+  /// Queue a delivery acknowledgment for a newly received direct message.
+  /// Acks are deduplicated per messageId and flushed in per-chat batches.
+  void _queueDeliveryAck(ChatMessage message) {
+    final me = (_currentUser ?? '').trim();
+    if (me.isEmpty) return;
+    if (message.direction != MessageDirection.incoming) return;
+    // Group delivery receipts are ambiguous (many recipients) — direct only.
+    if (message.groupId != null && message.groupId!.isNotEmpty) return;
+    final ageMs =
+        DateTime.now().millisecondsSinceEpoch - message.effectiveSentTime;
+    if (ageMs > _deliveryAckMaxAgeMs) return;
+    if (!_ackedDeliveryMessageIds.add(message.messageId)) return;
+    if (_ackedDeliveryMessageIds.length > _deliveryAckDedupCap) {
+      _ackedDeliveryMessageIds.remove(_ackedDeliveryMessageIds.first);
+    }
+    _pendingDeliveryAcks
+        .putIfAbsent(message.chatId, () => <String>{})
+        .add(message.messageId);
+    _deliveryAckTimer ??=
+        Timer(const Duration(milliseconds: 500), () => _flushDeliveryAcks());
+  }
+
+  Future<void> _flushDeliveryAcks() async {
+    _deliveryAckTimer = null;
+    final me = (_currentUser ?? '').trim();
+    if (me.isEmpty) {
+      _pendingDeliveryAcks.clear();
+      return;
+    }
+    final batches = Map<String, Set<String>>.from(_pendingDeliveryAcks);
+    _pendingDeliveryAcks.clear();
+    final deliveredAt = DateTime.now().millisecondsSinceEpoch;
+    for (final entry in batches.entries) {
+      try {
+        await _api.sendDeliveryReceipt(DeliveryReceiptPayload(
+          recipient: me,
+          sender: entry.key,
+          messageIds: entry.value.toList(),
+          deliveredAt: deliveredAt,
+        ));
+      } catch (_) {
+        // Best-effort — the server also stamps receiveDateTime at ingest, so
+        // a missed ack degrades gracefully to history-derived status.
+      }
+    }
   }
 
   /// Hydrate existing message with new data (pick longer body)
@@ -2110,6 +2276,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // message is created locally with replyTo from state, but the server
       // echo carries the canonically stored reference fields).
       replyTo: existing.replyTo ?? incoming.replyTo,
+      // Lifecycle timestamps: keep the earliest known dispatch time and fill
+      // in receive/read times as they become known.
+      sentDateTime: existing.sentDateTime ?? incoming.sentDateTime,
+      receiveDateTime: existing.receiveDateTime ?? incoming.receiveDateTime,
+      readDateTime: existing.readDateTime ?? incoming.readDateTime,
     );
   }
 
@@ -2171,6 +2342,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       forwarded: forwarded,
       forwardedFrom: forwardedFrom,
       forwardedFromName: forwardedFromName,
+      sentDateTime: DateTime.fromMillisecondsSinceEpoch(timestamp, isUtc: true),
     );
 
     // Add to state optimistically
@@ -2197,6 +2369,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         forwardedFrom: forwardedFrom,
         forwardedFromName: forwardedFromName,
         deviceId: _transport.deviceId,
+        sentDateTime:
+            DateTime.fromMillisecondsSinceEpoch(timestamp, isUtc: true).toIso8601String(),
       );
       final ack = await _sendReply(payload);
       final pts = ack?['pts'];
@@ -2245,6 +2419,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       groupName: group.name,
       groupType: group.type,
       replyTo: replyTo,
+      sentDateTime: DateTime.fromMillisecondsSinceEpoch(timestamp, isUtc: true),
     );
 
     // Add to state optimistically
@@ -2285,6 +2460,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         replyToBody: replyTo?.body,
         replyToImageUrl: replyTo?.imageUrl,
         deviceId: _transport.deviceId,
+        sentDateTime:
+            DateTime.fromMillisecondsSinceEpoch(timestamp, isUtc: true).toIso8601String(),
       );
       final ack = await _sendReply(payload);
       final pts = ack?['pts'];
@@ -2714,6 +2891,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       case 'read-receipt':
         _handleReadReceipt(message);
         break;
+      case 'delivered':
+      case 'delivery-receipt':
+        _handleDeliveryReceipt(message);
+        break;
       case 'reaction':
         _handleReaction(message);
         break;
@@ -2805,7 +2986,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // matching against an existing optimistic outgoing message in the same
     // chat by body+timestamp window.
     final body = msg.body ?? '';
-    final ts = msg.timestamp ?? DateTime.now().millisecondsSinceEpoch;
+    final ts = msg.sentDateTime ?? msg.timestamp ?? DateTime.now().millisecondsSinceEpoch;
     // Scan only recent outgoing messages (chatMessages are sorted newest-first
     // by _applyIncomingMessage), bailing out as soon as we step outside the
     // 30s dedup window so the lookup stays O(k) instead of O(n) on long chats.
@@ -2866,8 +3047,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       fileUrl: msg.fileUrl,
       direction: direction,
       timestamp: ts,
-      deliveryStatus:
-          isOutgoing ? DeliveryStatus.sent : DeliveryStatus.delivered,
+      deliveryStatus: isOutgoing
+          // Derive the tick state from the lifecycle timestamps so ticks are
+          // correct after a history load instead of being stuck at `sent`.
+          ? (msg.readDateTime != null
+              ? DeliveryStatus.read
+              : (msg.receiveDateTime != null
+                  ? DeliveryStatus.delivered
+                  : DeliveryStatus.sent))
+          : DeliveryStatus.delivered,
       groupId: msg.groupId,
       groupName: msg.groupName,
       groupType: msg.groupType == 'community' ? GroupType.community : GroupType.group,
@@ -2883,6 +3071,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       forwarded: msg.forwarded ?? false,
       forwardedFrom: msg.forwardedFrom,
       forwardedFromName: msg.forwardedFromName,
+      sentDateTime: msg.sentDateTime != null
+          ? DateTime.fromMillisecondsSinceEpoch(msg.sentDateTime!, isUtc: true)
+          : DateTime.fromMillisecondsSinceEpoch(ts, isUtc: true),
+      receiveDateTime: msg.receiveDateTime != null
+          ? DateTime.fromMillisecondsSinceEpoch(msg.receiveDateTime!, isUtc: true)
+          : null,
+      readDateTime: msg.readDateTime != null
+          ? DateTime.fromMillisecondsSinceEpoch(msg.readDateTime!, isUtc: true)
+          : null,
     );
   }
 
@@ -2992,12 +3189,19 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     if (msg.messageIds == null || msg.messageIds!.isEmpty) return;
 
+    final readAtDateTime = DateTime.fromMillisecondsSinceEpoch(
+      msg.readAt ?? DateTime.now().millisecondsSinceEpoch,
+      isUtc: true,
+    );
     final newMessagesByChat = <String, List<ChatMessage>>{};
 
     for (final entry in state.messagesByChat.entries) {
       final chatMessages = entry.value.map((m) {
         if (msg.messageIds!.contains(m.messageId)) {
-          return m.copyWith(deliveryStatus: DeliveryStatus.read);
+          return m.copyWith(
+            deliveryStatus: DeliveryStatus.read,
+            readDateTime: m.readDateTime ?? readAtDateTime,
+          );
         }
         return m;
       }).toList();
@@ -3005,6 +3209,39 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
 
     state = state.copyWith(messagesByChat: newMessagesByChat);
+    // Persist the upgraded receipt state so the blue ticks survive an app
+    // restart instead of reverting to the last stored status.
+    _schedulePersistence();
+  }
+
+  /// Handles a `delivery-receipt` event: the recipient's device confirmed it
+  /// received our outgoing messages, so upgrade their ticks to delivered ✓✓
+  /// (never downgrading a message that is already read).
+  void _handleDeliveryReceipt(IncomingServerMessage msg) {
+    if (msg.messageIds == null || msg.messageIds!.isEmpty) return;
+
+    final deliveredAtDateTime = DateTime.fromMillisecondsSinceEpoch(
+      msg.deliveredAt ?? DateTime.now().millisecondsSinceEpoch,
+      isUtc: true,
+    );
+    final newMessagesByChat = <String, List<ChatMessage>>{};
+
+    for (final entry in state.messagesByChat.entries) {
+      final chatMessages = entry.value.map((m) {
+        if (msg.messageIds!.contains(m.messageId)) {
+          return m.copyWith(
+            deliveryStatus:
+                _maxDeliveryStatus(m.deliveryStatus, DeliveryStatus.delivered),
+            receiveDateTime: m.receiveDateTime ?? deliveredAtDateTime,
+          );
+        }
+        return m;
+      }).toList();
+      newMessagesByChat[entry.key] = chatMessages;
+    }
+
+    state = state.copyWith(messagesByChat: newMessagesByChat);
+    _schedulePersistence();
   }
 
   void _handleReaction(IncomingServerMessage msg) {
@@ -3102,15 +3339,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       debugPrint('[ChatStore] Poll tick skipped — transport is ${_transport.transportMode.name}');
       return;
     }
-    // Do not poll before initialization is complete. Polling before initialize()
+    // Do not poll before the initial background revalidation is complete.
+    // With the cache-first flow state.isInitialized flips to true as soon as
+    // the cached snapshot renders, but polling before the recovery pull
     // finishes results in pullMessages() reading latestTimestamp=0 from an
     // empty DB, fetching ALL historical messages through the incremental path,
     // and marking every incoming message as unread. The batch-import path in
-    // recoverMissedMessages resets unreadByChat to {} at the end of initialize,
-    // but intermediate poll ticks during the several-second initialization
-    // window can still cause all chats to briefly (or permanently) show unread
-    // badges after an app update or reinstall.
-    if (!state.isInitialized) return;
+    // recoverMissedMessages resets unreadByChat to {} at the end of the sync,
+    // but intermediate poll ticks during the several-second sync window can
+    // still cause all chats to briefly (or permanently) show unread badges
+    // after an app update or reinstall.
+    if (!_initialSyncCompleted) return;
     // Do not poll during a full sync — the sync performs its own comprehensive
     // pull and polling with a cleared state would mark historical messages as
     // unread.
@@ -3419,12 +3658,19 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _persistTimer?.cancel();
     _persistTimer = null;
 
+    // Drop any queued delivery acknowledgments belonging to the previous user.
+    _deliveryAckTimer?.cancel();
+    _deliveryAckTimer = null;
+    _pendingDeliveryAcks.clear();
+    _ackedDeliveryMessageIds.clear();
+
     // Reset per-session tracking fields.
     final previousUser = _currentUser;
     _currentUser = null;
     _lastGapAnalysisTime = 0;
     _pendingSyncFloorMs = null;
     _syncCursorMs = 0;
+    _initialSyncCompleted = false;
 
     await _db.clearAll();
     if (previousUser != null && previousUser.trim().isNotEmpty) {

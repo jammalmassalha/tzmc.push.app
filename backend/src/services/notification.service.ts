@@ -202,6 +202,9 @@ export class NotificationService {
       groupName: compactData.groupName,
       sender: compactData.sender,
       user: compactData.user,
+      chatId: compactData.chatId,
+      sentDateTime: compactData.sentDateTime,
+      timestamp: compactData.timestamp,
       title: compactData.title,
       body: this.trimPushTextValue(
         compactData.body || compactData.groupMessageText || compactData.messageText || 'New Notification',

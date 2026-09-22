@@ -162,7 +162,17 @@ class ChatApiService {
       final response = await _client.post<Map<String, dynamic>>(
         ApiEndpoints.requestCode,
         data: {'user': normalized},
-        retryOptions: const RetryOptions(retries: 1, timeout: NetworkTimeouts.sessionTimeout),
+        // The server persists the code and dispatches the SMS (each with
+        // internal retries) before responding — override the 10s default Dio
+        // receiveTimeout or the app reports a timeout while the SMS arrives.
+        options: Options(
+          receiveTimeout: NetworkTimeouts.requestCodeTimeout,
+          sendTimeout: NetworkTimeouts.requestCodeTimeout,
+        ),
+        // No retry: a client-side retry would request a NEW code that
+        // overwrites (invalidates) the code from the SMS already in flight.
+        retryOptions:
+            const RetryOptions(retries: 0, timeout: NetworkTimeouts.requestCodeTimeout),
       );
 
       if (!response.isSuccessful) {
@@ -725,6 +735,19 @@ class ChatApiService {
 
     if (!response.isSuccessful) {
       throw ApiException('Read receipt failed with ${response.statusCode}');
+    }
+  }
+
+  /// Send delivery acknowledgment for received messages
+  Future<void> sendDeliveryReceipt(DeliveryReceiptPayload payload) async {
+    final response = await _client.post(
+      ApiEndpoints.delivered,
+      data: payload.toJson(),
+      retryOptions: const RetryOptions(retries: 2, timeout: Duration(seconds: 10)),
+    );
+
+    if (!response.isSuccessful) {
+      throw ApiException('Delivery receipt failed with ${response.statusCode}');
     }
   }
 

@@ -112,6 +112,9 @@ class Messages extends Table {
   TextColumn get forwardedFrom => text().nullable()();
   TextColumn get forwardedFromName => text().nullable()();
   IntColumn get userReceivedTime => integer().nullable()();
+  IntColumn get sentDateTime => integer().nullable()(); // epoch ms, sender dispatch time
+  IntColumn get receiveDateTime => integer().nullable()(); // epoch ms, server ingest time
+  IntColumn get readDateTime => integer().nullable()(); // epoch ms, recipient read time
 
   @override
   Set<Column> get primaryKey => {id};
@@ -168,6 +171,9 @@ class ChatDatabase extends _$ChatDatabase {
         if (from < 2) {
           await m.addColumn(messages, messages.clientMsgId);
           await m.addColumn(messages, messages.pts);
+          await m.addColumn(messages, messages.sentDateTime);
+          await m.addColumn(messages, messages.receiveDateTime);
+          await m.addColumn(messages, messages.readDateTime);
         }
       },
     );
@@ -308,7 +314,7 @@ class ChatDatabase extends _$ChatDatabase {
   /// start cost predictable while the full history stays available on disk.
   Future<List<ChatMessage>> getRecentMessages({int limit = restoreMessageLimit}) async {
     final query = select(messages)
-      ..orderBy([(t) => OrderingTerm.desc(t.timestamp)])
+      ..orderBy([(t) => OrderingTerm.desc(coalesce([t.sentDateTime, t.timestamp]))])
       ..limit(limit);
     final rows = await query.get();
     return rows.map(_messageFromRow).toList();
@@ -317,7 +323,9 @@ class ChatDatabase extends _$ChatDatabase {
   Future<List<ChatMessage>> getMessagesByChatId(String chatId, {int limit = 100}) async {
     final query = select(messages)
       ..where((t) => t.chatId.equals(chatId))
-      ..orderBy([(t) => OrderingTerm.desc(t.timestamp)])
+      // Strict chronological key: sentDateTime (sender dispatch time) with a
+      // fallback to the legacy timestamp for rows that pre-date the column.
+      ..orderBy([(t) => OrderingTerm.desc(coalesce([t.sentDateTime, t.timestamp]))])
       ..limit(limit);
     final rows = await query.get();
     return rows.map(_messageFromRow).toList();
@@ -386,6 +394,9 @@ class ChatDatabase extends _$ChatDatabase {
       forwardedFrom: Value(message.forwardedFrom),
       forwardedFromName: Value(message.forwardedFromName),
       userReceivedTime: Value(message.userReceivedTime),
+      sentDateTime: Value(message.sentDateTime?.millisecondsSinceEpoch),
+      receiveDateTime: Value(message.receiveDateTime?.millisecondsSinceEpoch),
+      readDateTime: Value(message.readDateTime?.millisecondsSinceEpoch),
     );
   }
 
@@ -439,6 +450,15 @@ class ChatDatabase extends _$ChatDatabase {
       forwardedFrom: row.forwardedFrom,
       forwardedFromName: row.forwardedFromName,
       userReceivedTime: row.userReceivedTime,
+      sentDateTime: row.sentDateTime != null
+          ? DateTime.fromMillisecondsSinceEpoch(row.sentDateTime!, isUtc: true)
+          : null,
+      receiveDateTime: row.receiveDateTime != null
+          ? DateTime.fromMillisecondsSinceEpoch(row.receiveDateTime!, isUtc: true)
+          : null,
+      readDateTime: row.readDateTime != null
+          ? DateTime.fromMillisecondsSinceEpoch(row.readDateTime!, isUtc: true)
+          : null,
     );
   }
 
