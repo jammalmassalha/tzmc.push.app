@@ -40,6 +40,10 @@ class ReplyPayload extends Equatable {
   /// this device can skip re-applying its own message.
   final String? deviceId;
 
+  /// Sender-side dispatch time as an ISO 8601 string. Recorded by the server
+  /// in the `sentDateTime` column and used for chronological message ordering.
+  final String? sentDateTime;
+
   const ReplyPayload({
     required this.user,
     required this.senderName,
@@ -66,6 +70,7 @@ class ReplyPayload extends Equatable {
     this.forwardedFrom,
     this.forwardedFromName,
     this.deviceId,
+    this.sentDateTime,
   });
 
   @override
@@ -95,6 +100,7 @@ class ReplyPayload extends Equatable {
         forwardedFrom,
         forwardedFromName,
         deviceId,
+        sentDateTime,
       ];
 
   Map<String, dynamic> toJson() => {
@@ -123,6 +129,7 @@ class ReplyPayload extends Equatable {
         if (forwardedFrom != null) 'forwardedFrom': forwardedFrom,
         if (forwardedFromName != null) 'forwardedFromName': forwardedFromName,
         if (deviceId != null && deviceId!.isNotEmpty) 'deviceId': deviceId,
+        if (sentDateTime != null && sentDateTime!.isNotEmpty) 'sentDateTime': sentDateTime,
       };
 }
 
@@ -301,6 +308,32 @@ class ReadReceiptPayload extends Equatable {
         'messageIds': messageIds,
         'readAt': readAt,
         if (deviceId != null && deviceId!.isNotEmpty) 'deviceId': deviceId,
+      };
+}
+
+/// Delivery receipt payload — recipient device acknowledges it received and
+/// stored the given messages, so the sender's ticks upgrade to delivered ✓✓.
+class DeliveryReceiptPayload extends Equatable {
+  final String recipient;
+  final String sender;
+  final List<String> messageIds;
+  final int deliveredAt;
+
+  const DeliveryReceiptPayload({
+    required this.recipient,
+    required this.sender,
+    required this.messageIds,
+    required this.deliveredAt,
+  });
+
+  @override
+  List<Object?> get props => [recipient, sender, messageIds, deliveredAt];
+
+  Map<String, dynamic> toJson() => {
+        'recipient': recipient,
+        'sender': sender,
+        'messageIds': messageIds,
+        'deliveredAt': deliveredAt,
       };
 }
 

@@ -2521,6 +2521,17 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
     }
 
     const messageId = String(clientMessageId || generateMessageId()).trim() || generateMessageId();
+    // Sender dispatch time: accept a client-provided sentDateTime (ISO 8601
+    // string or epoch ms); default to server receipt time when missing/invalid.
+    const sentAtMs = (() => {
+        const raw = rawPayload.sentDateTime;
+        if (raw === undefined || raw === null || raw === '') return Date.now();
+        const numeric = Number(raw);
+        if (Number.isFinite(numeric) && numeric > 0) return numeric;
+        const parsed = Date.parse(String(raw));
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : Date.now();
+    })();
+    const sentDateTimeIso = new Date(sentAtMs).toISOString();
     console.log(`[REPLY] From: ${user} | To: ${originalSender}`);
 
     let groupRecord = null;
@@ -2651,7 +2662,13 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             ...(reply ? { messageText: reply } : {}),
             ...(imageUrl ? { imageUrl } : {}),
             ...(fileUrl ? { fileUrl } : {}),
-            ...messageMetadata
+            ...messageMetadata,
+            // Chronological-ordering metadata: lets clients slot the message
+            // into its correct position instead of appending it at the tail.
+            messageId,
+            chatId: groupId || user,
+            sentDateTime: sentDateTimeIso,
+            timestamp: sentAtMs
         };
         const notificationData = {
             messageId,
@@ -2668,7 +2685,8 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             messageId,
             sender: isGroup ? groupId : user,
             body: reply,
-            timestamp: Date.now(),
+            timestamp: sentAtMs,
+            sentDateTime: sentDateTimeIso,
             imageUrl: imageUrl || null,
             fileUrl: fileUrl || null,
             groupId: groupId || null,
@@ -2717,7 +2735,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             messageId,
             imageUrl || '',
             fileUrl || '',
-            { groupSenderName: isGroup ? senderLabel : '' }
+            { groupSenderName: isGroup ? senderLabel : '', sentDateTime: sentDateTimeIso }
         );
 
         const result = await sendPushNotificationToUser(targetToNotify, notificationData, senderForPush, { messageId });
@@ -3054,6 +3072,72 @@ function generateAuthCode() {
     return String(min + Math.floor(Math.random() * (max - min + 1)));
 }
 
+// ── Local auth-code fallback store ───────────────────────────────────────────
+// The Google Apps Script sheet write can time out (fetchWithRetry aborts after
+// its timeout window on cold Apps Script executions), which previously failed
+// the whole request-code call with "This operation was aborted" even though
+// the SMS was dispatched. Codes are always mirrored here (hashed, TTL-bound,
+// attempt-limited) so verification still succeeds when the sheet is slow/down.
+const localAuthCodeStore = new Map(); // user -> { hash, salt, expiresAt, attemptsLeft }
+const AUTH_CODE_LOCAL_MAX_ATTEMPTS = 5;
+const AUTH_CODE_LOCAL_STORE_MAX_ENTRIES = 5000;
+
+function hashAuthCodeForStore(code, salt) {
+    return crypto.createHash('sha256').update(`${salt}:${code}`).digest('hex');
+}
+
+function pruneLocalAuthCodeStore() {
+    const now = Date.now();
+    for (const [user, entry] of localAuthCodeStore) {
+        if (!entry || entry.expiresAt <= now || entry.attemptsLeft <= 0) {
+            localAuthCodeStore.delete(user);
+        }
+    }
+    // Hard cap so the map can never grow unbounded under abuse.
+    while (localAuthCodeStore.size > AUTH_CODE_LOCAL_STORE_MAX_ENTRIES) {
+        const oldestKey = localAuthCodeStore.keys().next().value;
+        if (oldestKey === undefined) break;
+        localAuthCodeStore.delete(oldestKey);
+    }
+}
+
+function storeAuthCodeLocally(user, code) {
+    const normalizedUser = normalizeUserCandidate(user);
+    const normalizedCode = normalizeAuthCode(code);
+    if (!SESSION_USER_PATTERN.test(normalizedUser) || !AUTH_CODE_PATTERN.test(normalizedCode)) return;
+    pruneLocalAuthCodeStore();
+    const salt = crypto.randomBytes(16).toString('hex');
+    localAuthCodeStore.set(normalizedUser, {
+        salt,
+        hash: hashAuthCodeForStore(normalizedCode, salt),
+        expiresAt: Date.now() + AUTH_CODE_TTL_SECONDS * 1000,
+        attemptsLeft: AUTH_CODE_LOCAL_MAX_ATTEMPTS
+    });
+}
+
+function verifyAuthCodeLocally(user, code) {
+    const normalizedUser = normalizeUserCandidate(user);
+    const normalizedCode = normalizeAuthCode(code);
+    if (!SESSION_USER_PATTERN.test(normalizedUser) || !AUTH_CODE_PATTERN.test(normalizedCode)) return false;
+    const entry = localAuthCodeStore.get(normalizedUser);
+    if (!entry) return false;
+    if (entry.expiresAt <= Date.now() || entry.attemptsLeft <= 0) {
+        localAuthCodeStore.delete(normalizedUser);
+        return false;
+    }
+    entry.attemptsLeft -= 1;
+    const candidate = Buffer.from(hashAuthCodeForStore(normalizedCode, entry.salt), 'hex');
+    const expected = Buffer.from(entry.hash, 'hex');
+    const matched = candidate.length === expected.length && crypto.timingSafeEqual(candidate, expected);
+    if (matched) {
+        // Single-use: a verified code can never be replayed.
+        localAuthCodeStore.delete(normalizedUser);
+    } else if (entry.attemptsLeft <= 0) {
+        localAuthCodeStore.delete(normalizedUser);
+    }
+    return matched;
+}
+
 function escapeXmlValue(value) {
     return String(value || '')
         .replace(/&/g, '&amp;')
@@ -3203,28 +3287,56 @@ async function setAuthCodeOnSubscribeSheet(user, code) {
         return;
     }
 
-    const response = await fetchWithRetry(
-        GOOGLE_SHEET_URL,
-        {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                action: 'set_login_code',
-                user: normalizedUser,
-                code: normalizedCode,
-                ttlSeconds: AUTH_CODE_TTL_SECONDS,
-                token: AUTH_CODE_SHEET_TOKEN
-            })
-        },
-        { timeoutMs: 15000, retries: 2, backoffMs: 600 }
-    );
-    if (!response.ok) {
-        throw new Error(`Failed to persist verification code (${response.status})`);
+    // Always mirror the code locally FIRST so a slow DB/sheet write can
+    // never invalidate the code the user is about to receive by SMS.
+    storeAuthCodeLocally(normalizedUser, normalizedCode);
+
+    // Primary store: the MySQL Subscribe table's `2FA` column — instant,
+    // no Google Apps Script round-trip.
+    let persistedInDb = false;
+    if (mysqlLogsService && typeof mysqlLogsService.setAuthCode === 'function') {
+        try {
+            persistedInDb = await mysqlLogsService.setAuthCode(
+                normalizedUser,
+                normalizedCode,
+                AUTH_CODE_TTL_SECONDS
+            );
+        } catch (error) {
+            console.warn(`[AUTH CODE] DB 2FA persistence failed for ***${normalizedUser.slice(-4)}: ${error && error.message ? error.message : error}`);
+        }
     }
-    const payload = await response.json();
-    if (!payload || payload.result !== 'success') {
-        throw new Error(payload && payload.message ? payload.message : 'Sheet update failed');
-    }
+
+    // Legacy sync: keep the Google Sheet updated WITHOUT blocking the response.
+    // The DB (and local mirror) are authoritative for verification.
+    void (async () => {
+        try {
+            const response = await fetchWithRetry(
+                GOOGLE_SHEET_URL,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'set_login_code',
+                        user: normalizedUser,
+                        code: normalizedCode,
+                        ttlSeconds: AUTH_CODE_TTL_SECONDS,
+                        token: AUTH_CODE_SHEET_TOKEN
+                    })
+                },
+                { timeoutMs: 15000, retries: 2, backoffMs: 600 }
+            );
+            if (!response.ok) {
+                throw new Error(`Failed to persist verification code (${response.status})`);
+            }
+            const payload = await response.json();
+            if (!payload || payload.result !== 'success') {
+                throw new Error(payload && payload.message ? payload.message : 'Sheet update failed');
+            }
+        } catch (error) {
+            const reason = error && error.message ? String(error.message) : 'unknown error';
+            console.warn(`[AUTH CODE] Background sheet sync failed for ***${normalizedUser.slice(-4)} (DB${persistedInDb ? '' : ' unavailable,'} local fallback in use): ${reason}`);
+        }
+    })();
 }
 
 async function verifyAuthCodeFromSubscribeSheet(user, code) {
@@ -3240,25 +3352,60 @@ async function verifyAuthCodeFromSubscribeSheet(user, code) {
         return normalizedCode === staticCode;
     }
 
-    const response = await fetchWithRetry(
-        GOOGLE_SHEET_URL,
-        {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                action: 'verify_login_code',
-                user: normalizedUser,
-                code: normalizedCode,
-                token: AUTH_CODE_SHEET_TOKEN
-            })
-        },
-        { timeoutMs: 15000, retries: 1, backoffMs: 500 }
-    );
-    if (!response.ok) {
-        throw new Error(`Failed to verify code (${response.status})`);
+    // Primary verification: the MySQL Subscribe table's `2FA` column —
+    // instant, no Google Apps Script round-trip.
+    if (mysqlLogsService && typeof mysqlLogsService.verifyAuthCode === 'function') {
+        try {
+            const dbResult = await mysqlLogsService.verifyAuthCode(normalizedUser, normalizedCode);
+            if (dbResult === 'verified') {
+                // Consume any mirrored local entry so the code is single-use everywhere.
+                localAuthCodeStore.delete(normalizedUser);
+                return true;
+            }
+            if (dbResult === 'mismatch') {
+                // The DB row exists and holds a different (or expired) code.
+                // Still honor the local mirror in case an external writer
+                // overwrote the 2FA cell after our code was sent.
+                return verifyAuthCodeLocally(normalizedUser, normalizedCode);
+            }
+            // 'unavailable' → row/DB not reachable, fall through to fallbacks.
+        } catch (error) {
+            console.warn(`[AUTH CODE] DB 2FA verification failed for ***${normalizedUser.slice(-4)}: ${error && error.message ? error.message : error}`);
+        }
     }
-    const payload = await response.json();
-    return Boolean(payload && payload.result === 'success' && payload.verified === true);
+
+    // Fallback 1: local in-memory mirror written at request-code time.
+    if (verifyAuthCodeLocally(normalizedUser, normalizedCode)) {
+        return true;
+    }
+
+    // Fallback 2 (legacy): Google Sheet verification — only reached when the
+    // DB is unavailable AND the local mirror is empty (e.g. server restarted).
+    try {
+        const response = await fetchWithRetry(
+            GOOGLE_SHEET_URL,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'verify_login_code',
+                    user: normalizedUser,
+                    code: normalizedCode,
+                    token: AUTH_CODE_SHEET_TOKEN
+                })
+            },
+            { timeoutMs: 15000, retries: 1, backoffMs: 500 }
+        );
+        if (!response.ok) {
+            throw new Error(`Failed to verify code (${response.status})`);
+        }
+        const payload = await response.json();
+        return Boolean(payload && payload.result === 'success' && payload.verified === true);
+    } catch (error) {
+        const reason = error && error.message ? String(error.message) : 'unknown error';
+        console.warn(`[AUTH CODE] Legacy sheet verification failed for ***${normalizedUser.slice(-4)}: ${reason}`);
+        return false;
+    }
 }
 
 async function ensureRequestedUserCanAuthenticate(requestedUser) {
@@ -5191,7 +5338,10 @@ function logNotificationStatus(sender, recipient, messageShort, status, details,
         // For group messages the `sender` is the groupId, so the human display
         // name shown in the FCM notification is preserved separately and
         // returned again by /messages/logs (see mysql-logs.service.ts).
-        groupSenderName: String(options.groupSenderName || '').trim()
+        groupSenderName: String(options.groupSenderName || '').trim(),
+        // Sender-side dispatch time (ISO 8601 / epoch ms). Persisted in the
+        // dedicated sentDateTime DATETIME(3) column for chronological ordering.
+        sentDateTime: options.sentDateTime || undefined
     };
     const insertFn = options.dedup
         ? mysqlLogsService.insertLogIfNotDuplicate(logPayload)
@@ -6458,6 +6608,12 @@ app.post(['/mark-seen', '/notify/mark-seen'],
         }
         try {
             const affected = await mysqlLogsService.markMessagesSeen(user, chatId);
+            // Watermark read on the MessageActivities audit table (single indexed query).
+            if (typeof mysqlLogsService.markActivitiesRead === 'function') {
+                mysqlLogsService.markActivitiesRead(user, chatId).catch((err) => {
+                    console.warn('[MARK-SEEN] Failed to update MessageActivities readDateTime:', err && err.message ? err.message : err);
+                });
+            }
             // Notify the same user's other connected devices to clear local
             // unread counters for this chat (cross-device badge sync).
             void addToQueue(user, buildSelfReadClearMessage({
@@ -7845,6 +8001,12 @@ app.post(
         mysqlLogsService.markMessagesSeen(normalizedReader, normalizedSender).catch((err) => {
             console.warn('[READ RECEIPT] Failed to update SeenTime in DB:', err && err.message ? err.message : err);
         });
+        // Watermark read on the MessageActivities audit table (single indexed query).
+        if (typeof mysqlLogsService.markActivitiesRead === 'function') {
+            mysqlLogsService.markActivitiesRead(normalizedReader, normalizedSender).catch((err) => {
+                console.warn('[READ RECEIPT] Failed to update MessageActivities readDateTime:', err && err.message ? err.message : err);
+            });
+        }
 
         const result = await sendPushNotificationToUser(normalizedSender, payload, normalizedReader, { skipBadge: true });
 
@@ -7877,6 +8039,83 @@ app.post(
         res.json({ status: 'ok', details: result });
     } catch (err) {
         console.error('[READ RECEIPT] Failed:', err.message);
+        res.status(500).json({ status: 'error', message: err.message });
+    }
+});
+
+// Delivery acknowledgment: a recipient device confirms it has received (stored
+// locally) the given messages. Persists `receiveDateTime` and fans out a
+// silent `delivery-receipt` to the original sender so their outgoing messages
+// upgrade from single grey tick (sent) to double grey tick (delivered).
+const deliveryReceiptRateLimitStore = new Map();
+const deliveryReceiptLimiter = rateLimit({ windowMs: 60 * 1000, max: 120 });
+app.post(
+    ['/delivered', '/notify/delivered'],
+    deliveryReceiptLimiter,
+    requireAuthorizedUser({
+        required: true,
+        candidateKeys: ['recipient'],
+        onError: (_req, res, resolution) => res.status(resolution.status).json({ status: 'error', message: resolution.error })
+    }),
+    async (req, res) => {
+    try {
+        const { recipient: requestedRecipient, sender, messageIds, deliveredAt } = req.body;
+        if (!requestedRecipient || !sender || !Array.isArray(messageIds) || messageIds.length === 0) {
+            return res.status(400).json({ status: 'error', message: 'Missing fields' });
+        }
+        const normalizedRecipient = req.resolvedUser;
+        const rateCheck = consumeRateLimitEntry(deliveryReceiptRateLimitStore, normalizedRecipient, 60, 60 * 1000);
+        if (!rateCheck.allowed) {
+            return res.status(429).json({ status: 'error', message: `Rate limited. Retry after ${rateCheck.retryAfterSeconds}s` });
+        }
+        const normalizedSender = String(sender).trim();
+        const uniqueMessageIds = Array.from(
+            new Set(
+                messageIds
+                    .map((id) => String(id || '').trim())
+                    .filter(Boolean)
+            )
+        );
+        if (!normalizedRecipient || !normalizedSender || uniqueMessageIds.length === 0) {
+            return res.status(400).json({ status: 'error', message: 'Invalid delivery receipt payload' });
+        }
+
+        const effectiveDeliveredAt = Number(deliveredAt) || Date.now();
+
+        // Persist the delivery time so history loads derive the correct tick.
+        mysqlLogsService.markMessagesDelivered(normalizedRecipient, normalizedSender).catch((err) => {
+            console.warn('[DELIVERY RECEIPT] Failed to update receiveDateTime in DB:', err && err.message ? err.message : err);
+        });
+        // Batch-stamp receiveDateTime on MessageActivities via the indexed
+        // MessageId lookup (one query for the whole batch — no N+1 updates).
+        if (typeof mysqlLogsService.markActivitiesDelivered === 'function') {
+            mysqlLogsService.markActivitiesDelivered(normalizedRecipient, uniqueMessageIds).catch((err) => {
+                console.warn('[DELIVERY RECEIPT] Failed to update MessageActivities receiveDateTime:', err && err.message ? err.message : err);
+            });
+        }
+
+        const receiptData = {
+            type: 'delivery-receipt',
+            messageIds: uniqueMessageIds,
+            deliveredAt: effectiveDeliveredAt,
+            sender: normalizedRecipient
+        };
+
+        // Queue as well so polling/SSE can recover if push is delayed/missed.
+        await addToQueue(normalizedSender, {
+            ...receiptData,
+            timestamp: Date.now()
+        });
+
+        const result = await sendPushNotificationToUser(normalizedSender, {
+            title: '',
+            body: { shortText: '', longText: '' },
+            data: receiptData
+        }, normalizedRecipient, { skipBadge: true });
+
+        res.json({ status: 'ok', details: result });
+    } catch (err) {
+        console.error('[DELIVERY RECEIPT] Failed:', err.message);
         res.status(500).json({ status: 'error', message: err.message });
     }
 });

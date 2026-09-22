@@ -59,7 +59,17 @@ class AuthAuthenticated extends AuthState {
 
   final bool isRestricted;
 
-  const AuthAuthenticated({required this.user, this.phone, this.isRestricted = false});
+  /// True only when this state was produced by a fresh interactive OTP login
+  /// (as opposed to restoring a persisted session on app start). Drives the
+  /// one-time AI initialization screen after login.
+  final bool justLoggedIn;
+
+  const AuthAuthenticated({
+    required this.user,
+    this.phone,
+    this.isRestricted = false,
+    this.justLoggedIn = false,
+  });
 }
 
 /// Authentication error
@@ -219,6 +229,13 @@ class AuthNotifier extends Notifier<AuthState> {
   /// Verify SMS code
   Future<void> verifyCode(String code) async {
     final currentState = state;
+    // In-flight guard: a verification request is already running. Submitting
+    // a second concurrent request would race the first (the code is
+    // single-use on the server) and abort/invalidate it, so silently ignore
+    // duplicate submissions instead of surfacing an error.
+    if (currentState is AuthLoading) {
+      return;
+    }
     if (currentState is! AuthAwaitingCode) {
       state = AuthError(
         message: 'מצב לא תקין לאימות קוד',
@@ -247,6 +264,7 @@ class AuthNotifier extends Notifier<AuthState> {
         user: user,
         phone: currentState.phoneNumber,
         isRestricted: sessionResponse.isRestricted ?? false,
+        justLoggedIn: true,
       );
       unawaited(_resetBadgeAfterAuth());
       _logger.i('Code verification successful for: $user (isRestricted: ${sessionResponse.isRestricted})');
@@ -324,6 +342,7 @@ class AuthNotifier extends Notifier<AuthState> {
           user: currentState.user,
           phone: currentState.phone,
           isRestricted: isRestricted,
+          justLoggedIn: currentState.justLoggedIn,
         );
         _logger.i('Dynamic status updated for user: ${currentState.user} (isRestricted: $isRestricted)');
       }

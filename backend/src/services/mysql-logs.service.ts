@@ -28,6 +28,13 @@ export interface MysqlLogInsertPayload {
    * and must also appear inside the in-app group bubble.
    */
   groupSenderName?: string;
+  /**
+   * Sender-side dispatch time (ISO 8601 string, epoch ms or Date). When
+   * missing the send time defaults to the row `DateTime`/now. Stored in the
+   * dedicated `sentDateTime` DATETIME(3) column used for chronological
+   * ordering of chat messages.
+   */
+  sentDateTime?: unknown;
 }
 
 export interface MysqlLogsReadOptions {
@@ -95,6 +102,9 @@ interface MysqlLogRow extends RowDataPacket {
   imageUrl: string | null;
   fileUrl: string | null;
   seenTime: Date | string | number | null;
+  sentDateTime: Date | string | number | null;
+  receiveDateTime: Date | string | number | null;
+  readDateTime: Date | string | number | null;
   groupSenderName: string | null;
 }
 
@@ -216,6 +226,19 @@ function normalizeDateTimeForStorage(value: unknown): Date {
   return new Date(Math.floor(timestamp / 1000) * 1000);
 }
 
+/**
+ * Millisecond-precision variant used for the lifecycle timestamp columns
+ * (`sentDateTime` / `receiveDateTime` / `readDateTime`, DATETIME(3)).
+ * Falls back to the provided default when the value cannot be parsed.
+ */
+function normalizeLifecycleDateTimeForStorage(value: unknown, fallback: Date): Date {
+  const timestamp = parseFlexibleTimestamp(value);
+  if (!timestamp || !Number.isFinite(timestamp)) {
+    return fallback;
+  }
+  return new Date(timestamp);
+}
+
 function normalizeDateTimeKey(value: unknown): string {
   const timestamp = parseFlexibleTimestamp(value);
   if (!timestamp || !Number.isFinite(timestamp)) {
@@ -296,11 +319,13 @@ export class MysqlLogsService {
   private imageUrlColumnReady = false;
   private fileUrlColumnReady = false;
   private seenTimeColumnReady = false;
+  private lifecycleTimestampColumnsReady = false;
   private groupSenderNameColumnReady = false;
   private dedupIndexReady = false;
   private communityGroupsTablesReady = false;
   private chatGroupsTablesReady = false;
   private messageActivitiesTableReady = false;
+  private messageActivitiesLifecycleReady = false;
   private serverStateTableReady = false;
   private flutterPushRegistrationDebugTableReady = false;
   private flutterPushRegistrationDebugActionColumnWidthReady = false;
@@ -330,9 +355,9 @@ export class MysqlLogsService {
 
   constructor(config: MysqlLogsConfig) {
     this.tableName = normalizeTableName(config.table);
-    // 11 columns / 11 parameters — keep in sync with insertLog() and insertLogsBulk()
-    this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`, \`GroupSenderName\`)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    // 13 columns / 13 parameters — keep in sync with insertLog() and insertLogsBulk()
+    this.insertQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`, \`GroupSenderName\`, \`sentDateTime\`, \`receiveDateTime\`)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     this.pool = mysql.createPool({
       host: config.host,
       port: config.port,
@@ -345,6 +370,7 @@ export class MysqlLogsService {
     void this.ensureImageUrlColumn();
     void this.ensureFileUrlColumn();
     void this.ensureSeenTimeColumn();
+    void this.ensureLifecycleTimestampColumns();
     void this.ensureGroupSenderNameColumn();
     void this.ensureSecretariesTable();
     void this.ensureBotSessionsTable();
@@ -397,6 +423,70 @@ export class MysqlLogsService {
       }
     }
     this.seenTimeColumnReady = true;
+  }
+
+  /**
+   * Ensures the message lifecycle timestamp columns exist:
+   *   • `sentDateTime`    — sender's dispatch time (client-provided, DATETIME(3))
+   *   • `receiveDateTime` — server ingest time (DATETIME(3))
+   *   • `readDateTime`    — recipient read time (DATETIME(3))
+   * Also backfills `sentDateTime` from the legacy `DateTime` column and
+   * creates an index optimized for chronological chat retrieval.
+   */
+  private async ensureLifecycleTimestampColumns(): Promise<void> {
+    if (this.lifecycleTimestampColumnsReady) return;
+    const columnStatements = [
+      `ALTER TABLE \`${this.tableName}\` ADD COLUMN \`sentDateTime\` DATETIME(3) NULL DEFAULT NULL`,
+      `ALTER TABLE \`${this.tableName}\` ADD COLUMN \`receiveDateTime\` DATETIME(3) NULL DEFAULT NULL`,
+      `ALTER TABLE \`${this.tableName}\` ADD COLUMN \`readDateTime\` DATETIME(3) NULL DEFAULT NULL`
+    ];
+    for (const statement of columnStatements) {
+      try {
+        await this.pool.execute(statement);
+      } catch (err: unknown) {
+        const code = (err as { code?: string }).code;
+        const message = String((err as { message?: string }).message || '');
+        // ER_DUP_FIELDNAME = column already exists — expected on subsequent restarts.
+        if (code !== 'ER_DUP_FIELDNAME' && !message.includes('Duplicate column')) {
+          console.warn('[MYSQL] ensureLifecycleTimestampColumns warning:', message);
+        }
+      }
+    }
+    try {
+      // Backfill legacy rows so ordering by sentDateTime never drops history.
+      await this.pool.execute(
+        `UPDATE \`${this.tableName}\` SET \`sentDateTime\` = \`DateTime\` WHERE \`sentDateTime\` IS NULL`
+      );
+    } catch (err: unknown) {
+      console.warn('[MYSQL] sentDateTime backfill warning:', String((err as { message?: string }).message || ''));
+    }
+    try {
+      // Index for optimized chronological message retrieval per chat partner.
+      await this.pool.execute(
+        `CREATE INDEX \`idx_chat_sentDateTime\` ON \`${this.tableName}\` (\`From\`, \`sentDateTime\`)`
+      );
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code;
+      const message = String((err as { message?: string }).message || '');
+      // ER_DUP_KEYNAME = index already exists — expected on subsequent restarts.
+      if (code !== 'ER_DUP_KEYNAME' && !message.includes('Duplicate key name')) {
+        console.warn('[MYSQL] idx_chat_sentDateTime warning:', message);
+      }
+    }
+    try {
+      // Index for receipt-status lookups (delivery/read receipt updates and
+      // per-chat unread/receipt aggregation).
+      await this.pool.execute(
+        `CREATE INDEX \`idx_messages_receipt_status\` ON \`${this.tableName}\` (\`ToUser\`, \`From\`, \`readDateTime\`, \`receiveDateTime\`)`
+      );
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code;
+      const message = String((err as { message?: string }).message || '');
+      if (code !== 'ER_DUP_KEYNAME' && !message.includes('Duplicate key name')) {
+        console.warn('[MYSQL] idx_messages_receipt_status warning:', message);
+      }
+    }
+    this.lifecycleTimestampColumnsReady = true;
   }
 
   /**
@@ -479,8 +569,10 @@ export class MysqlLogsService {
     const imageUrl = toTrimmedString(payload.imageUrl);
     const fileUrl = toTrimmedString(payload.fileUrl);
     const groupSenderName = toTrimmedString(payload.groupSenderName);
+    const sentDateTime = normalizeLifecycleDateTimeForStorage(payload.sentDateTime ?? payload.dateTime, dateTime);
+    const receiveDateTime = new Date();
 
-    await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null, groupSenderName || null]);
+    await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null, groupSenderName || null, sentDateTime, receiveDateTime]);
     return true;
   }
 
@@ -503,15 +595,17 @@ export class MysqlLogsService {
     const imageUrl = toTrimmedString(payload.imageUrl);
     const fileUrl = toTrimmedString(payload.fileUrl);
     const groupSenderName = toTrimmedString(payload.groupSenderName);
+    const sentDateTime = normalizeLifecycleDateTimeForStorage(payload.sentDateTime ?? payload.dateTime, dateTime);
+    const receiveDateTime = new Date();
 
     if (!recipient) {
       // Cannot deduplicate without recipient — fall back to normal insert
-      await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null, groupSenderName || null]);
+      await this.pool.execute(this.insertQuery, [dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null, groupSenderName || null, sentDateTime, receiveDateTime]);
       return true;
     }
 
-    const sql = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`, \`GroupSenderName\`)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    const sql = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`, \`GroupSenderName\`, \`sentDateTime\`, \`receiveDateTime\`)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
        FROM DUAL
        WHERE NOT EXISTS (
          SELECT 1 FROM \`${this.tableName}\`
@@ -519,7 +613,7 @@ export class MysqlLogsService {
          LIMIT 1
        )`;
     const [result] = await this.pool.execute(sql, [
-      dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null, groupSenderName || null,
+      dateTime, recipient, sender, msgId, message, status, details, recipientAuthJson, imageUrl || null, fileUrl || null, groupSenderName || null, sentDateTime, receiveDateTime,
       sender, recipient, dateTime
     ]);
     const affectedRows = (result as { affectedRows?: number }).affectedRows ?? 0;
@@ -623,6 +717,8 @@ export class MysqlLogsService {
         const imageUrl = toTrimmedString(payload.imageUrl);
         const fileUrl = toTrimmedString(payload.fileUrl);
         const groupSenderName = toTrimmedString(payload.groupSenderName);
+        const sentDateTime = normalizeLifecycleDateTimeForStorage(payload.sentDateTime ?? payload.dateTime, dateTime);
+        const receiveDateTime = new Date();
         await connection.execute(this.insertQuery, [
           dateTime,
           recipient,
@@ -634,7 +730,9 @@ export class MysqlLogsService {
           recipientAuthJson,
           imageUrl || null,
           fileUrl || null,
-          groupSenderName || null
+          groupSenderName || null,
+          sentDateTime,
+          receiveDateTime
         ]);
       }
       await connection.commit();
@@ -734,6 +832,9 @@ export class MysqlLogsService {
           \`ImageUrl\` AS imageUrl,
           \`FileUrl\` AS fileUrl,
           \`SeenTime\` AS seenTime,
+          \`sentDateTime\` AS sentDateTime,
+          \`receiveDateTime\` AS receiveDateTime,
+          \`readDateTime\` AS readDateTime,
           \`GroupSenderName\` AS groupSenderName 
         FROM \`${this.tableName}\` 
         WHERE 1=1`;
@@ -850,6 +951,9 @@ export class MysqlLogsService {
         }
 
         const timestamp = parseFlexibleTimestamp(row.dateTime) || Date.now();
+        const sentDateTime = parseFlexibleTimestamp(row.sentDateTime) || timestamp;
+        const receiveDateTime = parseFlexibleTimestamp(row.receiveDateTime) || undefined;
+        const readDateTime = parseFlexibleTimestamp(row.readDateTime) || undefined;
         const msgIdFromRowOrDetails = toTrimmedString(
           row.msgId ||
           detailsMap.messageId ||
@@ -881,6 +985,9 @@ export class MysqlLogsService {
           imageUrl: imageUrl || undefined,
           fileUrl: fileUrl || undefined,
           timestamp,
+          sentDateTime,
+          receiveDateTime,
+          readDateTime,
           recipient: requestedUser,
           status,
           details,
@@ -909,7 +1016,15 @@ export class MysqlLogsService {
       }
     }
 
+    // Strict chronological order: sentDateTime ASC (fallback to DateTime),
+    // stable id tiebreak so equal timestamps keep their insertion order.
     messages.reverse();
+    messages.sort((a, b) => {
+      const aTime = Number(a.sentDateTime ?? a.timestamp) || 0;
+      const bTime = Number(b.sentDateTime ?? b.timestamp) || 0;
+      if (aTime !== bTime) return aTime - bTime;
+      return String(a.id || '').localeCompare(String(b.id || ''));
+    });
     return messages;
   }
 
@@ -959,6 +1074,7 @@ export class MysqlLogsService {
    */
   async markMessagesSeen(user: string, chatId: string): Promise<number> {
     await this.ensureSeenTimeColumn();
+    await this.ensureLifecycleTimestampColumns();
     const safeUser = toTrimmedString(user).toLowerCase();
     const safeChatId = toTrimmedString(chatId);
     if (!safeUser || !safeChatId) return 0;
@@ -969,7 +1085,7 @@ export class MysqlLogsService {
       //   (ToUser = chatId AND From != user)  — group msgs received
       //   (ToUser = user AND From = chatId)   — DMs received from chatId
       const sql = `UPDATE \`${this.tableName}\`
-        SET \`SeenTime\` = NOW()
+        SET \`SeenTime\` = NOW(), \`readDateTime\` = COALESCE(\`readDateTime\`, NOW(3))
         WHERE \`SeenTime\` IS NULL
           AND (
             (LOWER(\`ToUser\`) = ? AND LOWER(\`From\`) != ?)
@@ -984,6 +1100,41 @@ export class MysqlLogsService {
     } catch (err: unknown) {
       const message = String((err as { message?: string }).message || '');
       console.warn('[MYSQL] markMessagesSeen error:', message);
+      return 0;
+    }
+  }
+
+  /**
+   * Mark messages as delivered to a recipient's device.
+   * Sets `receiveDateTime` (delivery acknowledgment time) for messages sent to
+   * the recipient in the given chat that do not have one yet. Uses COALESCE so
+   * the earliest recorded delivery time is never overwritten.
+   */
+  async markMessagesDelivered(recipient: string, chatId: string): Promise<number> {
+    await this.ensureLifecycleTimestampColumns();
+    const safeRecipient = toTrimmedString(recipient).toLowerCase();
+    const safeChatId = toTrimmedString(chatId).toLowerCase();
+    if (!safeRecipient || !safeChatId) return 0;
+    try {
+      // Mirrors markMessagesSeen chat semantics:
+      //   (ToUser = chatId AND From != recipient) — group msgs received
+      //   (ToUser = recipient AND From = chatId)  — DMs received from chatId
+      const sql = `UPDATE \`${this.tableName}\`
+        SET \`receiveDateTime\` = COALESCE(\`receiveDateTime\`, NOW(3))
+        WHERE \`receiveDateTime\` IS NULL
+          AND (
+            (LOWER(\`ToUser\`) = ? AND LOWER(\`From\`) != ?)
+            OR
+            (LOWER(\`ToUser\`) = ? AND LOWER(\`From\`) = ?)
+          )`;
+      const [result] = await this.pool.execute(sql, [
+        safeChatId, safeRecipient,
+        safeRecipient, safeChatId
+      ]);
+      return (result as any).affectedRows || 0;
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.warn('[MYSQL] markMessagesDelivered error:', message);
       return 0;
     }
   }
@@ -1651,12 +1802,17 @@ export class MysqlLogsService {
           \`TargetMessageId\` VARCHAR(255) DEFAULT NULL,
           \`ActionTimestamp\` BIGINT NOT NULL,
           \`CreatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP,
+          \`sentDateTime\` DATETIME(3) NULL DEFAULT NULL,
+          \`receiveDateTime\` DATETIME(3) NULL DEFAULT NULL,
+          \`readDateTime\` DATETIME(3) NULL DEFAULT NULL,
           PRIMARY KEY (\`Id\`),
           INDEX \`idx_ma_sender\` (\`Sender\`(50)),
           INDEX \`idx_ma_action_type\` (\`ActionType\`),
           INDEX \`idx_ma_message_id\` (\`MessageId\`(100)),
           INDEX \`idx_ma_group_id\` (\`GroupId\`(100)),
-          INDEX \`idx_ma_created_at\` (\`CreatedAt\`)
+          INDEX \`idx_ma_created_at\` (\`CreatedAt\`),
+          INDEX \`idx_msg_chat_order\` (\`GroupId\`(100), \`Recipient\`(100), \`Sender\`(50), \`sentDateTime\`, \`Id\`),
+          INDEX \`idx_msg_status_lookup\` (\`Sender\`(50), \`Recipient\`(100), \`readDateTime\`, \`receiveDateTime\`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
       `);
       this.messageActivitiesTableReady = true;
@@ -1665,6 +1821,89 @@ export class MysqlLogsService {
       const message = String((err as { message?: string }).message || '');
       console.warn('[MYSQL] ensureMessageActivitiesTable warning:', message);
     }
+    await this.ensureMessageActivitiesLifecycleColumns();
+  }
+
+  /**
+   * Migration for pre-existing MessageActivities tables:
+   *   • Adds `sentDateTime` / `receiveDateTime` / `readDateTime` DATETIME(3)
+   *     lifecycle columns (safe no-op when they already exist).
+   *   • Backfills `sentDateTime` from the epoch-ms `ActionTimestamp` (falling
+   *     back to `CreatedAt`) so chronological ordering never drops history.
+   *   • Creates the critical indexes that stop full-table scans (and the
+   *     resulting `Lock wait timeout exceeded` errors) during bulk
+   *     delivery/read status updates:
+   *       - `idx_msg_messageid`     — instant `WHERE MessageId IN (...)` updates
+   *       - `idx_msg_chat_order`    — chronological chat retrieval w/o filesort
+   *       - `idx_msg_status_lookup` — bulk read/delivery watermark updates
+   * Status updates only touch receiveDateTime/readDateTime — never the
+   * `sentDateTime` / `ActionTimestamp` / `Id` sort keys.
+   */
+  private async ensureMessageActivitiesLifecycleColumns(): Promise<void> {
+    if (this.messageActivitiesLifecycleReady) return;
+    const columnStatements = [
+      `ALTER TABLE \`MessageActivities\` ADD COLUMN \`sentDateTime\` DATETIME(3) NULL DEFAULT NULL`,
+      `ALTER TABLE \`MessageActivities\` ADD COLUMN \`receiveDateTime\` DATETIME(3) NULL DEFAULT NULL`,
+      `ALTER TABLE \`MessageActivities\` ADD COLUMN \`readDateTime\` DATETIME(3) NULL DEFAULT NULL`
+    ];
+    for (const statement of columnStatements) {
+      try {
+        await this.pool.execute(statement);
+      } catch (err: unknown) {
+        const code = (err as { code?: string }).code;
+        const message = String((err as { message?: string }).message || '');
+        // ER_DUP_FIELDNAME = column already exists — expected on subsequent restarts.
+        if (code !== 'ER_DUP_FIELDNAME' && !message.includes('Duplicate column')) {
+          console.warn('[MYSQL] MessageActivities lifecycle column warning:', message);
+        }
+      }
+    }
+    try {
+      // Backfill legacy rows: ActionTimestamp is epoch milliseconds.
+      await this.pool.execute(
+        `UPDATE \`MessageActivities\`
+         SET \`sentDateTime\` = COALESCE(FROM_UNIXTIME(\`ActionTimestamp\` / 1000), \`CreatedAt\`, NOW(3))
+         WHERE \`sentDateTime\` IS NULL`
+      );
+    } catch (err: unknown) {
+      console.warn('[MYSQL] MessageActivities sentDateTime backfill warning:', String((err as { message?: string }).message || ''));
+    }
+    // Only create the dedicated MessageId index when no index already covers
+    // MessageId (fresh tables ship with `idx_ma_message_id` — avoid duplicates).
+    let hasMessageIdIndex = false;
+    try {
+      const [indexRows] = await this.pool.query(
+        `SHOW INDEX FROM \`MessageActivities\` WHERE \`Column_name\` = 'MessageId'`
+      );
+      hasMessageIdIndex = Array.isArray(indexRows) && indexRows.length > 0;
+    } catch (_idxErr: unknown) {
+      // SHOW INDEX failure — fall through and attempt creation (dup-safe below).
+    }
+    const indexStatements = [
+      // Fast chronological chat ordering without memory filesort.
+      `CREATE INDEX \`idx_msg_chat_order\` ON \`MessageActivities\` (\`GroupId\`(100), \`Recipient\`(100), \`Sender\`(50), \`sentDateTime\`, \`Id\`)`,
+      // Ultra-fast bulk read/delivery watermark updates.
+      `CREATE INDEX \`idx_msg_status_lookup\` ON \`MessageActivities\` (\`Sender\`(50), \`Recipient\`(100), \`readDateTime\`, \`receiveDateTime\`)`
+    ];
+    if (!hasMessageIdIndex) {
+      // Fast lookup by MessageId for instant status updates without table locks.
+      indexStatements.unshift(
+        `CREATE INDEX \`idx_msg_messageid\` ON \`MessageActivities\` (\`MessageId\`(100))`
+      );
+    }
+    for (const statement of indexStatements) {
+      try {
+        await this.pool.execute(statement);
+      } catch (err: unknown) {
+        const code = (err as { code?: string }).code;
+        const message = String((err as { message?: string }).message || '');
+        // ER_DUP_KEYNAME = index already exists — expected on subsequent restarts.
+        if (code !== 'ER_DUP_KEYNAME' && !message.includes('Duplicate key name')) {
+          console.warn('[MYSQL] MessageActivities index warning:', message);
+        }
+      }
+    }
+    this.messageActivitiesLifecycleReady = true;
   }
 
   async insertMessageActivity(activity: {
@@ -1692,16 +1931,91 @@ export class MysqlLogsService {
     const emoji = toTrimmedString(activity.emoji) || null;
     const targetMessageId = toTrimmedString(activity.targetMessageId) || null;
     const actionTimestamp = Number(activity.actionTimestamp) || Date.now();
+    // sentDateTime mirrors the sender's dispatch time (== ActionTimestamp) and
+    // is the immutable chronological sort key. receiveDateTime/readDateTime
+    // start NULL and are stamped later by delivery/read acknowledgments.
+    const sentDateTime = new Date(actionTimestamp);
     try {
       await this.pool.execute(
         `INSERT INTO \`MessageActivities\`
-           (\`ActionType\`, \`MessageId\`, \`Sender\`, \`Recipient\`, \`GroupId\`, \`Body\`, \`ImageUrl\`, \`FileUrl\`, \`Emoji\`, \`TargetMessageId\`, \`ActionTimestamp\`)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [actionType, messageId, sender, recipient, groupId, body, imageUrl, fileUrl, emoji, targetMessageId, actionTimestamp]
+           (\`ActionType\`, \`MessageId\`, \`Sender\`, \`Recipient\`, \`GroupId\`, \`Body\`, \`ImageUrl\`, \`FileUrl\`, \`Emoji\`, \`TargetMessageId\`, \`ActionTimestamp\`, \`sentDateTime\`)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [actionType, messageId, sender, recipient, groupId, body, imageUrl, fileUrl, emoji, targetMessageId, actionTimestamp, sentDateTime]
       );
     } catch (err: unknown) {
       const message = String((err as { message?: string }).message || '');
       console.error('[MYSQL] insertMessageActivity error:', message);
+    }
+  }
+
+  /**
+   * Batch delivery acknowledgment on the MessageActivities audit table.
+   * Stamps `receiveDateTime` for the given messageIds in ONE indexed query
+   * (uses the MessageId index) instead of N+1 per-message updates — this is
+   * what previously caused `Lock wait timeout exceeded` full-table scans.
+   * COALESCE preserves the earliest recorded delivery time, and the
+   * `sentDateTime`/`ActionTimestamp` sort keys are never touched.
+   */
+  async markActivitiesDelivered(recipient: string, messageIds: string[]): Promise<number> {
+    await this.ensureMessageActivitiesTable();
+    const safeRecipient = toTrimmedString(recipient).toLowerCase();
+    const safeIds = Array.isArray(messageIds)
+      ? [...new Set(messageIds.map((id) => toTrimmedString(id)).filter(Boolean))].slice(0, 500)
+      : [];
+    if (!safeRecipient || !safeIds.length) return 0;
+    try {
+      const placeholders = safeIds.map(() => '?').join(', ');
+      const sql = `UPDATE \`MessageActivities\`
+        SET \`receiveDateTime\` = COALESCE(\`receiveDateTime\`, NOW(3))
+        WHERE \`ActionType\` IN ('message', 'queue-message')
+          AND \`MessageId\` IN (${placeholders})
+          AND LOWER(\`Sender\`) != ?
+          AND \`receiveDateTime\` IS NULL`;
+      const [result] = await this.pool.execute(sql, [...safeIds, safeRecipient]);
+      return (result as any).affectedRows || 0;
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.warn('[MYSQL] markActivitiesDelivered error:', message);
+      return 0;
+    }
+  }
+
+  /**
+   * Watermark read acknowledgment on the MessageActivities audit table.
+   * When a user opens a chat, all pending messages addressed to them in that
+   * chat are marked read (and implicitly delivered) in ONE indexed query.
+   * Only `readDateTime`/`receiveDateTime` are mutated — never the
+   * `sentDateTime`/`ActionTimestamp`/`Id` sort keys, so message order can
+   * never reshuffle because of a status update.
+   */
+  async markActivitiesRead(reader: string, chatId: string): Promise<number> {
+    await this.ensureMessageActivitiesTable();
+    const safeReader = toTrimmedString(reader).toLowerCase();
+    const safeChatId = toTrimmedString(chatId).toLowerCase();
+    if (!safeReader || !safeChatId) return 0;
+    try {
+      // Chat semantics: for group messages GroupId = chatId; for direct
+      // messages Sender = chatId and Recipient contains the reader.
+      const sql = `UPDATE \`MessageActivities\`
+        SET \`readDateTime\` = COALESCE(\`readDateTime\`, NOW(3)),
+            \`receiveDateTime\` = COALESCE(\`receiveDateTime\`, NOW(3))
+        WHERE \`ActionType\` IN ('message', 'queue-message')
+          AND \`readDateTime\` IS NULL
+          AND LOWER(\`Sender\`) != ?
+          AND (
+            LOWER(\`GroupId\`) = ?
+            OR (LOWER(\`Sender\`) = ? AND (LOWER(\`Recipient\`) = ? OR \`Recipient\` LIKE ?))
+          )`;
+      const [result] = await this.pool.execute(sql, [
+        safeReader,
+        safeChatId,
+        safeChatId, safeReader, `%${safeReader}%`
+      ]);
+      return (result as any).affectedRows || 0;
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.warn('[MYSQL] markActivitiesRead error:', message);
+      return 0;
     }
   }
 
@@ -1770,7 +2084,10 @@ export class MysqlLogsService {
           \`FileUrl\`         AS fileUrl,
           \`Emoji\`           AS emoji,
           \`TargetMessageId\` AS targetMessageId,
-          \`ActionTimestamp\` AS actionTimestamp
+          \`ActionTimestamp\` AS actionTimestamp,
+          \`sentDateTime\`    AS sentDateTime,
+          \`receiveDateTime\` AS receiveDateTime,
+          \`readDateTime\`    AS readDateTime
         FROM \`MessageActivities\`
         WHERE \`ActionType\` IN (${actionTypePlaceholders})
           AND (\`Sender\` = ? OR \`Recipient\` = ? OR \`Recipient\` LIKE ?`;
@@ -1796,15 +2113,18 @@ export class MysqlLogsService {
 
       if (includeMessages) {
         // Full-sync mode paginates newest-first to mirror the historical Logs-table paging.
-        sql += ` ORDER BY \`ActionTimestamp\` DESC LIMIT ?, ?`;
+        // Secondary `Id` key keeps the order strictly monotonic and stable —
+        // status updates never mutate ActionTimestamp/sentDateTime/Id, so
+        // delivery/read receipts can never reshuffle message order.
+        sql += ` ORDER BY \`ActionTimestamp\` DESC, \`Id\` DESC LIMIT ?, ?`;
         params.push(offset, limit);
       } else if (offset > 0) {
         // Backward-compatible actions-only mode (used by incremental sync callers).
-        sql += ` ORDER BY \`ActionTimestamp\` ASC LIMIT ?, ?`;
+        sql += ` ORDER BY \`ActionTimestamp\` ASC, \`Id\` ASC LIMIT ?, ?`;
         params.push(offset, limit);
       } else {
         // Preserve historical ordering for existing callers that did not use offset.
-        sql += ` ORDER BY \`ActionTimestamp\` ASC LIMIT ?`;
+        sql += ` ORDER BY \`ActionTimestamp\` ASC, \`Id\` ASC LIMIT ?`;
         params.push(limit);
       }
 
@@ -1845,6 +2165,13 @@ export class MysqlLogsService {
           record.body = String(row.body || '').trim() || undefined;
           record.imageUrl = String(row.imageUrl || '').trim() || undefined;
           record.fileUrl = String(row.fileUrl || '').trim() || undefined;
+          // Lifecycle timestamps (epoch ms) drive the client's chronological
+          // sort (sentDateTime) and the sent/delivered/read tick state.
+          record.sentDateTime = parseFlexibleTimestamp(row.sentDateTime) || ts;
+          const receiveDateTime = parseFlexibleTimestamp(row.receiveDateTime);
+          if (receiveDateTime > 0) record.receiveDateTime = receiveDateTime;
+          const readDateTime = parseFlexibleTimestamp(row.readDateTime);
+          if (readDateTime > 0) record.readDateTime = readDateTime;
           if (groupId && sender) {
             record.groupSenderName = sender;
           }
@@ -2291,6 +2618,89 @@ export class MysqlLogsService {
       const message = String((err as { message?: string }).message || '');
       console.error('[MYSQL] checkAuth error:', message);
       return { status: 'error', message: 'Database query failed', isActive: false };
+    }
+  }
+
+  /**
+   * Store a login OTP code in the Subscribe table's `2FA` column.
+   * Format: "<code>|<expiresAtEpochMs>" so the code is TTL-bound.
+   * Much faster than the Google-Sheet round-trip and survives server restarts.
+   */
+  async setAuthCode(username: string, code: string, ttlSeconds: number): Promise<boolean> {
+    await this.ensureSubscribeTable();
+    const normalized = toTrimmedString(username);
+    const normalizedCode = toTrimmedString(code);
+    if (!normalized || !normalizedCode) return false;
+    const ttl = Math.max(60, Number(ttlSeconds) || 300);
+    const expiresAt = Date.now() + ttl * 1000;
+    try {
+      const identifiers = Array.from(new Set(
+        [normalized, normalized.toLowerCase(), normalizePhone(normalized)].filter(Boolean)
+      ));
+      const placeholders = identifiers.map(() => '?').join(', ');
+      const [result] = await this.pool.execute(
+        `UPDATE \`Subscribe\` SET \`2FA\` = ? WHERE \`User\` IN (${placeholders})`,
+        [`${normalizedCode}|${expiresAt}`, ...identifiers]
+      );
+      return ((result as any).affectedRows || 0) > 0;
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.error('[MYSQL] setAuthCode error:', message);
+      return false;
+    }
+  }
+
+  /**
+   * Verify a login OTP code against the Subscribe table's `2FA` column.
+   * Accepts both the "<code>|<expiresAt>" format written by setAuthCode and a
+   * bare code written by external tooling (no expiry — treated as valid).
+   * Single-use: the column is cleared immediately after a successful match.
+   * Returns 'verified' | 'mismatch' | 'unavailable'.
+   */
+  async verifyAuthCode(username: string, code: string): Promise<'verified' | 'mismatch' | 'unavailable'> {
+    await this.ensureSubscribeTable();
+    const normalized = toTrimmedString(username);
+    const normalizedCode = toTrimmedString(code);
+    if (!normalized || !normalizedCode) return 'mismatch';
+    try {
+      const identifiers = Array.from(new Set(
+        [normalized, normalized.toLowerCase(), normalizePhone(normalized)].filter(Boolean)
+      ));
+      const placeholders = identifiers.map(() => '?').join(', ');
+      const [rows] = await this.pool.query<RowDataPacket[]>(
+        `SELECT \`User\`, \`2FA\` AS twoFA FROM \`Subscribe\` WHERE \`User\` IN (${placeholders})`,
+        identifiers
+      );
+      if (!rows || rows.length === 0) return 'unavailable';
+
+      for (const row of rows) {
+        const stored = toTrimmedString(row.twoFA);
+        if (!stored) continue;
+        const separatorIndex = stored.indexOf('|');
+        const storedCode = separatorIndex >= 0 ? stored.slice(0, separatorIndex).trim() : stored;
+        const expiresAt = separatorIndex >= 0 ? Number(stored.slice(separatorIndex + 1)) : 0;
+        if (expiresAt > 0 && Date.now() > expiresAt) {
+          continue; // expired code — treat as no match
+        }
+        if (storedCode && storedCode === normalizedCode) {
+          // Single-use: clear the code so it can never be replayed.
+          const matchedUser = toTrimmedString(row.User);
+          try {
+            await this.pool.execute(
+              'UPDATE `Subscribe` SET `2FA` = NULL WHERE `User` = ?',
+              [matchedUser]
+            );
+          } catch (_clearErr) {
+            // Non-fatal: expiry still bounds the code's lifetime.
+          }
+          return 'verified';
+        }
+      }
+      return 'mismatch';
+    } catch (err: unknown) {
+      const message = String((err as { message?: string }).message || '');
+      console.error('[MYSQL] verifyAuthCode error:', message);
+      return 'unavailable';
     }
   }
 

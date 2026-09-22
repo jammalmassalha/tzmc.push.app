@@ -73,6 +73,7 @@ class ApiEndpoints {
   static const String reaction = '/reaction';
   static const String typing = '/typing';
   static const String read = '/read';
+  static const String delivered = '/delivered';
   static const String edit = '/edit';
   static const String delete = '/delete';
   static const String upload = '/upload';
@@ -155,6 +156,12 @@ class NetworkTimeouts {
   /// Session operations timeout
   static const Duration sessionTimeout = Duration(seconds: 12);
 
+  /// SMS request-code timeout. The server persists the code to the Subscribe
+  /// sheet and dispatches the SMS through the gateway (each with internal
+  /// retries) before responding, so a short timeout makes the app report a
+  /// failure even though the SMS was actually sent.
+  static const Duration requestCodeTimeout = Duration(seconds: 60);
+
   /// SMS verify-code timeout. The server holds the request open for up to
   /// ~45 s after a successful code match while it waits for an external
   /// service to set the user's final Status on the Subscribe sheet, so the
@@ -193,6 +200,10 @@ class RealtimeConfig {
 
   /// SSE stream retry delay
   static const Duration streamRetryDelay = Duration(seconds: 5);
+
+  /// Max time to wait for the SSE connection (response headers) to be
+  /// established before tearing down and falling back to polling.
+  static const Duration sseConnectTimeout = Duration(seconds: 15);
 
   /// Socket reconnect retry delay
   static const Duration socketRetryDelay = Duration(milliseconds: 3500);

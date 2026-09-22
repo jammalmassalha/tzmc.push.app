@@ -6137,7 +6137,8 @@ export class ChatStoreService {
             incomingType === 'delete-action' ||
             incomingType === 'edit-action' ||
             incomingType === 'reaction' ||
-            incomingType === 'read-receipt'
+            incomingType === 'read-receipt' ||
+            incomingType === 'delivery-receipt'
           ) {
             deferredActions.push(message);
           }
@@ -6166,7 +6167,8 @@ export class ChatStoreService {
       incomingType === 'edit-action' ||
       incomingType === 'reaction' ||
       incomingType === 'group-update' ||
-      incomingType === 'read-receipt'
+      incomingType === 'read-receipt' ||
+      incomingType === 'delivery-receipt'
     );
   }
 
@@ -6235,7 +6237,8 @@ export class ChatStoreService {
       const incomingBody = this.resolveIncomingMessageBody(incoming);
       const incomingImageUrl = this.resolveIncomingImageUrl(incoming);
       const incomingFileUrl = this.resolveIncomingFileUrl(incoming);
-      const incomingTimestampRaw = Number(incoming.timestamp ?? Date.now());
+      const incomingSentDateTime = this.parseFlexibleEpochMs(incoming.sentDateTime);
+      const incomingTimestampRaw = Number(incomingSentDateTime ?? incoming.timestamp ?? Date.now());
       const incomingTimestamp = Number.isFinite(incomingTimestampRaw) && incomingTimestampRaw > 0
         ? incomingTimestampRaw
         : Date.now();
@@ -6375,6 +6378,9 @@ export class ChatStoreService {
         fileUrl: incomingFileUrl,
         direction: isOutgoingFromCurrentUser ? 'outgoing' : 'incoming',
         timestamp: incomingTimestamp,
+        sentDateTime: incomingSentDateTime ?? incomingTimestamp,
+        receiveDateTime: this.parseFlexibleEpochMs(incoming.receiveDateTime),
+        readDateTime: this.parseFlexibleEpochMs(incoming.readDateTime),
         deliveryStatus: 'delivered',
         groupId: normalizedGroupId || null,
         groupName: incoming.groupName ?? null,
@@ -6562,6 +6568,9 @@ export class ChatStoreService {
     if (incomingType === 'read-receipt') {
       return this.applyIncomingReadReceipt(incoming);
     }
+    if (incomingType === 'delivery-receipt') {
+      return this.applyIncomingDeliveryReceipt(incoming);
+    }
 
     const sender = this.normalizeUser(incoming.sender ?? '');
     if (!sender) return false;
@@ -6588,7 +6597,8 @@ export class ChatStoreService {
     const incomingBody = this.resolveIncomingMessageBody(incoming);
     const incomingImageUrl = this.resolveIncomingImageUrl(incoming);
     const incomingFileUrl = this.resolveIncomingFileUrl(incoming);
-    const incomingTimestampRaw = Number(incoming.timestamp ?? Date.now());
+    const incomingSentDateTime = this.parseFlexibleEpochMs(incoming.sentDateTime);
+    const incomingTimestampRaw = Number(incomingSentDateTime ?? incoming.timestamp ?? Date.now());
     const incomingTimestamp = Number.isFinite(incomingTimestampRaw) && incomingTimestampRaw > 0
       ? incomingTimestampRaw
       : Date.now();
@@ -6679,6 +6689,9 @@ export class ChatStoreService {
       fileUrl: incomingFileUrl,
       direction: isOutgoingFromCurrentUser ? 'outgoing' : 'incoming',
       timestamp: incomingTimestamp,
+      sentDateTime: incomingSentDateTime ?? incomingTimestamp,
+      receiveDateTime: this.parseFlexibleEpochMs(incoming.receiveDateTime),
+      readDateTime: this.parseFlexibleEpochMs(incoming.readDateTime),
       deliveryStatus: 'delivered',
       groupId: normalizedGroupId,
       groupName: incoming.groupName ?? null,
@@ -6994,6 +7007,20 @@ export class ChatStoreService {
     if (!messageIds.length) return false;
 
     return this.markOutgoingMessagesAsRead(messageIds);
+  }
+
+  private applyIncomingDeliveryReceipt(incoming: IncomingServerMessage): boolean {
+    const messageIds = Array.isArray(incoming.messageIds)
+      ? incoming.messageIds.map((id) => String(id || '').trim()).filter(Boolean)
+      : String(incoming.messageId ?? '')
+        .split(',')
+        .map((id) => String(id || '').trim())
+        .filter(Boolean);
+    if (!messageIds.length) return false;
+
+    const deliveredAtValue = Number(incoming.deliveredAt ?? Date.now());
+    const deliveredAt = Number.isFinite(deliveredAtValue) ? deliveredAtValue : Date.now();
+    return this.markOutgoingMessagesAsDelivered(messageIds, deliveredAt);
   }
 
   private applyIncomingEditAction(incoming: IncomingServerMessage): boolean {
@@ -7587,6 +7614,23 @@ export class ChatStoreService {
     this.schedulePersist();
   }
 
+  private parseFlexibleEpochMs(value: number | string | null | undefined): number | null {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+    const numeric = typeof value === 'number' ? value : Number(value);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric;
+    }
+    if (typeof value === 'string') {
+      const parsed = Date.parse(value);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+    return null;
+  }
+
   private findMessageInsertIndexByTimestamp(list: ChatMessage[], timestamp: number): number {
     let low = 0;
     let high = list.length;
@@ -7640,6 +7684,40 @@ export class ChatStoreService {
 
           changed = true;
           return { ...message, deliveryStatus: 'read' as DeliveryStatus };
+        });
+        next[chatId] = updated;
+      }
+
+      return changed ? next : messageMap;
+    });
+
+    if (changed) {
+      this.schedulePersist();
+    }
+    return changed;
+  }
+
+  private markOutgoingMessagesAsDelivered(messageIds: string[], deliveredAt: number): boolean {
+    const targetIds = new Set(messageIds.map((id) => String(id || '').trim()).filter(Boolean));
+    if (!targetIds.size) return false;
+
+    let changed = false;
+    this.messagesByChat.update((messageMap) => {
+      const next: Record<string, ChatMessage[]> = {};
+
+      for (const [chatId, list] of Object.entries(messageMap)) {
+        const updated = list.map((message) => {
+          if (message.direction !== 'outgoing') return message;
+          if (!targetIds.has(message.messageId)) return message;
+          // Never downgrade a message that is already read.
+          if (message.deliveryStatus === 'read' || message.deliveryStatus === 'delivered') return message;
+
+          changed = true;
+          return {
+            ...message,
+            deliveryStatus: 'delivered' as DeliveryStatus,
+            receiveDateTime: message.receiveDateTime ?? deliveredAt
+          };
         });
         next[chatId] = updated;
       }
@@ -8284,6 +8362,9 @@ export class ChatStoreService {
           messageId: String(record.messageId || this.generateId('msg')),
           body: resolvedBody,
           timestamp: Number(record.timestamp ?? Date.now()),
+          sentDateTime: this.parseFlexibleEpochMs(record.sentDateTime),
+          receiveDateTime: this.parseFlexibleEpochMs(record.receiveDateTime),
+          readDateTime: this.parseFlexibleEpochMs(record.readDateTime),
           direction: record.direction === 'incoming' ? 'incoming' : 'outgoing',
           deliveryStatus: record.deliveryStatus ?? 'sent',
           groupId: normalizedGroupId,
@@ -8305,7 +8386,9 @@ export class ChatStoreService {
       }
 
       for (const list of Object.values(messageMap)) {
-        list.sort((a, b) => a.timestamp - b.timestamp);
+        list.sort(
+          (a, b) => (a.sentDateTime ?? a.timestamp) - (b.sentDateTime ?? b.timestamp)
+        );
       }
 
       this.unreadByChat.set(unreadByChat);
@@ -8666,6 +8749,7 @@ export class ChatStoreService {
     }
     const numericGroupUpdatedAt = Number(payload['groupUpdatedAt']);
     const numericReadAt = Number(payload['readAt']);
+    const numericDeliveredAt = Number(payload['deliveredAt']);
     const numericPayloadTimestamp = Number(payload['timestamp']);
     const numericPayloadReceivedAt = Number(
       payload['receivedAt'] ??
@@ -8691,6 +8775,7 @@ export class ChatStoreService {
       messageId: typeof payload['messageId'] === 'string' ? payload['messageId'] : undefined,
       messageIds: payloadMessageIds.length ? payloadMessageIds : undefined,
       readAt: Number.isFinite(numericReadAt) ? numericReadAt : undefined,
+      deliveredAt: Number.isFinite(numericDeliveredAt) ? numericDeliveredAt : undefined,
       sender: typeof payload['sender'] === 'string' ? payload['sender'] : undefined,
       targetMessageId:
         typeof payload['targetMessageId'] === 'string' ? payload['targetMessageId'] : undefined,
@@ -8714,7 +8799,7 @@ export class ChatStoreService {
       timestamp: resolvedIncomingTimestamp
     };
 
-    if (payloadType !== 'reaction' && payloadType !== 'group-update' && payloadType !== 'read-receipt') {
+    if (payloadType !== 'reaction' && payloadType !== 'group-update' && payloadType !== 'read-receipt' && payloadType !== 'delivery-receipt') {
       const immediateIncoming = this.buildIncomingMessageFromPushPayload(payload, incoming);
       if (immediateIncoming) {
         this.incrementDeliveryTelemetry('pushImmediateMessageBuilt');

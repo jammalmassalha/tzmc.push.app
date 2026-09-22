@@ -29,6 +29,7 @@ import '../../features/auth/presentation/auth_state.dart';
 import '../../features/chat/presentation/message_screen.dart';
 import '../../firebase_options.dart';
 import '../api/chat_api_service.dart';
+import '../models/chat_models.dart' show ChatMessage;
 import '../navigation/root_navigator.dart';
 import '../services/chat_store_service.dart';
 
@@ -125,6 +126,9 @@ class PushNotificationService {
   // Single-flight guard: prevents two concurrent _getAndRegisterToken() calls
   // from spawning interleaved APNs polling loops.
   bool _getAndRegisterTokenInProgress = false;
+  // Set once [initialize] has run so repeated calls don't re-subscribe the
+  // FCM listeners.
+  bool _initialized = false;
   StreamSubscription? _tokenRefreshSubscription;
   StreamSubscription? _messageSubscription;
 
@@ -139,6 +143,11 @@ class PushNotificationService {
   /// before the system dialog appears (and a "open settings" fallback if
   /// the user has previously denied the permission).
   Future<void> initialize() async {
+    // Idempotency guard: initialize() may be invoked both by the AI
+    // initialization screen (right after OTP login) and by ChatShellScreen on
+    // mount. Re-running it would duplicate the FCM listeners.
+    if (_initialized) return;
+    _initialized = true;
     try {
       // Firebase is initialized in main() with platform-specific
       // [DefaultFirebaseOptions]. Re-calling initializeApp here is safe
@@ -193,6 +202,8 @@ class PushNotificationService {
 
       debugPrint('[PushNotificationService] Initialized successfully');
     } catch (e) {
+      // Allow a later call to retry a failed initialization.
+      _initialized = false;
       debugPrint('[PushNotificationService] Initialization error: $e');
     }
   }
@@ -1113,6 +1124,8 @@ class PushNotificationService {
     const silentTypes = {
       'read-receipt',
       'read',
+      'delivery-receipt',
+      'delivered',
       'delete-action',
       'delete',
       'edit-action',
@@ -1414,6 +1427,7 @@ class PushNotificationService {
     _tokenRegistrationRetryTimer?.cancel();
     _tokenRefreshSubscription?.cancel();
     _messageSubscription?.cancel();
+    _initialized = false;
   }
 }
 
@@ -1457,6 +1471,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   // the unread tray counter.
   const actionOnlyTypes = {
     'read-receipt', 'read',
+    'delivery-receipt', 'delivered',
     'delete-action', 'delete',
     'edit-action', 'edit',
     'group-update', 'typing', 'reaction',
@@ -1484,7 +1499,11 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
         jsonDecode(existing) as Map<String, dynamic>;
 
     final prev = pending[chatId] as Map<String, dynamic>?;
-    final ts = int.tryParse(data['timestamp']?.toString() ?? '') ??
+    // Prefer the sender dispatch time so delta-fetch cursors reflect the true
+    // chronological position of the message, not its delivery time.
+    final ts = ChatMessage.parseFlexibleDateTime(data['sentDateTime'])
+            ?.millisecondsSinceEpoch ??
+        int.tryParse(data['timestamp']?.toString() ?? '') ??
         DateTime.now().millisecondsSinceEpoch;
     final messageId = (data['messageId'] ?? '').toString().trim();
     final prevPendingSince = prev?['pendingSince'];
