@@ -75,6 +75,10 @@ export class RedisStateStore {
     return `${this.keyPrefix}:sequence:${user}`;
   }
 
+  private chatPtsKey(chatId: string): string {
+    return `${this.keyPrefix}:chat:${chatId}:pts`;
+  }
+
   private queueEventsChannel(): string {
     return `${this.keyPrefix}:queue:events`;
   }
@@ -188,6 +192,14 @@ export class RedisStateStore {
     const normalizedUser = toTrimmedString(user).toLowerCase();
     if (!normalizedUser) return 0;
     const value = await this.client.incr(this.sequenceKeyForUser(normalizedUser));
+    return Number(value) || 0;
+  }
+
+  async nextChatPts(chatId: string): Promise<number> {
+    if (!this.connected || !this.client) return 0;
+    const normalizedChatId = toTrimmedString(chatId);
+    if (!normalizedChatId) return 0;
+    const value = await this.client.incr(this.chatPtsKey(normalizedChatId));
     return Number(value) || 0;
   }
 

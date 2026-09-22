@@ -86,7 +86,9 @@ class Groups extends Table {
 class Messages extends Table {
   TextColumn get id => text()();
   TextColumn get messageId => text()();
+  TextColumn get clientMsgId => text().nullable()();
   TextColumn get chatId => text()();
+  IntColumn get pts => integer().nullable()();
   TextColumn get sender => text()();
   TextColumn get senderDisplayName => text().nullable()();
   TextColumn get recordType => text().nullable()();
@@ -152,7 +154,7 @@ class ChatDatabase extends _$ChatDatabase {
   ChatDatabase.forTesting(QueryExecutor executor) : super(executor);
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
 
   @override
   MigrationStrategy get migration {
@@ -161,7 +163,10 @@ class ChatDatabase extends _$ChatDatabase {
         await m.createAll();
       },
       onUpgrade: (Migrator m, int from, int to) async {
-        // Handle future migrations here
+        if (from < 2) {
+          await m.addColumn(messages, messages.clientMsgId);
+          await m.addColumn(messages, messages.pts);
+        }
       },
     );
   }
@@ -327,6 +332,14 @@ class ChatDatabase extends _$ChatDatabase {
     return result?.read(messages.timestamp.max()) ?? 0;
   }
 
+  Future<int> getHighestPts(String chatId) async {
+    final query = selectOnly(messages)
+      ..addColumns([messages.pts.max()])
+      ..where(messages.chatId.equals(chatId));
+    final result = await query.getSingleOrNull();
+    return result?.read(messages.pts.max()) ?? 0;
+  }
+
   Future<void> upsertMessage(ChatMessage message) async {
     await into(messages).insertOnConflictUpdate(_messageToCompanion(message));
   }
@@ -347,7 +360,9 @@ class ChatDatabase extends _$ChatDatabase {
     return MessagesCompanion.insert(
       id: message.id,
       messageId: message.messageId,
+      clientMsgId: Value(message.clientMsgId),
       chatId: message.chatId,
+      pts: Value(message.pts),
       sender: message.sender,
       senderDisplayName: Value(message.senderDisplayName),
       recordType: Value(message.recordType),
@@ -391,7 +406,9 @@ class ChatDatabase extends _$ChatDatabase {
     return ChatMessage(
       id: row.id,
       messageId: row.messageId,
+      clientMsgId: row.clientMsgId,
       chatId: row.chatId,
+      pts: row.pts,
       sender: row.sender,
       senderDisplayName: senderDisplayName,
       recordType: row.recordType,

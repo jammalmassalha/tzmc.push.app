@@ -29,6 +29,7 @@ export interface SendPushOptions {
   messageId?: string;
   skipBadge?: boolean;
   dedupLog?: boolean;
+  silent?: boolean;
 }
 
 export interface SendPushResult {
@@ -469,7 +470,9 @@ export class NotificationService {
             messageType === 'edit-action' ||
             messageType === this.deps.AUTH_REFRESH_PUSH_TYPE
           );
-          const payload = this.buildPushPayloadString(payloadData, { includeNotification: includeNotificationPayload });
+          const payload = this.buildPushPayloadString(payloadData, {
+            includeNotification: includeNotificationPayload && options.silent !== true
+          });
 
           try {
             const pushOptions = { TTL: 604800, headers: { Urgency: 'high' }, timeout: 15000 };

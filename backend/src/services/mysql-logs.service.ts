@@ -1649,6 +1649,11 @@ export class MysqlLogsService {
           \`FileUrl\` TEXT DEFAULT NULL,
           \`Emoji\` VARCHAR(50) DEFAULT NULL,
           \`TargetMessageId\` VARCHAR(255) DEFAULT NULL,
+          \`ClientMsgId\` VARCHAR(64) DEFAULT NULL,
+          \`Pts\` BIGINT DEFAULT NULL,
+          \`Status\` ENUM('sent', 'delivered', 'read') NOT NULL DEFAULT 'sent',
+          \`DeliveredAt\` DATETIME DEFAULT NULL,
+          \`ReadAt\` DATETIME DEFAULT NULL,
           \`ActionTimestamp\` BIGINT NOT NULL,
           \`CreatedAt\` DATETIME DEFAULT CURRENT_TIMESTAMP,
           PRIMARY KEY (\`Id\`),
@@ -1659,6 +1664,17 @@ export class MysqlLogsService {
           INDEX \`idx_ma_created_at\` (\`CreatedAt\`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
       `);
+      for (const statement of [
+        'ALTER TABLE `MessageActivities` ADD COLUMN `ClientMsgId` VARCHAR(64) DEFAULT NULL',
+        'ALTER TABLE `MessageActivities` ADD COLUMN `Pts` BIGINT DEFAULT NULL',
+        "ALTER TABLE `MessageActivities` ADD COLUMN `Status` ENUM('sent', 'delivered', 'read') NOT NULL DEFAULT 'sent'",
+        'ALTER TABLE `MessageActivities` ADD COLUMN `DeliveredAt` DATETIME DEFAULT NULL',
+        'ALTER TABLE `MessageActivities` ADD COLUMN `ReadAt` DATETIME DEFAULT NULL',
+        'CREATE INDEX `idx_ma_client_msg_id` ON `MessageActivities` (`ClientMsgId`)',
+        'CREATE INDEX `idx_ma_chat_pts` ON `MessageActivities` (`GroupId`, `Pts`)',
+      ]) {
+        try { await this.pool.execute(statement); } catch (_) { /* already applied */ }
+      }
       this.messageActivitiesTableReady = true;
       console.log('[MYSQL] MessageActivities table ensured.');
     } catch (err: unknown) {
@@ -1678,6 +1694,11 @@ export class MysqlLogsService {
     fileUrl?: string;
     emoji?: string;
     targetMessageId?: string;
+    clientMsgId?: string;
+    pts?: number;
+    status?: 'sent' | 'delivered' | 'read';
+    deliveredAt?: number;
+    readAt?: number;
     actionTimestamp?: number;
   }): Promise<void> {
     await this.ensureMessageActivitiesTable();
@@ -1691,17 +1712,43 @@ export class MysqlLogsService {
     const fileUrl = toTrimmedString(activity.fileUrl) || null;
     const emoji = toTrimmedString(activity.emoji) || null;
     const targetMessageId = toTrimmedString(activity.targetMessageId) || null;
+    const clientMsgId = toTrimmedString(activity.clientMsgId).slice(0, 64) || null;
+    const pts = Number(activity.pts) > 0 ? Number(activity.pts) : null;
+    const status = activity.status === 'delivered' || activity.status === 'read' ? activity.status : 'sent';
     const actionTimestamp = Number(activity.actionTimestamp) || Date.now();
     try {
       await this.pool.execute(
         `INSERT INTO \`MessageActivities\`
-           (\`ActionType\`, \`MessageId\`, \`Sender\`, \`Recipient\`, \`GroupId\`, \`Body\`, \`ImageUrl\`, \`FileUrl\`, \`Emoji\`, \`TargetMessageId\`, \`ActionTimestamp\`)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [actionType, messageId, sender, recipient, groupId, body, imageUrl, fileUrl, emoji, targetMessageId, actionTimestamp]
+           (\`ActionType\`, \`MessageId\`, \`Sender\`, \`Recipient\`, \`GroupId\`, \`Body\`, \`ImageUrl\`, \`FileUrl\`, \`Emoji\`, \`TargetMessageId\`, \`ClientMsgId\`, \`Pts\`, \`Status\`, \`DeliveredAt\`, \`ReadAt\`, \`ActionTimestamp\`)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [actionType, messageId, sender, recipient, groupId, body, imageUrl, fileUrl, emoji, targetMessageId,
+          clientMsgId, pts, status,
+          activity.deliveredAt ? new Date(activity.deliveredAt) : null,
+          activity.readAt ? new Date(activity.readAt) : null,
+          actionTimestamp]
       );
     } catch (err: unknown) {
       const message = String((err as { message?: string }).message || '');
       console.error('[MYSQL] insertMessageActivity error:', message);
+    }
+
+    async markMessageDelivered(messageId: string, deliveredAt = Date.now()): Promise<void> {
+      await this.ensureMessageActivitiesTable();
+      await this.pool.execute(
+        'UPDATE `MessageActivities` SET `Status` = IF(`Status` = "read", "read", "delivered"), `DeliveredAt` = COALESCE(`DeliveredAt`, ?) WHERE `MessageId` = ?',
+        [new Date(deliveredAt), messageId]
+      );
+    }
+
+    async markMessagesRead(messageIds: string[], readAt = Date.now()): Promise<void> {
+      await this.ensureMessageActivitiesTable();
+      const ids = messageIds.map((id) => toTrimmedString(id)).filter(Boolean);
+      if (!ids.length) return;
+      const placeholders = ids.map(() => '?').join(', ');
+      await this.pool.execute(
+        `UPDATE \`MessageActivities\` SET \`Status\` = 'read', \`ReadAt\` = COALESCE(\`ReadAt\`, ?) WHERE \`MessageId\` IN (${placeholders})`,
+        [new Date(readAt), ...ids]
+      );
     }
   }
 

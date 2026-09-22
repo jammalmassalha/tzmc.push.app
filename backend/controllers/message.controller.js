@@ -361,6 +361,7 @@ function registerMessageController(app, deps = {}) {
             const user = req.resolvedUser;
             if (!user) return res.status(400).json({ messages: [], error: 'Missing user' });
             const lastSequence = Math.max(0, Number(req.query && (req.query.last_seq || req.query.lastSeq)) || 0);
+            const requestedChatId = String(req.query && (req.query.chat_id || req.query.chatId) || '').trim();
             let messages = [];
             const store = getActiveRedisStateStore();
             if (store && store.isEnabled && typeof store.readQueueSince === 'function') {
@@ -374,11 +375,17 @@ function registerMessageController(app, deps = {}) {
                 const mailbox = getMessageQueue()[user] || [];
                 messages = mailbox.filter((message) => Number(message && message.seq_id) > lastSequence);
             }
-            messages.sort((a, b) => Number(a && a.seq_id) - Number(b && b.seq_id));
+            if (requestedChatId) {
+                messages = messages.filter((message) => {
+                    const value = String(message && (message.chatId || message.groupId || message.toUser || '') || '').trim();
+                    return value === requestedChatId;
+                });
+            }
+            messages.sort((a, b) => Number(a && (a.pts || a.seq_id)) - Number(b && (b.pts || b.seq_id)));
             const currentSequence = typeof getMailboxSequence === 'function'
                 ? Number(getMailboxSequence(user)) || 0
-                : (messages.length ? Number(messages[messages.length - 1].seq_id) || 0 : lastSequence);
-            return res.json({ messages, last_seq: currentSequence });
+                : (messages.length ? Number(messages[messages.length - 1].pts || messages[messages.length - 1].seq_id) || 0 : lastSequence);
+            return res.json({ messages, last_seq: currentSequence, highest_pts: currentSequence });
         }
     );
 

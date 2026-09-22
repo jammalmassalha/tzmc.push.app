@@ -1950,7 +1950,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final message = ChatMessage(
       id: messageId,
       messageId: messageId,
+      clientMsgId: msg.clientMsgId,
       chatId: chatId,
+      pts: msg.pts,
       sender: sender,
       senderDisplayName: senderDisplayName,
       body: body,
@@ -1965,6 +1967,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     );
 
     final isNew = _applyIncomingMessage(message);
+    if (!isSelfEcho && message.messageId.isNotEmpty) {
+      unawaited(_transport.emitWithAck('message:ack_delivery', {
+        'server_msg_id': message.messageId,
+        'chat_id': chatId,
+        'pts': message.pts ?? 0,
+        'sender': message.sender,
+      }));
+    }
 
     // Update unread count if not the currently open chat.
     // Skip for self-echo messages (sender's own devices) to avoid
@@ -2512,6 +2522,16 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     unawaited(_clearChatFromPendingTray(chatId));
 
     try {
+      final messages = state.messagesByChat[chatId] ?? const <ChatMessage>[];
+      final readUpToPts = messages
+          .where((message) => messageIds.contains(message.messageId))
+          .map((message) => message.pts ?? 0)
+          .fold<int>(0, (maxPts, pts) => pts > maxPts ? pts : maxPts);
+      unawaited(_transport.emitWithAck('message:ack_read', {
+        'message_ids': messageIds,
+        'chat_id': chatId,
+        'read_up_to_pts': readUpToPts,
+      }));
       await _api.markMessagesAsRead(
         chatId,
         messageIds,
@@ -3023,8 +3043,28 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // recoverMissedMessages here would race with the sync's cleared state
       // and could mark historical messages as unread.
       if (state.isSyncing) return;
-      // Recover missed messages when reconnecting
-      recoverMissedMessages(force: true);
+      unawaited(_syncKnownChats());
+    }
+  }
+
+  Future<void> _syncKnownChats() async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty) return;
+    final chatIds = state.messagesByChat.keys.toList(growable: false);
+    for (final chatId in chatIds) {
+      try {
+        final sincePts = await _db.getHighestPts(chatId);
+        final diff = await _api.syncChat(
+          chatId: chatId,
+          sincePts: sincePts,
+          user: user,
+        );
+        for (final message in diff) {
+          _handleServerMessage(message);
+        }
+      } catch (_) {
+        // The existing recovery path remains available on the next poll tick.
+      }
     }
   }
 
