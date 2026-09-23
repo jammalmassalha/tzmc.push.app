@@ -60,6 +60,14 @@ final class PrivacyShield {
   // Must match _kPushRegistrationChannelName in push_notification_service.dart.
   private let pushRegistrationChannelName = "flutter_push_registration"
 
+  private func onMain(_ work: @escaping () -> Void) {
+    if Thread.isMainThread {
+      work()
+    } else {
+      DispatchQueue.main.async(execute: work)
+    }
+  }
+
   private func clearBadgeAndDeliveredNotifications(completion: (() -> Void)? = nil) {
     let clearBadge = {
       UIApplication.shared.applicationIconBadgeNumber = 0
@@ -67,17 +75,15 @@ final class PrivacyShield {
       center.removeAllDeliveredNotifications()
       if #available(iOS 16.0, *) {
         center.setBadgeCount(0) { _ in
-          completion?()
+          self.onMain {
+            completion?()
+          }
         }
       } else {
         completion?()
       }
     }
-    if Thread.isMainThread {
-      clearBadge()
-    } else {
-      DispatchQueue.main.async(execute: clearBadge)
-    }
+    onMain(clearBadge)
   }
 
   override func application(
@@ -124,25 +130,24 @@ final class PrivacyShield {
           // via the UIApplicationDelegate callbacks.
           result(nil)
         }
-        if Thread.isMainThread {
-          dispatchRegistrationRequest()
-        } else {
-          DispatchQueue.main.async(execute: dispatchRegistrationRequest)
-        }
+        self.onMain(dispatchRegistrationRequest)
       }
     }
     return didFinishLaunching
   }
 
   @objc private func handleScreenCaptureChange() {
-    if PrivacyShield.shared.isScreenCaptured {
-      PrivacyShield.shared.cover(window)
-    } else if UIApplication.shared.applicationState == .active {
-      // A recording can also stop while the app is backgrounded. Uncovering
-      // then would leave the window exposed for the next snapshot, so the
-      // shield is only lifted while the app is actually on screen —
-      // `applicationDidBecomeActive` handles the rest.
-      PrivacyShield.shared.uncover()
+    onMain { [weak self] in
+      guard let self else { return }
+      if PrivacyShield.shared.isScreenCaptured {
+        PrivacyShield.shared.cover(self.window)
+      } else if UIApplication.shared.applicationState == .active {
+        // A recording can also stop while the app is backgrounded. Uncovering
+        // then would leave the window exposed for the next snapshot, so the
+        // shield is only lifted while the app is actually on screen —
+        // `applicationDidBecomeActive` handles the rest.
+        PrivacyShield.shared.uncover()
+      }
     }
   }
 
@@ -150,12 +155,16 @@ final class PrivacyShield {
     super.applicationWillResignActive(application)
     // Installed before the system takes its app-switcher snapshot, so the
     // preview shows the blur instead of the open conversation.
-    PrivacyShield.shared.cover(window)
+    onMain { [weak self] in
+      PrivacyShield.shared.cover(self?.window)
+    }
   }
 
   override func applicationDidBecomeActive(_ application: UIApplication) {
     super.applicationDidBecomeActive(application)
-    PrivacyShield.shared.uncoverIfNotCaptured()
+    onMain {
+      PrivacyShield.shared.uncoverIfNotCaptured()
+    }
   }
 
   override func userNotificationCenter(
