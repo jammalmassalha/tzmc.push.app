@@ -138,6 +138,7 @@ class _AiInitializationScreenState extends ConsumerState<AiInitializationScreen>
         }
       }(),
     ]);
+    await ref.read(pushNotificationServiceProvider).completeLaunchRouting();
   }
 
   // ---------------------------------------------------------------------

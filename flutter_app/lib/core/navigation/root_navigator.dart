@@ -5,7 +5,10 @@ library;
 import 'package:flutter/material.dart';
 
 /// Root navigator key wired into [MaterialApp.navigatorKey] in `main.dart`.
-final GlobalKey<NavigatorState> rootNavigatorKey = GlobalKey<NavigatorState>();
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+
+/// Backwards-compatible alias for callers that use the descriptive name.
+final GlobalKey<NavigatorState> rootNavigatorKey = navigatorKey;
 
 /// Canonical top-level shell routes. The active URL is the single source of
 /// truth for which shell destination is selected.

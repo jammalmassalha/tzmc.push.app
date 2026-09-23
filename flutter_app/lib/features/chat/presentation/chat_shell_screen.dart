@@ -186,6 +186,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   Future<void> _initializeChatStore(String user) async {
     try {
       await ref.read(chatStoreProvider.notifier).initialize(user);
+      await ref.read(pushNotificationServiceProvider).completeLaunchRouting();
     } catch (e, st) {
       debugPrint('[ChatShellScreen] chatStore.initialize error: $e\n$st');
     }

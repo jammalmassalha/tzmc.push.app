@@ -317,6 +317,13 @@ function createFlutterPushService(options = {}) {
             messageId: messageId || undefined,
             ...compactCustomData
         };
+        payloadData.chatId = String(
+            compactCustomData.chatId
+                || compactCustomData.groupId
+                || compactCustomData.sender
+                || ''
+        );
+        payloadData.type = String(compactCustomData.type || 'CHAT_MESSAGE');
 
         // Include the badge count (unread message count for this user) so that
         // the iOS home-screen icon badge is updated via `aps.badge`.  The value
