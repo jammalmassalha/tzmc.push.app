@@ -2045,9 +2045,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final meNorm = _currentUser?.trim().toLowerCase() ?? '';
     final senderNorm = sender.trim().toLowerCase();
     final isSelfEcho = meNorm.isNotEmpty && senderNorm == meNorm;
+    final payloadChatId = str(data['chatId']);
     String chatId;
-    if (msg.chatId != null && msg.chatId!.trim().isNotEmpty) {
-      chatId = msg.chatId!.trim().toLowerCase();
+    if (payloadChatId != null) {
+      chatId = payloadChatId.toLowerCase();
     } else if (isGroup) {
       chatId = groupId;
     } else if (isSelfEcho || skipNotification) {
