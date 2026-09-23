@@ -591,28 +591,28 @@ class ChatApiService {
       throw ApiException('Chat sync failed with ${response.statusCode}');
     }
 
-    Future<Map<String, dynamic>> syncChatsAndMessages({
-      required String user,
-      required int lastSyncTimestamp,
-    }) async {
-      final response = await _client.get<Map<String, dynamic>>(
-        ApiEndpoints.chatSync,
-        queryParameters: {
-          'user': user.trim().toLowerCase(),
-          'last_sync_timestamp': lastSyncTimestamp,
-        },
-        retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 20)),
-      );
-      if (!response.isSuccessful || response.data == null) {
-        throw ApiException('Chat hydration sync failed with ${response.statusCode}');
-      }
-      return response.data!;
-    }
-
     final messages = (response.data?['messages'] as List?) ?? [];
     return messages
         .map((item) => IncomingServerMessage.fromJson(item as Map<String, dynamic>))
         .toList();
+  }
+
+  Future<Map<String, dynamic>> syncChatsAndMessages({
+    required String user,
+    required int lastSyncTimestamp,
+  }) async {
+    final response = await _client.get<Map<String, dynamic>>(
+      ApiEndpoints.chatSync,
+      queryParameters: {
+        'user': user.trim().toLowerCase(),
+        'last_sync_timestamp': lastSyncTimestamp,
+      },
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 20)),
+    );
+    if (!response.isSuccessful || response.data == null) {
+      throw ApiException('Chat hydration sync failed with ${response.statusCode}');
+    }
+    return response.data!;
   }
 
   Future<void> acknowledgeDelivery(String messageId) async {
