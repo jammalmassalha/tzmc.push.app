@@ -130,6 +130,7 @@ class PushNotificationService {
   // Set once [initialize] has run so repeated calls don't re-subscribe the
   // FCM listeners.
   bool _initialized = false;
+  String? _pendingRouteChatId;
   StreamSubscription? _tokenRefreshSubscription;
   StreamSubscription? _messageSubscription;
 
@@ -198,7 +199,9 @@ class PushNotificationService {
       // Check if app was opened from a terminated state notification
       final initialMessage = await _messaging!.getInitialMessage();
       if (initialMessage != null) {
-        _onMessageOpenedApp(initialMessage);
+        debugPrint('[PUSH-ROUTING] getInitialMessage caught payload: ${initialMessage.data}');
+        _pendingRouteChatId = _chatIdFromMessage(initialMessage);
+        _applyPushPayload(initialMessage);
       }
 
       debugPrint('[PushNotificationService] Initialized successfully');
@@ -1071,6 +1074,7 @@ class PushNotificationService {
 
   /// Handle message when app opened from notification
   void _onMessageOpenedApp(RemoteMessage message) {
+    debugPrint('[PUSH-ROUTING] onMessageOpenedApp payload: ${message.data}');
     debugPrint('[PushNotificationService] Opened from notification: ${message.messageId}');
 
     // Apply push payload (also schedules recovery pulls)
@@ -1281,9 +1285,33 @@ class PushNotificationService {
 
   /// Navigate to the chat from a notification
   void _navigateToChat(RemoteMessage message) {
-    final data = message.data;
-    final chatId = (data['chatId'] ?? data['groupId'] ?? data['sender'])?.toString();
+    final chatId = _chatIdFromMessage(message);
     if (chatId == null || chatId.isEmpty) return;
+    _openChatScreen(chatId);
+  }
+
+  String? _chatIdFromMessage(RemoteMessage message) {
+    final data = message.data;
+    final chatId = (data['chatId'] ?? data['groupId'] ?? data['sender'])
+        ?.toString()
+        .trim();
+    return chatId == null || chatId.isEmpty ? null : chatId;
+  }
+
+  /// Replays a terminated-state route after authentication and the initial
+  /// chat synchronization have completed.
+  Future<void> completeLaunchRouting() async {
+    final chatId = _pendingRouteChatId;
+    if (chatId == null) return;
+    if (_ref.read(currentUserProvider) == null) {
+      debugPrint('[PUSH-ROUTING] Launch route deferred: user is not authenticated');
+      return;
+    }
+    debugPrint('[PUSH-ROUTING] Waiting for ChatStoreService.syncOnLaunch()');
+    await _ref.read(chatStoreProvider.notifier).syncOnLaunch();
+    if (_pendingRouteChatId != chatId) return;
+    _pendingRouteChatId = null;
+    debugPrint('[PUSH-ROUTING] Replaying pending chat route: $chatId');
     _openChatScreen(chatId);
   }
 
@@ -1302,14 +1330,14 @@ class PushNotificationService {
       debugPrint('[PushNotificationService] setCurrentChat error: $e');
     }
 
-    final navigator = rootNavigatorKey.currentState;
+    final navigator = navigatorKey.currentState;
     if (navigator == null) {
       debugPrint('[PushNotificationService] Navigator not ready, deferring deep link');
       // The widget tree is still being built (cold-start). Schedule the push
       // for the very next frame, by which time the MaterialApp navigator will
       // be mounted and available.
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        final nav = rootNavigatorKey.currentState;
+        final nav = navigatorKey.currentState;
         if (nav == null) {
           debugPrint('[PushNotificationService] Navigator still not ready after post-frame, skipping deep link');
           return;

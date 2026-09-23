@@ -261,7 +261,14 @@ function buildFcmMessage(token, parsedPayload, subscription) {
         ? envelope.notification
         : null;
     const dataSource = (envelope.data && typeof envelope.data === 'object') ? envelope.data : {};
-    const data = trimDataMap(coerceDataMap(dataSource));
+    // FCM data values must be strings, and mobile routing requires a stable
+    // chatId even when older producers only supplied groupId or sender.
+    const routingData = {
+        ...dataSource,
+        chatId: dataSource.chatId ?? dataSource.groupId ?? dataSource.sender ?? '',
+        type: dataSource.type ?? 'CHAT_MESSAGE'
+    };
+    const data = trimDataMap(coerceDataMap(routingData));
 
     const message = { token, data };
 

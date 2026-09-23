@@ -313,6 +313,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// Guards against launching two concurrent initial revalidations when
   /// [initialize] is invoked again before the first background sync finishes.
   bool _initialSyncInFlight = false;
+  Future<void>? _initialSyncFuture;
 
   /// Community group configs loaded from the server; seeded with defaults.
   /// Mirrors Angular's `communityGroupConfigs` field.
@@ -517,8 +518,21 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   /// Starts the first server hydration with an observable state transition.
   Future<void> syncOnLaunch() async {
+    final activeSync = _initialSyncFuture;
+    if (_initialSyncInFlight && activeSync != null) {
+      await activeSync;
+      return;
+    }
     state = state.copyWith(isInitialSyncing: true);
-    await _revalidateFromServer();
+    final sync = _revalidateFromServer();
+    _initialSyncFuture = sync;
+    try {
+      await sync;
+    } finally {
+      if (identical(_initialSyncFuture, sync)) {
+        _initialSyncFuture = null;
+      }
+    }
   }
 
   Future<void> _retryOutbox() async {
