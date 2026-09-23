@@ -374,6 +374,50 @@ class ChatDatabase extends _$ChatDatabase {
     return select(messages).watch().map((rows) => rows.map(_messageFromRow).toList());
   }
 
+  Future<void> syncOneToOne({
+    required List<dynamic> chats,
+    required List<dynamic> messages,
+  }) async {
+    final messageRows = messages;
+    await transaction(() async {
+      for (final raw in chats) {
+        if (raw is! Map) continue;
+        final map = Map<String, dynamic>.from(raw);
+        final id = '${map['chatId'] ?? map['id'] ?? ''}'.trim();
+        if (id.isEmpty) continue;
+        await setUnreadCount(id, _syncInt(map['unreadCount']));
+      }
+      for (final raw in messageRows) {
+        if (raw is! Map) continue;
+        final map = Map<String, dynamic>.from(raw);
+        final id = '${map['id'] ?? map['messageId'] ?? ''}'.trim();
+        final chatId = '${map['chatId'] ?? map['groupId'] ?? map['toUser'] ?? ''}'.trim();
+        if (id.isEmpty || chatId.isEmpty) continue;
+        final timestamp = _syncTimestamp(map['timestamp'] ?? map['sentDateTime']);
+        final messageMap = <String, dynamic>{
+          ...map,
+          'id': id,
+          'messageId': '${map['messageId'] ?? id}',
+          'chatId': chatId,
+          'sender': '${map['sender'] ?? map['from'] ?? ''}',
+          'body': '${map['body'] ?? map['message'] ?? map['content'] ?? ''}',
+          'timestamp': timestamp,
+          if (map['pts'] != null) 'pts': _syncInt(map['pts']),
+          'direction': map['direction'] ?? 'incoming',
+          'deliveryStatus': map['deliveryStatus'] ?? map['status'] ?? 'delivered',
+        };
+        final message = ChatMessage.fromJson(messageMap);
+        await into(this.messages).insertOnConflictUpdate(_messageToCompanion(message));
+      }
+    });
+  }
+
+  static int _syncInt(dynamic value) => value is num ? value.toInt() : int.tryParse('$value') ?? 0;
+  static int _syncTimestamp(dynamic value) {
+    if (value is num) return value.toInt();
+    return DateTime.tryParse('$value')?.millisecondsSinceEpoch ?? int.tryParse('$value') ?? 0;
+  }
+
   Future<int> getHighestPts(String chatId) async {
     final query = selectOnly(messages)
       ..addColumns([messages.pts.max()])

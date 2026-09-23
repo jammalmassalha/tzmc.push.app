@@ -292,27 +292,22 @@ function buildFcmMessage(token, parsedPayload, subscription) {
     };
 
     if (isApnsSubscription(subscription)) {
+        const title = notification && typeof notification.title === 'string'
+            ? notification.title
+            : (typeof data.title === 'string' ? data.title : DEFAULT_NOTIFICATION_TITLE);
+        const body = notification && typeof notification.body === 'string'
+            ? notification.body
+            : (typeof data.body === 'string' ? data.body : DEFAULT_NOTIFICATION_BODY);
         const aps = {
-            badge: normalizeBadgeCount(data.badgeCount),
-            'content-available': 1
+            alert: { title, body },
+            badge: normalizeBadgeCount(data.badgeCount) ?? 1,
+            sound: 'default',
+            'content-available': 1,
+            'mutable-content': 1
         };
 
-        if (notification) {
-            const title = typeof notification.title === 'string'
-                ? notification.title
-                : DEFAULT_NOTIFICATION_TITLE;
-            const body = typeof notification.body === 'string'
-                ? notification.body
-                : DEFAULT_NOTIFICATION_BODY;
-            aps.alert = { title, body };
-            aps.sound = 'default';
-            aps['mutable-content'] = 1;
-        }
-
         message.apns = {
-            headers: notification
-                ? { 'apns-priority': '10', 'apns-push-type': 'alert' }
-                : { 'apns-priority': '5', 'apns-push-type': 'background' },
+            headers: { 'apns-priority': '10', 'apns-push-type': 'alert' },
             payload: {
                 aps
             }

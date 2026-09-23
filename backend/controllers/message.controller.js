@@ -422,19 +422,17 @@ function registerMessageController(app, deps = {}) {
                 // available.
                 if (typeof getLogsMessagesForUser === 'function') {
                     try {
-                        messages = await getLogsMessagesForUser(user, { limit: 20, offset: 0, since: 0 });
+                        messages = await getLogsMessagesForUser(user, { limit: 20000, offset: 0, since: 0 });
                     } catch (error) {
                         console.warn('[MYSQL] Initial chat sync failed:', error && error.message ? error.message : error);
                     }
                 }
-                messages = messages
-                    .sort((a, b) => {
-                        const timestamp = (message) => Number(message && (
-                            message.sentDateTime || message.timestamp || message.createdAt
-                        )) || Date.parse(String(message && (message.sentDateTime || message.timestamp || message.createdAt) || '')) || 0;
-                        return timestamp(b) - timestamp(a);
-                    })
-                    .slice(0, 20);
+                messages = messages.sort((a, b) => {
+                    const timestamp = (message) => Number(message && (
+                        message.sentDateTime || message.timestamp || message.createdAt
+                    )) || Date.parse(String(message && (message.sentDateTime || message.timestamp || message.createdAt) || '')) || 0;
+                    return timestamp(a) - timestamp(b);
+                });
             }
             messages.sort((a, b) => Number(a && (a.pts || a.seq_id)) - Number(b && (b.pts || b.seq_id)));
             const currentSequence = typeof getMailboxSequence === 'function'
@@ -447,8 +445,44 @@ function registerMessageController(app, deps = {}) {
                 const timestamp = Number(rawTimestamp) || Date.parse(String(rawTimestamp || '')) || 0;
                 return Math.max(latest, timestamp);
             }, lastSyncTimestamp);
+            const chatById = new Map();
+            for (const message of messages) {
+                const chatId = String(message.chatId || message.groupId || message.toUser || message.sender || '').trim();
+                if (!chatId) continue;
+                const timestamp = Number(message.sentDateTime || message.timestamp || message.createdAt) ||
+                    Date.parse(String(message.sentDateTime || message.timestamp || message.createdAt || '')) || 0;
+                const current = chatById.get(chatId);
+                if (!current || timestamp >= current.lastMessageTimestamp) {
+                    chatById.set(chatId, {
+                        chatId,
+                        chatName: message.chatName || message.groupName || chatId,
+                        isGroup: Boolean(message.groupId || message.isGroup),
+                        avatarUrl: message.avatarUrl || message.upic || null,
+                        lastMessageId: message.messageId || message.id || null,
+                        lastMessageText: message.body || message.message || message.content || '',
+                        lastMessageSenderId: message.sender || message.from || null,
+                        lastMessageTimestamp: timestamp,
+                        lastMessageStatus: message.status || message.deliveryStatus || null,
+                        unreadCount: Number(message.unreadCount) || 0
+                    });
+                }
+                if (Number(message.unreadCount) > 0) {
+                    chatById.get(chatId).unreadCount = Number(message.unreadCount);
+                }
+            }
+            const chatList = Array.from(chatById.values()).sort(
+                (a, b) => b.lastMessageTimestamp - a.lastMessageTimestamp
+            );
+            console.info(
+                `[SYNC-PIPELINE] ${isInitialSync ? 'Full' : 'Delta'} sync user=${user} ` +
+                `messages=${messages.length} chats=${chatList.length} cursor=${lastSyncTimestamp}`
+            );
             return res.json({
+                success: true,
                 messages,
+                chats: isInitialSync ? chatList : undefined,
+                updatedChats: isInitialSync ? undefined : chatList,
+                newMessages: isInitialSync ? undefined : messages,
                 mode: isInitialSync ? 'full' : 'delta',
                 last_seq: currentSequence,
                 highest_pts: currentSequence,
