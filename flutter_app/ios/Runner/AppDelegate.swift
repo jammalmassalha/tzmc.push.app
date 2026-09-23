@@ -60,6 +60,14 @@ final class PrivacyShield {
   // Must match _kPushRegistrationChannelName in push_notification_service.dart.
   private let pushRegistrationChannelName = "flutter_push_registration"
 
+  private func onMain(_ work: @escaping () -> Void) {
+    if Thread.isMainThread {
+      work()
+    } else {
+      DispatchQueue.main.async(execute: work)
+    }
+  }
+
   private func clearBadgeAndDeliveredNotifications(completion: (() -> Void)? = nil) {
     let clearBadge = {
       UIApplication.shared.applicationIconBadgeNumber = 0
@@ -67,17 +75,15 @@ final class PrivacyShield {
       center.removeAllDeliveredNotifications()
       if #available(iOS 16.0, *) {
         center.setBadgeCount(0) { _ in
-          completion?()
+          self.onMain {
+            completion?()
+          }
         }
       } else {
         completion?()
       }
     }
-    if Thread.isMainThread {
-      clearBadge()
-    } else {
-      DispatchQueue.main.async(execute: clearBadge)
-    }
+    onMain(clearBadge)
   }
 
   override func application(
@@ -85,7 +91,6 @@ final class PrivacyShield {
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     FirebaseApp.configure()
-    UNUserNotificationCenter.current().delegate = self
     application.registerForRemoteNotifications()
     GeneratedPluginRegistrant.register(with: self)
     let didFinishLaunching = super.application(
@@ -124,25 +129,24 @@ final class PrivacyShield {
           // via the UIApplicationDelegate callbacks.
           result(nil)
         }
-        if Thread.isMainThread {
-          dispatchRegistrationRequest()
-        } else {
-          DispatchQueue.main.async(execute: dispatchRegistrationRequest)
-        }
+        self.onMain(dispatchRegistrationRequest)
       }
     }
     return didFinishLaunching
   }
 
   @objc private func handleScreenCaptureChange() {
-    if PrivacyShield.shared.isScreenCaptured {
-      PrivacyShield.shared.cover(window)
-    } else if UIApplication.shared.applicationState == .active {
-      // A recording can also stop while the app is backgrounded. Uncovering
-      // then would leave the window exposed for the next snapshot, so the
-      // shield is only lifted while the app is actually on screen —
-      // `applicationDidBecomeActive` handles the rest.
-      PrivacyShield.shared.uncover()
+    onMain { [weak self] in
+      guard let self else { return }
+      if PrivacyShield.shared.isScreenCaptured {
+        PrivacyShield.shared.cover(self.window)
+      } else if UIApplication.shared.applicationState == .active {
+        // A recording can also stop while the app is backgrounded. Uncovering
+        // then would leave the window exposed for the next snapshot, so the
+        // shield is only lifted while the app is actually on screen —
+        // `applicationDidBecomeActive` handles the rest.
+        PrivacyShield.shared.uncover()
+      }
     }
   }
 
@@ -150,49 +154,16 @@ final class PrivacyShield {
     super.applicationWillResignActive(application)
     // Installed before the system takes its app-switcher snapshot, so the
     // preview shows the blur instead of the open conversation.
-    PrivacyShield.shared.cover(window)
+    onMain { [weak self] in
+      PrivacyShield.shared.cover(self?.window)
+    }
   }
 
   override func applicationDidBecomeActive(_ application: UIApplication) {
     super.applicationDidBecomeActive(application)
-    PrivacyShield.shared.uncoverIfNotCaptured()
-  }
-
-  override func userNotificationCenter(
-    _ center: UNUserNotificationCenter,
-    willPresent notification: UNNotification,
-    withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
-  ) {
-    // UNUserNotificationCenter requires this callback to be completed exactly
-    // once. Keep it on the main queue because presentation and badge updates
-    // are UIKit work, including during a cold start.
-    DispatchQueue.main.async {
-      completionHandler([.alert, .badge, .sound])
+    onMain {
+      PrivacyShield.shared.uncoverIfNotCaptured()
     }
-  }
-
-  override func userNotificationCenter(
-    _ center: UNUserNotificationCenter,
-    didReceive response: UNNotificationResponse,
-    withCompletionHandler completionHandler: @escaping () -> Void
-  ) {
-    // Do not inspect the response or access Flutter here. During a cold start
-    // the engine may not have finished registering its channels. Completing
-    // the delegate callback is sufficient; Firebase handles the response
-    // through its Flutter message stream once the engine is running.
-    DispatchQueue.main.async {
-      completionHandler()
-    }
-  }
-
-  override func application(
-    _ application: UIApplication,
-    didReceiveRemoteNotification userInfo: [AnyHashable: Any],
-    fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
-  ) {
-    // Do not reset the icon badge or remove delivered notifications here.
-    // Firebase/Flutter owns background data processing; APNs owns presentation.
-    completionHandler(.newData)
   }
 
   override func application(

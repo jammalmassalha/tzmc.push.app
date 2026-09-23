@@ -166,6 +166,17 @@ class PushNotificationService {
       if (!kIsWeb) {
         _localNotifications = FlutterLocalNotificationsPlugin();
         await _initializeLocalNotifications();
+
+        // Let Firebase/APNs present iOS foreground notifications. The local
+        // notifications plugin is used for Android foreground display only;
+        // presenting through both paths can cause iOS to dismiss the entry.
+        if (_isIOSPlatform()) {
+          await _messaging!.setForegroundNotificationPresentationOptions(
+            alert: true,
+            badge: true,
+            sound: true,
+          );
+        }
       }
 
       // Subscribe to token refresh BEFORE starting the initial registration
@@ -1160,7 +1171,7 @@ class PushNotificationService {
     // On web the browser already shows a system notification when the
     // service worker (`firebase-messaging-sw.js`) handles the push, so
     // we don't need to do anything here.
-    if (kIsWeb || _localNotifications == null) return;
+    if (kIsWeb || _localNotifications == null || _isIOSPlatform()) return;
 
     // All individual notifications share the same group key so the OS
     // collapses them into a single group entry in the notification shade.
