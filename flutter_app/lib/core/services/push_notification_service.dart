@@ -130,7 +130,10 @@ class PushNotificationService {
   // Set once [initialize] has run so repeated calls don't re-subscribe the
   // FCM listeners.
   bool _initialized = false;
-  String? _pendingRouteChatId;
+  /// Chat route captured before authentication and the root navigator are
+  /// ready. Kept at class level because a cold-start notification can arrive
+  /// before the service has finished initializing.
+  static String? _pendingRouteChatId;
   StreamSubscription? _tokenRefreshSubscription;
   StreamSubscription? _messageSubscription;
 
@@ -1333,20 +1336,21 @@ class PushNotificationService {
     final navigator = navigatorKey.currentState;
     if (navigator == null) {
       debugPrint('[PushNotificationService] Navigator not ready, deferring deep link');
+      _pendingRouteChatId = chatId;
       // The widget tree is still being built (cold-start). Schedule the push
       // for the very next frame, by which time the MaterialApp navigator will
       // be mounted and available.
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        final nav = navigatorKey.currentState;
-        if (nav == null) {
-          debugPrint('[PushNotificationService] Navigator still not ready after post-frame, skipping deep link');
-          return;
+        if (_pendingRouteChatId == chatId &&
+            navigatorKey.currentState != null) {
+          _pendingRouteChatId = null;
+          _openChatScreen(chatId);
         }
-        nav.push(
-          MaterialPageRoute(builder: (_) => MessageScreen(chatId: chatId, initialUnreadCount: unreadCount)),
-        );
       });
       return;
+    }
+    if (_pendingRouteChatId == chatId) {
+      _pendingRouteChatId = null;
     }
     navigator.push(
       MaterialPageRoute(builder: (_) => MessageScreen(chatId: chatId, initialUnreadCount: unreadCount)),
@@ -1481,44 +1485,42 @@ final pushNotificationServiceProvider = Provider<PushNotificationService>((ref) 
 /// This must be a top-level function
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  debugPrint('[PushNotificationService] Background message: ${message.messageId}');
-  
-  // Initialize Firebase if needed (background isolate has its own
-  // FirebaseApp registry — pass explicit options so init succeeds even
-  // when google-services.json codegen isn't on the classpath).
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  WidgetsFlutterBinding.ensureInitialized();
+  try {
+    // Initialize Firebase before touching any other plugin in this isolate.
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    debugPrint('[PushNotificationService] Background message: ${message.messageId}');
 
-  final data = message.data;
+    final data = message.data;
 
-  // Skip silent / action-only payloads — only real chat messages should
-  // contribute to the pending unread tray.
-  final type = (data['type'] ?? '').toString().trim().toLowerCase();
+    // Skip silent / action-only payloads — only real chat messages should
+    // contribute to the pending unread tray.
+    final type = (data['type'] ?? '').toString().trim().toLowerCase();
   // These payload types carry server-side actions (edits, deletes, reactions,
   // read receipts) rather than new user messages, so they must not increment
   // the unread tray counter.
-  const actionOnlyTypes = {
-    'read-receipt', 'read',
-    'delivery-receipt', 'delivered',
-    'delete-action', 'delete',
-    'edit-action', 'edit',
-    'group-update', 'typing', 'reaction',
-  };
-  final skipNotification = data['skipNotification'] == true ||
-      data['skipNotification'] == 'true';
-  if (skipNotification || actionOnlyTypes.contains(type)) return;
+    const actionOnlyTypes = {
+      'read-receipt', 'read',
+      'delivery-receipt', 'delivered',
+      'delete-action', 'delete',
+      'edit-action', 'edit',
+      'group-update', 'typing', 'reaction',
+    };
+    final skipNotification = data['skipNotification'] == true ||
+        data['skipNotification'] == 'true';
+    if (skipNotification || actionOnlyTypes.contains(type)) return;
 
   // Resolve the chatId using the same priority as PushNotificationService
   // does when routing a foreground message: groupId first, then sender.
-  final groupId = (data['groupId'] ?? '').toString().trim();
-  final sender =
-      (data['sender'] ?? data['fromUser'] ?? '').toString().trim().toLowerCase();
-  final chatId = groupId.isNotEmpty ? groupId : sender;
-  if (chatId.isEmpty) return;
-  final messageId = (data['messageId'] ?? message.messageId ?? '').toString().trim();
+    final groupId = (data['groupId'] ?? '').toString().trim();
+    final sender =
+        (data['sender'] ?? data['fromUser'] ?? '').toString().trim().toLowerCase();
+    final chatId = groupId.isNotEmpty ? groupId : sender;
+    if (chatId.isEmpty) return;
+    final messageId = (data['messageId'] ?? message.messageId ?? '').toString().trim();
 
-  try {
     final timestamp = ChatMessage.parseFlexibleDateTime(
           data['sentDateTime'] ?? data['timestamp'])?.millisecondsSinceEpoch ??
         DateTime.now().millisecondsSinceEpoch;
@@ -1540,15 +1542,10 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       ));
       await database.close();
     }
-  } catch (error) {
-    debugPrint('[BGHandler] Failed to persist message: $error');
-  }
-
-  // Persist the pending unread count to SharedPreferences so that
-  // ChatStoreNotifier.initialize() can display accurate badges immediately
-  // on the next foreground launch — before the network recovery pull has
-  // had a chance to complete.
-  try {
+    // Persist the pending unread count to SharedPreferences so that
+    // ChatStoreNotifier.initialize() can display accurate badges immediately
+    // on the next foreground launch — before the network recovery pull has
+    // had a chance to complete.
     final prefs = await SharedPreferences.getInstance();
     final existing = prefs.getString(kPendingChatUpdatesKey) ?? '{}';
     final Map<String, dynamic> pending =
@@ -1593,7 +1590,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
     await prefs.setString(kPendingChatUpdatesKey, jsonEncode(pending));
     debugPrint('[BGHandler] Saved pending tray: chatId=$chatId');
-  } catch (e) {
-    debugPrint('[BGHandler] Failed to save pending tray: $e');
+  } catch (error, stackTrace) {
+    debugPrint('[BGHandler] Failed to process message: $error\n$stackTrace');
   }
 }
