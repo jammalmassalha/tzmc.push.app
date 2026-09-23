@@ -182,9 +182,23 @@ echo "Building for ANDROID..."
 echo "=========================================="
 
 # Check for Java and suggest fix for SSL issues
+if [ -n "${JAVA_HOME:-}" ] && [ ! -d "$JAVA_HOME" ]; then
+    echo "⚠️  JAVA_HOME points to a missing directory: $JAVA_HOME"
+    if command -v java &> /dev/null; then
+        echo "   Ignoring the stale JAVA_HOME and using Java from PATH."
+        unset JAVA_HOME
+    else
+        echo "   Install Java 17 or update JAVA_HOME before building Android."
+        exit 1
+    fi
+fi
+
 if command -v java &> /dev/null; then
     JAVA_VERSION=$(java -version 2>&1 | head -n 1)
     echo "Java version: $JAVA_VERSION"
+else
+    echo "❌ Java is not available on PATH. Install Java 17 before building Android."
+    exit 1
 fi
 
 # Build APK for direct installation
