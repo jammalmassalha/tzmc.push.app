@@ -130,24 +130,6 @@ class UnreadCounts extends Table {
   Set<Column> get primaryKey => {chatId};
 }
 
-@DataClassName('LocalChat')
-class Chats extends Table {
-  TextColumn get chatId => text()();
-  TextColumn get chatName => text()();
-  BoolColumn get isGroup => boolean()();
-  TextColumn get avatarUrl => text().nullable()();
-  TextColumn get lastMessageId => text().nullable()();
-  TextColumn get lastMessageText => text().nullable()();
-  TextColumn get lastMessageSenderId => text().nullable()();
-  IntColumn get lastMessageTimestamp => integer()();
-  TextColumn get lastMessageStatus => text().nullable()();
-  IntColumn get unreadCount => integer()();
-  IntColumn get lastActivity => integer()();
-
-  @override
-  Set<Column> get primaryKey => {chatId};
-}
-
 /// Outbox items table (pending messages to send)
 @DataClassName('OutboxItemsData')
 class OutboxItems extends Table {
@@ -167,7 +149,7 @@ class OutboxItems extends Table {
 // Database
 // ---------------------------------------------------------------------------
 
-@DriftDatabase(tables: [Contacts, Groups, Messages, UnreadCounts, Chats, OutboxItems])
+@DriftDatabase(tables: [Contacts, Groups, Messages, UnreadCounts, OutboxItems])
 class ChatDatabase extends _$ChatDatabase {
   ChatDatabase() : super(openConnection());
 
@@ -177,7 +159,7 @@ class ChatDatabase extends _$ChatDatabase {
   ChatDatabase.forTesting(QueryExecutor executor) : super(executor);
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 2;
 
   @override
   MigrationStrategy get migration {
@@ -192,9 +174,6 @@ class ChatDatabase extends _$ChatDatabase {
           await m.addColumn(messages, messages.sentDateTime);
           await m.addColumn(messages, messages.receiveDateTime);
           await m.addColumn(messages, messages.readDateTime);
-        }
-        if (from < 3) {
-          await m.createTable(chats);
         }
       },
     );
@@ -386,46 +365,28 @@ class ChatDatabase extends _$ChatDatabase {
       UNION ALL SELECT 1 FROM messages
       UNION ALL SELECT 1 FROM unread_counts
       ''',
-      readsFrom: {contacts, groups, messages, unreadCounts, chats},
+      readsFrom: {contacts, groups, messages, unreadCounts},
     ).watch().map<void>((_) {});
   }
 
   /// Emits the current message rows immediately and after every message write.
-  Stream<List<LocalChat>> watchAllChats() {
-    final query = select(chats)
-      ..orderBy([(t) => OrderingTerm.desc(t.lastActivity)]);
-    return query.watch();
+  Stream<List<ChatMessage>> watchAllChats() {
+    return select(messages).watch().map((rows) => rows.map(_messageFromRow).toList());
   }
 
   Future<void> syncOneToOne({
-    required List<dynamic> chats: incomingChats,
-    required List<dynamic> messages: incomingMessages,
+    required List<dynamic> chats,
+    required List<dynamic> messages,
   }) async {
     await transaction(() async {
-      final hydrated = <String, LocalChat>{};
-      for (final raw in incomingChats) {
+      for (final raw in chats) {
         if (raw is! Map) continue;
         final map = Map<String, dynamic>.from(raw);
         final id = '${map['chatId'] ?? map['id'] ?? ''}'.trim();
         if (id.isEmpty) continue;
-        final activity = _syncTimestamp(map['lastMessageTimestamp']);
-        final row = LocalChat(
-          chatId: id,
-          chatName: '${map['chatName'] ?? map['name'] ?? id}',
-          isGroup: map['isGroup'] == true,
-          avatarUrl: map['avatarUrl']?.toString(),
-          lastMessageId: map['lastMessageId']?.toString(),
-          lastMessageText: map['lastMessageText']?.toString(),
-          lastMessageSenderId: map['lastMessageSenderId']?.toString(),
-          lastMessageTimestamp: activity,
-          lastMessageStatus: map['lastMessageStatus']?.toString(),
-          unreadCount: _syncInt(map['unreadCount']),
-          lastActivity: activity,
-        );
-        hydrated[id] = row;
-        await into(chats).insertOnConflictUpdate(row.toCompanion(true));
+        await setUnreadCount(id, _syncInt(map['unreadCount']));
       }
-      for (final raw in incomingMessages) {
+      for (final raw in messages) {
         if (raw is! Map) continue;
         final map = Map<String, dynamic>.from(raw);
         final id = '${map['id'] ?? map['messageId'] ?? ''}'.trim();
@@ -445,30 +406,6 @@ class ChatDatabase extends _$ChatDatabase {
         };
         final message = ChatMessage.fromJson(messageMap);
         await into(messages).insertOnConflictUpdate(_messageToCompanion(message));
-        final current = hydrated[chatId];
-        if (current == null || timestamp >= current.lastActivity) {
-          await into(chats).insertOnConflictUpdate(ChatsCompanion(
-            chatId: Value(chatId),
-            chatName: Value(current?.chatName ?? '${map['chatName'] ?? chatId}'),
-            isGroup: Value(current?.isGroup ?? map['groupId'] != null),
-            avatarUrl: Value(current?.avatarUrl),
-            lastMessageId: Value(message.messageId),
-            lastMessageText: Value(message.body),
-            lastMessageSenderId: Value(message.sender),
-            lastMessageTimestamp: Value(timestamp),
-            lastMessageStatus: Value(message.deliveryStatus.name),
-            unreadCount: Value(current?.unreadCount ?? 0),
-            lastActivity: Value(timestamp),
-          ));
-          hydrated[chatId] = (current ?? LocalChat(
-            chatId: chatId, chatName: '${map['chatName'] ?? chatId}',
-            isGroup: map['groupId'] != null, avatarUrl: null,
-            lastMessageId: message.messageId, lastMessageText: message.body,
-            lastMessageSenderId: message.sender, lastMessageTimestamp: timestamp,
-            lastMessageStatus: message.deliveryStatus.name, unreadCount: 0,
-            lastActivity: timestamp,
-          ));
-        }
       }
     });
   }

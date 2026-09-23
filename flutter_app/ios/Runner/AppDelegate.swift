@@ -84,7 +84,9 @@ final class PrivacyShield {
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    FirebaseApp.configure()
+    if FirebaseApp.app() == nil {
+      FirebaseApp.configure()
+    }
     UNUserNotificationCenter.current().delegate = self
     application.registerForRemoteNotifications()
     GeneratedPluginRegistrant.register(with: self)

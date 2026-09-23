@@ -48,7 +48,7 @@ class ChatListScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return StreamBuilder<List<LocalChat>>(
+    return StreamBuilder<List<ChatMessage>>(
       stream: ref.watch(chatDatabaseProvider).watchAllChats(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {

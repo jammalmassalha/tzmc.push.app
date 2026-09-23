@@ -557,8 +557,31 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     if (_initialSyncInFlight) return;
     _initialSyncInFlight = true;
     state = state.copyWith(isInitialSyncing: true);
-    debugPrint('SYNC_TRACE: Fetching from backend with lastSyncTimestamp: $_syncCursorMs');
+    debugPrint('[SYNC-PIPELINE] Starting sync with lastSyncTimestamp: $_syncCursorMs');
     try {
+      final hydration = await _api.syncChatsAndMessages(
+        user: _currentUser!,
+        lastSyncTimestamp: _syncCursorMs,
+      );
+      final hydrationMessages = (hydration['mode'] == 'full'
+              ? hydration['messages']
+              : hydration['newMessages']) as List? ?? const [];
+      final hydrationChats = (hydration['mode'] == 'full'
+              ? hydration['chats']
+              : hydration['updatedChats']) as List? ?? const [];
+      debugPrint(
+        '[SYNC-PIPELINE] Received mode=${hydration['mode']} '
+        'chats=${hydrationChats.length} messages=${hydrationMessages.length}',
+      );
+      await _db.syncOneToOne(
+        chats: hydrationChats,
+        messages: hydrationMessages,
+      );
+      final nextCursor = int.tryParse('${hydration['next_sync_timestamp'] ?? 0}') ?? 0;
+      if (nextCursor > _syncCursorMs) {
+        _syncCursorMs = nextCursor;
+        await _writeSyncCursor(_currentUser!);
+      }
       // 2. Pull fresh contacts and groups
       await Future.wait([
         _pullContacts(),
