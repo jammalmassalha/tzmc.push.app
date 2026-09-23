@@ -567,44 +567,45 @@ class ChatApiService {
       throw ApiException('Messages request failed with ${response.statusCode}');
     }
 
-    Future<List<IncomingServerMessage>> syncChat({
-      required String chatId,
-      required int sincePts,
-      String? user,
-      int limit = 100,
-    }) async {
-      final response = await _client.get<Map<String, dynamic>>(
-        ApiEndpoints.chatSync,
-        queryParameters: {
-          'chat_id': chatId,
-          'since_pts': sincePts,
-          'limit': limit.clamp(1, 500),
-          if (user != null && user.trim().isNotEmpty) 'user': user.trim().toLowerCase(),
-        },
-        retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 15)),
-      );
-      if (!response.isSuccessful) {
-        throw ApiException('Chat sync failed with ${response.statusCode}');
-      }
+    final messages = (response.data?['messages'] as List?) ?? [];
+    return messages.map((item) => IncomingServerMessage.fromJson(item as Map<String, dynamic>)).toList();
+  }
 
-      Future<void> acknowledgeDelivery(String messageId) async {
-        final response = await _client.post<Map<String, dynamic>>(
-          '/messages/ack-delivery',
-          data: {'server_msg_id': messageId},
-          retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
-        );
-        if (!response.isSuccessful) {
-          throw ApiException('Delivery ACK failed with ${response.statusCode}');
-        }
-      }
-      final messages = (response.data?['messages'] as List?) ?? [];
-      return messages
-          .map((item) => IncomingServerMessage.fromJson(item as Map<String, dynamic>))
-          .toList();
+  Future<List<IncomingServerMessage>> syncChat({
+    required String chatId,
+    required int sincePts,
+    String? user,
+    int limit = 100,
+  }) async {
+    final response = await _client.get<Map<String, dynamic>>(
+      ApiEndpoints.chatSync,
+      queryParameters: {
+        'chat_id': chatId,
+        'since_pts': sincePts,
+        'limit': limit.clamp(1, 500),
+        if (user != null && user.trim().isNotEmpty) 'user': user.trim().toLowerCase(),
+      },
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 15)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException('Chat sync failed with ${response.statusCode}');
     }
 
     final messages = (response.data?['messages'] as List?) ?? [];
-    return messages.map((item) => IncomingServerMessage.fromJson(item as Map<String, dynamic>)).toList();
+    return messages
+        .map((item) => IncomingServerMessage.fromJson(item as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> acknowledgeDelivery(String messageId) async {
+    final response = await _client.post<Map<String, dynamic>>(
+      '/messages/ack-delivery',
+      data: {'server_msg_id': messageId},
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 10)),
+    );
+    if (!response.isSuccessful) {
+      throw ApiException('Delivery ACK failed with ${response.statusCode}');
+    }
   }
 
   /// Get messages from logs (for gap analysis / history sync)

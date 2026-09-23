@@ -2050,9 +2050,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final message = ChatMessage(
       id: messageId,
       messageId: messageId,
-      clientMsgId: msg.clientMsgId,
+      clientMsgId: str(data['client_msg_id']) ?? str(data['clientMsgId']),
       chatId: chatId,
-      pts: msg.pts,
+      pts: parseInt(data['pts']),
       sender: sender,
       senderDisplayName: senderDisplayName,
       body: body,
