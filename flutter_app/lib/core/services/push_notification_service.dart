@@ -1114,7 +1114,6 @@ class PushNotificationService {
       final timestamp = ChatMessage.parseFlexibleDateTime(
                 data['sentDateTime'] ?? data['timestamp'])?.millisecondsSinceEpoch ??
           DateTime.now().millisecondsSinceEpoch;
-      final messageId = (data['messageId'] ?? message.messageId ?? '').toString().trim();
       if (messageId.isNotEmpty) {
         final database = ChatDatabase();
         await database.upsertMessage(ChatMessage(
@@ -1135,6 +1134,35 @@ class PushNotificationService {
       }
     } catch (error) {
       debugPrint('[BGHandler] Failed to persist message: $error');
+    }
+
+    if (!kIsWeb) {
+      try {
+        final notifications = FlutterLocalNotificationsPlugin();
+        await notifications.initialize(
+          const InitializationSettings(
+            android: AndroidInitializationSettings('@drawable/ic_notification'),
+            iOS: DarwinInitializationSettings(),
+          ),
+        );
+        await notifications.show(
+          messageId.hashCode & 0x7fffffff,
+          (data['title'] ?? 'הודעה חדשה').toString(),
+          (data['body'] ?? data['messageText'] ?? 'הודעה חדשה').toString(),
+          const NotificationDetails(
+            android: AndroidNotificationDetails(
+              'chat_messages',
+              'Chat messages',
+              channelDescription: 'New chat messages',
+              importance: Importance.high,
+              priority: Priority.high,
+            ),
+            iOS: DarwinNotificationDetails(),
+          ),
+        );
+      } catch (error) {
+        debugPrint('[BGHandler] Failed to show local notification: $error');
+      }
     }
 
     debugPrint('[PushNotificationService] Local notification tapped: $chatId');
@@ -1518,6 +1546,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       (data['sender'] ?? data['fromUser'] ?? '').toString().trim().toLowerCase();
   final chatId = groupId.isNotEmpty ? groupId : sender;
   if (chatId.isEmpty) return;
+  final messageId = (data['messageId'] ?? message.messageId ?? '').toString().trim();
 
   // Persist the pending unread count to SharedPreferences so that
   // ChatStoreNotifier.initialize() can display accurate badges immediately

@@ -325,16 +325,10 @@ function createFlutterPushService(options = {}) {
             payloadData.badgeCount = options.badgeCount;
         }
 
-        const includeNotification = !(
-            payloadData.skipNotification === true ||
-            payloadData.skipNotification === 'true' ||
-            messageType === 'read-receipt' ||
-            messageType === 'delivery-receipt' ||
-            messageType === 'group-update' ||
-            messageType === 'delete-action' ||
-            messageType === 'edit-action' ||
-            messageType === 'reaction'
-        );
+        // Flutter handles display from the data payload after persisting it
+        // locally. Keeping the FCM envelope data-only avoids OS-level
+        // notification races and guarantees background messages reach Dart.
+        const includeNotification = false;
 
         return notificationService.buildPushPayloadString(payloadData, { includeNotification });
     }
