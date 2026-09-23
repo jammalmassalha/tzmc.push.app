@@ -366,9 +366,15 @@ function registerMessageController(app, deps = {}) {
             const rawLastSyncTimestamp = req.query && (
                 req.query.last_sync_timestamp ?? req.query.lastSyncTimestamp
             );
-            const hasLastSyncTimestamp = rawLastSyncTimestamp !== undefined &&
-                rawLastSyncTimestamp !== null &&
-                String(rawLastSyncTimestamp).trim() !== '';
+            // Treat all fresh-install cursor values consistently. In particular,
+            // `0` is a common persisted default and must not enter the delta
+            // path, where a null/empty local cursor can otherwise produce an
+            // incomplete hydration.
+            const normalizedLastSyncTimestamp = String(rawLastSyncTimestamp ?? '').trim().toLowerCase();
+            const isInitialSync = normalizedLastSyncTimestamp === '' ||
+                normalizedLastSyncTimestamp === 'null' ||
+                normalizedLastSyncTimestamp === '0';
+            const hasLastSyncTimestamp = !isInitialSync;
             const lastSyncTimestamp = Math.max(0, Number(rawLastSyncTimestamp) || 0);
             const requestedChatId = String(req.query && (req.query.chat_id || req.query.chatId) || '').trim();
             let messages = [];
@@ -443,6 +449,7 @@ function registerMessageController(app, deps = {}) {
             }, lastSyncTimestamp);
             return res.json({
                 messages,
+                mode: isInitialSync ? 'full' : 'delta',
                 last_seq: currentSequence,
                 highest_pts: currentSequence,
                 next_sync_timestamp: nextSyncTimestamp
