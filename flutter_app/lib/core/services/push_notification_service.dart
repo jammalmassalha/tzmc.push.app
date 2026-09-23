@@ -1544,37 +1544,6 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     debugPrint('[BGHandler] Failed to persist message: $error');
   }
 
-  if (!kIsWeb) {
-    try {
-      final notifications = FlutterLocalNotificationsPlugin();
-      await callInitialize(
-        notifications,
-        const InitializationSettings(
-          android: AndroidInitializationSettings('@drawable/ic_notification'),
-          iOS: DarwinInitializationSettings(),
-        ),
-      );
-      await callShow(
-        notifications,
-        messageId.hashCode & 0x7fffffff,
-        (data['title'] ?? 'הודעה חדשה').toString(),
-        (data['body'] ?? data['messageText'] ?? 'הודעה חדשה').toString(),
-        const NotificationDetails(
-          android: AndroidNotificationDetails(
-            'chat_messages',
-            'Chat messages',
-            channelDescription: 'New chat messages',
-            importance: Importance.high,
-            priority: Priority.high,
-          ),
-          iOS: DarwinNotificationDetails(),
-        ),
-      );
-    } catch (error) {
-      debugPrint('[BGHandler] Failed to show local notification: $error');
-    }
-  }
-
   // Persist the pending unread count to SharedPreferences so that
   // ChatStoreNotifier.initialize() can display accurate badges immediately
   // on the next foreground launch — before the network recovery pull has

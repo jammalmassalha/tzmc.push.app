@@ -158,7 +158,24 @@ final class PrivacyShield {
   override func applicationDidBecomeActive(_ application: UIApplication) {
     super.applicationDidBecomeActive(application)
     PrivacyShield.shared.uncoverIfNotCaptured()
-    clearBadgeAndDeliveredNotifications()
+  }
+
+  override func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    willPresent notification: UNNotification,
+    withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+  ) {
+    completionHandler([.alert, .badge, .sound])
+  }
+
+  override func application(
+    _ application: UIApplication,
+    didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+    fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+  ) {
+    // Do not reset the icon badge or remove delivered notifications here.
+    // Firebase/Flutter owns background data processing; APNs owns presentation.
+    completionHandler(.newData)
   }
 
   override func application(

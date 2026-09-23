@@ -291,10 +291,11 @@ function buildFcmMessage(token, parsedPayload, subscription) {
     // quirks where `android.notification.channelId` alone can trigger a
     // phantom notification on certain Android builds.
     const messageId = typeof data.messageId === 'string' ? data.messageId : undefined;
+    const chatId = typeof data.chatId === 'string' ? data.chatId.trim() : '';
     message.android = {
         priority: 'high',
         ttl: 7 * 24 * 60 * 60 * 1000,
-        collapseKey: messageId,
+        collapseKey: chatId || messageId,
         ...(notification ? { notification: { channelId: 'chat_messages', tag: messageId } } : {})
     };
 
@@ -305,16 +306,28 @@ function buildFcmMessage(token, parsedPayload, subscription) {
         const body = notification && typeof notification.body === 'string'
             ? notification.body
             : (typeof data.body === 'string' ? data.body : DEFAULT_NOTIFICATION_BODY);
+        const badgeCount = normalizeBadgeCount(data.badgeCount);
         const aps = {
             alert: { title, body },
-            badge: normalizeBadgeCount(data.badgeCount) ?? 1,
             sound: 'default',
             'content-available': 1,
             'mutable-content': 1
         };
+        // Never send badge: 0 with a new alert: iOS can remove delivered
+        // notifications when the app icon is explicitly reset to zero.
+        if (badgeCount !== undefined && badgeCount > 0) {
+            aps.badge = badgeCount;
+        }
+        console.debug(
+            `[PUSH-IOS-DEBUG] Sending payload. Badge value is: ${badgeCount > 0 ? badgeCount : 'omitted'}`
+        );
 
         message.apns = {
-            headers: { 'apns-priority': '10', 'apns-push-type': 'alert' },
+            headers: {
+                'apns-priority': '10',
+                'apns-push-type': 'alert',
+                ...(chatId ? { 'apns-collapse-id': chatId } : {})
+            },
             payload: {
                 aps
             }
