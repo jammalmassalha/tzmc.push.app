@@ -1,4 +1,5 @@
 import Flutter
+import FirebaseCore
 import FirebaseMessaging
 import UIKit
 import UserNotifications
@@ -83,6 +84,9 @@ final class PrivacyShield {
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
+    FirebaseApp.configure()
+    UNUserNotificationCenter.current().delegate = self
+    application.registerForRemoteNotifications()
     GeneratedPluginRegistrant.register(with: self)
     let didFinishLaunching = super.application(
       application,
