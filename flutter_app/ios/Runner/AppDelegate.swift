@@ -91,7 +91,6 @@ final class PrivacyShield {
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     FirebaseApp.configure()
-    UNUserNotificationCenter.current().delegate = self
     application.registerForRemoteNotifications()
     GeneratedPluginRegistrant.register(with: self)
     let didFinishLaunching = super.application(
@@ -165,43 +164,6 @@ final class PrivacyShield {
     onMain {
       PrivacyShield.shared.uncoverIfNotCaptured()
     }
-  }
-
-  override func userNotificationCenter(
-    _ center: UNUserNotificationCenter,
-    willPresent notification: UNNotification,
-    withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
-  ) {
-    // UNUserNotificationCenter requires this callback to be completed exactly
-    // once. Keep it on the main queue because presentation and badge updates
-    // are UIKit work, including during a cold start.
-    DispatchQueue.main.async {
-      completionHandler([.alert, .badge, .sound])
-    }
-  }
-
-  override func userNotificationCenter(
-    _ center: UNUserNotificationCenter,
-    didReceive response: UNNotificationResponse,
-    withCompletionHandler completionHandler: @escaping () -> Void
-  ) {
-    // Do not inspect the response or access Flutter here. During a cold start
-    // the engine may not have finished registering its channels. Completing
-    // the delegate callback is sufficient; Firebase handles the response
-    // through its Flutter message stream once the engine is running.
-    DispatchQueue.main.async {
-      completionHandler()
-    }
-  }
-
-  override func application(
-    _ application: UIApplication,
-    didReceiveRemoteNotification userInfo: [AnyHashable: Any],
-    fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
-  ) {
-    // Do not reset the icon badge or remove delivered notifications here.
-    // Firebase/Flutter owns background data processing; APNs owns presentation.
-    completionHandler(.newData)
   }
 
   override func application(
