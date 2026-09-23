@@ -5721,6 +5721,7 @@ io.on('connection', (socket) => {
     }
 
     addWebsocketClient(socketUser, socket);
+    void redisStateStorePromise.then((store) => store?.registerActiveConnection?.(socketUser, socket.id));
     socket.emit('chat:connected', { user: socketUser, ts: Date.now() });
 
     // Immediately check if the connected user is restricted and notify them
@@ -5819,6 +5820,7 @@ io.on('connection', (socket) => {
 
     socket.on('disconnect', () => {
         removeWebsocketClient(socketUser, socket);
+        void redisStateStorePromise.then((store) => store?.unregisterActiveConnection?.(socketUser, socket.id));
     });
 });
 

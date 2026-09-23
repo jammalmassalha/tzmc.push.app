@@ -29,7 +29,8 @@ import '../../features/auth/presentation/auth_state.dart';
 import '../../features/chat/presentation/message_screen.dart';
 import '../../firebase_options.dart';
 import '../api/chat_api_service.dart';
-import '../models/chat_models.dart' show ChatMessage;
+import '../database/chat_database.dart';
+import '../models/chat_models.dart' show ChatMessage, DeliveryStatus, MessageDirection;
 import '../navigation/root_navigator.dart';
 import '../services/chat_store_service.dart';
 
@@ -1487,6 +1488,64 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       (data['sender'] ?? data['fromUser'] ?? '').toString().trim().toLowerCase();
   final chatId = groupId.isNotEmpty ? groupId : sender;
   if (chatId.isEmpty) return;
+  final messageId = (data['messageId'] ?? message.messageId ?? '').toString().trim();
+
+  try {
+    final timestamp = ChatMessage.parseFlexibleDateTime(
+          data['sentDateTime'] ?? data['timestamp'])?.millisecondsSinceEpoch ??
+        DateTime.now().millisecondsSinceEpoch;
+    if (messageId.isNotEmpty) {
+      final database = ChatDatabase();
+      await database.upsertMessage(ChatMessage(
+        id: messageId,
+        messageId: messageId,
+        clientMsgId: messageId,
+        chatId: chatId,
+        sender: sender,
+        body: (data['body'] ?? data['messageText'] ?? '').toString(),
+        imageUrl: data['imageUrl']?.toString(),
+        direction: MessageDirection.incoming,
+        timestamp: timestamp,
+        deliveryStatus: DeliveryStatus.delivered,
+        groupId: groupId.isNotEmpty ? groupId : null,
+        sentDateTime: DateTime.fromMillisecondsSinceEpoch(timestamp, isUtc: true),
+      ));
+      await database.close();
+    }
+  } catch (error) {
+    debugPrint('[BGHandler] Failed to persist message: $error');
+  }
+
+  if (!kIsWeb) {
+    try {
+      final notifications = FlutterLocalNotificationsPlugin();
+      await callInitialize(
+        notifications,
+        const InitializationSettings(
+          android: AndroidInitializationSettings('@drawable/ic_notification'),
+          iOS: DarwinInitializationSettings(),
+        ),
+      );
+      await callShow(
+        notifications,
+        messageId.hashCode & 0x7fffffff,
+        (data['title'] ?? 'הודעה חדשה').toString(),
+        (data['body'] ?? data['messageText'] ?? 'הודעה חדשה').toString(),
+        const NotificationDetails(
+          android: AndroidNotificationDetails(
+            'chat_messages',
+            'Chat messages',
+            channelDescription: 'New chat messages',
+            importance: Importance.high,
+            priority: Priority.high,
+          ),
+          iOS: DarwinNotificationDetails(),
+        ),
+      );
+    } catch (error) {
+      debugPrint('[BGHandler] Failed to show local notification: $error');
+    }
+  }
 
   // Persist the pending unread count to SharedPreferences so that
   // ChatStoreNotifier.initialize() can display accurate badges immediately
@@ -1505,7 +1564,6 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
             ?.millisecondsSinceEpoch ??
         int.tryParse(data['timestamp']?.toString() ?? '') ??
         DateTime.now().millisecondsSinceEpoch;
-    final messageId = (data['messageId'] ?? '').toString().trim();
     final prevPendingSince = prev?['pendingSince'];
     final prevPendingSinceMs = prevPendingSince is int
         ? prevPendingSince
@@ -1522,10 +1580,8 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       'pendingSince': (prevPendingSinceMs != null && prevPendingSinceMs > 0)
           ? (prevPendingSinceMs < ts ? prevPendingSinceMs : ts)
           : ts,
-      // Newest push seen for this chat.  The message itself is not written to
-      // the local database from this isolate, so recording its identity and
-      // timestamp lets the resume-time delta pull position its cursor
-      // correctly instead of relying on the (stale) local message table.
+      // Newest push seen for this chat. Keep the identity and timestamp so the
+      // resume-time delta pull can position its cursor correctly.
       'lastTimestamp':
           (prevLastTimestampMs != null && prevLastTimestampMs > ts)
               ? prevLastTimestampMs

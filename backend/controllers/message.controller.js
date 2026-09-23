@@ -363,6 +363,9 @@ function registerMessageController(app, deps = {}) {
             const lastSequence = Math.max(0, Number(req.query && (
                 req.query.since_pts || req.query.last_seq || req.query.lastSeq
             )) || 0);
+            const lastSyncTimestamp = Math.max(0, Number(req.query && (
+                req.query.last_sync_timestamp || req.query.lastSyncTimestamp
+            )) || 0);
             const requestedChatId = String(req.query && (req.query.chat_id || req.query.chatId) || '').trim();
             let messages = [];
             const store = getActiveRedisStateStore();
@@ -383,11 +386,32 @@ function registerMessageController(app, deps = {}) {
                     return value === requestedChatId;
                 });
             }
+            if (lastSyncTimestamp > 0) {
+                messages = messages.filter((message) => {
+                    const rawTimestamp = message && (
+                        message.sentDateTime || message.timestamp || message.createdAt
+                    );
+                    const timestamp = Number(rawTimestamp) || Date.parse(String(rawTimestamp || '')) || 0;
+                    return timestamp > lastSyncTimestamp;
+                });
+            }
             messages.sort((a, b) => Number(a && (a.pts || a.seq_id)) - Number(b && (b.pts || b.seq_id)));
             const currentSequence = typeof getMailboxSequence === 'function'
                 ? Number(getMailboxSequence(user)) || 0
                 : (messages.length ? Number(messages[messages.length - 1].pts || messages[messages.length - 1].seq_id) || 0 : lastSequence);
-            return res.json({ messages, last_seq: currentSequence, highest_pts: currentSequence });
+            const nextSyncTimestamp = messages.reduce((latest, message) => {
+                const rawTimestamp = message && (
+                    message.sentDateTime || message.timestamp || message.createdAt
+                );
+                const timestamp = Number(rawTimestamp) || Date.parse(String(rawTimestamp || '')) || 0;
+                return Math.max(latest, timestamp);
+            }, lastSyncTimestamp);
+            return res.json({
+                messages,
+                last_seq: currentSequence,
+                highest_pts: currentSequence,
+                next_sync_timestamp: nextSyncTimestamp
+            });
         }
     );
 

@@ -83,6 +83,35 @@ export class RedisStateStore {
     return `${this.keyPrefix}:queue:events`;
   }
 
+  private activeConnectionsKey(user: string): string {
+    return `${this.keyPrefix}:connections:${user}`;
+  }
+
+  async registerActiveConnection(user: string, connectionId: string): Promise<void> {
+    if (!this.connected || !this.client) return;
+    const normalizedUser = toTrimmedString(user).toLowerCase();
+    const normalizedConnection = toTrimmedString(connectionId);
+    if (!normalizedUser || !normalizedConnection) return;
+    await this.client.sAdd(this.activeConnectionsKey(normalizedUser), normalizedConnection);
+    await this.client.expire(this.activeConnectionsKey(normalizedUser), 86400);
+  }
+
+  async unregisterActiveConnection(user: string, connectionId: string): Promise<void> {
+    if (!this.connected || !this.client) return;
+    const normalizedUser = toTrimmedString(user).toLowerCase();
+    const normalizedConnection = toTrimmedString(connectionId);
+    if (!normalizedUser || !normalizedConnection) return;
+    const key = this.activeConnectionsKey(normalizedUser);
+    await this.client.sRem(key, normalizedConnection);
+    if ((await this.client.sCard(key)) === 0) await this.client.del(key);
+  }
+
+  async getActiveConnectionCount(user: string): Promise<number> {
+    if (!this.connected || !this.client) return 0;
+    const normalizedUser = toTrimmedString(user).toLowerCase();
+    return normalizedUser ? Number(await this.client.sCard(this.activeConnectionsKey(normalizedUser))) || 0 : 0;
+  }
+
   get queuePublisherId(): string {
     return this.publisherId;
   }
