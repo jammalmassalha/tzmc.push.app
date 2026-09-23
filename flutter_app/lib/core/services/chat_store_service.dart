@@ -481,28 +481,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           }
         }
 
-        Future<void> _retryOutbox() async {
-          try {
-            final pending = await _db.getOutboxItems();
-            for (final item in pending) {
-              final payload = ReplyPayload.fromJson(
-                Map<String, dynamic>.from(jsonDecode(item.payload) as Map),
-              );
-              if (payload.user.trim().toLowerCase() != (_currentUser ?? '')) continue;
-              try {
-                final ack = await _sendReply(payload);
-                final pts = ack?['pts'];
-                if (pts is num && pts > 0) _updateMessagePts(payload.messageId, pts.toInt());
-                _updateMessageStatus(payload.messageId, DeliveryStatus.sent);
-                await _db.removeOutboxItem(item.id);
-              } catch (_) {
-                _updateMessageStatus(payload.messageId, DeliveryStatus.failed);
-              }
-            }
-          } catch (error) {
-            debugPrint('[ChatStore] Outbox retry failed: $error');
-          }
-        }
         // State may be empty; the server pull below re-populates it.
       }
 
@@ -528,6 +506,31 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     } catch (e) {
       state = state.copyWith(isLoading: false);
       rethrow;
+    }
+  }
+
+  Future<void> _retryOutbox() async {
+    try {
+      final pending = await _db.getOutboxItems();
+      for (final item in pending) {
+        final payload = ReplyPayload.fromJson(
+          Map<String, dynamic>.from(jsonDecode(item.payload) as Map),
+        );
+        if (payload.user.trim().toLowerCase() != (_currentUser ?? '')) continue;
+        try {
+          final ack = await _sendReply(payload);
+          final pts = ack?['pts'];
+          if (pts is num && pts > 0) {
+            _updateMessagePts(payload.messageId, pts.toInt());
+          }
+          _updateMessageStatus(payload.messageId, DeliveryStatus.sent);
+          await _db.removeOutboxItem(item.id);
+        } catch (_) {
+          _updateMessageStatus(payload.messageId, DeliveryStatus.failed);
+        }
+      }
+    } catch (error) {
+      debugPrint('[ChatStore] Outbox retry failed: $error');
     }
   }
 
