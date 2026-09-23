@@ -366,6 +366,36 @@ class ChatDatabase extends _$ChatDatabase {
     await (delete(messages)..where((t) => t.id.equals(id))).go();
   }
 
+  Future<void> enqueueOutbox({
+    required String id,
+    required String kind,
+    required Map<String, dynamic> payload,
+    String? messageId,
+    List<String>? recipients,
+  }) async {
+    await into(outboxItems).insertOnConflictUpdate(
+      OutboxItemsCompanion.insert(
+        id: id,
+        kind: kind,
+        payload: jsonEncode(payload),
+        recipients: Value(recipients == null ? null : jsonEncode(recipients)),
+        messageId: Value(messageId),
+        createdAt: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+  }
+
+  Future<List<OutboxItemsData>> getOutboxItems({int limit = 100}) async {
+    final query = select(outboxItems)
+      ..orderBy([(t) => OrderingTerm.asc(t.createdAt)])
+      ..limit(limit);
+    return query.get();
+  }
+
+  Future<void> removeOutboxItem(String id) async {
+    await (delete(outboxItems)..where((t) => t.id.equals(id))).go();
+  }
+
   MessagesCompanion _messageToCompanion(ChatMessage message) {
     return MessagesCompanion.insert(
       id: message.id,

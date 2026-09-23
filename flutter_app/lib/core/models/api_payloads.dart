@@ -73,6 +73,38 @@ class ReplyPayload extends Equatable {
     this.sentDateTime,
   });
 
+  factory ReplyPayload.fromJson(Map<String, dynamic> json) {
+    final groupType = json['groupType']?.toString();
+    return ReplyPayload(
+      user: json['user']?.toString() ?? '',
+      senderName: json['senderName']?.toString() ?? '',
+      reply: json['reply']?.toString() ?? '',
+      imageUrl: json['imageUrl']?.toString(),
+      fileUrl: json['fileUrl']?.toString(),
+      originalSender: json['originalSender']?.toString() ?? '',
+      messageId: json['messageId']?.toString() ?? '',
+      membersToNotify: (json['membersToNotify'] as List?)?.map((e) => e.toString()).toList(),
+      groupId: json['groupId']?.toString(),
+      groupName: json['groupName']?.toString(),
+      groupMembers: (json['groupMembers'] as List?)?.map((e) => e.toString()).toList(),
+      groupCreatedBy: json['groupCreatedBy']?.toString(),
+      groupAdmins: (json['groupAdmins'] as List?)?.map((e) => e.toString()).toList(),
+      groupUpdatedAt: (json['groupUpdatedAt'] as num?)?.toInt(),
+      groupType: groupType == 'community' ? GroupType.community : (groupType == 'group' ? GroupType.group : null),
+      groupSenderName: json['groupSenderName']?.toString(),
+      replyToMessageId: json['replyToMessageId']?.toString(),
+      replyToSender: json['replyToSender']?.toString(),
+      replyToSenderName: json['replyToSenderName']?.toString(),
+      replyToBody: json['replyToBody']?.toString(),
+      replyToImageUrl: json['replyToImageUrl']?.toString(),
+      forwarded: json['forwarded'] == true,
+      forwardedFrom: json['forwardedFrom']?.toString(),
+      forwardedFromName: json['forwardedFromName']?.toString(),
+      deviceId: json['deviceId']?.toString(),
+      sentDateTime: json['sentDateTime']?.toString(),
+    );
+  }
+
   @override
   List<Object?> get props => [
         user,

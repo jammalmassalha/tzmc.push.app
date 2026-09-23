@@ -29,7 +29,8 @@ import '../../features/auth/presentation/auth_state.dart';
 import '../../features/chat/presentation/message_screen.dart';
 import '../../firebase_options.dart';
 import '../api/chat_api_service.dart';
-import '../models/chat_models.dart' show ChatMessage;
+import '../database/chat_database.dart';
+import '../models/chat_models.dart' show ChatMessage, DeliveryStatus, MessageDirection;
 import '../navigation/root_navigator.dart';
 import '../services/chat_store_service.dart';
 
@@ -1105,6 +1106,36 @@ class PushNotificationService {
     if (parts.isEmpty) return;
     final chatId = parts[0];
     if (chatId.isEmpty) return;
+
+    // Persist the complete message in the same local store used by the UI.
+    // This makes a notification tap a zero-latency open even before the next
+    // foreground delta sync completes.
+    try {
+      final timestamp = ChatMessage.parseFlexibleDateTime(
+                data['sentDateTime'] ?? data['timestamp'])?.millisecondsSinceEpoch ??
+          DateTime.now().millisecondsSinceEpoch;
+      final messageId = (data['messageId'] ?? message.messageId ?? '').toString().trim();
+      if (messageId.isNotEmpty) {
+        final database = ChatDatabase();
+        await database.upsertMessage(ChatMessage(
+          id: messageId,
+          messageId: messageId,
+          clientMsgId: messageId,
+          chatId: chatId,
+          sender: sender,
+          body: (data['body'] ?? data['messageText'] ?? '').toString(),
+          imageUrl: data['imageUrl']?.toString(),
+          direction: MessageDirection.incoming,
+          timestamp: timestamp,
+          deliveryStatus: DeliveryStatus.delivered,
+          groupId: groupId.isNotEmpty ? groupId : null,
+          sentDateTime: DateTime.fromMillisecondsSinceEpoch(timestamp, isUtc: true),
+        ));
+        await database.close();
+      }
+    } catch (error) {
+      debugPrint('[BGHandler] Failed to persist message: $error');
+    }
 
     debugPrint('[PushNotificationService] Local notification tapped: $chatId');
     _openChatScreen(chatId);
