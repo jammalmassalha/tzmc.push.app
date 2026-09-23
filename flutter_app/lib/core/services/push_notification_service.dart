@@ -14,13 +14,14 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+
 // Conditional shims isolate the positional-arg initialize/show calls from
 // dart2js type-checking.  flutter_local_notifications 19.x has no web
 // platform entry; Flutter 3.38+ generates a zero-arg web stub that conflicts
 // at compile time with the real API.  The stubs are no-ops because the
 // service-worker handles web push.
-import '_notif_shim_stub.dart'
-    if (dart.library.io) '_notif_shim_native.dart';
+import '_notif_shim_stub.dart' if (dart.library.io) '_notif_shim_native.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -30,7 +31,8 @@ import '../../features/chat/presentation/message_screen.dart';
 import '../../firebase_options.dart';
 import '../api/chat_api_service.dart';
 import '../database/chat_database.dart';
-import '../models/chat_models.dart' show ChatMessage, DeliveryStatus, MessageDirection;
+import '../models/chat_models.dart'
+    show ChatMessage, DeliveryStatus, MessageDirection;
 import '../navigation/root_navigator.dart';
 import '../services/chat_store_service.dart';
 
@@ -110,8 +112,9 @@ bool _isAndroidPlatform() {
 class PushNotificationService {
   final ChatApiService _api;
   final Ref _ref;
-  late final MethodChannel _pushRegistrationChannel =
-      const MethodChannel(_kPushRegistrationChannelName);
+  late final MethodChannel _pushRegistrationChannel = const MethodChannel(
+    _kPushRegistrationChannelName,
+  );
 
   FirebaseMessaging? _messaging;
   FlutterLocalNotificationsPlugin? _localNotifications;
@@ -130,6 +133,7 @@ class PushNotificationService {
   // Set once [initialize] has run so repeated calls don't re-subscribe the
   // FCM listeners.
   bool _initialized = false;
+
   /// Chat route captured before authentication and the root navigator are
   /// ready. Kept at class level because a cold-start notification can arrive
   /// before the service has finished initializing.
@@ -164,8 +168,10 @@ class PushNotificationService {
       // browser's own notification API handles foreground display via the
       // `firebase-messaging-sw.js` service worker.
       if (!kIsWeb) {
-        _localNotifications = FlutterLocalNotificationsPlugin();
-        await _initializeLocalNotifications();
+        if (_isAndroidPlatform()) {
+          _localNotifications = FlutterLocalNotificationsPlugin();
+          await _initializeLocalNotifications();
+        }
 
         // Let Firebase/APNs present iOS foreground notifications. The local
         // notifications plugin is used for Android foreground display only;
@@ -213,7 +219,9 @@ class PushNotificationService {
       // Check if app was opened from a terminated state notification
       final initialMessage = await _messaging!.getInitialMessage();
       if (initialMessage != null) {
-        debugPrint('[PUSH-ROUTING] getInitialMessage caught payload: ${initialMessage.data}');
+        debugPrint(
+          '[PUSH-ROUTING] getInitialMessage caught payload: ${initialMessage.data}',
+        );
         _pendingRouteChatId = _chatIdFromMessage(initialMessage);
         _applyPushPayload(initialMessage);
       }
@@ -260,8 +268,9 @@ class PushNotificationService {
       // Web path — Firebase Messaging is required for browser push.
       if (_messaging == null) {
         debugPrint(
-            '[PushNotificationService] FirebaseMessaging not available on web — '
-            'check Firebase JS SDK config / firebase_options.');
+          '[PushNotificationService] FirebaseMessaging not available on web — '
+          'check Firebase JS SDK config / firebase_options.',
+        );
         return;
       }
 
@@ -269,7 +278,9 @@ class PushNotificationService {
       try {
         settings = await _messaging!.getNotificationSettings();
       } catch (e) {
-        debugPrint('[PushNotificationService] getNotificationSettings error: $e');
+        debugPrint(
+          '[PushNotificationService] getNotificationSettings error: $e',
+        );
         return;
       }
 
@@ -310,8 +321,9 @@ class PushNotificationService {
   ) async {
     if (_messaging == null) {
       debugPrint(
-          '[PushNotificationService] FirebaseMessaging not available on iOS — '
-          'check Firebase initialization / firebase_options.');
+        '[PushNotificationService] FirebaseMessaging not available on iOS — '
+        'check Firebase initialization / firebase_options.',
+      );
       return;
     }
 
@@ -354,12 +366,16 @@ class PushNotificationService {
   /// On grant, we still call `FirebaseMessaging.requestPermission()` so the
   /// FCM authorization status is in sync, and then fetch & register the
   /// device token with the backend.
-  Future<void> _ensurePermissionViaPermissionHandler(BuildContext context) async {
+  Future<void> _ensurePermissionViaPermissionHandler(
+    BuildContext context,
+  ) async {
     PermissionStatus status;
     try {
       status = await Permission.notification.status;
     } catch (e) {
-      debugPrint('[PushNotificationService] permission_handler status error: $e');
+      debugPrint(
+        '[PushNotificationService] permission_handler status error: $e',
+      );
       return;
     }
 
@@ -388,9 +404,12 @@ class PushNotificationService {
     try {
       result = await Permission.notification.request();
       debugPrint(
-          '[PushNotificationService] permission_handler result: $result');
+        '[PushNotificationService] permission_handler result: $result',
+      );
     } catch (e) {
-      debugPrint('[PushNotificationService] permission_handler request error: $e');
+      debugPrint(
+        '[PushNotificationService] permission_handler request error: $e',
+      );
       return;
     }
 
@@ -447,7 +466,8 @@ class PushNotificationService {
 
   /// Show — at most once per install — a dialog inviting the user to
   /// re-enable notifications from the system Settings screen.
-  Future<void> _maybeShowOpenSettingsDialog(BuildContext context) async {    SharedPreferences prefs;
+  Future<void> _maybeShowOpenSettingsDialog(BuildContext context) async {
+    SharedPreferences prefs;
     try {
       prefs = await SharedPreferences.getInstance();
     } catch (e) {
@@ -511,7 +531,8 @@ class PushNotificationService {
       );
       final authorizationStatus = settings.authorizationStatus;
       debugPrint(
-          '[PushNotificationService] Permission status: $authorizationStatus');
+        '[PushNotificationService] Permission status: $authorizationStatus',
+      );
       _logIOSRegistrationStep(
         'ios_permission_request_result',
         _isAuthorized(authorizationStatus) ? 'success' : 'denied',
@@ -530,7 +551,9 @@ class PushNotificationService {
     } on FirebaseException catch (e) {
       final detail =
           'Firebase error ${e.plugin}/${e.code}: ${e.message ?? e.toString()}';
-      debugPrint('[PushNotificationService] requestPermission FirebaseException: $detail');
+      debugPrint(
+        '[PushNotificationService] requestPermission FirebaseException: $detail',
+      );
       _logIOSRegistrationStep(
         'ios_permission_firebase_error',
         'error',
@@ -552,7 +575,9 @@ class PushNotificationService {
   }
 
   Future<void> _initializeLocalNotifications() async {
-    const androidSettings = AndroidInitializationSettings('@drawable/ic_notification');
+    const androidSettings = AndroidInitializationSettings(
+      '@drawable/ic_notification',
+    );
     const iosSettings = DarwinInitializationSettings(
       requestAlertPermission: false,
       requestBadgePermission: false,
@@ -589,19 +614,21 @@ class PushNotificationService {
       );
       await _localNotifications!
           .resolvePlatformSpecificImplementation<
-              AndroidFlutterLocalNotificationsPlugin>()
+            AndroidFlutterLocalNotificationsPlugin
+          >()
           ?.createNotificationChannel(channel);
     }
   }
 
   Future<void> _clearUnreadBadgesAfterPermissionGranted() async {
     try {
-      await _ref.read(chatStoreProvider.notifier).clearAllUnreadBadgesInBackground();
+      await _ref
+          .read(chatStoreProvider.notifier)
+          .clearAllUnreadBadgesInBackground();
     } catch (e) {
       debugPrint('[PushNotificationService] clear unread badges error: $e');
     }
   }
-
 
   void _logIOSRegistrationStep(
     String action,
@@ -612,15 +639,17 @@ class PushNotificationService {
     String? fullResponse,
   }) {
     if (!_isIOSPlatform()) return;
-    unawaited(_api.logFlutterPushRegistrationStep(
-      action: action,
-      status: status,
-      username: _getCurrentNormalizedUsername(),
-      platform: _getPlatformName(),
-      message: message,
-      tokenLength: tokenLength ?? token?.length,
-      fullResponse: fullResponse,
-    ));
+    unawaited(
+      _api.logFlutterPushRegistrationStep(
+        action: action,
+        status: status,
+        username: _getCurrentNormalizedUsername(),
+        platform: _getPlatformName(),
+        message: message,
+        tokenLength: tokenLength ?? token?.length,
+        fullResponse: fullResponse,
+      ),
+    );
   }
 
   Future<void> _getAndRegisterToken() async {
@@ -707,9 +736,10 @@ class PushNotificationService {
         const vapidKey = DefaultFirebaseOptions.webVapidKey;
         if (vapidKey.isEmpty) {
           debugPrint(
-              '[PushNotificationService] No web VAPID key configured — '
-              'set DefaultFirebaseOptions.webVapidKey from Firebase '
-              'Console → Cloud Messaging → Web Push certificates.');
+            '[PushNotificationService] No web VAPID key configured — '
+            'set DefaultFirebaseOptions.webVapidKey from Firebase '
+            'Console → Cloud Messaging → Web Push certificates.',
+          );
           token = await _messaging!.getToken();
         } else {
           token = await _messaging!.getToken(vapidKey: vapidKey);
@@ -728,7 +758,9 @@ class PushNotificationService {
           // visible in the backend debug log.
           final detail =
               'Firebase error ${e.plugin}/${e.code}: ${e.message ?? e.toString()}';
-          debugPrint('[PushNotificationService] getToken FirebaseException: $detail');
+          debugPrint(
+            '[PushNotificationService] getToken FirebaseException: $detail',
+          );
           _logIOSRegistrationStep(
             'ios_fcm_token_firebase_error',
             'error',
@@ -815,12 +847,9 @@ class PushNotificationService {
 
     _tokenRegistrationRetryAttempt += 1;
     final attempt = _tokenRegistrationRetryAttempt;
-    _tokenRegistrationRetryTimer = Timer(
-      _kTokenRegistrationRetryDelay,
-      () {
-        _runScheduledTokenRegistrationRetry(attempt);
-      },
-    );
+    _tokenRegistrationRetryTimer = Timer(_kTokenRegistrationRetryDelay, () {
+      _runScheduledTokenRegistrationRetry(attempt);
+    });
   }
 
   Future<void> _runScheduledTokenRegistrationRetry(int attempt) async {
@@ -853,9 +882,11 @@ class PushNotificationService {
   }
 
   Future<String?> _waitForAPNSToken() async {
-    for (var attemptNumber = 1;
-        attemptNumber <= _kAPNSTokenMaxAttempts;
-        attemptNumber += 1) {
+    for (
+      var attemptNumber = 1;
+      attemptNumber <= _kAPNSTokenMaxAttempts;
+      attemptNumber += 1
+    ) {
       String? apnsToken;
       try {
         apnsToken = await _messaging!.getAPNSToken();
@@ -881,7 +912,9 @@ class PushNotificationService {
         } else {
           final detail =
               'Firebase error ${e.plugin}/${e.code}: ${e.message ?? e.toString()}';
-          debugPrint('[PushNotificationService] getAPNSToken FirebaseException: $detail');
+          debugPrint(
+            '[PushNotificationService] getAPNSToken FirebaseException: $detail',
+          );
           _logIOSRegistrationStep(
             'ios_apns_gettoken_firebase_error',
             'error',
@@ -896,7 +929,9 @@ class PushNotificationService {
         }
         // In both cases treat as null — keep retrying in case it is transient.
       } catch (e) {
-        debugPrint('[PushNotificationService] getAPNSToken error on attempt $attemptNumber: $e');
+        debugPrint(
+          '[PushNotificationService] getAPNSToken error on attempt $attemptNumber: $e',
+        );
         _logIOSRegistrationStep(
           'ios_apns_gettoken_error',
           'error',
@@ -982,7 +1017,8 @@ class PushNotificationService {
     final normalizedUser = _getCurrentNormalizedUsername();
     if (normalizedUser == null) {
       debugPrint(
-          '[PushNotificationService] No current user — deferring token registration');
+        '[PushNotificationService] No current user — deferring token registration',
+      );
       _logIOSRegistrationStep(
         'ios_backend_registration_deferred',
         'deferred',
@@ -1029,8 +1065,10 @@ class PushNotificationService {
       _tokenRegistrationRetryAttempt = 0;
       _tokenRegistrationRetryTimer?.cancel();
       _tokenRegistrationRetryTimer = null;
-      debugPrint('[PushNotificationService] Device token registered for '
-          '$normalizedUser: ${token.substring(0, 20)}...');
+      debugPrint(
+        '[PushNotificationService] Device token registered for '
+        '$normalizedUser: ${token.substring(0, 20)}...',
+      );
       _logIOSRegistrationStep(
         'ios_backend_registration_success',
         'success',
@@ -1077,7 +1115,9 @@ class PushNotificationService {
 
   /// Handle foreground message
   void _onMessage(RemoteMessage message) {
-    debugPrint('[PushNotificationService] Foreground message: ${message.messageId}');
+    debugPrint(
+      '[PushNotificationService] Foreground message: ${message.messageId}',
+    );
 
     // Show local notification
     _showLocalNotification(message);
@@ -1089,7 +1129,9 @@ class PushNotificationService {
   /// Handle message when app opened from notification
   void _onMessageOpenedApp(RemoteMessage message) {
     debugPrint('[PUSH-ROUTING] onMessageOpenedApp payload: ${message.data}');
-    debugPrint('[PushNotificationService] Opened from notification: ${message.messageId}');
+    debugPrint(
+      '[PushNotificationService] Opened from notification: ${message.messageId}',
+    );
 
     // Apply push payload (also schedules recovery pulls)
     _applyPushPayload(message);
@@ -1238,16 +1280,19 @@ class PushNotificationService {
         // Prefer data fields over the FCM notification.body — they are always
         // set by the backend and survive payload transformations on every
         // platform, whereas notification.body may be absent in edge cases.
-        final fromData = (message.data['messageText']?.toString().trim().isNotEmpty == true
+        final fromData =
+            (message.data['messageText']?.toString().trim().isNotEmpty == true
                 ? message.data['messageText']?.toString().trim()
-                : null)
-            ?? (message.data['body']?.toString().trim().isNotEmpty == true
+                : null) ??
+            (message.data['body']?.toString().trim().isNotEmpty == true
                 ? message.data['body']?.toString().trim()
                 : null);
         if (fromData != null && fromData.toLowerCase() != 'new notification') {
           return fromData;
         }
-        return (notification.body?.isNotEmpty == true) ? notification.body : fromData ?? '';
+        return (notification.body?.isNotEmpty == true)
+            ? notification.body
+            : fromData ?? '';
       })(),
       details,
       payload: notificationPayload,
@@ -1291,7 +1336,9 @@ class PushNotificationService {
       // Cast to Map<String, dynamic> — RemoteMessage.data is Map<String, String>
       // on Android but typed as Map<String, dynamic> in firebase_messaging.
       final dataMap = Map<String, dynamic>.from(data);
-      _ref.read(chatStoreProvider.notifier).applyIncomingFromPushPayload(dataMap);
+      _ref
+          .read(chatStoreProvider.notifier)
+          .applyIncomingFromPushPayload(dataMap);
     } catch (e) {
       debugPrint('[PushNotificationService] Error applying push payload: $e');
     }
@@ -1318,7 +1365,9 @@ class PushNotificationService {
     final chatId = _pendingRouteChatId;
     if (chatId == null) return;
     if (_ref.read(currentUserProvider) == null) {
-      debugPrint('[PUSH-ROUTING] Launch route deferred: user is not authenticated');
+      debugPrint(
+        '[PUSH-ROUTING] Launch route deferred: user is not authenticated',
+      );
       return;
     }
     debugPrint('[PUSH-ROUTING] Waiting for ChatStoreService.syncOnLaunch()');
@@ -1346,7 +1395,9 @@ class PushNotificationService {
 
     final navigator = navigatorKey.currentState;
     if (navigator == null) {
-      debugPrint('[PushNotificationService] Navigator not ready, deferring deep link');
+      debugPrint(
+        '[PushNotificationService] Navigator not ready, deferring deep link',
+      );
       _pendingRouteChatId = chatId;
       // The widget tree is still being built (cold-start). Schedule the push
       // for the very next frame, by which time the MaterialApp navigator will
@@ -1364,7 +1415,10 @@ class PushNotificationService {
       _pendingRouteChatId = null;
     }
     navigator.push(
-      MaterialPageRoute(builder: (_) => MessageScreen(chatId: chatId, initialUnreadCount: unreadCount)),
+      MaterialPageRoute(
+        builder: (_) =>
+            MessageScreen(chatId: chatId, initialUnreadCount: unreadCount),
+      ),
     );
   }
 
@@ -1373,13 +1427,16 @@ class PushNotificationService {
   void _openHelpdeskScreen() {
     final navigator = rootNavigatorKey.currentState;
     if (navigator == null) {
-      debugPrint('[PushNotificationService] Navigator not ready, skipping helpdesk deep link');
+      debugPrint(
+        '[PushNotificationService] Navigator not ready, skipping helpdesk deep link',
+      );
       return;
     }
-    final currentPath =
-        AppRoutes.normalizePath(rootNavigatorKey.currentContext != null
-            ? ModalRoute.of(rootNavigatorKey.currentContext!)?.settings.name
-            : null);
+    final currentPath = AppRoutes.normalizePath(
+      rootNavigatorKey.currentContext != null
+          ? ModalRoute.of(rootNavigatorKey.currentContext!)?.settings.name
+          : null,
+    );
     if (currentPath == AppRoutes.helpdesk) return;
     navigator.pushReplacementNamed(AppRoutes.helpdesk);
   }
@@ -1406,7 +1463,9 @@ class PushNotificationService {
       try {
         await _localNotifications!.cancelAll();
       } catch (e) {
-        debugPrint('[PushNotificationService] cancelAll notifications error: $e');
+        debugPrint(
+          '[PushNotificationService] cancelAll notifications error: $e',
+        );
       }
     }
 
@@ -1479,10 +1538,12 @@ class PushNotificationService {
 // Provider
 // ---------------------------------------------------------------------------
 
-final pushNotificationServiceProvider = Provider<PushNotificationService>((ref) {
+final pushNotificationServiceProvider = Provider<PushNotificationService>((
+  ref,
+) {
   final api = ref.watch(chatApiServiceProvider);
   final service = PushNotificationService(api, ref);
-  
+
   ref.onDispose(service.dispose);
 
   return service;
@@ -1502,55 +1563,74 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
-    debugPrint('[PushNotificationService] Background message: ${message.messageId}');
+    debugPrint(
+      '[PushNotificationService] Background message: ${message.messageId}',
+    );
 
     final data = message.data;
 
     // Skip silent / action-only payloads — only real chat messages should
     // contribute to the pending unread tray.
     final type = (data['type'] ?? '').toString().trim().toLowerCase();
-  // These payload types carry server-side actions (edits, deletes, reactions,
-  // read receipts) rather than new user messages, so they must not increment
-  // the unread tray counter.
+    // These payload types carry server-side actions (edits, deletes, reactions,
+    // read receipts) rather than new user messages, so they must not increment
+    // the unread tray counter.
     const actionOnlyTypes = {
-      'read-receipt', 'read',
-      'delivery-receipt', 'delivered',
-      'delete-action', 'delete',
-      'edit-action', 'edit',
-      'group-update', 'typing', 'reaction',
+      'read-receipt',
+      'read',
+      'delivery-receipt',
+      'delivered',
+      'delete-action',
+      'delete',
+      'edit-action',
+      'edit',
+      'group-update',
+      'typing',
+      'reaction',
     };
-    final skipNotification = data['skipNotification'] == true ||
-        data['skipNotification'] == 'true';
+    final skipNotification =
+        data['skipNotification'] == true || data['skipNotification'] == 'true';
     if (skipNotification || actionOnlyTypes.contains(type)) return;
 
-  // Resolve the chatId using the same priority as PushNotificationService
-  // does when routing a foreground message: groupId first, then sender.
+    // Resolve the chatId using the same priority as PushNotificationService
+    // does when routing a foreground message: groupId first, then sender.
     final groupId = (data['groupId'] ?? '').toString().trim();
-    final sender =
-        (data['sender'] ?? data['fromUser'] ?? '').toString().trim().toLowerCase();
+    final sender = (data['sender'] ?? data['fromUser'] ?? '')
+        .toString()
+        .trim()
+        .toLowerCase();
     final chatId = groupId.isNotEmpty ? groupId : sender;
     if (chatId.isEmpty) return;
-    final messageId = (data['messageId'] ?? message.messageId ?? '').toString().trim();
+    final messageId = (data['messageId'] ?? message.messageId ?? '')
+        .toString()
+        .trim();
 
-    final timestamp = ChatMessage.parseFlexibleDateTime(
-          data['sentDateTime'] ?? data['timestamp'])?.millisecondsSinceEpoch ??
+    final timestamp =
+        ChatMessage.parseFlexibleDateTime(
+          data['sentDateTime'] ?? data['timestamp'],
+        )?.millisecondsSinceEpoch ??
         DateTime.now().millisecondsSinceEpoch;
     if (messageId.isNotEmpty) {
       final database = ChatDatabase();
-      await database.upsertMessage(ChatMessage(
-        id: messageId,
-        messageId: messageId,
-        clientMsgId: messageId,
-        chatId: chatId,
-        sender: sender,
-        body: (data['body'] ?? data['messageText'] ?? '').toString(),
-        imageUrl: data['imageUrl']?.toString(),
-        direction: MessageDirection.incoming,
-        timestamp: timestamp,
-        deliveryStatus: DeliveryStatus.delivered,
-        groupId: groupId.isNotEmpty ? groupId : null,
-        sentDateTime: DateTime.fromMillisecondsSinceEpoch(timestamp, isUtc: true),
-      ));
+      await database.upsertMessage(
+        ChatMessage(
+          id: messageId,
+          messageId: messageId,
+          clientMsgId: messageId,
+          chatId: chatId,
+          sender: sender,
+          body: (data['body'] ?? data['messageText'] ?? '').toString(),
+          imageUrl: data['imageUrl']?.toString(),
+          direction: MessageDirection.incoming,
+          timestamp: timestamp,
+          deliveryStatus: DeliveryStatus.delivered,
+          groupId: groupId.isNotEmpty ? groupId : null,
+          sentDateTime: DateTime.fromMillisecondsSinceEpoch(
+            timestamp,
+            isUtc: true,
+          ),
+        ),
+      );
       await database.close();
     }
     // Persist the pending unread count to SharedPreferences so that
@@ -1565,7 +1645,8 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     final prev = pending[chatId] as Map<String, dynamic>?;
     // Prefer the sender dispatch time so delta-fetch cursors reflect the true
     // chronological position of the message, not its delivery time.
-    final ts = ChatMessage.parseFlexibleDateTime(data['sentDateTime'])
+    final ts =
+        ChatMessage.parseFlexibleDateTime(data['sentDateTime'])
             ?.millisecondsSinceEpoch ??
         int.tryParse(data['timestamp']?.toString() ?? '') ??
         DateTime.now().millisecondsSinceEpoch;
@@ -1587,10 +1668,9 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
           : ts,
       // Newest push seen for this chat. Keep the identity and timestamp so the
       // resume-time delta pull can position its cursor correctly.
-      'lastTimestamp':
-          (prevLastTimestampMs != null && prevLastTimestampMs > ts)
-              ? prevLastTimestampMs
-              : ts,
+      'lastTimestamp': (prevLastTimestampMs != null && prevLastTimestampMs > ts)
+          ? prevLastTimestampMs
+          : ts,
       if (messageId.isNotEmpty)
         'lastMessageId': messageId
       else if (prevLastMessageId.isNotEmpty)
