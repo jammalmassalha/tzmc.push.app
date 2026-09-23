@@ -513,11 +513,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       rethrow;
     }
 
-    /// Starts the first server hydration with an observable state transition.
-    Future<void> syncOnLaunch() async {
-      state = state.copyWith(isInitialSyncing: true);
-      await _revalidateFromServer();
-    }
+  }
+
+  /// Starts the first server hydration with an observable state transition.
+  Future<void> syncOnLaunch() async {
+    state = state.copyWith(isInitialSyncing: true);
+    await _revalidateFromServer();
   }
 
   Future<void> _retryOutbox() async {
