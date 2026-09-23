@@ -1101,7 +1101,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // accounts for the persisted high-water mark and the FCM background
       // tray) rather than the raw table maximum.
       int localLatest;
+      bool localDbHasMessages = true;
       try {
+        localDbHasMessages = await _db.hasMessages();
         localLatest = await _db.getLatestMessageTimestamp();
       } catch (_) {
         // DB unavailable (web without WASM files); derive the latest known
@@ -1109,7 +1111,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         localLatest = _latestTimestampFromState();
       }
 
-      if (localLatest == 0) {
+      if (!localDbHasMessages) {
         // No local history (first install or DB cleared): use the batch-import
         // path so that all historical messages are loaded without incrementing
         // unread counters. Treating the entire history as "unread" on first open

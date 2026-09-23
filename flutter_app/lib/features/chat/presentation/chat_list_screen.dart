@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart' hide TextDirection;
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../../core/database/chat_database.dart';
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../../core/utils/toast_utils.dart';
@@ -47,85 +48,83 @@ class ChatListScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final state = ref.watch(chatStoreProvider);
-    final chatItems = state.chatListItems;
-    final isLoading = state.isLoading;
+    return StreamBuilder<void>(
+      stream: ref.watch(chatDatabaseProvider).watchChatChanges(),
+      builder: (context, _) {
+        final state = ref.watch(chatStoreProvider);
+        final chatItems = state.chatListItems;
+        final isLoading = state.isLoading;
 
-    // While the store is initializing (fetching contacts + recovering messages),
-    // show a spinner rather than the "no chats yet" empty state so the user
-    // knows data is being loaded.
-    if (chatItems.isEmpty && isLoading) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const CircularProgressIndicator(),
-            const SizedBox(height: 16),
-            Text(
-              'טוען שיחות...',
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.6).round()),
-                  ),
+        if (chatItems.isEmpty && isLoading) {
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const CircularProgressIndicator(),
+                const SizedBox(height: 16),
+                Text(
+                  'טוען שיחות...',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.6).round()),
+                      ),
+                ),
+              ],
             ),
-          ],
-        ),
-      );
-    }
-
-    // Match the Angular behavior: render the (possibly empty) list immediately
-    // and let the background sync populate it. No full-screen loader on entry.
-    if (chatItems.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Image.asset(
-              'assets/images/logo.png',
-              width: 96,
-              height: 96,
-              color: Theme.of(context).colorScheme.primary.withAlpha((255 * 0.3).round()),
-              colorBlendMode: BlendMode.modulate,
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'אין שיחות עדיין',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.6).round()),
-                  ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'התחל שיחה חדשה מהאייקון בסרגל העליון',
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.4).round()),
-                  ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    return RefreshIndicator(
-      onRefresh: () async {
-        await ref.read(chatStoreProvider.notifier).recoverMissedMessages(force: true);
-      },
-      child: ListView.builder(
-        itemCount: chatItems.length,
-        itemBuilder: (context, index) {
-          final item = chatItems[index];
-          final contact = item.isGroup ? null : _findContact(state, item.id);
-          final phone = (item.phone ?? contact?.phone ?? '').trim();
-          return _ChatListTile(
-            item: item,
-            isSelected: selectedChatId == item.id,
-            onTap: () => _openChat(context, ref, item),
-            onCall: phone.isNotEmpty
-                ? () => _callUser(context, phone)
-                : null,
-            onDelete: () => _deleteChat(context, ref, item),
           );
-        },
-      ),
+        }
+
+        if (chatItems.isEmpty) {
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Image.asset(
+                  'assets/images/logo.png',
+                  width: 96,
+                  height: 96,
+                  color: Theme.of(context).colorScheme.primary.withAlpha((255 * 0.3).round()),
+                  colorBlendMode: BlendMode.modulate,
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'אין שיחות עדיין',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.6).round()),
+                      ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'התחל שיחה חדשה מהאייקון בסרגל העליון',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.4).round()),
+                      ),
+                ),
+              ],
+            ),
+          );
+        }
+
+        return RefreshIndicator(
+          onRefresh: () async {
+            await ref.read(chatStoreProvider.notifier).recoverMissedMessages(force: true);
+          },
+          child: ListView.builder(
+            itemCount: chatItems.length,
+            itemBuilder: (context, index) {
+              final item = chatItems[index];
+              final contact = item.isGroup ? null : _findContact(state, item.id);
+              final phone = (item.phone ?? contact?.phone ?? '').trim();
+              return _ChatListTile(
+                item: item,
+                isSelected: selectedChatId == item.id,
+                onTap: () => _openChat(context, ref, item),
+                onCall: phone.isNotEmpty ? () => _callUser(context, phone) : null,
+                onDelete: () => _deleteChat(context, ref, item),
+              );
+            },
+          ),
+        );
+      },
     );
   }
 
