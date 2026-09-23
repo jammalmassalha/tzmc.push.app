@@ -342,6 +342,33 @@ class ChatDatabase extends _$ChatDatabase {
     return result?.read(messages.timestamp.max()) ?? 0;
   }
 
+  /// Whether the local message cache contains any history.
+  ///
+  /// This is intentionally separate from [getLatestMessageTimestamp]: a
+  /// message can legitimately have a zero/invalid legacy timestamp while the
+  /// database is not empty.
+  Future<bool> hasMessages() async {
+    final query = select(messages)..limit(1);
+    return (await query.get()).isNotEmpty;
+  }
+
+  /// Emits whenever local chat data changes.
+  ///
+  /// The chat list is rendered from the store, but this stream is the local
+  /// database invalidation signal.  It covers all tables that can affect a
+  /// chat-list row, so a background hydration write is painted immediately.
+  Stream<void> watchChatChanges() {
+    return customSelect(
+      '''
+      SELECT 1 AS change_marker FROM contacts
+      UNION ALL SELECT 1 FROM groups
+      UNION ALL SELECT 1 FROM messages
+      UNION ALL SELECT 1 FROM unread_counts
+      ''',
+      readsFrom: {contacts, groups, messages, unreadCounts},
+    ).watch().map<void>((_) {});
+  }
+
   Future<int> getHighestPts(String chatId) async {
     final query = selectOnly(messages)
       ..addColumns([messages.pts.max()])

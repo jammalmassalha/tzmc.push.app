@@ -21,6 +21,7 @@ function registerMessageController(app, deps = {}) {
         getActiveRedisStateStore,
         getMessageQueue,
         getMailboxSequence,
+        getLogsMessagesForUser,
         scheduleStateSave,
         sseClients,
         updateUserReceivedTime,
@@ -363,9 +364,13 @@ function registerMessageController(app, deps = {}) {
             const lastSequence = Math.max(0, Number(req.query && (
                 req.query.since_pts || req.query.last_seq || req.query.lastSeq
             )) || 0);
-            const lastSyncTimestamp = Math.max(0, Number(req.query && (
-                req.query.last_sync_timestamp || req.query.lastSyncTimestamp
-            )) || 0);
+            const rawLastSyncTimestamp = req.query && (
+                req.query.last_sync_timestamp ?? req.query.lastSyncTimestamp
+            );
+            const hasLastSyncTimestamp = rawLastSyncTimestamp !== undefined &&
+                rawLastSyncTimestamp !== null &&
+                String(rawLastSyncTimestamp).trim() !== '';
+            const lastSyncTimestamp = Math.max(0, Number(rawLastSyncTimestamp) || 0);
             const requestedChatId = String(req.query && (req.query.chat_id || req.query.chatId) || '').trim();
             let messages = [];
             const store = getActiveRedisStateStore();
@@ -386,7 +391,7 @@ function registerMessageController(app, deps = {}) {
                     return value === requestedChatId;
                 });
             }
-            if (lastSyncTimestamp > 0) {
+            if (hasLastSyncTimestamp) {
                 messages = messages.filter((message) => {
                     const rawTimestamp = message && (
                         message.sentDateTime || message.timestamp || message.createdAt
@@ -394,6 +399,37 @@ function registerMessageController(app, deps = {}) {
                     const timestamp = Number(rawTimestamp) || Date.parse(String(rawTimestamp || '')) || 0;
                     return timestamp > lastSyncTimestamp;
                 });
+                if (!messages.length && typeof getLogsMessagesForUser === 'function') {
+                    try {
+                        messages = await getLogsMessagesForUser(user, {
+                            limit: 200,
+                            offset: 0,
+                            since: lastSyncTimestamp
+                        });
+                    } catch (error) {
+                        console.warn('[MYSQL] Delta chat sync failed:', error && error.message ? error.message : error);
+                    }
+                }
+            } else {
+                // A first sync is deliberately bounded.  The mailbox is only a
+                // realtime buffer and may be empty after a server restart, so
+                // use the durable MySQL log as the source of truth when it is
+                // available.
+                if (typeof getLogsMessagesForUser === 'function') {
+                    try {
+                        messages = await getLogsMessagesForUser(user, { limit: 20, offset: 0, since: 0 });
+                    } catch (error) {
+                        console.warn('[MYSQL] Initial chat sync failed:', error && error.message ? error.message : error);
+                    }
+                }
+                messages = messages
+                    .sort((a, b) => {
+                        const timestamp = (message) => Number(message && (
+                            message.sentDateTime || message.timestamp || message.createdAt
+                        )) || Date.parse(String(message && (message.sentDateTime || message.timestamp || message.createdAt) || '')) || 0;
+                        return timestamp(b) - timestamp(a);
+                    })
+                    .slice(0, 20);
             }
             messages.sort((a, b) => Number(a && (a.pts || a.seq_id)) - Number(b && (b.pts || b.seq_id)));
             const currentSequence = typeof getMailboxSequence === 'function'
