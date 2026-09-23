@@ -837,6 +837,7 @@ function registerMessageController(app, deps = {}) {
                     }
 
                     const resolvedGroupType = groupTypeRaw === 'community' ? 'community' : (groupTypeRaw === 'group' ? 'group' : (resolvedGroupId ? (knownGroupTypeById.get(resolvedGroupId) || (hardcodedGroupKeySet.has(resolvedGroupId) ? 'community' : 'group')) : undefined));
+                    const resolvedChatId = resolvedGroupId || (sender === user ? normalizedToUserCandidate : sender);
                     if (isRestrictedUser && resolvedGroupId && hardcodedGroupKeySet.has(resolvedGroupId)) {
                         return null;
                     }
@@ -863,6 +864,7 @@ function registerMessageController(app, deps = {}) {
                             deletedAt: normalizedType === 'delete-action' && deletedAt > 0 ? deletedAt : undefined,
                             timestamp,
                             toUser: normalizedToUserCandidate || undefined,
+                            chatId: resolvedChatId || undefined,
                             groupId: resolvedGroupId || undefined,
                             groupName: resolvedGroupName || undefined,
                             groupType: resolvedGroupType,
@@ -875,6 +877,7 @@ function registerMessageController(app, deps = {}) {
                         messageId,
                         sender,
                         toUser: normalizedToUserCandidate || undefined,
+                        chatId: resolvedChatId || undefined,
                         body: resolvedBody,
                         imageUrl,
                         fileUrl,
@@ -920,6 +923,12 @@ function registerMessageController(app, deps = {}) {
                       )
                     : dedupedMessages;
 
+                console.log(
+                    `SYNC_TRACE: Backend returned ${
+                        new Set(allMessages.map((message) => message.chatId || message.groupId || message.sender).filter(Boolean)
+                        ).size
+                    } chats and ${allMessages.length} deltas`
+                );
                 return res.json({ result: 'success', messages: allMessages });
             } catch (error) {
                 console.error('[LOGS SYNC] Failed:', error.message);

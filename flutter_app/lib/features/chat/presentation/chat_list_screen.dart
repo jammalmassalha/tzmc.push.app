@@ -48,9 +48,16 @@ class ChatListScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return StreamBuilder<void>(
-      stream: ref.watch(chatDatabaseProvider).watchChatChanges(),
-      builder: (context, _) {
+    return StreamBuilder<List<ChatMessage>>(
+      stream: ref.watch(chatDatabaseProvider).watchAllChats(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          debugPrint('SYNC_TRACE: StreamBuilder emitted new list with 0 items (waiting)');
+        } else if (snapshot.hasData) {
+          debugPrint(
+            'SYNC_TRACE: StreamBuilder emitted new list with ${snapshot.data!.length} items',
+          );
+        }
         final state = ref.watch(chatStoreProvider);
         final chatItems = state.chatListItems;
         final isLoading = state.isLoading;
