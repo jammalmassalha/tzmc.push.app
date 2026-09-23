@@ -378,6 +378,7 @@ class ChatDatabase extends _$ChatDatabase {
     required List<dynamic> chats,
     required List<dynamic> messages,
   }) async {
+    final messageRows = messages;
     await transaction(() async {
       for (final raw in chats) {
         if (raw is! Map) continue;
@@ -386,7 +387,7 @@ class ChatDatabase extends _$ChatDatabase {
         if (id.isEmpty) continue;
         await setUnreadCount(id, _syncInt(map['unreadCount']));
       }
-      for (final raw in messages) {
+      for (final raw in messageRows) {
         if (raw is! Map) continue;
         final map = Map<String, dynamic>.from(raw);
         final id = '${map['id'] ?? map['messageId'] ?? ''}'.trim();
@@ -401,11 +402,12 @@ class ChatDatabase extends _$ChatDatabase {
           'sender': '${map['sender'] ?? map['from'] ?? ''}',
           'body': '${map['body'] ?? map['message'] ?? map['content'] ?? ''}',
           'timestamp': timestamp,
+          if (map['pts'] != null) 'pts': _syncInt(map['pts']),
           'direction': map['direction'] ?? 'incoming',
           'deliveryStatus': map['deliveryStatus'] ?? map['status'] ?? 'delivered',
         };
         final message = ChatMessage.fromJson(messageMap);
-        await into(messages).insertOnConflictUpdate(_messageToCompanion(message));
+        await into(this.messages).insertOnConflictUpdate(_messageToCompanion(message));
       }
     });
   }
