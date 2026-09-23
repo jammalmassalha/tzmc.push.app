@@ -163,7 +163,26 @@ final class PrivacyShield {
     willPresent notification: UNNotification,
     withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
   ) {
-    completionHandler([.alert, .badge, .sound])
+    // UNUserNotificationCenter requires this callback to be completed exactly
+    // once. Keep it on the main queue because presentation and badge updates
+    // are UIKit work, including during a cold start.
+    DispatchQueue.main.async {
+      completionHandler([.alert, .badge, .sound])
+    }
+  }
+
+  override func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
+    // Do not inspect the response or access Flutter here. During a cold start
+    // the engine may not have finished registering its channels. Completing
+    // the delegate callback is sufficient; Firebase handles the response
+    // through its Flutter message stream once the engine is running.
+    DispatchQueue.main.async {
+      completionHandler()
+    }
   }
 
   override func application(
