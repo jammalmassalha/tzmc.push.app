@@ -21,7 +21,6 @@ function registerMessageController(app, deps = {}) {
         getActiveRedisStateStore,
         getMessageQueue,
         getMailboxSequence,
-        getLogsMessagesForUser,
         scheduleStateSave,
         sseClients,
         updateUserReceivedTime,
