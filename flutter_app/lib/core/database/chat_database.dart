@@ -369,6 +369,11 @@ class ChatDatabase extends _$ChatDatabase {
     ).watch().map<void>((_) {});
   }
 
+  /// Emits the current message rows immediately and after every message write.
+  Stream<List<ChatMessage>> watchAllChats() {
+    return select(messages).watch().map((rows) => rows.map(_messageFromRow).toList());
+  }
+
   Future<int> getHighestPts(String chatId) async {
     final query = selectOnly(messages)
       ..addColumns([messages.pts.max()])

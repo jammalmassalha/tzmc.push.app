@@ -116,6 +116,7 @@ class ChatState {
   final bool isLoading;
   final bool isInitialized;
   final bool isRestricted;
+  final bool isInitialSyncing;
 
   /// Full-sync progress fields (mirrors Angular store.syncing /
   /// store.syncProgressPercent / store.syncProgressLabel).
@@ -136,6 +137,7 @@ class ChatState {
     this.isLoading = false,
     this.isInitialized = false,
     this.isRestricted = false,
+    this.isInitialSyncing = false,
     this.isSyncing = false,
     this.syncProgressPercent = 0,
     this.syncProgressLabel = '',
@@ -152,6 +154,7 @@ class ChatState {
     bool? isLoading,
     bool? isInitialized,
     bool? isRestricted,
+    bool? isInitialSyncing,
     bool clearCurrentChat = false,
     bool? isSyncing,
     int? syncProgressPercent,
@@ -168,6 +171,7 @@ class ChatState {
       isLoading: isLoading ?? this.isLoading,
       isInitialized: isInitialized ?? this.isInitialized,
       isRestricted: isRestricted ?? this.isRestricted,
+      isInitialSyncing: isInitialSyncing ?? this.isInitialSyncing,
       isSyncing: isSyncing ?? this.isSyncing,
       syncProgressPercent: syncProgressPercent ?? this.syncProgressPercent,
       syncProgressLabel: syncProgressLabel ?? this.syncProgressLabel,
@@ -400,6 +404,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // Always keep _currentUser up-to-date so own-message echoes are tagged
     // as outgoing (avoids the "see my message twice" bug).
     _currentUser = normalized;
+    debugPrint('SYNC_TRACE: Auth complete, triggering syncOnLaunch()');
     unawaited(_retryOutbox());
 
     final isRestricted = ref.read(isUserRestrictedProvider);
@@ -413,7 +418,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // start), retry it now — the cached UI is already live, so this stays
       // silent and non-blocking.
       if (!_initialSyncCompleted && !_initialSyncInFlight) {
-        unawaited(_revalidateFromServer());
+        unawaited(syncOnLaunch());
       }
       return;
     }
@@ -502,11 +507,18 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // links).  On a fresh install (no cache) isLoading stays true until the
       // background sync completes, preserving the "loading chats" spinner
       // instead of a misleading empty state.
-      unawaited(_revalidateFromServer());
+      unawaited(syncOnLaunch());
     } catch (e) {
       state = state.copyWith(isLoading: false);
       rethrow;
     }
+
+  }
+
+  /// Starts the first server hydration with an observable state transition.
+  Future<void> syncOnLaunch() async {
+    state = state.copyWith(isInitialSyncing: true);
+    await _revalidateFromServer();
   }
 
   Future<void> _retryOutbox() async {
@@ -544,6 +556,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   Future<void> _revalidateFromServer() async {
     if (_initialSyncInFlight) return;
     _initialSyncInFlight = true;
+    state = state.copyWith(isInitialSyncing: true);
+    debugPrint('SYNC_TRACE: Fetching from backend with lastSyncTimestamp: $_syncCursorMs');
     try {
       // 2. Pull fresh contacts and groups
       await Future.wait([
@@ -614,7 +628,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // timer fires), the recovered messages are already in the DB and the chat
       // list is populated on the very next cold start without needing another
       // server round-trip.
-      await persistNow();
+      try {
+        await persistNow();
+        debugPrint(
+          'SYNC_TRACE: Successfully upserted '
+          '${state.messagesByChat.values.where((messages) => messages.isNotEmpty).length} chats into local DB',
+        );
+      } catch (error, stackTrace) {
+        debugPrint('SYNC_TRACE: Local DB upsert failed: $error\n$stackTrace');
+      }
 
       // Mark initialization complete, keeping the freshly-accumulated unread
       // counts (from recoverMissedMessages + tray) intact.  This is a no-op
@@ -637,6 +659,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       state = state.copyWith(isLoading: false);
     } finally {
       _initialSyncInFlight = false;
+      state = state.copyWith(isInitialSyncing: false);
     }
   }
 
@@ -1334,6 +1357,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       if (page.length < limit) break;
     }
 
+    debugPrint(
+      'SYNC_TRACE: Backend returned '
+      '${allRaw.map((message) => message.groupId ?? message.sender).whereType<String>().toSet().length} chats '
+      'and ${allRaw.length} deltas',
+    );
     if (allRaw.isEmpty) return;
 
     // ── 2. Filter system/sentinel messages ──────────────────────────────────
@@ -2018,7 +2046,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final senderNorm = sender.trim().toLowerCase();
     final isSelfEcho = meNorm.isNotEmpty && senderNorm == meNorm;
     String chatId;
-    if (isGroup) {
+    if (msg.chatId != null && msg.chatId!.trim().isNotEmpty) {
+      chatId = msg.chatId!.trim().toLowerCase();
+    } else if (isGroup) {
       chatId = groupId;
     } else if (isSelfEcho || skipNotification) {
       // Use only toUser — never fall back to recipient for self-echo messages.
