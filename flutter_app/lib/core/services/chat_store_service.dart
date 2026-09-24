@@ -193,7 +193,9 @@ class ChatState {
           title: contact.displayName,
           info: contact.info,
           phone: contact.phone,
-          subtitle: lastMessage != null ? _getMessagePreview(lastMessage) : 'לחץ להתחלת שיחה',
+          subtitle: lastMessage != null
+              ? _getMessagePreview(lastMessage, includeSender: true)
+              : 'לחץ להתחלת שיחה',
           lastTimestamp: lastMessage != null ? lastMessage.timestamp : 0,
           unread: unreadByChat[contact.username] ?? 0,
           isGroup: false,
@@ -230,7 +232,7 @@ class ChatState {
         title: contact?.displayName ?? chatId,
         info: contact?.info,
         phone: contact?.phone,
-        subtitle: _getMessagePreview(lastMessage),
+        subtitle: _getMessagePreview(lastMessage, includeSender: true),
         lastTimestamp: lastMessage.timestamp,
         unread: unreadByChat[chatId] ?? 0,
         isGroup: false,
@@ -251,7 +253,7 @@ class ChatState {
         title: group.name,
         info: '${group.members.length} חברים',
         phone: null,
-        subtitle: _getMessagePreview(lastMessage),
+        subtitle: _getMessagePreview(lastMessage, includeSender: true),
         lastTimestamp: lastMessage.timestamp,
         unread: unreadByChat[group.id] ?? 0,
         isGroup: true,
@@ -265,7 +267,21 @@ class ChatState {
     return items;
   }
 
-  String _getMessagePreview(ChatMessage message) {
+  String _getMessagePreview(
+    ChatMessage message, {
+    bool includeSender = false,
+  }) {
+    final preview = _getMessageBodyPreview(message);
+    if (!includeSender) return preview;
+
+    final sender = message.senderDisplayName?.trim().isNotEmpty == true
+        ? message.senderDisplayName!.trim()
+        : (contacts[message.sender.trim().toLowerCase()]?.displayName.trim() ??
+            message.sender.trim());
+    return sender.isEmpty ? preview : '$sender: $preview';
+  }
+
+  String _getMessageBodyPreview(ChatMessage message) {
     if (message.deletedAt != null) return '🗑️ הודעה נמחקה';
     if (message.imageUrl != null) return '📷 תמונה';
     if (message.fileUrl != null) return '📎 קובץ';
