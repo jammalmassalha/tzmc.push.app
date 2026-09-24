@@ -79,6 +79,12 @@ function createFlutterPushService(options = {}) {
     let saveTimer = null;
     let saveInFlight = Promise.resolve();
     let loaded = false;
+    // A message can pass through more than one server delivery trigger while
+    // its queue/log record is being committed. Prevent that race from showing
+    // two alerts on the same iOS device without suppressing delivery to other
+    // devices.
+    const recentDeliveries = new Map();
+    const deliveryDedupeWindowMs = 2 * 60 * 1000;
 
     function snapshotForDisk() {
         const out = {};
@@ -380,6 +386,12 @@ function createFlutterPushService(options = {}) {
                 recipients.map(async (recipient) => {
                     const userKey = userKeyFn(recipient.username);
                     const badgeCount = badgeCountByUser.get(userKey);
+                    const deliveryKey = options && options.messageId
+                        ? `${recipient.token}:${String(options.messageId)}`
+                        : null;
+                    if (deliveryKey && recentDeliveries.has(deliveryKey)) {
+                        return;
+                    }
                     const payloadString = buildPayloadStringForMessage(message, {
                         sender,
                         messageId: options && options.messageId,
@@ -394,12 +406,18 @@ function createFlutterPushService(options = {}) {
                         username: recipient.username
                     };
                     try {
+                        if (deliveryKey) {
+                            recentDeliveries.set(deliveryKey, Date.now());
+                            setTimeout(() => recentDeliveries.delete(deliveryKey), deliveryDedupeWindowMs)
+                                .unref?.();
+                        }
                         await fcmSender.sendFcmNotification(subscription, payloadString, {
                             TTL: 604800,
                             timeout: 15000
                         });
                         delivered += 1;
                     } catch (error) {
+                        if (deliveryKey) recentDeliveries.delete(deliveryKey);
                         failed += 1;
                         const status = error && Number(error.statusCode);
                         if (status === 404 || status === 410) {
