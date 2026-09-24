@@ -61,8 +61,7 @@ class _AiInitializationScreenState extends ConsumerState<AiInitializationScreen>
   Timer? _typewriterTimer;
   bool _completed = false;
 
-  /// The real background initialization, kicked off in parallel with the
-  /// typing animation on the very first frame.
+  /// Local cache hydration, kicked off on the very first frame.
   late final Future<void> _backgroundWork;
 
   @override
@@ -98,56 +97,33 @@ class _AiInitializationScreenState extends ConsumerState<AiInitializationScreen>
   Future<void> _runBackgroundInitialization() async {
     final user = ref.read(currentUserProvider);
 
-    // Step A: pre-warm (open + migrate) the local Drift/SQLite database with
-    // a cheap query so the chat store's cache restore below is instant.
     try {
-      await ref.read(chatDatabaseProvider).getLatestMessageTimestamp();
+      if (user != null) {
+        // initialize() awaits only local cache hydration when requested. The
+        // server revalidation is started after the shell has been shown.
+        await ref
+            .read(chatStoreProvider.notifier)
+            .initialize(user, startBackgroundSync: false);
+      }
     } catch (e) {
-      debugPrint('[AiInit] DB pre-warm failed (non-fatal): $e');
+      debugPrint('[AiInit] local cache initialization failed (non-fatal): $e');
     }
 
-    if (user == null) return;
+    if (!mounted || _completed) return;
+    _completed = true;
+    widget.onCompleted();
 
-    // Step B (parallel): realtime transport, push registration, and the
-    // cache-first chat store initialization (restores the local snapshot and
-    // fires the server delta sync in the background).
-    await Future.wait<void>([
-      Future<void>(() {
-        try {
-          ref
-              .read(realtimeTransportServiceProvider)
-              .connect(user, isNetworkReachable: () => true);
-        } catch (e) {
-          debugPrint('[AiInit] transport connect failed (non-fatal): $e');
-        }
-      }),
-      () async {
-        try {
-          final push = ref.read(pushNotificationServiceProvider);
-          await push.initialize();
-          await push.registerPendingTokenForUser();
-        } catch (e) {
-          debugPrint('[AiInit] push init failed (non-fatal): $e');
-        }
-      }(),
-      () async {
-        try {
-          await ref.read(chatStoreProvider.notifier).initialize(user);
-        } catch (e) {
-          debugPrint('[AiInit] chat store init failed (non-fatal): $e');
-        }
-      }(),
-    ]);
-    // A pending notification route may wait for a network sync. It must never
-    // hold the launch animation hostage: the shell can render from the local
-    // cache while routing continues in the background.
-    unawaited(
-      ref
-          .read(pushNotificationServiceProvider)
-          .completeLaunchRouting()
-          .timeout(const Duration(seconds: 3))
-          .catchError((_) {}),
-    );
+    if (user != null) {
+      unawaited(_syncInBackground());
+    }
+  }
+
+  Future<void> _syncInBackground() async {
+    try {
+      await ref.read(chatStoreProvider.notifier).syncOnLaunch();
+    } catch (e) {
+      debugPrint('[AiInit] background chat sync failed (non-fatal): $e');
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -157,14 +133,6 @@ class _AiInitializationScreenState extends ConsumerState<AiInitializationScreen>
   Future<void> _runScript() async {
     for (var i = 0; i < _steps.length; i++) {
       if (!mounted) return;
-      // Before announcing "ready", make sure local cache hydration has had a
-      // chance to finish. Network work is deliberately not allowed to block
-      // the hand-off to the chat shell.
-      if (i == _steps.length - 1) {
-        try {
-          await _backgroundWork.timeout(const Duration(seconds: 3));
-        } catch (_) {}
-      }
       await _typeStepText(_steps[i]);
       if (!mounted) return;
       setState(() => _progress = _stepProgress[i]);
