@@ -8,6 +8,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart' hide TextDirection;
+import 'package:shimmer/shimmer.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/database/chat_database.dart';
@@ -99,13 +100,12 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen>
         final chatItems = state.chatListItems;
         // Keep the empty state hidden while either local restoration or the
         // first server sync is still active. Cached rows render immediately.
-        final isLoading = (!state.isInitialized && state.isLoading) ||
-            (chatItems.isEmpty && state.isInitialSyncing);
+        final isLoading = !state.isInitialized || state.isInitialSyncing;
 
         if (chatItems.isEmpty) {
-          return _ChatDataRetrievalView(
-            isSyncing: isLoading || state.isInitialSyncing,
-          );
+          return isLoading
+              ? const _ChatDataRetrievalView()
+              : const Center(child: Text('אין שיחות עדיין'));
         }
 
         return RefreshIndicator(
@@ -415,125 +415,33 @@ class _ChatListTile extends StatelessWidget {
   }
 }
 
-class _ChatDataRetrievalView extends StatefulWidget {
-  final bool isSyncing;
-
-  const _ChatDataRetrievalView({
-    required this.isSyncing,
-  });
-
-  @override
-  State<_ChatDataRetrievalView> createState() => _ChatDataRetrievalViewState();
-}
-
-class _ChatDataRetrievalViewState extends State<_ChatDataRetrievalView>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _pulseController;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1800),
-    )..repeat(reverse: true);
-  }
-
-  @override
-  void dispose() {
-    _pulseController.dispose();
-    super.dispose();
-  }
+class _ChatDataRetrievalView extends StatelessWidget {
+  const _ChatDataRetrievalView();
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final primary = theme.colorScheme.primary;
-
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 28),
-        child: Card(
-          elevation: 3,
-          clipBehavior: Clip.antiAlias,
-          child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.fromLTRB(26, 34, 26, 28),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  primary.withValues(alpha: 0.10),
-                  theme.colorScheme.surface,
-                ],
-              ),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                AnimatedBuilder(
-                  animation: _pulseController,
-                  builder: (context, child) => Transform.scale(
-                    scale: 0.94 + (_pulseController.value * 0.08),
-                    child: child,
-                  ),
-                  child: Container(
-                    width: 78,
-                    height: 78,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: primary.withValues(alpha: 0.14),
-                      boxShadow: [
-                        BoxShadow(
-                          color: primary.withValues(alpha: 0.22),
-                          blurRadius: 24,
-                          spreadRadius: 4,
-                        ),
-                      ],
-                    ),
-                    child: Icon(Icons.auto_awesome, size: 38, color: primary),
-                  ),
-                ),
-                const SizedBox(height: 22),
-                Text(
-                  'הסוכן החכם טוען את השיחות שלך',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 9),
-                Text(
-                  widget.isSyncing
-                      ? 'בודק את הנתונים המקומיים ומסנכרן מידע חדש מהשרת...'
-                      : 'הנתונים המקומיים נטענים. הסנכרון מהשרת ממשיך ברקע.',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: theme.colorScheme.onSurface.withAlpha(170),
-                    height: 1.45,
-                  ),
-                ),
-                const SizedBox(height: 22),
-                if (widget.isSyncing)
-                  SizedBox(
-                    width: 190,
-                    child: LinearProgressIndicator(
-                      minHeight: 4,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                  )
-                else
-                  Text(
-                    'הנתונים המקומיים יופיעו כאן מיד כשהאחסון ייטען. '
-                    'הסנכרון מהשרת ממשיך ברקע.',
-                    textAlign: TextAlign.center,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurface.withAlpha(150),
-                      height: 1.4,
-                    ),
-                  ),
-              ],
+    return ListView.builder(
+      itemCount: 8,
+      itemBuilder: (context, index) => Shimmer.fromColors(
+        baseColor: Colors.grey.shade300,
+        highlightColor: Colors.grey.shade100,
+        child: ListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+          leading: const CircleAvatar(
+            backgroundColor: Colors.white,
+            radius: 24,
+          ),
+          title: Container(
+            height: 16,
+            margin: const EdgeInsets.only(bottom: 8),
+            color: Colors.white,
+          ),
+          subtitle: Align(
+            alignment: AlignmentDirectional.centerStart,
+            child: Container(
+              height: 14,
+              width: MediaQuery.sizeOf(context).width * 0.58,
+              color: Colors.white,
             ),
           ),
         ),

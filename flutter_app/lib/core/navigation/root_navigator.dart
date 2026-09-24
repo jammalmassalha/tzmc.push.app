@@ -68,6 +68,7 @@ class AppRoutes {
 
   static const String login = '/login';
   static const String home = '/';
+  static const String chatList = '/chat_list';
   static const String groups = '/groups';
   static const String shuttle = '/shuttle';
   static const String helpdesk = '/helpdesk';
@@ -78,7 +79,7 @@ class AppRoutes {
 
   static String normalizePath(String? rawPath) {
     final path = AppShellRoute._normalizeRawPath(rawPath);
-    if (path.isEmpty || path == home) return home;
+    if (path.isEmpty || path == home || path == chatList) return home;
     if (path == login) return login;
     if (AppShellRoute.matchesPath(path)) {
       return AppShellRoute.fromPath(path).routePath;
