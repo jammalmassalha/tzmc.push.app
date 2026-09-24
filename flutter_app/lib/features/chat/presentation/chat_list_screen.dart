@@ -50,23 +50,13 @@ class ChatListScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return StreamBuilder<List<ChatMessage>>(
-      stream: ref.watch(chatDatabaseProvider).watchAllChats(),
+    return StreamBuilder<void>(
+      stream: ref.watch(chatDatabaseProvider).watchChatChanges(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          debugPrint('SYNC_TRACE: StreamBuilder emitted new list with 0 items (waiting)');
+          debugPrint('SYNC_TRACE: Waiting for local database changes');
         } else if (snapshot.hasData) {
-          debugPrint(
-            'SYNC_TRACE: StreamBuilder emitted new list with ${snapshot.data!.length} items',
-          );
-          if (snapshot.data!.isNotEmpty) {
-            final localMessages = snapshot.data!;
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (context.mounted) {
-                ref.read(chatStoreProvider.notifier).restoreLocalMessages(localMessages);
-              }
-            });
-          }
+          unawaited(ref.read(chatStoreProvider.notifier).restoreLocalCache());
         }
         final state = ref.watch(chatStoreProvider);
         if (!state.isInitialized) {

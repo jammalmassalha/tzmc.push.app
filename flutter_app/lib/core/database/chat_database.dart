@@ -32,7 +32,7 @@ const int _kMaxGroupSenderPrefixLength = 80;
 /// Maximum number of messages loaded back into memory when restoring the
 /// persisted state.  The on-disk history is unbounded (persistence never
 /// deletes messages), so the restore is capped to keep cold start predictable.
-const int restoreMessageLimit = 20000;
+const int restoreMessageLimit = 5000;
 
 /// Extracts a sender name from a legacy group-message body of the form
 /// "SenderName: message text".  Returns null when the body does not match
@@ -609,16 +609,20 @@ class ChatDatabase extends _$ChatDatabase {
   // ---------------------------------------------------------------------------
 
   Future<PersistedChatState> getPersistedState() async {
-    final contactList = await getAllContacts();
-    final groupList = await getAllGroups();
-    final unread = await getAllUnreadCounts();
-    final messageList = await getRecentMessages();
+    // These tables are independent. Read them concurrently so opening the
+    // app does not wait for four sequential SQLite round trips.
+    final results = await Future.wait<dynamic>([
+      getAllContacts(),
+      getAllGroups(),
+      getAllUnreadCounts(),
+      getRecentMessages(),
+    ]);
 
     return PersistedChatState(
-      contacts: contactList,
-      groups: groupList,
-      unreadByChat: unread,
-      messages: messageList,
+      contacts: results[0] as List<Contact>,
+      groups: results[1] as List<ChatGroup>,
+      unreadByChat: results[2] as Map<String, int>,
+      messages: results[3] as List<ChatMessage>,
     );
   }
 
