@@ -41,6 +41,7 @@ class ChatListScreen extends ConsumerStatefulWidget {
 class _ChatListScreenState extends ConsumerState<ChatListScreen>
     with WidgetsBindingObserver {
   bool _isBooting = true;
+  bool _isSyncing = false;
   StreamSubscription<void>? _dbSubscription;
 
   Contact? _findContact(ChatState state, String value) {
@@ -81,15 +82,23 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       debugPrint('App resumed: triggering background chat sync');
-      unawaited(_syncOnResume());
+      if (!_isSyncing) {
+        unawaited(_syncOnResume());
+      }
     }
   }
 
   Future<void> _syncOnResume() async {
+    _isSyncing = true;
     try {
-      await ref.read(chatStoreProvider.notifier).syncOnLaunch();
+      await ref
+          .read(chatStoreProvider.notifier)
+          .syncOnLaunch()
+          .timeout(const Duration(seconds: 10));
     } catch (e) {
-      debugPrint('Background chat sync failed after resume: $e');
+      debugPrint('Background chat sync failed or timed out after resume: $e');
+    } finally {
+      _isSyncing = false;
     }
   }
 

@@ -16,6 +16,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/services/chat_store_service.dart';
+import '../../chat/presentation/chat_shell_screen.dart';
 import 'auth_state.dart';
 
 /// Typing speed per character (~25ms as per the design spec).
@@ -92,14 +93,14 @@ class _AiInitializationScreenState extends ConsumerState<AiInitializationScreen>
     final user = ref.read(currentUserProvider);
 
     try {
-      // Keep the polished loading state visible briefly, but never allow a
-      // local database problem to block the transition to the app.
+      // Keep the polished loading state visible briefly, but give slow eMMC
+      // storage enough time to finish opening and reading the local database.
       await Future.wait<void>([
         if (user != null)
           ref
               .read(chatStoreProvider.notifier)
               .initialize(user, startBackgroundSync: false)
-              .timeout(const Duration(milliseconds: 2500)),
+            .timeout(const Duration(seconds: 8)),
         Future.delayed(const Duration(milliseconds: 1200)),
       ]);
     } catch (e) {
@@ -111,7 +112,11 @@ class _AiInitializationScreenState extends ConsumerState<AiInitializationScreen>
       final chatStore =
           user == null ? null : ref.read(chatStoreProvider.notifier);
       _completed = true;
-      widget.onCompleted();
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => const ChatShellScreen(),
+        ),
+      );
 
       if (chatStore != null) {
         // Sync after routing so a remote failure cannot delay the UI.
