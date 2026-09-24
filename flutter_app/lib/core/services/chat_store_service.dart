@@ -504,6 +504,44 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   }
 
+  void _applyHydrationMessages(List<dynamic> rawMessages) {
+    if (rawMessages.isEmpty) return;
+
+    const actionTypes = {
+      'read',
+      'read-receipt',
+      'delivered',
+      'delivery-receipt',
+      'delete',
+      'delete-action',
+      'edit',
+      'edit-action',
+      'reaction',
+      'group-update',
+    };
+    final textMessages = <ChatMessage>[];
+    final actionMessages = <IncomingServerMessage>[];
+
+    for (final raw in rawMessages) {
+      if (raw is! Map) continue;
+      final message = IncomingServerMessage.fromJson(
+        Map<String, dynamic>.from(raw),
+      );
+      final type = (message.type ?? '').trim().toLowerCase();
+      if (actionTypes.contains(type)) {
+        actionMessages.add(message);
+      } else {
+        final chatMessage = _buildChatMessageFromServer(message);
+        if (chatMessage != null) textMessages.add(chatMessage);
+      }
+    }
+
+    _applyMessagesBatch(textMessages);
+    for (final message in actionMessages) {
+      _handleServerMessage(message);
+    }
+  }
+
   /// Starts the first server hydration with an observable state transition.
   Future<void> syncOnLaunch() async {
     final activeSync = _initialSyncFuture;
@@ -579,6 +617,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         chats: hydrationChats,
         messages: hydrationMessages,
       );
+      // syncOneToOne persists the server response, but the chat list is
+      // rendered from Riverpod state. Apply the same response in memory too;
+      // otherwise a fresh install sees an empty list until a later poll even
+      // though the database already contains the user's chats.
+      _applyHydrationMessages(hydrationMessages);
       final nextCursor = int.tryParse('${hydration['next_sync_timestamp'] ?? 0}') ?? 0;
       if (nextCursor > _syncCursorMs) {
         _syncCursorMs = nextCursor;
