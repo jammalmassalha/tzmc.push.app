@@ -169,8 +169,19 @@ class PushNotificationService {
       // `firebase-messaging-sw.js` service worker.
       if (!kIsWeb) {
         if (_isAndroidPlatform()) {
-          _localNotifications = FlutterLocalNotificationsPlugin();
-          await _initializeLocalNotifications();
+          // Local notification setup is only the foreground presentation
+          // layer. Never let a plugin/channel/icon failure abort Firebase
+          // Messaging listeners or token registration.
+          try {
+            _localNotifications = FlutterLocalNotificationsPlugin();
+            await _initializeLocalNotifications();
+          } catch (e, st) {
+            _localNotifications = null;
+            debugPrint(
+              '[PushNotificationService] Android local notifications setup '
+              'failed; continuing with FCM: $e\n$st',
+            );
+          }
         }
 
         // Let Firebase/APNs present iOS foreground notifications. The local
@@ -201,20 +212,33 @@ class PushNotificationService {
         },
       );
 
+      // Install listeners before token lookup. Token/APNs setup can be slow or
+      // fail transiently; foreground and tap events must not be missed while
+      // that work is in progress.
+      _messageSubscription = FirebaseMessaging.onMessage.listen(_onMessage);
+      FirebaseMessaging.onMessageOpenedApp.listen(_onMessageOpenedApp);
+
       // If the user has already granted (or provisionally granted)
       // notification permission in a previous session, register the device
       // token now without showing any dialog. The OS prompt is handled
       // separately by [ensurePermissionAndRegister].
       final settings = await _messaging!.getNotificationSettings();
-      if (_isAuthorized(settings.authorizationStatus)) {
+      var androidPermissionGranted = false;
+      if (_isAndroidPlatform()) {
+        try {
+          final permissionStatus = await Permission.notification.status;
+          androidPermissionGranted =
+              permissionStatus.isGranted || permissionStatus.isLimited;
+        } catch (e) {
+          debugPrint(
+            '[PushNotificationService] Android notification permission '
+            'status check failed: $e',
+          );
+        }
+      }
+      if (_isAuthorized(settings.authorizationStatus) || androidPermissionGranted) {
         await _getAndRegisterToken();
       }
-
-      // Listen for messages
-      _messageSubscription = FirebaseMessaging.onMessage.listen(_onMessage);
-
-      // Handle background message (when app is opened from notification)
-      FirebaseMessaging.onMessageOpenedApp.listen(_onMessageOpenedApp);
 
       // Check if app was opened from a terminated state notification
       final initialMessage = await _messaging!.getInitialMessage();
@@ -415,10 +439,12 @@ class PushNotificationService {
 
     if (result.isGranted || result.isLimited) {
       await _clearSettingsNagFlag();
-      // Sync FCM authorization status (iOS uses its own UNUserNotificationCenter
-      // bookkeeping) and fetch the FCM token.
+      // Android's Firebase authorization status can remain stale/denied even
+      // after POST_NOTIFICATIONS is granted. The OS permission is authoritative
+      // on Android, so fetch/register the token directly instead of gating it
+      // on Firebase's status response.
       if (_messaging != null) {
-        await _requestPermissionAndRegister();
+        await _getAndRegisterToken();
       }
       return;
     }

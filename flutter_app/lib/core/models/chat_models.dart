@@ -799,7 +799,10 @@ class IncomingServerMessage extends Equatable {
     ) ?? locationBody;
 
     return IncomingServerMessage(
-      messageId: asString(json['messageId'] ?? json['msgId']),
+      // The chat sync endpoint may return the database column as `id`,
+      // while the logs endpoint uses `messageId`. Accept both shapes so a
+      // fresh install can hydrate the in-memory chat list from either source.
+      messageId: asString(json['messageId'] ?? json['msgId'] ?? json['id']),
       clientMsgId: asString(json['client_msg_id'] ?? json['clientMsgId']),
       pts: asInt(json['pts']),
       sender: asString(json['sender'] ?? json['from'] ?? json['fromUser']),

@@ -159,9 +159,10 @@ class NetworkTimeouts {
 
   /// SMS request-code timeout. The server persists the code to the Subscribe
   /// sheet and dispatches the SMS through the gateway (each with internal
-  /// retries) before responding, so a short timeout makes the app report a
-  /// failure even though the SMS was actually sent.
-  static const Duration requestCodeTimeout = Duration(seconds: 60);
+  /// retries and a sender fallback) before responding. The client must allow
+  /// enough time for both gateway attempts, otherwise Android reports a
+  /// failure while the server is still sending the code.
+  static const Duration requestCodeTimeout = Duration(seconds: 150);
 
   /// SMS verify-code timeout. The server holds the request open for up to
   /// ~45 s after a successful code match while it waits for an external

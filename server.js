@@ -2675,7 +2675,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         const normalizedGroupName = (typeof groupName === 'string') ? groupName.trim() : groupName;
         const shortText = reply || (imageUrl ? 'Sent an image' : 'New Message');
         const normalizedGroupType = groupRecord ? groupRecord.type : normalizeGroupType(groupType || 'group');
-        const notificationTitle = isGroup ? (normalizedGroupName || 'Group message') : `New message from ${senderLabel}`;
+        const notificationTitle = isGroup ? (normalizedGroupName || 'Group message') : senderLabel;
         const notificationExtraData = {
             ...(isGroup ? {
                 groupId,

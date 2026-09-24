@@ -193,7 +193,9 @@ class ChatState {
           title: contact.displayName,
           info: contact.info,
           phone: contact.phone,
-          subtitle: lastMessage != null ? _getMessagePreview(lastMessage) : 'לחץ להתחלת שיחה',
+          subtitle: lastMessage != null
+              ? _getMessagePreview(lastMessage, includeSender: true)
+              : 'לחץ להתחלת שיחה',
           lastTimestamp: lastMessage != null ? lastMessage.timestamp : 0,
           unread: unreadByChat[contact.username] ?? 0,
           isGroup: false,
@@ -230,7 +232,7 @@ class ChatState {
         title: contact?.displayName ?? chatId,
         info: contact?.info,
         phone: contact?.phone,
-        subtitle: _getMessagePreview(lastMessage),
+        subtitle: _getMessagePreview(lastMessage, includeSender: true),
         lastTimestamp: lastMessage.timestamp,
         unread: unreadByChat[chatId] ?? 0,
         isGroup: false,
@@ -251,7 +253,7 @@ class ChatState {
         title: group.name,
         info: '${group.members.length} חברים',
         phone: null,
-        subtitle: _getMessagePreview(lastMessage),
+        subtitle: _getMessagePreview(lastMessage, includeSender: true),
         lastTimestamp: lastMessage.timestamp,
         unread: unreadByChat[group.id] ?? 0,
         isGroup: true,
@@ -265,7 +267,21 @@ class ChatState {
     return items;
   }
 
-  String _getMessagePreview(ChatMessage message) {
+  String _getMessagePreview(
+    ChatMessage message, {
+    bool includeSender = false,
+  }) {
+    final preview = _getMessageBodyPreview(message);
+    if (!includeSender) return preview;
+
+    final sender = message.senderDisplayName?.trim().isNotEmpty == true
+        ? message.senderDisplayName!.trim()
+        : (contacts[message.sender.trim().toLowerCase()]?.displayName.trim() ??
+            message.sender.trim());
+    return sender.isEmpty ? preview : '$sender: $preview';
+  }
+
+  String _getMessageBodyPreview(ChatMessage message) {
     if (message.deletedAt != null) return '🗑️ הודעה נמחקה';
     if (message.imageUrl != null) return '📷 תמונה';
     if (message.fileUrl != null) return '📎 קובץ';
@@ -314,6 +330,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// [initialize] is invoked again before the first background sync finishes.
   bool _initialSyncInFlight = false;
   Future<void>? _initialSyncFuture;
+  bool _localCacheRestoreInFlight = false;
 
   /// Community group configs loaded from the server; seeded with defaults.
   /// Mirrors Angular's `communityGroupConfigs` field.
@@ -490,30 +507,106 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // State may be empty; the server pull below re-populates it.
       }
 
-      // Phase 1 complete — the cached snapshot is now in state.  When cached
-      // data exists, unblock the UI immediately (stale-while-revalidate): the
-      // chat list renders from the local cache on the very next frame while
-      // the server revalidation below runs silently in the background.
-      final hasCachedData = state.messagesByChat.isNotEmpty ||
-          state.contacts.isNotEmpty ||
-          state.groups.isNotEmpty;
-      if (hasCachedData) {
-        state = state.copyWith(isLoading: false, isInitialized: true);
-        // Keep periodic persistence running from the moment the UI is live.
-        _schedulePersistence();
-      }
+      // Phase 1 complete — the cached snapshot is now in state. Unconditionally
+      // mark initialized so the UI renders immediately, even with an empty DB.
+      state = state.copyWith(isLoading: false, isInitialized: true);
+      _schedulePersistence();
 
-      // Phase 2: revalidate from the server WITHOUT awaiting, so first-frame
-      // rendering is never blocked by network latency (400ms–2000ms on slow
-      // links).  On a fresh install (no cache) isLoading stays true until the
-      // background sync completes, preserving the "loading chats" spinner
-      // instead of a misleading empty state.
+      // Phase 2: revalidate from the server WITHOUT awaiting.
       unawaited(syncOnLaunch());
     } catch (e) {
       state = state.copyWith(isLoading: false);
       rethrow;
     }
 
+  }
+
+  void _applyHydrationMessages(List<dynamic> rawMessages) {
+    if (rawMessages.isEmpty) return;
+
+    const actionTypes = {
+      'read',
+      'read-receipt',
+      'delivered',
+      'delivery-receipt',
+      'delete',
+      'delete-action',
+      'edit',
+      'edit-action',
+      'reaction',
+      'group-update',
+    };
+    final textMessages = <ChatMessage>[];
+    final actionMessages = <IncomingServerMessage>[];
+
+    for (final raw in rawMessages) {
+      if (raw is! Map) continue;
+      final message = IncomingServerMessage.fromJson(
+        Map<String, dynamic>.from(raw),
+      );
+      final type = (message.type ?? '').trim().toLowerCase();
+      if (actionTypes.contains(type)) {
+        actionMessages.add(message);
+      } else {
+        final chatMessage = _buildChatMessageFromServer(message);
+        if (chatMessage != null) textMessages.add(chatMessage);
+      }
+    }
+
+    _applyMessagesBatch(textMessages);
+    for (final message in actionMessages) {
+      _handleServerMessage(message);
+    }
+  }
+
+  /// Merge rows emitted directly by Drift into Riverpod when the initial
+  /// snapshot restore is still catching up or another table failed to decode.
+  /// The chat list must never hide valid offline messages merely because the
+  /// database stream and the network/store initialization completed out of order.
+  void restoreLocalMessages(List<ChatMessage> messages) {
+    if (messages.isEmpty || state.messagesByChat.isNotEmpty) return;
+    _applyMessagesBatch(messages);
+  }
+
+  /// Restore the complete persisted snapshot when the chat shell renders
+  /// before its normal startup initializer reaches the database phase.
+  Future<void> restoreLocalCache() async {
+    if (_currentUser == null ||
+        _localCacheRestoreInFlight ||
+        state.messagesByChat.isNotEmpty ||
+        state.contacts.isNotEmpty ||
+        state.groups.isNotEmpty) {
+      return;
+    }
+    _localCacheRestoreInFlight = true;
+    try {
+      final deletedChats = await _readDeletedChats(_currentUser!);
+      final persisted = await _db.getPersistedState();
+      if (persisted.messages.isEmpty &&
+          persisted.contacts.isEmpty &&
+          persisted.groups.isEmpty) {
+        return;
+      }
+      state = state.copyWith(
+        contacts: Map.fromEntries(
+          persisted.contacts.map((contact) => MapEntry(contact.username, contact)),
+        ),
+        groups: Map.fromEntries(
+          persisted.groups.map((group) => MapEntry(group.id, group)),
+        ),
+        messagesByChat: _filterDeletedChatMessages(
+          _groupMessagesByChat(persisted.messages),
+          deletedChats,
+        ),
+        deletedChats: deletedChats,
+        isLoading: false,
+        isInitialized: true,
+      );
+    } catch (error) {
+      debugPrint('[ChatStore] Immediate local cache restore failed: $error');
+    } finally {
+      _localCacheRestoreInFlight = false;
+    }
   }
 
   /// Starts the first server hydration with an observable state transition.
@@ -591,6 +684,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         chats: hydrationChats,
         messages: hydrationMessages,
       );
+      // syncOneToOne persists the server response, but the chat list is
+      // rendered from Riverpod state. Apply the same response in memory too;
+      // otherwise a fresh install sees an empty list until a later poll even
+      // though the database already contains the user's chats.
+      _applyHydrationMessages(hydrationMessages);
       final nextCursor = int.tryParse('${hydration['next_sync_timestamp'] ?? 0}') ?? 0;
       if (nextCursor > _syncCursorMs) {
         _syncCursorMs = nextCursor;

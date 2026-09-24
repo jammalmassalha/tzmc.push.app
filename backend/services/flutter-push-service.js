@@ -79,6 +79,12 @@ function createFlutterPushService(options = {}) {
     let saveTimer = null;
     let saveInFlight = Promise.resolve();
     let loaded = false;
+    // A message can pass through more than one server delivery trigger while
+    // its queue/log record is being committed. Prevent that race from showing
+    // two alerts on the same iOS device without suppressing delivery to other
+    // devices.
+    const recentDeliveries = new Map();
+    const deliveryDedupeWindowMs = 2 * 60 * 1000;
 
     function snapshotForDisk() {
         const out = {};
@@ -332,10 +338,15 @@ function createFlutterPushService(options = {}) {
             payloadData.badgeCount = options.badgeCount;
         }
 
-        // Flutter handles display from the data payload after persisting it
-        // locally. Keeping the FCM envelope data-only avoids OS-level
-        // notification races and guarantees background messages reach Dart.
-        const includeNotification = false;
+        // Work Alert is the generic/system fallback title and must stay silent.
+        // Self-echoes are also data-only so a sender's other devices update
+        // their chat without showing a second alert. Real chat messages keep
+        // the visible envelope for background/terminated Android delivery.
+        const skipNotification =
+            customData.skipNotification === true ||
+            customData.skipNotification === 'true';
+        const includeNotification =
+            !skipNotification && title.trim().toLowerCase() !== 'work alert';
 
         return notificationService.buildPushPayloadString(payloadData, { includeNotification });
     }
@@ -380,6 +391,12 @@ function createFlutterPushService(options = {}) {
                 recipients.map(async (recipient) => {
                     const userKey = userKeyFn(recipient.username);
                     const badgeCount = badgeCountByUser.get(userKey);
+                    const deliveryKey = options && options.messageId
+                        ? `${recipient.token}:${String(options.messageId)}`
+                        : null;
+                    if (deliveryKey && recentDeliveries.has(deliveryKey)) {
+                        return;
+                    }
                     const payloadString = buildPayloadStringForMessage(message, {
                         sender,
                         messageId: options && options.messageId,
@@ -394,12 +411,18 @@ function createFlutterPushService(options = {}) {
                         username: recipient.username
                     };
                     try {
+                        if (deliveryKey) {
+                            recentDeliveries.set(deliveryKey, Date.now());
+                            setTimeout(() => recentDeliveries.delete(deliveryKey), deliveryDedupeWindowMs)
+                                .unref?.();
+                        }
                         await fcmSender.sendFcmNotification(subscription, payloadString, {
                             TTL: 604800,
                             timeout: 15000
                         });
                         delivered += 1;
                     } catch (error) {
+                        if (deliveryKey) recentDeliveries.delete(deliveryKey);
                         failed += 1;
                         const status = error && Number(error.statusCode);
                         if (status === 404 || status === 410) {

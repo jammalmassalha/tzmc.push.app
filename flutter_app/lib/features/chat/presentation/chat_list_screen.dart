@@ -3,6 +3,8 @@
 /// Shows both direct messages and group chats sorted by last message time.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart' hide TextDirection;
@@ -48,67 +50,27 @@ class ChatListScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return StreamBuilder<List<ChatMessage>>(
-      stream: ref.watch(chatDatabaseProvider).watchAllChats(),
+    return StreamBuilder<void>(
+      stream: ref.watch(chatDatabaseProvider).watchChatChanges(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          debugPrint('SYNC_TRACE: StreamBuilder emitted new list with 0 items (waiting)');
+          debugPrint('SYNC_TRACE: Waiting for local database changes');
         } else if (snapshot.hasData) {
-          debugPrint(
-            'SYNC_TRACE: StreamBuilder emitted new list with ${snapshot.data!.length} items',
-          );
+          unawaited(ref.read(chatStoreProvider.notifier).restoreLocalCache());
         }
         final state = ref.watch(chatStoreProvider);
-        final chatItems = state.chatListItems;
-        final isLoading = state.isLoading || state.isInitialSyncing ||
-            (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData);
-
-        if (chatItems.isEmpty && isLoading) {
-          return Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const CircularProgressIndicator(),
-                const SizedBox(height: 16),
-                Text(
-                  'טוען שיחות...',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.6).round()),
-                      ),
-                ),
-              ],
-            ),
-          );
+        if (!state.isInitialized) {
+          unawaited(ref.read(chatStoreProvider.notifier).restoreLocalCache());
         }
+        final chatItems = state.chatListItems;
+        // Keep the empty state hidden while either local restoration or the
+        // first server sync is still active. Cached rows render immediately.
+        final isLoading = (!state.isInitialized && state.isLoading) ||
+            (chatItems.isEmpty && state.isInitialSyncing);
 
         if (chatItems.isEmpty) {
-          return Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Image.asset(
-                  'assets/images/logo.png',
-                  width: 96,
-                  height: 96,
-                  color: Theme.of(context).colorScheme.primary.withAlpha((255 * 0.3).round()),
-                  colorBlendMode: BlendMode.modulate,
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  'אין שיחות עדיין',
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.6).round()),
-                      ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'התחל שיחה חדשה מהאייקון בסרגל העליון',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.4).round()),
-                      ),
-                ),
-              ],
-            ),
+          return _ChatDataRetrievalView(
+            isSyncing: isLoading || state.isInitialSyncing,
           );
         }
 
@@ -416,6 +378,133 @@ class _ChatListTile extends StatelessWidget {
     } else {
       return DateFormat.yMd('he').format(date);
     }
+  }
+}
+
+class _ChatDataRetrievalView extends StatefulWidget {
+  final bool isSyncing;
+
+  const _ChatDataRetrievalView({
+    required this.isSyncing,
+  });
+
+  @override
+  State<_ChatDataRetrievalView> createState() => _ChatDataRetrievalViewState();
+}
+
+class _ChatDataRetrievalViewState extends State<_ChatDataRetrievalView>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _pulseController;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _pulseController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final primary = theme.colorScheme.primary;
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 28),
+        child: Card(
+          elevation: 3,
+          clipBehavior: Clip.antiAlias,
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.fromLTRB(26, 34, 26, 28),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  primary.withValues(alpha: 0.10),
+                  theme.colorScheme.surface,
+                ],
+              ),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                AnimatedBuilder(
+                  animation: _pulseController,
+                  builder: (context, child) => Transform.scale(
+                    scale: 0.94 + (_pulseController.value * 0.08),
+                    child: child,
+                  ),
+                  child: Container(
+                    width: 78,
+                    height: 78,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: primary.withValues(alpha: 0.14),
+                      boxShadow: [
+                        BoxShadow(
+                          color: primary.withValues(alpha: 0.22),
+                          blurRadius: 24,
+                          spreadRadius: 4,
+                        ),
+                      ],
+                    ),
+                    child: Icon(Icons.auto_awesome, size: 38, color: primary),
+                  ),
+                ),
+                const SizedBox(height: 22),
+                Text(
+                  'הסוכן החכם טוען את השיחות שלך',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 9),
+                Text(
+                  widget.isSyncing
+                      ? 'בודק את הנתונים המקומיים ומסנכרן מידע חדש מהשרת...'
+                      : 'הנתונים המקומיים נטענים. הסנכרון מהשרת ממשיך ברקע.',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurface.withAlpha(170),
+                    height: 1.45,
+                  ),
+                ),
+                const SizedBox(height: 22),
+                if (widget.isSyncing)
+                  SizedBox(
+                    width: 190,
+                    child: LinearProgressIndicator(
+                      minHeight: 4,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  )
+                else
+                  Text(
+                    'הנתונים המקומיים יופיעו כאן מיד כשהאחסון ייטען. '
+                    'הסנכרון מהשרת ממשיך ברקע.',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurface.withAlpha(150),
+                      height: 1.4,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
