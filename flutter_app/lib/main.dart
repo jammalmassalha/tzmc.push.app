@@ -19,7 +19,6 @@ import 'core/services/accessibility_service.dart';
 import 'core/services/push_notification_service.dart';
 import 'firebase_options.dart';
 import 'shared/theme/app_theme.dart';
-import 'features/auth/presentation/ai_initialization_screen.dart';
 import 'features/auth/presentation/auth_state.dart';
 import 'features/auth/presentation/login_screen.dart';
 import 'features/chat/presentation/chat_shell_screen.dart';
@@ -141,7 +140,8 @@ class TzmcPushApp extends ConsumerWidget {
         );
       },
 
-      // Initial route handling based on auth state
+      // Start at the chat list. AuthRouter still redirects unauthenticated
+      // users to login, while authenticated users see the shell immediately.
       initialRoute: _initialRouteName(),
       onGenerateRoute: (settings) {
         final request = AppRouteRequest.fromName(settings.name);
@@ -158,17 +158,12 @@ class TzmcPushApp extends ConsumerWidget {
 
   String _initialRouteName() {
     if (kIsWeb) {
-      // With hash-based routing (Flutter's default web URL strategy) the
-      // in-app route is stored in window.location.hash.  The JS snippet in
-      // index.html converts plain path deep-links (/fluttertest/helpdesk) into
-      // hash form (#/helpdesk) before Flutter boots, so Uri.base.fragment
-      // already contains the correct route when we get here.
-      final fragment = Uri.base.fragment; // e.g. "/helpdesk"
+      final fragment = Uri.base.fragment;
       if (fragment.isNotEmpty && fragment != AppRoutes.home) {
         return AppRoutes.normalizePath(fragment);
       }
     }
-    return AppRoutes.home;
+    return AppRoutes.chatList;
   }
 }
 
@@ -190,10 +185,6 @@ class AuthRouter extends ConsumerStatefulWidget {
 class _AuthRouterState extends ConsumerState<AuthRouter> {
   bool _isNavigating = false;
 
-  /// True once the one-time AI initialization screen (shown right after a
-  /// fresh OTP login) has finished and the main shell may be displayed.
-  bool _aiInitCompleted = false;
-
   @override
   Widget build(BuildContext context) {
     final authState = ref.watch(authStateProvider);
@@ -204,51 +195,22 @@ class _AuthRouterState extends ConsumerState<AuthRouter> {
       AuthUnauthenticated() || AuthAwaitingCode() || AuthError() => _buildUnauthenticated(
           requestedPath,
         ),
-      AuthAuthenticated(justLoggedIn: final justLoggedIn) =>
-        _buildAuthenticated(justLoggedIn),
+      AuthAuthenticated() => _buildAuthenticated(),
     };
   }
 
   Widget _buildUnauthenticated(String requestedPath) {
-    // A new login flow is starting — arm the AI initialization screen again.
-    _aiInitCompleted = false;
     if (requestedPath != AppRoutes.login) {
       _scheduleNavigation(AppRoutes.loginWithRedirect(requestedPath));
     }
     return const LoginScreen();
   }
 
-  Widget _buildAuthenticated(bool justLoggedIn) {
+  Widget _buildAuthenticated() {
     final targetPath = widget.redirectPath ?? widget.requestedPath;
-    // After a fresh interactive OTP login (not a restored session), run the
-    // AI agent initialization screen once: it pre-warms the local database,
-    // registers the push token and syncs chats while the animation plays,
-    // then fades/scales into the main shell.
-    final showAiInit = justLoggedIn && !_aiInitCompleted;
-    return AnimatedSwitcher(
-      // 600ms fade into the AI initialization screen after OTP success,
-      // 400ms fade/scale from it into the main shell.
-      duration: Duration(milliseconds: showAiInit ? 600 : 400),
-      switchInCurve: Curves.easeOut,
-      switchOutCurve: Curves.easeIn,
-      transitionBuilder: (child, animation) => FadeTransition(
-        opacity: animation,
-        child: ScaleTransition(
-          scale: Tween<double>(begin: 0.98, end: 1.0).animate(animation),
-          child: child,
-        ),
-      ),
-      child: showAiInit
-          ? AiInitializationScreen(
-              key: const ValueKey('ai-init'),
-              onCompleted: () {
-                if (mounted) setState(() => _aiInitCompleted = true);
-              },
-            )
-          : ChatShellScreen(
-              key: const ValueKey('chat-shell'),
-              initialPath: targetPath,
-            ),
+    return ChatShellScreen(
+      key: const ValueKey('chat-shell'),
+      initialPath: targetPath,
     );
   }
 
