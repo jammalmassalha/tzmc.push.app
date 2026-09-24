@@ -15,10 +15,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../core/database/chat_database.dart';
-import '../../../core/realtime/realtime_transport_service.dart';
 import '../../../core/services/chat_store_service.dart';
-import '../../../core/services/push_notification_service.dart';
 import 'auth_state.dart';
 
 /// Typing speed per character (~25ms as per the design spec).
@@ -61,14 +58,11 @@ class _AiInitializationScreenState extends ConsumerState<AiInitializationScreen>
   Timer? _typewriterTimer;
   bool _completed = false;
 
-  /// Local cache hydration, kicked off on the very first frame.
-  late final Future<void> _backgroundWork;
-
   @override
   void initState() {
     super.initState();
     _initOrbAnimations();
-    _backgroundWork = _runBackgroundInitialization();
+    unawaited(_runBackgroundInitialization());
     unawaited(_runScript());
   }
 
