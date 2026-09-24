@@ -542,6 +542,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
   }
 
+  /// Merge rows emitted directly by Drift into Riverpod when the initial
+  /// snapshot restore is still catching up or another table failed to decode.
+  /// The chat list must never hide valid offline messages merely because the
+  /// database stream and the network/store initialization completed out of order.
+  void restoreLocalMessages(List<ChatMessage> messages) {
+    if (messages.isEmpty || state.messagesByChat.isNotEmpty) return;
+    _applyMessagesBatch(messages);
+  }
+
   /// Starts the first server hydration with an observable state transition.
   Future<void> syncOnLaunch() async {
     final activeSync = _initialSyncFuture;

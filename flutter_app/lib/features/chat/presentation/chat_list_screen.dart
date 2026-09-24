@@ -57,27 +57,59 @@ class ChatListScreen extends ConsumerWidget {
           debugPrint(
             'SYNC_TRACE: StreamBuilder emitted new list with ${snapshot.data!.length} items',
           );
+          if (snapshot.data!.isNotEmpty) {
+            final localMessages = snapshot.data!;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (context.mounted) {
+                ref.read(chatStoreProvider.notifier).restoreLocalMessages(localMessages);
+              }
+            });
+          }
         }
         final state = ref.watch(chatStoreProvider);
         final chatItems = state.chatListItems;
-        // Only block on the initial local-state load; network revalidation and
-        // stream waiting must not prevent an initialized empty state from rendering.
-        final isLoading = !state.isInitialized && state.isLoading;
+        // Keep the empty state hidden while either local restoration or the
+        // first server sync is still active. Cached rows render immediately.
+        final isLoading = (!state.isInitialized && state.isLoading) ||
+            (chatItems.isEmpty && state.isInitialSyncing);
 
         if (chatItems.isEmpty && isLoading) {
           return Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const CircularProgressIndicator(),
-                const SizedBox(height: 16),
-                Text(
-                  'טוען שיחות...',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.6).round()),
-                      ),
+            child: Card(
+              margin: const EdgeInsets.symmetric(horizontal: 28),
+              elevation: 2,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 30),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.cloud_sync_rounded,
+                      size: 46,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'מאתחל את השיחות שלך',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'בודק נתונים שמורים ומסנכרן מהשרת...',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.65).round()),
+                          ),
+                    ),
+                    const SizedBox(height: 20),
+                    const SizedBox(
+                      width: 180,
+                      child: LinearProgressIndicator(),
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
           );
         }
