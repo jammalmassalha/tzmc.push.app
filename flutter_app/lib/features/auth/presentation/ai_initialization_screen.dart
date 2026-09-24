@@ -138,7 +138,16 @@ class _AiInitializationScreenState extends ConsumerState<AiInitializationScreen>
         }
       }(),
     ]);
-    await ref.read(pushNotificationServiceProvider).completeLaunchRouting();
+    // A pending notification route may wait for a network sync. It must never
+    // hold the launch animation hostage: the shell can render from the local
+    // cache while routing continues in the background.
+    unawaited(
+      ref
+          .read(pushNotificationServiceProvider)
+          .completeLaunchRouting()
+          .timeout(const Duration(seconds: 3))
+          .catchError((_) {}),
+    );
   }
 
   // ---------------------------------------------------------------------
@@ -148,11 +157,12 @@ class _AiInitializationScreenState extends ConsumerState<AiInitializationScreen>
   Future<void> _runScript() async {
     for (var i = 0; i < _steps.length; i++) {
       if (!mounted) return;
-      // Before announcing "ready", make sure the background work has really
-      // finished so ChatShellScreen renders instantly from warm caches.
+      // Before announcing "ready", make sure local cache hydration has had a
+      // chance to finish. Network work is deliberately not allowed to block
+      // the hand-off to the chat shell.
       if (i == _steps.length - 1) {
         try {
-          await _backgroundWork;
+          await _backgroundWork.timeout(const Duration(seconds: 3));
         } catch (_) {}
       }
       await _typeStepText(_steps[i]);

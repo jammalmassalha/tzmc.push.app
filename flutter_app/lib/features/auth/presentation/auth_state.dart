@@ -126,7 +126,10 @@ class AuthNotifier extends Notifier<AuthState> {
         // session. ChatShellScreen can therefore build from RAM on its first
         // frame instead of showing an empty/loading state while Drift reads.
         try {
-          await ref.read(chatStoreProvider.notifier).initialize(cachedUser!);
+          await ref
+              .read(chatStoreProvider.notifier)
+              .initialize(cachedUser!)
+              .timeout(const Duration(seconds: 2));
         } catch (e) {
           // Authentication must remain usable when local storage is damaged
           // or unavailable; the shell can still recover from the server.
