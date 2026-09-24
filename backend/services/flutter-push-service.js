@@ -345,8 +345,13 @@ function createFlutterPushService(options = {}) {
         const skipNotification =
             customData.skipNotification === true ||
             customData.skipNotification === 'true';
-        const includeNotification =
-            !skipNotification && title.trim().toLowerCase() !== 'work alert';
+        const normalizedTitle = title.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        const normalizedType = String(compactCustomData.type || '').trim().toLowerCase().replace(/[-_]+/g, ' ');
+        const silentStatusPush = normalizedTitle === 'worker alert'
+            || normalizedTitle === 'work alert'
+            || new Set(['read receipt', 'read', 'sent', 'receive', 'received', 'delivery receipt', 'delivered'])
+                .has(normalizedType);
+        const includeNotification = !skipNotification && !silentStatusPush;
 
         return notificationService.buildPushPayloadString(payloadData, { includeNotification });
     }

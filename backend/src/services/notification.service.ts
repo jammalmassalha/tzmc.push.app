@@ -151,15 +151,22 @@ export class NotificationService {
   }
 
   buildPushPayloadString(payloadData: Record<string, unknown> = {}, options: PushPayloadOptions = {}): string {
-    const includeNotification = options.includeNotification !== false;
+    const title = String(payloadData.title || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const type = String(payloadData.type || '').trim().toLowerCase().replace(/[-_]+/g, ' ');
+    const silentStatusPush =
+      title === 'worker alert' ||
+      title === 'work alert' ||
+      new Set(['read receipt', 'read', 'sent', 'receive', 'received', 'delivery receipt', 'delivered'])
+        .has(type);
+    const includeNotification = options.includeNotification !== false && !silentStatusPush;
     const buildPayloadEnvelope = (dataPayload: Record<string, unknown>): Record<string, unknown> => {
       if (!includeNotification) return { data: dataPayload };
-      const title = String(dataPayload.title || '').trim();
+      const notificationTitle = String(dataPayload.title || '').trim();
       const body = String(
         dataPayload.body || dataPayload.groupMessageText || dataPayload.messageText || 'New Notification'
       ).trim();
       const notification: Record<string, unknown> = {
-        title: title || 'Work Alert',
+        title: notificationTitle || 'Work Alert',
         body: body || 'New Notification',
         icon: dataPayload.icon || dataPayload.badge,
         badge: dataPayload.badge || dataPayload.icon,

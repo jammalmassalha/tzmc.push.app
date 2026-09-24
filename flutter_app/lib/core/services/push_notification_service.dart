@@ -1222,7 +1222,16 @@ class PushNotificationService {
       'reaction',
     };
     final type = (data['type'] ?? '').toString().trim().toLowerCase();
-    return silentTypes.contains(type);
+    final title = (data['title'] ?? '')
+        .toString()
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
+        .trim();
+    return silentTypes.contains(type) ||
+        title == 'worker alert' ||
+        title == 'work alert' ||
+        {'sent', 'receive', 'received'}.contains(type);
   }
 
   /// Show local notification for foreground messages
