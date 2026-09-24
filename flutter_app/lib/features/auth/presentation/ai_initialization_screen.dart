@@ -139,7 +139,6 @@ class _AiInitializationScreenState extends ConsumerState<AiInitializationScreen>
       setState(() => _progress = _stepProgress[i]);
       await Future.delayed(_kStepPause);
     }
-
   }
 
   Future<void> _typeStepText(String fullText) {
