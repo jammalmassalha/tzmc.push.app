@@ -9,6 +9,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/config/environment.dart';
@@ -99,6 +100,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
       initialPage: startIndex < 0 ? 0 : startIndex,
     );
     _initializeServices();
+    unawaited(_restoreCachedTabPermissions());
     unawaited(_refreshTabPermissions());
   }
 
@@ -968,7 +970,50 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
         _currentTab = _visibleTabs.first;
       }
     });
+    unawaited(_saveCachedTabPermissions(normalizedUser, canAccessShuttle));
     _syncPageToCurrentTab();
+  }
+
+  String _tabPermissionsKey(String user) =>
+      'tzmc_tab_permissions_v1:${user.trim().toLowerCase()}';
+
+  Future<void> _restoreCachedTabPermissions() async {
+    final user = ref.read(currentUserProvider);
+    if (user == null) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cached = prefs.getStringList(_tabPermissionsKey(user));
+      if (cached == null || !mounted) return;
+      final canAccessShuttle = cached.contains('shuttle');
+      final canAccessTicketManager = cached.contains('ticket_manager');
+      final canAccessAdminGroups = cached.contains('admin_groups');
+      setState(() {
+        _canAccessShuttle = canAccessShuttle;
+        _canAccessTicketManager = canAccessTicketManager;
+        _canAccessAdminGroups = canAccessAdminGroups;
+        _recomputeVisibleTabs();
+      });
+      _syncPageToCurrentTab();
+    } catch (error) {
+      debugPrint('[ChatShellScreen] cached permission restore failed: $error');
+    }
+  }
+
+  Future<void> _saveCachedTabPermissions(
+    String user,
+    bool canAccessShuttle,
+  ) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final permissions = <String>[
+        if (canAccessShuttle) 'shuttle',
+        if (_canAccessTicketManager) 'ticket_manager',
+        if (_canAccessAdminGroups) 'admin_groups',
+      ];
+      await prefs.setStringList(_tabPermissionsKey(user), permissions);
+    } catch (error) {
+      debugPrint('[ChatShellScreen] cached permission save failed: $error');
+    }
   }
 
   bool _isUserAllowedForShuttle(String normalizedUser, List<String> employees) {

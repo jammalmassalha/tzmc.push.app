@@ -314,6 +314,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// [initialize] is invoked again before the first background sync finishes.
   bool _initialSyncInFlight = false;
   Future<void>? _initialSyncFuture;
+  bool _localCacheRestoreInFlight = false;
 
   /// Community group configs loaded from the server; seeded with defaults.
   /// Mirrors Angular's `communityGroupConfigs` field.
@@ -549,6 +550,47 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   void restoreLocalMessages(List<ChatMessage> messages) {
     if (messages.isEmpty || state.messagesByChat.isNotEmpty) return;
     _applyMessagesBatch(messages);
+  }
+
+  /// Restore the complete persisted snapshot when the chat shell renders
+  /// before its normal startup initializer reaches the database phase.
+  Future<void> restoreLocalCache() async {
+    if (_currentUser == null ||
+        _localCacheRestoreInFlight ||
+        state.messagesByChat.isNotEmpty ||
+        state.contacts.isNotEmpty ||
+        state.groups.isNotEmpty) {
+      return;
+    }
+    _localCacheRestoreInFlight = true;
+    try {
+      final deletedChats = await _readDeletedChats(_currentUser!);
+      final persisted = await _db.getPersistedState();
+      if (persisted.messages.isEmpty &&
+          persisted.contacts.isEmpty &&
+          persisted.groups.isEmpty) {
+        return;
+      }
+      state = state.copyWith(
+        contacts: Map.fromEntries(
+          persisted.contacts.map((contact) => MapEntry(contact.username, contact)),
+        ),
+        groups: Map.fromEntries(
+          persisted.groups.map((group) => MapEntry(group.id, group)),
+        ),
+        messagesByChat: _filterDeletedChatMessages(
+          _groupMessagesByChat(persisted.messages),
+          deletedChats,
+        ),
+        deletedChats: deletedChats,
+        isLoading: false,
+        isInitialized: true,
+      );
+    } catch (error) {
+      debugPrint('[ChatStore] Immediate local cache restore failed: $error');
+    } finally {
+      _localCacheRestoreInFlight = false;
+    }
   }
 
   /// Starts the first server hydration with an observable state transition.

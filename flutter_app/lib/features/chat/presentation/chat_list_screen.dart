@@ -3,6 +3,8 @@
 /// Shows both direct messages and group chats sorted by last message time.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart' hide TextDirection;
@@ -67,6 +69,9 @@ class ChatListScreen extends ConsumerWidget {
           }
         }
         final state = ref.watch(chatStoreProvider);
+        if (!state.isInitialized) {
+          unawaited(ref.read(chatStoreProvider.notifier).restoreLocalCache());
+        }
         final chatItems = state.chatListItems;
         // Keep the empty state hidden while either local restoration or the
         // first server sync is still active. Cached rows render immediately.
@@ -76,7 +81,14 @@ class ChatListScreen extends ConsumerWidget {
         if (chatItems.isEmpty) {
           return _ChatDataRetrievalView(
             isSyncing: isLoading || state.isInitialSyncing,
-            onRetry: () => ref.read(chatStoreProvider.notifier).syncOnLaunch(),
+            onRetry: () async {
+              await ref.read(chatStoreProvider.notifier).syncOnLaunch();
+              if (context.mounted) {
+                await ref.read(chatStoreProvider.notifier).recoverMissedMessages(
+                      force: true,
+                    );
+              }
+            },
           );
         }
 
@@ -389,7 +401,7 @@ class _ChatListTile extends StatelessWidget {
 
 class _ChatDataRetrievalView extends StatefulWidget {
   final bool isSyncing;
-  final VoidCallback onRetry;
+  final Future<void> Function() onRetry;
 
   const _ChatDataRetrievalView({
     required this.isSyncing,
