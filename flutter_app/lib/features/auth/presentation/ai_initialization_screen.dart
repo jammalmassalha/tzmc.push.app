@@ -95,12 +95,13 @@ class _AiInitializationScreenState extends ConsumerState<AiInitializationScreen>
       // Keep the polished loading state visible briefly, but never allow a
       // local database problem to block the transition to the app.
       await Future.wait<void>([
-        Future.delayed(const Duration(milliseconds: 1500)),
         if (user != null)
           ref
               .read(chatStoreProvider.notifier)
-              .initialize(user, startBackgroundSync: false),
-      ]).timeout(const Duration(seconds: 3));
+              .initialize(user, startBackgroundSync: false)
+              .timeout(const Duration(milliseconds: 2500)),
+        Future.delayed(const Duration(milliseconds: 1200)),
+      ]);
     } catch (e) {
       debugPrint('[AiInit] initialization failed or timed out (non-fatal): $e');
     } finally {
