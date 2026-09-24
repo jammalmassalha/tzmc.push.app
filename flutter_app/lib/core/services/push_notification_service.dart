@@ -223,7 +223,20 @@ class PushNotificationService {
       // token now without showing any dialog. The OS prompt is handled
       // separately by [ensurePermissionAndRegister].
       final settings = await _messaging!.getNotificationSettings();
-      if (_isAuthorized(settings.authorizationStatus)) {
+      var androidPermissionGranted = false;
+      if (_isAndroidPlatform()) {
+        try {
+          final permissionStatus = await Permission.notification.status;
+          androidPermissionGranted =
+              permissionStatus.isGranted || permissionStatus.isLimited;
+        } catch (e) {
+          debugPrint(
+            '[PushNotificationService] Android notification permission '
+            'status check failed: $e',
+          );
+        }
+      }
+      if (_isAuthorized(settings.authorizationStatus) || androidPermissionGranted) {
         await _getAndRegisterToken();
       }
 
@@ -426,10 +439,12 @@ class PushNotificationService {
 
     if (result.isGranted || result.isLimited) {
       await _clearSettingsNagFlag();
-      // Sync FCM authorization status (iOS uses its own UNUserNotificationCenter
-      // bookkeeping) and fetch the FCM token.
+      // Android's Firebase authorization status can remain stale/denied even
+      // after POST_NOTIFICATIONS is granted. The OS permission is authoritative
+      // on Android, so fetch/register the token directly instead of gating it
+      // on Firebase's status response.
       if (_messaging != null) {
-        await _requestPermissionAndRegister();
+        await _getAndRegisterToken();
       }
       return;
     }
