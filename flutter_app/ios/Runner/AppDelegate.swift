@@ -1,5 +1,4 @@
 import Flutter
-import FirebaseCore
 import FirebaseMessaging
 import UIKit
 import UserNotifications
@@ -90,9 +89,8 @@ final class PrivacyShield {
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    FirebaseApp.configure()
-    
-    // FIX: Force FlutterAppDelegate to handle and multiplex the completion handlers
+    // Let FlutterFire initialize Firebase from main.dart. Setting the
+    // notification delegate here keeps foreground notifications visible.
     if #available(iOS 10.0, *) {
       UNUserNotificationCenter.current().delegate = self as? UNUserNotificationCenterDelegate
     }
