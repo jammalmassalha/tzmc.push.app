@@ -63,14 +63,20 @@ class NotificationService {
         return compact;
     }
     buildPushPayloadString(payloadData = {}, options = {}) {
-        const includeNotification = options.includeNotification !== false;
+        const title = String(payloadData.title || '').trim().toLowerCase().replace(/[-_]+/g, ' ');
+        const type = String(payloadData.type || '').trim().toLowerCase().replace(/[-_]+/g, ' ');
+        const silentStatusPush = title === 'worker alert' ||
+            title === 'work alert' ||
+            new Set(['read receipt', 'read', 'sent', 'receive', 'received', 'delivery receipt', 'delivered'])
+                .has(type);
+        const includeNotification = options.includeNotification !== false && !silentStatusPush;
         const buildPayloadEnvelope = (dataPayload) => {
             if (!includeNotification)
                 return { data: dataPayload };
-            const title = String(dataPayload.title || '').trim();
+            const notificationTitle = String(dataPayload.title || '').trim();
             const body = String(dataPayload.body || dataPayload.groupMessageText || dataPayload.messageText || 'New Notification').trim();
             const notification = {
-                title: title || 'Work Alert',
+                title: notificationTitle || 'Work Alert',
                 body: body || 'New Notification',
                 icon: dataPayload.icon || dataPayload.badge,
                 badge: dataPayload.badge || dataPayload.icon,
