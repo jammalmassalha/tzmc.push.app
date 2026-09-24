@@ -291,11 +291,9 @@ function buildFcmMessage(token, parsedPayload, subscription) {
     // quirks where `android.notification.channelId` alone can trigger a
     // phantom notification on certain Android builds.
     const messageId = typeof data.messageId === 'string' ? data.messageId : undefined;
-    const chatId = typeof data.chatId === 'string' ? data.chatId.trim() : '';
     message.android = {
         priority: 'high',
         ttl: 7 * 24 * 60 * 60 * 1000,
-        collapseKey: chatId || messageId,
         ...(notification ? { notification: { channelId: 'chat_messages', tag: messageId } } : {})
     };
 
@@ -325,8 +323,7 @@ function buildFcmMessage(token, parsedPayload, subscription) {
         message.apns = {
             headers: {
                 'apns-priority': '10',
-                'apns-push-type': 'alert',
-                ...(chatId ? { 'apns-collapse-id': chatId } : {})
+                'apns-push-type': 'alert'
             },
             payload: {
                 aps

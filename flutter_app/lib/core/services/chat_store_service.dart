@@ -490,24 +490,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // State may be empty; the server pull below re-populates it.
       }
 
-      // Phase 1 complete — the cached snapshot is now in state.  When cached
-      // data exists, unblock the UI immediately (stale-while-revalidate): the
-      // chat list renders from the local cache on the very next frame while
-      // the server revalidation below runs silently in the background.
-      final hasCachedData = state.messagesByChat.isNotEmpty ||
-          state.contacts.isNotEmpty ||
-          state.groups.isNotEmpty;
-      if (hasCachedData) {
-        state = state.copyWith(isLoading: false, isInitialized: true);
-        // Keep periodic persistence running from the moment the UI is live.
-        _schedulePersistence();
-      }
+      // Phase 1 complete — the cached snapshot is now in state. Unconditionally
+      // mark initialized so the UI renders immediately, even with an empty DB.
+      state = state.copyWith(isLoading: false, isInitialized: true);
+      _schedulePersistence();
 
-      // Phase 2: revalidate from the server WITHOUT awaiting, so first-frame
-      // rendering is never blocked by network latency (400ms–2000ms on slow
-      // links).  On a fresh install (no cache) isLoading stays true until the
-      // background sync completes, preserving the "loading chats" spinner
-      // instead of a misleading empty state.
+      // Phase 2: revalidate from the server WITHOUT awaiting.
       unawaited(syncOnLaunch());
     } catch (e) {
       state = state.copyWith(isLoading: false);

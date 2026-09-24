@@ -60,8 +60,9 @@ class ChatListScreen extends ConsumerWidget {
         }
         final state = ref.watch(chatStoreProvider);
         final chatItems = state.chatListItems;
-        final isLoading = state.isLoading || state.isInitialSyncing ||
-            (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData);
+        // Only block on the initial local-state load; network revalidation and
+        // stream waiting must not prevent an initialized empty state from rendering.
+        final isLoading = !state.isInitialized && state.isLoading;
 
         if (chatItems.isEmpty && isLoading) {
           return Center(
