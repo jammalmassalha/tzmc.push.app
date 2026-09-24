@@ -100,7 +100,7 @@ class _AiInitializationScreenState extends ConsumerState<AiInitializationScreen>
           ref
               .read(chatStoreProvider.notifier)
               .initialize(user, startBackgroundSync: false)
-            .timeout(const Duration(seconds: 8)),
+              .timeout(const Duration(seconds: 8)),
         Future.delayed(const Duration(milliseconds: 1200)),
       ]);
     } catch (e) {
