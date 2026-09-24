@@ -63,7 +63,7 @@ class NotificationService {
         return compact;
     }
     buildPushPayloadString(payloadData = {}, options = {}) {
-        const title = String(payloadData.title || '').trim().toLowerCase().replace(/[-_]+/g, ' ');
+        const title = String(payloadData.title || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
         const type = String(payloadData.type || '').trim().toLowerCase().replace(/[-_]+/g, ' ');
         const silentStatusPush = title === 'worker alert' ||
             title === 'work alert' ||
