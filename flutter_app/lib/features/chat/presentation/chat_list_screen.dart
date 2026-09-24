@@ -11,7 +11,6 @@ import 'package:intl/intl.dart' hide TextDirection;
 import 'package:shimmer/shimmer.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../../../core/database/chat_database.dart';
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../../core/utils/toast_utils.dart';
@@ -59,6 +58,9 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_bootApp());
+    });
   }
 
   @override
@@ -83,52 +85,63 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen>
     }
   }
 
+  Future<void> _bootApp() async {
+    final notifier = ref.read(chatStoreProvider.notifier);
+    final state = ref.read(chatStoreProvider);
+
+    if (!state.isInitialized) {
+      try {
+        await notifier.restoreLocalCache();
+      } catch (e) {
+        debugPrint('Local cache restore failed: $e');
+      }
+    }
+
+    try {
+      await notifier.syncOnLaunch();
+    } catch (e) {
+      debugPrint('Background sync failed: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<void>(
-      stream: ref.watch(chatDatabaseProvider).watchChatChanges(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          debugPrint('SYNC_TRACE: Waiting for local database changes');
-        } else if (snapshot.hasData) {
-          unawaited(ref.read(chatStoreProvider.notifier).restoreLocalCache());
-        }
-        final state = ref.watch(chatStoreProvider);
-        if (!state.isInitialized) {
-          unawaited(ref.read(chatStoreProvider.notifier).restoreLocalCache());
-        }
-        final chatItems = state.chatListItems;
-        // Keep the empty state hidden while either local restoration or the
-        // first server sync is still active. Cached rows render immediately.
-        final isLoading = !state.isInitialized || state.isInitialSyncing;
+    final state = ref.watch(chatStoreProvider);
+    final chatItems = state.chatListItems;
+    final showShimmer =
+        !state.isInitialized || (chatItems.isEmpty && state.isInitialSyncing);
 
-        if (chatItems.isEmpty) {
-          return isLoading
-              ? const _ChatDataRetrievalView()
-              : const Center(child: Text('אין שיחות עדיין'));
-        }
-
-        return RefreshIndicator(
-          onRefresh: () async {
-            await ref.read(chatStoreProvider.notifier).recoverMissedMessages(force: true);
-          },
-          child: ListView.builder(
-            itemCount: chatItems.length,
-            itemBuilder: (context, index) {
-              final item = chatItems[index];
-              final contact = item.isGroup ? null : _findContact(state, item.id);
-              final phone = (item.phone ?? contact?.phone ?? '').trim();
-              return _ChatListTile(
-                item: item,
-                isSelected: widget.selectedChatId == item.id,
-                onTap: () => _openChat(context, ref, item),
-                onCall: phone.isNotEmpty ? () => _callUser(context, phone) : null,
-                onDelete: () => _deleteChat(context, ref, item),
-              );
-            },
-          ),
-        );
-      },
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 400),
+      child: showShimmer
+          ? const _ChatDataRetrievalView()
+          : chatItems.isEmpty
+              ? const Center(child: Text('אין שיחות עדיין'))
+              : RefreshIndicator(
+                  onRefresh: () async {
+                    await ref
+                        .read(chatStoreProvider.notifier)
+                        .recoverMissedMessages(force: true);
+                  },
+                  child: ListView.builder(
+                    itemCount: chatItems.length,
+                    itemBuilder: (context, index) {
+                      final item = chatItems[index];
+                      final contact =
+                          item.isGroup ? null : _findContact(state, item.id);
+                      final phone = (item.phone ?? contact?.phone ?? '').trim();
+                      return _ChatListTile(
+                        item: item,
+                        isSelected: widget.selectedChatId == item.id,
+                        onTap: () => _openChat(context, ref, item),
+                        onCall: phone.isNotEmpty
+                            ? () => _callUser(context, phone)
+                            : null,
+                        onDelete: () => _deleteChat(context, ref, item),
+                      );
+                    },
+                  ),
+                ),
     );
   }
 
