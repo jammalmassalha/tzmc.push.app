@@ -169,8 +169,19 @@ class PushNotificationService {
       // `firebase-messaging-sw.js` service worker.
       if (!kIsWeb) {
         if (_isAndroidPlatform()) {
-          _localNotifications = FlutterLocalNotificationsPlugin();
-          await _initializeLocalNotifications();
+          // Local notification setup is only the foreground presentation
+          // layer. Never let a plugin/channel/icon failure abort Firebase
+          // Messaging listeners or token registration.
+          try {
+            _localNotifications = FlutterLocalNotificationsPlugin();
+            await _initializeLocalNotifications();
+          } catch (e, st) {
+            _localNotifications = null;
+            debugPrint(
+              '[PushNotificationService] Android local notifications setup '
+              'failed; continuing with FCM: $e\n$st',
+            );
+          }
         }
 
         // Let Firebase/APNs present iOS foreground notifications. The local
@@ -201,6 +212,12 @@ class PushNotificationService {
         },
       );
 
+      // Install listeners before token lookup. Token/APNs setup can be slow or
+      // fail transiently; foreground and tap events must not be missed while
+      // that work is in progress.
+      _messageSubscription = FirebaseMessaging.onMessage.listen(_onMessage);
+      FirebaseMessaging.onMessageOpenedApp.listen(_onMessageOpenedApp);
+
       // If the user has already granted (or provisionally granted)
       // notification permission in a previous session, register the device
       // token now without showing any dialog. The OS prompt is handled
@@ -209,12 +226,6 @@ class PushNotificationService {
       if (_isAuthorized(settings.authorizationStatus)) {
         await _getAndRegisterToken();
       }
-
-      // Listen for messages
-      _messageSubscription = FirebaseMessaging.onMessage.listen(_onMessage);
-
-      // Handle background message (when app is opened from notification)
-      FirebaseMessaging.onMessageOpenedApp.listen(_onMessageOpenedApp);
 
       // Check if app was opened from a terminated state notification
       final initialMessage = await _messaging!.getInitialMessage();
