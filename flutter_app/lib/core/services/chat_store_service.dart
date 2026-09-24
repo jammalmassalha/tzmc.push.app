@@ -401,7 +401,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// Phase 2 (fired without awaiting): pull fresh contacts, groups and
   /// missed messages from the server in the background and merge them into
   /// state as they arrive (see [_revalidateFromServer]).
-  Future<void> initialize(String currentUser) async {
+  Future<void> initialize(
+    String currentUser, {
+    bool startBackgroundSync = true,
+  }) async {
     final normalized = currentUser.trim().toLowerCase();
 
     // -----------------------------------------------------------------------
@@ -512,8 +515,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       state = state.copyWith(isLoading: false, isInitialized: true);
       _schedulePersistence();
 
-      // Phase 2: revalidate from the server WITHOUT awaiting.
-      unawaited(syncOnLaunch());
+      // Phase 2: revalidate from the server WITHOUT awaiting. Callers that
+      // need to hand off to the UI first can start this explicitly afterward.
+      if (startBackgroundSync) {
+        unawaited(syncOnLaunch());
+      }
     } catch (e) {
       state = state.copyWith(isLoading: false);
       rethrow;
