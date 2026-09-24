@@ -23,7 +23,7 @@ const Color _kHoverChatTileColor = AppColors.background;   // #F5F5F5
 const Color _kPressedChatTileColor = AppColors.divider;    // #E0E0E0
 
 /// Chat list widget
-class ChatListScreen extends ConsumerWidget {
+class ChatListScreen extends ConsumerStatefulWidget {
   final ValueChanged<ChatListItem>? onChatSelected;
   final String? selectedChatId;
 
@@ -33,6 +33,12 @@ class ChatListScreen extends ConsumerWidget {
     this.selectedChatId,
   });
 
+  @override
+  ConsumerState<ChatListScreen> createState() => _ChatListScreenState();
+}
+
+class _ChatListScreenState extends ConsumerState<ChatListScreen>
+    with WidgetsBindingObserver {
   Contact? _findContact(ChatState state, String value) {
     final normalized = value.trim().toLowerCase();
     if (normalized.isEmpty) return null;
@@ -49,7 +55,35 @@ class ChatListScreen extends ConsumerWidget {
   }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      debugPrint('App resumed: triggering background chat sync');
+      unawaited(_syncOnResume());
+    }
+  }
+
+  Future<void> _syncOnResume() async {
+    try {
+      await ref.read(chatStoreProvider.notifier).syncOnLaunch();
+    } catch (e) {
+      debugPrint('Background chat sync failed after resume: $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return StreamBuilder<void>(
       stream: ref.watch(chatDatabaseProvider).watchChatChanges(),
       builder: (context, snapshot) {
@@ -86,7 +120,7 @@ class ChatListScreen extends ConsumerWidget {
               final phone = (item.phone ?? contact?.phone ?? '').trim();
               return _ChatListTile(
                 item: item,
-                isSelected: selectedChatId == item.id,
+                isSelected: widget.selectedChatId == item.id,
                 onTap: () => _openChat(context, ref, item),
                 onCall: phone.isNotEmpty ? () => _callUser(context, phone) : null,
                 onDelete: () => _deleteChat(context, ref, item),
@@ -101,8 +135,8 @@ class ChatListScreen extends ConsumerWidget {
   void _openChat(BuildContext context, WidgetRef ref, ChatListItem item) {
     final unreadCount = item.unread;
     ref.read(chatStoreProvider.notifier).setCurrentChat(item.id);
-    if (onChatSelected != null) {
-      onChatSelected!(item);
+    if (widget.onChatSelected != null) {
+      widget.onChatSelected!(item);
       return;
     }
     Navigator.of(context).push(
