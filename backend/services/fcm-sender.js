@@ -255,6 +255,33 @@ function normalizeBadgeCount(value) {
     return Number.isFinite(badgeCount) && badgeCount >= 0 ? badgeCount : undefined;
 }
 
+function isSilentPushData(data) {
+    const skipNotification = data.skipNotification === true ||
+        String(data.skipNotification || '').toLowerCase() === 'true';
+    if (skipNotification) return true;
+
+    const type = String(data.type || '').trim().toLowerCase().replace(/[-_]+/g, ' ');
+    const title = String(data.title || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    return title === 'worker alert' ||
+        title === 'work alert' ||
+        new Set([
+            'read receipt',
+            'read',
+            'sent',
+            'receive',
+            'received',
+            'delivery receipt',
+            'delivered',
+            'delete action',
+            'delete',
+            'edit action',
+            'edit',
+            'group update',
+            'typing',
+            'reaction'
+        ]).has(type);
+}
+
 function buildFcmMessage(token, parsedPayload, subscription) {
     const envelope = (parsedPayload && typeof parsedPayload === 'object') ? parsedPayload : {};
     const notification = (envelope.notification && typeof envelope.notification === 'object')
@@ -269,10 +296,11 @@ function buildFcmMessage(token, parsedPayload, subscription) {
         type: dataSource.type ?? 'CHAT_MESSAGE'
     };
     const data = trimDataMap(coerceDataMap(routingData));
+    const silent = isSilentPushData(data);
 
     const message = { token, data };
 
-    if (notification) {
+    if (notification && !silent) {
         const title = typeof notification.title === 'string'
             ? notification.title
             : DEFAULT_NOTIFICATION_TITLE;
@@ -294,7 +322,7 @@ function buildFcmMessage(token, parsedPayload, subscription) {
     message.android = {
         priority: 'high',
         ttl: 7 * 24 * 60 * 60 * 1000,
-        ...(notification ? { notification: { channelId: 'chat_messages', tag: messageId } } : {})
+        ...(notification && !silent ? { notification: { channelId: 'chat_messages', tag: messageId } } : {})
     };
 
     if (isApnsSubscription(subscription)) {
@@ -305,12 +333,14 @@ function buildFcmMessage(token, parsedPayload, subscription) {
             ? notification.body
             : (typeof data.body === 'string' ? data.body : DEFAULT_NOTIFICATION_BODY);
         const badgeCount = normalizeBadgeCount(data.badgeCount);
-        const aps = {
-            alert: { title, body },
-            sound: 'default',
-            'content-available': 1,
-            'mutable-content': 1
-        };
+        const aps = silent
+            ? { 'content-available': 1 }
+            : {
+                alert: { title, body },
+                sound: 'default',
+                'content-available': 1,
+                'mutable-content': 1
+            };
         // Never send badge: 0 with a new alert: iOS can remove delivered
         // notifications when the app icon is explicitly reset to zero.
         if (badgeCount !== undefined && badgeCount > 0) {
@@ -322,8 +352,8 @@ function buildFcmMessage(token, parsedPayload, subscription) {
 
         message.apns = {
             headers: {
-                'apns-priority': '10',
-                'apns-push-type': 'alert'
+                'apns-priority': silent ? '5' : '10',
+                'apns-push-type': silent ? 'background' : 'alert'
             },
             payload: {
                 aps
