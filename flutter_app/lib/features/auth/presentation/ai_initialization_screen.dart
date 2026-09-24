@@ -92,24 +92,31 @@ class _AiInitializationScreenState extends ConsumerState<AiInitializationScreen>
     final user = ref.read(currentUserProvider);
 
     try {
-      if (user != null) {
-        // initialize() awaits only local cache hydration when requested. The
-        // server revalidation is started after the shell has been shown.
-        await ref
-            .read(chatStoreProvider.notifier)
-            .initialize(user, startBackgroundSync: false);
-      }
+      // Keep the polished loading state visible briefly, but never allow a
+      // local database problem to block the transition to the app.
+      await Future.wait<void>([
+        if (user != null)
+          ref
+              .read(chatStoreProvider.notifier)
+              .initialize(user, startBackgroundSync: false)
+              .timeout(const Duration(milliseconds: 2500)),
+        Future.delayed(const Duration(milliseconds: 1200)),
+      ]);
     } catch (e) {
-      debugPrint('[AiInit] local cache initialization failed (non-fatal): $e');
-    }
+      debugPrint('[AiInit] initialization failed or timed out (non-fatal): $e');
+    } finally {
+      // This is deliberately in finally so every initialization outcome,
+      // including a timeout, gets the user to the main app.
+      if (!mounted || _completed) return;
+      final chatStore =
+          user == null ? null : ref.read(chatStoreProvider.notifier);
+      _completed = true;
+      widget.onCompleted();
 
-    if (!mounted || _completed) return;
-    final chatStore = user == null ? null : ref.read(chatStoreProvider.notifier);
-    _completed = true;
-    widget.onCompleted();
-
-    if (chatStore != null) {
-      unawaited(_syncInBackground(chatStore));
+      if (chatStore != null) {
+        // Sync after routing so a remote failure cannot delay the UI.
+        unawaited(_syncInBackground(chatStore));
+      }
     }
   }
 
@@ -133,10 +140,6 @@ class _AiInitializationScreenState extends ConsumerState<AiInitializationScreen>
       setState(() => _progress = _stepProgress[i]);
       await Future.delayed(_kStepPause);
     }
-
-    if (!mounted || _completed) return;
-    _completed = true;
-    widget.onCompleted();
   }
 
   Future<void> _typeStepText(String fullText) {
