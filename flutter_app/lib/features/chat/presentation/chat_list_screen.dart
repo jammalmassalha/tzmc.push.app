@@ -81,14 +81,6 @@ class ChatListScreen extends ConsumerWidget {
         if (chatItems.isEmpty) {
           return _ChatDataRetrievalView(
             isSyncing: isLoading || state.isInitialSyncing,
-            onRetry: () async {
-              await ref.read(chatStoreProvider.notifier).syncOnLaunch();
-              if (context.mounted) {
-                await ref.read(chatStoreProvider.notifier).recoverMissedMessages(
-                      force: true,
-                    );
-              }
-            },
           );
         }
 
@@ -401,11 +393,9 @@ class _ChatListTile extends StatelessWidget {
 
 class _ChatDataRetrievalView extends StatefulWidget {
   final bool isSyncing;
-  final Future<void> Function() onRetry;
 
   const _ChatDataRetrievalView({
     required this.isSyncing,
-    required this.onRetry,
   });
 
   @override
@@ -493,7 +483,7 @@ class _ChatDataRetrievalViewState extends State<_ChatDataRetrievalView>
                 Text(
                   widget.isSyncing
                       ? 'בודק את הנתונים המקומיים ומסנכרן מידע חדש מהשרת...'
-                      : 'הנתונים עדיין נטענים. ננסה שוב לקבלת המידע העדכני ביותר.',
+                      : 'הנתונים המקומיים נטענים. הסנכרון מהשרת ממשיך ברקע.',
                   textAlign: TextAlign.center,
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: theme.colorScheme.onSurface.withAlpha(170),
@@ -510,10 +500,14 @@ class _ChatDataRetrievalViewState extends State<_ChatDataRetrievalView>
                     ),
                   )
                 else
-                  FilledButton.icon(
-                    onPressed: widget.onRetry,
-                    icon: const Icon(Icons.refresh_rounded),
-                    label: const Text('נסה שוב'),
+                  Text(
+                    'הנתונים המקומיים יופיעו כאן מיד כשהאחסון ייטען. '
+                    'הסנכרון מהשרת ממשיך ברקע.',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurface.withAlpha(150),
+                      height: 1.4,
+                    ),
                   ),
               ],
             ),

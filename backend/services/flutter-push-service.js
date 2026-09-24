@@ -338,10 +338,15 @@ function createFlutterPushService(options = {}) {
             payloadData.badgeCount = options.badgeCount;
         }
 
-        // Include a visible notification envelope so Android can display the
-        // message while the app is backgrounded or terminated. The data map is
-        // retained for routing and recovery when the user opens the app.
-        const includeNotification = true;
+        // Work Alert is the generic/system fallback title and must stay silent.
+        // Self-echoes are also data-only so a sender's other devices update
+        // their chat without showing a second alert. Real chat messages keep
+        // the visible envelope for background/terminated Android delivery.
+        const skipNotification =
+            customData.skipNotification === true ||
+            customData.skipNotification === 'true';
+        const includeNotification =
+            !skipNotification && title.trim().toLowerCase() !== 'work alert';
 
         return notificationService.buildPushPayloadString(payloadData, { includeNotification });
     }
