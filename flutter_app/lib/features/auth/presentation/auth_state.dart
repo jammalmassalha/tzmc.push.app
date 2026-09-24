@@ -107,16 +107,30 @@ class AuthNotifier extends Notifier<AuthState> {
 
   /// Check for existing session on app start
   Future<void> _checkExistingSession() async {
+    String? cachedUser;
     try {
-      // First check secure storage for cached user
-      final cachedUser = await _secureStorage.read(key: _userKey);
+      // Restore the last authenticated identity first. This keeps the
+      // offline-first app usable immediately; session/privilege validation is
+      // deliberately performed below without blocking the first frame.
+      cachedUser = (await _secureStorage.read(key: _userKey))?.trim().toLowerCase();
+      if (cachedUser != null && cachedUser!.isNotEmpty) {
+        final cachedPhone = await _secureStorage.read(key: _phoneKey);
+        state = AuthAuthenticated(
+          user: cachedUser!,
+          phone: cachedPhone,
+          isRestricted: false,
+        );
+        _logger.i('Restored cached session for $cachedUser; refreshing silently');
+      }
 
-      // Then verify with server
+      // Silent server refresh. A null result is not treated as logout when a
+      // cached user exists, because it also represents an offline/timeout
+      // response and must not lock the user out of the local app.
       final sessionInfo = await _apiService.getSessionInfo();
 
       if (sessionInfo != null) {
         final sessionUser = sessionInfo.user?.trim().toLowerCase() ?? cachedUser ?? '';
-        if (cachedUser != null && cachedUser.trim().toLowerCase() != sessionUser) {
+        if (cachedUser != null && cachedUser != sessionUser) {
           try {
             await ref.read(chatStoreProvider.notifier).clearAll();
           } catch (e) {
@@ -133,6 +147,10 @@ class AuthNotifier extends Notifier<AuthState> {
         unawaited(_resetBadgeAfterAuth());
         _logger.i('Session restored for user: $sessionUser (isRestricted: ${sessionInfo.isRestricted})');
       } else {
+        if (cachedUser != null && cachedUser.isNotEmpty) {
+          _logger.w('Session refresh unavailable; keeping cached offline session');
+          return;
+        }
         await _secureStorage.delete(key: _userKey);
 
         // On Windows desktop, attempt auto-login via the Windows username
