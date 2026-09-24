@@ -345,7 +345,7 @@ function createFlutterPushService(options = {}) {
         const skipNotification =
             customData.skipNotification === true ||
             customData.skipNotification === 'true';
-        const normalizedTitle = title.trim().toLowerCase().replace(/[-_]+/g, ' ');
+        const normalizedTitle = title.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
         const normalizedType = String(compactCustomData.type || '').trim().toLowerCase().replace(/[-_]+/g, ' ');
         const silentStatusPush = normalizedTitle === 'worker alert'
             || normalizedTitle === 'work alert'
