@@ -332,10 +332,10 @@ function createFlutterPushService(options = {}) {
             payloadData.badgeCount = options.badgeCount;
         }
 
-        // Flutter handles display from the data payload after persisting it
-        // locally. Keeping the FCM envelope data-only avoids OS-level
-        // notification races and guarantees background messages reach Dart.
-        const includeNotification = false;
+        // Include a visible notification envelope so Android can display the
+        // message while the app is backgrounded or terminated. The data map is
+        // retained for routing and recovery when the user opens the app.
+        const includeNotification = true;
 
         return notificationService.buildPushPayloadString(payloadData, { includeNotification });
     }
