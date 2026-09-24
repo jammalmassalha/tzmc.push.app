@@ -155,7 +155,6 @@ class TzmcPushApp extends ConsumerWidget {
       },
     );
   }
-
 }
 
 /// Router that shows appropriate screen based on auth state
