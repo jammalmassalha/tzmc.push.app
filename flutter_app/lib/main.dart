@@ -142,7 +142,7 @@ class TzmcPushApp extends ConsumerWidget {
 
       // Start at the chat list. AuthRouter still redirects unauthenticated
       // users to login, while authenticated users see the shell immediately.
-      initialRoute: AppRoutes.chatList,
+      initialRoute: _initialRouteName(),
       onGenerateRoute: (settings) {
         final request = AppRouteRequest.fromName(settings.name);
         return MaterialPageRoute<void>(
@@ -154,6 +154,16 @@ class TzmcPushApp extends ConsumerWidget {
         );
       },
     );
+  }
+
+  String _initialRouteName() {
+    if (kIsWeb) {
+      final fragment = Uri.base.fragment;
+      if (fragment.isNotEmpty && fragment != AppRoutes.home) {
+        return AppRoutes.normalizePath(fragment);
+      }
+    }
+    return AppRoutes.chatList;
   }
 }
 
