@@ -104,17 +104,18 @@ class _AiInitializationScreenState extends ConsumerState<AiInitializationScreen>
     }
 
     if (!mounted || _completed) return;
+    final chatStore = user == null ? null : ref.read(chatStoreProvider.notifier);
     _completed = true;
     widget.onCompleted();
 
-    if (user != null) {
-      unawaited(_syncInBackground());
+    if (chatStore != null) {
+      unawaited(_syncInBackground(chatStore));
     }
   }
 
-  Future<void> _syncInBackground() async {
+  Future<void> _syncInBackground(ChatStoreNotifier chatStore) async {
     try {
-      await ref.read(chatStoreProvider.notifier).syncOnLaunch();
+      await chatStore.syncOnLaunch();
     } catch (e) {
       debugPrint('[AiInit] background chat sync failed (non-fatal): $e');
     }
