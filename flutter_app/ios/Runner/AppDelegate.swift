@@ -91,6 +91,12 @@ final class PrivacyShield {
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     FirebaseApp.configure()
+    
+    // FIX: Force FlutterAppDelegate to handle and multiplex the completion handlers
+    if #available(iOS 10.0, *) {
+      UNUserNotificationCenter.current().delegate = self as? UNUserNotificationCenterDelegate
+    }
+    
     application.registerForRemoteNotifications()
     GeneratedPluginRegistrant.register(with: self)
     let didFinishLaunching = super.application(
