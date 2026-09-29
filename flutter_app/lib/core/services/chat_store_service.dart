@@ -305,7 +305,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   StreamSubscription<void>? _pollTickSubscription;
   StreamSubscription<bool>? _statusSubscription;
 
-  Timer? _persistTimer;
   int _lastGapAnalysisTime = 0;
   String? _currentUser;
 
@@ -364,7 +363,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       _connectionSubscription?.cancel();
       _pollTickSubscription?.cancel();
       _statusSubscription?.cancel();
-      _persistTimer?.cancel();
       for (final timers in _typingClearTimers.values) {
         for (final t in timers.values) {
           t.cancel();
@@ -3703,8 +3701,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   // ---------------------------------------------------------------------------
 
   void _schedulePersistence() {
-    _persistTimer?.cancel();
-    _persistTimer = Timer(const Duration(seconds: 2), _persistState);
+    // Messages are written to Drift at their point of mutation. Persist only
+    // the small metadata snapshot needed by the chat shell.
+    unawaited(_persistState());
   }
 
   Future<void> _persistState() async {
@@ -3713,16 +3712,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       if (user == null || user.trim().isEmpty) {
         return;
       }
-      final allMessages = <ChatMessage>[];
-      for (final messages in state.messagesByChat.values) {
-        allMessages.addAll(messages);
-      }
-
       final snapshot = PersistedChatState(
         contacts: state.contacts.values.toList(),
         groups: state.groups.values.toList(),
         unreadByChat: state.unreadByChat,
-        messages: allMessages,
+        messages: const [],
       );
 
       try {
@@ -3820,10 +3814,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   ///
   /// Realtime deliveries (socket / SSE / foreground FCM) and optimistic
   /// outgoing bubbles would otherwise only reach SQLite through the 2-second
-  /// debounced [_persistState], so a message that arrives right before the app
-  /// is backgrounded or killed would be lost.  Failures are non-fatal: on Web
-  /// without `sqlite3.wasm` the Drift call throws and the debounced
-  /// [_persistState] still writes the [WebChatStorage] snapshot.
+  /// debounced state snapshot, so a message that arrives right before the app
+  /// is backgrounded or killed would be lost. Failures are non-fatal.
   void _writeMessageThrough(ChatMessage message) {
     try {
       // `catchError` covers async failures; the surrounding `try` covers the
@@ -3872,7 +3864,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   /// Force immediate persistence
   Future<void> persistNow() async {
-    _persistTimer?.cancel();
     await _persistState();
   }
 
@@ -3895,11 +3886,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// Called during explicit logout and when a different user logs in on the
   /// same device so the previous user's data is never exposed to the new user.
   Future<void> clearAll() async {
-    // Cancel any pending deferred write to prevent stale data being persisted
-    // after the wipe.
-    _persistTimer?.cancel();
-    _persistTimer = null;
-
     // Drop any queued delivery acknowledgments belonging to the previous user.
     _deliveryAckTimer?.cancel();
     _deliveryAckTimer = null;
@@ -3952,6 +3938,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
 final chatStoreProvider = NotifierProvider<ChatStoreNotifier, ChatState>(() {
   return ChatStoreNotifier();
+});
+
+/// Reactive, bounded message window for the active chat.
+///
+/// Drift owns the message data; consumers rebuild only when this chat's rows
+/// change instead of depending on the entire store snapshot.
+final chatMessagesStreamProvider =
+    StreamProvider.autoDispose.family<List<ChatMessage>, String>((ref, chatId) {
+  return ref.watch(chatDatabaseProvider).watchMessagesForChat(chatId);
 });
 
 // ---------------------------------------------------------------------------

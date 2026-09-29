@@ -287,7 +287,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(chatStoreProvider);
-    final allMessages = state.messagesByChat[widget.chatId] ?? [];
+    final messagesAsync = ref.watch(chatMessagesStreamProvider(widget.chatId));
+    final allMessages = messagesAsync.valueOrNull ?? const <ChatMessage>[];
     final chatInfo = _getChatInfo(state);
 
     // Filter messages when search is active
@@ -305,6 +306,12 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     _messageItemKeys.removeWhere((id, _) => !visibleMessageIds.contains(id));
     if (!_searchActive && messages.isNotEmpty) {
       _scheduleStickyDateRefresh();
+    }
+
+    if (messagesAsync.hasError && allMessages.isEmpty) {
+      return Center(
+        child: Text('שגיאה בטעינת ההודעות: ${messagesAsync.error}'),
+      );
     }
 
     return Directionality(
