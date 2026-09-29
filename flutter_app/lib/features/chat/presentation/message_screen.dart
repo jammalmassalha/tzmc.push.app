@@ -297,7 +297,11 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   Widget build(BuildContext context) {
     final state = ref.watch(chatStoreProvider);
     final messagesAsync = ref.watch(chatMessagesStreamProvider(widget.chatId));
-    final allMessages = messagesAsync.value ?? const <ChatMessage>[];
+    final allMessages = messagesAsync.when(
+      data: (messages) => messages,
+      loading: () => const <ChatMessage>[],
+      error: (_, __) => const <ChatMessage>[],
+    );
     final chatInfo = _getChatInfo(state);
 
     // Filter messages when search is active
