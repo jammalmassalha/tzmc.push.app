@@ -85,6 +85,7 @@ class Groups extends Table {
 @DataClassName('MessagesData')
 @TableIndex(name: 'messages_client_msg_id_idx', columns: {#clientMsgId})
 @TableIndex(name: 'messages_chat_pts_idx', columns: {#chatId, #pts})
+@TableIndex(name: 'idx_messages_chat_timestamp', columns: {#chatId, #timestamp})
 class Messages extends Table {
   TextColumn get id => text()();
   TextColumn get messageId => text()();
@@ -98,6 +99,7 @@ class Messages extends Table {
   TextColumn get imageUrl => text().nullable()();
   TextColumn get thumbnailUrl => text().nullable()();
   TextColumn get fileUrl => text().nullable()();
+  TextColumn get localFilePath => text().nullable()();
   TextColumn get direction => text()(); // 'incoming' or 'outgoing'
   IntColumn get timestamp => integer()();
   TextColumn get deliveryStatus => text()();
@@ -159,13 +161,19 @@ class ChatDatabase extends _$ChatDatabase {
   ChatDatabase.forTesting(QueryExecutor executor) : super(executor);
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration {
     return MigrationStrategy(
       onCreate: (Migrator m) async {
         await m.createAll();
+      },
+      beforeOpen: (details) async {
+        await customStatement('PRAGMA journal_mode = WAL');
+        await customStatement('PRAGMA synchronous = NORMAL');
+        await customStatement('PRAGMA busy_timeout = 5000');
+        await customStatement('PRAGMA foreign_keys = ON');
       },
       onUpgrade: (Migrator m, int from, int to) async {
         if (from < 2) {
@@ -174,6 +182,9 @@ class ChatDatabase extends _$ChatDatabase {
           await m.addColumn(messages, messages.sentDateTime);
           await m.addColumn(messages, messages.receiveDateTime);
           await m.addColumn(messages, messages.readDateTime);
+        }
+        if (from < 3) {
+          await m.addColumn(messages, messages.localFilePath);
         }
       },
     );
@@ -372,6 +383,37 @@ class ChatDatabase extends _$ChatDatabase {
   /// Emits the current message rows immediately and after every message write.
   Stream<List<ChatMessage>> watchAllChats() {
     return select(messages).watch().map((rows) => rows.map(_messageFromRow).toList());
+  }
+
+  /// Watches the newest messages for one chat. The database remains the source
+  /// of truth, so screens only retain the bounded window they render.
+  Stream<List<ChatMessage>> watchMessagesForChat(
+    String chatId, {
+    int limit = 50,
+  }) {
+    final query = select(messages)
+      ..where((message) => message.chatId.equals(chatId))
+      ..orderBy([(message) => OrderingTerm.desc(message.timestamp)])
+      ..limit(limit);
+    return query.watch().map((rows) => rows.map(_messageFromRow).toList());
+  }
+
+  /// Loads an older page using keyset pagination rather than OFFSET.
+  Future<List<ChatMessage>> fetchOlderMessages(
+    String chatId, {
+    required int beforeTimestamp,
+    int limit = 50,
+  }) async {
+    final query = select(messages)
+      ..where(
+        (message) =>
+            message.chatId.equals(chatId) &
+            message.timestamp.isSmallerThanValue(beforeTimestamp),
+      )
+      ..orderBy([(message) => OrderingTerm.desc(message.timestamp)])
+      ..limit(limit);
+    final rows = await query.get();
+    return rows.map(_messageFromRow).toList();
   }
 
   Future<void> syncOneToOne({
