@@ -18,6 +18,7 @@ import '../database/web_storage.dart';
 import '../models/api_payloads.dart';
 import '../models/chat_models.dart';
 import '../realtime/realtime_transport_service.dart';
+import 'outbox_processor.dart';
 import '../../features/auth/presentation/auth_state.dart';
 
 // ---------------------------------------------------------------------------
@@ -376,7 +377,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   void _subscribeToTransport() {
     _messageSubscription = _transport.message$.listen(_handleServerMessage);
-    _connectionSubscription = _transport.connected$.listen(_handleConnectionChange);
+    _connectionSubscription = _transport.connected$.listen((connected) {
+      _handleConnectionChange(connected);
+      if (connected) {
+        unawaited(ref.read(outboxProcessorProvider).drainQueue());
+      }
+    });
     _pollTickSubscription = _transport.pollTick$.listen((_) => _handlePollTick());
     _statusSubscription = _transport.status$.listen(_handleStatusChange);
   }
@@ -426,6 +432,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _currentUser = normalized;
     debugPrint('SYNC_TRACE: Auth complete, triggering syncOnLaunch()');
     unawaited(_retryOutbox());
+    unawaited(ref.read(outboxProcessorProvider).drainQueue());
 
     final isRestricted = ref.read(isUserRestrictedProvider);
 

@@ -141,6 +141,9 @@ class OutboxItems extends Table {
   TextColumn get recipients => text().nullable()(); // JSON array for group messages
   TextColumn get messageId => text().nullable()();
   IntColumn get attempts => integer().withDefault(const Constant(0))();
+  IntColumn get retryCount => integer().withDefault(const Constant(0))();
+  IntColumn get nextAttemptAt => integer().withDefault(const Constant(0))();
+  TextColumn get lastError => text().nullable()();
   IntColumn get createdAt => integer()();
 
   @override
@@ -161,7 +164,7 @@ class ChatDatabase extends _$ChatDatabase {
   ChatDatabase.forTesting(QueryExecutor executor) : super(executor);
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration {
@@ -185,6 +188,11 @@ class ChatDatabase extends _$ChatDatabase {
         }
         if (from < 3) {
           await m.addColumn(messages, messages.localFilePath);
+        }
+        if (from < 4) {
+          await m.addColumn(outboxItems, outboxItems.retryCount);
+          await m.addColumn(outboxItems, outboxItems.nextAttemptAt);
+          await m.addColumn(outboxItems, outboxItems.lastError);
         }
       },
     );
@@ -508,6 +516,32 @@ class ChatDatabase extends _$ChatDatabase {
       ..orderBy([(t) => OrderingTerm.asc(t.createdAt)])
       ..limit(limit);
     return query.get();
+  }
+
+  Future<List<OutboxItemsData>> getDueOutboxItems({
+    required int now,
+    int limit = 20,
+  }) async {
+    final query = select(outboxItems)
+      ..where((item) => item.nextAttemptAt.isSmallerOrEqualValue(now))
+      ..orderBy([(item) => OrderingTerm.asc(item.nextAttemptAt)])
+      ..limit(limit);
+    return query.get();
+  }
+
+  Future<void> updateOutboxRetry({
+    required String id,
+    required int retryCount,
+    required int nextAttemptAt,
+    required String error,
+  }) async {
+    await (update(outboxItems)..where((item) => item.id.equals(id))).write(
+      OutboxItemsCompanion(
+        retryCount: Value(retryCount),
+        nextAttemptAt: Value(nextAttemptAt),
+        lastError: Value(error),
+      ),
+    );
   }
 
   Future<void> removeOutboxItem(String id) async {
