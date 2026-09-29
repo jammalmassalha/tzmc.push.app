@@ -3165,15 +3165,18 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       final isNew = _applyIncomingMessage(chatMessage);
 
       // Only increment the unread badge when:
-      //  • the message is for a chat the user is NOT currently viewing, AND
+      //  • the message is for a chat the user is NOT currently viewing, or
+      //    the app is backgrounded, AND
       //  • the message is incoming (not our own echo), AND
       //  • the message is genuinely new — not an already-known entry returned
       //    by the logs endpoint near the `since` boundary (the server
       //    intentionally returns 1-2 such duplicates to avoid missing rows;
       //    _applyIncomingMessage returns false for those so we never re-count
       //    a message the user has already read).
+      final isAppForeground =
+          WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
       if (isNew &&
-          chatMessage.chatId != state.currentChatId &&
+          (chatMessage.chatId != state.currentChatId || !isAppForeground) &&
           chatMessage.direction == MessageDirection.incoming) {
         final newUnread = Map<String, int>.from(state.unreadByChat);
         newUnread[chatMessage.chatId] = (newUnread[chatMessage.chatId] ?? 0) + 1;
