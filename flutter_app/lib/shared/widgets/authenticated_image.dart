@@ -165,6 +165,7 @@ class AuthenticatedNetworkImage extends ConsumerStatefulWidget {
   final double? width;
   final double? height;
   final BoxFit fit;
+  final int? cacheWidth;
 
   const AuthenticatedNetworkImage({
     super.key,
@@ -173,6 +174,7 @@ class AuthenticatedNetworkImage extends ConsumerStatefulWidget {
     this.width,
     this.height,
     this.fit = BoxFit.cover,
+    this.cacheWidth,
   });
 
   @override
@@ -238,6 +240,7 @@ class _AuthenticatedNetworkImageState
   Widget build(BuildContext context) {
     final w = widget.width ?? 200;
     final h = widget.height ?? 150;
+    final cacheWidth = widget.cacheWidth ?? (w * MediaQuery.devicePixelRatioOf(context)).round().clamp(1, 400);
     if (!kIsWeb &&
         widget.localFilePath != null &&
         File(widget.localFilePath!).existsSync()) {
@@ -246,6 +249,7 @@ class _AuthenticatedNetworkImageState
         width: w,
         height: h,
         fit: widget.fit,
+        cacheWidth: cacheWidth,
       );
     }
 
@@ -257,6 +261,7 @@ class _AuthenticatedNetworkImageState
         width: w,
         height: h,
         fit: widget.fit,
+        cacheWidth: cacheWidth,
         errorBuilder: (_, __, ___) => Container(
           width: w,
           height: h,
@@ -288,6 +293,7 @@ class _AuthenticatedNetworkImageState
       width: w,
       height: h,
       fit: widget.fit,
+      cacheWidth: cacheWidth,
       errorBuilder: (_, __, ___) => Container(
         width: w,
         height: h,
@@ -384,6 +390,7 @@ class _AuthenticatedCircleAvatarState
   @override
   Widget build(BuildContext context) {
     final diameter = widget.radius * 2;
+    final cacheWidth = (diameter * MediaQuery.devicePixelRatioOf(context)).round().clamp(1, 200);
     final trimmedUrl = widget.url?.trim();
 
     if (trimmedUrl == null || trimmedUrl.isEmpty) {
@@ -406,6 +413,7 @@ class _AuthenticatedCircleAvatarState
             width: diameter,
             height: diameter,
             fit: BoxFit.cover,
+            cacheWidth: cacheWidth,
             errorBuilder: (_, __, ___) => widget.fallback,
           ),
         ),
@@ -431,6 +439,7 @@ class _AuthenticatedCircleAvatarState
                     width: diameter,
                     height: diameter,
                     fit: BoxFit.cover,
+                    cacheWidth: cacheWidth,
                     errorBuilder: (_, __, ___) => widget.fallback,
                   ),
       ),
