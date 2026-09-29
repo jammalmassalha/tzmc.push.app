@@ -240,7 +240,8 @@ class _AuthenticatedNetworkImageState
   Widget build(BuildContext context) {
     final w = widget.width ?? 200;
     final h = widget.height ?? 150;
-    final cacheWidth = widget.cacheWidth ?? (w * MediaQuery.devicePixelRatioOf(context)).round().clamp(1, 400);
+    final cacheWidth = widget.cacheWidth ??
+        (w * MediaQuery.devicePixelRatioOf(context)).round().clamp(1, 400).toInt();
     if (!kIsWeb &&
         widget.localFilePath != null &&
         File(widget.localFilePath!).existsSync()) {
@@ -390,7 +391,8 @@ class _AuthenticatedCircleAvatarState
   @override
   Widget build(BuildContext context) {
     final diameter = widget.radius * 2;
-    final cacheWidth = (diameter * MediaQuery.devicePixelRatioOf(context)).round().clamp(1, 200);
+    final cacheWidth =
+        (diameter * MediaQuery.devicePixelRatioOf(context)).round().clamp(1, 200).toInt();
     final trimmedUrl = widget.url?.trim();
 
     if (trimmedUrl == null || trimmedUrl.isEmpty) {
