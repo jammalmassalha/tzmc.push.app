@@ -281,6 +281,7 @@ class ChatMessage extends Equatable {
   final String? imageUrl;
   final String? thumbnailUrl;
   final String? fileUrl;
+  final String? localFilePath;
   final MessageDirection direction;
   final int timestamp;
   final DeliveryStatus deliveryStatus;
@@ -319,6 +320,7 @@ class ChatMessage extends Equatable {
     this.imageUrl,
     this.thumbnailUrl,
     this.fileUrl,
+    this.localFilePath,
     required this.direction,
     required this.timestamp,
     required this.deliveryStatus,
@@ -398,6 +400,7 @@ class ChatMessage extends Equatable {
         imageUrl,
         thumbnailUrl,
         fileUrl,
+        localFilePath,
         direction,
         timestamp,
         deliveryStatus,
@@ -431,6 +434,7 @@ class ChatMessage extends Equatable {
       imageUrl: json['imageUrl'] as String?,
       thumbnailUrl: json['thumbnailUrl'] as String?,
       fileUrl: json['fileUrl'] as String?,
+      localFilePath: json['localFilePath'] as String?,
       direction: MessageDirection.values.firstWhere(
         (e) => e.name == json['direction'],
         orElse: () => MessageDirection.incoming,
@@ -481,6 +485,7 @@ class ChatMessage extends Equatable {
         'imageUrl': imageUrl,
         'thumbnailUrl': thumbnailUrl,
         'fileUrl': fileUrl,
+        if (localFilePath != null) 'localFilePath': localFilePath,
         'direction': direction.name,
         'timestamp': timestamp,
         'deliveryStatus': deliveryStatus.name,
@@ -514,6 +519,7 @@ class ChatMessage extends Equatable {
     String? imageUrl,
     String? thumbnailUrl,
     String? fileUrl,
+    String? localFilePath,
     MessageDirection? direction,
     int? timestamp,
     DeliveryStatus? deliveryStatus,
@@ -545,6 +551,7 @@ class ChatMessage extends Equatable {
       imageUrl: imageUrl ?? this.imageUrl,
       thumbnailUrl: thumbnailUrl ?? this.thumbnailUrl,
       fileUrl: fileUrl ?? this.fileUrl,
+      localFilePath: localFilePath ?? this.localFilePath,
       direction: direction ?? this.direction,
       timestamp: timestamp ?? this.timestamp,
       deliveryStatus: deliveryStatus ?? this.deliveryStatus,

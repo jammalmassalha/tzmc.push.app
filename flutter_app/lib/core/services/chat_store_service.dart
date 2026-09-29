@@ -2538,6 +2538,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     required String body,
     String? imageUrl,
     String? fileUrl,
+    String? localFilePath,
     MessageReference? replyTo,
     bool forwarded = false,
     String? forwardedFrom,
@@ -2557,6 +2558,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       body: body,
       imageUrl: imageUrl,
       fileUrl: fileUrl,
+      localFilePath: localFilePath,
       direction: MessageDirection.outgoing,
       timestamp: timestamp,
       deliveryStatus: DeliveryStatus.pending,
@@ -2622,6 +2624,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     required String body,
     String? imageUrl,
     String? fileUrl,
+    String? localFilePath,
     MessageReference? replyTo,
   }) async {
     final group = state.groups[groupId];
@@ -2641,6 +2644,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       body: body,
       imageUrl: imageUrl,
       fileUrl: fileUrl,
+      localFilePath: localFilePath,
       direction: MessageDirection.outgoing,
       timestamp: timestamp,
       deliveryStatus: DeliveryStatus.pending,

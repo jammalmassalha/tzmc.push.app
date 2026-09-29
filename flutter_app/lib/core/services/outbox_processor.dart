@@ -8,6 +8,9 @@ import '../database/chat_database.dart';
 import '../models/api_payloads.dart';
 import '../models/chat_models.dart';
 import '../realtime/realtime_transport_service.dart';
+import '../utils/xfile.dart' as xfile;
+import '../utils/staged_file_stub.dart'
+    if (dart.library.io) '../utils/staged_file_io.dart';
 
 final outboxProcessorProvider = Provider<OutboxProcessor>((ref) {
   return OutboxProcessor(
@@ -46,10 +49,46 @@ class OutboxProcessor {
     try {
       final decoded = jsonDecode(item.payload);
       if (decoded is! Map) throw const FormatException('Invalid outbox payload');
-      final payload = ReplyPayload.fromJson(Map<String, dynamic>.from(decoded));
-      await _api.sendDirectMessage(payload);
+      final payloadMap = Map<String, dynamic>.from(decoded);
+      final payload = ReplyPayload.fromJson(payloadMap);
+      final message = await _db.getMessage(item.messageId ?? payload.messageId);
+      final localPath = message?.localFilePath;
+      if (localPath != null && localPath.isNotEmpty) {
+        final bytes = await readStagedFile(localPath);
+        final uploaded = await _api.uploadFile(
+          xfile.XFile.fromPath(
+            path: localPath,
+            bytesLoader: () async => bytes,
+          ),
+          chatId: payload.groupId ?? payload.originalSender,
+        );
+        final extension = localPath.toLowerCase().split('.').last;
+        const imageExtensions = {'jpg', 'jpeg', 'png', 'gif', 'webp', 'heic'};
+        if (imageExtensions.contains(extension)) {
+          payloadMap['imageUrl'] = uploaded.url;
+          payloadMap.remove('fileUrl');
+        } else {
+          payloadMap['fileUrl'] = uploaded.url;
+          payloadMap.remove('imageUrl');
+        }
+        await _db.upsertMessage(
+          message!.copyWith(
+            imageUrl: imageExtensions.contains(extension) ? uploaded.url : message!.imageUrl,
+            fileUrl: imageExtensions.contains(extension) ? message!.fileUrl : uploaded.url,
+          ),
+        );
+      }
+      final dispatchedPayload = ReplyPayload.fromJson(payloadMap);
+      await _api.sendDirectMessage(dispatchedPayload);
       await _db.removeOutboxItem(item.id);
-      await _updateMessageStatus(item.messageId ?? payload.messageId, DeliveryStatus.sent);
+      await _updateMessageStatus(item.messageId ?? dispatchedPayload.messageId, DeliveryStatus.sent);
+      if (localPath != null && localPath.isNotEmpty) {
+        try {
+          await deleteStagedFile(localPath);
+        } catch (_) {
+          // Cleanup is best-effort after the server acknowledged the message.
+        }
+      }
     } catch (error) {
       final retryCount = item.retryCount + 1;
       final baseDelay = min(1000 * pow(2, retryCount).toInt(), 3600000);

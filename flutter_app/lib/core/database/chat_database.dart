@@ -562,6 +562,7 @@ class ChatDatabase extends _$ChatDatabase {
       imageUrl: Value(message.imageUrl),
       thumbnailUrl: Value(message.thumbnailUrl),
       fileUrl: Value(message.fileUrl),
+      localFilePath: Value(message.localFilePath),
       direction: message.direction == MessageDirection.incoming ? 'incoming' : 'outgoing',
       timestamp: message.timestamp,
       deliveryStatus: message.deliveryStatus.name,
@@ -611,6 +612,7 @@ class ChatDatabase extends _$ChatDatabase {
       imageUrl: row.imageUrl,
       thumbnailUrl: row.thumbnailUrl,
       fileUrl: row.fileUrl,
+      localFilePath: row.localFilePath,
       direction: row.direction == 'incoming' ? MessageDirection.incoming : MessageDirection.outgoing,
       timestamp: row.timestamp,
       deliveryStatus: DeliveryStatus.values.firstWhere(

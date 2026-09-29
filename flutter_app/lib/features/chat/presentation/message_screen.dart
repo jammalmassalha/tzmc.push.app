@@ -1843,10 +1843,13 @@ class _MessageBubble extends StatelessWidget {
                       ),
 
                     // Image
-                    if (message.imageUrl != null && !isDeleted)
+                    if ((message.imageUrl != null || message.localFilePath != null) && !isDeleted)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
-                        child: _ImageAttachmentCard(url: message.imageUrl!),
+                        child: _ImageAttachmentCard(
+                          url: message.imageUrl,
+                          localFilePath: message.localFilePath,
+                        ),
                       ),
 
                     // File attachment
@@ -2524,9 +2527,10 @@ class _LocationButton extends StatelessWidget {
 
 /// A styled image attachment card that mirrors the AI-agent attachment look.
 class _ImageAttachmentCard extends StatelessWidget {
-  final String url;
+  final String? url;
+  final String? localFilePath;
 
-  const _ImageAttachmentCard({required this.url});
+  const _ImageAttachmentCard({this.url, this.localFilePath});
 
   static const Color _imageFileColor = Color(0xFF00897B);
 
@@ -2540,7 +2544,7 @@ class _ImageAttachmentCard extends StatelessWidget {
         side: BorderSide(color: _imageFileColor.withAlpha(40)),
       ),
       child: InkWell(
-        onTap: () => _showFullScreenImage(context, url),
+        onTap: url == null ? null : () => _showFullScreenImage(context, url!),
         borderRadius: BorderRadius.circular(12),
         child: Padding(
           padding: const EdgeInsets.all(8),
@@ -2550,7 +2554,8 @@ class _ImageAttachmentCard extends StatelessWidget {
               ClipRRect(
                 borderRadius: BorderRadius.circular(8),
                 child: AuthenticatedNetworkImage(
-                  url: url,
+                  url: url ?? '',
+                  localFilePath: localFilePath,
                   width: 200,
                   height: 150,
                 ),
