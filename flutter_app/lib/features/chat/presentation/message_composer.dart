@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../../../core/api/chat_api_service.dart';
 import '../../../core/models/chat_models.dart';
@@ -524,6 +525,19 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
     // complete even though the composer UI is reset immediately.
     final pendingImage = _selectedImage;
     final pendingFile = _selectedFile;
+    final clientMsgId = 'local_${DateTime.now().microsecondsSinceEpoch}';
+    Future<String?> stageAttachment(xfile.XFile? attachment) async {
+      if (attachment == null || kIsWeb) return null;
+      final directory = await getApplicationDocumentsDirectory();
+      final outgoing = io.Directory('${directory.path}/media/outgoing');
+      await outgoing.create(recursive: true);
+      final extension = attachment.name.contains('.')
+          ? attachment.name.substring(attachment.name.lastIndexOf('.'))
+          : '';
+      final target = io.File('${outgoing.path}/$clientMsgId$extension');
+      await target.writeAsBytes(await attachment.readAsBytes(), flush: true);
+      return target.path;
+    }
 
     // Optimistic UX: clear the input and selected attachments now so the
     // user can immediately type/send the next message. The chat store
@@ -547,21 +561,17 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
 
     Future<void> doSend() async {
       try {
+        final localFilePath = await stageAttachment(pendingImage ?? pendingFile);
         String? imageUrl;
         String? fileUrl;
-
-        // Upload image if selected
-        if (pendingImage != null) {
+        if (kIsWeb) {
           final api = ref.read(chatApiServiceProvider);
-          final uploadResult = await api.uploadFile(pendingImage, chatId: chatId);
-          imageUrl = uploadResult.url;
-        }
-
-        // Upload file if selected
-        if (pendingFile != null) {
-          final api = ref.read(chatApiServiceProvider);
-          final uploadResult = await api.uploadFile(pendingFile, chatId: chatId);
-          fileUrl = uploadResult.url;
+          if (pendingImage != null) {
+            imageUrl = (await api.uploadFile(pendingImage, chatId: chatId)).url;
+          }
+          if (pendingFile != null) {
+            fileUrl = (await api.uploadFile(pendingFile, chatId: chatId)).url;
+          }
         }
 
         final chatStore = ref.read(chatStoreProvider.notifier);
@@ -576,6 +586,7 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
             body: text,
             imageUrl: imageUrl,
             fileUrl: fileUrl,
+            localFilePath: localFilePath,
             replyTo: replyTo,
           );
         } else {
@@ -585,6 +596,7 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
             body: text,
             imageUrl: imageUrl,
             fileUrl: fileUrl,
+            localFilePath: localFilePath,
             replyTo: replyTo,
           );
         }

@@ -161,6 +161,7 @@ Future<bool> openAuthenticatedFileExternally(BuildContext context, String url) a
 /// CORS issues from XHR). On mobile, uses Dio to include the session cookie.
 class AuthenticatedNetworkImage extends ConsumerStatefulWidget {
   final String url;
+  final String? localFilePath;
   final double? width;
   final double? height;
   final BoxFit fit;
@@ -168,6 +169,7 @@ class AuthenticatedNetworkImage extends ConsumerStatefulWidget {
   const AuthenticatedNetworkImage({
     super.key,
     required this.url,
+    this.localFilePath,
     this.width,
     this.height,
     this.fit = BoxFit.cover,
@@ -236,6 +238,16 @@ class _AuthenticatedNetworkImageState
   Widget build(BuildContext context) {
     final w = widget.width ?? 200;
     final h = widget.height ?? 150;
+    if (!kIsWeb &&
+        widget.localFilePath != null &&
+        File(widget.localFilePath!).existsSync()) {
+      return Image.file(
+        File(widget.localFilePath!),
+        width: w,
+        height: h,
+        fit: widget.fit,
+      );
+    }
 
     // On web: delegate to Image.network — the browser sends cookies and
     // renders the image without triggering CORS for simple img requests.

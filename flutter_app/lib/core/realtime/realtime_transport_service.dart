@@ -36,6 +36,8 @@ class RealtimeTransportService {
   /// Current transport mode
   RealtimeTransportMode _transportMode = RealtimeTransportMode.polling;
   RealtimeTransportMode get transportMode => _transportMode;
+  bool _isConnected = false;
+  bool get isConnected => _isConnected;
 
   /// Stream controller for incoming messages
   final _messageController = StreamController<IncomingServerMessage>.broadcast();
@@ -273,6 +275,7 @@ class RealtimeTransportService {
         _socketSseFallbackTimer?.cancel();
         _socketSseFallbackTimer = null;
         _stopSseOnly();
+        _isConnected = true;
         _connectedController.add(true);
         _logger.d('Socket connected');
       });
@@ -306,6 +309,7 @@ class RealtimeTransportService {
         _socketConnected = true;
         _setTransportMode(RealtimeTransportMode.socket);
         _stopSseOnly();
+        _isConnected = true;
         _connectedController.add(true);
       });
 
@@ -316,6 +320,7 @@ class RealtimeTransportService {
         _shuttingDown = false;
         _socketConnected = false;
         _socketConnecting = false;
+        _isConnected = false;
         _setTransportMode(RealtimeTransportMode.polling);
         _handleSocketConnectFailure(user);
         _logger.d('Socket disconnected');
@@ -442,6 +447,7 @@ class RealtimeTransportService {
       // mode. Flipping it before the connection succeeds would silence the
       // polling fallback while no events can actually arrive.
       _setTransportMode(RealtimeTransportMode.sse);
+      _isConnected = true;
       _connectedController.add(true);
 
       _sseSubscription = response.stream

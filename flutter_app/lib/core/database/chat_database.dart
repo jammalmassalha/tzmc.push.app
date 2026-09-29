@@ -85,6 +85,7 @@ class Groups extends Table {
 @DataClassName('MessagesData')
 @TableIndex(name: 'messages_client_msg_id_idx', columns: {#clientMsgId})
 @TableIndex(name: 'messages_chat_pts_idx', columns: {#chatId, #pts})
+@TableIndex(name: 'idx_messages_chat_timestamp', columns: {#chatId, #timestamp})
 class Messages extends Table {
   TextColumn get id => text()();
   TextColumn get messageId => text()();
@@ -98,6 +99,7 @@ class Messages extends Table {
   TextColumn get imageUrl => text().nullable()();
   TextColumn get thumbnailUrl => text().nullable()();
   TextColumn get fileUrl => text().nullable()();
+  TextColumn get localFilePath => text().nullable()();
   TextColumn get direction => text()(); // 'incoming' or 'outgoing'
   IntColumn get timestamp => integer()();
   TextColumn get deliveryStatus => text()();
@@ -139,6 +141,9 @@ class OutboxItems extends Table {
   TextColumn get recipients => text().nullable()(); // JSON array for group messages
   TextColumn get messageId => text().nullable()();
   IntColumn get attempts => integer().withDefault(const Constant(0))();
+  IntColumn get retryCount => integer().withDefault(const Constant(0))();
+  IntColumn get nextAttemptAt => integer().withDefault(const Constant(0))();
+  TextColumn get lastError => text().nullable()();
   IntColumn get createdAt => integer()();
 
   @override
@@ -159,13 +164,19 @@ class ChatDatabase extends _$ChatDatabase {
   ChatDatabase.forTesting(QueryExecutor executor) : super(executor);
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration {
     return MigrationStrategy(
       onCreate: (Migrator m) async {
         await m.createAll();
+      },
+      beforeOpen: (details) async {
+        await customStatement('PRAGMA journal_mode = WAL');
+        await customStatement('PRAGMA synchronous = NORMAL');
+        await customStatement('PRAGMA busy_timeout = 5000');
+        await customStatement('PRAGMA foreign_keys = ON');
       },
       onUpgrade: (Migrator m, int from, int to) async {
         if (from < 2) {
@@ -174,6 +185,14 @@ class ChatDatabase extends _$ChatDatabase {
           await m.addColumn(messages, messages.sentDateTime);
           await m.addColumn(messages, messages.receiveDateTime);
           await m.addColumn(messages, messages.readDateTime);
+        }
+        if (from < 3) {
+          await m.addColumn(messages, messages.localFilePath);
+        }
+        if (from < 4) {
+          await m.addColumn(outboxItems, outboxItems.retryCount);
+          await m.addColumn(outboxItems, outboxItems.nextAttemptAt);
+          await m.addColumn(outboxItems, outboxItems.lastError);
         }
       },
     );
@@ -374,6 +393,37 @@ class ChatDatabase extends _$ChatDatabase {
     return select(messages).watch().map((rows) => rows.map(_messageFromRow).toList());
   }
 
+  /// Watches the newest messages for one chat. The database remains the source
+  /// of truth, so screens only retain the bounded window they render.
+  Stream<List<ChatMessage>> watchMessagesForChat(
+    String chatId, {
+    int limit = 50,
+  }) {
+    final query = select(messages)
+      ..where((message) => message.chatId.equals(chatId))
+      ..orderBy([(message) => OrderingTerm.desc(message.timestamp)])
+      ..limit(limit);
+    return query.watch().map((rows) => rows.map(_messageFromRow).toList());
+  }
+
+  /// Loads an older page using keyset pagination rather than OFFSET.
+  Future<List<ChatMessage>> fetchOlderMessages(
+    String chatId, {
+    required int beforeTimestamp,
+    int limit = 50,
+  }) async {
+    final query = select(messages)
+      ..where(
+        (message) =>
+            message.chatId.equals(chatId) &
+            message.timestamp.isSmallerThanValue(beforeTimestamp),
+      )
+      ..orderBy([(message) => OrderingTerm.desc(message.timestamp)])
+      ..limit(limit);
+    final rows = await query.get();
+    return rows.map(_messageFromRow).toList();
+  }
+
   Future<void> syncOneToOne({
     required List<dynamic> chats,
     required List<dynamic> messages,
@@ -468,6 +518,32 @@ class ChatDatabase extends _$ChatDatabase {
     return query.get();
   }
 
+  Future<List<OutboxItemsData>> getDueOutboxItems({
+    required int now,
+    int limit = 20,
+  }) async {
+    final query = select(outboxItems)
+      ..where((item) => item.nextAttemptAt.isSmallerOrEqualValue(now))
+      ..orderBy([(item) => OrderingTerm.asc(item.nextAttemptAt)])
+      ..limit(limit);
+    return query.get();
+  }
+
+  Future<void> updateOutboxRetry({
+    required String id,
+    required int retryCount,
+    required int nextAttemptAt,
+    required String error,
+  }) async {
+    await (update(outboxItems)..where((item) => item.id.equals(id))).write(
+      OutboxItemsCompanion(
+        retryCount: Value(retryCount),
+        nextAttemptAt: Value(nextAttemptAt),
+        lastError: Value(error),
+      ),
+    );
+  }
+
   Future<void> removeOutboxItem(String id) async {
     await (delete(outboxItems)..where((t) => t.id.equals(id))).go();
   }
@@ -486,6 +562,7 @@ class ChatDatabase extends _$ChatDatabase {
       imageUrl: Value(message.imageUrl),
       thumbnailUrl: Value(message.thumbnailUrl),
       fileUrl: Value(message.fileUrl),
+      localFilePath: Value(message.localFilePath),
       direction: message.direction == MessageDirection.incoming ? 'incoming' : 'outgoing',
       timestamp: message.timestamp,
       deliveryStatus: message.deliveryStatus.name,
@@ -535,6 +612,7 @@ class ChatDatabase extends _$ChatDatabase {
       imageUrl: row.imageUrl,
       thumbnailUrl: row.thumbnailUrl,
       fileUrl: row.fileUrl,
+      localFilePath: row.localFilePath,
       direction: row.direction == 'incoming' ? MessageDirection.incoming : MessageDirection.outgoing,
       timestamp: row.timestamp,
       deliveryStatus: DeliveryStatus.values.firstWhere(

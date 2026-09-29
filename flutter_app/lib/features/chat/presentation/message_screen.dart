@@ -3,6 +3,7 @@
 /// Shows message bubbles with support for text, images, reactions,
 /// replies, and edit/delete status.
 library;
+
 import 'dart:io' show Directory, File;
 import 'dart:typed_data' show Uint8List;
 import 'dart:ui' as ui;
@@ -74,6 +75,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
 
   /// The chat ID of the accreditation group that exposes the AI agent button.
   static const String _accreditationChatId = 'אקרדיטציה';
+
   /// The date label currently shown in the floating date badge at the top of
   /// the messages area (e.g. "היום", "אתמול", "01/05/2025").
   /// Mirrors Angular's `stickyMessageDateLabel` / `messages-sticky-date`.
@@ -94,8 +96,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   /// vertical padding.  Used both for estimating the initial scroll offset
   /// when there are unread messages and for the floating date calculation.
   static const double _estimatedItemHeight = 72.0;
-  static const Duration _stickyDateRefreshDelay =
-      Duration(milliseconds: 350);
+  static const Duration _stickyDateRefreshDelay = Duration(milliseconds: 350);
   bool _stickyDateRefreshScheduled = false;
 
   Future<void> _resetBadgeOnOpen() async {
@@ -129,7 +130,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     return null;
   }
 
-  Contact? _findCurrentChatContact(ChatState state) => _findContact(state, widget.chatId);
+  Contact? _findCurrentChatContact(ChatState state) =>
+      _findContact(state, widget.chatId);
 
   void _scheduleStickyDateRefresh() {
     if (_stickyDateRefreshScheduled) return;
@@ -152,7 +154,9 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     _searchController = TextEditingController();
     _searchFocus = FocusNode();
     _searchController.addListener(() {
-      setState(() => _searchQuery = _searchController.text.trim().toLowerCase());
+      setState(
+        () => _searchQuery = _searchController.text.trim().toLowerCase(),
+      );
     });
 
     // Listen for scroll position changes to show/hide the scroll-to-bottom
@@ -160,11 +164,15 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     _scrollController.addListener(_onScrollChanged);
 
     if (unread > 0) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToFirstUnread());
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _scrollToFirstUnread(),
+      );
     }
 
     // Seed the floating date badge on first layout.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _scheduleStickyDateRefresh());
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _scheduleStickyDateRefresh(),
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) => _resetBadgeOnOpen());
   }
 
@@ -188,7 +196,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   /// messages). The button appears when the user has scrolled more than
   /// [_scrollBottomThreshold] pixels away from the bottom.
   void _onScrollChanged() {
-    final shouldShow = _scrollController.hasClients &&
+    final shouldShow =
+        _scrollController.hasClients &&
         _scrollController.offset > _scrollBottomThreshold;
     if (shouldShow != _showScrollButton) {
       setState(() => _showScrollButton = shouldShow);
@@ -287,15 +296,25 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(chatStoreProvider);
-    final allMessages = state.messagesByChat[widget.chatId] ?? [];
+    final messagesAsync = ref.watch(chatMessagesStreamProvider(widget.chatId));
+    final cachedMessages = state.messagesByChat[widget.chatId] ?? const <ChatMessage>[];
+    final streamedMessages = messagesAsync.when(
+      data: (messages) => messages,
+      loading: () => const <ChatMessage>[],
+      error: (_, __) => const <ChatMessage>[],
+    );
+    // Keep the already-restored cache visible while the Drift watcher opens.
+    // This avoids an empty conversation during the stream's initial loading
+    // window or when the platform database is temporarily unavailable.
+    final allMessages =
+        streamedMessages.isNotEmpty ? streamedMessages : cachedMessages;
     final chatInfo = _getChatInfo(state);
 
     // Filter messages when search is active
     final messages = (_searchActive && _searchQuery.isNotEmpty)
         ? allMessages
-            .where((m) =>
-                (m.body ?? '').toLowerCase().contains(_searchQuery))
-            .toList()
+              .where((m) => (m.body ?? '').toLowerCase().contains(_searchQuery))
+              .toList()
         : allMessages;
 
     // Keep _currentMessages in sync so the scroll listener can access the
@@ -305,6 +324,12 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     _messageItemKeys.removeWhere((id, _) => !visibleMessageIds.contains(id));
     if (!_searchActive && messages.isNotEmpty) {
       _scheduleStickyDateRefresh();
+    }
+
+    if (messagesAsync.hasError && allMessages.isEmpty) {
+      return Center(
+        child: Text('שגיאה בטעינת ההודעות: ${messagesAsync.error}'),
+      );
     }
 
     return Directionality(
@@ -317,432 +342,472 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
           return true;
         },
         child: Scaffold(
-        appBar: _searchActive
-            ? AppBar(
-                leading: IconButton(
-                  icon: const Icon(Icons.arrow_back),
-                  onPressed: _closeSearch,
-                ),
-                title: TextField(
-                  controller: _searchController,
-                  focusNode: _searchFocus,
-                  textDirection: ui.TextDirection.rtl,
-                  style: const TextStyle(color: Colors.white),
-                  cursorColor: Colors.white,
-                  decoration: InputDecoration(
-                    hintText: 'חיפוש בשיחה...',
-                    hintStyle:
-                        TextStyle(color: Colors.white.withAlpha(178)),
-                    border: InputBorder.none,
+          appBar: _searchActive
+              ? AppBar(
+                  leading: IconButton(
+                    icon: const Icon(Icons.arrow_back),
+                    onPressed: _closeSearch,
                   ),
-                ),
-                actions: [
-                  if (_searchQuery.isNotEmpty)
-                    IconButton(
-                      icon: const Icon(Icons.close),
-                      onPressed: () {
-                        _searchController.clear();
-                        setState(() => _searchQuery = '');
-                      },
+                  title: TextField(
+                    controller: _searchController,
+                    focusNode: _searchFocus,
+                    textDirection: ui.TextDirection.rtl,
+                    style: const TextStyle(color: Colors.white),
+                    cursorColor: Colors.white,
+                    decoration: InputDecoration(
+                      hintText: 'חיפוש בשיחה...',
+                      hintStyle: TextStyle(color: Colors.white.withAlpha(178)),
+                      border: InputBorder.none,
                     ),
-                ],
-              )
-            : AppBar(
-                leading: IconButton(
-                  icon: const Icon(Icons.arrow_back),
-                  onPressed: _handleExit,
-                ),
-                title: GestureDetector(
-                  onTap: chatInfo.isGroup
-                      ? _openGroupInfo
-                      : (chatInfo.avatarUrl != null
-                          ? () => _showAvatarPreview(
-                              context, chatInfo.title, chatInfo.avatarUrl!)
-                          : null),
-                  child: Row(
-                    children: [
-                      AuthenticatedCircleAvatar(
-                        url: chatInfo.avatarUrl,
-                        radius: 20,
-                        fallback: CircleAvatar(
+                  ),
+                  actions: [
+                    if (_searchQuery.isNotEmpty)
+                      IconButton(
+                        icon: const Icon(Icons.close),
+                        onPressed: () {
+                          _searchController.clear();
+                          setState(() => _searchQuery = '');
+                        },
+                      ),
+                  ],
+                )
+              : AppBar(
+                  leading: IconButton(
+                    icon: const Icon(Icons.arrow_back),
+                    onPressed: _handleExit,
+                  ),
+                  title: GestureDetector(
+                    onTap: chatInfo.isGroup
+                        ? _openGroupInfo
+                        : (chatInfo.avatarUrl != null
+                              ? () => _showAvatarPreview(
+                                  context,
+                                  chatInfo.title,
+                                  chatInfo.avatarUrl!,
+                                )
+                              : null),
+                    child: Row(
+                      children: [
+                        AuthenticatedCircleAvatar(
+                          url: chatInfo.avatarUrl,
                           radius: 20,
-                          backgroundColor: Colors.white24,
-                          child: Text(
-                            chatInfo.title.isNotEmpty
-                                ? chatInfo.title[0].toUpperCase()
-                                : '?',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
+                          fallback: CircleAvatar(
+                            radius: 20,
+                            backgroundColor: Colors.white24,
+                            child: Text(
+                              chatInfo.title.isNotEmpty
+                                  ? chatInfo.title[0].toUpperCase()
+                                  : '?',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              chatInfo.title,
-                              style: const TextStyle(
-                                  fontSize: 16, fontWeight: FontWeight.bold),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            if (chatInfo.subtitle != null)
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
                               Text(
-                                chatInfo.subtitle!,
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color:
-                                      Colors.white.withAlpha((255 * 0.7).round()),
+                                chatInfo.title,
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
                                 ),
                                 overflow: TextOverflow.ellipsis,
                               ),
-                          ],
+                              if (chatInfo.subtitle != null)
+                                Text(
+                                  chatInfo.subtitle!,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.white.withAlpha(
+                                      (255 * 0.7).round(),
+                                    ),
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                            ],
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
-                actions: [
-                  if (!chatInfo.isGroup)
-                    Builder(builder: (context) {
-                      final contact = _findCurrentChatContact(state);
-                      final phone = (contact?.phone?.trim().isNotEmpty == true
+                  actions: [
+                    if (!chatInfo.isGroup)
+                      Builder(
+                        builder: (context) {
+                          final contact = _findCurrentChatContact(state);
+                          final phone =
+                              (contact?.phone?.trim().isNotEmpty == true
                               ? contact!.phone!.trim()
                               : widget.chatId.trim());
-                      return IconButton(
-                        icon: const Icon(Icons.call),
-                        tooltip: 'התקשר',
-                        onPressed: () async {
-                          final uri = Uri(scheme: 'tel', path: phone);
-                          if (await canLaunchUrl(uri)) {
-                            await launchUrl(uri);
-                          }
+                          return IconButton(
+                            icon: const Icon(Icons.call),
+                            tooltip: 'התקשר',
+                            onPressed: () async {
+                              final uri = Uri(scheme: 'tel', path: phone);
+                              if (await canLaunchUrl(uri)) {
+                                await launchUrl(uri);
+                              }
+                            },
+                          );
                         },
-                      );
-                    }),
-                  if (widget.chatId == _accreditationChatId)
-                    IconButton(
-                      icon: const Icon(Icons.auto_awesome_outlined),
-                      tooltip: 'סוכן AI',
-                      onPressed: () => Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (_) => const AccreditationAgentScreen(),
-                        ),
                       ),
-                    ),
-                  IconButton(
-                    icon: const Icon(Icons.search),
-                    tooltip: 'חיפוש',
-                    onPressed: _openSearch,
-                  ),
-                  PopupMenuButton<String>(
-                    icon: const Icon(Icons.more_vert),
-                    onSelected: _handleMenuAction,
-                    itemBuilder: (context) {
-                      final contact = _findCurrentChatContact(state);
-                      final phone = contact?.phone?.trim().isNotEmpty == true
-                          ? contact!.phone!.trim()
-                          : widget.chatId.trim();
-                      return [
-                        const PopupMenuItem(
-                          value: 'info',
-                          child: Row(
-                            children: [
-                              Icon(Icons.info_outline, size: 20),
-                              SizedBox(width: 12),
-                              Text('פרטים'),
-                            ],
+                    if (widget.chatId == _accreditationChatId)
+                      IconButton(
+                        icon: const Icon(Icons.auto_awesome_outlined),
+                        tooltip: 'סוכן AI',
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const AccreditationAgentScreen(),
                           ),
                         ),
-                        if (!chatInfo.isGroup)
+                      ),
+                    IconButton(
+                      icon: const Icon(Icons.search),
+                      tooltip: 'חיפוש',
+                      onPressed: _openSearch,
+                    ),
+                    PopupMenuButton<String>(
+                      icon: const Icon(Icons.more_vert),
+                      onSelected: _handleMenuAction,
+                      itemBuilder: (context) {
+                        final contact = _findCurrentChatContact(state);
+                        final phone = contact?.phone?.trim().isNotEmpty == true
+                            ? contact!.phone!.trim()
+                            : widget.chatId.trim();
+                        return [
                           const PopupMenuItem(
-                            value: 'call',
+                            value: 'info',
                             child: Row(
                               children: [
-                                Icon(Icons.call_outlined, size: 20),
+                                Icon(Icons.info_outline, size: 20),
                                 SizedBox(width: 12),
-                                Text('התקשר'),
+                                Text('פרטים'),
                               ],
                             ),
                           ),
-                        PopupMenuItem(
-                          value: 'delete_chat',
-                          child: Row(
-                            children: [
-                              Icon(
-                                Icons.delete_outline,
-                                size: 20,
-                                color: Theme.of(context).colorScheme.error,
+                          if (!chatInfo.isGroup)
+                            const PopupMenuItem(
+                              value: 'call',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.call_outlined, size: 20),
+                                  SizedBox(width: 12),
+                                  Text('התקשר'),
+                                ],
                               ),
-                              const SizedBox(width: 12),
-                              Text(
-                                'מחק שיחה',
-                                style: TextStyle(
+                            ),
+                          PopupMenuItem(
+                            value: 'delete_chat',
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.delete_outline,
+                                  size: 20,
                                   color: Theme.of(context).colorScheme.error,
                                 ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ];
-                    },
-                  ),
-                ],
-              ),
-        body: Column(
-          children: [
-            // Messages list + scroll-to-bottom FAB
-            Expanded(
-              child: Stack(
-                children: [
-                  // ── Message list ──────────────────────────────────────────
-                  messages.isEmpty
-                   ? (_searchActive && _searchQuery.isNotEmpty
-                       ? _buildSearchEmpty(context)
-                       : _buildEmptyState(context))
-                   : ListView.builder(
-                       key: _messagesListKey,
-                       controller: _scrollController,
-                       reverse: true,
-                       padding: const EdgeInsets.symmetric(
-                           horizontal: 8, vertical: 16),
-                       // +1 for the optional unread divider slot (only when not searching)
-                       itemCount: messages.length +
-                           (!_searchActive && widget.initialUnreadCount > 0
-                               ? 1
-                               : 0),
-                       itemBuilder: (context, index) {
-                         // With reverse: true, index 0 = newest message (bottom).
-                         // The unread divider sits just below the first unread message,
-                         // i.e. at position `initialUnreadCount` in the reversed list
-                         // (between last-read and first-unread).
-                         final unread =
-                             !_searchActive ? widget.initialUnreadCount : 0;
-                         if (unread > 0 && index == unread) {
-                           return _buildUnreadDivider(context);
-                         }
-
-                         // Shift the message index down by 1 after the divider slot.
-                         final msgIndex =
-                             (unread > 0 && index > unread) ? index - 1 : index;
-                         if (msgIndex >= messages.length) {
-                           return const SizedBox.shrink();
-                         }
-
-                         final message = messages[msgIndex];
-                         final previousMessage = msgIndex < messages.length - 1
-                             ? messages[msgIndex + 1]
-                             : null;
-                         final showDateHeader =
-                             _shouldShowDateHeader(message, previousMessage);
-
-                         // Resolve a non-null sender label for group bubbles.
-                         // Older messages or edge-case payloads may arrive
-                         // without `senderDisplayName`; fall back to contacts
-                         // and finally to the raw sender username so the
-                         // user can always tell who sent the message in a
-                         // group (matches what the FCM notification shows).
-                         //
-                         // Use `message.groupId != null` as the per-message
-                         // group check in addition to `chatInfo.isGroup`.
-                         // `chatInfo.isGroup` is only true when the group entry
-                         // is already present in `state.groups`; on a cold
-                         // start the groups map may still be empty when the
-                         // first frame is rendered, silently suppressing every
-                         // sender label.  `message.groupId != null` is set the
-                         // moment the message is built from the server payload
-                         // so it is always reliable.
-                         final messageIsFromGroup =
-                             chatInfo.isGroup || message.groupId != null;
-                         String? resolvedSenderLabel;
-                         if (messageIsFromGroup &&
-                             message.direction !=
-                                 MessageDirection.outgoing) {
-                           final senderId = message.sender.trim();
-                           final senderIsGroupId = senderId.toLowerCase() ==
-                               widget.chatId.trim().toLowerCase();
-                           final fromName =
-                               (message.senderDisplayName ?? '').trim();
-                           // fromName may be a raw phone/username stored as
-                           // groupSenderName — try resolving it against the
-                           // local contact list so the receiver sees a real
-                           // display name instead of a phone number.
-                           final fromNameContact =
-                               fromName.isNotEmpty ? _findContact(state, fromName) : null;
-                           final fromContact = _findContact(state, senderId);
-                           if ((fromNameContact?.displayName ?? '').isNotEmpty) {
-                             resolvedSenderLabel = fromNameContact!.displayName;
-                           } else if (fromName.isNotEmpty) {
-                             resolvedSenderLabel = fromName;
-                           } else if ((fromContact?.displayName ?? '').isNotEmpty) {
-                             resolvedSenderLabel = fromContact!.displayName;
-                           } else if (!senderIsGroupId &&
-                               senderId.isNotEmpty) {
-                             resolvedSenderLabel = senderId;
-                           }
-                         }
-
-                         return KeyedSubtree(
-                           key: _keyForMessage(message.id),
-                           child: Column(
-                           children: [
-                             if (showDateHeader)
-                               _buildDateHeader(context, message.timestamp),
-                             _MessageBubble(
-                               message: message,
-                               isGroup: messageIsFromGroup,
-                               resolvedSenderLabel: resolvedSenderLabel,
-                               onSenderTap: () => _showGroupSenderActions(
-                                 senderId: message.sender,
-                                 senderLabel: resolvedSenderLabel ?? message.sender,
-                               ),
-                               searchQuery:
-                                   _searchActive ? _searchQuery : null,
-                               onReply: () => setState(
-                                   () => _replyTo = MessageReference(
-                                         messageId: message.messageId,
-                                         sender: message.sender,
-                                         senderDisplayName:
-                                             message.senderDisplayName,
-                                         body: message.body,
-                                         imageUrl: message.imageUrl,
-                                       )),
-                               onReact: (emoji) =>
-                                   _handleReaction(message, emoji),
-                               onEdit:
-                                   message.direction == MessageDirection.outgoing
-                                       ? () => setState(
-                                           () => _editingMessage = message)
-                                       : null,
-                               onDelete:
-                                   message.direction == MessageDirection.outgoing
-                                       ? () => _handleDelete(message)
-                                       : null,
-                               onCopy: () => _handleCopy(message),
-                               onForward: () => _handleForward(message),
-                             ),
-                           ],
-                           ),
-                         );
-                       },
-                     ),
-
-                  // ── Scroll-to-bottom button ───────────────────────────────
-                  // Shown when the user has scrolled up (offset > threshold).
-                  // Mirrors Angular's `scroll-bottom-btn`.
-                  if (!_searchActive)
-                    Positioned(
-                      bottom: 12,
-                      left: 12,
-                      child: AnimatedOpacity(
-                        opacity: _showScrollButton ? 1.0 : 0.0,
-                        duration: const Duration(milliseconds: 200),
-                        child: IgnorePointer(
-                          ignoring: !_showScrollButton,
-                          child: FloatingActionButton.small(
-                            heroTag: 'scrollToBottom_${widget.chatId}',
-                            onPressed: _scrollToBottom,
-                            tooltip: 'גלול להודעה האחרונה',
-                            backgroundColor:
-                                Theme.of(context).colorScheme.primaryContainer,
-                            foregroundColor:
-                                Theme.of(context).colorScheme.onPrimaryContainer,
-                            elevation: 2,
-                            child: const Icon(Icons.keyboard_arrow_down),
-                          ),
-                        ),
-                      ),
-                    ),
-
-                  // ── Floating date badge ───────────────────────────────────
-                  // Shows the date of the topmost visible message, mirroring
-                  // Angular's `messages-sticky-date` chip.
-                  if (!_searchActive && _stickyDate != null && messages.isNotEmpty)
-                    Positioned(
-                      top: 8,
-                      left: 0,
-                      right: 0,
-                      child: Center(
-                        child: AnimatedOpacity(
-                          opacity: 1.0,
-                          duration: const Duration(milliseconds: 200),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .surfaceContainerHighest
-                                  .withAlpha(230),
-                              borderRadius: BorderRadius.circular(16),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withAlpha(25),
-                                  blurRadius: 4,
-                                  offset: const Offset(0, 1),
+                                const SizedBox(width: 12),
+                                Text(
+                                  'מחק שיחה',
+                                  style: TextStyle(
+                                    color: Theme.of(context).colorScheme.error,
+                                  ),
                                 ),
                               ],
                             ),
-                            child: Text(
-                              _stickyDate!,
-                              style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ];
+                      },
+                    ),
+                  ],
+                ),
+          body: Column(
+            children: [
+              // Messages list + scroll-to-bottom FAB
+              Expanded(
+                child: Stack(
+                  children: [
+                    // ── Message list ──────────────────────────────────────────
+                    messages.isEmpty
+                        ? (_searchActive && _searchQuery.isNotEmpty
+                              ? _buildSearchEmpty(context)
+                              : _buildEmptyState(context))
+                        : ListView.builder(
+                            key: _messagesListKey,
+                            controller: _scrollController,
+                            reverse: true,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 16,
+                            ),
+                            // +1 for the optional unread divider slot (only when not searching)
+                            itemCount:
+                                messages.length +
+                                (!_searchActive && widget.initialUnreadCount > 0
+                                    ? 1
+                                    : 0),
+                            itemBuilder: (context, index) {
+                              // With reverse: true, index 0 = newest message (bottom).
+                              // The unread divider sits just below the first unread message,
+                              // i.e. at position `initialUnreadCount` in the reversed list
+                              // (between last-read and first-unread).
+                              final unread = !_searchActive
+                                  ? widget.initialUnreadCount
+                                  : 0;
+                              if (unread > 0 && index == unread) {
+                                return _buildUnreadDivider(context);
+                              }
+
+                              // Shift the message index down by 1 after the divider slot.
+                              final msgIndex = (unread > 0 && index > unread)
+                                  ? index - 1
+                                  : index;
+                              if (msgIndex >= messages.length) {
+                                return const SizedBox.shrink();
+                              }
+
+                              final message = messages[msgIndex];
+                              final previousMessage =
+                                  msgIndex < messages.length - 1
+                                  ? messages[msgIndex + 1]
+                                  : null;
+                              final showDateHeader = _shouldShowDateHeader(
+                                message,
+                                previousMessage,
+                              );
+
+                              // Resolve a non-null sender label for group bubbles.
+                              // Older messages or edge-case payloads may arrive
+                              // without `senderDisplayName`; fall back to contacts
+                              // and finally to the raw sender username so the
+                              // user can always tell who sent the message in a
+                              // group (matches what the FCM notification shows).
+                              //
+                              // Use `message.groupId != null` as the per-message
+                              // group check in addition to `chatInfo.isGroup`.
+                              // `chatInfo.isGroup` is only true when the group entry
+                              // is already present in `state.groups`; on a cold
+                              // start the groups map may still be empty when the
+                              // first frame is rendered, silently suppressing every
+                              // sender label.  `message.groupId != null` is set the
+                              // moment the message is built from the server payload
+                              // so it is always reliable.
+                              final messageIsFromGroup =
+                                  chatInfo.isGroup || message.groupId != null;
+                              String? resolvedSenderLabel;
+                              if (messageIsFromGroup &&
+                                  message.direction !=
+                                      MessageDirection.outgoing) {
+                                final senderId = message.sender.trim();
+                                final senderIsGroupId =
+                                    senderId.toLowerCase() ==
+                                    widget.chatId.trim().toLowerCase();
+                                final fromName =
+                                    (message.senderDisplayName ?? '').trim();
+                                // fromName may be a raw phone/username stored as
+                                // groupSenderName — try resolving it against the
+                                // local contact list so the receiver sees a real
+                                // display name instead of a phone number.
+                                final fromNameContact = fromName.isNotEmpty
+                                    ? _findContact(state, fromName)
+                                    : null;
+                                final fromContact = _findContact(
+                                  state,
+                                  senderId,
+                                );
+                                if ((fromNameContact?.displayName ?? '')
+                                    .isNotEmpty) {
+                                  resolvedSenderLabel =
+                                      fromNameContact!.displayName;
+                                } else if (fromName.isNotEmpty) {
+                                  resolvedSenderLabel = fromName;
+                                } else if ((fromContact?.displayName ?? '')
+                                    .isNotEmpty) {
+                                  resolvedSenderLabel =
+                                      fromContact!.displayName;
+                                } else if (!senderIsGroupId &&
+                                    senderId.isNotEmpty) {
+                                  resolvedSenderLabel = senderId;
+                                }
+                              }
+
+                              return KeyedSubtree(
+                                key: _keyForMessage(message.id),
+                                child: Column(
+                                  children: [
+                                    if (showDateHeader)
+                                      _buildDateHeader(
+                                        context,
+                                        message.timestamp,
+                                      ),
+                                    _MessageBubble(
+                                      message: message,
+                                      isGroup: messageIsFromGroup,
+                                      resolvedSenderLabel: resolvedSenderLabel,
+                                      onSenderTap: () =>
+                                          _showGroupSenderActions(
+                                            senderId: message.sender,
+                                            senderLabel:
+                                                resolvedSenderLabel ??
+                                                message.sender,
+                                          ),
+                                      searchQuery: _searchActive
+                                          ? _searchQuery
+                                          : null,
+                                      onReply: () => setState(
+                                        () => _replyTo = MessageReference(
+                                          messageId: message.messageId,
+                                          sender: message.sender,
+                                          senderDisplayName:
+                                              message.senderDisplayName,
+                                          body: message.body,
+                                          imageUrl: message.imageUrl,
+                                        ),
+                                      ),
+                                      onReact: (emoji) =>
+                                          _handleReaction(message, emoji),
+                                      onEdit:
+                                          message.direction ==
+                                              MessageDirection.outgoing
+                                          ? () => setState(
+                                              () => _editingMessage = message,
+                                            )
+                                          : null,
+                                      onDelete:
+                                          message.direction ==
+                                              MessageDirection.outgoing
+                                          ? () => _handleDelete(message)
+                                          : null,
+                                      onCopy: () => _handleCopy(message),
+                                      onForward: () => _handleForward(message),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+
+                    // ── Scroll-to-bottom button ───────────────────────────────
+                    // Shown when the user has scrolled up (offset > threshold).
+                    // Mirrors Angular's `scroll-bottom-btn`.
+                    if (!_searchActive)
+                      Positioned(
+                        bottom: 12,
+                        left: 12,
+                        child: AnimatedOpacity(
+                          opacity: _showScrollButton ? 1.0 : 0.0,
+                          duration: const Duration(milliseconds: 200),
+                          child: IgnorePointer(
+                            ignoring: !_showScrollButton,
+                            child: FloatingActionButton.small(
+                              heroTag: 'scrollToBottom_${widget.chatId}',
+                              onPressed: _scrollToBottom,
+                              tooltip: 'גלול להודעה האחרונה',
+                              backgroundColor: Theme.of(context)
+                                  .colorScheme
+                                  .primaryContainer,
+                              foregroundColor: Theme.of(context)
+                                  .colorScheme
+                                  .onPrimaryContainer,
+                              elevation: 2,
+                              child: const Icon(Icons.keyboard_arrow_down),
                             ),
                           ),
                         ),
                       ),
-                    ),
-                ],
-              ),
-            ),
 
-            // Reply preview (hidden while searching)
-            if (!_searchActive && _replyTo != null)
-              _ReplyPreview(
-                replyTo: _replyTo!,
-                onCancel: () => setState(() => _replyTo = null),
+                    // ── Floating date badge ───────────────────────────────────
+                    // Shows the date of the topmost visible message, mirroring
+                    // Angular's `messages-sticky-date` chip.
+                    if (!_searchActive &&
+                        _stickyDate != null &&
+                        messages.isNotEmpty)
+                      Positioned(
+                        top: 8,
+                        left: 0,
+                        right: 0,
+                        child: Center(
+                          child: AnimatedOpacity(
+                            opacity: 1.0,
+                            duration: const Duration(milliseconds: 200),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 6,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .surfaceContainerHighest
+                                    .withAlpha(230),
+                                borderRadius: BorderRadius.circular(16),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withAlpha(25),
+                                    blurRadius: 4,
+                                    offset: const Offset(0, 1),
+                                  ),
+                                ],
+                              ),
+                              child: Text(
+                                _stickyDate!,
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
               ),
 
-            // Edit preview (hidden while searching)
-            if (!_searchActive && _editingMessage != null)
-              _EditPreview(
-                message: _editingMessage!,
-                onCancel: () => setState(() => _editingMessage = null),
-              ),
+              // Reply preview (hidden while searching)
+              if (!_searchActive && _replyTo != null)
+                _ReplyPreview(
+                  replyTo: _replyTo!,
+                  onCancel: () => setState(() => _replyTo = null),
+                ),
 
-            // Typing indicator (hidden while searching)
-            if (!_searchActive)
-              _TypingIndicatorRow(
-                chatId: widget.chatId,
-                state: state,
-              ),
+              // Edit preview (hidden while searching)
+              if (!_searchActive && _editingMessage != null)
+                _EditPreview(
+                  message: _editingMessage!,
+                  onCancel: () => setState(() => _editingMessage = null),
+                ),
 
-            // Message composer (hidden while searching)
-            if (!_searchActive)
-              MessageComposer(
-                chatId: widget.chatId,
-                isGroup: chatInfo.isGroup,
-                replyTo: _replyTo,
-                editingMessage: _editingMessage,
-                onMessageSent: () {
-                  setState(() {
-                    _replyTo = null;
-                    _editingMessage = null;
-                  });
-                  _scrollToBottom();
-                },
-              ),
-          ],
-        ),
+              // Typing indicator (hidden while searching)
+              if (!_searchActive)
+                _TypingIndicatorRow(chatId: widget.chatId, state: state),
+
+              // Message composer (hidden while searching)
+              if (!_searchActive)
+                MessageComposer(
+                  chatId: widget.chatId,
+                  isGroup: chatInfo.isGroup,
+                  replyTo: _replyTo,
+                  editingMessage: _editingMessage,
+                  onMessageSent: () {
+                    setState(() {
+                      _replyTo = null;
+                      _editingMessage = null;
+                    });
+                    _scrollToBottom();
+                  },
+                ),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  ({String title, String? subtitle, bool isGroup, String? avatarUrl}) _getChatInfo(ChatState state) {
+  ({String title, String? subtitle, bool isGroup, String? avatarUrl})
+  _getChatInfo(ChatState state) {
     final group = state.groups[widget.chatId];
     if (group != null) {
       return (
@@ -758,7 +823,9 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       title: contact?.displayName ?? widget.chatId,
       subtitle: contact?.info,
       isGroup: false,
-      avatarUrl: (contact?.upic?.trim().isNotEmpty ?? false) ? contact!.upic : null,
+      avatarUrl: (contact?.upic?.trim().isNotEmpty ?? false)
+          ? contact!.upic
+          : null,
     );
   }
 
@@ -771,22 +838,25 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
             'assets/images/logo.png',
             width: 80,
             height: 80,
-            color: Theme.of(context).colorScheme.primary.withAlpha((255 * 0.3).round()),
+            color: Theme.of(context).colorScheme.primary
+                .withAlpha((255 * 0.3).round()),
             colorBlendMode: BlendMode.modulate,
           ),
           const SizedBox(height: 16),
           Text(
             'אין הודעות עדיין',
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.6).round()),
-                ),
+              color: Theme.of(context).colorScheme.onSurface
+                  .withAlpha((255 * 0.6).round()),
+            ),
           ),
           const SizedBox(height: 8),
           Text(
             'שלח הודעה ראשונה!',
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurface.withAlpha((255 * 0.4).round()),
-                ),
+              color: Theme.of(context).colorScheme.onSurface
+                  .withAlpha((255 * 0.4).round()),
+            ),
           ),
         ],
       ),
@@ -797,7 +867,9 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     if (previous == null) return true;
 
     final currentDate = DateTime.fromMillisecondsSinceEpoch(current.timestamp);
-    final previousDate = DateTime.fromMillisecondsSinceEpoch(previous.timestamp);
+    final previousDate = DateTime.fromMillisecondsSinceEpoch(
+      previous.timestamp,
+    );
 
     return currentDate.year != previousDate.year ||
         currentDate.month != previousDate.month ||
@@ -821,9 +893,9 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
             child: Text(
               '${widget.initialUnreadCount} הודעות שלא נקראו',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: const Color(0xFF1976D2),
-                    fontWeight: FontWeight.w600,
-                  ),
+                color: const Color(0xFF1976D2),
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
           const SizedBox(width: 8),
@@ -858,10 +930,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
             color: Theme.of(context).colorScheme.surfaceContainerHighest,
             borderRadius: BorderRadius.circular(16),
           ),
-          child: Text(
-            dateText,
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
+          child: Text(dateText, style: Theme.of(context).textTheme.bodySmall),
         ),
       ),
     );
@@ -922,7 +991,9 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       ),
     );
     if (confirmed != true || !mounted) return;
-    final deleted = await ref.read(chatStoreProvider.notifier).deleteChat(widget.chatId);
+    final deleted = await ref
+        .read(chatStoreProvider.notifier)
+        .deleteChat(widget.chatId);
     if (!mounted) return;
     if (deleted) {
       if (widget.embedded) {
@@ -945,13 +1016,14 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     final senderContact =
         _findContact(state, senderId) ?? _findContact(state, senderLabel);
     final contactUsername = senderContact?.username.trim() ?? '';
-    final normalizedSender =
-        contactUsername.isNotEmpty ? contactUsername : senderId.trim();
+    final normalizedSender = contactUsername.isNotEmpty
+        ? contactUsername
+        : senderId.trim();
     final senderPhone = senderContact?.phone?.trim() ?? '';
     final senderDisplayLabel =
         senderContact?.displayName.trim().isNotEmpty == true
-            ? senderContact!.displayName
-            : senderLabel;
+        ? senderContact!.displayName
+        : senderLabel;
     if (normalizedSender.isEmpty &&
         senderPhone.isEmpty &&
         senderDisplayLabel.trim().isEmpty) {
@@ -964,7 +1036,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     // Some group records store `sender == currentChatId` (the group id). When we
     // successfully resolved a real contact from the sender label, keep going so
     // the action sheet still opens for that person.
-    if (normalizedSenderLower == currentChatLower && senderContact == null) return;
+    if (normalizedSenderLower == currentChatLower && senderContact == null)
+      return;
     if (normalizedSenderLower == currentUserLower) {
       return;
     }
@@ -1010,8 +1083,9 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
               title: const Text('שלח הודעה פרטית'),
               onTap: () {
                 Navigator.of(ctx).pop();
-                final chatId =
-                    ref.read(chatStoreProvider.notifier).startDirectChat(normalizedSender);
+                final chatId = ref
+                    .read(chatStoreProvider.notifier)
+                    .startDirectChat(normalizedSender);
                 if (chatId.isEmpty) {
                   if (mounted) {
                     showTopToast(context, 'לא ניתן לפתוח שיחה פרטית');
@@ -1019,11 +1093,14 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                   return;
                 }
                 if (!mounted) return;
-                final unread = ref.read(chatStoreProvider).unreadByChat[chatId] ?? 0;
+                final unread =
+                    ref.read(chatStoreProvider).unreadByChat[chatId] ?? 0;
                 Navigator.of(context).push(
                   MaterialPageRoute(
-                    builder: (_) =>
-                        MessageScreen(chatId: chatId, initialUnreadCount: unread),
+                    builder: (_) => MessageScreen(
+                      chatId: chatId,
+                      initialUnreadCount: unread,
+                    ),
                   ),
                 );
               },
@@ -1049,16 +1126,10 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (info.isNotEmpty)
-              Text(
-                info,
-                textDirection: ui.TextDirection.rtl,
-              ),
+              Text(info, textDirection: ui.TextDirection.rtl),
             if (phone.isNotEmpty) ...[
               if (info.isNotEmpty) const SizedBox(height: 8),
-              Text(
-                phone,
-                textDirection: ui.TextDirection.rtl,
-              ),
+              Text(phone, textDirection: ui.TextDirection.rtl),
             ],
           ],
         ),
@@ -1097,8 +1168,9 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       _searchActive = true;
       _searchQuery = '';
     });
-    WidgetsBinding.instance
-        .addPostFrameCallback((_) => _searchFocus.requestFocus());
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _searchFocus.requestFocus(),
+    );
   }
 
   void _closeSearch() {
@@ -1117,20 +1189,16 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
           Icon(
             Icons.search_off,
             size: 60,
-            color: Theme.of(context)
-                .colorScheme
-                .onSurface
+            color: Theme.of(context).colorScheme.onSurface
                 .withAlpha((255 * 0.3).round()),
           ),
           const SizedBox(height: 12),
           Text(
             'לא נמצאו הודעות עבור "$_searchQuery"',
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: Theme.of(context)
-                      .colorScheme
-                      .onSurface
-                      .withAlpha((255 * 0.5).round()),
-                ),
+              color: Theme.of(context).colorScheme.onSurface
+                  .withAlpha((255 * 0.5).round()),
+            ),
             textAlign: TextAlign.center,
           ),
         ],
@@ -1138,7 +1206,11 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     );
   }
 
-  void _showAvatarPreview(BuildContext context, String title, String avatarUrl) {
+  void _showAvatarPreview(
+    BuildContext context,
+    String title,
+    String avatarUrl,
+  ) {
     showDialog(
       context: context,
       barrierColor: Colors.black87,
@@ -1186,9 +1258,13 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     );
 
     if (existingReaction?.emoji == emoji) {
-      ref.read(chatStoreProvider.notifier).removeReaction(message.messageId, emoji);
+      ref
+          .read(chatStoreProvider.notifier)
+          .removeReaction(message.messageId, emoji);
     } else {
-      ref.read(chatStoreProvider.notifier).addReaction(message.messageId, emoji);
+      ref
+          .read(chatStoreProvider.notifier)
+          .addReaction(message.messageId, emoji);
     }
   }
 
@@ -1197,7 +1273,10 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('מחיקת הודעה', textDirection: ui.TextDirection.rtl),
-        content: const Text('האם אתה בטוח שברצונך למחוק הודעה זו?', textDirection: ui.TextDirection.rtl),
+        content: const Text(
+          'האם אתה בטוח שברצונך למחוק הודעה זו?',
+          textDirection: ui.TextDirection.rtl,
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
@@ -1206,9 +1285,13 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
           TextButton(
             onPressed: () {
               Navigator.of(context).pop();
-              ref.read(chatStoreProvider.notifier).deleteMessage(message.messageId);
+              ref
+                  .read(chatStoreProvider.notifier)
+                  .deleteMessage(message.messageId);
             },
-            style: TextButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.error),
+            style: TextButton.styleFrom(
+              foregroundColor: Theme.of(context).colorScheme.error,
+            ),
             child: const Text('מחק'),
           ),
         ],
@@ -1218,7 +1301,11 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
 
   void _handleCopy(ChatMessage message) {
     Clipboard.setData(ClipboardData(text: message.body));
-    showTopToast(context, 'ההודעה הועתקה', duration: const Duration(seconds: 1));
+    showTopToast(
+      context,
+      'ההודעה הועתקה',
+      duration: const Duration(seconds: 1),
+    );
   }
 
   void _handleForward(ChatMessage message) {
@@ -1236,18 +1323,23 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
         contacts: contacts,
         onContactSelected: (contact) async {
           Navigator.of(ctx).pop();
-          final senderName = state.contacts[message.sender]?.displayName ??
-              ref.read(chatStoreProvider.notifier).getDisplayName(message.sender);
+          final senderName =
+              state.contacts[message.sender]?.displayName ??
+              ref
+                  .read(chatStoreProvider.notifier)
+                  .getDisplayName(message.sender);
           try {
-            await ref.read(chatStoreProvider.notifier).sendDirectMessage(
-              recipient: contact.username,
-              body: message.body,
-              imageUrl: message.imageUrl,
-              fileUrl: message.fileUrl,
-              forwarded: true,
-              forwardedFrom: message.sender,
-              forwardedFromName: senderName,
-            );
+            await ref
+                .read(chatStoreProvider.notifier)
+                .sendDirectMessage(
+                  recipient: contact.username,
+                  body: message.body,
+                  imageUrl: message.imageUrl,
+                  fileUrl: message.fileUrl,
+                  forwarded: true,
+                  forwardedFrom: message.sender,
+                  forwardedFromName: senderName,
+                );
             if (mounted) {
               showTopToast(context, 'ההודעה הועברה ל${contact.displayName}');
             }
@@ -1263,11 +1355,13 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
 
   void _scrollToBottom() {
     if (_scrollController.hasClients) {
-      _scrollController.animateTo(
-        0,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOut,
-      ).whenComplete(_scheduleStickyDateRefresh);
+      _scrollController
+          .animateTo(
+            0,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          )
+          .whenComplete(_scheduleStickyDateRefresh);
     }
   }
 }
@@ -1279,8 +1373,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
 /// Extracts a filename from a URL for use as the saved file name.
 String _extractSaveFilename(String url) {
   try {
-    final segment = Uri.parse(url)
-        .pathSegments
+    final segment = Uri.parse(url).pathSegments
         .lastWhere((s) => s.isNotEmpty, orElse: () => '');
     final decoded = Uri.decodeComponent(segment);
     if (decoded.isNotEmpty) return decoded;
@@ -1293,10 +1386,15 @@ String _extractSaveFilename(String url) {
 
 String _sanitizeSaveFilename(String name) {
   final normalized = name.replaceAll('\\', '/');
-  final segments = normalized.split('/').where((segment) => segment.isNotEmpty).toList();
+  final segments = normalized
+      .split('/')
+      .where((segment) => segment.isNotEmpty)
+      .toList();
   final basename = segments.isNotEmpty ? segments.last : null;
   final candidate = (basename ?? name).replaceAll('\u0000', '');
-  final safe = candidate.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '_').trim();
+  final safe = candidate
+      .replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '_')
+      .trim();
   if (safe.isEmpty || safe == '.' || safe == '..') {
     return 'file_${DateTime.now().millisecondsSinceEpoch}';
   }
@@ -1329,8 +1427,19 @@ Future<File> _createUniqueSaveFile(String filename) async {
 /// original extension, so formats like HEIC or TIFF reach `fileUrl` even
 /// though they are never rendered as an inline `_ImagePart`.
 const Set<String> _kBlockedSaveExtensions = {
-  'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'heif',
-  'tif', 'tiff', 'avif', 'svg', 'ico',
+  'jpg',
+  'jpeg',
+  'png',
+  'gif',
+  'webp',
+  'bmp',
+  'heic',
+  'heif',
+  'tif',
+  'tiff',
+  'avif',
+  'svg',
+  'ico',
 };
 
 /// Whether [url] points at an image, which users are not allowed to save.
@@ -1388,7 +1497,9 @@ Future<void> _saveFileToDevice(
 
     if (response.statusCode != 200 || response.data == null) {
       showTopToastOnOverlay(
-          overlay, 'שגיאה בהורדת הקובץ (${response.statusCode ?? "?"})');
+        overlay,
+        'שגיאה בהורדת הקובץ (${response.statusCode ?? "?"})',
+      );
       return;
     }
 
@@ -1524,8 +1635,10 @@ String _normalizeMessageUrl(String url) {
 
   if (RegExp(r'^www\.', caseSensitive: false).hasMatch(value)) {
     value = 'https://$value';
-  } else if (RegExp(r'^/?(?:notify/)?uploads/', caseSensitive: false)
-      .hasMatch(value)) {
+  } else if (RegExp(
+    r'^/?(?:notify/)?uploads/',
+    caseSensitive: false,
+  ).hasMatch(value)) {
     value = value.startsWith('/') ? value : '/$value';
   }
 
@@ -1541,9 +1654,10 @@ String _normalizeMessageUrl(String url) {
   return value;
 }
 
-bool _isImageUrl(String url) =>
-    RegExp(r'\.(jpeg|jpg|png|gif|webp)(\?|$)', caseSensitive: false)
-        .hasMatch(url);
+bool _isImageUrl(String url) => RegExp(
+  r'\.(jpeg|jpg|png|gif|webp)(\?|$)',
+  caseSensitive: false,
+).hasMatch(url);
 
 bool _isFileUrl(String url) =>
     RegExp(r'\.(pdf|doc|docx)(\?|$)', caseSensitive: false).hasMatch(url);
@@ -1558,7 +1672,8 @@ bool _isLocationUrl(String url) {
 
 /// Strips trailing punctuation characters from a URL.
 ({String cleanUrl, String trailingText}) _stripTrailingPunctuationUrl(
-    String url) {
+  String url,
+) {
   var clean = url;
   var trailing = '';
   while (clean.isNotEmpty && '),.!?;:'.contains(clean[clean.length - 1])) {
@@ -1570,7 +1685,8 @@ bool _isLocationUrl(String url) {
 
 /// Strips trailing punctuation characters from a phone number.
 ({String cleanPhone, String trailingText}) _stripTrailingPhonePunctuation(
-    String phone) {
+  String phone,
+) {
   var clean = phone;
   var trailing = '';
   while (clean.isNotEmpty && '),.!?;:'.contains(clean[clean.length - 1])) {
@@ -1618,8 +1734,11 @@ void _appendTextAndPhoneParts(List<_MessagePart> parts, String text) {
       // GPS coordinate pair — convert to Google Maps URL.
       final subParts = rawMatch.split(RegExp(r'\s*,\s*'));
       if (subParts.length >= 2) {
-        parts.add(_LocationPart(
-            'https://www.google.com/maps?q=${subParts[0].trim()},${subParts[1].trim()}'));
+        parts.add(
+          _LocationPart(
+            'https://www.google.com/maps?q=${subParts[0].trim()},${subParts[1].trim()}',
+          ),
+        );
       } else {
         parts.add(_TextPart(rawMatch));
       }
@@ -1640,8 +1759,9 @@ void _appendTextAndPhoneParts(List<_MessagePart> parts, String text) {
         continue;
       }
 
-      final (:cleanPhone, :trailingText) =
-          _stripTrailingPhonePunctuation(rawMatch);
+      final (:cleanPhone, :trailingText) = _stripTrailingPhonePunctuation(
+        rawMatch,
+      );
       final normalized = _normalizePhoneForAction(cleanPhone);
       if (normalized.isNotEmpty) {
         parts.add(_PhonePart(display: cleanPhone, phone: normalized));
@@ -1758,7 +1878,9 @@ class _MessageBubble extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 2),
         child: Row(
-          mainAxisAlignment: isOutgoing ? MainAxisAlignment.start : MainAxisAlignment.end,
+          mainAxisAlignment: isOutgoing
+              ? MainAxisAlignment.start
+              : MainAxisAlignment.end,
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             if (isOutgoing) const SizedBox(width: 8),
@@ -1767,7 +1889,10 @@ class _MessageBubble extends StatelessWidget {
                 constraints: BoxConstraints(
                   maxWidth: MediaQuery.of(context).size.width * 0.75,
                 ),
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
                   color: isOutgoing
                       ? AppColors.outgoingBubble
@@ -1795,7 +1920,10 @@ class _MessageBubble extends StatelessWidget {
                           borderRadius: BorderRadius.circular(4),
                           onTap: onSenderTap,
                           child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 2,
+                              vertical: 1,
+                            ),
                             child: Text(
                               resolvedSenderLabel!,
                               style: TextStyle(
@@ -1821,14 +1949,18 @@ class _MessageBubble extends StatelessWidget {
                             Icon(
                               Icons.forward,
                               size: 14,
-                              color: theme.colorScheme.onSurface.withAlpha((255 * 0.5).round()),
+                              color: theme.colorScheme.onSurface.withAlpha(
+                                (255 * 0.5).round(),
+                              ),
                             ),
                             const SizedBox(width: 4),
                             Text(
                               'הועבר',
                               style: theme.textTheme.bodySmall?.copyWith(
                                 fontStyle: FontStyle.italic,
-                                color: theme.colorScheme.onSurface.withAlpha((255 * 0.5).round()),
+                                color: theme.colorScheme.onSurface.withAlpha(
+                                  (255 * 0.5).round(),
+                                ),
                               ),
                             ),
                           ],
@@ -1836,10 +1968,15 @@ class _MessageBubble extends StatelessWidget {
                       ),
 
                     // Image
-                    if (message.imageUrl != null && !isDeleted)
+                    if ((message.imageUrl != null ||
+                            message.localFilePath != null) &&
+                        !isDeleted)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
-                        child: _ImageAttachmentCard(url: message.imageUrl!),
+                        child: _ImageAttachmentCard(
+                          url: message.imageUrl,
+                          localFilePath: message.localFilePath,
+                        ),
                       ),
 
                     // File attachment
@@ -1855,11 +1992,17 @@ class _MessageBubble extends StatelessWidget {
                         '🗑️ הודעה זו נמחקה',
                         style: theme.textTheme.bodyMedium?.copyWith(
                           fontStyle: FontStyle.italic,
-                          color: theme.colorScheme.onSurface.withAlpha((255 * 0.5).round()),
+                          color: theme.colorScheme.onSurface.withAlpha(
+                            (255 * 0.5).round(),
+                          ),
                         ),
                       )
                     else
-                      _MessageBody(body: message.body, theme: theme, searchQuery: searchQuery),
+                      _MessageBody(
+                        body: message.body,
+                        theme: theme,
+                        searchQuery: searchQuery,
+                      ),
 
                     const SizedBox(height: 4),
 
@@ -1869,10 +2012,14 @@ class _MessageBubble extends StatelessWidget {
                       children: [
                         Text(
                           DateFormat.Hm('he').format(
-                            DateTime.fromMillisecondsSinceEpoch(message.timestamp),
+                            DateTime.fromMillisecondsSinceEpoch(
+                              message.timestamp,
+                            ),
                           ),
                           style: theme.textTheme.bodySmall?.copyWith(
-                            color: theme.colorScheme.onSurface.withAlpha((255 * 0.5).round()),
+                            color: theme.colorScheme.onSurface.withAlpha(
+                              (255 * 0.5).round(),
+                            ),
                           ),
                         ),
                         if (message.editedAt != null) ...[
@@ -1881,7 +2028,9 @@ class _MessageBubble extends StatelessWidget {
                             '(נערך)',
                             style: theme.textTheme.bodySmall?.copyWith(
                               fontStyle: FontStyle.italic,
-                              color: theme.colorScheme.onSurface.withAlpha((255 * 0.5).round()),
+                              color: theme.colorScheme.onSurface.withAlpha(
+                                (255 * 0.5).round(),
+                              ),
                             ),
                           ),
                         ],
@@ -1893,7 +2042,8 @@ class _MessageBubble extends StatelessWidget {
                     ),
 
                     // Reactions
-                    if (message.reactions != null && message.reactions!.isNotEmpty)
+                    if (message.reactions != null &&
+                        message.reactions!.isNotEmpty)
                       _buildReactions(context),
                   ],
                 ),
@@ -1914,13 +2064,12 @@ class _MessageBubble extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest.withAlpha((255 * 0.5).round()),
+        color: theme.colorScheme.surfaceContainerHighest.withAlpha(
+          (255 * 0.5).round(),
+        ),
         borderRadius: BorderRadius.circular(8),
         border: const Border(
-          right: const BorderSide(
-            color: AppColors.primary,
-            width: 3,
-          ),
+          right: const BorderSide(color: AppColors.primary, width: 3),
         ),
       ),
       child: Column(
@@ -1939,8 +2088,8 @@ class _MessageBubble extends StatelessWidget {
             replyTo.imageUrl != null
                 ? '📷 תמונה'
                 : (replyTo.body ?? '').length > 50
-                    ? '${replyTo.body!.substring(0, 50)}...'
-                    : (replyTo.body ?? ''),
+                ? '${replyTo.body!.substring(0, 50)}...'
+                : (replyTo.body ?? ''),
             style: theme.textTheme.bodySmall,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
@@ -1986,7 +2135,8 @@ class _MessageBubble extends StatelessWidget {
     final reactionCounts = <String, int>{};
 
     for (final reaction in reactions) {
-      reactionCounts[reaction.emoji] = (reactionCounts[reaction.emoji] ?? 0) + 1;
+      reactionCounts[reaction.emoji] =
+          (reactionCounts[reaction.emoji] ?? 0) + 1;
     }
 
     return Padding(
@@ -2077,8 +2227,14 @@ class _MessageBubble extends StatelessWidget {
               ),
             if (onDelete != null)
               ListTile(
-                leading: Icon(Icons.delete, color: Theme.of(context).colorScheme.error),
-                title: Text('מחק', style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                leading: Icon(
+                  Icons.delete,
+                  color: Theme.of(context).colorScheme.error,
+                ),
+                title: Text(
+                  'מחק',
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
                 onTap: () {
                   Navigator.of(context).pop();
                   onDelete!();
@@ -2141,10 +2297,7 @@ class _ReplyPreview extends StatelessWidget {
   final MessageReference replyTo;
   final VoidCallback onCancel;
 
-  const _ReplyPreview({
-    required this.replyTo,
-    required this.onCancel,
-  });
+  const _ReplyPreview({required this.replyTo, required this.onCancel});
 
   @override
   Widget build(BuildContext context) {
@@ -2154,17 +2307,11 @@ class _ReplyPreview extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHighest,
-        border: Border(
-          top: BorderSide(color: theme.dividerColor),
-        ),
+        border: Border(top: BorderSide(color: theme.dividerColor)),
       ),
       child: Row(
         children: [
-          Container(
-            width: 3,
-            height: 40,
-            color: AppColors.primary,
-          ),
+          Container(width: 3, height: 40, color: AppColors.primary),
           const SizedBox(width: 8),
           Expanded(
             child: Column(
@@ -2206,10 +2353,7 @@ class _EditPreview extends StatelessWidget {
   final ChatMessage message;
   final VoidCallback onCancel;
 
-  const _EditPreview({
-    required this.message,
-    required this.onCancel,
-  });
+  const _EditPreview({required this.message, required this.onCancel});
 
   @override
   Widget build(BuildContext context) {
@@ -2219,9 +2363,7 @@ class _EditPreview extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHighest,
-        border: Border(
-          top: BorderSide(color: theme.dividerColor),
-        ),
+        border: Border(top: BorderSide(color: theme.dividerColor)),
       ),
       child: Row(
         children: [
@@ -2276,8 +2418,7 @@ class _TypingIndicatorRow extends StatelessWidget {
     String label;
     if (typingSet.length == 1) {
       final username = typingSet.first;
-      final displayName =
-          state.contacts[username]?.displayName ?? username;
+      final displayName = state.contacts[username]?.displayName ?? username;
       label = '$displayName מקליד/ה...';
     } else {
       label = 'כמה אנשים מקלידים...';
@@ -2333,9 +2474,7 @@ class _DotsAnimationState extends State<_DotsAnimation>
 
   @override
   Widget build(BuildContext context) {
-    final color = Theme.of(context)
-        .colorScheme
-        .onSurface
+    final color = Theme.of(context).colorScheme.onSurface
         .withAlpha((255 * 0.5).round());
     return AnimatedBuilder(
       animation: _ctrl,
@@ -2345,15 +2484,13 @@ class _DotsAnimationState extends State<_DotsAnimation>
           children: List.generate(3, (i) {
             final delay = i / 3;
             final phase = ((_ctrl.value - delay) % 1.0 + 1.0) % 1.0;
-            final scale = 0.6 + 0.4 * (phase < 0.5 ? phase * 2 : (1 - phase) * 2);
+            final scale =
+                0.6 + 0.4 * (phase < 0.5 ? phase * 2 : (1 - phase) * 2);
             return Container(
               margin: const EdgeInsets.symmetric(horizontal: 2),
               width: 6,
               height: 6,
-              decoration: BoxDecoration(
-                color: color,
-                shape: BoxShape.circle,
-              ),
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
               transform: Matrix4.identity()..scale(scale),
             );
           }),
@@ -2363,14 +2500,16 @@ class _DotsAnimationState extends State<_DotsAnimation>
   }
 }
 
-
 class _MessageBody extends StatelessWidget {
   final String body;
   final ThemeData theme;
   final String? searchQuery;
 
-  const _MessageBody(
-      {required this.body, required this.theme, this.searchQuery});
+  const _MessageBody({
+    required this.body,
+    required this.theme,
+    this.searchQuery,
+  });
 
   /// Builds a [TextSpan] with search-term highlights applied to [text].
   InlineSpan _buildHighlightedSpan(String text, TextStyle base) {
@@ -2385,14 +2524,16 @@ class _MessageBody extends StatelessWidget {
       if (idx > start) {
         spans.add(TextSpan(text: text.substring(start, idx), style: base));
       }
-      spans.add(TextSpan(
-        text: text.substring(idx, idx + q.length),
-        style: base.copyWith(
-          backgroundColor: Colors.yellow.shade600,
-          color: Colors.black,
-          fontWeight: FontWeight.bold,
+      spans.add(
+        TextSpan(
+          text: text.substring(idx, idx + q.length),
+          style: base.copyWith(
+            backgroundColor: Colors.yellow.shade600,
+            color: Colors.black,
+            fontWeight: FontWeight.bold,
+          ),
         ),
-      ));
+      );
       start = idx + q.length;
     }
     if (start < text.length) {
@@ -2415,9 +2556,7 @@ class _MessageBody extends StatelessWidget {
 
     void flushInline() {
       if (inlineSpans.isNotEmpty) {
-        widgets.add(
-          RichText(text: TextSpan(children: List.of(inlineSpans))),
-        );
+        widgets.add(RichText(text: TextSpan(children: List.of(inlineSpans))));
         inlineSpans.clear();
       }
     }
@@ -2427,34 +2566,44 @@ class _MessageBody extends StatelessWidget {
         case _TextPart(:final text):
           inlineSpans.add(_buildHighlightedSpan(text, base));
         case _PhonePart(:final display, :final phone):
-          inlineSpans.add(WidgetSpan(
-            alignment: PlaceholderAlignment.middle,
-            child: _PhoneButton(display: display, phone: phone),
-          ));
+          inlineSpans.add(
+            WidgetSpan(
+              alignment: PlaceholderAlignment.middle,
+              child: _PhoneButton(display: display, phone: phone),
+            ),
+          );
         case _ImagePart(:final url):
           flushInline();
-          widgets.add(Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: _ImageAttachmentCard(url: url),
-          ));
+          widgets.add(
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: _ImageAttachmentCard(url: url),
+            ),
+          );
         case _FilePart(:final url):
           flushInline();
-          widgets.add(Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: _FileAttachmentButton(url: resolveToAbsoluteUrl(url)),
-          ));
+          widgets.add(
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: _FileAttachmentButton(url: resolveToAbsoluteUrl(url)),
+            ),
+          );
         case _LinkPart(:final url):
           flushInline();
-          widgets.add(Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: _LinkButton(url: resolveToAbsoluteUrl(url)),
-          ));
+          widgets.add(
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: _LinkButton(url: resolveToAbsoluteUrl(url)),
+            ),
+          );
         case _LocationPart(:final url):
           flushInline();
-          widgets.add(Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: _LocationButton(url: url),
-          ));
+          widgets.add(
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: _LocationButton(url: url),
+            ),
+          );
       }
     }
 
@@ -2517,9 +2666,10 @@ class _LocationButton extends StatelessWidget {
 
 /// A styled image attachment card that mirrors the AI-agent attachment look.
 class _ImageAttachmentCard extends StatelessWidget {
-  final String url;
+  final String? url;
+  final String? localFilePath;
 
-  const _ImageAttachmentCard({required this.url});
+  const _ImageAttachmentCard({this.url, this.localFilePath});
 
   static const Color _imageFileColor = Color(0xFF00897B);
 
@@ -2533,7 +2683,7 @@ class _ImageAttachmentCard extends StatelessWidget {
         side: BorderSide(color: _imageFileColor.withAlpha(40)),
       ),
       child: InkWell(
-        onTap: () => _showFullScreenImage(context, url),
+        onTap: url == null ? null : () => _showFullScreenImage(context, url!),
         borderRadius: BorderRadius.circular(12),
         child: Padding(
           padding: const EdgeInsets.all(8),
@@ -2543,7 +2693,8 @@ class _ImageAttachmentCard extends StatelessWidget {
               ClipRRect(
                 borderRadius: BorderRadius.circular(8),
                 child: AuthenticatedNetworkImage(
-                  url: url,
+                  url: url ?? '',
+                  localFilePath: localFilePath,
                   width: 200,
                   height: 150,
                 ),
@@ -2637,7 +2788,12 @@ class _FileAttachmentButton extends StatelessWidget {
         },
         borderRadius: BorderRadius.circular(12),
         child: Padding(
-          padding: const EdgeInsets.only(left: 12, right: 8, top: 10, bottom: 10),
+          padding: const EdgeInsets.only(
+            left: 12,
+            right: 8,
+            top: 10,
+            bottom: 10,
+          ),
           child: Row(
             children: [
               Container(
@@ -2656,7 +2812,10 @@ class _FileAttachmentButton extends StatelessWidget {
                   children: [
                     Text(
                       _fileName,
-                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -2674,11 +2833,8 @@ class _FileAttachmentButton extends StatelessWidget {
                 visualDensity: VisualDensity.compact,
                 icon: Icon(Icons.download, color: iconColor, size: 18),
                 tooltip: 'שמור במכשיר',
-                onPressed: () => _saveFileToDevice(
-                  context,
-                  url,
-                  openAfterSave: false,
-                ),
+                onPressed: () =>
+                    _saveFileToDevice(context, url, openAfterSave: false),
               ),
             ],
           ),
@@ -2687,7 +2843,6 @@ class _FileAttachmentButton extends StatelessWidget {
     );
   }
 }
-
 
 // ---------------------------------------------------------------------------
 // Phone button (inline in message body)
@@ -2713,7 +2868,8 @@ class _PhoneButton extends StatelessWidget {
           color: AppColors.primary.withAlpha((255 * 0.1).round()),
           borderRadius: BorderRadius.circular(6),
           border: Border.all(
-              color: AppColors.primary.withAlpha((255 * 0.3).round())),
+            color: AppColors.primary.withAlpha((255 * 0.3).round()),
+          ),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -2746,7 +2902,9 @@ class _PhoneButton extends StatelessWidget {
               child: Text(
                 display,
                 style: const TextStyle(
-                    fontSize: 18, fontWeight: FontWeight.bold),
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
                 textDirection: ui.TextDirection.ltr,
               ),
             ),
@@ -2823,7 +2981,8 @@ class _LinkButton extends StatelessWidget {
           color: AppColors.primary.withAlpha((255 * 0.1).round()),
           borderRadius: BorderRadius.circular(8),
           border: Border.all(
-              color: AppColors.primary.withAlpha((255 * 0.3).round())),
+            color: AppColors.primary.withAlpha((255 * 0.3).round()),
+          ),
         ),
         child: const Row(
           mainAxisSize: MainAxisSize.min,
@@ -2845,7 +3004,6 @@ class _LinkButton extends StatelessWidget {
     );
   }
 }
-
 
 // ---------------------------------------------------------------------------
 // Forward contact picker
@@ -2871,9 +3029,11 @@ class _ForwardContactPickerState extends State<_ForwardContactPicker> {
     if (_query.isEmpty) return widget.contacts;
     final q = _query.toLowerCase();
     return widget.contacts
-        .where((c) =>
-            c.displayName.toLowerCase().contains(q) ||
-            c.username.toLowerCase().contains(q))
+        .where(
+          (c) =>
+              c.displayName.toLowerCase().contains(q) ||
+              c.username.toLowerCase().contains(q),
+        )
         .toList();
   }
 
@@ -2913,8 +3073,10 @@ class _ForwardContactPickerState extends State<_ForwardContactPicker> {
                 prefixIcon: Icon(Icons.search),
                 border: OutlineInputBorder(),
                 isDense: true,
-                contentPadding:
-                    EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                contentPadding: EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
               ),
               onChanged: (v) => setState(() => _query = v),
             ),
@@ -2941,8 +3103,10 @@ class _ForwardContactPickerState extends State<_ForwardContactPicker> {
                           textDirection: ui.TextDirection.rtl,
                         ),
                         subtitle: contact.info != null
-                            ? Text(contact.info!,
-                                textDirection: ui.TextDirection.rtl)
+                            ? Text(
+                                contact.info!,
+                                textDirection: ui.TextDirection.rtl,
+                              )
                             : null,
                         onTap: () => widget.onContactSelected(contact),
                       );

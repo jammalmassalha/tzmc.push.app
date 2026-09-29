@@ -8,6 +8,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -17,6 +18,7 @@ import '../database/web_storage.dart';
 import '../models/api_payloads.dart';
 import '../models/chat_models.dart';
 import '../realtime/realtime_transport_service.dart';
+import 'outbox_processor.dart';
 import '../../features/auth/presentation/auth_state.dart';
 
 // ---------------------------------------------------------------------------
@@ -304,7 +306,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   StreamSubscription<void>? _pollTickSubscription;
   StreamSubscription<bool>? _statusSubscription;
 
-  Timer? _persistTimer;
   int _lastGapAnalysisTime = 0;
   String? _currentUser;
 
@@ -363,7 +364,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       _connectionSubscription?.cancel();
       _pollTickSubscription?.cancel();
       _statusSubscription?.cancel();
-      _persistTimer?.cancel();
       for (final timers in _typingClearTimers.values) {
         for (final t in timers.values) {
           t.cancel();
@@ -377,7 +377,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   void _subscribeToTransport() {
     _messageSubscription = _transport.message$.listen(_handleServerMessage);
-    _connectionSubscription = _transport.connected$.listen(_handleConnectionChange);
+    _connectionSubscription = _transport.connected$.listen((connected) {
+      _handleConnectionChange(connected);
+      if (connected) {
+        unawaited(ref.read(outboxProcessorProvider).drainQueue());
+      }
+    });
     _pollTickSubscription = _transport.pollTick$.listen((_) => _handlePollTick());
     _statusSubscription = _transport.status$.listen(_handleStatusChange);
   }
@@ -427,6 +432,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _currentUser = normalized;
     debugPrint('SYNC_TRACE: Auth complete, triggering syncOnLaunch()');
     unawaited(_retryOutbox());
+    unawaited(ref.read(outboxProcessorProvider).drainQueue());
 
     final isRestricted = ref.read(isUserRestrictedProvider);
 
@@ -465,11 +471,21 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // still runs, so the user sees their chat history without having to
       // manually press "sync".
       //
-      // NOTE: unreadByChat is intentionally NOT restored from the persisted
-      // snapshot — stale counts from a previous session would mislead the user
-      // if they've since read those messages on another device.  The correct
-      // unread counts are accumulated fresh by recoverMissedMessages() below
-      // and supplemented by the background-notification tray (step 4).
+      // Restore unread counts immediately so cached chat badges are available
+      // before the background server revalidation completes.  The pending tray
+      // is merged with the persisted counts because it may contain messages
+      // that have not reached the local database yet.
+      final tray = await _readAndClearPendingTray();
+      Map<String, int> mergeUnread(Map<String, int> persistedUnread) {
+        final merged = Map<String, int>.from(persistedUnread);
+        for (final entry in tray.entries) {
+          if (entry.value > (merged[entry.key] ?? 0)) {
+            merged[entry.key] = entry.value;
+          }
+        }
+        return merged;
+      }
+
       try {
         final persisted = await _db.getPersistedState();
         state = state.copyWith(
@@ -479,7 +495,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
             _groupMessagesByChat(persisted.messages),
             deletedChats,
           ),
-          unreadByChat: const {},
+          unreadByChat: mergeUnread(persisted.unreadByChat),
           deletedChats: deletedChats,
         );
       } catch (dbError) {
@@ -497,7 +513,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
                   _groupMessagesByChat(webPersisted.messages),
                   deletedChats,
                 ),
-                unreadByChat: const {},
+                unreadByChat: mergeUnread(webPersisted.unreadByChat),
                 deletedChats: deletedChats,
               );
               debugPrint('[ChatStore] Restored state from web storage (${webPersisted.messages.length} messages)');
@@ -2285,7 +2301,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // incrementing the badge for messages the user just sent.
     // Also skip when the message was already known locally (isNew == false) to
     // prevent re-incrementing a badge the user has already cleared by reading.
-    if (isNew && !skipNotification && chatId != state.currentChatId) {
+    final isAppForeground =
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+    if (isNew &&
+        !skipNotification &&
+        (chatId != state.currentChatId || !isAppForeground)) {
       final newUnread = Map<String, int>.from(state.unreadByChat);
       newUnread[chatId] = (newUnread[chatId] ?? 0) + 1;
       state = state.copyWith(unreadByChat: newUnread);
@@ -2518,6 +2538,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     required String body,
     String? imageUrl,
     String? fileUrl,
+    String? localFilePath,
     MessageReference? replyTo,
     bool forwarded = false,
     String? forwardedFrom,
@@ -2537,6 +2558,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       body: body,
       imageUrl: imageUrl,
       fileUrl: fileUrl,
+      localFilePath: localFilePath,
       direction: MessageDirection.outgoing,
       timestamp: timestamp,
       deliveryStatus: DeliveryStatus.pending,
@@ -2602,6 +2624,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     required String body,
     String? imageUrl,
     String? fileUrl,
+    String? localFilePath,
     MessageReference? replyTo,
   }) async {
     final group = state.groups[groupId];
@@ -2621,6 +2644,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       body: body,
       imageUrl: imageUrl,
       fileUrl: fileUrl,
+      localFilePath: localFilePath,
       direction: MessageDirection.outgoing,
       timestamp: timestamp,
       deliveryStatus: DeliveryStatus.pending,
@@ -2919,7 +2943,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   // ---------------------------------------------------------------------------
 
   Future<void> markAsRead(String chatId, List<String> messageIds) async {
-    if (messageIds.isEmpty) return;
+    if (messageIds.isEmpty ||
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      return;
+    }
 
     // Clear unread count locally
     final newUnread = Map<String, int>.from(state.unreadByChat);
@@ -3009,7 +3036,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // (messagesByChat[chatId] == null), so getMessages() returns [] and
     // markAsRead() exits before resetting the count.  By zeroing the badge
     // here we ensure it resets on the very first open.
-    if (chatId != null && (state.unreadByChat[chatId] ?? 0) > 0) {
+    final isAppForeground =
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+    if (isAppForeground &&
+        chatId != null &&
+        (state.unreadByChat[chatId] ?? 0) > 0) {
       final newUnread = Map<String, int>.from(state.unreadByChat);
       newUnread[chatId] = 0;
       state = state.copyWith(unreadByChat: newUnread);
@@ -3143,15 +3174,18 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       final isNew = _applyIncomingMessage(chatMessage);
 
       // Only increment the unread badge when:
-      //  • the message is for a chat the user is NOT currently viewing, AND
+      //  • the message is for a chat the user is NOT currently viewing, or
+      //    the app is backgrounded, AND
       //  • the message is incoming (not our own echo), AND
       //  • the message is genuinely new — not an already-known entry returned
       //    by the logs endpoint near the `since` boundary (the server
       //    intentionally returns 1-2 such duplicates to avoid missing rows;
       //    _applyIncomingMessage returns false for those so we never re-count
       //    a message the user has already read).
+      final isAppForeground =
+          WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
       if (isNew &&
-          chatMessage.chatId != state.currentChatId &&
+          (chatMessage.chatId != state.currentChatId || !isAppForeground) &&
           chatMessage.direction == MessageDirection.incoming) {
         final newUnread = Map<String, int>.from(state.unreadByChat);
         newUnread[chatMessage.chatId] = (newUnread[chatMessage.chatId] ?? 0) + 1;
@@ -3678,8 +3712,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   // ---------------------------------------------------------------------------
 
   void _schedulePersistence() {
-    _persistTimer?.cancel();
-    _persistTimer = Timer(const Duration(seconds: 2), _persistState);
+    // Messages are written to Drift at their point of mutation. Persist only
+    // the small metadata snapshot needed by the chat shell.
+    unawaited(_persistState());
   }
 
   Future<void> _persistState() async {
@@ -3688,16 +3723,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       if (user == null || user.trim().isEmpty) {
         return;
       }
-      final allMessages = <ChatMessage>[];
-      for (final messages in state.messagesByChat.values) {
-        allMessages.addAll(messages);
-      }
-
       final snapshot = PersistedChatState(
         contacts: state.contacts.values.toList(),
         groups: state.groups.values.toList(),
         unreadByChat: state.unreadByChat,
-        messages: allMessages,
+        messages: const [],
       );
 
       try {
@@ -3795,10 +3825,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   ///
   /// Realtime deliveries (socket / SSE / foreground FCM) and optimistic
   /// outgoing bubbles would otherwise only reach SQLite through the 2-second
-  /// debounced [_persistState], so a message that arrives right before the app
-  /// is backgrounded or killed would be lost.  Failures are non-fatal: on Web
-  /// without `sqlite3.wasm` the Drift call throws and the debounced
-  /// [_persistState] still writes the [WebChatStorage] snapshot.
+  /// debounced state snapshot, so a message that arrives right before the app
+  /// is backgrounded or killed would be lost. Failures are non-fatal.
   void _writeMessageThrough(ChatMessage message) {
     try {
       // `catchError` covers async failures; the surrounding `try` covers the
@@ -3847,7 +3875,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   /// Force immediate persistence
   Future<void> persistNow() async {
-    _persistTimer?.cancel();
     await _persistState();
   }
 
@@ -3870,11 +3897,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// Called during explicit logout and when a different user logs in on the
   /// same device so the previous user's data is never exposed to the new user.
   Future<void> clearAll() async {
-    // Cancel any pending deferred write to prevent stale data being persisted
-    // after the wipe.
-    _persistTimer?.cancel();
-    _persistTimer = null;
-
     // Drop any queued delivery acknowledgments belonging to the previous user.
     _deliveryAckTimer?.cancel();
     _deliveryAckTimer = null;
@@ -3927,6 +3949,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
 final chatStoreProvider = NotifierProvider<ChatStoreNotifier, ChatState>(() {
   return ChatStoreNotifier();
+});
+
+/// Reactive, bounded message window for the active chat.
+///
+/// Drift owns the message data; consumers rebuild only when this chat's rows
+/// change instead of depending on the entire store snapshot.
+final chatMessagesStreamProvider =
+    StreamProvider.autoDispose.family<List<ChatMessage>, String>((ref, chatId) {
+  return ref.watch(chatDatabaseProvider).watchMessagesForChat(chatId);
 });
 
 // ---------------------------------------------------------------------------
