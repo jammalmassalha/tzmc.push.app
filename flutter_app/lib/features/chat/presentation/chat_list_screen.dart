@@ -11,6 +11,7 @@ import 'package:intl/intl.dart' hide TextDirection;
 import 'package:shimmer/shimmer.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../../core/database/chat_database.dart';
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../../core/utils/toast_utils.dart';
@@ -39,6 +40,10 @@ class ChatListScreen extends ConsumerStatefulWidget {
 
 class _ChatListScreenState extends ConsumerState<ChatListScreen>
     with WidgetsBindingObserver {
+  bool _isBooting = true;
+  bool _isSyncing = false;
+  StreamSubscription<void>? _dbSubscription;
+
   Contact? _findContact(ChatState state, String value) {
     final normalized = value.trim().toLowerCase();
     if (normalized.isEmpty) return null;
@@ -58,6 +63,9 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _dbSubscription = ref.read(chatDatabaseProvider).watchChatChanges().listen((_) {
+      unawaited(ref.read(chatStoreProvider.notifier).restoreLocalCache());
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_bootApp());
     });
@@ -66,6 +74,7 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _dbSubscription?.cancel();
     super.dispose();
   }
 
@@ -73,50 +82,54 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       debugPrint('App resumed: triggering background chat sync');
-      unawaited(_syncOnResume());
+      if (!_isSyncing) {
+        unawaited(_syncOnResume());
+      }
     }
   }
 
   Future<void> _syncOnResume() async {
+    _isSyncing = true;
     try {
-      await ref.read(chatStoreProvider.notifier).syncOnLaunch();
+      await ref
+          .read(chatStoreProvider.notifier)
+          .syncOnLaunch()
+          .timeout(const Duration(seconds: 10));
     } catch (e) {
-      debugPrint('Background chat sync failed after resume: $e');
+      debugPrint('Background chat sync failed or timed out after resume: $e');
+    } finally {
+      _isSyncing = false;
     }
   }
 
   Future<void> _bootApp() async {
     final notifier = ref.read(chatStoreProvider.notifier);
-    final state = ref.read(chatStoreProvider);
-
-    if (!state.isInitialized) {
-      try {
-        await notifier.restoreLocalCache();
-      } catch (e) {
-        debugPrint('Local cache restore failed: $e');
-      }
-    }
 
     try {
-      await notifier.syncOnLaunch();
+      await notifier.restoreLocalCache();
     } catch (e) {
-      debugPrint('Background sync failed: $e');
+      debugPrint('Local cache restore failed: $e');
     }
+
+    if (mounted) {
+      setState(() => _isBooting = false);
+    }
+
+    unawaited(_syncOnResume());
   }
 
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(chatStoreProvider);
     final chatItems = state.chatListItems;
-    final showShimmer =
-        !state.isInitialized || (chatItems.isEmpty && state.isInitialSyncing);
+    final showShimmer = _isBooting || (chatItems.isEmpty && state.isInitialSyncing);
 
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 400),
       child: showShimmer
           ? const _ChatDataRetrievalView()
           : chatItems.isEmpty
-              ? const Center(child: Text('אין שיחות עדיין'))
+              ? _buildPremiumEmptyState(context)
               : RefreshIndicator(
                   onRefresh: () async {
                     await ref
@@ -142,6 +155,43 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen>
                     },
                   ),
                 ),
+    );
+  }
+
+  Widget _buildPremiumEmptyState(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: colorScheme.primary.withOpacity(0.1),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              Icons.chat_bubble_outline_rounded,
+              size: 64,
+              color: colorScheme.primary,
+            ),
+          ),
+          const SizedBox(height: 24),
+          Text(
+            'אין שיחות פעילות',
+            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'כל השיחות שלך יופיעו כאן.',
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: colorScheme.onSurface.withOpacity(0.6),
+                ),
+          ),
+        ],
+      ),
     );
   }
 
