@@ -8,6 +8,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -465,11 +466,21 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // still runs, so the user sees their chat history without having to
       // manually press "sync".
       //
-      // NOTE: unreadByChat is intentionally NOT restored from the persisted
-      // snapshot — stale counts from a previous session would mislead the user
-      // if they've since read those messages on another device.  The correct
-      // unread counts are accumulated fresh by recoverMissedMessages() below
-      // and supplemented by the background-notification tray (step 4).
+      // Restore unread counts immediately so cached chat badges are available
+      // before the background server revalidation completes.  The pending tray
+      // is merged with the persisted counts because it may contain messages
+      // that have not reached the local database yet.
+      final tray = await _readAndClearPendingTray();
+      Map<String, int> mergeUnread(Map<String, int> persistedUnread) {
+        final merged = Map<String, int>.from(persistedUnread);
+        for (final entry in tray.entries) {
+          if (entry.value > (merged[entry.key] ?? 0)) {
+            merged[entry.key] = entry.value;
+          }
+        }
+        return merged;
+      }
+
       try {
         final persisted = await _db.getPersistedState();
         state = state.copyWith(
@@ -479,7 +490,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
             _groupMessagesByChat(persisted.messages),
             deletedChats,
           ),
-          unreadByChat: const {},
+          unreadByChat: mergeUnread(persisted.unreadByChat),
           deletedChats: deletedChats,
         );
       } catch (dbError) {
@@ -497,7 +508,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
                   _groupMessagesByChat(webPersisted.messages),
                   deletedChats,
                 ),
-                unreadByChat: const {},
+                unreadByChat: mergeUnread(webPersisted.unreadByChat),
                 deletedChats: deletedChats,
               );
               debugPrint('[ChatStore] Restored state from web storage (${webPersisted.messages.length} messages)');
@@ -2285,7 +2296,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // incrementing the badge for messages the user just sent.
     // Also skip when the message was already known locally (isNew == false) to
     // prevent re-incrementing a badge the user has already cleared by reading.
-    if (isNew && !skipNotification && chatId != state.currentChatId) {
+    final isAppForeground =
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+    if (isNew &&
+        !skipNotification &&
+        (chatId != state.currentChatId || !isAppForeground)) {
       final newUnread = Map<String, int>.from(state.unreadByChat);
       newUnread[chatId] = (newUnread[chatId] ?? 0) + 1;
       state = state.copyWith(unreadByChat: newUnread);
@@ -2919,7 +2934,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   // ---------------------------------------------------------------------------
 
   Future<void> markAsRead(String chatId, List<String> messageIds) async {
-    if (messageIds.isEmpty) return;
+    if (messageIds.isEmpty ||
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      return;
+    }
 
     // Clear unread count locally
     final newUnread = Map<String, int>.from(state.unreadByChat);
@@ -3009,7 +3027,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // (messagesByChat[chatId] == null), so getMessages() returns [] and
     // markAsRead() exits before resetting the count.  By zeroing the badge
     // here we ensure it resets on the very first open.
-    if (chatId != null && (state.unreadByChat[chatId] ?? 0) > 0) {
+    final isAppForeground =
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+    if (isAppForeground &&
+        chatId != null &&
+        (state.unreadByChat[chatId] ?? 0) > 0) {
       final newUnread = Map<String, int>.from(state.unreadByChat);
       newUnread[chatId] = 0;
       state = state.copyWith(unreadByChat: newUnread);
