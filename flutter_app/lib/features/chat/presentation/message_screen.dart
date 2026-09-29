@@ -297,11 +297,17 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   Widget build(BuildContext context) {
     final state = ref.watch(chatStoreProvider);
     final messagesAsync = ref.watch(chatMessagesStreamProvider(widget.chatId));
-    final allMessages = messagesAsync.when(
+    final cachedMessages = state.messagesByChat[widget.chatId] ?? const <ChatMessage>[];
+    final streamedMessages = messagesAsync.when(
       data: (messages) => messages,
       loading: () => const <ChatMessage>[],
       error: (_, __) => const <ChatMessage>[],
     );
+    // Keep the already-restored cache visible while the Drift watcher opens.
+    // This avoids an empty conversation during the stream's initial loading
+    // window or when the platform database is temporarily unavailable.
+    final allMessages =
+        streamedMessages.isNotEmpty ? streamedMessages : cachedMessages;
     final chatInfo = _getChatInfo(state);
 
     // Filter messages when search is active
