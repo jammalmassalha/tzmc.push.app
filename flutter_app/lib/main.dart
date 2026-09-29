@@ -186,6 +186,7 @@ class AuthRouter extends ConsumerStatefulWidget {
 
 class _AuthRouterState extends ConsumerState<AuthRouter> {
   bool _isNavigating = false;
+  bool _hasAttemptedPushRoute = false;
 
   @override
   Widget build(BuildContext context) {
@@ -210,6 +211,14 @@ class _AuthRouterState extends ConsumerState<AuthRouter> {
 
   Widget _buildAuthenticated() {
     final targetPath = widget.redirectPath ?? widget.requestedPath;
+    if (!_hasAttemptedPushRoute) {
+      _hasAttemptedPushRoute = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          ref.read(pushNotificationServiceProvider).completeLaunchRouting();
+        }
+      });
+    }
     return ChatShellScreen(
       key: const ValueKey('chat-shell'),
       initialPath: targetPath,

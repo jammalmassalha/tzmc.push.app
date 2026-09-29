@@ -250,6 +250,23 @@ class PushNotificationService {
         _applyPushPayload(initialMessage);
       }
 
+      // Check if app was opened from an Android local notification while
+      // completely terminated. FCM getInitialMessage() does not cover these.
+      if (!kIsWeb && _isAndroidPlatform() && _localNotifications != null) {
+        final launchDetails =
+            await _localNotifications!.getNotificationAppLaunchDetails();
+        if (launchDetails?.didNotificationLaunchApp == true) {
+          final payload = launchDetails?.notificationResponse?.payload;
+          if (payload != null && !payload.startsWith('helpdesk:')) {
+            final parts = payload.split(':');
+            if (parts.isNotEmpty) {
+              final chatId = parts[0].trim().toLowerCase();
+              if (chatId.isNotEmpty) _pendingRouteChatId = chatId;
+            }
+          }
+        }
+      }
+
       debugPrint('[PushNotificationService] Initialized successfully');
     } catch (e) {
       // Allow a later call to retry a failed initialization.
@@ -1190,7 +1207,7 @@ class PushNotificationService {
     // Format: "chatId:messageId"
     final parts = payload.split(':');
     if (parts.isEmpty) return;
-    final chatId = parts[0];
+    final chatId = parts[0].trim().toLowerCase();
     if (chatId.isEmpty) return;
 
     debugPrint('[PushNotificationService] Local notification tapped: $chatId');
@@ -1391,7 +1408,7 @@ class PushNotificationService {
     final chatId = (data['chatId'] ?? data['groupId'] ?? data['sender'])
         ?.toString()
         .trim();
-    return chatId == null || chatId.isEmpty ? null : chatId;
+    return chatId == null || chatId.isEmpty ? null : chatId.toLowerCase();
   }
 
   /// Replays a terminated-state route after authentication and the initial
@@ -1417,42 +1434,40 @@ class PushNotificationService {
   /// global [rootNavigatorKey]. This works from background-tap callbacks
   /// where there is no [BuildContext] in scope.
   ///
-  /// If the navigator is not yet available (e.g. the app is still building its
-  /// widget tree on a cold start), the navigation is deferred via
-  /// [addPostFrameCallback] so it is attempted after the first rendered frame.
   void _openChatScreen(String chatId) {
-    final unreadCount = _ref.read(chatStoreProvider).unreadByChat[chatId] ?? 0;
+    final normalizedChatId = chatId.trim().toLowerCase();
+    if (normalizedChatId.isEmpty) return;
+
+    final currentUser = _ref.read(currentUserProvider);
+    final navigator = rootNavigatorKey.currentState;
+    if (currentUser == null || navigator == null) {
+      debugPrint(
+        '[PushNotificationService] App not ready, deferring route to '
+        '$normalizedChatId',
+      );
+      _pendingRouteChatId = normalizedChatId;
+      return;
+    }
+
+    if (_pendingRouteChatId == normalizedChatId) {
+      _pendingRouteChatId = null;
+    }
+
+    final unreadCount =
+        _ref.read(chatStoreProvider).unreadByChat[normalizedChatId] ?? 0;
     try {
-      _ref.read(chatStoreProvider.notifier).setCurrentChat(chatId);
+      _ref.read(chatStoreProvider.notifier).setCurrentChat(normalizedChatId);
     } catch (e) {
       debugPrint('[PushNotificationService] setCurrentChat error: $e');
     }
 
-    final navigator = navigatorKey.currentState;
-    if (navigator == null) {
-      debugPrint(
-        '[PushNotificationService] Navigator not ready, deferring deep link',
-      );
-      _pendingRouteChatId = chatId;
-      // The widget tree is still being built (cold-start). Schedule the push
-      // for the very next frame, by which time the MaterialApp navigator will
-      // be mounted and available.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (_pendingRouteChatId == chatId &&
-            navigatorKey.currentState != null) {
-          _pendingRouteChatId = null;
-          _openChatScreen(chatId);
-        }
-      });
-      return;
-    }
-    if (_pendingRouteChatId == chatId) {
-      _pendingRouteChatId = null;
-    }
     navigator.push(
       MaterialPageRoute(
         builder: (_) =>
-            MessageScreen(chatId: chatId, initialUnreadCount: unreadCount),
+            MessageScreen(
+              chatId: normalizedChatId,
+              initialUnreadCount: unreadCount,
+            ),
       ),
     );
   }
