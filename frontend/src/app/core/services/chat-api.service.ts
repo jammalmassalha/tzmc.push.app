@@ -624,7 +624,7 @@ export class ChatApiService {
     const normalizedUser = String(user || '').trim().toLowerCase();
     const cursor = Math.max(0, Math.floor(Number(lastSeq) || 0));
     const candidateUrls = normalizedUser
-      ? [`${this.notifyBaseUrl}/messages/sync?user=${encodeURIComponent(normalizedUser)}&last_seq=${cursor}`, `${this.messagesUrlBase}?user=${encodeURIComponent(normalizedUser)}`, this.messagesUrlBase]
+      ? [`${this.messagesUrlBase}?user=${encodeURIComponent(normalizedUser)}`, `${this.notifyBaseUrl}/messages/sync?user=${encodeURIComponent(normalizedUser)}&last_seq=${cursor}`, this.messagesUrlBase]
       : [this.messagesUrlBase];
 
     let response: Response | null = null;

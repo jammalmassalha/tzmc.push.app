@@ -687,11 +687,12 @@ export class ChatStoreService {
     // instead of an empty "no chats" state during the initial recovery period.
     this.loading.set(true);
 
-    // Load community group configs from DB (async, non-blocking for critical path)
-    await this.loadCommunityGroupConfigs();
-
-    // Load all user groups from MySQL DB
-    await this.loadUserChatGroupsFromDb();
+    // These metadata requests are independent. Fetch them together so a slow
+    // groups query cannot delay message recovery and the first usable render.
+    await Promise.all([
+      this.loadCommunityGroupConfigs(),
+      this.loadUserChatGroupsFromDb()
+    ]);
 
     /**
      * SYNC STEP 1: Drain Service Worker Cache
@@ -5903,7 +5904,10 @@ export class ChatStoreService {
 
   private connectRealtime(user: string): void {
     this.stopRealtime();
+    // Keep a mailbox poll running as a lossless safety net. Socket/SSE are
+    // latency optimizations; a failed handshake must never stop new messages.
     this.transport.connect(user, () => this.isNetworkReachable());
+    this.transport.startPolling(user);
   }
 
   private stopRealtime(): void {
@@ -6084,7 +6088,7 @@ export class ChatStoreService {
 
     this.pullInFlight = true;
     try {
-      const messages = await this.api.pollMessages();
+      const messages = await this.api.pollMessages(user);
       this.incrementDeliveryTelemetry('pollMessagesFetched', messages.length);
       const appliedCount = this.applyIncomingMessagesBatch(messages);
       this.incrementDeliveryTelemetry('pollMessagesApplied', appliedCount);
