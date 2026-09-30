@@ -267,6 +267,13 @@ class PushNotificationService {
         }
       }
 
+      // Initialization may finish after the first authenticated frame. Retry
+      // from a frame callback so a terminated-state tap is not lost when the
+      // initial route was read before the navigator was mounted.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(completeLaunchRouting());
+      });
+
       debugPrint('[PushNotificationService] Initialized successfully');
     } catch (e) {
       // Allow a later call to retry a failed initialization.
@@ -1422,21 +1429,35 @@ class PushNotificationService {
       );
       return;
     }
+    // The push service and chat shell initialize independently. Do not invoke
+    // syncOnLaunch before the store has established its current user.
+    if (!_ref.read(chatStoreProvider).isInitialized) {
+      debugPrint('[PUSH-ROUTING] Launch route deferred: chat store is not ready');
+      return;
+    }
+    await WidgetsBinding.instance.endOfFrame;
     debugPrint('[PUSH-ROUTING] Waiting for ChatStoreService.syncOnLaunch()');
     await _ref.read(chatStoreProvider.notifier).syncOnLaunch();
     if (_pendingRouteChatId != chatId) return;
-    _pendingRouteChatId = null;
     debugPrint('[PUSH-ROUTING] Replaying pending chat route: $chatId');
-    _openChatScreen(chatId);
+    if (_openChatScreen(chatId)) {
+      _pendingRouteChatId = null;
+    } else {
+      // The navigator can still be mounting while authentication and store
+      // hydration complete. Try once more on the next frame.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(completeLaunchRouting());
+      });
+    }
   }
 
   /// Set current chat in the store and push the [MessageScreen] route via the
   /// global [rootNavigatorKey]. This works from background-tap callbacks
   /// where there is no [BuildContext] in scope.
   ///
-  void _openChatScreen(String chatId) {
+  bool _openChatScreen(String chatId) {
     final normalizedChatId = chatId.trim().toLowerCase();
-    if (normalizedChatId.isEmpty) return;
+    if (normalizedChatId.isEmpty) return false;
 
     final currentUser = _ref.read(currentUserProvider);
     final navigator = rootNavigatorKey.currentState;
@@ -1446,7 +1467,7 @@ class PushNotificationService {
         '$normalizedChatId',
       );
       _pendingRouteChatId = normalizedChatId;
-      return;
+      return false;
     }
 
     if (_pendingRouteChatId == normalizedChatId) {
@@ -1470,6 +1491,7 @@ class PushNotificationService {
             ),
       ),
     );
+    return true;
   }
 
   /// Navigate to the shell-managed helpdesk route via the global
