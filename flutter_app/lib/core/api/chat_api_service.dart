@@ -605,9 +605,9 @@ class ChatApiService {
     required String user,
     required int lastSyncTimestamp,
   }) async {
-    final response = await _client.get<Map<String, dynamic>>(
+    final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.chatSync,
-      queryParameters: {
+      data: {
         'user': user.trim().toLowerCase(),
         'last_sync_timestamp': lastSyncTimestamp,
       },
