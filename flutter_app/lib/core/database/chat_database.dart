@@ -397,7 +397,7 @@ class ChatDatabase extends _$ChatDatabase {
   /// of truth, so screens only retain the bounded window they render.
   Stream<List<ChatMessage>> watchMessagesForChat(
     String chatId, {
-    int limit = 50,
+    int limit = 30,
   }) {
     final query = select(messages)
       ..where((message) => message.chatId.equals(chatId))
@@ -410,7 +410,7 @@ class ChatDatabase extends _$ChatDatabase {
   Future<List<ChatMessage>> fetchOlderMessages(
     String chatId, {
     required int beforeTimestamp,
-    int limit = 50,
+    int limit = 30,
   }) async {
     final query = select(messages)
       ..where(

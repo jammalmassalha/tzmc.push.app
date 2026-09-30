@@ -5,6 +5,8 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
+import 'dart:isolate';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
@@ -17,6 +19,8 @@ import '../models/helpdesk_models.dart';
 import '../utils/xfile.dart';
 import 'http_client.dart';
 import '../../features/accreditation_agent/data/accreditation_agent_response.dart';
+
+Future<dynamic> _decodeJsonInIsolate(String body) => Isolate.run(() => jsonDecode(body));
 
 /// Chat API service provider
 final chatApiServiceProvider = Provider<ChatApiService>((ref) {
@@ -639,7 +643,7 @@ class ChatApiService {
     final safeLimit = limit.clamp(1, 200000);
     final safeOffset = offset.clamp(0, 1000000);
 
-    final response = await _client.post<Map<String, dynamic>>(
+    final response = await _client.post<String>(
       ApiEndpoints.messagesLogs,
       data: {
         'user': normalizedUser,
@@ -649,6 +653,7 @@ class ChatApiService {
         'since': since.toString(),
         '_ts': DateTime.now().millisecondsSinceEpoch.toString(),
       },
+      options: Options(responseType: ResponseType.plain),
       retryOptions: const RetryOptions(retries: 1, timeout: NetworkTimeouts.logsTimeout),
     );
 
@@ -656,7 +661,9 @@ class ChatApiService {
       throw ApiException('Logs request failed: ${response.statusCode}');
     }
 
-    final messages = (response.data?['messages'] as List?) ?? [];
+    final decoded = response.data == null ? null : await _decodeJsonInIsolate(response.data!);
+    final body = _coerceJsonMap(decoded);
+    final messages = (body['messages'] as List?) ?? [];
     return messages.map((item) => IncomingServerMessage.fromJson(item as Map<String, dynamic>)).toList();
   }
 
