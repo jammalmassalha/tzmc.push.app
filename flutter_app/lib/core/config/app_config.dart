@@ -176,6 +176,10 @@ class NetworkTimeouts {
   /// Messages logs timeout (may return large payloads)
   static const Duration logsTimeout = Duration(seconds: 20);
 
+  /// Chat synchronization can take longer while the backend wakes or the
+  /// network reconnects after the app resumes.
+  static const Duration chatSyncTimeout = Duration(seconds: 30);
+
   /// Shuttle orders timeout (Apps Script can be slow)
   static const Duration shuttleTimeout = Duration(seconds: 65);
 

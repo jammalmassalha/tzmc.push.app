@@ -611,7 +611,15 @@ class ChatApiService {
         'user': user.trim().toLowerCase(),
         'last_sync_timestamp': lastSyncTimestamp,
       },
-      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 20)),
+      options: Options(
+        sendTimeout: NetworkTimeouts.chatSyncTimeout,
+        connectTimeout: NetworkTimeouts.chatSyncTimeout,
+        receiveTimeout: NetworkTimeouts.chatSyncTimeout,
+      ),
+      retryOptions: const RetryOptions(
+        retries: 1,
+        timeout: NetworkTimeouts.chatSyncTimeout,
+      ),
     );
     if (!response.isSuccessful || response.data == null) {
       throw ApiException('Chat hydration sync failed with ${response.statusCode}');
