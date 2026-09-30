@@ -540,7 +540,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         unawaited(syncOnLaunch());
       }
     } catch (e) {
-      state = state.copyWith(isLoading: false);
+      // Initialization is best-effort: do not leave the shell permanently
+      // behind a loading gate when local storage is unavailable.
+      state = state.copyWith(
+        isLoading: false,
+        isInitialized: true,
+      );
       rethrow;
     }
 

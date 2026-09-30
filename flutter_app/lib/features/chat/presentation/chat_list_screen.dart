@@ -98,12 +98,10 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
   Widget build(BuildContext context) {
     final state = ref.watch(chatStoreProvider);
     final chatItems = state.chatListItems;
-    // The store marks itself initialized as soon as the cached snapshot has
-    // been restored. Do not keep the whole list behind a skeleton while the
-    // network revalidation runs; an empty cache should show the normal empty
-    // state and update reactively when synchronization returns chats.
-    final showShimmer =
-        _isBooting || (chatItems.isEmpty && state.isInitialSyncing && !state.isInitialized);
+    // Network revalidation is intentionally not part of the first-render
+    // loading gate. An empty cache must show the normal empty state and update
+    // reactively when synchronization returns chats.
+    final showShimmer = _isBooting;
 
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 400),
