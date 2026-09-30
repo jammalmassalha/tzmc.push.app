@@ -464,78 +464,20 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       _syncCursorMs = await _readSyncCursor(normalized);
       _pendingSyncFloorMs = await _readPendingTrayFloor();
 
-      // 1. Restore from local database (best-effort).
-      //
-      // On Flutter web the legacy sql.js engine may not initialise correctly
-      // (e.g. missing sqlite3.wasm / drift_worker files), causing
-      // getPersistedState() to throw.  Catching the error here means the rest
-      // of initialise() – most importantly the server-side gap-analysis pull –
-      // still runs, so the user sees their chat history without having to
-      // manually press "sync".
-      //
-      // Restore unread counts immediately so cached chat badges are available
-      // before the background server revalidation completes.  The pending tray
-      // is merged with the persisted counts because it may contain messages
-      // that have not reached the local database yet.
-      final tray = await _readAndClearPendingTray();
-      Map<String, int> mergeUnread(Map<String, int> persistedUnread) {
-        final merged = Map<String, int>.from(persistedUnread);
-        for (final entry in tray.entries) {
-          if (entry.value > (merged[entry.key] ?? 0)) {
-            merged[entry.key] = entry.value;
-          }
-        }
-        return merged;
-      }
-
-      try {
-        final persisted = await _db.getPersistedState();
-        state = state.copyWith(
-          contacts: Map.fromEntries(persisted.contacts.map((c) => MapEntry(c.username, c))),
-          groups: Map.fromEntries(persisted.groups.map((g) => MapEntry(g.id, g))),
-          messagesByChat: _filterDeletedChatMessages(
-            _groupMessagesByChat(persisted.messages),
-            deletedChats,
-          ),
-          unreadByChat: mergeUnread(persisted.unreadByChat),
-          deletedChats: deletedChats,
-        );
-      } catch (dbError) {
-        debugPrint('[ChatStore] DB restore failed, trying web storage fallback: $dbError');
-        // Drift DB is unavailable (e.g. web without sqlite3.wasm).
-        // Try restoring from the shared_preferences-based localStorage snapshot.
-        if (kIsWeb) {
-          try {
-            final webPersisted = await WebChatStorage.getPersistedState(normalized);
-            if (webPersisted != null) {
-              state = state.copyWith(
-                contacts: Map.fromEntries(webPersisted.contacts.map((c) => MapEntry(c.username, c))),
-                groups: Map.fromEntries(webPersisted.groups.map((g) => MapEntry(g.id, g))),
-                messagesByChat: _filterDeletedChatMessages(
-                  _groupMessagesByChat(webPersisted.messages),
-                  deletedChats,
-                ),
-                unreadByChat: mergeUnread(webPersisted.unreadByChat),
-                deletedChats: deletedChats,
-              );
-              debugPrint('[ChatStore] Restored state from web storage (${webPersisted.messages.length} messages)');
-            }
-          } catch (webError) {
-            debugPrint('[ChatStore] Web storage restore also failed: $webError');
-          }
-        }
-
-        // State may be empty; the server pull below re-populates it.
-      }
-
-      // Phase 1 complete — the cached snapshot is now in state. Unconditionally
-      // mark initialized so the UI renders immediately, even with an empty DB.
-      state = state.copyWith(isLoading: false, isInitialized: true);
-      _flushPendingPushPayloads();
-      _schedulePersistence();
-
-      // Phase 2: revalidate from the server WITHOUT awaiting. Callers that
-      // need to hand off to the UI first can start this explicitly afterward.
+      // Chat data is server-authoritative. Do not hydrate contacts, groups,
+      // messages, or unread counts from Drift/SQLite or browser storage.
+      // The API synchronization below is the only startup source of chat
+      // data, avoiding stale or incomplete cache snapshots on web.
+      state = state.copyWith(
+        contacts: const {},
+        groups: const {},
+        messagesByChat: const {},
+        unreadByChat: const {},
+        deletedChats: deletedChats,
+        isLoading: false,
+        isInitialized: true,
+      );
+      // Synchronize from the server in the background.
       if (startBackgroundSync) {
         unawaited(syncOnLaunch());
       }
@@ -742,14 +684,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       _syncCommunityGroups();
 
       // 3. Pull missed messages (gap analysis).
-      int latestTimestampBeforeRecovery;
-      try {
-        latestTimestampBeforeRecovery = await _db.getLatestMessageTimestamp();
-      } catch (_) {
-        latestTimestampBeforeRecovery = _latestTimestampFromState();
-      }
-      final hadLocalHistory = latestTimestampBeforeRecovery > 0;
-
       //
       // Use force:true to bypass the 30-second cooldown.  The realtime
       // transport can fire _handleConnectionChange(true) before we reach
@@ -762,7 +696,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // from the empty unreadByChat set above.
       await recoverMissedMessages(force: true);
 
-      // 4. Merge the background-notification pending tray (safety net).
+      // 4. Consume the pending sync floor; message and unread data come from
+      // the server response rather than local notification storage.
       //
       // When notifications arrive while the app is terminated, the
       // firebaseMessagingBackgroundHandler saves each chat's pending unread
@@ -771,24 +706,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // lag, network error, message not yet persisted when the logs endpoint
       // was queried).  We take the MAX so we never downgrade a count that
       // the pull already computed correctly.
-      final tray = await _readAndClearPendingTray();
       // The pending floor has now been consumed by the recovery pull above;
       // clear it so subsequent delta pulls use the normal high-water mark.
       _pendingSyncFloorMs = null;
-      if (hadLocalHistory && tray.isNotEmpty) {
-        final merged = Map<String, int>.from(state.unreadByChat);
-        for (final entry in tray.entries) {
-          // Skip the currently open chat — the user is already viewing it so
-          // the tray count would incorrectly re-show the badge after they exit.
-          if (entry.key == state.currentChatId) continue;
-          final existing = merged[entry.key] ?? 0;
-          if (entry.value > existing) {
-            merged[entry.key] = entry.value;
-          }
-        }
-        state = state.copyWith(unreadByChat: merged);
-      }
-
       // 5. Persist the fully-synced state immediately so that if the user
       // closes the app right after the first open (before the 2-second deferred
       // timer fires), the recovered messages are already in the DB and the chat
