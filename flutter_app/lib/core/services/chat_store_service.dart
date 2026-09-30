@@ -333,6 +333,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   Future<void>? _initialSyncFuture;
   bool _localCacheRestoreInFlight = false;
 
+  /// Push payloads can arrive before the cache-first restore finishes. Keep
+  /// them until hydration has established the complete local state; otherwise
+  /// restoring the database snapshot would replace the notification message.
+  final List<Map<String, dynamic>> _pendingPushPayloads = [];
+
   /// Community group configs loaded from the server; seeded with defaults.
   /// Mirrors Angular's `communityGroupConfigs` field.
   List<CommunityGroupConfig> _communityGroupConfigs = List.unmodifiable(_kSeedCommunityGroups);
@@ -529,6 +534,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // Phase 1 complete — the cached snapshot is now in state. Unconditionally
       // mark initialized so the UI renders immediately, even with an empty DB.
       state = state.copyWith(isLoading: false, isInitialized: true);
+      _flushPendingPushPayloads();
       _schedulePersistence();
 
       // Phase 2: revalidate from the server WITHOUT awaiting. Callers that
@@ -624,6 +630,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         isLoading: false,
         isInitialized: true,
       );
+      _flushPendingPushPayloads();
     } catch (error) {
       debugPrint('[ChatStore] Immediate local cache restore failed: $error');
     } finally {
@@ -2026,6 +2033,24 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// payload exceeds maxPushPayloadBytes), so this method also schedules
   /// recovery pulls to hydrate the full body shortly after.
   void applyIncomingFromPushPayload(Map<String, dynamic> data) {
+    if (data.isEmpty) return;
+    if (!state.isInitialized) {
+      _pendingPushPayloads.add(Map<String, dynamic>.from(data));
+      return;
+    }
+    _applyIncomingFromPushPayloadNow(data);
+  }
+
+  void _flushPendingPushPayloads() {
+    if (_pendingPushPayloads.isEmpty || !state.isInitialized) return;
+    final pending = List<Map<String, dynamic>>.from(_pendingPushPayloads);
+    _pendingPushPayloads.clear();
+    for (final data in pending) {
+      _applyIncomingFromPushPayloadNow(data);
+    }
+  }
+
+  void _applyIncomingFromPushPayloadNow(Map<String, dynamic> data) {
     if (data.isEmpty) return;
 
     String? str(dynamic v) {
@@ -3897,6 +3922,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// Called during explicit logout and when a different user logs in on the
   /// same device so the previous user's data is never exposed to the new user.
   Future<void> clearAll() async {
+    _pendingPushPayloads.clear();
     // Drop any queued delivery acknowledgments belonging to the previous user.
     _deliveryAckTimer?.cancel();
     _deliveryAckTimer = null;
