@@ -458,23 +458,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       final deletedChats = await _readDeletedChats(normalized);
       state = state.copyWith(deletedChats: deletedChats);
 
-      // The chat store is API-driven. Do not hydrate chats or messages from
-      // Drift/web storage during startup; this removes the offline hydration
-      // race from the notification and authentication paths.
-      state = state.copyWith(
-        contacts: const {},
-        groups: const {},
-        messagesByChat: const {},
-        unreadByChat: const {},
-        isLoading: false,
-        isInitialized: true,
-      );
-      _flushPendingPushPayloads();
-      if (startBackgroundSync) {
-        unawaited(syncOnLaunch());
-      }
-      return;
-
       // Load the persisted incremental-sync high-water mark and the oldest
       // pending background push, so the recovery pull below starts from a
       // cursor that survives a trimmed or partially written message table.
@@ -835,6 +818,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // Degrade gracefully to cached-only data; realtime transport events and
       // subsequent reconnects will retry the recovery pull.
       state = state.copyWith(isLoading: false);
+      // Do not leave polling gated forever after a failed cold-start request.
+      // The mailbox pull is the lossless recovery path while realtime
+      // transports reconnect.
+      _initialSyncCompleted = true;
     } finally {
       _initialSyncInFlight = false;
       state = state.copyWith(isInitialSyncing: false);
@@ -3630,14 +3617,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   }
 
   void _handlePollTick() {
-    // Only pull messages via HTTP when the real-time transport (socket/SSE) is
-    // not available. When socket or SSE is active, messages are delivered in
-    // real time; polling would just duplicate network calls.
-    if (_transport.transportMode != RealtimeTransportMode.polling) {
-      debugPrint('[ChatStore] Poll tick skipped — transport is ${_transport.transportMode.name}');
-      return;
-    }
-    // Do not poll before the initial background revalidation is complete.
+    // Polling is a lossless safety net even while Socket/SSE reports connected:
+    // a connected transport can still stall or lose an event during reconnect.
+    // Client-side message IDs make overlapping delivery idempotent.
     // With the cache-first flow state.isInitialized flips to true as soon as
     // the cached snapshot renders, but polling before the recovery pull
     // finishes results in pullMessages() reading latestTimestamp=0 from an
@@ -3648,9 +3630,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // still cause all chats to briefly (or permanently) show unread badges
     // after an app update or reinstall.
     if (!_initialSyncCompleted) return;
-    // Do not poll during a full sync — the sync performs its own comprehensive
-    // pull and polling with a cleared state would mark historical messages as
-    // unread.
+    // Do not poll during a full sync; it performs its own comprehensive pull.
     if (state.isSyncing) return;
     pullMessages();
   }
