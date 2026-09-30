@@ -14,6 +14,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../core/database/chat_database.dart';
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
+import '../../../core/services/push_notification_service.dart';
 import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
 import '../../../shared/widgets/authenticated_image.dart';
@@ -113,6 +114,30 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen>
 
     if (mounted) {
       setState(() => _isBooting = false);
+    }
+
+    // A cold-start FCM payload is deliberately held by the push service until
+    // the local database snapshot is available. Merge it only now so it cannot
+    // replace or race the restored chat history, then navigate on a mounted
+    // widget tree.
+    final pendingChatId = ref
+        .read(pushNotificationServiceProvider)
+        .consumePendingColdStartMessage();
+    if (pendingChatId != null && mounted) {
+      await WidgetsBinding.instance.endOfFrame;
+      if (mounted) {
+        final state = ref.read(chatStoreProvider);
+        final unreadCount = state.unreadByChat[pendingChatId] ?? 0;
+        ref.read(chatStoreProvider.notifier).setCurrentChat(pendingChatId);
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => MessageScreen(
+              chatId: pendingChatId,
+              initialUnreadCount: unreadCount,
+            ),
+          ),
+        );
+      }
     }
 
     unawaited(_syncOnResume());

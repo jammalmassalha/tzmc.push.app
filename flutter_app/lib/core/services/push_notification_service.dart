@@ -250,7 +250,6 @@ class PushNotificationService {
         debugPrint(
           '[PUSH-ROUTING] getInitialMessage caught payload: ${initialMessage.data}',
         );
-        _pendingRouteChatId = _chatIdFromMessage(initialMessage);
         pendingColdStartMessage = initialMessage;
       }
 
@@ -1407,6 +1406,18 @@ class PushNotificationService {
     }
   }
 
+  /// Applies a terminated-state notification after the chat store has restored
+  /// its local history. Returns the chat ID to open, if one is present.
+  String? consumePendingColdStartMessage() {
+    final message = pendingColdStartMessage;
+    if (message == null) return null;
+
+    final chatId = _chatIdFromMessage(message);
+    _applyPushPayload(message);
+    pendingColdStartMessage = null;
+    return chatId;
+  }
+
   /// Navigate to the chat from a notification
   void _navigateToChat(RemoteMessage message) {
     final chatId = _chatIdFromMessage(message);
@@ -1445,11 +1456,6 @@ class PushNotificationService {
         return;
       }
       await WidgetsBinding.instance.endOfFrame;
-      final coldStartMessage = pendingColdStartMessage;
-      if (coldStartMessage != null) {
-        _applyPushPayload(coldStartMessage);
-        pendingColdStartMessage = null;
-      }
       debugPrint('[PUSH-ROUTING] Waiting for ChatStoreService.syncOnLaunch()');
       await _ref.read(chatStoreProvider.notifier).syncOnLaunch();
       if (_pendingRouteChatId != chatId) return;
