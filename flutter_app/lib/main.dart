@@ -145,6 +145,19 @@ class TzmcPushApp extends ConsumerWidget {
       // Start at the chat list. AuthRouter still redirects unauthenticated
       // users to login, while authenticated users see the shell immediately.
       initialRoute: _initialRouteName(),
+      onGenerateInitialRoutes: (initialRoute) {
+        // Build one root route only. This prevents the framework from adding
+        // an extra home route while authentication settles.
+        return [
+          MaterialPageRoute<void>(
+            settings: RouteSettings(name: initialRoute),
+            builder: (_) => AuthRouter(
+              requestedPath: AppRouteRequest.fromName(initialRoute).path,
+              redirectPath: AppRouteRequest.fromName(initialRoute).redirectPath,
+            ),
+          ),
+        ];
+      },
       onGenerateRoute: (settings) {
         final request = AppRouteRequest.fromName(settings.name);
         return MaterialPageRoute<void>(
@@ -187,6 +200,7 @@ class AuthRouter extends ConsumerStatefulWidget {
 class _AuthRouterState extends ConsumerState<AuthRouter> {
   bool _isNavigating = false;
   bool _hasAttemptedPushRoute = false;
+  bool _hasScheduledAuthNavigation = false;
 
   @override
   Widget build(BuildContext context) {
@@ -226,11 +240,19 @@ class _AuthRouterState extends ConsumerState<AuthRouter> {
   }
 
   void _scheduleNavigation(String routeName) {
-    if (_isNavigating || !mounted) return;
+    if (_isNavigating || _hasScheduledAuthNavigation || !mounted) return;
+    _hasScheduledAuthNavigation = true;
     _isNavigating = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      Navigator.of(context).pushReplacementNamed(routeName);
+      if (ref.read(authStateProvider) is AuthAuthenticated) {
+        _isNavigating = false;
+        return;
+      }
+      Navigator.of(context).pushNamedAndRemoveUntil(
+        routeName,
+        (route) => false,
+      );
       _isNavigating = false;
     });
   }
