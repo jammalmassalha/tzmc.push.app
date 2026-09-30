@@ -138,6 +138,9 @@ class PushNotificationService {
   /// ready. Kept at class level because a cold-start notification can arrive
   /// before the service has finished initializing.
   static String? _pendingRouteChatId;
+  /// Retains the complete cold-start payload until the chat store has restored
+  /// its local snapshot. It must not be applied during FCM initialization.
+  static RemoteMessage? pendingColdStartMessage;
   bool _launchRoutingInFlight = false;
   StreamSubscription? _tokenRefreshSubscription;
   StreamSubscription? _messageSubscription;
@@ -248,7 +251,7 @@ class PushNotificationService {
           '[PUSH-ROUTING] getInitialMessage caught payload: ${initialMessage.data}',
         );
         _pendingRouteChatId = _chatIdFromMessage(initialMessage);
-        _applyPushPayload(initialMessage);
+        pendingColdStartMessage = initialMessage;
       }
 
       // Check if app was opened from an Android local notification while
@@ -1442,6 +1445,11 @@ class PushNotificationService {
         return;
       }
       await WidgetsBinding.instance.endOfFrame;
+      final coldStartMessage = pendingColdStartMessage;
+      if (coldStartMessage != null) {
+        _applyPushPayload(coldStartMessage);
+        pendingColdStartMessage = null;
+      }
       debugPrint('[PUSH-ROUTING] Waiting for ChatStoreService.syncOnLaunch()');
       await _ref.read(chatStoreProvider.notifier).syncOnLaunch();
       if (_pendingRouteChatId != chatId) return;
