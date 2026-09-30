@@ -11,7 +11,6 @@ import 'package:intl/intl.dart' hide TextDirection;
 import 'package:shimmer/shimmer.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../../../core/database/chat_database.dart';
 import '../../../core/navigation/root_navigator.dart';
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
@@ -44,7 +43,6 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen>
     with WidgetsBindingObserver {
   bool _isBooting = true;
   bool _isSyncing = false;
-  StreamSubscription<void>? _dbSubscription;
 
   Contact? _findContact(ChatState state, String value) {
     final normalized = value.trim().toLowerCase();
@@ -65,9 +63,6 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _dbSubscription = ref.read(chatDatabaseProvider).watchChatChanges().listen((_) {
-      unawaited(ref.read(chatStoreProvider.notifier).restoreLocalCache());
-    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_bootApp());
     });
@@ -76,7 +71,6 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _dbSubscription?.cancel();
     super.dispose();
   }
 
@@ -105,14 +99,6 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen>
   }
 
   Future<void> _bootApp() async {
-    final notifier = ref.read(chatStoreProvider.notifier);
-
-    try {
-      await notifier.restoreLocalCache();
-    } catch (e) {
-      debugPrint('Local cache restore failed: $e');
-    }
-
     if (mounted) {
       setState(() => _isBooting = false);
     }

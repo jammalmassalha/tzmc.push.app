@@ -1412,12 +1412,6 @@ class PushNotificationService {
     final message = pendingColdStartMessage;
     if (message == null) return null;
 
-    // Keep the cold-start workaround deliberately simple: allow the app,
-    // widget tree, and local database time to finish loading before applying
-    // the payload.
-    await Future<void>.delayed(const Duration(seconds: 4));
-    if (pendingColdStartMessage == null) return null;
-
     final chatId = _chatIdFromMessage(message);
     _applyPushPayload(message);
     pendingColdStartMessage = null;

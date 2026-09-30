@@ -4,6 +4,7 @@
 /// replies, and edit/delete status.
 library;
 
+import 'dart:async';
 import 'dart:io' show Directory, File;
 import 'dart:typed_data' show Uint8List;
 import 'dart:ui' as ui;
@@ -174,6 +175,9 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       (_) => _scheduleStickyDateRefresh(),
     );
     WidgetsBinding.instance.addPostFrameCallback((_) => _resetBadgeOnOpen());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(ref.read(chatStoreProvider.notifier).loadChatHistory(widget.chatId));
+    });
   }
 
   void _clearCurrentChatSelection() {
