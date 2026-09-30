@@ -12,6 +12,7 @@ import 'package:shimmer/shimmer.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/database/chat_database.dart';
+import '../../../core/navigation/root_navigator.dart';
 import '../../../core/models/chat_models.dart';
 import '../../../core/services/chat_store_service.dart';
 import '../../../core/services/push_notification_service.dart';
@@ -120,16 +121,17 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen>
     // the local database snapshot is available. Merge it only now so it cannot
     // replace or race the restored chat history, then navigate on a mounted
     // widget tree.
-    final pendingChatId = ref
+    final pendingChatId = await ref
         .read(pushNotificationServiceProvider)
         .consumePendingColdStartMessage();
     if (pendingChatId != null && mounted) {
       await WidgetsBinding.instance.endOfFrame;
-      if (mounted) {
+      final navigator = rootNavigatorKey.currentState;
+      if (mounted && navigator != null) {
         final state = ref.read(chatStoreProvider);
         final unreadCount = state.unreadByChat[pendingChatId] ?? 0;
         ref.read(chatStoreProvider.notifier).setCurrentChat(pendingChatId);
-        Navigator.of(context).push(
+        navigator.push(
           MaterialPageRoute(
             builder: (_) => MessageScreen(
               chatId: pendingChatId,
