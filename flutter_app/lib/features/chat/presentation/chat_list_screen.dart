@@ -39,10 +39,8 @@ class ChatListScreen extends ConsumerStatefulWidget {
   ConsumerState<ChatListScreen> createState() => _ChatListScreenState();
 }
 
-class _ChatListScreenState extends ConsumerState<ChatListScreen>
-    with WidgetsBindingObserver {
+class _ChatListScreenState extends ConsumerState<ChatListScreen> {
   bool _isBooting = true;
-  bool _isSyncing = false;
 
   Contact? _findContact(ChatState state, String value) {
     final normalized = value.trim().toLowerCase();
@@ -62,40 +60,9 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen>
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_bootApp());
     });
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      debugPrint('App resumed: triggering background chat sync');
-      if (!_isSyncing) {
-        unawaited(_syncOnResume());
-      }
-    }
-  }
-
-  Future<void> _syncOnResume() async {
-    _isSyncing = true;
-    try {
-      await ref
-          .read(chatStoreProvider.notifier)
-          .syncOnLaunch()
-          .timeout(const Duration(seconds: 10));
-    } catch (e) {
-      debugPrint('Background chat sync failed or timed out after resume: $e');
-    } finally {
-      _isSyncing = false;
-    }
   }
 
   Future<void> _bootApp() async {
@@ -103,10 +70,8 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen>
       setState(() => _isBooting = false);
     }
 
-    // A cold-start FCM payload is deliberately held by the push service until
-    // the local database snapshot is available. Merge it only now so it cannot
-    // replace or race the restored chat history, then navigate on a mounted
-    // widget tree.
+    // Apply a pending cold-start payload after the shell has mounted, then
+    // navigate only when the root navigator is available.
     final pendingChatId = await ref
         .read(pushNotificationServiceProvider)
         .consumePendingColdStartMessage();
@@ -127,8 +92,6 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen>
         );
       }
     }
-
-    unawaited(_syncOnResume());
   }
 
   @override
