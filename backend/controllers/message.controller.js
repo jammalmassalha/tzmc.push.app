@@ -358,6 +358,9 @@ function registerMessageController(app, deps = {}) {
                 res.status(resolution.status).json({ messages: [], error: resolution.error })
         }),
         async (req, res) => {
+            // Flutter sends this endpoint as POST with the cursor in JSON.
+            // registerReadRoute keeps GET available for existing web clients
+            // and merges POST body fields into req.query for this handler.
             const user = req.resolvedUser;
             if (!user) return res.status(400).json({ messages: [], error: 'Missing user' });
             const lastSequence = Math.max(0, Number(req.query && (

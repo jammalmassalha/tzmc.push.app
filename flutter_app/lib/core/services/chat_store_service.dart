@@ -446,9 +446,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         state = state.copyWith(isRestricted: isRestricted);
       }
 
-      // If the first background revalidation failed (e.g. no network on cold
-      // start), retry it now — the cached UI is already live, so this stays
-      // silent and non-blocking.
       if (!_initialSyncCompleted && !_initialSyncInFlight) {
         unawaited(syncOnLaunch());
       }
@@ -460,6 +457,23 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     try {
       final deletedChats = await _readDeletedChats(normalized);
       state = state.copyWith(deletedChats: deletedChats);
+
+      // The chat store is API-driven. Do not hydrate chats or messages from
+      // Drift/web storage during startup; this removes the offline hydration
+      // race from the notification and authentication paths.
+      state = state.copyWith(
+        contacts: const {},
+        groups: const {},
+        messagesByChat: const {},
+        unreadByChat: const {},
+        isLoading: false,
+        isInitialized: true,
+      );
+      _flushPendingPushPayloads();
+      if (startBackgroundSync) {
+        unawaited(syncOnLaunch());
+      }
+      return;
 
       // Load the persisted incremental-sync high-water mark and the oldest
       // pending background push, so the recovery pull below starts from a
@@ -1219,6 +1233,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// Get messages for a chat
   List<ChatMessage> getMessages(String chatId) {
     return state.messagesByChat[chatId] ?? [];
+  }
+
+  /// Fetch the current user's message history from the API for an opened chat.
+  /// The result is kept only in the in-memory Riverpod state.
+  Future<void> loadChatHistory(String chatId) async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty || chatId.trim().isEmpty) return;
+    await _pullAllMessagesFromLogs(user: user, since: 0);
   }
 
   /// Pull messages since a timestamp

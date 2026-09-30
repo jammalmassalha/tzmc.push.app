@@ -8198,13 +8198,19 @@ app.post(
             timestamp: Date.now()
         });
 
-        const result = await sendPushNotificationToUser(normalizedSender, {
+        // Delivery acknowledgements are device-to-server state updates. Do not
+        // hold the HTTP response open while the sender's FCM fan-out completes;
+        // a slow or unavailable push provider must not make the recipient retry
+        // the acknowledgement.
+        void sendPushNotificationToUser(normalizedSender, {
             title: '',
             body: { shortText: '', longText: '' },
             data: receiptData
-        }, normalizedRecipient, { skipBadge: true });
+        }, normalizedRecipient, { skipBadge: true }).catch((error) => {
+            console.warn('[DELIVERY RECEIPT] Sender notification failed:', error && error.message ? error.message : error);
+        });
 
-        res.json({ status: 'ok', details: result });
+        res.json({ status: 'ok' });
     } catch (err) {
         console.error('[DELIVERY RECEIPT] Failed:', err.message);
         res.status(500).json({ status: 'error', message: err.message });

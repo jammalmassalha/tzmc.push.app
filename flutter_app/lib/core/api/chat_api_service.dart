@@ -605,13 +605,21 @@ class ChatApiService {
     required String user,
     required int lastSyncTimestamp,
   }) async {
-    final response = await _client.get<Map<String, dynamic>>(
+    final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.chatSync,
-      queryParameters: {
+      data: {
         'user': user.trim().toLowerCase(),
         'last_sync_timestamp': lastSyncTimestamp,
       },
-      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 20)),
+      options: Options(
+        sendTimeout: NetworkTimeouts.chatSyncTimeout,
+        connectTimeout: NetworkTimeouts.chatSyncTimeout,
+        receiveTimeout: NetworkTimeouts.chatSyncTimeout,
+      ),
+      retryOptions: const RetryOptions(
+        retries: 1,
+        timeout: NetworkTimeouts.chatSyncTimeout,
+      ),
     );
     if (!response.isSuccessful || response.data == null) {
       throw ApiException('Chat hydration sync failed with ${response.statusCode}');
