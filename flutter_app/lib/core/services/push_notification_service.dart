@@ -138,6 +138,7 @@ class PushNotificationService {
   /// ready. Kept at class level because a cold-start notification can arrive
   /// before the service has finished initializing.
   static String? _pendingRouteChatId;
+  bool _launchRoutingInFlight = false;
   StreamSubscription? _tokenRefreshSubscription;
   StreamSubscription? _messageSubscription;
 
@@ -1421,33 +1422,41 @@ class PushNotificationService {
   /// Replays a terminated-state route after authentication and the initial
   /// chat synchronization have completed.
   Future<void> completeLaunchRouting() async {
+    if (_launchRoutingInFlight) return;
     final chatId = _pendingRouteChatId;
     if (chatId == null) return;
-    if (_ref.read(currentUserProvider) == null) {
-      debugPrint(
-        '[PUSH-ROUTING] Launch route deferred: user is not authenticated',
-      );
-      return;
-    }
-    // The push service and chat shell initialize independently. Do not invoke
-    // syncOnLaunch before the store has established its current user.
-    if (!_ref.read(chatStoreProvider).isInitialized) {
-      debugPrint('[PUSH-ROUTING] Launch route deferred: chat store is not ready');
-      return;
-    }
-    await WidgetsBinding.instance.endOfFrame;
-    debugPrint('[PUSH-ROUTING] Waiting for ChatStoreService.syncOnLaunch()');
-    await _ref.read(chatStoreProvider.notifier).syncOnLaunch();
-    if (_pendingRouteChatId != chatId) return;
-    debugPrint('[PUSH-ROUTING] Replaying pending chat route: $chatId');
-    if (_openChatScreen(chatId)) {
-      _pendingRouteChatId = null;
-    } else {
-      // The navigator can still be mounting while authentication and store
-      // hydration complete. Try once more on the next frame.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        unawaited(completeLaunchRouting());
-      });
+    _launchRoutingInFlight = true;
+    try {
+      if (_ref.read(currentUserProvider) == null) {
+        debugPrint(
+          '[PUSH-ROUTING] Launch route deferred: user is not authenticated',
+        );
+        return;
+      }
+      // The push service and chat shell initialize independently. Do not invoke
+      // syncOnLaunch before the store has established its current user.
+      if (!_ref.read(chatStoreProvider).isInitialized) {
+        debugPrint(
+          '[PUSH-ROUTING] Launch route deferred: chat store is not ready',
+        );
+        return;
+      }
+      await WidgetsBinding.instance.endOfFrame;
+      debugPrint('[PUSH-ROUTING] Waiting for ChatStoreService.syncOnLaunch()');
+      await _ref.read(chatStoreProvider.notifier).syncOnLaunch();
+      if (_pendingRouteChatId != chatId) return;
+      debugPrint('[PUSH-ROUTING] Replaying pending chat route: $chatId');
+      if (_openChatScreen(chatId)) {
+        _pendingRouteChatId = null;
+      } else {
+        // The navigator can still be mounting while authentication and store
+        // hydration complete. Try once more on the next frame.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          unawaited(completeLaunchRouting());
+        });
+      }
+    } finally {
+      _launchRoutingInFlight = false;
     }
   }
 
