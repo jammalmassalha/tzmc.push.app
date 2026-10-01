@@ -679,34 +679,49 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _initialSyncInFlight = true;
     state = state.copyWith(isInitialSyncing: true);
     debugPrint('[SYNC-PIPELINE] Starting sync with lastSyncTimestamp: $_syncCursorMs');
+    // Start the durable history recovery immediately. The combined sync
+    // request can be slow, while logs are sufficient to build the chat list
+    // and must not wait behind that request.
+    final fallbackRecovery = recoverMissedMessages(force: true);
     try {
-      final hydration = await _api.syncChatsAndMessages(
-        user: _currentUser!,
-        lastSyncTimestamp: _syncCursorMs,
-      );
-      final hydrationMessages = (hydration['mode'] == 'full'
-              ? hydration['messages']
-              : hydration['newMessages']) as List? ?? const [];
-      final hydrationChats = (hydration['mode'] == 'full'
-              ? hydration['chats']
-              : hydration['updatedChats']) as List? ?? const [];
-      debugPrint(
-        '[SYNC-PIPELINE] Received mode=${hydration['mode']} '
-        'chats=${hydrationChats.length} messages=${hydrationMessages.length}',
-      );
-      await _db.syncOneToOne(
-        chats: hydrationChats,
-        messages: hydrationMessages,
-      );
-      // syncOneToOne persists the server response, but the chat list is
-      // rendered from Riverpod state. Apply the same response in memory too;
-      // otherwise a fresh install sees an empty list until a later poll even
-      // though the database already contains the user's chats.
-      _applyHydrationMessages(hydrationMessages);
-      final nextCursor = int.tryParse('${hydration['next_sync_timestamp'] ?? 0}') ?? 0;
-      if (nextCursor > _syncCursorMs) {
-        _syncCursorMs = nextCursor;
-        await _writeSyncCursor(_currentUser!);
+      // The combined sync endpoint is an optimization, not the source of
+      // truth. It can be slow while the backend wakes up (or fail when its
+      // mailbox store is unavailable), so never let it prevent the durable
+      // logs fallback from populating a fresh chat list.
+      try {
+        final hydration = await _api.syncChatsAndMessages(
+          user: _currentUser!,
+          lastSyncTimestamp: _syncCursorMs,
+        );
+        final hydrationMessages = (hydration['mode'] == 'full'
+                ? hydration['messages']
+                : hydration['newMessages']) as List? ?? const [];
+        final hydrationChats = (hydration['mode'] == 'full'
+                ? hydration['chats']
+                : hydration['updatedChats']) as List? ?? const [];
+        debugPrint(
+          '[SYNC-PIPELINE] Received mode=${hydration['mode']} '
+          'chats=${hydrationChats.length} messages=${hydrationMessages.length}',
+        );
+        await _db.syncOneToOne(
+          chats: hydrationChats,
+          messages: hydrationMessages,
+        );
+        // syncOneToOne persists the server response, but the chat list is
+        // rendered from Riverpod state. Apply the same response in memory too;
+        // otherwise a fresh install sees an empty list until a later poll even
+        // though the database already contains the user's chats.
+        _applyHydrationMessages(hydrationMessages);
+        final nextCursor = int.tryParse('${hydration['next_sync_timestamp'] ?? 0}') ?? 0;
+        if (nextCursor > _syncCursorMs) {
+          _syncCursorMs = nextCursor;
+          await _writeSyncCursor(_currentUser!);
+        }
+      } catch (error, stackTrace) {
+        debugPrint(
+          '[SYNC-PIPELINE] Combined sync failed; falling back to message logs: '
+          '$error\n$stackTrace',
+        );
       }
       // 2. Pull fresh contacts and groups
       await Future.wait([
@@ -735,7 +750,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // This accurately re-counts unread messages by calling
       // _handleIncomingTextMessage for every new incoming message, starting
       // from the empty unreadByChat set above.
-      await recoverMissedMessages(force: true);
+      await fallbackRecovery;
 
       // 4. Consume the pending sync floor; message and unread data come from
       // the server response rather than local notification storage.
@@ -1262,24 +1277,26 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // badges.  The incremental branch uses the resolved cursor (which also
       // accounts for the persisted high-water mark and the FCM background
       // tray) rather than the raw table maximum.
-      int localLatest;
       bool localDbHasMessages = true;
       try {
         localDbHasMessages = await _db.hasMessages();
-        localLatest = await _db.getLatestMessageTimestamp();
       } catch (_) {
-        // DB unavailable (web without WASM files); derive the latest known
-        // timestamp from the in-memory state so we still pull missed messages.
-        localLatest = _latestTimestampFromState();
+        // DB unavailable (web without WASM files); the in-memory state still
+        // determines whether a complete visible history is required.
+        localDbHasMessages = false;
       }
 
-      if (!localDbHasMessages) {
-        // No local history (first install or DB cleared): use the batch-import
-        // path so that all historical messages are loaded without incrementing
-        // unread counters. Treating the entire history as "unread" on first open
-        // would produce thousands of spurious badge counts that confuse users.
-        // On the next open the DB will have messages and the incremental path
-        // below is used — only genuinely new messages are counted as unread.
+      // Startup intentionally begins with an empty in-memory state and does
+      // not hydrate chat data from Drift/SQLite. Therefore a populated local
+      // database must not make this look like an incremental-only startup:
+      // using its cursor here would leave the UI empty because only messages
+      // newer than the cursor are returned. Rebuild the visible chat list from
+      // the authoritative server history whenever memory has no messages.
+      final hasInMemoryMessages = state.messagesByChat.values.any((messages) => messages.isNotEmpty);
+      if (!localDbHasMessages || !hasInMemoryMessages) {
+        // No visible in-memory history (first install, DB cleared, or a
+        // server-authoritative startup): use the batch-import path so that all
+        // historical messages are loaded without incrementing unread counts.
         final user = _currentUser;
         if (user != null && user.isNotEmpty) {
           await _pullAllMessagesFromLogs(user: user, since: 0);
