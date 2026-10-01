@@ -224,63 +224,95 @@ class ChatApiService {
       throw AuthException('מספר טלפון לא תקין');
     }
 
-    try {
-      print('📱 [OTP] Requesting SMS code for phone: $normalized');
-      final response = await _client.post<Map<String, dynamic>>(
-        ApiEndpoints.requestCode,
-        data: {'user': normalized},
-        // The server persists the code and dispatches the SMS (each with
-        // internal retries) before responding — override the 10s default Dio
-        // receiveTimeout or the app reports a timeout while the SMS arrives.
-        options: Options(
-          receiveTimeout: NetworkTimeouts.requestCodeTimeout,
-          sendTimeout: NetworkTimeouts.requestCodeTimeout,
-        ),
-        // No retry: a client-side retry would request a NEW code that
-        // overwrites (invalidates) the code from the SMS already in flight.
-        retryOptions:
-            const RetryOptions(retries: 0, timeout: NetworkTimeouts.requestCodeTimeout),
-      );
+    // Retry logic with exponential backoff for transient failures
+    int maxRetries = 2; // 2 retries = 3 total attempts
+    Duration delayBetweenRetries = const Duration(seconds: 2);
+    
+    for (int attempt = 1; attempt <= maxRetries + 1; attempt++) {
+      try {
+        print('📱 [OTP] Requesting SMS code for phone: $normalized (attempt $attempt/${maxRetries + 1})');
+        final response = await _client.post<Map<String, dynamic>>(
+          ApiEndpoints.requestCode,
+          data: {'user': normalized},
+          // The server persists the code and dispatches the SMS (each with
+          // internal retries) before responding — override the 10s default Dio
+          // receiveTimeout or the app reports a timeout while the SMS arrives.
+          options: Options(
+            receiveTimeout: NetworkTimeouts.requestCodeTimeout,
+            sendTimeout: NetworkTimeouts.requestCodeTimeout,
+          ),
+          // No retry at Dio level: a client-side retry would request a NEW code that
+          // overwrites (invalidates) the code from the SMS already in flight.
+          retryOptions:
+              const RetryOptions(retries: 0, timeout: NetworkTimeouts.requestCodeTimeout),
+        );
 
-      print('📱 [OTP] Response status: ${response.statusCode}, isSuccessful: ${response.isSuccessful}');
-      
-      if (!response.isSuccessful) {
-        final body = _coerceJsonMap(response.data);
-        final message = _extractErrorMessage(body, '');
-        print('❌ [OTP] Request failed - Status: ${response.statusCode}, Message: $message, Body: $body');
+        print('📱 [OTP] Response status: ${response.statusCode}, isSuccessful: ${response.isSuccessful}');
+        
+        if (!response.isSuccessful) {
+          final body = _coerceJsonMap(response.data);
+          final message = _extractErrorMessage(body, '');
+          print('❌ [OTP] Request failed - Status: ${response.statusCode}, Message: $message, Body: $body');
 
-        if (response.statusCode == 400) {
-          throw AuthException('מספר טלפון לא תקין');
-        } else if (response.statusCode == 403) {
-          throw AuthException('המשתמש אינו מורשה');
-        } else if (response.statusCode == 429) {
-          final retryAfter = _parseRetryAfterSeconds(body);
-          final retryMessage = retryAfter == null
-              ? 'יותר מדי ניסיונות. נסה שוב מאוחר יותר'
-              : 'יותר מדי ניסיונות. נסה שוב בעוד $retryAfter שניות';
-          throw RateLimitException(retryMessage, retryAfter);
-        } else if (message.isNotEmpty) {
-          throw AuthException(message);
+          if (response.statusCode == 400) {
+            throw AuthException('מספר טלפון לא תקין');
+          } else if (response.statusCode == 403) {
+            throw AuthException('המשתמש אינו מורשה');
+          } else if (response.statusCode == 429) {
+            final retryAfter = _parseRetryAfterSeconds(body);
+            final retryMessage = retryAfter == null
+                ? 'יותר מדי ניסיונות. נסה שוב מאוחר יותר'
+                : 'יותר מדי ניסיונות. נסה שוב בעוד $retryAfter שניות';
+            throw RateLimitException(retryMessage, retryAfter);
+          } else if (message.isNotEmpty) {
+            throw AuthException(message);
+          }
+          throw AuthException('שליחת קוד אימות נכשלה');
         }
-        throw AuthException('שליחת קוד אימות נכשלה');
-      }
 
-      final body = SessionResponse.fromJson(_coerceJsonMap(response.data));
-      final expiresInSeconds = body.expiresInSeconds ?? 300;
-      print('✅ [OTP] SMS code requested successfully, expires in: $expiresInSeconds seconds');
-      return expiresInSeconds > 0 ? expiresInSeconds : 300;
-    } on TimeoutException catch (e) {
-      print('⏱️  [OTP] Request timeout: $e');
-      throw AuthException('השרת לא הגיב בזמן. נסה שוב');
-    } on DioException catch (e) {
-      print('🌐 [OTP] Dio error: ${e.type}, Status: ${e.response?.statusCode}, Message: ${e.message}');
-      final message = _extractErrorMessage(e.response?.data, '');
-      throw AuthException(message.isNotEmpty ? message : 'שליחת קוד אימות נכשלה');
-    } catch (error, stackTrace) {
-      print('❌ [OTP] Unexpected error: $error');
-      debugPrint('requestSessionCode unexpected error: $error\n$stackTrace');
-      Error.throwWithStackTrace(AuthException('שליחת קוד אימות נכשלה'), stackTrace);
+        final body = SessionResponse.fromJson(_coerceJsonMap(response.data));
+        final expiresInSeconds = body.expiresInSeconds ?? 300;
+        print('✅ [OTP] SMS code requested successfully, expires in: $expiresInSeconds seconds');
+        return expiresInSeconds > 0 ? expiresInSeconds : 300;
+      } on TimeoutException catch (e) {
+        print('⏱️  [OTP] Request timeout on attempt $attempt/${ maxRetries + 1}: $e');
+        if (attempt <= maxRetries) {
+          print('⏱️  [OTP] Retrying after ${delayBetweenRetries.inSeconds}s...');
+          await Future.delayed(delayBetweenRetries);
+          delayBetweenRetries *= 2; // Exponential backoff
+          continue;
+        }
+        throw AuthException('השרת לא הגיב בזמן. נסה שוב');
+      } on DioException catch (e) {
+        print('🌐 [OTP] Dio error on attempt $attempt/${maxRetries + 1}: ${e.type}, Status: ${e.response?.statusCode}, Message: ${e.message}');
+        // Retry on network errors, but not on application errors
+        if (attempt <= maxRetries && 
+            (e.type == DioExceptionType.connectionTimeout || 
+             e.type == DioExceptionType.receiveTimeout ||
+             e.type == DioExceptionType.sendTimeout ||
+             e.type == DioExceptionType.unknown)) {
+          print('🌐 [OTP] Retrying due to network error after ${delayBetweenRetries.inSeconds}s...');
+          await Future.delayed(delayBetweenRetries);
+          delayBetweenRetries *= 2; // Exponential backoff
+          continue;
+        }
+        final message = _extractErrorMessage(e.response?.data, '');
+        throw AuthException(message.isNotEmpty ? message : 'שליחת קוד אימות נכשלה');
+      } catch (error, stackTrace) {
+        print('❌ [OTP] Error on attempt $attempt/${maxRetries + 1}: $error');
+        if (attempt <= maxRetries) {
+          print('❌ [OTP] Retrying after ${delayBetweenRetries.inSeconds}s...');
+          await Future.delayed(delayBetweenRetries);
+          delayBetweenRetries *= 2; // Exponential backoff
+          continue;
+        }
+        debugPrint('requestSessionCode unexpected error: $error\n$stackTrace');
+        Error.throwWithStackTrace(AuthException('שליחת קוד אימות נכשלה'), stackTrace);
+      }
     }
+    
+    // Should never reach here, but just in case
+    throw AuthException('שליחת קוד אימות נכשלה');
   }
 
   /// Verify SMS code
