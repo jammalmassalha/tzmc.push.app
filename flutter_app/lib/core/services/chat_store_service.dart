@@ -184,6 +184,13 @@ class ChatState {
   /// Get all chat list items sorted by last message timestamp
   List<ChatListItem> get chatListItems {
     final items = <ChatListItem>[];
+    Contact? contactFor(String username) {
+      final normalized = username.trim().toLowerCase();
+      for (final entry in contacts.entries) {
+        if (entry.key.trim().toLowerCase() == normalized) return entry.value;
+      }
+      return null;
+    }
 
     if (isRestricted) {
       // Return ALL contacts (the active secretaries returned by getContacts) EVEN if they have no messages!
@@ -223,15 +230,19 @@ class ChatState {
 
       // Check if it's a group chat
       final group = groups[chatId];
-      if (group != null) continue; // Handle groups separately
+      if (group != null || messages.first.groupId?.trim().isNotEmpty == true) {
+        continue; // Handle groups separately
+      }
 
       // Direct chat
-      final contact = contacts[chatId];
+      final contact = contactFor(chatId);
       final lastMessage = messages.first;
 
       items.add(ChatListItem(
         id: chatId,
-        title: contact?.displayName ?? chatId,
+        title: chatId.trim().toLowerCase() == (_currentUser ?? '').trim().toLowerCase()
+            ? 'אני'
+            : contact?.displayName ?? chatId,
         info: contact?.info,
         phone: contact?.phone,
         subtitle: _getMessagePreview(lastMessage, includeSender: true),
@@ -243,17 +254,42 @@ class ChatState {
       ));
     }
 
-    // Add groups with messages
-    for (final group in groups.values) {
-      final messages = messagesByChat[group.id] ?? [];
+    // Add groups with messages. Prefer the group record, but use group
+    // metadata carried by the message when the groups request is incomplete.
+    final groupEntries = <String, List<ChatMessage>>{};
+    for (final entry in messagesByChat.entries) {
+      final last = entry.value.isEmpty ? null : entry.value.first;
+      final groupId = last?.groupId?.trim().isNotEmpty == true
+          ? last!.groupId!.trim()
+          : (groups.containsKey(entry.key) ? entry.key : '');
+      if (groupId.isNotEmpty) {
+        groupEntries[groupId] = entry.value;
+      }
+    }
+    for (final entry in groupEntries.entries) {
+      final groupId = entry.key;
+      final messages = entry.value;
       if (messages.isEmpty) continue;
-
       final lastMessage = messages.first;
+      ChatGroup? group = groups[groupId];
+      if (group == null) {
+        for (final candidate in groups.values) {
+          if (candidate.id.trim().toLowerCase() == groupId.toLowerCase()) {
+            group = candidate;
+            break;
+          }
+        }
+      }
+      final groupTitle = group?.name.trim().isNotEmpty == true
+          ? group!.name.trim()
+          : (lastMessage.groupName?.trim().isNotEmpty == true
+              ? lastMessage.groupName!.trim()
+              : groupId);
 
       items.add(ChatListItem(
-        id: group.id,
-        title: group.name,
-        info: '${group.members.length} חברים',
+        id: groupId,
+        title: groupTitle,
+        info: group == null ? null : '${group.members.length} חברים',
         phone: null,
         subtitle: _getMessagePreview(lastMessage, includeSender: true),
         lastTimestamp: lastMessage.timestamp,
@@ -276,9 +312,12 @@ class ChatState {
     final preview = _getMessageBodyPreview(message);
     if (!includeSender) return preview;
 
-    final sender = message.senderDisplayName?.trim().isNotEmpty == true
+    final senderKey = message.sender.trim().toLowerCase();
+    final sender = senderKey == (_currentUser ?? '').trim().toLowerCase()
+        ? 'אני'
+        : message.senderDisplayName?.trim().isNotEmpty == true
         ? message.senderDisplayName!.trim()
-        : (contacts[message.sender.trim().toLowerCase()]?.displayName.trim() ??
+        : (contactFor(message.sender)?.displayName.trim() ??
             message.sender.trim());
     return sender.isEmpty ? preview : '$sender: $preview';
   }
