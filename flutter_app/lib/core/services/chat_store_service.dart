@@ -3791,6 +3791,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       if (user == null || user.trim().isEmpty) {
         return;
       }
+      
+      final messageCount = state.messagesByChat.values.fold(0, (sum, msgs) => sum + msgs.length);
+      print('📊 [PersistState] Starting persistence for user: $user');
+      print('📊 [PersistState] Messages in state: $messageCount');
+      print('📊 [PersistState] Contacts: ${state.contacts.length}');
+      print('📊 [PersistState] Groups: ${state.groups.length}');
+      
       final snapshot = PersistedChatState(
         contacts: state.contacts.values.toList(),
         groups: state.groups.values.toList(),
@@ -3800,16 +3807,20 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
       try {
         await _db.persistState(snapshot);
-      } catch (_) {
+        print('✅ [PersistState] Successfully persisted to Drift database');
+      } catch (e) {
+        print('❌ [PersistState] Drift DB error: $e');
         // Drift DB unavailable (e.g. web without sqlite3.wasm).
         // Fall back to shared_preferences-based localStorage snapshot.
         if (kIsWeb) {
           await WebChatStorage.persistState(user, snapshot);
+          print('✅ [PersistState] Fell back to WebStorage');
         }
       }
       await _writeDeletedChats(user, state.deletedChats);
       await _writeSyncCursor(user);
-    } catch (_) {
+    } catch (e) {
+      print('❌ [PersistState] Error: $e');
       // Persistence failure is non-fatal – data remains available in memory
       // for the current session and will be retried on the next trigger.
     }

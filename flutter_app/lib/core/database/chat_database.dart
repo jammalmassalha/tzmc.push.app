@@ -8,7 +8,7 @@ library;
 import 'dart:convert';
 
 import 'package:drift/drift.dart';
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/chat_models.dart';
@@ -724,6 +724,11 @@ class ChatDatabase extends _$ChatDatabase {
   ///
   /// The whole snapshot is applied inside a single [batch] so it is atomic.
   Future<void> persistState(PersistedChatState state) async {
+    debugPrint('🔵 [Drift] Starting persistState batch insert');
+    debugPrint('🔵 [Drift] Messages to insert: ${state.messages.length}');
+    debugPrint('🔵 [Drift] Contacts to insert: ${state.contacts.length}');
+    debugPrint('🔵 [Drift] Groups to insert: ${state.groups.length}');
+    
     await batch((batch) {
       // Contacts
       final contactKeys = state.contacts.map((c) => c.username).toList();
@@ -784,6 +789,9 @@ class ChatDatabase extends _$ChatDatabase {
       }
 
       // Messages — upsert only, never delete (see doc comment above).
+      if (state.messages.isNotEmpty) {
+        debugPrint('🔵 [Drift] Inserting ${state.messages.length} messages into database');
+      }
       for (final message in state.messages) {
         batch.insert(
           messages,
@@ -792,6 +800,8 @@ class ChatDatabase extends _$ChatDatabase {
         );
       }
     });
+    
+    debugPrint('✅ [Drift] persistState batch insert completed');
   }
 
   /// Clear all data
