@@ -533,6 +533,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         isLoading: false,
         isInitialized: true,
       );
+      // Even if initialization fails, try to restore from cache as a fallback.
+      unawaited(restoreLocalCache());
       rethrow;
     }
 
