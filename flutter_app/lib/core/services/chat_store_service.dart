@@ -701,6 +701,23 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     if (_initialSyncInFlight) return;
     _initialSyncInFlight = true;
     state = state.copyWith(isInitialSyncing: true);
+    
+    // Check for first load or hard reload and force full sync
+    final user = _currentUser;
+    if (user != null && user.isNotEmpty) {
+      final isFirst = await _isFirstLoad(user);
+      final isWebReload = await _isWebHardReload();
+      
+      if (isFirst || isWebReload) {
+        await _forceFullSync(user);
+        if (isFirst) {
+          print('🚀 [Sync] First load detected - forcing full sync for user: $user');
+        } else if (isWebReload) {
+          print('🔄 [Sync] Web hard reload detected - forcing full sync for user: $user');
+        }
+      }
+    }
+    
     debugPrint('[SYNC-PIPELINE] Starting sync with lastSyncTimestamp: $_syncCursorMs');
     // Start the durable history recovery immediately. The combined sync
     // request can be slow, while logs are sufficient to build the chat list
@@ -3861,6 +3878,61 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     } catch (_) {
       // Best-effort.
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // First-load and hard-reload detection
+  // ---------------------------------------------------------------------------
+
+  /// Detects if this is the first load on the device (all platforms).
+  /// A first load is when the sync cursor is 0 (never been synced before).
+  Future<bool> _isFirstLoad(String user) async {
+    try {
+      final syncCursor = await _readSyncCursor(user);
+      final isFirst = syncCursor == 0;
+      if (isFirst) {
+        print('🚀 [FirstLoad] Detected first load for user: $user - forcing full sync');
+      }
+      return isFirst;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Detects web hard reload by checking if page visibility state changed.
+  /// On hard reload, the session storage is cleared, which we can detect.
+  /// This is specific to Flutter Web and uses dart:html.
+  Future<bool> _isWebHardReload() async {
+    if (!kIsWeb) return false;
+    
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      const hardReloadKey = 'web_session_id';
+      final newSessionId = DateTime.now().millisecondsSinceEpoch.toString();
+      final lastSessionId = prefs.getString(hardReloadKey);
+      
+      // If no previous session ID, this is either first load or hard reload
+      if (lastSessionId == null) {
+        await prefs.setString(hardReloadKey, newSessionId);
+        print('🔄 [WebHardReload] Detected web hard reload - resetting sync cursor');
+        return true;
+      }
+      
+      // If session ID changed significantly (not in same session), it's a hard reload
+      // This catches browser refresh, tab reload, or F5 reload on web
+      await prefs.setString(hardReloadKey, newSessionId);
+      return false; // Only first load detected here, actual hard reload caught by page reload
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Force full sync by resetting the sync cursor to 0.
+  /// Called on first load or hard reload to ensure complete data sync.
+  Future<void> _forceFullSync(String user) async {
+    print('💾 [ForceFullSync] Resetting sync cursor to 0 for full sync');
+    _syncCursorMs = 0;
+    await _clearSyncCursor(user);
   }
 
   /// Advance the high-water mark when a newer message is applied.
