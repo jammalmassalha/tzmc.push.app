@@ -112,48 +112,48 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                   child: chatItems.isEmpty
                       ? _buildPremiumEmptyState(context)
                       : RefreshIndicator(
-                  onRefresh: () async {
-                    await ref
-                        .read(chatStoreProvider.notifier)
-                        .recoverMissedMessages(force: true);
-                  },
-                  child: ListView.builder(
-                    itemCount: chatItems.length,
-                    itemBuilder: (context, index) {
-                      final item = chatItems[index];
-                      final contact =
-                          item.isGroup ? null : _findContact(state, item.id);
-                      final currentUser = ref.watch(currentUserProvider);
-                      final normalizedId = item.id.trim().toLowerCase();
-                      final lastMessage = state.messagesByChat[item.id]?.first;
-                      final isSelfChat = !item.isGroup &&
-                          currentUser != null &&
-                          (normalizedId == currentUser.trim().toLowerCase() ||
-                              lastMessage?.sender.trim().toLowerCase() ==
-                                  currentUser.trim().toLowerCase());
-                      final title = !item.isGroup &&
-                              isSelfChat
-                          ? 'אני'
-                          : (contact?.displayName.trim().isNotEmpty ?? false)
-                              ? contact!.displayName.trim()
-                              : ref
-                                  .read(chatStoreProvider.notifier)
-                                  .getDisplayName(item.id)
-                                  .trim();
-                      final phone = (item.phone ?? contact?.phone ?? '').trim();
-                      return _ChatListTile(
-                        item: item,
-                        title: title.isNotEmpty ? title : item.title,
-                        isSelected: widget.selectedChatId == item.id,
-                        onTap: () => _openChat(context, ref, item),
-                        onCall: phone.isNotEmpty
-                            ? () => _callUser(context, phone)
-                            : null,
-                        onDelete: () => _deleteChat(context, ref, item),
-                      );
-                    },
-                  ),
-                ),
+                        onRefresh: () async {
+                          await ref
+                              .read(chatStoreProvider.notifier)
+                              .recoverMissedMessages(force: true);
+                        },
+                        child: ListView.builder(
+                          itemCount: chatItems.length,
+                          itemBuilder: (context, index) {
+                            final item = chatItems[index];
+                            final contact =
+                                item.isGroup ? null : _findContact(state, item.id);
+                            final currentUser = ref.watch(currentUserProvider);
+                            final normalizedId = item.id.trim().toLowerCase();
+                            final lastMessage = state.messagesByChat[item.id]?.first;
+                            final isSelfChat = !item.isGroup &&
+                                currentUser != null &&
+                                (normalizedId == currentUser.trim().toLowerCase() ||
+                                    lastMessage?.sender.trim().toLowerCase() ==
+                                        currentUser.trim().toLowerCase());
+                            final title = !item.isGroup && isSelfChat
+                                ? 'אני'
+                                : (contact?.displayName.trim().isNotEmpty ?? false)
+                                    ? contact!.displayName.trim()
+                                    : ref
+                                        .read(chatStoreProvider.notifier)
+                                        .getDisplayName(item.id)
+                                        .trim();
+                            final phone = (item.phone ?? contact?.phone ?? '').trim();
+                            return _ChatListTile(
+                              item: item,
+                              title: title.isNotEmpty ? title : item.title,
+                              isSelected: widget.selectedChatId == item.id,
+                              onTap: () => _openChat(context, ref, item),
+                              onCall: phone.isNotEmpty
+                                  ? () => _callUser(context, phone)
+                                  : null,
+                              onDelete: () => _deleteChat(context, ref, item),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
               ],
             ),
     );
