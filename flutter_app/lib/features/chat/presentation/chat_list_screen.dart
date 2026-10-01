@@ -124,9 +124,14 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                           item.isGroup ? null : _findContact(state, item.id);
                       final currentUser = ref.watch(currentUserProvider);
                       final normalizedId = item.id.trim().toLowerCase();
+                      final lastMessage = state.messagesByChat[item.id]?.first;
+                      final isSelfChat = !item.isGroup &&
+                          currentUser != null &&
+                          (normalizedId == currentUser.trim().toLowerCase() ||
+                              lastMessage?.sender.trim().toLowerCase() ==
+                                  currentUser.trim().toLowerCase());
                       final title = !item.isGroup &&
-                              currentUser != null &&
-                              normalizedId == currentUser.trim().toLowerCase()
+                              isSelfChat
                           ? 'אני'
                           : (contact?.displayName.trim().isNotEmpty ?? false)
                               ? contact!.displayName.trim()
