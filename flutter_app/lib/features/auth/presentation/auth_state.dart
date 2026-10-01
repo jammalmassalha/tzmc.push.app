@@ -196,7 +196,16 @@ class AuthNotifier extends Notifier<AuthState> {
 
     final previousState = state;
 
-    final throttleDecision = await _otpThrottle.check(phoneNumber);
+    final normalizedPhone = normalizeOtpPhone(phoneNumber);
+    if (!RegExp(r'^05\d{8}$').hasMatch(normalizedPhone)) {
+      state = AuthError(
+        message: 'מספר טלפון לא תקין',
+        previousState: state,
+      );
+      return;
+    }
+
+    final throttleDecision = await _otpThrottle.check(normalizedPhone);
     if (!throttleDecision.allowed) {
       state = AuthError(
         message: throttleDecision.message,
@@ -214,10 +223,10 @@ class AuthNotifier extends Notifier<AuthState> {
     state = const AuthLoading();
 
     try {
-      final expiresIn = await _apiService.requestSessionCode(phoneNumber);
-      await _otpThrottle.recordSend(phoneNumber);
+      final expiresIn = await _apiService.requestSessionCode(normalizedPhone);
+      await _otpThrottle.recordSend(normalizedPhone);
       state = AuthAwaitingCode(
-        phoneNumber: phoneNumber,
+        phoneNumber: normalizedPhone,
         expiresInSeconds: expiresIn,
       );
       _logger.i('SMS code requested for: $phoneNumber, expires in: $expiresIn seconds');
