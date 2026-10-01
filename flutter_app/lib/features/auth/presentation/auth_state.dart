@@ -136,7 +136,7 @@ class AuthNotifier extends Notifier<AuthState> {
           isRestricted: sessionInfo.isRestricted ?? false,
         );
         _startSessionRefresh();
-        _apiService._startSessionCacheRefreshTimer();  // Start 5-min cache refresh
+        _apiService.startSessionCacheRefreshTimer();  // Start 5-min cache refresh
         unawaited(_resetBadgeAfterAuth());
         _logger.i('Session restored for user: $sessionUser (isRestricted: ${sessionInfo.isRestricted})');
       } else {
@@ -286,7 +286,7 @@ class AuthNotifier extends Notifier<AuthState> {
         justLoggedIn: true,
       );
       _startSessionRefresh();
-      _apiService._startSessionCacheRefreshTimer();  // Start 5-min cache refresh
+      _apiService.startSessionCacheRefreshTimer();  // Start 5-min cache refresh
       unawaited(_resetBadgeAfterAuth());
       _logger.i('Code verification successful for: $user (isRestricted: ${sessionResponse.isRestricted})');
     } on AuthException catch (e) {

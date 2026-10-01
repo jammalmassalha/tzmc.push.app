@@ -167,7 +167,7 @@ class ChatApiService {
   }
 
   /// Start periodic refresh of session cache every 5 minutes
-  void _startSessionCacheRefreshTimer() {
+  void startSessionCacheRefreshTimer() {
     _sessionCacheRefreshTimer?.cancel();
     print('⏰ [SessionCache] Starting 5-minute auto-refresh timer');
     _sessionCacheRefreshTimer = Timer.periodic(
