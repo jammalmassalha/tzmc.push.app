@@ -2545,13 +2545,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     //   edit that made the text shorter (e.g. "Hello World" → "Hi").
     // - Otherwise fall back to the longer-body heuristic which guards against
     //   push truncation where the cached body is shorter than the full text.
-    final String body;
+    final String? body;
     if (existing.editedAt != null) {
       body = existing.body;
-    } else if (incoming.body.length > existing.body.length) {
-      body = incoming.body;
     } else {
-      body = existing.body;
+      final incomingLen = incoming.body?.length ?? 0;
+      final existingLen = existing.body?.length ?? 0;
+      if (incomingLen > existingLen) {
+        body = incoming.body;
+      } else {
+        body = existing.body;
+      }
     }
 
     return existing.copyWith(
