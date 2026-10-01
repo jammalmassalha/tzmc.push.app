@@ -5,6 +5,7 @@
 library;
 
 import 'dart:async';
+import 'dart:developer' as developer;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -239,13 +240,26 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
     // global groups and no entry point for creating chats or groups. The
     // realtime status stream and the screen's own poll flip this back to the
     // full shell the moment the status becomes 1.
+    
+    print('===== ChatShellScreen Build =====');
+    print('isRestricted: $isRestricted');
+    print('chatState.isSyncing: ${chatState.isSyncing}');
+    print('chatState.isLoading: ${chatState.isLoading}');
+    print('chatState.isInitialSyncing: ${chatState.isInitialSyncing}');
+    print('chatState.messagesByChat.length: ${chatState.messagesByChat.length}');
+    print('chatState.chatListItems.length: ${chatState.chatListItems.length}');
+    print('=====================================');
+    
     if (isRestricted) {
+      print('[ChatShellScreen] Showing PendingApprovalScreen (user restricted)');
       return const PendingApprovalScreen();
     }
 
     final isDesktopWeb =
         kIsWeb && MediaQuery.sizeOf(context).width >= _kDesktopShellBreakpoint;
 
+    print('[ChatShellScreen] Showing ${isDesktopWeb ? 'Desktop' : 'Mobile'} Scaffold');
+    
     return Directionality(
       textDirection: TextDirection.rtl,
       child: Stack(
@@ -319,6 +333,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   }
 
   Scaffold _buildMobileScaffold(MainTab currentTab) {
+    print('[ChatShellScreen._buildMobileScaffold] currentTab: $currentTab, visibleTabs: $_visibleTabs');
     return Scaffold(
       appBar: _buildAppBar(currentTab),
       body: PageView(
@@ -787,6 +802,7 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   }
 
   Widget _buildChatsTab() {
+    print('[ChatShellScreen] Building ChatsTab - Instantiating ChatListScreen');
     return const ChatListScreen();
   }
 
