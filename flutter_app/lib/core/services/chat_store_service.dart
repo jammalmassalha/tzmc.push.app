@@ -375,6 +375,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   Future<void>? _messageRecoveryFuture;
   bool _localCacheRestoreInFlight = false;
 
+  /// Prevents concurrent calls to [pullMessages()] during incremental syncs.
+  /// When true, subsequent poll ticks or recovery pulls are skipped until the
+  /// current pull completes. This prevents overlapping API requests that could
+  /// cause state corruption or duplicate processing.
+  bool _isPullingMessages = false;
+
   /// Push payloads can arrive before the cache-first restore finishes. Keep
   /// them until hydration has established the complete local state; otherwise
   /// restoring the database snapshot would replace the notification message.
@@ -1228,6 +1234,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // poll tick, until the authoritative startup recovery has completed.
     if (!_initialSyncCompleted || _initialSyncInFlight) return;
 
+    // Prevent overlapping sync calls. If a pull is already in progress,
+    // skip this call and rely on the next poll tick.
+    if (_isPullingMessages) return;
+
+    _isPullingMessages = true;
     try {
       int latestTimestamp;
       if (since != null) {
@@ -1268,6 +1279,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       _schedulePersistence();
     } catch (e) {
       // Log error, continue with cached data
+    } finally {
+      _isPullingMessages = false;
     }
   }
 
