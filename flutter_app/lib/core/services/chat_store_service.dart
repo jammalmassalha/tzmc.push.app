@@ -240,9 +240,7 @@ class ChatState {
 
       items.add(ChatListItem(
         id: chatId,
-        title: chatId.trim().toLowerCase() == (_currentUser ?? '').trim().toLowerCase()
-            ? 'אני'
-            : contact?.displayName ?? chatId,
+        title: contact?.displayName ?? chatId,
         info: contact?.info,
         phone: contact?.phone,
         subtitle: _getMessagePreview(lastMessage, includeSender: true),
@@ -293,7 +291,7 @@ class ChatState {
         phone: null,
         subtitle: _getMessagePreview(lastMessage, includeSender: true),
         lastTimestamp: lastMessage.timestamp,
-        unread: unreadByChat[group.id] ?? 0,
+        unread: unreadByChat[groupId] ?? 0,
         isGroup: true,
         pinned: false,
       ));
@@ -312,13 +310,17 @@ class ChatState {
     final preview = _getMessageBodyPreview(message);
     if (!includeSender) return preview;
 
-    final senderKey = message.sender.trim().toLowerCase();
-    final sender = senderKey == (_currentUser ?? '').trim().toLowerCase()
-        ? 'אני'
-        : message.senderDisplayName?.trim().isNotEmpty == true
+    final sender = message.senderDisplayName?.trim().isNotEmpty == true
         ? message.senderDisplayName!.trim()
-        : (contactFor(message.sender)?.displayName.trim() ??
-            message.sender.trim());
+        : (() {
+            final normalizedSender = message.sender.trim().toLowerCase();
+            for (final entry in contacts.entries) {
+              if (entry.key.trim().toLowerCase() == normalizedSender) {
+                return entry.value.displayName.trim();
+              }
+            }
+            return message.sender.trim();
+          })();
     return sender.isEmpty ? preview : '$sender: $preview';
   }
 
