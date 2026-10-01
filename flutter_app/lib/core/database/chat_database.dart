@@ -558,7 +558,7 @@ class ChatDatabase extends _$ChatDatabase {
       sender: message.sender,
       senderDisplayName: Value(message.senderDisplayName),
       recordType: Value(message.recordType),
-      body: Value(message.body),
+      body: message.body ?? '',
       imageUrl: Value(message.imageUrl),
       thumbnailUrl: Value(message.thumbnailUrl),
       fileUrl: Value(message.fileUrl),
