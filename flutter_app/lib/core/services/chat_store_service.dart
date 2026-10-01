@@ -372,6 +372,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// [initialize] is invoked again before the first background sync finishes.
   bool _initialSyncInFlight = false;
   Future<void>? _initialSyncFuture;
+  Future<void>? _messageRecoveryFuture;
   bool _localCacheRestoreInFlight = false;
 
   /// Push payloads can arrive before the cache-first restore finishes. Keep
@@ -1215,6 +1216,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   Future<void> pullMessages({int? since}) async {
     final user = _currentUser;
     if (user == null || user.isEmpty) return;
+    // The initial recovery downloads the complete durable history. An
+    // incremental pull racing it can use the cursor written by the first
+    // page, receive an empty delta, and make startup appear to have no chats.
+    if (_initialSyncInFlight) return;
 
     try {
       int latestTimestamp;
@@ -1261,6 +1266,24 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   /// Recover missed messages (gap analysis)
   Future<void> recoverMissedMessages({bool force = false}) async {
+    final activeRecovery = _messageRecoveryFuture;
+    if (activeRecovery != null) {
+      await activeRecovery;
+      return;
+    }
+
+    final recovery = _recoverMissedMessages(force: force);
+    _messageRecoveryFuture = recovery;
+    try {
+      await recovery;
+    } finally {
+      if (identical(_messageRecoveryFuture, recovery)) {
+        _messageRecoveryFuture = null;
+      }
+    }
+  }
+
+  Future<void> _recoverMissedMessages({bool force = false}) async {
     final now = DateTime.now().millisecondsSinceEpoch;
 
     // Cooldown check (unless forced)
