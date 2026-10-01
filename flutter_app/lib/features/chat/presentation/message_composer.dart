@@ -66,7 +66,7 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
   void initState() {
     super.initState();
     if (widget.editingMessage != null) {
-      _textController.text = widget.editingMessage!.body;
+      _textController.text = widget.editingMessage!.body ?? '';
     }
     _textController.addListener(_onTextChanged);
   }
@@ -76,7 +76,7 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
     super.didUpdateWidget(oldWidget);
     if (widget.editingMessage != oldWidget.editingMessage) {
       if (widget.editingMessage != null) {
-        _textController.text = widget.editingMessage!.body;
+        _textController.text = widget.editingMessage!.body ?? '';
         _focusNode.requestFocus();
       } else {
         _textController.clear();
