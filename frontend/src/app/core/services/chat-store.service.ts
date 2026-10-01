@@ -299,6 +299,8 @@ export class ChatStoreService {
   readonly lastActivatedChatMeta = signal<ActivatedChatMeta | null>(null);
   readonly unreadByChat = signal<Record<string, number>>({});
   readonly loading = signal(false);
+  readonly chatDataRetrieving = signal(false);
+  readonly chatDataRetrievalLabel = signal('טוען את השיחות שלך...');
   readonly syncing = signal(false);
   readonly syncProgressPercent = signal(0);
   readonly syncProgressLabel = signal('');
@@ -668,6 +670,7 @@ export class ChatStoreService {
     const user = this.currentUser();
     if (!user) {
       this.loading.set(false);
+      this.chatDataRetrieving.set(false);
       return;
     }
 
@@ -682,6 +685,8 @@ export class ChatStoreService {
     }
 
     this.initializedUser = user;
+    this.chatDataRetrieving.set(true);
+    this.chatDataRetrievalLabel.set('טוען אנשי קשר וקבוצות...');
 
     // Signal to the UI that data is being fetched so it can show a spinner
     // instead of an empty "no chats" state during the initial recovery period.
@@ -708,11 +713,16 @@ export class ChatStoreService {
      * merges missed messages into the reactive chat list when it completes.
      */
     this.loading.set(false);
+    this.chatDataRetrievalLabel.set('מסנכרן את ההודעות שלך...');
     void this.recoverMissedMessagesFromLogs(user, {
       force: true,
       incrementUnread: true,
       limit: 1000
-    }).catch(() => undefined);
+    }).catch(() => undefined).finally(() => {
+      if (this.currentUser() === user) {
+        this.chatDataRetrieving.set(false);
+      }
+    });
 
     /**
      * SYNC STEP 3: Process pending SW messages AFTER drain + recovery.
@@ -836,6 +846,7 @@ export class ChatStoreService {
 
     this.currentUser.set(user);
     this.initializedUser = null;
+    this.chatDataRetrieving.set(false);
     this.clearDeletedMessageSuppressions();
     this.contacts.set([]);
     this.groups.set([]);
@@ -876,6 +887,7 @@ export class ChatStoreService {
     void this.flushDeliveryTelemetry({ force: true, includeZero: false });
     this.stopDeliveryTelemetry();
     this.initializedUser = null;
+    this.chatDataRetrieving.set(false);
     if (user) {
       this.clearShuttleReminderTimersForUser(user);
       localStorage.removeItem(this.activeChatKey(user));
