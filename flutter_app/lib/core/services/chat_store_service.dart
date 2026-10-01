@@ -519,6 +519,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         isLoading: false,
         isInitialized: true,
       );
+      // Try to restore cached data so the UI is not blank while syncing.
+      // The sync will update with server-authoritative data.
+      unawaited(restoreLocalCache());
       // Synchronize from the server in the background.
       if (startBackgroundSync) {
         unawaited(syncOnLaunch());
