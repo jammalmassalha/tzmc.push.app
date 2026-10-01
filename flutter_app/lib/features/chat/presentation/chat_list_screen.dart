@@ -157,26 +157,31 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                             final item = chatItems[index];
                             final contact =
                                 item.isGroup ? null : _findContact(state, item.id);
-                            final currentUser = ref.watch(currentUserProvider);
-                            final normalizedId = item.id.trim().toLowerCase();
-                            final lastMessage = state.messagesByChat[item.id]?.first;
-                            final isSelfChat = !item.isGroup &&
-                                currentUser != null &&
-                                (normalizedId == currentUser.trim().toLowerCase() ||
-                                    lastMessage?.sender.trim().toLowerCase() ==
-                                        currentUser.trim().toLowerCase());
-                            final title = !item.isGroup && isSelfChat
-                                ? 'אני'
-                                : (contact?.displayName.trim().isNotEmpty ?? false)
-                                    ? contact!.displayName.trim()
-                                    : ref
-                                        .read(chatStoreProvider.notifier)
-                                        .getDisplayName(item.id)
-                                        .trim();
-                            final phone = (item.phone ?? contact?.phone ?? '').trim();
+                            
+                            // Determine the display title
+                            String title;
+                            String phone;
+                            
+                            if (item.isGroup) {
+                              // For groups: show group name from item.title
+                              title = item.title.trim().isNotEmpty ? item.title.trim() : 'قروب';
+                              phone = '';
+                            } else {
+                              // For individual chats: try contact name first, then getDisplayName, then fallback to title
+                              if (contact?.displayName.trim().isNotEmpty ?? false) {
+                                title = contact!.displayName.trim();
+                              } else {
+                                final displayName = ref
+                                    .read(chatStoreProvider.notifier)
+                                    .getDisplayName(item.id)
+                                    .trim();
+                                title = displayName.isNotEmpty ? displayName : item.title.trim();
+                              }
+                              phone = (item.phone ?? contact?.phone ?? '').trim();
+                            }
                             return _ChatListTile(
                               item: item,
-                              title: title.isNotEmpty ? title : item.title,
+                              title: title,
                               isSelected: widget.selectedChatId == item.id,
                               onTap: () => _openChat(context, ref, item),
                               onCall: phone.isNotEmpty
