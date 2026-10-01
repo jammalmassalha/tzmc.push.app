@@ -31,6 +31,12 @@ final chatApiServiceProvider = Provider<ChatApiService>((ref) {
 /// Chat API service implementation
 class ChatApiService {
   static const Duration _debugLogTimeout = Duration(seconds: 4);
+  
+  // Session status caching (5 minutes TTL)
+  static const int _sessionCacheTtlMs = 5 * 60 * 1000; // 5 minutes
+  SessionResponse? _cachedSessionResponse;
+  int _cachedSessionTimestampMs = 0;
+  Timer? _sessionCacheRefreshTimer;
 
   final HttpClient _client;
 
@@ -91,11 +97,35 @@ class ChatApiService {
   }
 
   // ---------------------------------------------------------------------------
-  // Authentication
+  // Session caching
   // ---------------------------------------------------------------------------
 
-  /// Get current session user
-  Future<String?> getSessionUser() async {
+  /// Check if cached session is still valid (within 5-minute TTL)
+  bool _isSessionCacheValid() {
+    if (_cachedSessionResponse == null) return false;
+    final ageMs = DateTime.now().millisecondsSinceEpoch - _cachedSessionTimestampMs;
+    return ageMs < _sessionCacheTtlMs;
+  }
+
+  /// Update session cache with new response
+  void _updateSessionCache(SessionResponse? response) {
+    _cachedSessionResponse = response;
+    _cachedSessionTimestampMs = DateTime.now().millisecondsSinceEpoch;
+    if (response != null) {
+      print('💾 [SessionCache] Cached session for user: ${response.user} (expires in 5 min)');
+    }
+  }
+
+  /// Get cached session response, making API call if cache expired
+  Future<SessionResponse?> _getSessionResponseWithCache() async {
+    // Return cached response if still valid
+    if (_isSessionCacheValid()) {
+      print('✅ [SessionCache] Using cached session (${((DateTime.now().millisecondsSinceEpoch - _cachedSessionTimestampMs) / 1000).toStringAsFixed(1)}s old)');
+      return _cachedSessionResponse;
+    }
+
+    // Cache expired or missing - fetch from API
+    print('🔄 [SessionCache] Cache expired or missing - fetching from API');
     try {
       final response = await _client.post<Map<String, dynamic>>(
         ApiEndpoints.sessionStatus,
@@ -109,15 +139,58 @@ class ChatApiService {
 
       final body = SessionResponse.fromJson(response.data ?? {});
       _client.setCsrfToken(body.csrfToken);
-
+      
+      // Validate and cache the response
       final user = body.user?.trim().toLowerCase();
-      if (!body.authenticated) {
+      if (body.authenticated && (user?.isNotEmpty ?? false)) {
+        _updateSessionCache(body);
+        return body;
+      } else {
         _client.clearCsrfToken();
+        _updateSessionCache(null);
         return null;
       }
-
-      return body.authenticated && (user?.isNotEmpty ?? false) ? user : null;
     } catch (e) {
+      print('❌ [SessionCache] API error: $e');
+      _client.clearCsrfToken();
+      return null;
+    }
+  }
+
+  /// Clear session cache (e.g., on logout)
+  void clearSessionCache() {
+    print('🗑️  [SessionCache] Clearing session cache');
+    _cachedSessionResponse = null;
+    _cachedSessionTimestampMs = 0;
+    _sessionCacheRefreshTimer?.cancel();
+    _sessionCacheRefreshTimer = null;
+  }
+
+  /// Start periodic refresh of session cache every 5 minutes
+  void _startSessionCacheRefreshTimer() {
+    _sessionCacheRefreshTimer?.cancel();
+    print('⏰ [SessionCache] Starting 5-minute auto-refresh timer');
+    _sessionCacheRefreshTimer = Timer.periodic(
+      const Duration(minutes: 5),
+      (_) {
+        print('🔄 [SessionCache] 5-minute refresh cycle triggered');
+        _getSessionResponseWithCache().catchError((_) {});
+      },
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Authentication
+  // ---------------------------------------------------------------------------
+
+  /// Get current session user
+  Future<String?> getSessionUser() async {
+    try {
+      final response = await _getSessionResponseWithCache();
+      final user = response?.user?.trim().toLowerCase();
+      return response?.authenticated == true && (user?.isNotEmpty ?? false) ? user : null;
+    } catch (e) {
+      print('❌ [SessionCache] getSessionUser error: $e');
       _client.clearCsrfToken();
       return null;
     }
@@ -126,27 +199,16 @@ class ChatApiService {
   /// Get current session info (with isRestricted status)
   Future<SessionResponse?> getSessionInfo() async {
     try {
-      final response = await _client.post<Map<String, dynamic>>(
-        ApiEndpoints.sessionStatus,
-        retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 8)),
-      );
-
-      if (!response.isSuccessful) {
+      final response = await _getSessionResponseWithCache();
+      final user = response?.user?.trim().toLowerCase();
+      if (response?.authenticated == true && (user?.isNotEmpty ?? false)) {
+        return response;
+      } else {
         _client.clearCsrfToken();
         return null;
       }
-
-      final body = SessionResponse.fromJson(response.data ?? {});
-      _client.setCsrfToken(body.csrfToken);
-
-      final user = body.user?.trim().toLowerCase();
-      if (!body.authenticated || (user?.isEmpty ?? true)) {
-        _client.clearCsrfToken();
-        return null;
-      }
-
-      return body;
     } catch (e) {
+      print('❌ [SessionCache] getSessionInfo error: $e');
       _client.clearCsrfToken();
       return null;
     }
