@@ -18,6 +18,7 @@ import '../../../core/services/push_notification_service.dart';
 import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
 import '../../../shared/widgets/authenticated_image.dart';
+import '../../auth/presentation/auth_state.dart';
 import 'message_screen.dart';
 
 const Color _kSelectedChatTileColor = Color(0xFFE3F2FD); // blue-50 tint matching AppColors.primary
@@ -121,9 +122,22 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                       final item = chatItems[index];
                       final contact =
                           item.isGroup ? null : _findContact(state, item.id);
+                      final currentUser = ref.watch(currentUserProvider);
+                      final normalizedId = item.id.trim().toLowerCase();
+                      final title = !item.isGroup &&
+                              currentUser != null &&
+                              normalizedId == currentUser.trim().toLowerCase()
+                          ? 'אני'
+                          : (contact?.displayName.trim().isNotEmpty ?? false)
+                              ? contact!.displayName.trim()
+                              : ref
+                                  .read(chatStoreProvider.notifier)
+                                  .getDisplayName(item.id)
+                                  .trim();
                       final phone = (item.phone ?? contact?.phone ?? '').trim();
                       return _ChatListTile(
                         item: item,
+                        title: title.isNotEmpty ? title : item.title,
                         isSelected: widget.selectedChatId == item.id,
                         onTap: () => _openChat(context, ref, item),
                         onCall: phone.isNotEmpty
@@ -234,6 +248,7 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
 /// Individual chat list tile
 class _ChatListTile extends StatelessWidget {
   final ChatListItem item;
+  final String title;
   final bool isSelected;
   final VoidCallback onTap;
   final VoidCallback? onCall;
@@ -241,6 +256,7 @@ class _ChatListTile extends StatelessWidget {
 
   const _ChatListTile({
     required this.item,
+    required this.title,
     required this.isSelected,
     required this.onTap,
     this.onCall,
@@ -293,7 +309,7 @@ class _ChatListTile extends StatelessWidget {
                     children: [
                       Expanded(
                         child: Text(
-                          item.title,
+                          title,
                           style: theme.textTheme.titleMedium?.copyWith(
                             fontWeight: item.unread > 0 ? FontWeight.bold : FontWeight.w500,
                           ),
