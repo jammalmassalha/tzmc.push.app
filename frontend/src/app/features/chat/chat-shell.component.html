@@ -123,11 +123,28 @@
         </div>
       </div>
 
+      @if (store.chatDataRetrieving()) {
+        <div class="chat-retrieval-status" role="status" aria-live="polite">
+          <span class="chat-retrieval-spinner" aria-hidden="true"></span>
+          <span>{{ store.chatDataRetrievalLabel() }}</span>
+          <span class="chat-retrieval-dots" aria-hidden="true">•••</span>
+        </div>
+      }
+
       @if (!filteredChats().length) {
         @if (store.loading()) {
           <div class="empty-chat-list loading-chats">
             <mat-spinner diameter="32"></mat-spinner>
-            <span>טוען שיחות...</span>
+            <span>{{ store.chatDataRetrievalLabel() }}</span>
+          </div>
+        } @else if (store.chatDataRetrieving()) {
+          <div class="empty-chat-list loading-chats retrieval-empty-state">
+            <span class="chat-retrieval-icon" aria-hidden="true">
+              <mat-icon>forum</mat-icon>
+            </span>
+            <strong>השיחות שלך בדרך</strong>
+            <span>{{ store.chatDataRetrievalLabel() }}</span>
+            <small>אנחנו מביאים את ההודעות מהשרת. אפשר להישאר במסך הזה.</small>
           </div>
         } @else {
           <div class="empty-chat-list">אין צ׳אטים פעילים. צור צ׳אט חדש כדי להתחיל.</div>

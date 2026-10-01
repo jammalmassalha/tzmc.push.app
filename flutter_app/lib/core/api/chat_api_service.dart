@@ -157,8 +157,8 @@ class ChatApiService {
 
   /// Request SMS verification code
   Future<int> requestSessionCode(String user) async {
-    final normalized = user.trim().toLowerCase();
-    if (normalized.isEmpty) {
+    final normalized = user.replaceAll(RegExp(r'\D'), '');
+    if (!RegExp(r'^05\d{8}$').hasMatch(normalized)) {
       throw AuthException('מספר טלפון לא תקין');
     }
 

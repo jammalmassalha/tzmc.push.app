@@ -98,8 +98,6 @@ class AuthNotifier extends Notifier<AuthState> {
   static const Duration _sessionRefreshInterval = Duration(minutes: 5);
 
   static const _userKey = 'tzmc_current_user';
-  static const _phoneKey = 'tzmc_current_user_phone';
-  static const _restrictedKey = 'tzmc_current_user_restricted';
 
   @override
   AuthState build() {
@@ -114,39 +112,13 @@ class AuthNotifier extends Notifier<AuthState> {
   Future<void> _checkExistingSession() async {
     String? cachedUser;
     try {
-      // Restore the last authenticated identity first. This keeps the
-      // offline-first app usable immediately; session/privilege validation is
-      // deliberately performed below without blocking the first frame.
+      // Keep only the identity needed to associate the server session with the
+      // current client. Authentication itself is always restored from the
+      // server session cookie/API, never from locally cached auth metadata.
       cachedUser = (await _secureStorage.read(key: _userKey))?.trim().toLowerCase();
-      if (cachedUser != null && cachedUser!.isNotEmpty) {
-        final cachedPhone = await _secureStorage.read(key: _phoneKey);
-        final cachedRestricted =
-            (await _secureStorage.read(key: _restrictedKey)) == 'true';
-        // Hydrate the in-memory chat store before exposing the restored
-        // session. ChatShellScreen can therefore build from RAM on its first
-        // frame instead of showing an empty/loading state while Drift reads.
-        try {
-          await ref
-              .read(chatStoreProvider.notifier)
-              .initialize(cachedUser!)
-              .timeout(const Duration(seconds: 2));
-        } catch (e) {
-          // Authentication must remain usable when local storage is damaged
-          // or unavailable; the shell can still recover from the server.
-          _logger.w('Unable to preload local chat cache: $e');
-        }
-        state = AuthAuthenticated(
-          user: cachedUser!,
-          phone: cachedPhone,
-          isRestricted: cachedRestricted,
-        );
-        _startSessionRefresh();
-        _logger.i('Restored cached session for $cachedUser; refreshing silently');
-      }
 
-      // Silent server refresh. A null result is not treated as logout when a
-      // cached user exists, because it also represents an offline/timeout
-      // response and must not lock the user out of the local app.
+      // Silent server validation. A locally stored identity is not sufficient
+      // to authenticate the user.
       final sessionInfo = await _apiService.getSessionInfo();
 
       if (sessionInfo != null) {
@@ -159,24 +131,14 @@ class AuthNotifier extends Notifier<AuthState> {
           }
         }
         await _secureStorage.write(key: _userKey, value: sessionUser);
-        await _secureStorage.write(
-          key: _restrictedKey,
-          value: (sessionInfo.isRestricted ?? false).toString(),
-        );
-        final cachedPhone = await _secureStorage.read(key: _phoneKey);
         state = AuthAuthenticated(
           user: sessionUser,
-          phone: cachedPhone,
           isRestricted: sessionInfo.isRestricted ?? false,
         );
         _startSessionRefresh();
         unawaited(_resetBadgeAfterAuth());
         _logger.i('Session restored for user: $sessionUser (isRestricted: ${sessionInfo.isRestricted})');
       } else {
-        if (cachedUser != null && cachedUser.isNotEmpty) {
-          _logger.w('Session refresh unavailable; keeping cached offline session');
-          return;
-        }
         await _secureStorage.delete(key: _userKey);
 
         // On Windows desktop, attempt auto-login via the Windows username
@@ -195,6 +157,7 @@ class AuthNotifier extends Notifier<AuthState> {
       }
     } catch (e) {
       _logger.e('Error checking session: $e');
+      await _secureStorage.delete(key: _userKey);
       state = const AuthUnauthenticated();
     }
   }
@@ -233,7 +196,16 @@ class AuthNotifier extends Notifier<AuthState> {
 
     final previousState = state;
 
-    final throttleDecision = await _otpThrottle.check(phoneNumber);
+    final normalizedPhone = normalizeOtpPhone(phoneNumber);
+    if (!RegExp(r'^05\d{8}$').hasMatch(normalizedPhone)) {
+      state = AuthError(
+        message: 'מספר טלפון לא תקין',
+        previousState: state,
+      );
+      return;
+    }
+
+    final throttleDecision = await _otpThrottle.check(normalizedPhone);
     if (!throttleDecision.allowed) {
       state = AuthError(
         message: throttleDecision.message,
@@ -251,10 +223,10 @@ class AuthNotifier extends Notifier<AuthState> {
     state = const AuthLoading();
 
     try {
-      final expiresIn = await _apiService.requestSessionCode(phoneNumber);
-      await _otpThrottle.recordSend(phoneNumber);
+      final expiresIn = await _apiService.requestSessionCode(normalizedPhone);
+      await _otpThrottle.recordSend(normalizedPhone);
       state = AuthAwaitingCode(
-        phoneNumber: phoneNumber,
+        phoneNumber: normalizedPhone,
         expiresInSeconds: expiresIn,
       );
       _logger.i('SMS code requested for: $phoneNumber, expires in: $expiresIn seconds');
@@ -304,11 +276,6 @@ class AuthNotifier extends Notifier<AuthState> {
         _logger.w('Error clearing chat cache after verify-code login: $e');
       }
       await _secureStorage.write(key: _userKey, value: user);
-      await _secureStorage.write(key: _phoneKey, value: currentState.phoneNumber);
-      await _secureStorage.write(
-        key: _restrictedKey,
-        value: (sessionResponse.isRestricted ?? false).toString(),
-      );
       state = AuthAuthenticated(
         user: user,
         phone: currentState.phoneNumber,
@@ -365,8 +332,6 @@ class AuthNotifier extends Notifier<AuthState> {
     }
 
     await _secureStorage.delete(key: _userKey);
-    await _secureStorage.delete(key: _phoneKey);
-    await _secureStorage.delete(key: _restrictedKey);
     _sessionRefreshTimer?.cancel();
     _sessionRefreshTimer = null;
     state = const AuthUnauthenticated();
@@ -413,10 +378,6 @@ class AuthNotifier extends Notifier<AuthState> {
       if (refreshedUser.isEmpty || refreshedUser != currentState.user) return;
 
       await _secureStorage.write(key: _userKey, value: refreshedUser);
-      await _secureStorage.write(
-        key: _restrictedKey,
-        value: (sessionInfo.isRestricted ?? currentState.isRestricted).toString(),
-      );
       state = AuthAuthenticated(
         user: refreshedUser,
         phone: currentState.phone,
@@ -439,12 +400,6 @@ class AuthNotifier extends Notifier<AuthState> {
           phone: currentState.phone,
           isRestricted: isRestricted,
           justLoggedIn: currentState.justLoggedIn,
-        );
-        unawaited(
-          _secureStorage.write(
-            key: _restrictedKey,
-            value: isRestricted.toString(),
-          ),
         );
         _logger.i('Dynamic status updated for user: ${currentState.user} (isRestricted: $isRestricted)');
       }

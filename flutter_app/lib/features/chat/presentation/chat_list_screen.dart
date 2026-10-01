@@ -18,6 +18,7 @@ import '../../../core/services/push_notification_service.dart';
 import '../../../core/utils/toast_utils.dart';
 import '../../../shared/theme/app_theme.dart';
 import '../../../shared/widgets/authenticated_image.dart';
+import '../../auth/presentation/auth_state.dart';
 import 'message_screen.dart';
 
 const Color _kSelectedChatTileColor = Color(0xFFE3F2FD); // blue-50 tint matching AppColors.primary
@@ -98,39 +99,103 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
   Widget build(BuildContext context) {
     final state = ref.watch(chatStoreProvider);
     final chatItems = state.chatListItems;
-    final showShimmer = _isBooting || (chatItems.isEmpty && state.isInitialSyncing);
+    final isRetrieving = _isBooting || state.isLoading || state.isInitialSyncing;
 
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 400),
-      child: showShimmer
+      child: isRetrieving && chatItems.isEmpty
           ? const _ChatDataRetrievalView()
-          : chatItems.isEmpty
-              ? _buildPremiumEmptyState(context)
-              : RefreshIndicator(
-                  onRefresh: () async {
-                    await ref
-                        .read(chatStoreProvider.notifier)
-                        .recoverMissedMessages(force: true);
-                  },
-                  child: ListView.builder(
-                    itemCount: chatItems.length,
-                    itemBuilder: (context, index) {
-                      final item = chatItems[index];
-                      final contact =
-                          item.isGroup ? null : _findContact(state, item.id);
-                      final phone = (item.phone ?? contact?.phone ?? '').trim();
-                      return _ChatListTile(
-                        item: item,
-                        isSelected: widget.selectedChatId == item.id,
-                        onTap: () => _openChat(context, ref, item),
-                        onCall: phone.isNotEmpty
-                            ? () => _callUser(context, phone)
-                            : null,
-                        onDelete: () => _deleteChat(context, ref, item),
-                      );
-                    },
-                  ),
-                ),
+          : Column(
+              children: [
+                if (isRetrieving) _buildRetrievalBanner(context),
+                Expanded(
+                  child: chatItems.isEmpty
+                      ? _buildPremiumEmptyState(context)
+                      : RefreshIndicator(
+                        onRefresh: () async {
+                          await ref
+                              .read(chatStoreProvider.notifier)
+                              .recoverMissedMessages(force: true);
+                        },
+                        child: ListView.builder(
+                          itemCount: chatItems.length,
+                          itemBuilder: (context, index) {
+                            final item = chatItems[index];
+                            final contact =
+                                item.isGroup ? null : _findContact(state, item.id);
+                            final currentUser = ref.watch(currentUserProvider);
+                            final normalizedId = item.id.trim().toLowerCase();
+                            final lastMessage = state.messagesByChat[item.id]?.first;
+                            final isSelfChat = !item.isGroup &&
+                                currentUser != null &&
+                                (normalizedId == currentUser.trim().toLowerCase() ||
+                                    lastMessage?.sender.trim().toLowerCase() ==
+                                        currentUser.trim().toLowerCase());
+                            final title = !item.isGroup && isSelfChat
+                                ? 'אני'
+                                : (contact?.displayName.trim().isNotEmpty ?? false)
+                                    ? contact!.displayName.trim()
+                                    : ref
+                                        .read(chatStoreProvider.notifier)
+                                        .getDisplayName(item.id)
+                                        .trim();
+                            final phone = (item.phone ?? contact?.phone ?? '').trim();
+                            return _ChatListTile(
+                              item: item,
+                              title: title.isNotEmpty ? title : item.title,
+                              isSelected: widget.selectedChatId == item.id,
+                              onTap: () => _openChat(context, ref, item),
+                              onCall: phone.isNotEmpty
+                                  ? () => _callUser(context, phone)
+                                  : null,
+                              onDelete: () => _deleteChat(context, ref, item),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+              ],
+            ),
+    );
+  }
+
+  Widget _buildRetrievalBanner(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Material(
+      color: colorScheme.primaryContainer.withOpacity(0.55),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: colorScheme.primary,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'טוען את השיחות וההודעות שלך...',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: colorScheme.onPrimaryContainer,
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+            ),
+            Text(
+              '•••',
+              style: TextStyle(
+                color: colorScheme.primary,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 2,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -231,6 +296,7 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
 /// Individual chat list tile
 class _ChatListTile extends StatelessWidget {
   final ChatListItem item;
+  final String title;
   final bool isSelected;
   final VoidCallback onTap;
   final VoidCallback? onCall;
@@ -238,6 +304,7 @@ class _ChatListTile extends StatelessWidget {
 
   const _ChatListTile({
     required this.item,
+    required this.title,
     required this.isSelected,
     required this.onTap,
     this.onCall,
@@ -290,7 +357,7 @@ class _ChatListTile extends StatelessWidget {
                     children: [
                       Expanded(
                         child: Text(
-                          item.title,
+                          title,
                           style: theme.textTheme.titleMedium?.copyWith(
                             fontWeight: item.unread > 0 ? FontWeight.bold : FontWeight.w500,
                           ),
@@ -459,31 +526,78 @@ class _ChatDataRetrievalView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListView.builder(
-      itemCount: 8,
-      itemBuilder: (context, index) => Shimmer.fromColors(
-        baseColor: Colors.grey.shade300,
-        highlightColor: Colors.grey.shade100,
-        child: ListTile(
-          contentPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-          leading: const CircleAvatar(
-            backgroundColor: Colors.white,
-            radius: 24,
-          ),
-          title: Container(
-            height: 16,
-            margin: const EdgeInsets.only(bottom: 8),
-            color: Colors.white,
-          ),
-          subtitle: Align(
-            alignment: AlignmentDirectional.centerStart,
-            child: Container(
-              height: 14,
-              width: MediaQuery.sizeOf(context).width * 0.58,
-              color: Colors.white,
+    return Column(
+      children: [
+        const _ChatRetrievalHeader(),
+        Expanded(
+          child: ListView.builder(
+            itemCount: 8,
+            itemBuilder: (context, index) => Shimmer.fromColors(
+              baseColor: Colors.grey.shade300,
+              highlightColor: Colors.grey.shade100,
+              child: ListTile(
+                contentPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                leading: const CircleAvatar(
+                  backgroundColor: Colors.white,
+                  radius: 24,
+                ),
+                title: Container(
+                  height: 16,
+                  margin: const EdgeInsets.only(bottom: 8),
+                  color: Colors.white,
+                ),
+                subtitle: Align(
+                  alignment: AlignmentDirectional.centerStart,
+                  child: Container(
+                    height: 14,
+                    width: MediaQuery.sizeOf(context).width * 0.58,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
             ),
           ),
         ),
+      ],
+    );
+  }
+}
+
+class _ChatRetrievalHeader extends StatelessWidget {
+  const _ChatRetrievalHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 14),
+      color: Theme.of(context).colorScheme.surface,
+      child: Column(
+        children: [
+          SizedBox(
+            width: 28,
+            height: 28,
+            child: CircularProgressIndicator(
+              strokeWidth: 3,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'השיחות שלך נטענות',
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'אנחנו מביאים את ההודעות מהשרת. זה עשוי לקחת רגע.',
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+          ),
+        ],
       ),
     );
   }

@@ -333,7 +333,13 @@ app.use((req, res, next) => {
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
-app.use('/notify', express.static(path.join(__dirname, 'public')));
+// API routes also use the /notify prefix. Never redirect missing API paths from
+// the static middleware; a proxy can otherwise send the request back here and
+// report a 508 loop.
+app.use('/notify', express.static(path.join(__dirname, 'public'), {
+    fallthrough: true,
+    redirect: false
+}));
 
 // Flutter web app — built with --base-href /fluttertest/ and deployed to dist/web/
 const flutterWebDir = path.join(__dirname, 'dist', 'web');

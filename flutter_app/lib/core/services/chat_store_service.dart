@@ -184,6 +184,13 @@ class ChatState {
   /// Get all chat list items sorted by last message timestamp
   List<ChatListItem> get chatListItems {
     final items = <ChatListItem>[];
+    Contact? contactFor(String username) {
+      final normalized = username.trim().toLowerCase();
+      for (final entry in contacts.entries) {
+        if (entry.key.trim().toLowerCase() == normalized) return entry.value;
+      }
+      return null;
+    }
 
     if (isRestricted) {
       // Return ALL contacts (the active secretaries returned by getContacts) EVEN if they have no messages!
@@ -223,10 +230,12 @@ class ChatState {
 
       // Check if it's a group chat
       final group = groups[chatId];
-      if (group != null) continue; // Handle groups separately
+      if (group != null || messages.first.groupId?.trim().isNotEmpty == true) {
+        continue; // Handle groups separately
+      }
 
       // Direct chat
-      final contact = contacts[chatId];
+      final contact = contactFor(chatId);
       final lastMessage = messages.first;
 
       items.add(ChatListItem(
@@ -243,21 +252,46 @@ class ChatState {
       ));
     }
 
-    // Add groups with messages
-    for (final group in groups.values) {
-      final messages = messagesByChat[group.id] ?? [];
+    // Add groups with messages. Prefer the group record, but use group
+    // metadata carried by the message when the groups request is incomplete.
+    final groupEntries = <String, List<ChatMessage>>{};
+    for (final entry in messagesByChat.entries) {
+      final last = entry.value.isEmpty ? null : entry.value.first;
+      final groupId = last?.groupId?.trim().isNotEmpty == true
+          ? last!.groupId!.trim()
+          : (groups.containsKey(entry.key) ? entry.key : '');
+      if (groupId.isNotEmpty) {
+        groupEntries[groupId] = entry.value;
+      }
+    }
+    for (final entry in groupEntries.entries) {
+      final groupId = entry.key;
+      final messages = entry.value;
       if (messages.isEmpty) continue;
-
       final lastMessage = messages.first;
+      ChatGroup? group = groups[groupId];
+      if (group == null) {
+        for (final candidate in groups.values) {
+          if (candidate.id.trim().toLowerCase() == groupId.toLowerCase()) {
+            group = candidate;
+            break;
+          }
+        }
+      }
+      final groupTitle = group?.name.trim().isNotEmpty == true
+          ? group!.name.trim()
+          : (lastMessage.groupName?.trim().isNotEmpty == true
+              ? lastMessage.groupName!.trim()
+              : groupId);
 
       items.add(ChatListItem(
-        id: group.id,
-        title: group.name,
-        info: '${group.members.length} חברים',
+        id: groupId,
+        title: groupTitle,
+        info: group == null ? null : '${group.members.length} חברים',
         phone: null,
         subtitle: _getMessagePreview(lastMessage, includeSender: true),
         lastTimestamp: lastMessage.timestamp,
-        unread: unreadByChat[group.id] ?? 0,
+        unread: unreadByChat[groupId] ?? 0,
         isGroup: true,
         pinned: false,
       ));
@@ -278,8 +312,15 @@ class ChatState {
 
     final sender = message.senderDisplayName?.trim().isNotEmpty == true
         ? message.senderDisplayName!.trim()
-        : (contacts[message.sender.trim().toLowerCase()]?.displayName.trim() ??
-            message.sender.trim());
+        : (() {
+            final normalizedSender = message.sender.trim().toLowerCase();
+            for (final entry in contacts.entries) {
+              if (entry.key.trim().toLowerCase() == normalizedSender) {
+                return entry.value.displayName.trim();
+              }
+            }
+            return message.sender.trim();
+          })();
     return sender.isEmpty ? preview : '$sender: $preview';
   }
 
@@ -331,6 +372,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// [initialize] is invoked again before the first background sync finishes.
   bool _initialSyncInFlight = false;
   Future<void>? _initialSyncFuture;
+  Future<void>? _messageRecoveryFuture;
   bool _localCacheRestoreInFlight = false;
 
   /// Push payloads can arrive before the cache-first restore finishes. Keep
@@ -458,106 +500,36 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       final deletedChats = await _readDeletedChats(normalized);
       state = state.copyWith(deletedChats: deletedChats);
 
-      // The chat store is API-driven. Do not hydrate chats or messages from
-      // Drift/web storage during startup; this removes the offline hydration
-      // race from the notification and authentication paths.
-      state = state.copyWith(
-        contacts: const {},
-        groups: const {},
-        messagesByChat: const {},
-        unreadByChat: const {},
-        isLoading: false,
-        isInitialized: true,
-      );
-      _flushPendingPushPayloads();
-      if (startBackgroundSync) {
-        unawaited(syncOnLaunch());
-      }
-      return;
-
       // Load the persisted incremental-sync high-water mark and the oldest
       // pending background push, so the recovery pull below starts from a
       // cursor that survives a trimmed or partially written message table.
       _syncCursorMs = await _readSyncCursor(normalized);
       _pendingSyncFloorMs = await _readPendingTrayFloor();
 
-      // 1. Restore from local database (best-effort).
-      //
-      // On Flutter web the legacy sql.js engine may not initialise correctly
-      // (e.g. missing sqlite3.wasm / drift_worker files), causing
-      // getPersistedState() to throw.  Catching the error here means the rest
-      // of initialise() – most importantly the server-side gap-analysis pull –
-      // still runs, so the user sees their chat history without having to
-      // manually press "sync".
-      //
-      // Restore unread counts immediately so cached chat badges are available
-      // before the background server revalidation completes.  The pending tray
-      // is merged with the persisted counts because it may contain messages
-      // that have not reached the local database yet.
-      final tray = await _readAndClearPendingTray();
-      Map<String, int> mergeUnread(Map<String, int> persistedUnread) {
-        final merged = Map<String, int>.from(persistedUnread);
-        for (final entry in tray.entries) {
-          if (entry.value > (merged[entry.key] ?? 0)) {
-            merged[entry.key] = entry.value;
-          }
-        }
-        return merged;
-      }
-
-      try {
-        final persisted = await _db.getPersistedState();
-        state = state.copyWith(
-          contacts: Map.fromEntries(persisted.contacts.map((c) => MapEntry(c.username, c))),
-          groups: Map.fromEntries(persisted.groups.map((g) => MapEntry(g.id, g))),
-          messagesByChat: _filterDeletedChatMessages(
-            _groupMessagesByChat(persisted.messages),
-            deletedChats,
-          ),
-          unreadByChat: mergeUnread(persisted.unreadByChat),
-          deletedChats: deletedChats,
-        );
-      } catch (dbError) {
-        debugPrint('[ChatStore] DB restore failed, trying web storage fallback: $dbError');
-        // Drift DB is unavailable (e.g. web without sqlite3.wasm).
-        // Try restoring from the shared_preferences-based localStorage snapshot.
-        if (kIsWeb) {
-          try {
-            final webPersisted = await WebChatStorage.getPersistedState(normalized);
-            if (webPersisted != null) {
-              state = state.copyWith(
-                contacts: Map.fromEntries(webPersisted.contacts.map((c) => MapEntry(c.username, c))),
-                groups: Map.fromEntries(webPersisted.groups.map((g) => MapEntry(g.id, g))),
-                messagesByChat: _filterDeletedChatMessages(
-                  _groupMessagesByChat(webPersisted.messages),
-                  deletedChats,
-                ),
-                unreadByChat: mergeUnread(webPersisted.unreadByChat),
-                deletedChats: deletedChats,
-              );
-              debugPrint('[ChatStore] Restored state from web storage (${webPersisted.messages.length} messages)');
-            }
-          } catch (webError) {
-            debugPrint('[ChatStore] Web storage restore also failed: $webError');
-          }
-        }
-
-        // State may be empty; the server pull below re-populates it.
-      }
-
-      // Phase 1 complete — the cached snapshot is now in state. Unconditionally
-      // mark initialized so the UI renders immediately, even with an empty DB.
-      state = state.copyWith(isLoading: false, isInitialized: true);
-      _flushPendingPushPayloads();
-      _schedulePersistence();
-
-      // Phase 2: revalidate from the server WITHOUT awaiting. Callers that
-      // need to hand off to the UI first can start this explicitly afterward.
+      // Chat data is server-authoritative. Do not hydrate contacts, groups,
+      // messages, or unread counts from Drift/SQLite or browser storage.
+      // The API synchronization below is the only startup source of chat
+      // data, avoiding stale or incomplete cache snapshots on web.
+      state = state.copyWith(
+        contacts: const {},
+        groups: const {},
+        messagesByChat: const {},
+        unreadByChat: const {},
+        deletedChats: deletedChats,
+        isLoading: false,
+        isInitialized: true,
+      );
+      // Synchronize from the server in the background.
       if (startBackgroundSync) {
         unawaited(syncOnLaunch());
       }
     } catch (e) {
-      state = state.copyWith(isLoading: false);
+      // Initialization is best-effort: do not leave the shell permanently
+      // behind a loading gate when local storage is unavailable.
+      state = state.copyWith(
+        isLoading: false,
+        isInitialized: true,
+      );
       rethrow;
     }
 
@@ -708,34 +680,49 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _initialSyncInFlight = true;
     state = state.copyWith(isInitialSyncing: true);
     debugPrint('[SYNC-PIPELINE] Starting sync with lastSyncTimestamp: $_syncCursorMs');
+    // Start the durable history recovery immediately. The combined sync
+    // request can be slow, while logs are sufficient to build the chat list
+    // and must not wait behind that request.
+    final fallbackRecovery = recoverMissedMessages(force: true);
     try {
-      final hydration = await _api.syncChatsAndMessages(
-        user: _currentUser!,
-        lastSyncTimestamp: _syncCursorMs,
-      );
-      final hydrationMessages = (hydration['mode'] == 'full'
-              ? hydration['messages']
-              : hydration['newMessages']) as List? ?? const [];
-      final hydrationChats = (hydration['mode'] == 'full'
-              ? hydration['chats']
-              : hydration['updatedChats']) as List? ?? const [];
-      debugPrint(
-        '[SYNC-PIPELINE] Received mode=${hydration['mode']} '
-        'chats=${hydrationChats.length} messages=${hydrationMessages.length}',
-      );
-      await _db.syncOneToOne(
-        chats: hydrationChats,
-        messages: hydrationMessages,
-      );
-      // syncOneToOne persists the server response, but the chat list is
-      // rendered from Riverpod state. Apply the same response in memory too;
-      // otherwise a fresh install sees an empty list until a later poll even
-      // though the database already contains the user's chats.
-      _applyHydrationMessages(hydrationMessages);
-      final nextCursor = int.tryParse('${hydration['next_sync_timestamp'] ?? 0}') ?? 0;
-      if (nextCursor > _syncCursorMs) {
-        _syncCursorMs = nextCursor;
-        await _writeSyncCursor(_currentUser!);
+      // The combined sync endpoint is an optimization, not the source of
+      // truth. It can be slow while the backend wakes up (or fail when its
+      // mailbox store is unavailable), so never let it prevent the durable
+      // logs fallback from populating a fresh chat list.
+      try {
+        final hydration = await _api.syncChatsAndMessages(
+          user: _currentUser!,
+          lastSyncTimestamp: _syncCursorMs,
+        );
+        final hydrationMessages = (hydration['mode'] == 'full'
+                ? hydration['messages']
+                : hydration['newMessages']) as List? ?? const [];
+        final hydrationChats = (hydration['mode'] == 'full'
+                ? hydration['chats']
+                : hydration['updatedChats']) as List? ?? const [];
+        debugPrint(
+          '[SYNC-PIPELINE] Received mode=${hydration['mode']} '
+          'chats=${hydrationChats.length} messages=${hydrationMessages.length}',
+        );
+        await _db.syncOneToOne(
+          chats: hydrationChats,
+          messages: hydrationMessages,
+        );
+        // syncOneToOne persists the server response, but the chat list is
+        // rendered from Riverpod state. Apply the same response in memory too;
+        // otherwise a fresh install sees an empty list until a later poll even
+        // though the database already contains the user's chats.
+        _applyHydrationMessages(hydrationMessages);
+        final nextCursor = int.tryParse('${hydration['next_sync_timestamp'] ?? 0}') ?? 0;
+        if (nextCursor > _syncCursorMs) {
+          _syncCursorMs = nextCursor;
+          await _writeSyncCursor(_currentUser!);
+        }
+      } catch (error, stackTrace) {
+        debugPrint(
+          '[SYNC-PIPELINE] Combined sync failed; falling back to message logs: '
+          '$error\n$stackTrace',
+        );
       }
       // 2. Pull fresh contacts and groups
       await Future.wait([
@@ -754,14 +741,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       _syncCommunityGroups();
 
       // 3. Pull missed messages (gap analysis).
-      int latestTimestampBeforeRecovery;
-      try {
-        latestTimestampBeforeRecovery = await _db.getLatestMessageTimestamp();
-      } catch (_) {
-        latestTimestampBeforeRecovery = _latestTimestampFromState();
-      }
-      final hadLocalHistory = latestTimestampBeforeRecovery > 0;
-
       //
       // Use force:true to bypass the 30-second cooldown.  The realtime
       // transport can fire _handleConnectionChange(true) before we reach
@@ -772,9 +751,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // This accurately re-counts unread messages by calling
       // _handleIncomingTextMessage for every new incoming message, starting
       // from the empty unreadByChat set above.
-      await recoverMissedMessages(force: true);
+      await fallbackRecovery;
 
-      // 4. Merge the background-notification pending tray (safety net).
+      // 4. Consume the pending sync floor; message and unread data come from
+      // the server response rather than local notification storage.
       //
       // When notifications arrive while the app is terminated, the
       // firebaseMessagingBackgroundHandler saves each chat's pending unread
@@ -783,24 +763,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // lag, network error, message not yet persisted when the logs endpoint
       // was queried).  We take the MAX so we never downgrade a count that
       // the pull already computed correctly.
-      final tray = await _readAndClearPendingTray();
       // The pending floor has now been consumed by the recovery pull above;
       // clear it so subsequent delta pulls use the normal high-water mark.
       _pendingSyncFloorMs = null;
-      if (hadLocalHistory && tray.isNotEmpty) {
-        final merged = Map<String, int>.from(state.unreadByChat);
-        for (final entry in tray.entries) {
-          // Skip the currently open chat — the user is already viewing it so
-          // the tray count would incorrectly re-show the badge after they exit.
-          if (entry.key == state.currentChatId) continue;
-          final existing = merged[entry.key] ?? 0;
-          if (entry.value > existing) {
-            merged[entry.key] = entry.value;
-          }
-        }
-        state = state.copyWith(unreadByChat: merged);
-      }
-
       // 5. Persist the fully-synced state immediately so that if the user
       // closes the app right after the first open (before the 2-second deferred
       // timer fires), the recovered messages are already in the DB and the chat
@@ -835,6 +800,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // Degrade gracefully to cached-only data; realtime transport events and
       // subsequent reconnects will retry the recovery pull.
       state = state.copyWith(isLoading: false);
+      // Do not leave polling gated forever after a failed cold-start request.
+      // The mailbox pull is the lossless recovery path while realtime
+      // transports reconnect.
+      _initialSyncCompleted = true;
     } finally {
       _initialSyncInFlight = false;
       state = state.copyWith(isInitialSyncing: false);
@@ -1247,6 +1216,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   Future<void> pullMessages({int? since}) async {
     final user = _currentUser;
     if (user == null || user.isEmpty) return;
+    // The initial recovery downloads the complete durable history. An
+    // incremental pull racing it can use the cursor written by the first
+    // page, receive an empty delta, and make startup appear to have no chats.
+    // Gate every caller (including delayed push-recovery timers), not only the
+    // poll tick, until the authoritative startup recovery has completed.
+    if (!_initialSyncCompleted || _initialSyncInFlight) return;
 
     try {
       int latestTimestamp;
@@ -1293,6 +1268,24 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   /// Recover missed messages (gap analysis)
   Future<void> recoverMissedMessages({bool force = false}) async {
+    final activeRecovery = _messageRecoveryFuture;
+    if (activeRecovery != null) {
+      await activeRecovery;
+      return;
+    }
+
+    final recovery = _recoverMissedMessages(force: force);
+    _messageRecoveryFuture = recovery;
+    try {
+      await recovery;
+    } finally {
+      if (identical(_messageRecoveryFuture, recovery)) {
+        _messageRecoveryFuture = null;
+      }
+    }
+  }
+
+  Future<void> _recoverMissedMessages({bool force = false}) async {
     final now = DateTime.now().millisecondsSinceEpoch;
 
     // Cooldown check (unless forced)
@@ -1309,24 +1302,26 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // badges.  The incremental branch uses the resolved cursor (which also
       // accounts for the persisted high-water mark and the FCM background
       // tray) rather than the raw table maximum.
-      int localLatest;
       bool localDbHasMessages = true;
       try {
         localDbHasMessages = await _db.hasMessages();
-        localLatest = await _db.getLatestMessageTimestamp();
       } catch (_) {
-        // DB unavailable (web without WASM files); derive the latest known
-        // timestamp from the in-memory state so we still pull missed messages.
-        localLatest = _latestTimestampFromState();
+        // DB unavailable (web without WASM files); the in-memory state still
+        // determines whether a complete visible history is required.
+        localDbHasMessages = false;
       }
 
-      if (!localDbHasMessages) {
-        // No local history (first install or DB cleared): use the batch-import
-        // path so that all historical messages are loaded without incrementing
-        // unread counters. Treating the entire history as "unread" on first open
-        // would produce thousands of spurious badge counts that confuse users.
-        // On the next open the DB will have messages and the incremental path
-        // below is used — only genuinely new messages are counted as unread.
+      // Startup intentionally begins with an empty in-memory state and does
+      // not hydrate chat data from Drift/SQLite. Therefore a populated local
+      // database must not make this look like an incremental-only startup:
+      // using its cursor here would leave the UI empty because only messages
+      // newer than the cursor are returned. Rebuild the visible chat list from
+      // the authoritative server history whenever memory has no messages.
+      final hasInMemoryMessages = state.messagesByChat.values.any((messages) => messages.isNotEmpty);
+      if (!localDbHasMessages || !hasInMemoryMessages) {
+        // No visible in-memory history (first install, DB cleared, or a
+        // server-authoritative startup): use the batch-import path so that all
+        // historical messages are loaded without incrementing unread counts.
         final user = _currentUser;
         if (user != null && user.isNotEmpty) {
           await _pullAllMessagesFromLogs(user: user, since: 0);
@@ -3630,14 +3625,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   }
 
   void _handlePollTick() {
-    // Only pull messages via HTTP when the real-time transport (socket/SSE) is
-    // not available. When socket or SSE is active, messages are delivered in
-    // real time; polling would just duplicate network calls.
-    if (_transport.transportMode != RealtimeTransportMode.polling) {
-      debugPrint('[ChatStore] Poll tick skipped — transport is ${_transport.transportMode.name}');
-      return;
-    }
-    // Do not poll before the initial background revalidation is complete.
+    // Polling is a lossless safety net even while Socket/SSE reports connected:
+    // a connected transport can still stall or lose an event during reconnect.
+    // Client-side message IDs make overlapping delivery idempotent.
     // With the cache-first flow state.isInitialized flips to true as soon as
     // the cached snapshot renders, but polling before the recovery pull
     // finishes results in pullMessages() reading latestTimestamp=0 from an
@@ -3648,9 +3638,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // still cause all chats to briefly (or permanently) show unread badges
     // after an app update or reinstall.
     if (!_initialSyncCompleted) return;
-    // Do not poll during a full sync — the sync performs its own comprehensive
-    // pull and polling with a cleared state would mark historical messages as
-    // unread.
+    // Do not poll during a full sync; it performs its own comprehensive pull.
     if (state.isSyncing) return;
     pullMessages();
   }

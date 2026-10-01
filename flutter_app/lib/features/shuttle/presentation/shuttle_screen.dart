@@ -9,6 +9,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/api/chat_api_service.dart';
 import '../../../core/models/api_payloads.dart';
@@ -162,6 +163,7 @@ class ShuttleNotifier extends Notifier<ShuttleState> {
   late final ChatApiService _api;
   String? _currentUser;
   List<String>? _employeesCache;
+  static const _employeesCacheKeyPrefix = 'tzmc_shuttle_employees_';
 
   @override
   ShuttleState build() {
@@ -416,9 +418,35 @@ class ShuttleNotifier extends Notifier<ShuttleState> {
     final cached = _employeesCache;
     if (cached != null) return cached;
     if (_currentUser == null || _currentUser!.isEmpty) return const [];
+
+    final cacheKey = '$_employeesCacheKeyPrefix${_currentUser!.trim().toLowerCase()}';
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final stored = prefs.getStringList(cacheKey);
+      if (stored != null && stored.isNotEmpty) {
+        _employeesCache = List<String>.unmodifiable(
+          stored.map((value) => value.trim()).where((value) => value.isNotEmpty),
+        );
+        unawaited(_refreshShuttleEmployees(cacheKey));
+        return _employeesCache!;
+      }
+    } catch (_) {
+      // Persistent caching is best-effort; the API remains authoritative.
+    }
+
+    return _refreshShuttleEmployees(cacheKey);
+  }
+
+  Future<List<String>> _refreshShuttleEmployees(String cacheKey) async {
     try {
       final fetched = await _api.getShuttleEmployees(_currentUser!);
-      _employeesCache = fetched;
+      _employeesCache = List<String>.unmodifiable(fetched);
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setStringList(cacheKey, fetched);
+      } catch (_) {
+        // Persistent caching is best-effort.
+      }
       return fetched;
     } catch (_) {
       return const [];
