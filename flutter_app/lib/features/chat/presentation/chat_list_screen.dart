@@ -4,6 +4,7 @@
 library;
 
 import 'dart:async';
+import 'dart:developer' as developer;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -100,6 +101,39 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
     final state = ref.watch(chatStoreProvider);
     final chatItems = state.chatListItems;
     final isRetrieving = _isBooting || state.isLoading || state.isInitialSyncing;
+
+    // Console logging for debugging
+    developer.log(
+      'ChatListScreen Build State',
+      name: 'ChatListScreen',
+      error: {
+        'chatItems_count': chatItems.length,
+        'chatItems': chatItems.map((item) => {
+          'id': item.id,
+          'title': item.title,
+          'subtitle': item.subtitle,
+          'lastTimestamp': item.lastTimestamp,
+          'unread': item.unread,
+          'isGroup': item.isGroup,
+          'pinned': item.pinned,
+        }).toList(),
+        'isRetrieving': isRetrieving,
+        'isBooting': _isBooting,
+        'isLoading': state.isLoading,
+        'isInitialSyncing': state.isInitialSyncing,
+      }.toString(),
+    );
+
+    // Also use print for browser console visibility
+    print('===== ChatListScreen Debug Info =====');
+    print('chatItems count: ${chatItems.length}');
+    print('isRetrieving: $isRetrieving (isBooting: $_isBooting, isLoading: ${state.isLoading}, isInitialSyncing: ${state.isInitialSyncing})');
+    print('chatItems:');
+    for (var i = 0; i < chatItems.length; i++) {
+      final item = chatItems[i];
+      print('  [$i] id="${item.id}", title="${item.title}", unread=${item.unread}, lastTimestamp=${item.lastTimestamp}');
+    }
+    print('=====================================');
 
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 400),
