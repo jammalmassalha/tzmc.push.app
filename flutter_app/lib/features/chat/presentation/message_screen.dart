@@ -1304,7 +1304,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   }
 
   void _handleCopy(ChatMessage message) {
-    Clipboard.setData(ClipboardData(text: message.body));
+    Clipboard.setData(ClipboardData(text: message.body ?? ''));
     showTopToast(
       context,
       'ההודעה הועתקה',
@@ -1337,7 +1337,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                 .read(chatStoreProvider.notifier)
                 .sendDirectMessage(
                   recipient: contact.username,
-                  body: message.body,
+                  body: message.body ?? '',
                   imageUrl: message.imageUrl,
                   fileUrl: message.fileUrl,
                   forwarded: true,
@@ -2387,7 +2387,7 @@ class _EditPreview extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  message.body,
+                  message.body ?? '',
                   style: theme.textTheme.bodySmall,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -2505,7 +2505,7 @@ class _DotsAnimationState extends State<_DotsAnimation>
 }
 
 class _MessageBody extends StatelessWidget {
-  final String body;
+  final String? body;
   final ThemeData theme;
   final String? searchQuery;
 
@@ -2549,7 +2549,7 @@ class _MessageBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final base = theme.textTheme.bodyMedium ?? const TextStyle();
-    final parts = _parseMessageBody(body);
+    final parts = _parseMessageBody(body ?? '');
 
     if (parts.isEmpty) return const SizedBox.shrink();
 

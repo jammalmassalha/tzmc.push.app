@@ -847,7 +847,18 @@ class _GroupListTile extends StatelessWidget {
     if (message.deletedAt != null) return '🗑️ הודעה נמחקה';
     if (message.imageUrl != null) return '📷 תמונה';
     if (message.fileUrl != null) return '📎 קובץ';
-    final body = message.body.trim();
+    
+    // Handle null or empty body with type-based fallbacks
+    final body = message.body?.trim();
+    if (body == null || body.isEmpty) {
+      if (message.recordType == 'reaction') {
+        return '👍 Reacted to a message';
+      } else if (message.recordType == 'delete-action') {
+        return '🚫 This message was deleted';
+      }
+      return '...';
+    }
+    
     return body.length > 30 ? '${body.substring(0, 30)}...' : body;
   }
 

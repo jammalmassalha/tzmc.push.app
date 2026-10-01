@@ -328,7 +328,18 @@ class ChatState {
     if (message.deletedAt != null) return '🗑️ הודעה נמחקה';
     if (message.imageUrl != null) return '📷 תמונה';
     if (message.fileUrl != null) return '📎 קובץ';
-    final body = message.body.trim();
+    
+    // Handle null or empty body with type-based fallbacks
+    final body = message.body?.trim();
+    if (body == null || body.isEmpty) {
+      if (message.recordType == 'reaction') {
+        return '👍 Reacted to a message';
+      } else if (message.recordType == 'delete-action') {
+        return '🚫 This message was deleted';
+      }
+      return '...';
+    }
+    
     return body.length > 50 ? '${body.substring(0, 50)}...' : body;
   }
 }
@@ -2413,13 +2424,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // out as soon as we leave the window so the cost stays bounded on long
     // chats.
     if (existingIndex < 0 && message.direction == MessageDirection.incoming) {
-      final fingerprint = message.body.trim();
+      final fingerprint = message.body?.trim() ?? '';
       final ts = message.timestamp;
       for (var i = 0; i < chatMessages.length; i++) {
         final m = chatMessages[i];
         if ((m.timestamp - ts).abs() >= 30000) break;
         if (m.direction == MessageDirection.outgoing &&
-            m.body.trim() == fingerprint) {
+            (m.body?.trim() ?? '') == fingerprint) {
           existingIndex = i;
           break;
         }
@@ -3296,22 +3307,22 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // groupId (server.js:2138), so a sender-based check fails. Fall back to
     // matching against an existing optimistic outgoing message in the same
     // chat by body+timestamp window.
-    final body = msg.body ?? '';
-    final ts = msg.sentDateTime ?? msg.timestamp ?? DateTime.now().millisecondsSinceEpoch;
-    // Scan only recent outgoing messages (chatMessages are sorted newest-first
-    // by _applyIncomingMessage), bailing out as soon as we step outside the
-    // 30s dedup window so the lookup stays O(k) instead of O(n) on long chats.
-    final existing = state.messagesByChat[chatId] ?? const <ChatMessage>[];
-    bool hasOptimisticEcho = false;
-    final trimmedBody = body.trim();
-    for (final m in existing) {
-      if ((m.timestamp - ts).abs() >= 30000) break;
-      if (m.direction != MessageDirection.outgoing) continue;
-      if (m.messageId == msg.messageId || m.body.trim() == trimmedBody) {
-        hasOptimisticEcho = true;
-        break;
-      }
-    }
+     final body = msg.body ?? '';
+     final ts = msg.sentDateTime ?? msg.timestamp ?? DateTime.now().millisecondsSinceEpoch;
+     // Scan only recent outgoing messages (chatMessages are sorted newest-first
+     // by _applyIncomingMessage), bailing out as soon as we step outside the
+     // 30s dedup window so the lookup stays O(k) instead of O(n) on long chats.
+     final existing = state.messagesByChat[chatId] ?? const <ChatMessage>[];
+     bool hasOptimisticEcho = false;
+     final trimmedBody = body.trim();
+     for (final m in existing) {
+       if ((m.timestamp - ts).abs() >= 30000) break;
+       if (m.direction != MessageDirection.outgoing) continue;
+       if (m.messageId == msg.messageId || (m.body?.trim() ?? '') == trimmedBody) {
+         hasOptimisticEcho = true;
+         break;
+       }
+     }
 
     // Fallback for group messages fetched from the notification logs: the DB's
     // `From` column stores the group ID instead of the actual sender's phone
