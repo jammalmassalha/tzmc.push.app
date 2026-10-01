@@ -1219,7 +1219,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // The initial recovery downloads the complete durable history. An
     // incremental pull racing it can use the cursor written by the first
     // page, receive an empty delta, and make startup appear to have no chats.
-    if (_initialSyncInFlight) return;
+    // Gate every caller (including delayed push-recovery timers), not only the
+    // poll tick, until the authoritative startup recovery has completed.
+    if (!_initialSyncCompleted || _initialSyncInFlight) return;
 
     try {
       int latestTimestamp;
