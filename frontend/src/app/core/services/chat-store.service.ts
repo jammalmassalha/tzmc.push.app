@@ -702,21 +702,17 @@ export class ChatStoreService {
     this.schedulePendingPushDrainRetry();
 
     /**
-     * SYNC STEP 2: Aggressive Logs Recovery (The Fix)
-     * This fills any gaps that the Service Worker missed (e.g., if the phone was offline
-     * or the OS killed the SW). We use 'force: true' to bypass the standard recovery cooldown.
-     * IMPORTANT: We await this so messages are loaded and placed in the correct chats
-     * before the UI renders — this is the first thing the user should see on app open.
+     * SYNC STEP 2: Logs recovery
+     * Do not block the home screen on the potentially slow historical logs
+     * request. Cached/server mailbox data can render now, while this recovery
+     * merges missed messages into the reactive chat list when it completes.
      */
-    await this.recoverMissedMessagesFromLogs(user, {
-      force: true,           // Ensures we sync every time the app starts
-      incrementUnread: true, // Marks missed messages as unread so they appear in badges
-      limit: 1000            // Window large enough to cover several hours of activity
-    }).catch(() => undefined);
-
-    // Recovery complete — the chat list is now populated. Hide the loading
-    // spinner so the user sees their chats.
     this.loading.set(false);
+    void this.recoverMissedMessagesFromLogs(user, {
+      force: true,
+      incrementUnread: true,
+      limit: 1000
+    }).catch(() => undefined);
 
     /**
      * SYNC STEP 3: Process pending SW messages AFTER drain + recovery.
