@@ -225,6 +225,7 @@ class ChatApiService {
     }
 
     try {
+      print('📱 [OTP] Requesting SMS code for phone: $normalized');
       final response = await _client.post<Map<String, dynamic>>(
         ApiEndpoints.requestCode,
         data: {'user': normalized},
@@ -241,9 +242,12 @@ class ChatApiService {
             const RetryOptions(retries: 0, timeout: NetworkTimeouts.requestCodeTimeout),
       );
 
+      print('📱 [OTP] Response status: ${response.statusCode}, isSuccessful: ${response.isSuccessful}');
+      
       if (!response.isSuccessful) {
         final body = _coerceJsonMap(response.data);
         final message = _extractErrorMessage(body, '');
+        print('❌ [OTP] Request failed - Status: ${response.statusCode}, Message: $message, Body: $body');
 
         if (response.statusCode == 400) {
           throw AuthException('מספר טלפון לא תקין');
@@ -263,14 +267,18 @@ class ChatApiService {
 
       final body = SessionResponse.fromJson(_coerceJsonMap(response.data));
       final expiresInSeconds = body.expiresInSeconds ?? 300;
+      print('✅ [OTP] SMS code requested successfully, expires in: $expiresInSeconds seconds');
       return expiresInSeconds > 0 ? expiresInSeconds : 300;
-    } on TimeoutException {
+    } on TimeoutException catch (e) {
+      print('⏱️  [OTP] Request timeout: $e');
       throw AuthException('השרת לא הגיב בזמן. נסה שוב');
     } on DioException catch (e) {
+      print('🌐 [OTP] Dio error: ${e.type}, Status: ${e.response?.statusCode}, Message: ${e.message}');
       final message = _extractErrorMessage(e.response?.data, '');
       throw AuthException(message.isNotEmpty ? message : 'שליחת קוד אימות נכשלה');
     } catch (error, stackTrace) {
-      debugPrint('requestSessionCode unexpected error: $error');
+      print('❌ [OTP] Unexpected error: $error');
+      debugPrint('requestSessionCode unexpected error: $error\n$stackTrace');
       Error.throwWithStackTrace(AuthException('שליחת קוד אימות נכשלה'), stackTrace);
     }
   }
@@ -287,48 +295,61 @@ class ChatApiService {
       throw AuthException('יש להזין קוד אימות בן 6 ספרות');
     }
 
-    // The backend holds this request open for up to ~45 s while it waits for
-    // an external service to set the user's final Status, so allow plenty of
-    // headroom and do not retry (a retry here would double the wait).
-    final response = await _client.post<Map<String, dynamic>>(
-      ApiEndpoints.verifyCode,
-      data: {'user': normalized, 'code': normalizedCode},
-      options: Options(
-        receiveTimeout: NetworkTimeouts.verifyCodeTimeout,
-        sendTimeout: NetworkTimeouts.verifyCodeTimeout,
-      ),
-      retryOptions: const RetryOptions(retries: 0, timeout: NetworkTimeouts.verifyCodeTimeout),
-    );
+    try {
+      print('📱 [OTP] Verifying code for phone: $normalized');
+      // The backend holds this request open for up to ~45 s while it waits for
+      // an external service to set the user's final Status, so allow plenty of
+      // headroom and do not retry (a retry here would double the wait).
+      final response = await _client.post<Map<String, dynamic>>(
+        ApiEndpoints.verifyCode,
+        data: {'user': normalized, 'code': normalizedCode},
+        options: Options(
+          receiveTimeout: NetworkTimeouts.verifyCodeTimeout,
+          sendTimeout: NetworkTimeouts.verifyCodeTimeout,
+        ),
+        retryOptions: const RetryOptions(retries: 0, timeout: NetworkTimeouts.verifyCodeTimeout),
+      );
 
-    if (!response.isSuccessful) {
-      final body = response.data;
-      final message = (body?['message'] ?? body?['error'] ?? '').toString().trim();
+      print('📱 [OTP] Verify response status: ${response.statusCode}, isSuccessful: ${response.isSuccessful}');
 
-      if (response.statusCode == 400) {
-        throw AuthException('קוד אימות לא תקין');
-      } else if (response.statusCode == 401) {
-        throw AuthException('קוד האימות שגוי או פג תוקף');
-      } else if (response.statusCode == 403) {
-        throw AuthException('המשתמש אינו מורשה');
-      } else if (response.statusCode == 429) {
-        final retryAfter = body?['retryAfterSeconds'] as int?;
-        throw RateLimitException('יותר מדי ניסיונות. נסה שוב בעוד $retryAfter שניות', retryAfter);
-      } else if (message.isNotEmpty) {
-        throw AuthException(message);
+      if (!response.isSuccessful) {
+        final body = response.data;
+        final message = (body?['message'] ?? body?['error'] ?? '').toString().trim();
+        print('❌ [OTP] Verify failed - Status: ${response.statusCode}, Message: $message');
+
+        if (response.statusCode == 400) {
+          throw AuthException('קוד אימות לא תקין');
+        } else if (response.statusCode == 401) {
+          throw AuthException('קוד האימות שגוי או פג תוקף');
+        } else if (response.statusCode == 403) {
+          throw AuthException('המשתמש אינו מורשה');
+        } else if (response.statusCode == 429) {
+          final retryAfter = body?['retryAfterSeconds'] as int?;
+          throw RateLimitException('יותר מדי ניסיונות. נסה שוב בעוד $retryAfter שניות', retryAfter);
+        } else if (message.isNotEmpty) {
+          throw AuthException(message);
+        }
+        throw AuthException('אימות הקוד נכשל');
       }
+
+      final body = SessionResponse.fromJson(response.data ?? {});
+      _client.setCsrfToken(body.csrfToken);
+
+      final sessionUser = body.user?.trim().toLowerCase();
+      if (!body.authenticated || (sessionUser?.isEmpty ?? true)) {
+        _client.clearCsrfToken();
+        throw AuthException('אימות הקוד נכשל');
+      }
+
+      print('✅ [OTP] Code verified successfully for: $sessionUser');
+      return sessionUser!;
+    } on DioException catch (e) {
+      print('🌐 [OTP] Dio error on verify: ${e.type}, Status: ${e.response?.statusCode}');
+      throw AuthException('אימות הקוד נכשל');
+    } catch (e) {
+      print('❌ [OTP] Unexpected error on verify: $e');
       throw AuthException('אימות הקוד נכשל');
     }
-
-    final body = SessionResponse.fromJson(response.data ?? {});
-    _client.setCsrfToken(body.csrfToken);
-
-    final sessionUser = body.user?.trim().toLowerCase();
-    if (!body.authenticated || (sessionUser?.isEmpty ?? true)) {
-      _client.clearCsrfToken();
-      throw AuthException('אימות הקוד נכשל');
-    }
-
-    return sessionUser!;
   }
 
   /// Verify SMS code and return full SessionResponse
