@@ -74,6 +74,10 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   /// `scrollBottomThresholdPx = 44`.
   static const double _scrollBottomThreshold = 44.0;
 
+  /// Threshold to trigger load-more when user scrolls near the top (highest offset)
+  /// of the reversed list. In a reversed list, scrolling to "top" means high offset.
+  static const double _loadMoreThreshold = 300.0;
+
   /// The chat ID of the accreditation group that exposes the AI agent button.
   static const String _accreditationChatId = 'אקרדיטציה';
 
@@ -87,6 +91,11 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   List<ChatMessage> _currentMessages = [];
   final GlobalKey _messagesListKey = GlobalKey(debugLabel: 'messagesList');
   final Map<String, GlobalKey> _messageItemKeys = <String, GlobalKey>{};
+
+  /// Track loading state for initial message fetch and pagination
+  bool _isLoadingInitialMessages = true;
+  bool _isLoadingMoreMessages = false;
+  bool _hasMoreMessages = true;
 
   /// Key placed on the "unread messages" divider so we can scroll to it
   /// precisely once the list has been laid out.
@@ -147,6 +156,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   @override
   void initState() {
     super.initState();
+    _isLoadingInitialMessages = true;
     final unread = widget.initialUnreadCount;
     // Start the scroll near the boundary so the divider is in the initial
     // render window and `ensureVisible` can work on it.
@@ -161,7 +171,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     });
 
     // Listen for scroll position changes to show/hide the scroll-to-bottom
-    // button and update the floating date badge.
+    // button, update the floating date badge, and detect scroll-to-top for
+    // pagination (load more older messages).
     _scrollController.addListener(_onScrollChanged);
 
     if (unread > 0) {
@@ -175,8 +186,20 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       (_) => _scheduleStickyDateRefresh(),
     );
     WidgetsBinding.instance.addPostFrameCallback((_) => _resetBadgeOnOpen());
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(ref.read(chatStoreProvider.notifier).loadChatHistory(widget.chatId));
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      debugPrint('📱🔄 [MessageScreen] Loading chat history for ${widget.chatId}');
+      try {
+        await ref.read(chatStoreProvider.notifier).loadChatHistory(widget.chatId);
+        if (mounted) {
+          debugPrint('✅📱 [MessageScreen] Chat history loaded successfully');
+          setState(() => _isLoadingInitialMessages = false);
+        }
+      } catch (e) {
+        if (mounted) {
+          debugPrint('❌📱 [MessageScreen] Failed to load chat history: $e');
+          setState(() => _isLoadingInitialMessages = false);
+        }
+      }
     });
   }
 
@@ -194,11 +217,12 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     Navigator.of(context).pop();
   }
 
-  /// Updates [_showScrollButton] and [_stickyDate] whenever the scroll
-  /// position changes.
+  /// Updates [_showScrollButton], [_stickyDate], and detects scroll-to-top
+  /// for pagination (loading older messages).
   /// Because the list is `reverse: true`, offset 0 is the bottom (newest
   /// messages). The button appears when the user has scrolled more than
-  /// [_scrollBottomThreshold] pixels away from the bottom.
+  /// [_scrollBottomThreshold] pixels away from the bottom. Pagination is
+  /// triggered when scrolling near the top (high offset).
   void _onScrollChanged() {
     final shouldShow =
         _scrollController.hasClients &&
@@ -207,6 +231,16 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       setState(() => _showScrollButton = shouldShow);
     }
     _updateStickyDate();
+
+    // Trigger load-more when user scrolls near the top of the reversed list
+    // (high offset means they've scrolled far from the bottom/newest messages)
+    if (_scrollController.hasClients &&
+        _hasMoreMessages &&
+        !_isLoadingMoreMessages &&
+        _scrollController.offset >
+            (_scrollController.position.maxScrollExtent - _loadMoreThreshold)) {
+      _loadMoreMessages();
+    }
   }
 
   /// Computes and stores the floating date label for the topmost visible
@@ -262,6 +296,43 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     if (messageDay == today) return 'היום';
     if (messageDay == yesterday) return 'אתמול';
     return DateFormat('dd/MM/yyyy').format(date);
+  }
+
+  /// Load more messages when user scrolls to the top of the reversed list.
+  /// This adds older messages to the chat history.
+  Future<void> _loadMoreMessages() async {
+    if (_isLoadingMoreMessages || !_hasMoreMessages || _currentMessages.isEmpty) {
+      return;
+    }
+
+    setState(() => _isLoadingMoreMessages = true);
+    try {
+      // Get the oldest message timestamp (last in reverse-sorted list is oldest)
+      final oldestMessage = _currentMessages.last;
+      final oldestTimestamp = oldestMessage.timestamp;
+
+      debugPrint('🔄📱 [MessageScreen] Loading older messages (before $oldestTimestamp)');
+
+      // Load messages older than the oldest currently visible message
+      final newMessages = await ref
+          .read(chatStoreProvider.notifier)
+          .loadOlderMessages(widget.chatId, oldestTimestamp);
+
+      if (mounted) {
+        if ((newMessages ?? 0) == 0) {
+          debugPrint('✅📱 [MessageScreen] No more older messages available');
+          setState(() => _hasMoreMessages = false);
+        } else {
+          debugPrint('✅📱 [MessageScreen] Loaded ${newMessages ?? 0} older messages');
+        }
+        setState(() => _isLoadingMoreMessages = false);
+      }
+    } catch (e) {
+      if (mounted) {
+        debugPrint('❌📱 [MessageScreen] Failed to load older messages: $e');
+        setState(() => _isLoadingMoreMessages = false);
+      }
+    }
   }
 
   void _scrollToFirstUnread() {
@@ -549,14 +620,34 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                               horizontal: 8,
                               vertical: 16,
                             ),
-                            // +1 for the optional unread divider slot (only when not searching)
+                            // Count messages + optional unread divider + optional loading indicator
                             itemCount:
                                 messages.length +
                                 (!_searchActive && widget.initialUnreadCount > 0
                                     ? 1
-                                    : 0),
+                                    : 0) +
+                                (_isLoadingMoreMessages ? 1 : 0),
                             itemBuilder: (context, index) {
                               // With reverse: true, index 0 = newest message (bottom).
+                              // The first item after reversal is the loading indicator (if present).
+                              if (_isLoadingMoreMessages && index == messages.length) {
+                                return Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 16),
+                                  child: Center(
+                                    child: SizedBox(
+                                      width: 32,
+                                      height: 32,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2.5,
+                                        valueColor: AlwaysStoppedAnimation<Color>(
+                                          Theme.of(context).primaryColor,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              }
+
                               // The unread divider sits just below the first unread message,
                               // i.e. at position `initialUnreadCount` in the reversed list
                               // (between last-read and first-unread).
@@ -834,6 +925,34 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   }
 
   Widget _buildEmptyState(BuildContext context) {
+    if (_isLoadingInitialMessages) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            SizedBox(
+              width: 48,
+              height: 48,
+              child: CircularProgressIndicator(
+                strokeWidth: 3,
+                valueColor: AlwaysStoppedAnimation<Color>(
+                  Theme.of(context).primaryColor,
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'טוען הודעות...',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                color: Theme.of(context).colorScheme.onSurface
+                    .withAlpha((255 * 0.6).round()),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -883,27 +1002,64 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   Widget _buildUnreadDivider(BuildContext context) {
     return Padding(
       key: _unreadDividerKey,
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Column(
         children: [
-          const Expanded(child: Divider()),
-          const SizedBox(width: 8),
+          // Top line for visual hierarchy
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            decoration: BoxDecoration(
-              color: const Color(0xFF1976D2).withAlpha((255 * 0.15).round()),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Text(
-              '${widget.initialUnreadCount} הודעות שלא נקראו',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: const Color(0xFF1976D2),
-                fontWeight: FontWeight.w600,
-              ),
-            ),
+            height: 3,
+            color: const Color(0xFF1976D2),
+            margin: const EdgeInsets.only(bottom: 8),
           ),
-          const SizedBox(width: 8),
-          const Expanded(child: Divider()),
+          Row(
+            children: [
+              const Expanded(
+                child: Divider(
+                  color: Color(0xFF1976D2),
+                  thickness: 2,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1976D2),
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF1976D2).withAlpha((255 * 0.3).round()),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: Text(
+                  '${widget.initialUnreadCount} הודעות שלא נקראו',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Divider(
+                  color: Color(0xFF1976D2),
+                  thickness: 2,
+                ),
+              ),
+            ],
+          ),
+          // Bottom line for visual hierarchy
+          Container(
+            height: 3,
+            color: const Color(0xFF1976D2),
+            margin: const EdgeInsets.only(top: 8),
+          ),
         ],
       ),
     );

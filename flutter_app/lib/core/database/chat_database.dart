@@ -397,6 +397,20 @@ class ChatDatabase extends _$ChatDatabase {
     return (await query.get()).isNotEmpty;
   }
 
+  /// Get older messages (for pagination) before a given timestamp for a specific chat.
+  /// Returns up to [limit] messages (default 50) ordered by newest first.
+  Future<List<ChatMessage>> getOlderMessages({
+    required String chatId,
+    required int beforeTimestamp,
+    int limit = 50,
+  }) async {
+    return fetchOlderMessages(
+      chatId,
+      beforeTimestamp: beforeTimestamp,
+      limit: limit,
+    );
+  }
+
   /// Emits whenever local chat data changes.
   ///
   /// The chat list is rendered from the store, but this stream is the local

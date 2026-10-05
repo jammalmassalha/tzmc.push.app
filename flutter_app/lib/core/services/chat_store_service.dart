@@ -1251,6 +1251,75 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     await _pullAllMessagesFromLogs(user: user, since: 0);
   }
 
+  /// Load older messages (pagination) for a specific chat.
+  /// Fetches messages older than [beforeTimestamp] and returns the count of new messages added.
+  /// This is used for "load more" functionality when scrolling to the top of the message list.
+  Future<int?> loadOlderMessages(
+    String chatId,
+    int beforeTimestamp,
+  ) async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty || chatId.trim().isEmpty) {
+      return null;
+    }
+
+    try {
+      debugPrint(
+        '📱🔄 [ChatStoreService] Loading older messages for $chatId before $beforeTimestamp',
+      );
+
+      // Fetch older messages from database (up to 50 older messages before this timestamp)
+      final olderMessages = await _db.getOlderMessages(
+        chatId: chatId.toLowerCase(),
+        beforeTimestamp: beforeTimestamp,
+        limit: 50,
+      );
+
+      if (olderMessages.isEmpty) {
+        debugPrint(
+          '✅📱 [ChatStoreService] No older messages found for $chatId before $beforeTimestamp',
+        );
+        return 0;
+      }
+
+      // Add to in-memory state (merge with existing messages, avoiding duplicates)
+      _addMessagesToState(olderMessages);
+
+      debugPrint(
+        '✅📱 [ChatStoreService] Added ${olderMessages.length} older messages to state for $chatId',
+      );
+
+      return olderMessages.length;
+    } catch (e) {
+      debugPrint(
+        '❌📱 [ChatStoreService] Error loading older messages: $e',
+      );
+      return null;
+    }
+  }
+
+  /// Helper to add messages to in-memory state, avoiding duplicates
+  void _addMessagesToState(List<ChatMessage> newMessages) {
+    if (newMessages.isEmpty) return;
+
+    final updatedByChat = Map<String, List<ChatMessage>>.from(state.messagesByChat);
+
+    for (final message in newMessages) {
+      final chatId = message.chatId.toLowerCase();
+      final existing = updatedByChat[chatId] ?? [];
+
+      // Check if message already exists (by ID)
+      if (!existing.any((m) => m.id == message.id)) {
+        // Add and re-sort by timestamp descending (newest first)
+        final updated = [...existing, message]
+          ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
+        updatedByChat[chatId] = updated;
+      }
+    }
+
+    state = state.copyWith(messagesByChat: updatedByChat);
+  }
+
   /// Pull messages since a timestamp
   Future<void> pullMessages({int? since}) async {
     final user = _currentUser;

@@ -1181,23 +1181,26 @@ class PushNotificationService {
 
   /// Handle message when app opened from notification
   void _onMessageOpenedApp(RemoteMessage message) {
-    debugPrint('[PUSH-ROUTING] onMessageOpenedApp payload: ${message.data}');
-    debugPrint(
-      '[PushNotificationService] Opened from notification: ${message.messageId}',
-    );
+    debugPrint('[PUSH-ROUTING] 📱 onMessageOpenedApp called with messageId: ${message.messageId}');
+    debugPrint('[PUSH-ROUTING] 📦 Payload: ${message.data}');
 
     // Apply push payload (also schedules recovery pulls)
     _applyPushPayload(message);
 
     // Navigate to the relevant screen based on notification type
     final type = (message.data['type'] ?? '').toString().trim().toLowerCase();
+    debugPrint('[PUSH-ROUTING] 🔍 Notification type: $type');
+    
     if (type == 'helpdesk_assigned' || type == 'helpdesk') {
+      debugPrint('[PUSH-ROUTING] 🎫 Opening helpdesk screen');
       _openHelpdeskScreen();
     } else if (type == 'helpdesk_ticket') {
       // helpdesk_ticket messages are delivered under 'מוקד איחוד' chat.
       // Navigate directly to that chat so the user sees the new message.
+      debugPrint('[PUSH-ROUTING] 🎫 Opening helpdesk ticket chat');
       _navigateToChat(message);
     } else {
+      debugPrint('[PUSH-ROUTING] 💬 Opening regular chat');
       _navigateToChat(message);
     }
   }
@@ -1421,7 +1424,11 @@ class PushNotificationService {
   /// Navigate to the chat from a notification
   void _navigateToChat(RemoteMessage message) {
     final chatId = _chatIdFromMessage(message);
-    if (chatId == null || chatId.isEmpty) return;
+    if (chatId == null || chatId.isEmpty) {
+      debugPrint('[PUSH-ROUTING] ❌ No valid chatId found in notification payload');
+      return;
+    }
+    debugPrint('[PUSH-ROUTING] 🎯 Extracted chatId: $chatId');
     _openChatScreen(chatId);
   }
 
@@ -1430,7 +1437,14 @@ class PushNotificationService {
     final chatId = (data['chatId'] ?? data['groupId'] ?? data['sender'])
         ?.toString()
         .trim();
-    return chatId == null || chatId.isEmpty ? null : chatId.toLowerCase();
+    if (chatId == null || chatId.isEmpty) {
+      debugPrint(
+        '[PUSH-ROUTING] ❌ No chat/group/sender ID in payload. Keys: ${data.keys.toList()}',
+      );
+      return null;
+    }
+    debugPrint('[PUSH-ROUTING] 📛 Found ID: $chatId (source: ${data.containsKey('chatId') ? 'chatId' : data.containsKey('groupId') ? 'groupId' : 'sender'})');
+    return chatId.toLowerCase();
   }
 
   /// Replays a terminated-state route after authentication and the initial
@@ -1480,14 +1494,21 @@ class PushNotificationService {
   ///
   bool _openChatScreen(String chatId) {
     final normalizedChatId = chatId.trim().toLowerCase();
-    if (normalizedChatId.isEmpty) return false;
+    if (normalizedChatId.isEmpty) {
+      debugPrint('[PUSH-ROUTING] ❌ Empty chat ID');
+      return false;
+    }
 
     final currentUser = _ref.read(currentUserProvider);
     final navigator = rootNavigatorKey.currentState;
+    
+    debugPrint(
+      '[PUSH-ROUTING] 📱 Opening chat: $normalizedChatId (user=$currentUser, navReady=${navigator != null})',
+    );
+
     if (currentUser == null || navigator == null) {
       debugPrint(
-        '[PushNotificationService] App not ready, deferring route to '
-        '$normalizedChatId',
+        '[PUSH-ROUTING] ⏱️ App not fully ready, deferring route to $normalizedChatId',
       );
       _pendingRouteChatId = normalizedChatId;
       return false;
@@ -1499,10 +1520,16 @@ class PushNotificationService {
 
     final unreadCount =
         _ref.read(chatStoreProvider).unreadByChat[normalizedChatId] ?? 0;
+    
+    debugPrint(
+      '[PUSH-ROUTING] 📬 Chat state: unreadCount=$unreadCount',
+    );
+
     try {
       _ref.read(chatStoreProvider.notifier).setCurrentChat(normalizedChatId);
+      debugPrint('[PUSH-ROUTING] ✅ Set current chat to $normalizedChatId');
     } catch (e) {
-      debugPrint('[PushNotificationService] setCurrentChat error: $e');
+      debugPrint('[PUSH-ROUTING] ❌ setCurrentChat error: $e');
     }
 
     navigator.push(
@@ -1514,6 +1541,8 @@ class PushNotificationService {
             ),
       ),
     );
+    
+    debugPrint('[PUSH-ROUTING] ✅ Pushed MessageScreen for $normalizedChatId');
     return true;
   }
 
