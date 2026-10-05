@@ -138,9 +138,6 @@ class PushNotificationService {
   /// ready. Kept at class level because a cold-start notification can arrive
   /// before the service has finished initializing.
   static String? _pendingRouteChatId;
-  /// Retains the complete cold-start payload until the chat store has restored
-  /// its local snapshot. It must not be applied during FCM initialization.
-  static RemoteMessage? pendingColdStartMessage;
   bool _launchRoutingInFlight = false;
   StreamSubscription? _tokenRefreshSubscription;
   StreamSubscription? _messageSubscription;
@@ -250,7 +247,8 @@ class PushNotificationService {
         debugPrint(
           '[PUSH-ROUTING] getInitialMessage caught payload: ${initialMessage.data}',
         );
-        pendingColdStartMessage = initialMessage;
+        // Process it exactly like a background notification so it uses the pending route system
+        _onMessageOpenedApp(initialMessage);
       }
 
       // Check if app was opened from an Android local notification while
@@ -1409,18 +1407,6 @@ class PushNotificationService {
     }
   }
 
-  /// Applies a terminated-state notification after the chat store has restored
-  /// its local history. Returns the chat ID to open, if one is present.
-  Future<String?> consumePendingColdStartMessage() async {
-    final message = pendingColdStartMessage;
-    if (message == null) return null;
-
-    final chatId = _chatIdFromMessage(message);
-    _applyPushPayload(message);
-    pendingColdStartMessage = null;
-    return chatId;
-  }
-
   /// Navigate to the chat from a notification
   void _navigateToChat(RemoteMessage message) {
     final chatId = _chatIdFromMessage(message);
@@ -1501,12 +1487,14 @@ class PushNotificationService {
 
     final currentUser = _ref.read(currentUserProvider);
     final navigator = rootNavigatorKey.currentState;
+    final isStoreReady = _ref.read(chatStoreProvider).isInitialized;
     
     debugPrint(
-      '[PUSH-ROUTING] 📱 Opening chat: $normalizedChatId (user=$currentUser, navReady=${navigator != null})',
+      '[PUSH-ROUTING] 📱 Opening chat: $normalizedChatId (user=$currentUser, navReady=${navigator != null}, storeReady=$isStoreReady)',
     );
 
-    if (currentUser == null || navigator == null) {
+    // Defer routing if the app, navigator, or chat store is not fully ready
+    if (currentUser == null || navigator == null || !isStoreReady) {
       debugPrint(
         '[PUSH-ROUTING] ⏱️ App not fully ready, deferring route to $normalizedChatId',
       );

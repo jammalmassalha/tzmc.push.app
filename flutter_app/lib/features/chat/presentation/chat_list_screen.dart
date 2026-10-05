@@ -71,29 +71,8 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
     if (mounted) {
       setState(() => _isBooting = false);
     }
-
-    // Apply a pending cold-start payload after the shell has mounted, then
-    // navigate only when the root navigator is available.
-    final pendingChatId = await ref
-        .read(pushNotificationServiceProvider)
-        .consumePendingColdStartMessage();
-    if (pendingChatId != null && mounted) {
-      await WidgetsBinding.instance.endOfFrame;
-      final navigator = rootNavigatorKey.currentState;
-      if (mounted && navigator != null) {
-        final state = ref.read(chatStoreProvider);
-        final unreadCount = state.unreadByChat[pendingChatId] ?? 0;
-        ref.read(chatStoreProvider.notifier).setCurrentChat(pendingChatId);
-        navigator.push(
-          MaterialPageRoute(
-            builder: (_) => MessageScreen(
-              chatId: pendingChatId,
-              initialUnreadCount: unreadCount,
-            ),
-          ),
-        );
-      }
-    }
+    // The cold-start push payload is now handled automatically
+    // by PushNotificationService.completeLaunchRouting()
   }
 
   @override
