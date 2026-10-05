@@ -203,10 +203,13 @@ class _AuthRouterState extends ConsumerState<AuthRouter> {
   bool _hasScheduledAuthNavigation = false;
 
   @override
+  @override
   Widget build(BuildContext context) {
     final authState = ref.watch(authStateProvider);
     final requestedPath = AppRoutes.normalizePath(widget.requestedPath);
 
+    print('[AuthRouter] Building - authState: $authState, requestedPath: $requestedPath');
+    
     return switch (authState) {
       AuthLoading() => const SplashScreen(),
       AuthUnauthenticated() || AuthAwaitingCode() || AuthError() => _buildUnauthenticated(

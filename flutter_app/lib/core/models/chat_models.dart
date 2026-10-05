@@ -277,7 +277,7 @@ class ChatMessage extends Equatable {
   final String sender;
   final String? senderDisplayName;
   final String? recordType;
-  final String body;
+  final String? body;
   final String? imageUrl;
   final String? thumbnailUrl;
   final String? fileUrl;
@@ -316,7 +316,7 @@ class ChatMessage extends Equatable {
     required this.sender,
     this.senderDisplayName,
     this.recordType,
-    required this.body,
+    this.body,
     this.imageUrl,
     this.thumbnailUrl,
     this.fileUrl,
@@ -422,15 +422,15 @@ class ChatMessage extends Equatable {
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) {
     return ChatMessage(
-      id: json['id'] as String,
-      messageId: json['messageId'] as String,
+      id: json['id'] as String? ?? '',
+      messageId: json['messageId'] as String? ?? '',
       clientMsgId: json['clientMsgId'] as String?,
-      chatId: json['chatId'] as String,
+      chatId: json['chatId'] as String? ?? '',
       pts: json['pts'] as int?,
-      sender: json['sender'] as String,
+      sender: json['sender'] as String? ?? '',
       senderDisplayName: json['senderDisplayName'] as String?,
       recordType: json['recordType'] as String?,
-      body: json['body'] as String,
+      body: json['body'] as String?,
       imageUrl: json['imageUrl'] as String?,
       thumbnailUrl: json['thumbnailUrl'] as String?,
       fileUrl: json['fileUrl'] as String?,
@@ -439,7 +439,7 @@ class ChatMessage extends Equatable {
         (e) => e.name == json['direction'],
         orElse: () => MessageDirection.incoming,
       ),
-      timestamp: json['timestamp'] as int,
+      timestamp: json['timestamp'] as int? ?? 0,
       deliveryStatus: DeliveryStatus.values.firstWhere(
         (e) => e.name == json['deliveryStatus'],
         orElse: () => DeliveryStatus.delivered,

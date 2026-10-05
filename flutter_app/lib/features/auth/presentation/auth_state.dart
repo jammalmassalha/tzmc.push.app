@@ -136,6 +136,7 @@ class AuthNotifier extends Notifier<AuthState> {
           isRestricted: sessionInfo.isRestricted ?? false,
         );
         _startSessionRefresh();
+        _apiService.startSessionCacheRefreshTimer();  // Start 5-min cache refresh
         unawaited(_resetBadgeAfterAuth());
         _logger.i('Session restored for user: $sessionUser (isRestricted: ${sessionInfo.isRestricted})');
       } else {
@@ -275,6 +276,8 @@ class AuthNotifier extends Notifier<AuthState> {
       } catch (e) {
         _logger.w('Error clearing chat cache after verify-code login: $e');
       }
+      // Clear session cache when user logs in (new session)
+      _apiService.clearSessionCache();
       await _secureStorage.write(key: _userKey, value: user);
       state = AuthAuthenticated(
         user: user,
@@ -283,6 +286,7 @@ class AuthNotifier extends Notifier<AuthState> {
         justLoggedIn: true,
       );
       _startSessionRefresh();
+      _apiService.startSessionCacheRefreshTimer();  // Start 5-min cache refresh
       unawaited(_resetBadgeAfterAuth());
       _logger.i('Code verification successful for: $user (isRestricted: ${sessionResponse.isRestricted})');
     } on AuthException catch (e) {
@@ -330,6 +334,9 @@ class AuthNotifier extends Notifier<AuthState> {
     } catch (e) {
       _logger.w('Error clearing chat store on logout: $e');
     }
+
+    // Clear session cache on logout
+    _apiService.clearSessionCache();
 
     await _secureStorage.delete(key: _userKey);
     _sessionRefreshTimer?.cancel();

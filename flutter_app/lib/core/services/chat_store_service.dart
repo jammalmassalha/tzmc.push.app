@@ -328,7 +328,18 @@ class ChatState {
     if (message.deletedAt != null) return '🗑️ הודעה נמחקה';
     if (message.imageUrl != null) return '📷 תמונה';
     if (message.fileUrl != null) return '📎 קובץ';
-    final body = message.body.trim();
+    
+    // Handle null or empty body with type-based fallbacks
+    final body = message.body?.trim();
+    if (body == null || body.isEmpty) {
+      if (message.recordType == 'reaction') {
+        return '👍 Reacted to a message';
+      } else if (message.recordType == 'delete-action') {
+        return '🚫 This message was deleted';
+      }
+      return '...';
+    }
+    
     return body.length > 50 ? '${body.substring(0, 50)}...' : body;
   }
 }
@@ -690,6 +701,23 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     if (_initialSyncInFlight) return;
     _initialSyncInFlight = true;
     state = state.copyWith(isInitialSyncing: true);
+    
+    // Check for first load or hard reload and force full sync
+    final user = _currentUser;
+    if (user != null && user.isNotEmpty) {
+      final isFirst = await _isFirstLoad(user);
+      final isWebReload = await _isWebHardReload();
+      
+      if (isFirst || isWebReload) {
+        await _forceFullSync(user);
+        if (isFirst) {
+          print('🚀 [Sync] First load detected - forcing full sync for user: $user');
+        } else if (isWebReload) {
+          print('🔄 [Sync] Web hard reload detected - forcing full sync for user: $user');
+        }
+      }
+    }
+    
     debugPrint('[SYNC-PIPELINE] Starting sync with lastSyncTimestamp: $_syncCursorMs');
     // Start the durable history recovery immediately. The combined sync
     // request can be slow, while logs are sufficient to build the chat list
@@ -1221,6 +1249,75 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final user = _currentUser;
     if (user == null || user.isEmpty || chatId.trim().isEmpty) return;
     await _pullAllMessagesFromLogs(user: user, since: 0);
+  }
+
+  /// Load older messages (pagination) for a specific chat.
+  /// Fetches messages older than [beforeTimestamp] and returns the count of new messages added.
+  /// This is used for "load more" functionality when scrolling to the top of the message list.
+  Future<int?> loadOlderMessages(
+    String chatId,
+    int beforeTimestamp,
+  ) async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty || chatId.trim().isEmpty) {
+      return null;
+    }
+
+    try {
+      debugPrint(
+        '📱🔄 [ChatStoreService] Loading older messages for $chatId before $beforeTimestamp',
+      );
+
+      // Fetch older messages from database (up to 50 older messages before this timestamp)
+      final olderMessages = await _db.getOlderMessages(
+        chatId: chatId.toLowerCase(),
+        beforeTimestamp: beforeTimestamp,
+        limit: 50,
+      );
+
+      if (olderMessages.isEmpty) {
+        debugPrint(
+          '✅📱 [ChatStoreService] No older messages found for $chatId before $beforeTimestamp',
+        );
+        return 0;
+      }
+
+      // Add to in-memory state (merge with existing messages, avoiding duplicates)
+      _addMessagesToState(olderMessages);
+
+      debugPrint(
+        '✅📱 [ChatStoreService] Added ${olderMessages.length} older messages to state for $chatId',
+      );
+
+      return olderMessages.length;
+    } catch (e) {
+      debugPrint(
+        '❌📱 [ChatStoreService] Error loading older messages: $e',
+      );
+      return null;
+    }
+  }
+
+  /// Helper to add messages to in-memory state, avoiding duplicates
+  void _addMessagesToState(List<ChatMessage> newMessages) {
+    if (newMessages.isEmpty) return;
+
+    final updatedByChat = Map<String, List<ChatMessage>>.from(state.messagesByChat);
+
+    for (final message in newMessages) {
+      final chatId = message.chatId.toLowerCase();
+      final existing = updatedByChat[chatId] ?? [];
+
+      // Check if message already exists (by ID)
+      if (!existing.any((m) => m.id == message.id)) {
+        // Add and re-sort by timestamp descending (newest first)
+        final updated = [...existing, message]
+          ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
+        updatedByChat[chatId] = updated;
+      }
+    }
+
+    state = state.copyWith(messagesByChat: updatedByChat);
   }
 
   /// Pull messages since a timestamp
@@ -2413,13 +2510,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // out as soon as we leave the window so the cost stays bounded on long
     // chats.
     if (existingIndex < 0 && message.direction == MessageDirection.incoming) {
-      final fingerprint = message.body.trim();
+      final fingerprint = message.body?.trim() ?? '';
       final ts = message.timestamp;
       for (var i = 0; i < chatMessages.length; i++) {
         final m = chatMessages[i];
         if ((m.timestamp - ts).abs() >= 30000) break;
         if (m.direction == MessageDirection.outgoing &&
-            m.body.trim() == fingerprint) {
+            (m.body?.trim() ?? '') == fingerprint) {
           existingIndex = i;
           break;
         }
@@ -2534,13 +2631,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     //   edit that made the text shorter (e.g. "Hello World" → "Hi").
     // - Otherwise fall back to the longer-body heuristic which guards against
     //   push truncation where the cached body is shorter than the full text.
-    final String body;
+    final String? body;
     if (existing.editedAt != null) {
       body = existing.body;
-    } else if (incoming.body.length > existing.body.length) {
-      body = incoming.body;
     } else {
-      body = existing.body;
+      final incomingLen = incoming.body?.length ?? 0;
+      final existingLen = existing.body?.length ?? 0;
+      if (incomingLen > existingLen) {
+        body = incoming.body;
+      } else {
+        body = existing.body;
+      }
     }
 
     return existing.copyWith(
@@ -3296,22 +3397,22 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // groupId (server.js:2138), so a sender-based check fails. Fall back to
     // matching against an existing optimistic outgoing message in the same
     // chat by body+timestamp window.
-    final body = msg.body ?? '';
-    final ts = msg.sentDateTime ?? msg.timestamp ?? DateTime.now().millisecondsSinceEpoch;
-    // Scan only recent outgoing messages (chatMessages are sorted newest-first
-    // by _applyIncomingMessage), bailing out as soon as we step outside the
-    // 30s dedup window so the lookup stays O(k) instead of O(n) on long chats.
-    final existing = state.messagesByChat[chatId] ?? const <ChatMessage>[];
-    bool hasOptimisticEcho = false;
-    final trimmedBody = body.trim();
-    for (final m in existing) {
-      if ((m.timestamp - ts).abs() >= 30000) break;
-      if (m.direction != MessageDirection.outgoing) continue;
-      if (m.messageId == msg.messageId || m.body.trim() == trimmedBody) {
-        hasOptimisticEcho = true;
-        break;
-      }
-    }
+     final body = msg.body ?? '';
+     final ts = msg.sentDateTime ?? msg.timestamp ?? DateTime.now().millisecondsSinceEpoch;
+     // Scan only recent outgoing messages (chatMessages are sorted newest-first
+     // by _applyIncomingMessage), bailing out as soon as we step outside the
+     // 30s dedup window so the lookup stays O(k) instead of O(n) on long chats.
+     final existing = state.messagesByChat[chatId] ?? const <ChatMessage>[];
+     bool hasOptimisticEcho = false;
+     final trimmedBody = body.trim();
+     for (final m in existing) {
+       if ((m.timestamp - ts).abs() >= 30000) break;
+       if (m.direction != MessageDirection.outgoing) continue;
+       if (m.messageId == msg.messageId || (m.body?.trim() ?? '') == trimmedBody) {
+         hasOptimisticEcho = true;
+         break;
+       }
+     }
 
     // Fallback for group messages fetched from the notification logs: the DB's
     // `From` column stores the group ID instead of the actual sender's phone
@@ -3776,6 +3877,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       if (user == null || user.trim().isEmpty) {
         return;
       }
+      
+      final messageCount = state.messagesByChat.values.fold(0, (sum, msgs) => sum + msgs.length);
+      print('📊 [PersistState] Starting persistence for user: $user');
+      print('📊 [PersistState] Messages in state: $messageCount');
+      print('📊 [PersistState] Contacts: ${state.contacts.length}');
+      print('📊 [PersistState] Groups: ${state.groups.length}');
+      
       final snapshot = PersistedChatState(
         contacts: state.contacts.values.toList(),
         groups: state.groups.values.toList(),
@@ -3785,16 +3893,20 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
       try {
         await _db.persistState(snapshot);
-      } catch (_) {
+        print('✅ [PersistState] Successfully persisted to Drift database');
+      } catch (e) {
+        print('❌ [PersistState] Drift DB error: $e');
         // Drift DB unavailable (e.g. web without sqlite3.wasm).
         // Fall back to shared_preferences-based localStorage snapshot.
         if (kIsWeb) {
           await WebChatStorage.persistState(user, snapshot);
+          print('✅ [PersistState] Fell back to WebStorage');
         }
       }
       await _writeDeletedChats(user, state.deletedChats);
       await _writeSyncCursor(user);
-    } catch (_) {
+    } catch (e) {
+      print('❌ [PersistState] Error: $e');
       // Persistence failure is non-fatal – data remains available in memory
       // for the current session and will be retried on the next trigger.
     }
@@ -3835,6 +3947,61 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     } catch (_) {
       // Best-effort.
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // First-load and hard-reload detection
+  // ---------------------------------------------------------------------------
+
+  /// Detects if this is the first load on the device (all platforms).
+  /// A first load is when the sync cursor is 0 (never been synced before).
+  Future<bool> _isFirstLoad(String user) async {
+    try {
+      final syncCursor = await _readSyncCursor(user);
+      final isFirst = syncCursor == 0;
+      if (isFirst) {
+        print('🚀 [FirstLoad] Detected first load for user: $user - forcing full sync');
+      }
+      return isFirst;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Detects web hard reload by checking if page visibility state changed.
+  /// On hard reload, the session storage is cleared, which we can detect.
+  /// This is specific to Flutter Web and uses dart:html.
+  Future<bool> _isWebHardReload() async {
+    if (!kIsWeb) return false;
+    
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      const hardReloadKey = 'web_session_id';
+      final newSessionId = DateTime.now().millisecondsSinceEpoch.toString();
+      final lastSessionId = prefs.getString(hardReloadKey);
+      
+      // If no previous session ID, this is either first load or hard reload
+      if (lastSessionId == null) {
+        await prefs.setString(hardReloadKey, newSessionId);
+        print('🔄 [WebHardReload] Detected web hard reload - resetting sync cursor');
+        return true;
+      }
+      
+      // If session ID changed significantly (not in same session), it's a hard reload
+      // This catches browser refresh, tab reload, or F5 reload on web
+      await prefs.setString(hardReloadKey, newSessionId);
+      return false; // Only first load detected here, actual hard reload caught by page reload
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Force full sync by resetting the sync cursor to 0.
+  /// Called on first load or hard reload to ensure complete data sync.
+  Future<void> _forceFullSync(String user) async {
+    print('💾 [ForceFullSync] Resetting sync cursor to 0 for full sync');
+    _syncCursorMs = 0;
+    await _clearSyncCursor(user);
   }
 
   /// Advance the high-water mark when a newer message is applied.

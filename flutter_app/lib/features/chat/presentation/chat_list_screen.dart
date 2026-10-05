@@ -4,6 +4,7 @@
 library;
 
 import 'dart:async';
+import 'dart:developer' as developer;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -101,6 +102,39 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
     final chatItems = state.chatListItems;
     final isRetrieving = _isBooting || state.isLoading || state.isInitialSyncing;
 
+    // Console logging for debugging
+    developer.log(
+      'ChatListScreen Build State',
+      name: 'ChatListScreen',
+      error: {
+        'chatItems_count': chatItems.length,
+        'chatItems': chatItems.map((item) => {
+          'id': item.id,
+          'title': item.title,
+          'subtitle': item.subtitle,
+          'lastTimestamp': item.lastTimestamp,
+          'unread': item.unread,
+          'isGroup': item.isGroup,
+          'pinned': item.pinned,
+        }).toList(),
+        'isRetrieving': isRetrieving,
+        'isBooting': _isBooting,
+        'isLoading': state.isLoading,
+        'isInitialSyncing': state.isInitialSyncing,
+      }.toString(),
+    );
+
+    // Also use print for browser console visibility
+    print('===== ChatListScreen Debug Info =====');
+    print('chatItems count: ${chatItems.length}');
+    print('isRetrieving: $isRetrieving (isBooting: $_isBooting, isLoading: ${state.isLoading}, isInitialSyncing: ${state.isInitialSyncing})');
+    print('chatItems:');
+    for (var i = 0; i < chatItems.length; i++) {
+      final item = chatItems[i];
+      print('  [$i] id="${item.id}", title="${item.title}", unread=${item.unread}, lastTimestamp=${item.lastTimestamp}');
+    }
+    print('=====================================');
+
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 400),
       child: isRetrieving && chatItems.isEmpty
@@ -123,26 +157,31 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                             final item = chatItems[index];
                             final contact =
                                 item.isGroup ? null : _findContact(state, item.id);
-                            final currentUser = ref.watch(currentUserProvider);
-                            final normalizedId = item.id.trim().toLowerCase();
-                            final lastMessage = state.messagesByChat[item.id]?.first;
-                            final isSelfChat = !item.isGroup &&
-                                currentUser != null &&
-                                (normalizedId == currentUser.trim().toLowerCase() ||
-                                    lastMessage?.sender.trim().toLowerCase() ==
-                                        currentUser.trim().toLowerCase());
-                            final title = !item.isGroup && isSelfChat
-                                ? 'אני'
-                                : (contact?.displayName.trim().isNotEmpty ?? false)
-                                    ? contact!.displayName.trim()
-                                    : ref
-                                        .read(chatStoreProvider.notifier)
-                                        .getDisplayName(item.id)
-                                        .trim();
-                            final phone = (item.phone ?? contact?.phone ?? '').trim();
+                            
+                            // Determine the display title
+                            String title;
+                            String phone;
+                            
+                            if (item.isGroup) {
+                              // For groups: show group name from item.title
+                              title = item.title.trim().isNotEmpty ? item.title.trim() : 'قروب';
+                              phone = '';
+                            } else {
+                              // For individual chats: try contact name first, then getDisplayName, then fallback to title
+                              if (contact?.displayName.trim().isNotEmpty ?? false) {
+                                title = contact!.displayName.trim();
+                              } else {
+                                final displayName = ref
+                                    .read(chatStoreProvider.notifier)
+                                    .getDisplayName(item.id)
+                                    .trim();
+                                title = displayName.isNotEmpty ? displayName : item.title.trim();
+                              }
+                              phone = (item.phone ?? contact?.phone ?? '').trim();
+                            }
                             return _ChatListTile(
                               item: item,
-                              title: title.isNotEmpty ? title : item.title,
+                              title: title,
                               isSelected: widget.selectedChatId == item.id,
                               onTap: () => _openChat(context, ref, item),
                               onCall: phone.isNotEmpty
@@ -847,7 +886,18 @@ class _GroupListTile extends StatelessWidget {
     if (message.deletedAt != null) return '🗑️ הודעה נמחקה';
     if (message.imageUrl != null) return '📷 תמונה';
     if (message.fileUrl != null) return '📎 קובץ';
-    final body = message.body.trim();
+    
+    // Handle null or empty body with type-based fallbacks
+    final body = message.body?.trim();
+    if (body == null || body.isEmpty) {
+      if (message.recordType == 'reaction') {
+        return '👍 Reacted to a message';
+      } else if (message.recordType == 'delete-action') {
+        return '🚫 This message was deleted';
+      }
+      return '...';
+    }
+    
     return body.length > 30 ? '${body.substring(0, 30)}...' : body;
   }
 

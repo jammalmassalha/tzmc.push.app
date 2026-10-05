@@ -8,7 +8,7 @@ library;
 import 'dart:convert';
 
 import 'package:drift/drift.dart';
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/chat_models.dart';
@@ -37,10 +37,13 @@ const int restoreMessageLimit = 5000;
 /// Extracts a sender name from a legacy group-message body of the form
 /// "SenderName: message text".  Returns null when the body does not match
 /// (including URL bodies) or when the candidate is suspicious.
-({String senderName, String strippedBody})? _extractGroupSenderFromBodyPrefix(String body) {
+({String senderName, String strippedBody})? _extractGroupSenderFromBodyPrefix(
+  String body,
+) {
   final trimmed = body.trim();
   if (trimmed.isEmpty) return null;
-  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return null;
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://'))
+    return null;
   final colonIdx = trimmed.indexOf(':');
   if (colonIdx <= 0 || colonIdx > _kMaxGroupSenderPrefixLength) return null;
   final senderName = trimmed.substring(0, colonIdx).trim();
@@ -114,9 +117,12 @@ class Messages extends Table {
   TextColumn get forwardedFrom => text().nullable()();
   TextColumn get forwardedFromName => text().nullable()();
   IntColumn get userReceivedTime => integer().nullable()();
-  IntColumn get sentDateTime => integer().nullable()(); // epoch ms, sender dispatch time
-  IntColumn get receiveDateTime => integer().nullable()(); // epoch ms, server ingest time
-  IntColumn get readDateTime => integer().nullable()(); // epoch ms, recipient read time
+  IntColumn get sentDateTime =>
+      integer().nullable()(); // epoch ms, sender dispatch time
+  IntColumn get receiveDateTime =>
+      integer().nullable()(); // epoch ms, server ingest time
+  IntColumn get readDateTime =>
+      integer().nullable()(); // epoch ms, recipient read time
 
   @override
   Set<Column> get primaryKey => {id};
@@ -138,7 +144,8 @@ class OutboxItems extends Table {
   TextColumn get id => text()();
   TextColumn get kind => text()(); // 'direct', 'group', 'group-update'
   TextColumn get payload => text()(); // JSON
-  TextColumn get recipients => text().nullable()(); // JSON array for group messages
+  TextColumn get recipients =>
+      text().nullable()(); // JSON array for group messages
   TextColumn get messageId => text().nullable()();
   IntColumn get attempts => integer().withDefault(const Constant(0))();
   IntColumn get retryCount => integer().withDefault(const Constant(0))();
@@ -208,7 +215,9 @@ class ChatDatabase extends _$ChatDatabase {
   }
 
   Future<Contact?> getContact(String username) async {
-    final row = await (select(contacts)..where((t) => t.username.equals(username))).getSingleOrNull();
+    final row = await (select(
+      contacts,
+    )..where((t) => t.username.equals(username))).getSingleOrNull();
     return row != null ? _contactFromRow(row) : null;
   }
 
@@ -267,7 +276,9 @@ class ChatDatabase extends _$ChatDatabase {
   }
 
   Future<ChatGroup?> getGroup(String id) async {
-    final row = await (select(groups)..where((t) => t.id.equals(id))).getSingleOrNull();
+    final row = await (select(
+      groups,
+    )..where((t) => t.id.equals(id))).getSingleOrNull();
     return row != null ? _groupFromRow(row) : null;
   }
 
@@ -294,7 +305,9 @@ class ChatDatabase extends _$ChatDatabase {
             id: group.id,
             name: group.name,
             members: jsonEncode(group.members),
-            admins: Value(group.admins != null ? jsonEncode(group.admins) : null),
+            admins: Value(
+              group.admins != null ? jsonEncode(group.admins) : null,
+            ),
             createdBy: group.createdBy,
             updatedAt: group.updatedAt,
             type: group.type == GroupType.community ? 'community' : 'group',
@@ -310,7 +323,9 @@ class ChatDatabase extends _$ChatDatabase {
       id: row.id,
       name: row.name,
       members: (jsonDecode(row.members) as List).cast<String>(),
-      admins: row.admins != null ? (jsonDecode(row.admins!) as List).cast<String>() : null,
+      admins: row.admins != null
+          ? (jsonDecode(row.admins!) as List).cast<String>()
+          : null,
       createdBy: row.createdBy,
       updatedAt: row.updatedAt,
       type: row.type == 'community' ? GroupType.community : GroupType.group,
@@ -331,27 +346,38 @@ class ChatDatabase extends _$ChatDatabase {
   /// Persistence is non-destructive, so the table keeps history beyond the
   /// per-chat in-memory cap.  Restoring uses this bounded query to keep cold
   /// start cost predictable while the full history stays available on disk.
-  Future<List<ChatMessage>> getRecentMessages({int limit = restoreMessageLimit}) async {
+  Future<List<ChatMessage>> getRecentMessages({
+    int limit = restoreMessageLimit,
+  }) async {
     final query = select(messages)
-      ..orderBy([(t) => OrderingTerm.desc(coalesce([t.sentDateTime, t.timestamp]))])
+      ..orderBy([
+        (t) => OrderingTerm.desc(coalesce([t.sentDateTime, t.timestamp])),
+      ])
       ..limit(limit);
     final rows = await query.get();
     return rows.map(_messageFromRow).toList();
   }
 
-  Future<List<ChatMessage>> getMessagesByChatId(String chatId, {int limit = 100}) async {
+  Future<List<ChatMessage>> getMessagesByChatId(
+    String chatId, {
+    int limit = 100,
+  }) async {
     final query = select(messages)
       ..where((t) => t.chatId.equals(chatId))
       // Strict chronological key: sentDateTime (sender dispatch time) with a
       // fallback to the legacy timestamp for rows that pre-date the column.
-      ..orderBy([(t) => OrderingTerm.desc(coalesce([t.sentDateTime, t.timestamp]))])
+      ..orderBy([
+        (t) => OrderingTerm.desc(coalesce([t.sentDateTime, t.timestamp])),
+      ])
       ..limit(limit);
     final rows = await query.get();
     return rows.map(_messageFromRow).toList();
   }
 
   Future<ChatMessage?> getMessage(String id) async {
-    final row = await (select(messages)..where((t) => t.id.equals(id))).getSingleOrNull();
+    final row = await (select(
+      messages,
+    )..where((t) => t.id.equals(id))).getSingleOrNull();
     return row != null ? _messageFromRow(row) : null;
   }
 
@@ -369,6 +395,20 @@ class ChatDatabase extends _$ChatDatabase {
   Future<bool> hasMessages() async {
     final query = select(messages)..limit(1);
     return (await query.get()).isNotEmpty;
+  }
+
+  /// Get older messages (for pagination) before a given timestamp for a specific chat.
+  /// Returns up to [limit] messages (default 50) ordered by newest first.
+  Future<List<ChatMessage>> getOlderMessages({
+    required String chatId,
+    required int beforeTimestamp,
+    int limit = 50,
+  }) async {
+    return fetchOlderMessages(
+      chatId,
+      beforeTimestamp: beforeTimestamp,
+      limit: limit,
+    );
   }
 
   /// Emits whenever local chat data changes.
@@ -390,7 +430,9 @@ class ChatDatabase extends _$ChatDatabase {
 
   /// Emits the current message rows immediately and after every message write.
   Stream<List<ChatMessage>> watchAllChats() {
-    return select(messages).watch().map((rows) => rows.map(_messageFromRow).toList());
+    return select(messages)
+        .watch()
+        .map((rows) => rows.map(_messageFromRow).toList());
   }
 
   /// Watches the newest messages for one chat. The database remains the source
@@ -441,9 +483,12 @@ class ChatDatabase extends _$ChatDatabase {
         if (raw is! Map) continue;
         final map = Map<String, dynamic>.from(raw);
         final id = '${map['id'] ?? map['messageId'] ?? ''}'.trim();
-        final chatId = '${map['chatId'] ?? map['groupId'] ?? map['toUser'] ?? ''}'.trim();
+        final chatId =
+            '${map['chatId'] ?? map['groupId'] ?? map['toUser'] ?? ''}'.trim();
         if (id.isEmpty || chatId.isEmpty) continue;
-        final timestamp = _syncTimestamp(map['timestamp'] ?? map['sentDateTime']);
+        final timestamp = _syncTimestamp(
+          map['timestamp'] ?? map['sentDateTime'],
+        );
         final messageMap = <String, dynamic>{
           ...map,
           'id': id,
@@ -454,18 +499,23 @@ class ChatDatabase extends _$ChatDatabase {
           'timestamp': timestamp,
           if (map['pts'] != null) 'pts': _syncInt(map['pts']),
           'direction': map['direction'] ?? 'incoming',
-          'deliveryStatus': map['deliveryStatus'] ?? map['status'] ?? 'delivered',
+          'deliveryStatus':
+              map['deliveryStatus'] ?? map['status'] ?? 'delivered',
         };
         final message = ChatMessage.fromJson(messageMap);
-        await into(this.messages).insertOnConflictUpdate(_messageToCompanion(message));
+        await into(this.messages)
+            .insertOnConflictUpdate(_messageToCompanion(message));
       }
     });
   }
 
-  static int _syncInt(dynamic value) => value is num ? value.toInt() : int.tryParse('$value') ?? 0;
+  static int _syncInt(dynamic value) =>
+      value is num ? value.toInt() : int.tryParse('$value') ?? 0;
   static int _syncTimestamp(dynamic value) {
     if (value is num) return value.toInt();
-    return DateTime.tryParse('$value')?.millisecondsSinceEpoch ?? int.tryParse('$value') ?? 0;
+    return DateTime.tryParse('$value')?.millisecondsSinceEpoch ??
+        int.tryParse('$value') ??
+        0;
   }
 
   Future<int> getHighestPts(String chatId) async {
@@ -483,7 +533,11 @@ class ChatDatabase extends _$ChatDatabase {
   Future<void> upsertMessages(List<ChatMessage> messageList) async {
     await batch((batch) {
       for (final message in messageList) {
-        batch.insert(messages, _messageToCompanion(message), mode: InsertMode.insertOrReplace);
+        batch.insert(
+          messages,
+          _messageToCompanion(message),
+          mode: InsertMode.insertOrReplace,
+        );
       }
     });
   }
@@ -558,21 +612,29 @@ class ChatDatabase extends _$ChatDatabase {
       sender: message.sender,
       senderDisplayName: Value(message.senderDisplayName),
       recordType: Value(message.recordType),
-      body: message.body,
+      body: message.body ?? '',
       imageUrl: Value(message.imageUrl),
       thumbnailUrl: Value(message.thumbnailUrl),
       fileUrl: Value(message.fileUrl),
       localFilePath: Value(message.localFilePath),
-      direction: message.direction == MessageDirection.incoming ? 'incoming' : 'outgoing',
+      direction: message.direction == MessageDirection.incoming
+          ? 'incoming'
+          : 'outgoing',
       timestamp: message.timestamp,
       deliveryStatus: message.deliveryStatus.name,
       groupId: Value(message.groupId),
       groupName: Value(message.groupName),
       groupType: Value(message.groupType?.name),
-      reactions: Value(message.reactions != null ? jsonEncode(message.reactions!.map((r) => r.toJson()).toList()) : null),
+      reactions: Value(
+        message.reactions != null
+            ? jsonEncode(message.reactions!.map((r) => r.toJson()).toList())
+            : null,
+      ),
       editedAt: Value(message.editedAt),
       deletedAt: Value(message.deletedAt),
-      replyTo: Value(message.replyTo != null ? jsonEncode(message.replyTo!.toJson()) : null),
+      replyTo: Value(
+        message.replyTo != null ? jsonEncode(message.replyTo!.toJson()) : null,
+      ),
       forwarded: Value(message.forwarded),
       forwardedFrom: Value(message.forwardedFrom),
       forwardedFromName: Value(message.forwardedFromName),
@@ -613,7 +675,9 @@ class ChatDatabase extends _$ChatDatabase {
       thumbnailUrl: row.thumbnailUrl,
       fileUrl: row.fileUrl,
       localFilePath: row.localFilePath,
-      direction: row.direction == 'incoming' ? MessageDirection.incoming : MessageDirection.outgoing,
+      direction: row.direction == 'incoming'
+          ? MessageDirection.incoming
+          : MessageDirection.outgoing,
       timestamp: row.timestamp,
       deliveryStatus: DeliveryStatus.values.firstWhere(
         (e) => e.name == row.deliveryStatus,
@@ -622,14 +686,23 @@ class ChatDatabase extends _$ChatDatabase {
       groupId: row.groupId,
       groupName: row.groupName,
       groupType: row.groupType != null
-          ? GroupType.values.firstWhere((e) => e.name == row.groupType, orElse: () => GroupType.group)
+          ? GroupType.values.firstWhere(
+              (e) => e.name == row.groupType,
+              orElse: () => GroupType.group,
+            )
           : null,
       reactions: row.reactions != null
-          ? (jsonDecode(row.reactions!) as List).map((r) => MessageReaction.fromJson(r as Map<String, dynamic>)).toList()
+          ? (jsonDecode(row.reactions!) as List)
+                .map((r) => MessageReaction.fromJson(r as Map<String, dynamic>))
+                .toList()
           : null,
       editedAt: row.editedAt,
       deletedAt: row.deletedAt,
-      replyTo: row.replyTo != null ? MessageReference.fromJson(jsonDecode(row.replyTo!) as Map<String, dynamic>) : null,
+      replyTo: row.replyTo != null
+          ? MessageReference.fromJson(
+              jsonDecode(row.replyTo!) as Map<String, dynamic>,
+            )
+          : null,
       forwarded: row.forwarded,
       forwardedFrom: row.forwardedFrom,
       forwardedFromName: row.forwardedFromName,
@@ -638,7 +711,10 @@ class ChatDatabase extends _$ChatDatabase {
           ? DateTime.fromMillisecondsSinceEpoch(row.sentDateTime!, isUtc: true)
           : null,
       receiveDateTime: row.receiveDateTime != null
-          ? DateTime.fromMillisecondsSinceEpoch(row.receiveDateTime!, isUtc: true)
+          ? DateTime.fromMillisecondsSinceEpoch(
+              row.receiveDateTime!,
+              isUtc: true,
+            )
           : null,
       readDateTime: row.readDateTime != null
           ? DateTime.fromMillisecondsSinceEpoch(row.readDateTime!, isUtc: true)
@@ -656,7 +732,9 @@ class ChatDatabase extends _$ChatDatabase {
   }
 
   Future<int> getUnreadCount(String chatId) async {
-    final row = await (select(unreadCounts)..where((t) => t.chatId.equals(chatId))).getSingleOrNull();
+    final row = await (select(
+      unreadCounts,
+    )..where((t) => t.chatId.equals(chatId))).getSingleOrNull();
     return row?.count ?? 0;
   }
 
@@ -724,6 +802,11 @@ class ChatDatabase extends _$ChatDatabase {
   ///
   /// The whole snapshot is applied inside a single [batch] so it is atomic.
   Future<void> persistState(PersistedChatState state) async {
+    debugPrint('🔵 [Drift] Starting persistState batch insert');
+    debugPrint('🔵 [Drift] Messages to insert: ${state.messages.length}');
+    debugPrint('🔵 [Drift] Contacts to insert: ${state.contacts.length}');
+    debugPrint('🔵 [Drift] Groups to insert: ${state.groups.length}');
+
     await batch((batch) {
       // Contacts
       final contactKeys = state.contacts.map((c) => c.username).toList();
@@ -758,7 +841,9 @@ class ChatDatabase extends _$ChatDatabase {
             id: group.id,
             name: group.name,
             members: jsonEncode(group.members),
-            admins: Value(group.admins != null ? jsonEncode(group.admins) : null),
+            admins: Value(
+              group.admins != null ? jsonEncode(group.admins) : null,
+            ),
             createdBy: group.createdBy,
             updatedAt: group.updatedAt,
             type: group.type == GroupType.community ? 'community' : 'group',
@@ -784,6 +869,11 @@ class ChatDatabase extends _$ChatDatabase {
       }
 
       // Messages — upsert only, never delete (see doc comment above).
+      if (state.messages.isNotEmpty) {
+        debugPrint(
+          '🔵 [Drift] Inserting ${state.messages.length} messages into database',
+        );
+      }
       for (final message in state.messages) {
         batch.insert(
           messages,
@@ -792,6 +882,8 @@ class ChatDatabase extends _$ChatDatabase {
         );
       }
     });
+
+    debugPrint('✅ [Drift] persistState batch insert completed');
   }
 
   /// Clear all data
