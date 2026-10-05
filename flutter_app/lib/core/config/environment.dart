@@ -1,4 +1,20 @@
 /// Environment-specific configuration
+///
+/// **CORS Configuration Note:**
+/// The [baseUrl] must be the same origin as where the Flutter web app is deployed
+/// for credentialed requests (with cookies) to work properly.
+///
+/// Examples:
+/// - If deployed at https://www.tzmc.co.il/flutterapp/
+///   → baseUrl should be https://www.tzmc.co.il/notify
+///
+/// - If deployed at https://app.example.com/
+///   → baseUrl should be https://www.tzmc.co.il/notify (backend origin)
+///   → Backend ALLOWED_HOSTS must include app.example.com
+///
+/// Same-origin deployments (preferred) don't require CORS headers because
+/// browsers allow same-origin requests automatically.
+/// Cross-origin deployments require proper CORS headers and allowed hosts configuration.
 library;
 
 enum Environment {

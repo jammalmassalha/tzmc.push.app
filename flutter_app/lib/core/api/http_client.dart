@@ -1,6 +1,19 @@
 /// HTTP client wrapper with retry, timeout, and interceptor support.
 ///
 /// This mirrors the fetchWithRetry behavior from the Angular frontend's ChatApiService.
+///
+/// **CORS & Credentials Configuration:**
+/// This HTTP client is configured to send credentials (cookies) with all requests.
+/// For this to work with cross-origin requests, the backend must:
+/// 1. Include the request origin in ALLOWED_HOSTS
+/// 2. Set proper CORS headers on all responses:
+///    - Access-Control-Allow-Origin: (the request origin)
+///    - Access-Control-Allow-Credentials: true
+///    - Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS
+///    - Access-Control-Allow-Headers: Content-Type, Authorization, X-CSRF-Token, etc.
+/// 3. Handle OPTIONS preflight requests before any route handlers
+///
+/// See CORS_DEPLOYMENT_GUIDE.md for detailed deployment instructions.
 library;
 
 import 'dart:async';

@@ -332,6 +332,88 @@ app.use((req, res, next) => {
     next();
 });
 
+// --- CORS CONFIGURATION (MUST RUN BEFORE STATIC/API MIDDLEWARE) ---
+// When the browser sends credentialed requests (withCredentials/credentials:'include'),
+// the response must echo a specific origin – the wildcard '*' is not allowed. We
+// reflect the request origin if it is allowed by the host allowlist (which already
+// covers tzmc.co.il, www.tzmc.co.il, *.tzmc.co.il, localhost, etc.).
+const corsOptions = {
+    origin: (origin, callback) => {
+        if (!origin) {
+            // Same-origin / non-browser requests (curl, server-to-server) – allow.
+            return callback(null, true);
+        }
+        let originHost = '';
+        try {
+            originHost = new URL(origin).hostname;
+        } catch (_) {
+            originHost = '';
+        }
+        if (!originHost) {
+            return callback(null, false);
+        }
+        if (isAllowedHost(originHost)) {
+            // Reflect the exact origin so credentialed requests pass the preflight.
+            return callback(null, true);
+        }
+        return callback(null, false);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'Cache-Control',
+        'Pragma',
+        'Last-Event-ID',
+        'X-Requested-With',
+        'X-CSRF-Token'
+    ],
+    // Explicitly set the exposed headers so the client can read them
+    exposedHeaders: [
+        'Content-Length',
+        'X-CSRF-Token',
+        'Retry-After',
+        'X-RateLimit-Limit',
+        'X-RateLimit-Remaining',
+        'X-RateLimit-Reset'
+    ]
+};
+
+// Apply CORS middleware BEFORE any routes or static middleware
+// so that CORS headers are set on all responses
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
+
+// Additional middleware to ensure CORS credentials header is always set
+// for credentialed requests (when origin is allowed)
+app.use((req, res, next) => {
+    const origin = req.headers.origin || '';
+    const referer = req.headers.referer || '';
+    
+    // Only set explicit credentials header if we're dealing with a request that
+    // might have credentials (indicated by referer or origin header)
+    if (origin || referer) {
+        // Check if we already have CORS headers from the cors middleware
+        if (!res.getHeader('Access-Control-Allow-Credentials')) {
+            // The cors middleware should have set this, but ensure it's present
+            // for cross-origin credentialed requests
+            let originHost = '';
+            try {
+                originHost = new URL(origin).hostname;
+            } catch (_) {
+                originHost = '';
+            }
+            
+            // Only if the origin is allowed
+            if (originHost && isAllowedHost(originHost)) {
+                res.setHeader('Access-Control-Allow-Credentials', 'true');
+            }
+        }
+    }
+    next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 // API routes also use the /notify prefix. Never redirect missing API paths from
 // the static middleware; a proxy can otherwise send the request back here and
@@ -379,49 +461,6 @@ app.use(['/uploads', '/notify/uploads'], (req, res, next) => {
 }, authenticatedUploadsStaticMiddleware, (_req, res) => {
     return res.status(404).json({ error: 'File not found' });
 });
-
-
-// --- CORS CONFIGURATION ---
-// When the browser sends credentialed requests (withCredentials/credentials:'include'),
-// the response must echo a specific origin – the wildcard '*' is not allowed. We
-// reflect the request origin if it is allowed by the host allowlist (which already
-// covers tzmc.co.il, www.tzmc.co.il, *.tzmc.co.il, localhost, etc.).
-const corsOptions = {
-    origin: (origin, callback) => {
-        if (!origin) {
-            // Same-origin / non-browser requests (curl, server-to-server) – allow.
-            return callback(null, true);
-        }
-        let originHost = '';
-        try {
-            originHost = new URL(origin).hostname;
-        } catch (_) {
-            originHost = '';
-        }
-        if (!originHost) {
-            return callback(null, false);
-        }
-        if (isAllowedHost(originHost)) {
-            // Reflect the exact origin so credentialed requests pass the preflight.
-            return callback(null, true);
-        }
-        return callback(null, false);
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-        'Content-Type',
-        'Authorization',
-        'Cache-Control',
-        'Pragma',
-        'Last-Event-ID',
-        'X-Requested-With',
-        'X-CSRF-Token'
-    ]
-};
-app.use(cors(corsOptions));
-
-app.options(/.*/, cors(corsOptions));
 
 // [FIX] INCREASE LIMIT TO 50MB (Default is only 100kb)
 app.use(bodyParser.json({ limit: '350mb' }));
