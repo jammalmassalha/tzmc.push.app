@@ -189,6 +189,20 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       debugPrint('📱🔄 [MessageScreen] Loading chat history for ${widget.chatId}');
       try {
+        // Check if messages are already in the store (preload may have completed)
+        final existingMessages =
+            ref.read(chatStoreProvider).messagesByChat[widget.chatId];
+        if (existingMessages != null && existingMessages.isNotEmpty) {
+          debugPrint(
+            '✅📱 [MessageScreen] Messages already loaded from preload (${existingMessages.length} messages)',
+          );
+          if (mounted) {
+            setState(() => _isLoadingInitialMessages = false);
+          }
+          return;
+        }
+
+        // If no messages yet, trigger load (preload may be in-flight or failed)
         await ref.read(chatStoreProvider.notifier).loadChatHistory(widget.chatId);
         if (mounted) {
           debugPrint('✅📱 [MessageScreen] Chat history loaded successfully');

@@ -1402,8 +1402,60 @@ class PushNotificationService {
       _ref
           .read(chatStoreProvider.notifier)
           .applyIncomingFromPushPayload(dataMap);
+      
+      // Start preloading message history in the background so it's ready
+      // when the user navigates to the chat. This eliminates the 3-5 second
+      // delay where the chat appears empty.
+      _preloadMessagesForChat(message);
     } catch (e) {
       debugPrint('[PushNotificationService] Error applying push payload: $e');
+    }
+  }
+
+  /// Start loading message history for a chat in the background.
+  /// This method is fire-and-forget (unawaited) so the notification can
+  /// navigate immediately while messages load asynchronously.
+  /// By the time MessageScreen renders, messages should already be loading.
+  void _preloadMessagesForChat(RemoteMessage message) {
+    final chatId = _chatIdFromMessage(message);
+    if (chatId == null || chatId.isEmpty) return;
+
+    debugPrint(
+      '[PUSH-PRELOAD] 🔄 Starting background message preload for chat: $chatId',
+    );
+
+    unawaited(
+      _preloadMessagesForChatAsync(chatId),
+    );
+  }
+
+  /// Async handler for background message preloading.
+  /// If the chat store is not yet ready, this will queue the messages and
+  /// apply them once the store initializes. MessageScreen acts as a fallback
+  /// if preloading hasn't finished by the time it's rendered.
+  Future<void> _preloadMessagesForChatAsync(String chatId) async {
+    try {
+      final normalizedChatId = chatId.trim().toLowerCase();
+      if (normalizedChatId.isEmpty) return;
+
+      debugPrint(
+        '[PUSH-PRELOAD] ⏳ Preloading messages for chat: $normalizedChatId',
+      );
+
+      // Load the full message history for this specific chat.
+      // This runs in the background while the UI navigates to the chat.
+      await _ref
+          .read(chatStoreProvider.notifier)
+          .loadChatHistory(normalizedChatId);
+
+      debugPrint(
+        '[PUSH-PRELOAD] ✅ Preload completed for chat: $normalizedChatId',
+      );
+    } catch (e) {
+      debugPrint(
+        '[PUSH-PRELOAD] ❌ Error preloading messages for chat $chatId: $e',
+      );
+      // Silently fail — MessageScreen will load messages as fallback.
     }
   }
 
