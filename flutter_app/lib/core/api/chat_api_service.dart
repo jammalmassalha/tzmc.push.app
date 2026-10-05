@@ -224,9 +224,10 @@ class ChatApiService {
       throw AuthException('מספר טלפון לא תקין');
     }
 
-    // Retry logic with exponential backoff for transient failures
-    int maxRetries = 2; // 2 retries = 3 total attempts
-    Duration delayBetweenRetries = const Duration(seconds: 2);
+    // Retry logic with exponential backoff for transient failures only
+    // Note: We reduce retries here because the server is rate-limiting
+    int maxRetries = 1; // 1 retry = 2 total attempts (reduced from 2)
+    Duration delayBetweenRetries = const Duration(seconds: 3); // Increased from 2s
     
     for (int attempt = 1; attempt <= maxRetries + 1; attempt++) {
       try {
@@ -252,18 +253,30 @@ class ChatApiService {
         if (!response.isSuccessful) {
           final body = _coerceJsonMap(response.data);
           final message = _extractErrorMessage(body, '');
-          print('❌ [OTP] Request failed - Status: ${response.statusCode}, Message: $message, Body: $body');
+          print('❌ [OTP] Request failed - Status: ${response.statusCode}, Message: $message');
 
+          // Handle specific error codes
           if (response.statusCode == 400) {
             throw AuthException('מספר טלפון לא תקין');
           } else if (response.statusCode == 403) {
             throw AuthException('המשתמש אינו מורשה');
           } else if (response.statusCode == 429) {
+            // Rate limit - respect Retry-After header if present
             final retryAfter = _parseRetryAfterSeconds(body);
             final retryMessage = retryAfter == null
                 ? 'יותר מדי ניסיונות. נסה שוב מאוחר יותר'
                 : 'יותר מדי ניסיונות. נסה שוב בעוד $retryAfter שניות';
             throw RateLimitException(retryMessage, retryAfter);
+          } else if (response.statusCode == 503) {
+            // Service Unavailable - server is overloaded
+            // Don't retry - inform user to try later
+            print('🔴 [OTP] Server overloaded (503) - not retrying');
+            throw AuthException('השרת עומס כרגע. בחר שוב בעוד כמה רגעים');
+          } else if (response.statusCode! >= 500) {
+            // Other server errors (500, 502, 504, etc.)
+            // Don't retry these - they indicate server issues
+            print('🔴 [OTP] Server error ${response.statusCode} - not retrying');
+            throw AuthException('בעיה בשרת. אנא נסה שוב מאוחר יותר');
           } else if (message.isNotEmpty) {
             throw AuthException(message);
           }
@@ -275,7 +288,7 @@ class ChatApiService {
         print('✅ [OTP] SMS code requested successfully, expires in: $expiresInSeconds seconds');
         return expiresInSeconds > 0 ? expiresInSeconds : 300;
       } on TimeoutException catch (e) {
-        print('⏱️  [OTP] Request timeout on attempt $attempt/${ maxRetries + 1}: $e');
+        print('⏱️  [OTP] Request timeout on attempt $attempt/${maxRetries + 1}: $e');
         if (attempt <= maxRetries) {
           print('⏱️  [OTP] Retrying after ${delayBetweenRetries.inSeconds}s...');
           await Future.delayed(delayBetweenRetries);
@@ -284,8 +297,16 @@ class ChatApiService {
         }
         throw AuthException('השרת לא הגיב בזמן. נסה שוב');
       } on DioException catch (e) {
-        print('🌐 [OTP] Dio error on attempt $attempt/${maxRetries + 1}: ${e.type}, Status: ${e.response?.statusCode}, Message: ${e.message}');
-        // Retry on network errors, but not on application errors
+        print('🌐 [OTP] Dio error on attempt $attempt/${maxRetries + 1}: ${e.type}, Status: ${e.response?.statusCode}');
+        
+        // Don't retry on response errors (4xx, 5xx)
+        if (e.response != null && e.response!.statusCode! >= 400) {
+          final message = _extractErrorMessage(e.response?.data, '');
+          print('🔴 [OTP] HTTP ${e.response!.statusCode} - not retrying');
+          throw AuthException(message.isNotEmpty ? message : 'שליחת קוד אימות נכשלה');
+        }
+        
+        // Only retry on network errors (timeouts, connection failures)
         if (attempt <= maxRetries && 
             (e.type == DioExceptionType.connectionTimeout || 
              e.type == DioExceptionType.receiveTimeout ||
@@ -296,17 +317,21 @@ class ChatApiService {
           delayBetweenRetries *= 2; // Exponential backoff
           continue;
         }
+        
         final message = _extractErrorMessage(e.response?.data, '');
         throw AuthException(message.isNotEmpty ? message : 'שליחת קוד אימות נכשלה');
       } catch (error, stackTrace) {
         print('❌ [OTP] Error on attempt $attempt/${maxRetries + 1}: $error');
-        if (attempt <= maxRetries) {
+        if (attempt <= maxRetries && error is! AuthException && error is! RateLimitException) {
           print('❌ [OTP] Retrying after ${delayBetweenRetries.inSeconds}s...');
           await Future.delayed(delayBetweenRetries);
           delayBetweenRetries *= 2; // Exponential backoff
           continue;
         }
         debugPrint('requestSessionCode unexpected error: $error\n$stackTrace');
+        if (error is AuthException || error is RateLimitException) {
+          rethrow;
+        }
         Error.throwWithStackTrace(AuthException('שליחת קוד אימות נכשלה'), stackTrace);
       }
     }
