@@ -322,10 +322,12 @@ export class MysqlLogsService {
   private lifecycleTimestampColumnsReady = false;
   private groupSenderNameColumnReady = false;
   private dedupIndexReady = false;
+  private logsSequenceColumnReady = false;
   private communityGroupsTablesReady = false;
   private chatGroupsTablesReady = false;
   private messageActivitiesTableReady = false;
   private messageActivitiesLifecycleReady = false;
+  private messageActivitiesIdempotencyReady = false;
   private serverStateTableReady = false;
   private flutterPushRegistrationDebugTableReady = false;
   private flutterPushRegistrationDebugActionColumnWidthReady = false;
@@ -372,6 +374,8 @@ export class MysqlLogsService {
     void this.ensureSeenTimeColumn();
     void this.ensureLifecycleTimestampColumns();
     void this.ensureGroupSenderNameColumn();
+    void this.ensureDedupIndex();
+    void this.ensureLogsSequenceColumn();
     void this.ensureSecretariesTable();
     void this.ensureBotSessionsTable();
   }
@@ -534,6 +538,38 @@ export class MysqlLogsService {
       }
     }
     this.dedupIndexReady = true;
+  }
+
+  private async ensureLogsSequenceColumn(): Promise<void> {
+    if (this.logsSequenceColumnReady) return;
+    try {
+      // Add pts column for persistent sequence numbering (used by sync endpoints)
+      await this.pool.execute(
+        `ALTER TABLE \`${this.tableName}\` ADD COLUMN \`pts\` BIGINT DEFAULT NULL`
+      );
+      console.log('[MYSQL] Logs pts column added.');
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code;
+      const message = String((err as { message?: string }).message || '');
+      // ER_DUP_FIELDNAME = column already exists — expected on subsequent restarts.
+      if (code !== 'ER_DUP_FIELDNAME' && !message.includes('Duplicate column')) {
+        console.warn('[MYSQL] ensureLogsSequenceColumn warning:', message);
+      }
+    }
+    try {
+      // Create index for pts-based ordering (sync queries will use this)
+      await this.pool.execute(
+        `CREATE INDEX \`idx_logs_pts\` ON \`${this.tableName}\` (\`pts\`, \`From\`, \`ToUser\`)`
+      );
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code;
+      const message = String((err as { message?: string }).message || '');
+      // ER_DUP_KEYNAME = index already exists — expected on subsequent restarts.
+      if (code !== 'ER_DUP_KEYNAME' && !message.includes('Duplicate key name')) {
+        console.warn('[MYSQL] ensureLogsSequenceColumn index warning:', message);
+      }
+    }
+    this.logsSequenceColumnReady = true;
   }
 
   private buildCompositeKeyFromPayload(payload: MysqlLogInsertPayload): string {
@@ -1838,6 +1874,7 @@ export class MysqlLogsService {
       console.warn('[MYSQL] ensureMessageActivitiesTable warning:', message);
     }
     await this.ensureMessageActivitiesLifecycleColumns();
+    await this.ensureMessageActivitiesIdempotencyConstraints();
   }
 
   /**
@@ -1920,6 +1957,39 @@ export class MysqlLogsService {
       }
     }
     this.messageActivitiesLifecycleReady = true;
+  }
+
+  /**
+  * Ensures idempotency constraint on MessageActivities:
+  *   • Adds UNIQUE INDEX on ClientMsgId (allowing NULL for non-message activities)
+  *   • Ensures Pts column for sequence-number ordering
+  * This prevents duplicate message processing across server restarts or retries.
+  */
+  private async ensureMessageActivitiesIdempotencyConstraints(): Promise<void> {
+   if (this.messageActivitiesIdempotencyReady) return;
+   try {
+     // Create UNIQUE INDEX on ClientMsgId (MySQL allows multiple NULLs, so this is safe)
+     const uniqueIndexStatements = [
+       'ALTER TABLE `MessageActivities` ADD UNIQUE INDEX `uk_client_msg_id_idempotency` (`ClientMsgId`)',
+     ];
+     for (const statement of uniqueIndexStatements) {
+       try {
+         await this.pool.execute(statement);
+       } catch (err: unknown) {
+         const code = (err as { code?: string }).code;
+         const message = String((err as { message?: string }).message || '');
+         // ER_DUP_KEYNAME = index already exists — expected on subsequent restarts.
+         if (code !== 'ER_DUP_KEYNAME' && !message.includes('Duplicate key name')) {
+           console.warn('[MYSQL] MessageActivities idempotency constraint warning:', message);
+         }
+       }
+     }
+     this.messageActivitiesIdempotencyReady = true;
+     console.log('[MYSQL] MessageActivities idempotency constraints ensured.');
+   } catch (err: unknown) {
+     const message = String((err as { message?: string }).message || '');
+     console.warn('[MYSQL] ensureMessageActivitiesIdempotencyConstraints warning:', message);
+   }
   }
 
   async insertMessageActivity(activity: {

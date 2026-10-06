@@ -1330,6 +1330,57 @@ function pruneRecentProcessedQueueMessages(nowTs = Date.now()) {
     }
 }
 
+/**
+* Redis-backed idempotency key cache for message deduplication.
+* Uses Redis SETEX with 24-48 hour TTL to track processed clientMsgIds
+* across server restarts. Falls back to MySQL UNIQUE constraint if Redis is unavailable.
+*/
+async function checkAndMarkMessageProcessed(clientMsgId, redisStore, ttlSeconds = 86400) {
+   if (!clientMsgId || !redisStore || !redisStore.isEnabled) {
+       // Redis not available — caller will rely on MySQL UNIQUE constraint
+       return false;
+   }
+   try {
+       const cacheKey = `msg_processed:${String(clientMsgId || '').slice(0, 128)}`;
+       const client = redisStore.getClient?.();
+       if (!client) return false;
+        
+       // Check if already processed
+       const existing = await client.get(cacheKey);
+       if (existing) {
+           console.log(`[IDEMPOTENCY] clientMsgId ${clientMsgId} already processed (found in Redis)`);
+           return true;
+       }
+        
+       // Mark as processed
+       await client.setex(cacheKey, ttlSeconds, 'processed');
+       return false;
+   } catch (err) {
+       console.warn('[IDEMPOTENCY] Redis check failed:', String(err).slice(0, 100));
+       // Redis error — continue processing and let MySQL UNIQUE constraint be the fallback
+       return false;
+   }
+}
+
+/**
+* Generate a persistent sequence number (pts) for message ordering.
+* Uses Redis INCR for atomic monotonic generation, falling back to NULL if unavailable.
+* The Logs/MessageActivities tables handle this column; pts is used for sync ordering.
+*/
+async function generateSequenceNumber(groupId, redisStore) {
+   if (!groupId || !redisStore || !redisStore.isEnabled) return null;
+   try {
+       const seqKey = `pts:${String(groupId || '').slice(0, 128)}`;
+       const client = redisStore.getClient?.();
+       if (!client) return null;
+       const pts = await client.incr(seqKey);
+       return Number.isFinite(pts) && pts > 0 ? pts : null;
+   } catch (err) {
+       console.warn('[PTS-GENERATION] Redis INCR failed:', String(err).slice(0, 100));
+       return null;
+   }
+}
+
 function hashStringToShortId(value = '') {
     const text = String(value || '');
     let hash = 0;
@@ -2654,13 +2705,36 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
     }
 
     pruneRecentProcessedReplyMessages();
+    
+    // ─── PHASE 2: Redis-backed Idempotency Check ───
+    // Check clientMessageId in Redis first (survives server restart)
+    const normalizedClientMsgId = String(clientMessageId || '').trim();
+    const alreadyProcessedByRedis = normalizedClientMsgId 
+        ? await checkAndMarkMessageProcessed(normalizedClientMsgId, activeRedisStateStore, 86400) // 24-hour TTL
+        : false;
+    
+    if (alreadyProcessedByRedis) {
+        console.log(`[REPLY] clientMsgId ${normalizedClientMsgId} already processed (Redis idempotency)`);
+        return {
+            status: 'success',
+            details: {
+                success: 0,
+                failed: 0,
+                deduped: true,
+                dedupeSource: 'redis'
+            }
+        };
+    }
+    
+    // Fallback: in-memory cache (for cases when Redis is down)
     if (recentProcessedReplyMessages.has(messageId)) {
         return {
             status: 'success',
             details: {
                 success: 0,
                 failed: 0,
-                deduped: true
+                deduped: true,
+                dedupeSource: 'memory'
             }
         };
     }
