@@ -1245,10 +1245,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   /// Fetch the current user's message history from the API for an opened chat.
   /// The result is kept only in the in-memory Riverpod state.
+  /// Uses incremental sync (since the last sync cursor) instead of full history.
   Future<void> loadChatHistory(String chatId) async {
     final user = _currentUser;
     if (user == null || user.isEmpty || chatId.trim().isEmpty) return;
-    await _pullAllMessagesFromLogs(user: user, since: 0);
+    // Use incremental sync to fetch only new messages since the last sync cursor
+    // instead of always requesting the full history (since: 0).
+    final since = await _resolveSyncCursor();
+    await _pullAllMessagesFromLogs(user: user, since: since);
   }
 
   /// PHASE 8: Load cached messages from SQLite for instant UI display.
@@ -3478,6 +3482,16 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       chatId = toUser;
     } else {
       chatId = senderNorm;
+      // Additional protection: skip messages that would create a self-chat
+      // This can happen if the sender normalization differs from current user
+      // normalization due to format differences (e.g., spaces, leading zeros)
+      if (me != null && chatId == me.trim().toLowerCase()) {
+        debugPrint(
+          '[CHAT] ⚠️ Skipping incoming message with self-chat risk: '
+          'sender=$senderNorm, me=$me, chatId=$chatId'
+        );
+        return null;
+      }
     }
 
     // If the echo is for a message *we* just sent, tag it as outgoing so
