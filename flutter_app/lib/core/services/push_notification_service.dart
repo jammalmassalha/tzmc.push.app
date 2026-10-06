@@ -1184,11 +1184,47 @@ class PushNotificationService {
       '[PushNotificationService] Foreground message: ${message.messageId}',
     );
 
-    // Show local notification
+    // PHASE 8.2: Detect and handle silent push notifications
+    final isSilent = _isSilentPushData(Map<String, dynamic>.from(message.data));
+    final hasNotification = message.notification != null;
+    
+    if (!hasNotification && isSilent) {
+      debugPrint(
+        '[PushNotificationService] PHASE 8.2: Silent data-only push detected, triggering background sync',
+      );
+      // Trigger background sync without showing any visual notification
+      _triggerBackgroundSync();
+    }
+
+    // Show local notification (if not silent)
     _showLocalNotification(message);
 
     // PHASE 5: Apply push payload (which triggers sync recovery in ChatStoreService)
     _applyPushPayload(message);
+  }
+
+  /// PHASE 8.2: Trigger background sync when a silent notification arrives.
+  ///
+  /// Silent push notifications (data-only, no visible alert) are used to
+  /// wake the app and trigger a background sync without disturbing the user.
+  /// This is more reliable than relying on FCM visible notifications alone,
+  /// especially on iOS where background push is throttled.
+  void _triggerBackgroundSync() {
+    try {
+      debugPrint('[PushNotificationService] PHASE 8.2: Triggering background sync from silent push');
+      
+      // Trigger message recovery in the chat store
+      final chatStore = _ref?.read(chatStoreProvider.notifier);
+      if (chatStore != null) {
+        // Force a full recovery pull to sync all missed messages
+        unawaited(chatStore.recoverMissedMessages(force: true));
+        debugPrint('[PushNotificationService] PHASE 8.2: Background sync initiated');
+      } else {
+        debugPrint('[PushNotificationService] PHASE 8.2: Chat store not available for sync');
+      }
+    } catch (e, st) {
+      debugPrint('[PushNotificationService] PHASE 8.2: Background sync failed: $e\n$st');
+    }
   }
 
   /// Handle message when app opened from notification (PHASE 5: Sync Trigger #1 - FCM)
@@ -1683,8 +1719,17 @@ final pushNotificationServiceProvider = Provider<PushNotificationService>((
 // Background Message Handler
 // ---------------------------------------------------------------------------
 
-/// Handle background messages when app is terminated or in background
-/// This must be a top-level function
+/// Handle background messages when app is terminated or in background.
+/// This must be a top-level function.
+///
+/// PHASE 8.2: Handles silent push notifications that wake the app in the
+/// background, allowing it to sync messages without showing a visual alert.
+/// This is more reliable than foreground-only push notifications, especially
+/// on iOS where background delivery is throttled.
+///
+/// Background messages are stored in the pending notification tray so that
+/// when the app next opens (either immediately or later), the messages are
+/// already in the local database and can be displayed instantly.
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   WidgetsFlutterBinding.ensureInitialized();
