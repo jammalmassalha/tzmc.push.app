@@ -3,6 +3,16 @@
 /// Handles device token registration, notification display,
 /// and push recovery pull logic to handle truncated payloads.
 /// On web, push notifications are handled via the existing web-push system.
+///
+/// **PHASE 5: Multi-Trigger Sync Integration**
+///
+/// This service implements one of four message sync triggers in the reliability architecture:
+/// 1. **FCM Notification** (this file) — triggers applyIncomingFromPushPayload()
+/// 2. **App Lifecycle** (chat_shell_screen.dart) — triggers recoverMissedMessages(force: true)
+/// 3. **WebSocket Reconnection** (realtime_transport_service.dart) — triggers drainQueue()
+/// 4. **Network Restoration** (realtime_transport_service.dart) — triggers drainQueue()
+///
+/// See FLUTTER_IMPLEMENTATION_GUIDE.md and RELIABILITY_ARCHITECTURE.md for architecture details.
 library;
 
 import 'dart:async';
@@ -1164,7 +1174,11 @@ class PushNotificationService {
     await _registerDeviceToken(pending);
   }
 
-  /// Handle foreground message
+  /// Handle foreground message (PHASE 5: Sync Trigger #1 - FCM)
+  ///
+  /// This is the first sync trigger in the multi-trigger architecture.
+  /// When a notification arrives in the foreground, we immediately apply the payload
+  /// to sync missed messages.
   void _onMessage(RemoteMessage message) {
     debugPrint(
       '[PushNotificationService] Foreground message: ${message.messageId}',
@@ -1173,16 +1187,20 @@ class PushNotificationService {
     // Show local notification
     _showLocalNotification(message);
 
-    // Apply push payload to chat store (also schedules recovery pulls)
+    // PHASE 5: Apply push payload (which triggers sync recovery in ChatStoreService)
     _applyPushPayload(message);
   }
 
-  /// Handle message when app opened from notification
+  /// Handle message when app opened from notification (PHASE 5: Sync Trigger #1 - FCM)
+  ///
+  /// This is also part of the first sync trigger. When the app is opened
+  /// from a notification, we apply the payload to sync and then navigate
+  /// to the relevant chat screen.
   void _onMessageOpenedApp(RemoteMessage message) {
     debugPrint('[PUSH-ROUTING] 📱 onMessageOpenedApp called with messageId: ${message.messageId}');
     debugPrint('[PUSH-ROUTING] 📦 Payload: ${message.data}');
 
-    // Apply push payload (also schedules recovery pulls)
+    // PHASE 5: Apply push payload (which triggers sync recovery in ChatStoreService)
     _applyPushPayload(message);
 
     // Navigate to the relevant screen based on notification type

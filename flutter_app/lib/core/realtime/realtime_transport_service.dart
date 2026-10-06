@@ -67,6 +67,7 @@ class RealtimeTransportService {
   bool _socketConnecting = false;
   http.Client? _sseClient;
   StreamSubscription? _sseSubscription;
+  StreamSubscription? _connectivitySubscription;
   Timer? _pollTimer;
   Timer? _reconnectTimer;
   Timer? _socketReconnectTimer;
@@ -77,6 +78,7 @@ class RealtimeTransportService {
 
   String? _activeUser;
   bool Function()? _isNetworkReachable;
+  bool _lastNetworkState = true; // Track last network connectivity state
 
   /// Stable per-install identifier sent in the socket handshake.
   ///
@@ -121,6 +123,12 @@ class RealtimeTransportService {
     // ChatStoreNotifier side skips the actual HTTP pull when socket/SSE is
     // active, so this only adds real network calls when truly needed.
     startPolling(user);
+
+    // PHASE 6: Subscribe to connectivity changes (network state observer).
+    // When network is restored from offline, reconnect the transport.
+    // This ensures the outbox is drained (via ChatStoreService._handleConnectionChange)
+    // even if FCM and lifecycle events miss the restoration.
+    _subscribeToConnectivityChanges(user);
 
     if (!_isNetworkReachable!()) {
       return;
@@ -194,6 +202,10 @@ class RealtimeTransportService {
     _socketReconnectTimer = null;
     _socketSseFallbackTimer?.cancel();
     _socketSseFallbackTimer = null;
+
+    // PHASE 6: Unsubscribe from connectivity changes
+    _connectivitySubscription?.cancel();
+    _connectivitySubscription = null;
 
     _setTransportMode(RealtimeTransportMode.polling);
     _shuttingDown = false;
@@ -566,6 +578,34 @@ class RealtimeTransportService {
     if (_transportMode == mode) return;
     _transportMode = mode;
     _logger.d('Transport mode changed to: ${mode.name}');
+  }
+
+  /// PHASE 6: Subscribe to network connectivity changes.
+  /// When network is restored from offline, reconnect the transport so
+  /// the outbox can be drained (via ChatStoreService._handleConnectionChange).
+  /// This is the fourth trigger in the multi-trigger sync architecture:
+  /// 1. FCM notification (push_notification_service.dart)
+  /// 2. App lifecycle foreground (chat_shell_screen.dart)
+  /// 3. WebSocket reconnection (here)
+  /// 4. Network connectivity restoration (here) ← Phase 6 addition
+  void _subscribeToConnectivityChanges(String user) {
+    _connectivitySubscription?.cancel();
+    _connectivitySubscription = NetworkConnectivity.onConnectivityChanged.listen(
+      (isConnected) {
+        _logger.d('[Phase6-Connectivity] Network state changed: isConnected=$isConnected, lastState=$_lastNetworkState');
+
+        // Transition from offline to online: reconnect the transport
+        if (isConnected && !_lastNetworkState) {
+          _logger.i('[Phase6-Connectivity] Network restored, reconnecting transport');
+          reconnectIfNeeded(user);
+        }
+
+        _lastNetworkState = isConnected;
+      },
+      onError: (error) {
+        _logger.e('[Phase6-Connectivity] Connectivity stream error: $error');
+      },
+    );
   }
 }
 
