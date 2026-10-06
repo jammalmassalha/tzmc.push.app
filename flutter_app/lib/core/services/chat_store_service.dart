@@ -1639,7 +1639,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           offset: offset,
           since: since,
         );
-      } catch (_) {
+      } catch (err) {
+        debugPrint('[LOGS SYNC] Network error during pagination at offset=$offset: $err');
         break; // Network error — stop paging; keep what we already have.
       }
 
@@ -1654,11 +1655,18 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
 
     debugPrint(
-      'SYNC_TRACE: Backend returned '
+      '[LOGS SYNC] Backend returned '
       '${allRaw.map((message) => message.groupId ?? message.sender).whereType<String>().toSet().length} chats '
-      'and ${allRaw.length} deltas',
+      'and ${allRaw.length} total messages (pagination fetched=$totalFetched)',
     );
-    if (allRaw.isEmpty) return;
+    
+    // IMPORTANT: Don't return early if allRaw is empty! We still need to apply
+    // messages (even if the list is empty) to ensure state consistency. The 
+    // _applyMessagesBatch will handle empty lists correctly now.
+    if (allRaw.isEmpty) {
+      debugPrint('[LOGS SYNC] ⚠️ No messages returned from backend');
+      // Continue to apply empty list to maintain state consistency
+    }
 
     // ── 2. Filter system/sentinel messages ──────────────────────────────────
     // Mirrors Angular's `shouldSkipLogsMessage`:
@@ -1688,7 +1696,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       return true;
     }).toList();
 
-    if (filtered.isEmpty) return;
+    debugPrint(
+      '[LOGS SYNC] After filtering: ${filtered.length} messages remain '
+      '(removed ${allRaw.length - filtered.length} system/sentinel messages)',
+    );
+    
+    // IMPORTANT: Don't return early if filtered is empty! We still need to apply
+    // messages (even if the list is empty) to ensure state consistency.
+    if (filtered.isEmpty) {
+      debugPrint('[LOGS SYNC] ⚠️ All messages filtered out (likely system/sentinel only)');
+      // Continue to apply empty list to maintain state consistency
+    }
 
     // ── 3. Normalise group messages ─────────────────────────────────────────
     // Mirrors Angular's `normalizeLogsMessagesForImport`:
@@ -1725,9 +1743,16 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // Apply text messages first so the target messages exist in state before
     // reactions (and edits/deletes) are applied.
     _applyMessagesBatch(textMessages);
+    debugPrint(
+      '[LOGS SYNC] Applied ${textMessages.length} text messages + '
+      '${actionMessages.length} action messages to state',
+    );
+    
     for (final msg in actionMessages) {
       _handleServerMessage(msg); // delete / edit / reaction / group-update
     }
+    
+    debugPrint('[LOGS SYNC] Full sync logs pull completed successfully');
   }
 
   // ---------------------------------------------------------------------------
@@ -1909,8 +1934,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// state update, without incrementing unread counters.
   ///
   /// Used by the full-sync batch import to avoid O(n) Riverpod state rebuilds.
+  /// 
+  /// CRITICAL: Even if [messages] is empty, this method ensures state consistency
+  /// by maintaining messagesByChat. This prevents the sync from leaving an
+  /// incomplete/stale state when the backend returns no messages or all messages
+  /// are filtered out.
   void _applyMessagesBatch(List<ChatMessage> messages) {
-    if (messages.isEmpty) return;
+    // Don't return early for empty messages! We still need to maintain state
+    // consistency after clearing during full sync. If we return early, the state
+    // will remain with empty messagesByChat even after sync completes.
 
     final newMessagesByChat =
         Map<String, List<ChatMessage>>.from(state.messagesByChat);
