@@ -32,9 +32,18 @@ function registerMessageController(app, deps = {}) {
     const resolveHardcodedGroupMembers = () =>
         (typeof getHardcodedGroupMembers === 'function' ? getHardcodedGroupMembers() : _legacyHardcodedGroupMembers) || {};
     const RECENT_POLLING_MESSAGE_DEDUP_TTL_MS = 10 * 60 * 1000;
+    // COMPREHENSIVE FIX: Extended TTL for delivered message ID tracking (24 hours)
+    // This prevents users from receiving notifications for messages they've already
+    // received and read (e.g., from server restart, recovery pulls, or batch operations)
+    const DELIVERED_MESSAGE_ID_TTL_MS = 24 * 60 * 60 * 1000;
     const LOGS_MESSAGE_SEMANTIC_DEDUP_WINDOW_MS = 2 * 60 * 1000;
     const MAX_RECENT_POLLING_DEDUP_KEYS_PER_USER = 4000;
+    const MAX_DELIVERED_MESSAGE_IDS_PER_USER = 10000;
     const recentPollingMessageKeysByUser = new Map();
+    // COMPREHENSIVE FIX: Track delivered message IDs per user with 24-hour TTL
+    // Structure: Map<user, Map<deliveryKey, deliveredAtTimestamp>>
+    // deliveryKey = messageId + chatId (unique per message+conversation)
+    const deliveredMessageIdsByUser = new Map();
 
     const normalizeTextForDedup = (value) => String(value || '').replace(/\s+/g, ' ').trim();
     const normalizeTimestampMs = (value, fallback = 0) => {
@@ -81,6 +90,77 @@ function registerMessageController(app, deps = {}) {
             keysMap.set(key, Number(timestamp) || Date.now());
         });
     };
+    // COMPREHENSIVE FIX: Helper functions for message ID tracking
+    const buildDeliveryKey = (message) => {
+       if (!message || typeof message !== 'object') return '';
+       const messageId = String(message.messageId || message.id || '').trim();
+       if (!messageId) return '';
+       const chatId = String(message.chatId || message.groupId || message.toUser || message.sender || '').trim();
+       return messageId && chatId ? `${messageId}:${chatId}` : '';
+    };
+    const markMessageAsDelivered = (user, message) => {
+       if (!user || !message) return;
+       const normalizedUser = normalizeUserKey(user);
+       if (!normalizedUser) return;
+       const deliveryKey = buildDeliveryKey(message);
+       if (!deliveryKey) return;
+       const now = Date.now();
+       let userDeliveries = deliveredMessageIdsByUser.get(normalizedUser);
+       if (!userDeliveries) {
+           userDeliveries = new Map();
+           deliveredMessageIdsByUser.set(normalizedUser, userDeliveries);
+       }
+       userDeliveries.set(deliveryKey, now);
+       // Prune old entries when map gets too large
+       if (userDeliveries.size > MAX_DELIVERED_MESSAGE_IDS_PER_USER) {
+           compactDeliveredMessageIds(userDeliveries);
+       }
+    };
+    const isMessageAlreadyDelivered = (user, message) => {
+       if (!user || !message) return false;
+       const normalizedUser = normalizeUserKey(user);
+       if (!normalizedUser) return false;
+       const deliveryKey = buildDeliveryKey(message);
+       if (!deliveryKey) return false;
+       const userDeliveries = deliveredMessageIdsByUser.get(normalizedUser);
+       if (!userDeliveries) return false;
+       const deliveredAt = userDeliveries.get(deliveryKey);
+       if (!deliveredAt) return false;
+       const now = Date.now();
+       // Check if delivery is still within TTL (24 hours)
+       return (now - Number(deliveredAt)) <= DELIVERED_MESSAGE_ID_TTL_MS;
+    };
+    const pruneDeliveredMessageIds = (nowTs = Date.now()) => {
+       for (const [userKey, deliveries] of deliveredMessageIdsByUser.entries()) {
+           if (!deliveries || !(deliveries instanceof Map)) {
+               deliveredMessageIdsByUser.delete(userKey);
+               continue;
+           }
+           for (const [deliveryKey, deliveredAt] of deliveries.entries()) {
+               if (!deliveryKey) {
+                   deliveries.delete(deliveryKey);
+                   continue;
+               }
+               if (!Number.isFinite(Number(deliveredAt)) || nowTs - Number(deliveredAt) > DELIVERED_MESSAGE_ID_TTL_MS) {
+                   deliveries.delete(deliveryKey);
+               }
+           }
+           if (deliveries.size === 0) {
+               deliveredMessageIdsByUser.delete(userKey);
+           }
+       }
+    };
+    const compactDeliveredMessageIds = (deliveries) => {
+       if (!(deliveries instanceof Map)) return;
+       if (deliveries.size <= MAX_DELIVERED_MESSAGE_IDS_PER_USER) return;
+       const sorted = Array.from(deliveries.entries())
+           .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
+           .slice(0, MAX_DELIVERED_MESSAGE_IDS_PER_USER);
+       deliveries.clear();
+       sorted.forEach(([key, timestamp]) => {
+           deliveries.set(key, Number(timestamp) || Date.now());
+       });
+    };
     const buildPollingMessageFingerprint = (message, user) => {
         if (!message || typeof message !== 'object') return '';
         const payloadType = String(message.type || 'message').trim().toLowerCase() || 'message';
@@ -122,6 +202,8 @@ function registerMessageController(app, deps = {}) {
         }
         const now = Date.now();
         pruneRecentPollingDedupKeys(now);
+        // COMPREHENSIVE FIX: Also prune old delivered message IDs
+        pruneDeliveredMessageIds(now);
         const recentlyDeliveredKeys = recentPollingMessageKeysByUser.get(normalizedUser) || new Map();
         const seenInBatch = new Set();
         const deduped = [];
@@ -136,6 +218,14 @@ function registerMessageController(app, deps = {}) {
             }
             const deliveredAt = Number(recentlyDeliveredKeys.get(fingerprint) || 0);
             if (deliveredAt > 0 && now - deliveredAt <= RECENT_POLLING_MESSAGE_DEDUP_TTL_MS) {
+                continue;
+            }
+            // COMPREHENSIVE FIX: Check if message was already delivered within 24 hours
+            if (isMessageAlreadyDelivered(normalizedUser, message)) {
+                console.info(
+                    `[DEDUP] Skipping duplicate message notification: messageId=${message.messageId || message.id} ` +
+                    `chatId=${message.chatId || message.groupId} user=${normalizedUser}`
+                );
                 continue;
             }
             seenInBatch.add(fingerprint);
@@ -493,6 +583,10 @@ function registerMessageController(app, deps = {}) {
                 `messages=${messages.length} chats=${chatList.length} cursor=${lastSyncTimestamp} ` +
                 `limit=${requestedLimit} offset=${requestedOffset}${requestedChatId ? ` chatId=${requestedChatId}` : ''}`
             );
+            // COMPREHENSIVE FIX: Mark all sync messages as delivered to prevent future duplicate notifications
+            for (const message of messages) {
+                markMessageAsDelivered(user, message);
+            }
             return res.json({
                 success: true,
                 messages,
@@ -557,6 +651,10 @@ function registerMessageController(app, deps = {}) {
                 const dedupedCount = waitingMessages.length - dedupedMessages.length;
                 if (dedupedCount > 0) {
                     console.warn(`[POLLING] Deduped ${dedupedCount} duplicate msgs for ${user}`);
+                }
+                // COMPREHENSIVE FIX: Mark delivered messages to prevent future duplicate notifications
+                for (const message of dedupedMessages) {
+                    markMessageAsDelivered(user, message);
                 }
                 console.log(`[POLLING] Delivered ${dedupedMessages.length} msgs to ${user}`);
                 return res.json({ messages: dedupedMessages });
