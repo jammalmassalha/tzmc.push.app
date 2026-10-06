@@ -32,9 +32,18 @@ function registerMessageController(app, deps = {}) {
     const resolveHardcodedGroupMembers = () =>
         (typeof getHardcodedGroupMembers === 'function' ? getHardcodedGroupMembers() : _legacyHardcodedGroupMembers) || {};
     const RECENT_POLLING_MESSAGE_DEDUP_TTL_MS = 10 * 60 * 1000;
+    // COMPREHENSIVE FIX: Extended TTL for delivered message ID tracking (24 hours)
+    // This prevents users from receiving notifications for messages they've already
+    // received and read (e.g., from server restart, recovery pulls, or batch operations)
+    const DELIVERED_MESSAGE_ID_TTL_MS = 24 * 60 * 60 * 1000;
     const LOGS_MESSAGE_SEMANTIC_DEDUP_WINDOW_MS = 2 * 60 * 1000;
     const MAX_RECENT_POLLING_DEDUP_KEYS_PER_USER = 4000;
+    const MAX_DELIVERED_MESSAGE_IDS_PER_USER = 10000;
     const recentPollingMessageKeysByUser = new Map();
+    // COMPREHENSIVE FIX: Track delivered message IDs per user with 24-hour TTL
+    // Structure: Map<user, Map<deliveryKey, deliveredAtTimestamp>>
+    // deliveryKey = messageId + chatId (unique per message+conversation)
+    const deliveredMessageIdsByUser = new Map();
 
     const normalizeTextForDedup = (value) => String(value || '').replace(/\s+/g, ' ').trim();
     const normalizeTimestampMs = (value, fallback = 0) => {
@@ -81,6 +90,77 @@ function registerMessageController(app, deps = {}) {
             keysMap.set(key, Number(timestamp) || Date.now());
         });
     };
+    // COMPREHENSIVE FIX: Helper functions for message ID tracking
+    const buildDeliveryKey = (message) => {
+       if (!message || typeof message !== 'object') return '';
+       const messageId = String(message.messageId || message.id || '').trim();
+       if (!messageId) return '';
+       const chatId = String(message.chatId || message.groupId || message.toUser || message.sender || '').trim();
+       return messageId && chatId ? `${messageId}:${chatId}` : '';
+    };
+    const markMessageAsDelivered = (user, message) => {
+       if (!user || !message) return;
+       const normalizedUser = normalizeUserKey(user);
+       if (!normalizedUser) return;
+       const deliveryKey = buildDeliveryKey(message);
+       if (!deliveryKey) return;
+       const now = Date.now();
+       let userDeliveries = deliveredMessageIdsByUser.get(normalizedUser);
+       if (!userDeliveries) {
+           userDeliveries = new Map();
+           deliveredMessageIdsByUser.set(normalizedUser, userDeliveries);
+       }
+       userDeliveries.set(deliveryKey, now);
+       // Prune old entries when map gets too large
+       if (userDeliveries.size > MAX_DELIVERED_MESSAGE_IDS_PER_USER) {
+           compactDeliveredMessageIds(userDeliveries);
+       }
+    };
+    const isMessageAlreadyDelivered = (user, message) => {
+       if (!user || !message) return false;
+       const normalizedUser = normalizeUserKey(user);
+       if (!normalizedUser) return false;
+       const deliveryKey = buildDeliveryKey(message);
+       if (!deliveryKey) return false;
+       const userDeliveries = deliveredMessageIdsByUser.get(normalizedUser);
+       if (!userDeliveries) return false;
+       const deliveredAt = userDeliveries.get(deliveryKey);
+       if (!deliveredAt) return false;
+       const now = Date.now();
+       // Check if delivery is still within TTL (24 hours)
+       return (now - Number(deliveredAt)) <= DELIVERED_MESSAGE_ID_TTL_MS;
+    };
+    const pruneDeliveredMessageIds = (nowTs = Date.now()) => {
+       for (const [userKey, deliveries] of deliveredMessageIdsByUser.entries()) {
+           if (!deliveries || !(deliveries instanceof Map)) {
+               deliveredMessageIdsByUser.delete(userKey);
+               continue;
+           }
+           for (const [deliveryKey, deliveredAt] of deliveries.entries()) {
+               if (!deliveryKey) {
+                   deliveries.delete(deliveryKey);
+                   continue;
+               }
+               if (!Number.isFinite(Number(deliveredAt)) || nowTs - Number(deliveredAt) > DELIVERED_MESSAGE_ID_TTL_MS) {
+                   deliveries.delete(deliveryKey);
+               }
+           }
+           if (deliveries.size === 0) {
+               deliveredMessageIdsByUser.delete(userKey);
+           }
+       }
+    };
+    const compactDeliveredMessageIds = (deliveries) => {
+       if (!(deliveries instanceof Map)) return;
+       if (deliveries.size <= MAX_DELIVERED_MESSAGE_IDS_PER_USER) return;
+       const sorted = Array.from(deliveries.entries())
+           .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
+           .slice(0, MAX_DELIVERED_MESSAGE_IDS_PER_USER);
+       deliveries.clear();
+       sorted.forEach(([key, timestamp]) => {
+           deliveries.set(key, Number(timestamp) || Date.now());
+       });
+    };
     const buildPollingMessageFingerprint = (message, user) => {
         if (!message || typeof message !== 'object') return '';
         const payloadType = String(message.type || 'message').trim().toLowerCase() || 'message';
@@ -122,6 +202,8 @@ function registerMessageController(app, deps = {}) {
         }
         const now = Date.now();
         pruneRecentPollingDedupKeys(now);
+        // COMPREHENSIVE FIX: Also prune old delivered message IDs
+        pruneDeliveredMessageIds(now);
         const recentlyDeliveredKeys = recentPollingMessageKeysByUser.get(normalizedUser) || new Map();
         const seenInBatch = new Set();
         const deduped = [];
@@ -136,6 +218,14 @@ function registerMessageController(app, deps = {}) {
             }
             const deliveredAt = Number(recentlyDeliveredKeys.get(fingerprint) || 0);
             if (deliveredAt > 0 && now - deliveredAt <= RECENT_POLLING_MESSAGE_DEDUP_TTL_MS) {
+                continue;
+            }
+            // COMPREHENSIVE FIX: Check if message was already delivered within 24 hours
+            if (isMessageAlreadyDelivered(normalizedUser, message)) {
+                console.info(
+                    `[DEDUP] Skipping duplicate message notification: messageId=${message.messageId || message.id} ` +
+                    `chatId=${message.chatId || message.groupId} user=${normalizedUser}`
+                );
                 continue;
             }
             seenInBatch.add(fingerprint);
@@ -380,6 +470,9 @@ function registerMessageController(app, deps = {}) {
             const hasLastSyncTimestamp = !isInitialSync;
             const lastSyncTimestamp = Math.max(0, Number(rawLastSyncTimestamp) || 0);
             const requestedChatId = String(req.query && (req.query.chat_id || req.query.chatId) || '').trim();
+            // Parse limit and offset for pagination (default to 100 results per page)
+            const requestedLimit = Math.max(1, Math.min(1000, Number(req.query && req.query.limit) || 100));
+            const requestedOffset = Math.max(0, Number(req.query && req.query.offset) || 0);
             let messages = [];
             const store = getActiveRedisStateStore();
             if (store && store.isEnabled && typeof store.readQueueSince === 'function') {
@@ -409,35 +502,112 @@ function registerMessageController(app, deps = {}) {
                 });
                 if (!messages.length && typeof getLogsMessagesForUser === 'function') {
                     try {
-                        messages = await getLogsMessagesForUser(user, {
-                            limit: 200,
-                            offset: 0,
+                        const queryOptions = {
+                            limit: requestedLimit,
+                            offset: requestedOffset,
                             since: lastSyncTimestamp
-                        });
+                        };
+                        // OPTIMIZATION: Push chat_id filter to database query if specified
+                        if (requestedChatId) {
+                            queryOptions.chatId = requestedChatId;
+                        }
+                        messages = await getLogsMessagesForUser(user, queryOptions);
                     } catch (error) {
                         console.warn('[MYSQL] Delta chat sync failed:', error && error.message ? error.message : error);
                     }
                 }
             } else {
-                // A first sync is deliberately bounded.  The mailbox is only a
-                // realtime buffer and may be empty after a server restart, so
-                // use the durable MySQL log as the source of truth when it is
-                // available.
+                // OPTIMIZATION: Reduce initial sync limit from 20,000 to 1,000 for better performance.
+                // The mailbox is only a realtime buffer and may be empty after a server restart, so
+                // use the durable MySQL log as the source of truth when it is available.
                 if (typeof getLogsMessagesForUser === 'function') {
                     try {
-                        messages = await getLogsMessagesForUser(user, { limit: 20000, offset: 0, since: 0 });
+                        const queryOptions = {
+                            limit: Math.min(requestedLimit, 1000), // Cap at 1000 for initial sync
+                            offset: requestedOffset,
+                            since: 0
+                        };
+                        // OPTIMIZATION: Push chat_id filter to database query if specified
+                        if (requestedChatId) {
+                            queryOptions.chatId = requestedChatId;
+                        }
+                        messages = await getLogsMessagesForUser(user, queryOptions);
                     } catch (error) {
                         console.warn('[MYSQL] Initial chat sync failed:', error && error.message ? error.message : error);
                     }
                 }
-                messages = messages.sort((a, b) => {
-                    const timestamp = (message) => Number(message && (
-                        message.sentDateTime || message.timestamp || message.createdAt
-                    )) || Date.parse(String(message && (message.sentDateTime || message.timestamp || message.createdAt) || '')) || 0;
-                    return timestamp(a) - timestamp(b);
-                });
             }
+            // OPTIMIZATION: Remove duplicate sorting. Keep only single sort by pts/seq_id.
+            // Messages should already be sorted by timestamp at the database layer.
             messages.sort((a, b) => Number(a && (a.pts || a.seq_id)) - Number(b && (b.pts || b.seq_id)));
+            
+            // ── Fetch group sender names from MessageActivities ──────────────────────
+            // For group messages, look up the sender name from MessageActivities table
+            // so we can strip the prefix from the body and return a clean message.
+            // This mirrors the processing done in /messages/logs endpoint.
+            let groupSenderByMsgId = new Map();
+            try {
+                if (typeof getGroupMessageSendersByMessageId === 'function' && messages.length > 0) {
+                    // Collect unique messageIds from the messages that look like group messages
+                    const messageIdsToLookup = [];
+                    for (const msg of messages) {
+                        if (!msg || typeof msg !== 'object') continue;
+                        const mid = String(msg.messageId || msg.id || '').trim();
+                        const isGroup = Boolean(msg.groupId || msg.isGroup || (msg.sender && msg.sender.startsWith('group:')));
+                        if (mid && isGroup) {
+                            messageIdsToLookup.push(mid);
+                        }
+                    }
+                    if (messageIdsToLookup.length > 0) {
+                        groupSenderByMsgId = await getGroupMessageSendersByMessageId(
+                            user,
+                            { messageIds: messageIdsToLookup }
+                        );
+                    }
+                }
+            } catch (_gsErr) {
+                // Non-fatal — sender label will fall back to existing groupSenderName
+                console.warn('[SYNC] Failed to fetch group sender names:', _gsErr && _gsErr.message);
+            }
+            
+            // ── Process messages to strip sender prefix and populate groupSenderName ──
+            // For each message, if it's a group message with sender name embedded in body,
+            // extract it and remove the prefix from body.
+            for (let i = 0; i < messages.length; i++) {
+                const message = messages[i];
+                if (!message || typeof message !== 'object') continue;
+                
+                const isGroup = Boolean(message.groupId || message.isGroup || (message.sender && message.sender.startsWith('group:')));
+                if (!isGroup) continue;
+                
+                const mid = String(message.messageId || message.id || '').trim();
+                
+                // Start with existing groupSenderName or look it up from MessageActivities
+                let groupSenderName = String(message.groupSenderName || message.senderName || message.fromName || '').trim();
+                if (!groupSenderName && mid && groupSenderByMsgId.has(mid)) {
+                    groupSenderName = groupSenderByMsgId.get(mid);
+                }
+                
+                // If we have a group sender name, strip it from the body if present
+                let body = String(message.body || message.message || message.content || '').trim();
+                if (groupSenderName && body) {
+                    const escapedName = groupSenderName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const prefixPattern = new RegExp(`^${escapedName}\\s*:\\s*`);
+                    if (prefixPattern.test(body)) {
+                        const stripped = body.replace(prefixPattern, '').trim();
+                        if (stripped) {
+                            body = stripped;
+                            // Update the message with the clean body
+                            message.body = body;
+                            message.message = body;
+                        }
+                    }
+                }
+                
+                // Store the group sender name on the message for the response
+                message.groupSenderName = groupSenderName || undefined;
+            }
+            
             const currentSequence = typeof getMailboxSequence === 'function'
                 ? Number(getMailboxSequence(user)) || 0
                 : (messages.length ? Number(messages[messages.length - 1].pts || messages[messages.length - 1].seq_id) || 0 : lastSequence);
@@ -455,14 +625,23 @@ function registerMessageController(app, deps = {}) {
                 const timestamp = Number(message.sentDateTime || message.timestamp || message.createdAt) ||
                     Date.parse(String(message.sentDateTime || message.timestamp || message.createdAt || '')) || 0;
                 const current = chatById.get(chatId);
+                
+                // Build lastMessageText: use clean body (sender prefix already stripped)
+                // and optionally prefix with groupSenderName for group chats
+                let lastMessageText = message.body || message.message || message.content || '';
+                const isGroup = Boolean(message.groupId || message.isGroup);
+                if (isGroup && message.groupSenderName) {
+                    lastMessageText = `${message.groupSenderName}: ${lastMessageText}`;
+                }
+                
                 if (!current || timestamp >= current.lastMessageTimestamp) {
                     chatById.set(chatId, {
                         chatId,
                         chatName: message.chatName || message.groupName || chatId,
-                        isGroup: Boolean(message.groupId || message.isGroup),
+                        isGroup: isGroup,
                         avatarUrl: message.avatarUrl || message.upic || null,
                         lastMessageId: message.messageId || message.id || null,
-                        lastMessageText: message.body || message.message || message.content || '',
+                        lastMessageText: lastMessageText,
                         lastMessageSenderId: message.sender || message.from || null,
                         lastMessageTimestamp: timestamp,
                         lastMessageStatus: message.status || message.deliveryStatus || null,
@@ -478,8 +657,13 @@ function registerMessageController(app, deps = {}) {
             );
             console.info(
                 `[SYNC-PIPELINE] ${isInitialSync ? 'Full' : 'Delta'} sync user=${user} ` +
-                `messages=${messages.length} chats=${chatList.length} cursor=${lastSyncTimestamp}`
+                `messages=${messages.length} chats=${chatList.length} cursor=${lastSyncTimestamp} ` +
+                `limit=${requestedLimit} offset=${requestedOffset}${requestedChatId ? ` chatId=${requestedChatId}` : ''}`
             );
+            // COMPREHENSIVE FIX: Mark all sync messages as delivered to prevent future duplicate notifications
+            for (const message of messages) {
+                markMessageAsDelivered(user, message);
+            }
             return res.json({
                 success: true,
                 messages,
@@ -544,6 +728,10 @@ function registerMessageController(app, deps = {}) {
                 const dedupedCount = waitingMessages.length - dedupedMessages.length;
                 if (dedupedCount > 0) {
                     console.warn(`[POLLING] Deduped ${dedupedCount} duplicate msgs for ${user}`);
+                }
+                // COMPREHENSIVE FIX: Mark delivered messages to prevent future duplicate notifications
+                for (const message of dedupedMessages) {
+                    markMessageAsDelivered(user, message);
                 }
                 console.log(`[POLLING] Delivered ${dedupedMessages.length} msgs to ${user}`);
                 return res.json({ messages: dedupedMessages });

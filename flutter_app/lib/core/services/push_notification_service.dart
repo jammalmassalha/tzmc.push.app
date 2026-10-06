@@ -3,6 +3,16 @@
 /// Handles device token registration, notification display,
 /// and push recovery pull logic to handle truncated payloads.
 /// On web, push notifications are handled via the existing web-push system.
+///
+/// **PHASE 5: Multi-Trigger Sync Integration**
+///
+/// This service implements one of four message sync triggers in the reliability architecture:
+/// 1. **FCM Notification** (this file) — triggers applyIncomingFromPushPayload()
+/// 2. **App Lifecycle** (chat_shell_screen.dart) — triggers recoverMissedMessages(force: true)
+/// 3. **WebSocket Reconnection** (realtime_transport_service.dart) — triggers drainQueue()
+/// 4. **Network Restoration** (realtime_transport_service.dart) — triggers drainQueue()
+///
+/// See FLUTTER_IMPLEMENTATION_GUIDE.md and RELIABILITY_ARCHITECTURE.md for architecture details.
 library;
 
 import 'dart:async';
@@ -138,9 +148,6 @@ class PushNotificationService {
   /// ready. Kept at class level because a cold-start notification can arrive
   /// before the service has finished initializing.
   static String? _pendingRouteChatId;
-  /// Retains the complete cold-start payload until the chat store has restored
-  /// its local snapshot. It must not be applied during FCM initialization.
-  static RemoteMessage? pendingColdStartMessage;
   bool _launchRoutingInFlight = false;
   StreamSubscription? _tokenRefreshSubscription;
   StreamSubscription? _messageSubscription;
@@ -250,7 +257,8 @@ class PushNotificationService {
         debugPrint(
           '[PUSH-ROUTING] getInitialMessage caught payload: ${initialMessage.data}',
         );
-        pendingColdStartMessage = initialMessage;
+        // Process it exactly like a background notification so it uses the pending route system
+        _onMessageOpenedApp(initialMessage);
       }
 
       // Check if app was opened from an Android local notification while
@@ -1166,25 +1174,69 @@ class PushNotificationService {
     await _registerDeviceToken(pending);
   }
 
-  /// Handle foreground message
+  /// Handle foreground message (PHASE 5: Sync Trigger #1 - FCM)
+  ///
+  /// This is the first sync trigger in the multi-trigger architecture.
+  /// When a notification arrives in the foreground, we immediately apply the payload
+  /// to sync missed messages.
   void _onMessage(RemoteMessage message) {
     debugPrint(
       '[PushNotificationService] Foreground message: ${message.messageId}',
     );
 
-    // Show local notification
+    // PHASE 8.2: Detect and handle silent push notifications
+    final isSilent = _isSilentPushData(Map<String, dynamic>.from(message.data));
+    final hasNotification = message.notification != null;
+    
+    if (!hasNotification && isSilent) {
+      debugPrint(
+        '[PushNotificationService] PHASE 8.2: Silent data-only push detected, triggering background sync',
+      );
+      // Trigger background sync without showing any visual notification
+      _triggerBackgroundSync();
+    }
+
+    // Show local notification (if not silent)
     _showLocalNotification(message);
 
-    // Apply push payload to chat store (also schedules recovery pulls)
+    // PHASE 5: Apply push payload (which triggers sync recovery in ChatStoreService)
     _applyPushPayload(message);
   }
 
-  /// Handle message when app opened from notification
+  /// PHASE 8.2: Trigger background sync when a silent notification arrives.
+  ///
+  /// Silent push notifications (data-only, no visible alert) are used to
+  /// wake the app and trigger a background sync without disturbing the user.
+  /// This is more reliable than relying on FCM visible notifications alone,
+  /// especially on iOS where background push is throttled.
+  void _triggerBackgroundSync() {
+    try {
+      debugPrint('[PushNotificationService] PHASE 8.2: Triggering background sync from silent push');
+      
+      // Trigger message recovery in the chat store
+      final chatStore = _ref?.read(chatStoreProvider.notifier);
+      if (chatStore != null) {
+        // Force a full recovery pull to sync all missed messages
+        unawaited(chatStore.recoverMissedMessages(force: true));
+        debugPrint('[PushNotificationService] PHASE 8.2: Background sync initiated');
+      } else {
+        debugPrint('[PushNotificationService] PHASE 8.2: Chat store not available for sync');
+      }
+    } catch (e, st) {
+      debugPrint('[PushNotificationService] PHASE 8.2: Background sync failed: $e\n$st');
+    }
+  }
+
+  /// Handle message when app opened from notification (PHASE 5: Sync Trigger #1 - FCM)
+  ///
+  /// This is also part of the first sync trigger. When the app is opened
+  /// from a notification, we apply the payload to sync and then navigate
+  /// to the relevant chat screen.
   void _onMessageOpenedApp(RemoteMessage message) {
     debugPrint('[PUSH-ROUTING] 📱 onMessageOpenedApp called with messageId: ${message.messageId}');
     debugPrint('[PUSH-ROUTING] 📦 Payload: ${message.data}');
 
-    // Apply push payload (also schedules recovery pulls)
+    // PHASE 5: Apply push payload (which triggers sync recovery in ChatStoreService)
     _applyPushPayload(message);
 
     // Navigate to the relevant screen based on notification type
@@ -1409,18 +1461,6 @@ class PushNotificationService {
     }
   }
 
-  /// Applies a terminated-state notification after the chat store has restored
-  /// its local history. Returns the chat ID to open, if one is present.
-  Future<String?> consumePendingColdStartMessage() async {
-    final message = pendingColdStartMessage;
-    if (message == null) return null;
-
-    final chatId = _chatIdFromMessage(message);
-    _applyPushPayload(message);
-    pendingColdStartMessage = null;
-    return chatId;
-  }
-
   /// Navigate to the chat from a notification
   void _navigateToChat(RemoteMessage message) {
     final chatId = _chatIdFromMessage(message);
@@ -1501,12 +1541,14 @@ class PushNotificationService {
 
     final currentUser = _ref.read(currentUserProvider);
     final navigator = rootNavigatorKey.currentState;
+    final isStoreReady = _ref.read(chatStoreProvider).isInitialized;
     
     debugPrint(
-      '[PUSH-ROUTING] 📱 Opening chat: $normalizedChatId (user=$currentUser, navReady=${navigator != null})',
+      '[PUSH-ROUTING] 📱 Opening chat: $normalizedChatId (user=$currentUser, navReady=${navigator != null}, storeReady=$isStoreReady)',
     );
 
-    if (currentUser == null || navigator == null) {
+    // Defer routing if the app, navigator, or chat store is not fully ready
+    if (currentUser == null || navigator == null || !isStoreReady) {
       debugPrint(
         '[PUSH-ROUTING] ⏱️ App not fully ready, deferring route to $normalizedChatId',
       );
@@ -1677,8 +1719,17 @@ final pushNotificationServiceProvider = Provider<PushNotificationService>((
 // Background Message Handler
 // ---------------------------------------------------------------------------
 
-/// Handle background messages when app is terminated or in background
-/// This must be a top-level function
+/// Handle background messages when app is terminated or in background.
+/// This must be a top-level function.
+///
+/// PHASE 8.2: Handles silent push notifications that wake the app in the
+/// background, allowing it to sync messages without showing a visual alert.
+/// This is more reliable than foreground-only push notifications, especially
+/// on iOS where background delivery is throttled.
+///
+/// Background messages are stored in the pending notification tray so that
+/// when the app next opens (either immediately or later), the messages are
+/// already in the local database and can be displayed instantly.
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   WidgetsFlutterBinding.ensureInitialized();

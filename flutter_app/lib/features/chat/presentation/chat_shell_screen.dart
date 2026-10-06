@@ -123,30 +123,42 @@ class _ChatShellScreenState extends ConsumerState<ChatShellScreen>
   /// Pulls any messages that arrived while the app was backgrounded so the
   /// chat is up-to-date.  All pending notifications are cleared from the OS
   /// notification tray and the app-icon badge is reset to zero.
+  /// PHASE 5: Multi-Trigger Sync Trigger #2 - App Lifecycle Observer
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      unawaited(_handleAppResumed());
-    }
+   if (state == AppLifecycleState.resumed) {
+     unawaited(_handleAppResumed());
+   }
   }
 
+  /// Handle app resume (PHASE 5: Sync Trigger #2 - Lifecycle)
+  ///
+  /// This is the second sync trigger in the multi-trigger architecture.
+  /// When the app returns to the foreground, we:
+  /// 1. Reconnect the WebSocket/SSE in case it dropped while backgrounded
+  /// 2. Call recoverMissedMessages(force: true) to sync messages from the server
+  /// 3. Re-register the FCM token (in case push credentials expired)
+  /// 4. Reset the app-icon badge
+  ///
+  /// See RELIABILITY_ARCHITECTURE.md and FLUTTER_IMPLEMENTATION_GUIDE.md for details.
   Future<void> _handleAppResumed() async {
-    // Pull missed messages so the chat list reflects whatever arrived while
-    // the app was backgrounded.
-    final user = ref.read(currentUserProvider);
-    if (user != null) {
-      // Reconnect the realtime transport in case socket/SSE dropped while the
-      // app was in the background. Auto-reconnect is disabled in socket.io so
-      // we need to trigger it explicitly on every resume.
-      ref.read(realtimeTransportServiceProvider).reconnectIfNeeded(user);
+   // Pull missed messages so the chat list reflects whatever arrived while
+   // the app was backgrounded.
+   final user = ref.read(currentUserProvider);
+   if (user != null) {
+     // PHASE 5: Reconnect the realtime transport in case socket/SSE dropped while the
+     // app was in the background. Auto-reconnect is disabled in socket.io so
+     // we need to trigger it explicitly on every resume.
+     ref.read(realtimeTransportServiceProvider).reconnectIfNeeded(user);
 
-      try {
-        await ref
-            .read(chatStoreProvider.notifier)
-            .recoverMissedMessages(force: true);
-      } catch (e, st) {
-        debugPrint('[ChatShellScreen] recoverMissedMessages on resume failed: $e\n$st');
-      }
+     try {
+       // PHASE 5: Sync trigger - call full message recovery
+       await ref
+           .read(chatStoreProvider.notifier)
+           .recoverMissedMessages(force: true);
+     } catch (e, st) {
+       debugPrint('[ChatShellScreen] recoverMissedMessages on resume failed: $e\n$st');
+     }
 
       try {
         await ref

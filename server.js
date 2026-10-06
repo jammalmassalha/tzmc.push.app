@@ -332,6 +332,88 @@ app.use((req, res, next) => {
     next();
 });
 
+// --- CORS CONFIGURATION (MUST RUN BEFORE STATIC/API MIDDLEWARE) ---
+// When the browser sends credentialed requests (withCredentials/credentials:'include'),
+// the response must echo a specific origin – the wildcard '*' is not allowed. We
+// reflect the request origin if it is allowed by the host allowlist (which already
+// covers tzmc.co.il, www.tzmc.co.il, *.tzmc.co.il, localhost, etc.).
+const corsOptions = {
+    origin: (origin, callback) => {
+        if (!origin) {
+            // Same-origin / non-browser requests (curl, server-to-server) – allow.
+            return callback(null, true);
+        }
+        let originHost = '';
+        try {
+            originHost = new URL(origin).hostname;
+        } catch (_) {
+            originHost = '';
+        }
+        if (!originHost) {
+            return callback(null, false);
+        }
+        if (isAllowedHost(originHost)) {
+            // Reflect the exact origin so credentialed requests pass the preflight.
+            return callback(null, true);
+        }
+        return callback(null, false);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'Cache-Control',
+        'Pragma',
+        'Last-Event-ID',
+        'X-Requested-With',
+        'X-CSRF-Token'
+    ],
+    // Explicitly set the exposed headers so the client can read them
+    exposedHeaders: [
+        'Content-Length',
+        'X-CSRF-Token',
+        'Retry-After',
+        'X-RateLimit-Limit',
+        'X-RateLimit-Remaining',
+        'X-RateLimit-Reset'
+    ]
+};
+
+// Apply CORS middleware BEFORE any routes or static middleware
+// so that CORS headers are set on all responses
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
+
+// Additional middleware to ensure CORS credentials header is always set
+// for credentialed requests (when origin is allowed)
+app.use((req, res, next) => {
+    const origin = req.headers.origin || '';
+    const referer = req.headers.referer || '';
+    
+    // Only set explicit credentials header if we're dealing with a request that
+    // might have credentials (indicated by referer or origin header)
+    if (origin || referer) {
+        // Check if we already have CORS headers from the cors middleware
+        if (!res.getHeader('Access-Control-Allow-Credentials')) {
+            // The cors middleware should have set this, but ensure it's present
+            // for cross-origin credentialed requests
+            let originHost = '';
+            try {
+                originHost = new URL(origin).hostname;
+            } catch (_) {
+                originHost = '';
+            }
+            
+            // Only if the origin is allowed
+            if (originHost && isAllowedHost(originHost)) {
+                res.setHeader('Access-Control-Allow-Credentials', 'true');
+            }
+        }
+    }
+    next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 // API routes also use the /notify prefix. Never redirect missing API paths from
 // the static middleware; a proxy can otherwise send the request back here and
@@ -379,49 +461,6 @@ app.use(['/uploads', '/notify/uploads'], (req, res, next) => {
 }, authenticatedUploadsStaticMiddleware, (_req, res) => {
     return res.status(404).json({ error: 'File not found' });
 });
-
-
-// --- CORS CONFIGURATION ---
-// When the browser sends credentialed requests (withCredentials/credentials:'include'),
-// the response must echo a specific origin – the wildcard '*' is not allowed. We
-// reflect the request origin if it is allowed by the host allowlist (which already
-// covers tzmc.co.il, www.tzmc.co.il, *.tzmc.co.il, localhost, etc.).
-const corsOptions = {
-    origin: (origin, callback) => {
-        if (!origin) {
-            // Same-origin / non-browser requests (curl, server-to-server) – allow.
-            return callback(null, true);
-        }
-        let originHost = '';
-        try {
-            originHost = new URL(origin).hostname;
-        } catch (_) {
-            originHost = '';
-        }
-        if (!originHost) {
-            return callback(null, false);
-        }
-        if (isAllowedHost(originHost)) {
-            // Reflect the exact origin so credentialed requests pass the preflight.
-            return callback(null, true);
-        }
-        return callback(null, false);
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-        'Content-Type',
-        'Authorization',
-        'Cache-Control',
-        'Pragma',
-        'Last-Event-ID',
-        'X-Requested-With',
-        'X-CSRF-Token'
-    ]
-};
-app.use(cors(corsOptions));
-
-app.options(/.*/, cors(corsOptions));
 
 // [FIX] INCREASE LIMIT TO 50MB (Default is only 100kb)
 app.use(bodyParser.json({ limit: '350mb' }));
@@ -1289,6 +1328,57 @@ function pruneRecentProcessedQueueMessages(nowTs = Date.now()) {
             recentProcessedQueueMessages.delete(dedupKey);
         }
     }
+}
+
+/**
+* Redis-backed idempotency key cache for message deduplication.
+* Uses Redis SETEX with 24-48 hour TTL to track processed clientMsgIds
+* across server restarts. Falls back to MySQL UNIQUE constraint if Redis is unavailable.
+*/
+async function checkAndMarkMessageProcessed(clientMsgId, redisStore, ttlSeconds = 86400) {
+   if (!clientMsgId || !redisStore || !redisStore.isEnabled) {
+       // Redis not available — caller will rely on MySQL UNIQUE constraint
+       return false;
+   }
+   try {
+       const cacheKey = `msg_processed:${String(clientMsgId || '').slice(0, 128)}`;
+       const client = redisStore.getClient?.();
+       if (!client) return false;
+        
+       // Check if already processed
+       const existing = await client.get(cacheKey);
+       if (existing) {
+           console.log(`[IDEMPOTENCY] clientMsgId ${clientMsgId} already processed (found in Redis)`);
+           return true;
+       }
+        
+       // Mark as processed
+       await client.setex(cacheKey, ttlSeconds, 'processed');
+       return false;
+   } catch (err) {
+       console.warn('[IDEMPOTENCY] Redis check failed:', String(err).slice(0, 100));
+       // Redis error — continue processing and let MySQL UNIQUE constraint be the fallback
+       return false;
+   }
+}
+
+/**
+* Generate a persistent sequence number (pts) for message ordering.
+* Uses Redis INCR for atomic monotonic generation, falling back to NULL if unavailable.
+* The Logs/MessageActivities tables handle this column; pts is used for sync ordering.
+*/
+async function generateSequenceNumber(groupId, redisStore) {
+   if (!groupId || !redisStore || !redisStore.isEnabled) return null;
+   try {
+       const seqKey = `pts:${String(groupId || '').slice(0, 128)}`;
+       const client = redisStore.getClient?.();
+       if (!client) return null;
+       const pts = await client.incr(seqKey);
+       return Number.isFinite(pts) && pts > 0 ? pts : null;
+   } catch (err) {
+       console.warn('[PTS-GENERATION] Redis INCR failed:', String(err).slice(0, 100));
+       return null;
+   }
 }
 
 function hashStringToShortId(value = '') {
@@ -2615,13 +2705,36 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
     }
 
     pruneRecentProcessedReplyMessages();
+    
+    // ─── PHASE 2: Redis-backed Idempotency Check ───
+    // Check clientMessageId in Redis first (survives server restart)
+    const normalizedClientMsgId = String(clientMessageId || '').trim();
+    const alreadyProcessedByRedis = normalizedClientMsgId 
+        ? await checkAndMarkMessageProcessed(normalizedClientMsgId, activeRedisStateStore, 86400) // 24-hour TTL
+        : false;
+    
+    if (alreadyProcessedByRedis) {
+        console.log(`[REPLY] clientMsgId ${normalizedClientMsgId} already processed (Redis idempotency)`);
+        return {
+            status: 'success',
+            details: {
+                success: 0,
+                failed: 0,
+                deduped: true,
+                dedupeSource: 'redis'
+            }
+        };
+    }
+    
+    // Fallback: in-memory cache (for cases when Redis is down)
     if (recentProcessedReplyMessages.has(messageId)) {
         return {
             status: 'success',
             details: {
                 success: 0,
                 failed: 0,
-                deduped: true
+                deduped: true,
+                dedupeSource: 'memory'
             }
         };
     }
@@ -2705,13 +2818,15 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             messageId,
             title: notificationTitle,
             body: {
-                shortText: isGroup ? `${senderLabel}: ${shortText}` : shortText,
+                shortText: shortText,
                 longText: reply
             },
             image: imageUrl,
             data: Object.keys(notificationExtraData).length ? notificationExtraData : undefined
         };
 
+        const senderForPush = isGroup ? groupId : user;
+        
         const pollingMessage = {
             messageId,
             client_msg_id: String(clientMessageId || messageId),
@@ -2731,46 +2846,63 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             groupSenderName: senderLabel,
             ...messageMetadata
         };
-        // Audit: log message creation to MessageActivities table (fire-and-forget).
-        void mysqlLogsService.insertMessageActivity({
-            actionType: 'message',
-            messageId,
-            sender: user,
-            recipient: groupId || (originalSender || ''),
-            groupId: groupId || null,
-            body: reply || null,
-            imageUrl: imageUrl || null,
-            fileUrl: fileUrl || null,
-            clientMsgId: String(clientMessageId || messageId).slice(0, 64),
-            status: 'sent',
-            actionTimestamp: Date.now()
-        }).catch(() => {});
+        
+        // ─── PHASE 4: Atomic Transaction for Message Persistence ───
+        // Generate persistent sequence number for ordering (survives server restart)
+        const pts = await generateSequenceNumber(groupId || user, activeRedisStateStore);
+        
+        // Insert MessageActivities (audit) + Logs (main storage) atomically in a transaction
+        // This guarantees all-or-nothing semantics. If either fails, both roll back.
+        // MySQL UNIQUE constraint on ClientMsgId provides idempotency if client retries.
+        const transactionResult = await mysqlLogsService.insertMessageActivityAndLog(
+            {
+                actionType: 'message',
+                messageId,
+                sender: user,
+                recipient: groupId || (originalSender || ''),
+                groupId: groupId || null,
+                body: reply || null,
+                imageUrl: imageUrl || null,
+                fileUrl: fileUrl || null,
+                clientMsgId: String(clientMessageId || messageId).slice(0, 64),
+                status: 'sent',
+                actionTimestamp: sentAtMs,
+                pts
+            },
+            {
+                sender: senderForPush || user,
+                recipient: Array.isArray(targetToNotify) ? targetToNotify.join(',') : (targetToNotify || ''),
+                message: reply || '',
+                status: 'Sent',
+                msgId: messageId,
+                imageUrl: imageUrl || '',
+                fileUrl: fileUrl || '',
+                groupSenderName: isGroup ? senderLabel : '',
+                sentDateTime: sentDateTimeIso,
+                receiveDateTime: sentDateTimeIso,
+                pts
+            }
+        );
+        
+        // Handle transaction result: if duplicate, return success without further processing
+        if (transactionResult.isDuplicate) {
+            console.log(`[REPLY] Duplicate message detected (clientMsgId=${normalizedClientMsgId}) — returning success without reprocessing`);
+            return {
+                status: 'success',
+                details: {
+                    success: 0,
+                    failed: 0,
+                    deduped: true,
+                    dedupeSource: 'mysql'
+                }
+            };
+        }
+        
+        if (!transactionResult.success) {
+            throw new Error(`[TRANSACTION] Failed to insert message: ${transactionResult.error}`);
+        }
 
         const queuedDeliveries = await addToQueue(targetToNotify, pollingMessage);
-
-        const senderForPush = isGroup ? groupId : user;
-
-        // Write the message to the main logs table NOW, before FCM fires.
-        // sendPushNotificationToUser() runs the Google Sheets subscription
-        // lookup before it calls logNotificationStatus(), so without this
-        // early write the message can be absent from /messages/logs for
-        // many seconds after FCM delivery.  The Flutter recovery pull
-        // (recoverMissedMessages → pullMessages → getMessagesFromLogs) would
-        // then return empty results, leaving the chat stale until the next
-        // poll tick.  Awaiting the insert guarantees the row is committed
-        // before FCM is dispatched.
-        await logNotificationStatus(
-            senderForPush,
-            Array.isArray(targetToNotify) ? targetToNotify.join(',') : targetToNotify,
-            reply || '',
-            'Sent',
-            '',
-            '',
-            messageId,
-            imageUrl || '',
-            fileUrl || '',
-            { groupSenderName: isGroup ? senderLabel : '', sentDateTime: sentDateTimeIso }
-        );
 
         const firstRecipient = Array.isArray(targetToNotify) ? targetToNotify[0] : targetToNotify;
         const recipientOnline = websocketClients.has(normalizeUserCandidate(firstRecipient));
@@ -5651,7 +5783,12 @@ app.use((req, res, next) => {
     }
 
     const requestPath = String(req.path || '').trim();
-    const isAuthSessionPath = requestPath === '/auth/session' || requestPath === '/notify/auth/session';
+    // Exclude auth session paths and all their sub-paths from CSRF requirement.
+    // These are public auth endpoints that don't require CSRF tokens.
+    const isAuthSessionPath = requestPath === '/auth/session' || 
+                              requestPath === '/notify/auth/session' ||
+                              requestPath.startsWith('/auth/session/') ||
+                              requestPath.startsWith('/notify/auth/session/');
     if (isAuthSessionPath && method === 'POST') {
         return next();
     }

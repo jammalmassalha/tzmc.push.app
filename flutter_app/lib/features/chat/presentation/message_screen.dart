@@ -186,21 +186,54 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       (_) => _scheduleStickyDateRefresh(),
     );
     WidgetsBinding.instance.addPostFrameCallback((_) => _resetBadgeOnOpen());
+    
+    // PHASE 8: Optimized Startup Sync
+    // Load cached messages immediately, then sync in background
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      debugPrint('📱🔄 [MessageScreen] Loading chat history for ${widget.chatId}');
-      try {
-        await ref.read(chatStoreProvider.notifier).loadChatHistory(widget.chatId);
-        if (mounted) {
-          debugPrint('✅📱 [MessageScreen] Chat history loaded successfully');
-          setState(() => _isLoadingInitialMessages = false);
-        }
-      } catch (e) {
-        if (mounted) {
-          debugPrint('❌📱 [MessageScreen] Failed to load chat history: $e');
-          setState(() => _isLoadingInitialMessages = false);
-        }
-      }
+      _initializeMessagesPhase8();
     });
+  }
+
+  /// PHASE 8: Optimized Startup Sync - Load cached, then sync
+  Future<void> _initializeMessagesPhase8() async {
+    if (!mounted) return;
+    
+    final store = ref.read(chatStoreProvider.notifier);
+    
+    try {
+      debugPrint('📱🔄 [MessageScreen] PHASE 8: Loading cached messages for ${widget.chatId}');
+      
+      // Step 1: Load cached messages from SQLite (instant display)
+      final cachedMessages = await store.loadCachedMessagesForChat(widget.chatId);
+      
+      if (cachedMessages.isNotEmpty && mounted) {
+        debugPrint('✅📱 [MessageScreen] PHASE 8: Loaded ${cachedMessages.length} cached messages, showing them now');
+        // Apply cached messages to Riverpod state so UI renders them immediately
+        store.applyCachedMessagesForChat(widget.chatId, cachedMessages);
+        setState(() {}); // Trigger rebuild with cached messages
+      }
+      
+      // Step 2: Trigger full sync in background (doesn't block UI)
+      debugPrint('📱🔄 [MessageScreen] PHASE 8: Triggering background sync for ${widget.chatId}');
+      unawaited(
+        store.loadChatHistory(widget.chatId).then((_) {
+          if (mounted) {
+            debugPrint('✅📱 [MessageScreen] PHASE 8: Background sync completed');
+            setState(() => _isLoadingInitialMessages = false);
+          }
+        }).catchError((e) {
+          if (mounted) {
+            debugPrint('❌📱 [MessageScreen] PHASE 8: Background sync failed: $e');
+            setState(() => _isLoadingInitialMessages = false);
+          }
+        }),
+      );
+    } catch (e, st) {
+      if (mounted) {
+        debugPrint('❌📱 [MessageScreen] PHASE 8: Error during initialization: $e\n$st');
+        setState(() => _isLoadingInitialMessages = false);
+      }
+    }
   }
 
   void _clearCurrentChatSelection() {
