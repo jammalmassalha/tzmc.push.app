@@ -2744,7 +2744,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             messageId,
             title: notificationTitle,
             body: {
-                shortText: isGroup ? `${senderLabel}: ${shortText}` : shortText,
+                shortText: shortText,
                 longText: reply
             },
             image: imageUrl,
