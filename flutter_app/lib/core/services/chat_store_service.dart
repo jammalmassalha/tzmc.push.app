@@ -1251,6 +1251,68 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     await _pullAllMessagesFromLogs(user: user, since: 0);
   }
 
+  /// PHASE 8: Load cached messages from SQLite for instant UI display.
+  ///
+  /// This method loads messages from the local SQLite database without making
+  /// an API call. It's used to show cached messages immediately when the user
+  /// opens a chat, creating the illusion of instant load. The actual sync
+  /// (via loadChatHistory) happens in the background.
+  ///
+  /// Returns the number of messages loaded, or -1 on error.
+  /// Does NOT modify state; only returns messages for the UI to display.
+  Future<List<ChatMessage>> loadCachedMessagesForChat(String chatId) async {
+    if (chatId.trim().isEmpty) {
+      debugPrint(
+        '🔍📱 [ChatStoreService] ⚠️ Empty chat ID for cached load',
+      );
+      return [];
+    }
+
+    try {
+      debugPrint(
+        '🔍📱 [ChatStoreService] PHASE 8: Loading cached messages for $chatId from SQLite',
+      );
+
+      // Load up to 100 recent messages from local database
+      final cachedMessages = await _db.getMessagesByChatId(
+        chatId.toLowerCase(),
+        limit: 100,
+      );
+
+      if (cachedMessages.isNotEmpty) {
+        debugPrint(
+          '✅🔍📱 [ChatStoreService] Loaded ${cachedMessages.length} cached messages for $chatId',
+        );
+      } else {
+        debugPrint(
+          '🔍📱 [ChatStoreService] No cached messages found for $chatId (fresh chat or first load)',
+        );
+      }
+
+      return cachedMessages;
+    } catch (e, st) {
+      debugPrint(
+        '❌🔍📱 [ChatStoreService] Error loading cached messages for $chatId: $e\n$st',
+      );
+      return [];
+    }
+  }
+
+  /// PHASE 8: Apply cached messages to state for instant UI display.
+  ///
+  /// This complements loadCachedMessagesForChat by updating the Riverpod state
+  /// with the cached messages so they appear in the UI immediately.
+  void applyCachedMessagesForChat(String chatId, List<ChatMessage> messages) {
+    if (messages.isEmpty) return;
+    
+    debugPrint(
+      '🔍📱 [ChatStoreService] PHASE 8: Applying ${messages.length} cached messages to state for $chatId',
+    );
+    
+    // Use the internal _addMessagesToState to properly merge with existing state
+    _addMessagesToState(messages);
+  }
+
   /// Load older messages (pagination) for a specific chat.
   /// Fetches messages older than [beforeTimestamp] and returns the count of new messages added.
   /// This is used for "load more" functionality when scrolling to the top of the message list.
