@@ -380,6 +380,9 @@ function registerMessageController(app, deps = {}) {
             const hasLastSyncTimestamp = !isInitialSync;
             const lastSyncTimestamp = Math.max(0, Number(rawLastSyncTimestamp) || 0);
             const requestedChatId = String(req.query && (req.query.chat_id || req.query.chatId) || '').trim();
+            // Parse limit and offset for pagination (default to 100 results per page)
+            const requestedLimit = Math.max(1, Math.min(1000, Number(req.query && req.query.limit) || 100));
+            const requestedOffset = Math.max(0, Number(req.query && req.query.offset) || 0);
             let messages = [];
             const store = getActiveRedisStateStore();
             if (store && store.isEnabled && typeof store.readQueueSince === 'function') {
@@ -409,34 +412,43 @@ function registerMessageController(app, deps = {}) {
                 });
                 if (!messages.length && typeof getLogsMessagesForUser === 'function') {
                     try {
-                        messages = await getLogsMessagesForUser(user, {
-                            limit: 200,
-                            offset: 0,
+                        const queryOptions = {
+                            limit: requestedLimit,
+                            offset: requestedOffset,
                             since: lastSyncTimestamp
-                        });
+                        };
+                        // OPTIMIZATION: Push chat_id filter to database query if specified
+                        if (requestedChatId) {
+                            queryOptions.chatId = requestedChatId;
+                        }
+                        messages = await getLogsMessagesForUser(user, queryOptions);
                     } catch (error) {
                         console.warn('[MYSQL] Delta chat sync failed:', error && error.message ? error.message : error);
                     }
                 }
             } else {
-                // A first sync is deliberately bounded.  The mailbox is only a
-                // realtime buffer and may be empty after a server restart, so
-                // use the durable MySQL log as the source of truth when it is
-                // available.
+                // OPTIMIZATION: Reduce initial sync limit from 20,000 to 1,000 for better performance.
+                // The mailbox is only a realtime buffer and may be empty after a server restart, so
+                // use the durable MySQL log as the source of truth when it is available.
                 if (typeof getLogsMessagesForUser === 'function') {
                     try {
-                        messages = await getLogsMessagesForUser(user, { limit: 20000, offset: 0, since: 0 });
+                        const queryOptions = {
+                            limit: Math.min(requestedLimit, 1000), // Cap at 1000 for initial sync
+                            offset: requestedOffset,
+                            since: 0
+                        };
+                        // OPTIMIZATION: Push chat_id filter to database query if specified
+                        if (requestedChatId) {
+                            queryOptions.chatId = requestedChatId;
+                        }
+                        messages = await getLogsMessagesForUser(user, queryOptions);
                     } catch (error) {
                         console.warn('[MYSQL] Initial chat sync failed:', error && error.message ? error.message : error);
                     }
                 }
-                messages = messages.sort((a, b) => {
-                    const timestamp = (message) => Number(message && (
-                        message.sentDateTime || message.timestamp || message.createdAt
-                    )) || Date.parse(String(message && (message.sentDateTime || message.timestamp || message.createdAt) || '')) || 0;
-                    return timestamp(a) - timestamp(b);
-                });
             }
+            // OPTIMIZATION: Remove duplicate sorting. Keep only single sort by pts/seq_id.
+            // Messages should already be sorted by timestamp at the database layer.
             messages.sort((a, b) => Number(a && (a.pts || a.seq_id)) - Number(b && (b.pts || b.seq_id)));
             const currentSequence = typeof getMailboxSequence === 'function'
                 ? Number(getMailboxSequence(user)) || 0
@@ -478,7 +490,8 @@ function registerMessageController(app, deps = {}) {
             );
             console.info(
                 `[SYNC-PIPELINE] ${isInitialSync ? 'Full' : 'Delta'} sync user=${user} ` +
-                `messages=${messages.length} chats=${chatList.length} cursor=${lastSyncTimestamp}`
+                `messages=${messages.length} chats=${chatList.length} cursor=${lastSyncTimestamp} ` +
+                `limit=${requestedLimit} offset=${requestedOffset}${requestedChatId ? ` chatId=${requestedChatId}` : ''}`
             );
             return res.json({
                 success: true,
