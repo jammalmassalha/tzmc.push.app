@@ -540,6 +540,74 @@ function registerMessageController(app, deps = {}) {
             // OPTIMIZATION: Remove duplicate sorting. Keep only single sort by pts/seq_id.
             // Messages should already be sorted by timestamp at the database layer.
             messages.sort((a, b) => Number(a && (a.pts || a.seq_id)) - Number(b && (b.pts || b.seq_id)));
+            
+            // ── Fetch group sender names from MessageActivities ──────────────────────
+            // For group messages, look up the sender name from MessageActivities table
+            // so we can strip the prefix from the body and return a clean message.
+            // This mirrors the processing done in /messages/logs endpoint.
+            let groupSenderByMsgId = new Map();
+            try {
+                if (typeof getGroupMessageSendersByMessageId === 'function' && messages.length > 0) {
+                    // Collect unique messageIds from the messages that look like group messages
+                    const messageIdsToLookup = [];
+                    for (const msg of messages) {
+                        if (!msg || typeof msg !== 'object') continue;
+                        const mid = String(msg.messageId || msg.id || '').trim();
+                        const isGroup = Boolean(msg.groupId || msg.isGroup || (msg.sender && msg.sender.startsWith('group:')));
+                        if (mid && isGroup) {
+                            messageIdsToLookup.push(mid);
+                        }
+                    }
+                    if (messageIdsToLookup.length > 0) {
+                        groupSenderByMsgId = await getGroupMessageSendersByMessageId(
+                            user,
+                            { messageIds: messageIdsToLookup }
+                        );
+                    }
+                }
+            } catch (_gsErr) {
+                // Non-fatal — sender label will fall back to existing groupSenderName
+                console.warn('[SYNC] Failed to fetch group sender names:', _gsErr && _gsErr.message);
+            }
+            
+            // ── Process messages to strip sender prefix and populate groupSenderName ──
+            // For each message, if it's a group message with sender name embedded in body,
+            // extract it and remove the prefix from body.
+            for (let i = 0; i < messages.length; i++) {
+                const message = messages[i];
+                if (!message || typeof message !== 'object') continue;
+                
+                const isGroup = Boolean(message.groupId || message.isGroup || (message.sender && message.sender.startsWith('group:')));
+                if (!isGroup) continue;
+                
+                const mid = String(message.messageId || message.id || '').trim();
+                
+                // Start with existing groupSenderName or look it up from MessageActivities
+                let groupSenderName = String(message.groupSenderName || message.senderName || message.fromName || '').trim();
+                if (!groupSenderName && mid && groupSenderByMsgId.has(mid)) {
+                    groupSenderName = groupSenderByMsgId.get(mid);
+                }
+                
+                // If we have a group sender name, strip it from the body if present
+                let body = String(message.body || message.message || message.content || '').trim();
+                if (groupSenderName && body) {
+                    const escapedName = groupSenderName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const prefixPattern = new RegExp(`^${escapedName}\\s*:\\s*`);
+                    if (prefixPattern.test(body)) {
+                        const stripped = body.replace(prefixPattern, '').trim();
+                        if (stripped) {
+                            body = stripped;
+                            // Update the message with the clean body
+                            message.body = body;
+                            message.message = body;
+                        }
+                    }
+                }
+                
+                // Store the group sender name on the message for the response
+                message.groupSenderName = groupSenderName || undefined;
+            }
+            
             const currentSequence = typeof getMailboxSequence === 'function'
                 ? Number(getMailboxSequence(user)) || 0
                 : (messages.length ? Number(messages[messages.length - 1].pts || messages[messages.length - 1].seq_id) || 0 : lastSequence);
@@ -557,14 +625,23 @@ function registerMessageController(app, deps = {}) {
                 const timestamp = Number(message.sentDateTime || message.timestamp || message.createdAt) ||
                     Date.parse(String(message.sentDateTime || message.timestamp || message.createdAt || '')) || 0;
                 const current = chatById.get(chatId);
+                
+                // Build lastMessageText: use clean body (sender prefix already stripped)
+                // and optionally prefix with groupSenderName for group chats
+                let lastMessageText = message.body || message.message || message.content || '';
+                const isGroup = Boolean(message.groupId || message.isGroup);
+                if (isGroup && message.groupSenderName) {
+                    lastMessageText = `${message.groupSenderName}: ${lastMessageText}`;
+                }
+                
                 if (!current || timestamp >= current.lastMessageTimestamp) {
                     chatById.set(chatId, {
                         chatId,
                         chatName: message.chatName || message.groupName || chatId,
-                        isGroup: Boolean(message.groupId || message.isGroup),
+                        isGroup: isGroup,
                         avatarUrl: message.avatarUrl || message.upic || null,
                         lastMessageId: message.messageId || message.id || null,
-                        lastMessageText: message.body || message.message || message.content || '',
+                        lastMessageText: lastMessageText,
                         lastMessageSenderId: message.sender || message.from || null,
                         lastMessageTimestamp: timestamp,
                         lastMessageStatus: message.status || message.deliveryStatus || null,
