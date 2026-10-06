@@ -2046,6 +2046,117 @@ export class MysqlLogsService {
     }
   }
 
+  /**
+   * Atomically insert both MessageActivities (audit) and Logs (main storage) in a transaction.
+   * This ensures that if either insert fails, both are rolled back, maintaining data consistency.
+   * Handles MySQL UNIQUE constraint on clientMsgId by catching ER_DUP_ENTRY and returning
+   * success (idempotent response) to the client.
+   */
+  async insertMessageActivityAndLog(
+    activity: {
+      actionType: string;
+      messageId?: string;
+      sender: string;
+      recipient?: string;
+      groupId?: string;
+      body?: string;
+      imageUrl?: string;
+      fileUrl?: string;
+      clientMsgId?: string;
+      pts?: number;
+      status?: 'sent' | 'delivered' | 'read';
+      actionTimestamp?: number;
+    },
+    logPayload: {
+      sender: string;
+      recipient: string;
+      message: string;
+      status: string;
+      details?: string;
+      msgId: string;
+      recipientAuthJson?: string;
+      imageUrl?: string;
+      fileUrl?: string;
+      groupSenderName?: string;
+      sentDateTime?: string;
+      receiveDateTime?: string;
+      pts?: number;
+    }
+  ): Promise<{success: boolean; isDuplicate: boolean; error?: string}> {
+    await this.ensureMessageActivitiesTable();
+    
+    const connection = await this.pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      
+      // Insert into MessageActivities (audit log)
+      const actionType = toTrimmedString(activity.actionType) || 'unknown';
+      const messageId = toTrimmedString(activity.messageId) || null;
+      const sender = toTrimmedString(activity.sender) || 'unknown';
+      const recipient = toTrimmedString(activity.recipient) || null;
+      const groupId = toTrimmedString(activity.groupId) || null;
+      const body = activity.body != null ? String(activity.body) : null;
+      const imageUrl = toTrimmedString(activity.imageUrl) || null;
+      const fileUrl = toTrimmedString(activity.fileUrl) || null;
+      const clientMsgId = toTrimmedString(activity.clientMsgId).slice(0, 64) || null;
+      const pts = Number(activity.pts) > 0 ? Number(activity.pts) : null;
+      const status = activity.status === 'delivered' || activity.status === 'read' ? activity.status : 'sent';
+      const actionTimestamp = Number(activity.actionTimestamp) || Date.now();
+      const sentDateTime = new Date(actionTimestamp);
+      
+      await connection.execute(
+        `INSERT INTO \`MessageActivities\`
+           (\`ActionType\`, \`MessageId\`, \`Sender\`, \`Recipient\`, \`GroupId\`, \`Body\`, \`ImageUrl\`, \`FileUrl\`, \`ClientMsgId\`, \`Pts\`, \`Status\`, \`ActionTimestamp\`, \`sentDateTime\`)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [actionType, messageId, sender, recipient, groupId, body, imageUrl, fileUrl, clientMsgId, pts, status, actionTimestamp, sentDateTime]
+      );
+      
+      // Insert into Logs (main message store)
+      const logsQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`, \`GroupSenderName\`, \`sentDateTime\`, \`receiveDateTime\`, \`pts\`)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      
+      const dateTime = new Date();
+      const sentDT = logPayload.sentDateTime ? new Date(logPayload.sentDateTime) : dateTime;
+      const receiveDT = logPayload.receiveDateTime ? new Date(logPayload.receiveDateTime) : dateTime;
+      
+      await connection.execute(logsQuery, [
+        dateTime,
+        logPayload.recipient || null,
+        logPayload.sender || 'System',
+        logPayload.msgId,
+        logPayload.message || '',
+        logPayload.status || 'Sent',
+        logPayload.details || '',
+        logPayload.recipientAuthJson || '',
+        logPayload.imageUrl || null,
+        logPayload.fileUrl || null,
+        logPayload.groupSenderName || null,
+        sentDT,
+        receiveDT,
+        logPayload.pts || null
+      ]);
+      
+      await connection.commit();
+      return { success: true, isDuplicate: false };
+    } catch (error: unknown) {
+      await connection.rollback();
+      
+      const errCode = (error as { code?: string }).code;
+      const errMsg = String((error as { message?: string }).message || '');
+      
+      // MySQL UNIQUE constraint on ClientMsgId — this is expected for retried requests
+      if (errCode === 'ER_DUP_ENTRY' && errMsg.includes('uk_client_msg_id_idempotency')) {
+        console.log(`[MYSQL] Duplicate clientMsgId detected (idempotent) — returning success`);
+        return { success: true, isDuplicate: true };
+      }
+      
+      console.error('[MYSQL] insertMessageActivityAndLog transaction error:', errMsg);
+      return { success: false, isDuplicate: false, error: errMsg };
+    } finally {
+      connection.release();
+    }
+  }
+
   async markMessageDelivered(messageId: string, deliveredAt = Date.now()): Promise<void> {
       await this.ensureMessageActivitiesTable();
       await this.pool.execute(

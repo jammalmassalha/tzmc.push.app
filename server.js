@@ -2825,6 +2825,8 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             data: Object.keys(notificationExtraData).length ? notificationExtraData : undefined
         };
 
+        const senderForPush = isGroup ? groupId : user;
+        
         const pollingMessage = {
             messageId,
             client_msg_id: String(clientMessageId || messageId),
@@ -2844,46 +2846,63 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             groupSenderName: senderLabel,
             ...messageMetadata
         };
-        // Audit: log message creation to MessageActivities table (fire-and-forget).
-        void mysqlLogsService.insertMessageActivity({
-            actionType: 'message',
-            messageId,
-            sender: user,
-            recipient: groupId || (originalSender || ''),
-            groupId: groupId || null,
-            body: reply || null,
-            imageUrl: imageUrl || null,
-            fileUrl: fileUrl || null,
-            clientMsgId: String(clientMessageId || messageId).slice(0, 64),
-            status: 'sent',
-            actionTimestamp: Date.now()
-        }).catch(() => {});
+        
+        // ─── PHASE 4: Atomic Transaction for Message Persistence ───
+        // Generate persistent sequence number for ordering (survives server restart)
+        const pts = await generateSequenceNumber(groupId || user, activeRedisStateStore);
+        
+        // Insert MessageActivities (audit) + Logs (main storage) atomically in a transaction
+        // This guarantees all-or-nothing semantics. If either fails, both roll back.
+        // MySQL UNIQUE constraint on ClientMsgId provides idempotency if client retries.
+        const transactionResult = await mysqlLogsService.insertMessageActivityAndLog(
+            {
+                actionType: 'message',
+                messageId,
+                sender: user,
+                recipient: groupId || (originalSender || ''),
+                groupId: groupId || null,
+                body: reply || null,
+                imageUrl: imageUrl || null,
+                fileUrl: fileUrl || null,
+                clientMsgId: String(clientMessageId || messageId).slice(0, 64),
+                status: 'sent',
+                actionTimestamp: sentAtMs,
+                pts
+            },
+            {
+                sender: senderForPush || user,
+                recipient: Array.isArray(targetToNotify) ? targetToNotify.join(',') : (targetToNotify || ''),
+                message: reply || '',
+                status: 'Sent',
+                msgId: messageId,
+                imageUrl: imageUrl || '',
+                fileUrl: fileUrl || '',
+                groupSenderName: isGroup ? senderLabel : '',
+                sentDateTime: sentDateTimeIso,
+                receiveDateTime: sentDateTimeIso,
+                pts
+            }
+        );
+        
+        // Handle transaction result: if duplicate, return success without further processing
+        if (transactionResult.isDuplicate) {
+            console.log(`[REPLY] Duplicate message detected (clientMsgId=${normalizedClientMsgId}) — returning success without reprocessing`);
+            return {
+                status: 'success',
+                details: {
+                    success: 0,
+                    failed: 0,
+                    deduped: true,
+                    dedupeSource: 'mysql'
+                }
+            };
+        }
+        
+        if (!transactionResult.success) {
+            throw new Error(`[TRANSACTION] Failed to insert message: ${transactionResult.error}`);
+        }
 
         const queuedDeliveries = await addToQueue(targetToNotify, pollingMessage);
-
-        const senderForPush = isGroup ? groupId : user;
-
-        // Write the message to the main logs table NOW, before FCM fires.
-        // sendPushNotificationToUser() runs the Google Sheets subscription
-        // lookup before it calls logNotificationStatus(), so without this
-        // early write the message can be absent from /messages/logs for
-        // many seconds after FCM delivery.  The Flutter recovery pull
-        // (recoverMissedMessages → pullMessages → getMessagesFromLogs) would
-        // then return empty results, leaving the chat stale until the next
-        // poll tick.  Awaiting the insert guarantees the row is committed
-        // before FCM is dispatched.
-        await logNotificationStatus(
-            senderForPush,
-            Array.isArray(targetToNotify) ? targetToNotify.join(',') : targetToNotify,
-            reply || '',
-            'Sent',
-            '',
-            '',
-            messageId,
-            imageUrl || '',
-            fileUrl || '',
-            { groupSenderName: isGroup ? senderLabel : '', sentDateTime: sentDateTimeIso }
-        );
 
         const firstRecipient = Array.isArray(targetToNotify) ? targetToNotify[0] : targetToNotify;
         const recipientOnline = websocketClients.has(normalizeUserCandidate(firstRecipient));
