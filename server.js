@@ -5690,7 +5690,12 @@ app.use((req, res, next) => {
     }
 
     const requestPath = String(req.path || '').trim();
-    const isAuthSessionPath = requestPath === '/auth/session' || requestPath === '/notify/auth/session';
+    // Exclude auth session paths and all their sub-paths from CSRF requirement.
+    // These are public auth endpoints that don't require CSRF tokens.
+    const isAuthSessionPath = requestPath === '/auth/session' || 
+                              requestPath === '/notify/auth/session' ||
+                              requestPath.startsWith('/auth/session/') ||
+                              requestPath.startsWith('/notify/auth/session/');
     if (isAuthSessionPath && method === 'POST') {
         return next();
     }
