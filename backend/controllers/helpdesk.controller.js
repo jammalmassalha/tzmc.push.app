@@ -1010,6 +1010,7 @@ function registerHelpdeskController(app, deps = {}) {
     const helpdeskAdminMutationIpRateLimit = rateLimit({
         windowMs: 60 * 1000,
         limit: 10,
+		validate: { keyGeneratorIpFallback: false },
         standardHeaders: true,
         legacyHeaders: false,
         keyGenerator: (req) => req.ip || req.socket && req.socket.remoteAddress || 'helpdesk-admin',
@@ -1027,6 +1028,7 @@ function registerHelpdeskController(app, deps = {}) {
     const helpdeskReadIpRateLimit = rateLimit({
         windowMs: 60 * 1000,
         limit: 60,
+		validate: { keyGeneratorIpFallback: false },
         standardHeaders: true,
         legacyHeaders: false,
         keyGenerator: (req) => req.ip || req.socket && req.socket.remoteAddress || 'helpdesk-read',
