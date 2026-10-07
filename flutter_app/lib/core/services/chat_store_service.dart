@@ -3543,7 +3543,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // types (particularly action messages like reactions, edits, deletes).
     // In such cases, we still have the sender and can infer that we're the
     // recipient.
-    if (!isGroup && recipientId.isEmpty && msg.sender != null) {
+    if (!isGroup && (recipientId?.isEmpty ?? true) && msg.sender != null) {
       // If the message is from someone else and we don't have recipientId,
       // the recipientId should be us (the current user)
       if (!isFromMe && me != null && me.isNotEmpty) {
