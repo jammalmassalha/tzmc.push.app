@@ -129,6 +129,9 @@ class ChatState {
   /// Map of chatId → set of usernames currently typing in that chat.
   final Map<String, Set<String>> typingByChatId;
 
+  /// Username of the currently authenticated user, normalized to lowercase.
+  final String? currentUser;
+
   const ChatState({
     this.contacts = const {},
     this.groups = const {},
@@ -144,6 +147,7 @@ class ChatState {
     this.syncProgressPercent = 0,
     this.syncProgressLabel = '',
     this.typingByChatId = const <String, Set<String>>{},
+    this.currentUser,
   });
 
   ChatState copyWith({
@@ -162,6 +166,7 @@ class ChatState {
     int? syncProgressPercent,
     String? syncProgressLabel,
     Map<String, Set<String>>? typingByChatId,
+    String? currentUser,
   }) {
     return ChatState(
       contacts: contacts ?? this.contacts,
@@ -178,6 +183,7 @@ class ChatState {
       syncProgressPercent: syncProgressPercent ?? this.syncProgressPercent,
       syncProgressLabel: syncProgressLabel ?? this.syncProgressLabel,
       typingByChatId: typingByChatId ?? this.typingByChatId,
+      currentUser: currentUser ?? this.currentUser,
     );
   }
 
@@ -223,7 +229,7 @@ class ChatState {
     }
 
     // Add direct contacts with messages
-    final currentUser = _currentUser ?? '';
+    final currentUser = this.currentUser ?? '';
     for (final entry in messagesByChat.entries) {
       final chatId = entry.key;
       final messages = entry.value;
@@ -505,7 +511,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     if (state.isInitialized) {
       if (state.isRestricted != isRestricted) {
-        state = state.copyWith(isRestricted: isRestricted);
+        state = state.copyWith(isRestricted: isRestricted, currentUser: _currentUser);
       }
 
       if (!_initialSyncCompleted && !_initialSyncInFlight) {
@@ -514,11 +520,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       return;
     }
 
-    state = state.copyWith(isLoading: true, isRestricted: isRestricted);
+    state = state.copyWith(isLoading: true, isRestricted: isRestricted, currentUser: _currentUser);
 
     try {
       final deletedChats = await _readDeletedChats(normalized);
-      state = state.copyWith(deletedChats: deletedChats);
+      state = state.copyWith(deletedChats: deletedChats, currentUser: _currentUser);
 
       // Load the persisted incremental-sync high-water mark and the oldest
       // pending background push, so the recovery pull below starts from a
@@ -538,6 +544,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         deletedChats: deletedChats,
         isLoading: false,
         isInitialized: true,
+        currentUser: _currentUser,
       );
       // Try to restore cached data so the UI is not blank while syncing.
       // The sync will update with server-authoritative data.
@@ -552,6 +559,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       state = state.copyWith(
         isLoading: false,
         isInitialized: true,
+        currentUser: _currentUser,
       );
       // Even if initialization fails, try to restore from cache as a fallback.
       unawaited(restoreLocalCache());
