@@ -2836,6 +2836,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             messageId,
             client_msg_id: String(clientMessageId || messageId),
             sender: isGroup ? groupId : user,
+            toUser: isGroup ? undefined : (originalSender || undefined),
             body: reply,
             timestamp: sentAtMs,
             sentDateTime: sentDateTimeIso,
