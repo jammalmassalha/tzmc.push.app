@@ -1394,22 +1394,44 @@ class PushNotificationService {
       message.hashCode,
       notification.title,
       (() {
-        // Prefer data fields over the FCM notification.body — they are always
-        // set by the backend and survive payload transformations on every
-        // platform, whereas notification.body may be absent in edge cases.
-        final fromData =
-            (message.data['messageText']?.toString().trim().isNotEmpty == true
-                ? message.data['messageText']?.toString().trim()
-                : null) ??
-            (message.data['body']?.toString().trim().isNotEmpty == true
-                ? message.data['body']?.toString().trim()
-                : null);
-        if (fromData != null && fromData.toLowerCase() != 'new notification') {
-          return fromData;
+        // For group chats, prefer the notification.body which includes sender name (from shortText)
+        // For direct messages, use messageText
+        final isGroup = message.data['isGroup'] == 'true' || 
+                       message.data['isGroup'] == true ||
+                       (message.data['groupId']?.toString().trim().isNotEmpty == true);
+        
+        if (isGroup) {
+          // For groups, use notification.body which has format "SenderName: Message"
+          // This comes from the backend's shortText field
+          if (notification.body?.isNotEmpty == true && notification.body!.toLowerCase() != 'new notification') {
+            return notification.body!;
+          }
+          
+          // Fallback: reconstruct from group sender name and message text if notification.body is missing
+          final senderName = message.data['groupSenderName']?.toString().trim() ?? '';
+          final messageText = message.data['messageText']?.toString().trim() ?? 
+                             message.data['body']?.toString().trim() ?? 
+                             notification.body ?? '';
+          if (senderName.isNotEmpty && messageText.isNotEmpty) {
+            return '$senderName: $messageText';
+          }
+          return messageText;
+        } else {
+          // For direct messages, prefer messageText from data fields
+          final fromData =
+              (message.data['messageText']?.toString().trim().isNotEmpty == true
+                  ? message.data['messageText']?.toString().trim()
+                  : null) ??
+              (message.data['body']?.toString().trim().isNotEmpty == true
+                  ? message.data['body']?.toString().trim()
+                  : null);
+          if (fromData != null && fromData.toLowerCase() != 'new notification') {
+            return fromData;
+          }
+          return (notification.body?.isNotEmpty == true)
+              ? notification.body
+              : fromData ?? '';
         }
-        return (notification.body?.isNotEmpty == true)
-            ? notification.body
-            : fromData ?? '';
       })(),
       details,
       payload: notificationPayload,

@@ -2801,6 +2801,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         const normalizedGroupType = groupRecord ? groupRecord.type : normalizeGroupType(groupType || 'group');
         const notificationTitle = isGroup ? (normalizedGroupName || 'Group message') : senderLabel;
         const notificationExtraData = {
+            isGroup: isGroup ? 'true' : 'false',
             ...(isGroup ? {
                 groupId,
                 groupName: normalizedGroupName,
@@ -3066,6 +3067,7 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
         
         notificationData.title = resolvedGroupName || 'הודעה חדשה';
         Object.assign(notificationData.data, {
+            isGroup: 'true',
             groupId, groupName: resolvedGroupName, groupMembers: resolvedGroupMembers,
             groupCreatedBy: resolvedGroupCreatedBy, groupAdmins: groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : undefined,
             groupUpdatedAt: resolvedGroupUpdatedAt, groupType: resolvedGroupType
@@ -8115,6 +8117,7 @@ app.post(
             },
             data: {
                 type: 'group-update',
+                isGroup: 'true',
                 groupId,
                 groupName: resolvedGroupName,
                 groupMembers: resolvedGroupMembers,
