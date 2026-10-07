@@ -365,6 +365,58 @@ class ChatMessage extends Equatable {
     return MessageReceiptStatus.sending;
   }
 
+  /// Returns the ID of the peer (the other person) in a direct message conversation.
+  /// 
+  /// For DMs (groupId is null):
+  /// - If this is an outgoing message (direction == outgoing), returns the recipient (chatId)
+  /// - If this is an incoming message (direction == incoming), returns the sender
+  /// 
+  /// For group messages, returns the groupId (not applicable for 1:1 conversations).
+  /// 
+  /// This method ensures consistent peer identification regardless of message direction,
+  /// preventing the creation of duplicate self-chats when messages flow in both directions.
+  String getPeerId(String currentUserId) {
+    if (groupId != null && groupId!.isNotEmpty) {
+      // Group message - peer is the group
+      return groupId!;
+    }
+    
+    final currentUserNorm = currentUserId.trim().toLowerCase();
+    final senderNorm = sender.trim().toLowerCase();
+    
+    // For direct messages: if I sent it, peer is the recipient (chatId)
+    // Otherwise, peer is the sender
+    if (senderNorm == currentUserNorm) {
+      return chatId; // I am the sender, so peer is the recipient (stored in chatId)
+    } else {
+      return senderNorm; // I am not the sender, so peer is the sender
+    }
+  }
+
+  /// Returns the display name for the peer in a conversation.
+  /// 
+  /// This should be used instead of hardcoding senderDisplayName or senderName,
+  /// as it correctly identifies who the current user is talking to.
+  /// 
+  /// Returns senderDisplayName if available, otherwise returns the peer ID itself.
+  String getPeerName(String currentUserId) {
+    if (groupId != null && groupId!.isNotEmpty) {
+      // Group message - peer is the group (should use groupName in UI)
+      return groupName ?? groupId ?? '';
+    }
+    
+    final currentUserNorm = currentUserId.trim().toLowerCase();
+    final senderNorm = sender.trim().toLowerCase();
+    
+    // For direct messages from the other person, use their display name
+    if (senderNorm != currentUserNorm && senderDisplayName != null && senderDisplayName!.isNotEmpty) {
+      return senderDisplayName!;
+    }
+    
+    // For outgoing messages or when display name is absent, return the peer ID
+    return getPeerId(currentUserId);
+  }
+
   /// Parses a flexible timestamp value (ISO 8601 string, epoch milliseconds as
   /// int/num/string, or DateTime) into a UTC [DateTime]. Returns null when the
   /// value is missing or unparseable.

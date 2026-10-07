@@ -223,6 +223,7 @@ class ChatState {
     }
 
     // Add direct contacts with messages
+    final currentUser = _currentUser ?? '';
     for (final entry in messagesByChat.entries) {
       final chatId = entry.key;
       final messages = entry.value;
@@ -234,13 +235,15 @@ class ChatState {
         continue; // Handle groups separately
       }
 
-      // Direct chat
-      final contact = contactFor(chatId);
+      // Direct chat - use the peer name from the last message using getPeerName()
       final lastMessage = messages.first;
+      final peerId = lastMessage.getPeerId(currentUser);
+      final peerName = lastMessage.getPeerName(currentUser);
+      final contact = contactFor(peerId);
 
       items.add(ChatListItem(
         id: chatId,
-        title: contact?.displayName ?? chatId,
+        title: contact?.displayName ?? peerName,
         info: contact?.info,
         phone: contact?.phone,
         subtitle: _getMessagePreview(lastMessage, includeSender: true),
@@ -2471,7 +2474,23 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       if (toUser.isEmpty || toUser == meNorm || toUser == senderNorm) return;
       chatId = toUser;
     } else {
-      chatId = senderNorm;
+      // For incoming DM messages from others, we need to use the sender as chatId.
+      // BUT first, protect against self-chat creation by checking if the sender
+      // is actually us (in case of normalization mismatches or race conditions).
+      if (meNorm.isNotEmpty && senderNorm == meNorm) {
+        // This is actually a self-echo that wasn't caught above.
+        // Try to use toUser if available, otherwise skip to prevent self-chat.
+        final toUser = (str(data['toUser']) ?? '').trim().toLowerCase();
+        if (toUser.isEmpty || toUser == meNorm) {
+          // Can't determine the other party, skip this message
+          debugPrint('[CHAT] ⚠️ Skipping self-echo without deterministic toUser: sender=$senderNorm, toUser=$toUser');
+          return;
+        }
+        chatId = toUser;
+      } else {
+        // Normal case: incoming message from someone else, group by their ID
+        chatId = senderNorm;
+      }
     }
 
     // Backend may include either the full body (messageText) or a truncated
