@@ -2816,7 +2816,11 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             // Chronological-ordering metadata: lets clients slot the message
             // into its correct position instead of appending it at the tail.
             messageId,
-            chatId: groupId || user,
+            // CRITICAL FIX: For direct messages, use the recipient (originalSender) as chatId,
+            // not the sender. This ensures messages appear in the correct conversation thread.
+            // For groups, use groupId. For self-echo/secretary redirects, originalSender identifies
+            // the actual conversation partner.
+            chatId: groupId || (originalSender || user),
             sentDateTime: sentDateTimeIso,
             timestamp: sentAtMs
         };
