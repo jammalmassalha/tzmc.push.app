@@ -2792,7 +2792,12 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         const isGroup = Boolean(groupId);
         const senderLabel = groupSenderName || senderName || user;
         const normalizedGroupName = (typeof groupName === 'string') ? groupName.trim() : groupName;
-        const shortText = reply || (imageUrl ? 'Sent an image' : 'New Message');
+        const messageBody = reply || (imageUrl ? 'Sent an image' : 'New Message');
+        // For group messages, prepend sender name to the notification short text
+        // so the popup notification shows who sent the message in the group
+        const shortText = isGroup && senderLabel 
+            ? `${senderLabel}: ${messageBody}`
+            : messageBody;
         const normalizedGroupType = groupRecord ? groupRecord.type : normalizeGroupType(groupType || 'group');
         const notificationTitle = isGroup ? (normalizedGroupName || 'Group message') : senderLabel;
         const notificationExtraData = {
@@ -2800,7 +2805,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
                 groupId,
                 groupName: normalizedGroupName,
                 groupType: normalizedGroupType,
-                groupMessageText: shortText,
+                groupMessageText: messageBody,
                 groupSenderName: senderLabel
             } : {}),
             ...(reply ? { messageText: reply } : {}),
