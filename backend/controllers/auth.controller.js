@@ -195,6 +195,7 @@ function registerAuthController(app, deps = {}) {
     const sessionStatusIpRateLimit = require('express-rate-limit')({
         windowMs: 60 * 1000,
         limit: Math.max(60, Number(process.env.AUTH_SESSION_STATUS_RATE_LIMIT_PER_IP) || 1200),
+		validate: { keyGeneratorIpFallback: false },
         standardHeaders: true,
         legacyHeaders: false,
         keyGenerator: (req) => (typeof getClientIpAddress === 'function' ? getClientIpAddress(req) : (req.ip || '')),
@@ -224,6 +225,7 @@ function registerAuthController(app, deps = {}) {
     const requestCodeIpRateLimit = rateLimit({
         windowMs: AUTH_CODE_RATE_LIMIT_WINDOW_MS,
         limit: AUTH_CODE_REQUEST_RATE_LIMIT_MAX_PER_IP,
+		validate: { keyGeneratorIpFallback: false },
         standardHeaders: true,
         legacyHeaders: false,
         keyGenerator: (req) => getClientIpAddress(req),
@@ -323,6 +325,7 @@ function registerAuthController(app, deps = {}) {
     const verifyCodeIpRateLimit = rateLimit({
         windowMs: AUTH_CODE_RATE_LIMIT_WINDOW_MS,
         limit: AUTH_CODE_VERIFY_RATE_LIMIT_MAX_PER_IP,
+		validate: { keyGeneratorIpFallback: false },
         standardHeaders: true,
         legacyHeaders: false,
         keyGenerator: (req) => getClientIpAddress(req),
