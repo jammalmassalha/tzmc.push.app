@@ -562,6 +562,7 @@ function registerAuthController(app, deps = {}) {
     const windowsLoginIpRateLimit = rateLimit({
         windowMs: 60 * 1000,
         limit: 120,
+		validate: { keyGeneratorIpFallback: false },
         standardHeaders: true,
         legacyHeaders: false,
         keyGenerator: (req) => getClientIpAddress(req),

@@ -12,7 +12,7 @@
  * - Automatic reconnection handling
  */
 
-const { createRedisStreamsManager } = require('./redis-streams');
+const { createRedisStreamsManager } = require('../services/redis-streams');
 
 /**
  * Create a WebSocket fan-out consumer
