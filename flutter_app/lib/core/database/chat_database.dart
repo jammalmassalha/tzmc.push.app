@@ -469,6 +469,7 @@ class ChatDatabase extends _$ChatDatabase {
   Future<void> syncOneToOne({
     required List<dynamic> chats,
     required List<dynamic> messages,
+    required String? currentUserId,
   }) async {
     final messageRows = messages;
     await transaction(() async {
@@ -483,22 +484,39 @@ class ChatDatabase extends _$ChatDatabase {
         if (raw is! Map) continue;
         final map = Map<String, dynamic>.from(raw);
         final id = '${map['id'] ?? map['messageId'] ?? ''}'.trim();
-        final chatId =
-            '${map['chatId'] ?? map['groupId'] ?? map['toUser'] ?? ''}'.trim();
-        if (id.isEmpty || chatId.isEmpty) continue;
+        if (id.isEmpty) continue;
+        
         final timestamp = _syncTimestamp(
           map['timestamp'] ?? map['sentDateTime'],
         );
+        
+        // Compute the correct chatId using resolveChatRoomId to prevent self-chats
+        // and handle messages sent to different users correctly
+        final groupId = '${map['groupId'] ?? ''}'.trim();
+        final sender = '${map['sender'] ?? map['from'] ?? ''}'.trim();
+        final recipientId = '${map['toUser'] ?? map['recipient'] ?? ''}'.trim();
+        final direction = map['direction'] ?? 'incoming';
+        
+        final chatId = resolveChatRoomId(
+          groupId: groupId.isNotEmpty ? groupId : null,
+          senderId: sender.isNotEmpty ? sender : null,
+          recipientId: groupId.isNotEmpty ? null : (recipientId.isNotEmpty ? recipientId : null),
+          currentUserId: currentUserId ?? '',
+        );
+        
+        // Skip messages that would create self-chats
+        if (chatId == null) continue;
+        
         final messageMap = <String, dynamic>{
           ...map,
           'id': id,
           'messageId': '${map['messageId'] ?? id}',
           'chatId': chatId,
-          'sender': '${map['sender'] ?? map['from'] ?? ''}',
+          'sender': sender,
           'body': '${map['body'] ?? map['message'] ?? map['content'] ?? ''}',
           'timestamp': timestamp,
           if (map['pts'] != null) 'pts': _syncInt(map['pts']),
-          'direction': map['direction'] ?? 'incoming',
+          'direction': direction,
           'deliveryStatus':
               map['deliveryStatus'] ?? map['status'] ?? 'delivered',
         };

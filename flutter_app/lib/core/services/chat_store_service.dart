@@ -757,6 +757,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         await _db.syncOneToOne(
           chats: hydrationChats,
           messages: hydrationMessages,
+          currentUserId: _currentUser,
         );
         // syncOneToOne persists the server response, but the chat list is
         // rendered from Riverpod state. Apply the same response in memory too;
@@ -3491,10 +3492,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final isFromMe = me != null && senderNorm == me.trim().toLowerCase();
 
     // Use the bulletproof helper to resolve chatId, preventing self-chats
+    // Try multiple field names for recipientId: toUser, to, recipient
+    final recipientId = isGroup ? null : (msg.toUser ?? msg.recipient ?? '');
     final chatId = resolveChatRoomId(
       groupId: msg.groupId,
       senderId: msg.sender,
-      recipientId: isGroup ? null : (msg.toUser ?? ''),
+      recipientId: recipientId,
       currentUserId: me ?? '',
     );
 
@@ -3502,7 +3505,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     if (chatId == null) {
       debugPrint(
         '[CHAT] ⚠️ Skipping message that would create self-chat: '
-        'sender=${msg.sender}, toUser=${msg.toUser}, groupId=${msg.groupId}, me=$me'
+        'sender=${msg.sender}, toUser=${msg.toUser}, recipient=${msg.recipient}, groupId=${msg.groupId}, me=$me'
       );
       return null;
     }
