@@ -2801,6 +2801,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         const normalizedGroupType = groupRecord ? groupRecord.type : normalizeGroupType(groupType || 'group');
         const notificationTitle = isGroup ? (normalizedGroupName || 'Group message') : senderLabel;
         const notificationExtraData = {
+            isGroup: isGroup ? 'true' : 'false',
             ...(isGroup ? {
                 groupId,
                 groupName: normalizedGroupName,
@@ -2815,7 +2816,11 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             // Chronological-ordering metadata: lets clients slot the message
             // into its correct position instead of appending it at the tail.
             messageId,
-            chatId: groupId || user,
+            // CRITICAL FIX: For direct messages, use the recipient (originalSender) as chatId,
+            // not the sender. This ensures messages appear in the correct conversation thread.
+            // For groups, use groupId. For self-echo/secretary redirects, originalSender identifies
+            // the actual conversation partner.
+            chatId: groupId || (originalSender || user),
             sentDateTime: sentDateTimeIso,
             timestamp: sentAtMs
         };
@@ -3066,6 +3071,7 @@ async function processReactionPayload(rawPayload = {}, resolvedUser = '') {
         
         notificationData.title = resolvedGroupName || 'הודעה חדשה';
         Object.assign(notificationData.data, {
+            isGroup: 'true',
             groupId, groupName: resolvedGroupName, groupMembers: resolvedGroupMembers,
             groupCreatedBy: resolvedGroupCreatedBy, groupAdmins: groupRecord && Array.isArray(groupRecord.admins) ? groupRecord.admins : undefined,
             groupUpdatedAt: resolvedGroupUpdatedAt, groupType: resolvedGroupType
@@ -8115,6 +8121,7 @@ app.post(
             },
             data: {
                 type: 'group-update',
+                isGroup: 'true',
                 groupId,
                 groupName: resolvedGroupName,
                 groupMembers: resolvedGroupMembers,

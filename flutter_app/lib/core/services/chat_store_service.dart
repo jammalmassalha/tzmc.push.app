@@ -1622,9 +1622,48 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         syncProgressLabel: 'מרענן נתונים...',
       );
 
-      // 5. Drain the /messages poll queue — mirrors Angular's `pullMessages(user)`
-      //    call inside forceSyncAllMessagesAndClearCache (which uses `pollMessages()`
-      //    on the /messages endpoint rather than the logs endpoint).
+      // 5. Sync all chats (1-to-1 conversations) from the server.
+      //    This ensures that all chat conversations are populated, even those
+      //    without recent messages. The syncChatsAndMessages endpoint returns
+      //    the complete list of active chats when in 'full' mode.
+      state = state.copyWith(
+        syncProgressPercent: 50,
+        syncProgressLabel: 'סנכרון כל השיחות...',
+      );
+      try {
+        final chatSync = await _api.syncChatsAndMessages(
+          user: user,
+          lastSyncTimestamp: 0, // Full sync from the beginning
+        );
+        final syncedChats = (chatSync['mode'] == 'full'
+            ? chatSync['chats']
+            : chatSync['updatedChats']) as List? ?? const [];
+        final syncedMessages = (chatSync['mode'] == 'full'
+            ? chatSync['messages']
+            : chatSync['newMessages']) as List? ?? const [];
+         
+        // Persist synced chats and messages to the database
+        if (syncedChats.isNotEmpty || syncedMessages.isNotEmpty) {
+          await _db.syncOneToOne(
+            chats: syncedChats,
+            messages: syncedMessages,
+            currentUserId: user,
+          );
+          // Apply synced messages to in-memory state
+          _applyHydrationMessages(syncedMessages);
+        }
+         
+        debugPrint(
+          '[FULL-SYNC] Synced ${syncedChats.length} chats and ${syncedMessages.length} messages',
+        );
+      } catch (error) {
+        debugPrint('[FULL-SYNC] Chat sync failed: $error (continuing with logs pull)');
+        // Non-fatal; the logs pull below will still fetch message history
+      }
+
+      // 5a. Drain the /messages poll queue — mirrors Angular's `pullMessages(user)`
+      //     call inside forceSyncAllMessagesAndClearCache (which uses `pollMessages()`
+      //     on the /messages endpoint rather than the logs endpoint).
       try {
         final polled = await _api.pollMessages();
         for (final msg in polled) {
@@ -1634,7 +1673,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // Polling failures are non-fatal; the logs pull below covers any gaps.
       }
       state = state.copyWith(
-        syncProgressPercent: 55,
+        syncProgressPercent: 60,
         syncProgressLabel: 'מושך הודעות...',
       );
 
@@ -2836,11 +2875,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final sender = _currentUser ?? '';
 
     // Create optimistic message
+    // CRITICAL: chatId MUST be the recipient's ID (the target conversation).
+    // This ensures the message appears in the correct chat thread when stored
+    // to the local database and displayed in the UI.
     final message = ChatMessage(
       id: messageId,
       messageId: messageId,
       clientMsgId: messageId,
-      chatId: recipient,
+      chatId: recipient,  // ✅ Target chat ID is the recipient, not the sender
       sender: sender.isNotEmpty ? sender : 'me',
       body: body,
       imageUrl: imageUrl,
@@ -3493,7 +3535,22 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     // Use the bulletproof helper to resolve chatId, preventing self-chats
     // Try multiple field names for recipientId: toUser, to, recipient
-    final recipientId = isGroup ? null : (msg.toUser ?? msg.recipient ?? '');
+    var recipientId = isGroup ? null : (msg.toUser ?? msg.recipient ?? '');
+    
+    // For direct messages where recipientId is missing, attempt to infer it
+    // from the sender field when we receive messages from the logs endpoint.
+    // The logs endpoint sometimes omits the toUser field for certain message
+    // types (particularly action messages like reactions, edits, deletes).
+    // In such cases, we still have the sender and can infer that we're the
+    // recipient.
+    if (!isGroup && (recipientId?.isEmpty ?? true) && msg.sender != null) {
+      // If the message is from someone else and we don't have recipientId,
+      // the recipientId should be us (the current user)
+      if (!isFromMe && me != null && me.isNotEmpty) {
+        recipientId = me;
+      }
+    }
+    
     final chatId = resolveChatRoomId(
       groupId: msg.groupId,
       senderId: msg.sender,
