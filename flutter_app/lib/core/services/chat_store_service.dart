@@ -129,6 +129,9 @@ class ChatState {
   /// Map of chatId → set of usernames currently typing in that chat.
   final Map<String, Set<String>> typingByChatId;
 
+  /// Username of the currently authenticated user, normalized to lowercase.
+  final String? currentUser;
+
   const ChatState({
     this.contacts = const {},
     this.groups = const {},
@@ -144,6 +147,7 @@ class ChatState {
     this.syncProgressPercent = 0,
     this.syncProgressLabel = '',
     this.typingByChatId = const <String, Set<String>>{},
+    this.currentUser,
   });
 
   ChatState copyWith({
@@ -162,6 +166,7 @@ class ChatState {
     int? syncProgressPercent,
     String? syncProgressLabel,
     Map<String, Set<String>>? typingByChatId,
+    String? currentUser,
   }) {
     return ChatState(
       contacts: contacts ?? this.contacts,
@@ -178,6 +183,7 @@ class ChatState {
       syncProgressPercent: syncProgressPercent ?? this.syncProgressPercent,
       syncProgressLabel: syncProgressLabel ?? this.syncProgressLabel,
       typingByChatId: typingByChatId ?? this.typingByChatId,
+      currentUser: currentUser ?? this.currentUser,
     );
   }
 
@@ -223,7 +229,7 @@ class ChatState {
     }
 
     // Add direct contacts with messages
-    final currentUser = _currentUser ?? '';
+    final currentUser = this.currentUser ?? '';
     for (final entry in messagesByChat.entries) {
       final chatId = entry.key;
       final messages = entry.value;
@@ -505,7 +511,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     if (state.isInitialized) {
       if (state.isRestricted != isRestricted) {
-        state = state.copyWith(isRestricted: isRestricted);
+        state = state.copyWith(isRestricted: isRestricted, currentUser: _currentUser);
       }
 
       if (!_initialSyncCompleted && !_initialSyncInFlight) {
@@ -514,11 +520,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       return;
     }
 
-    state = state.copyWith(isLoading: true, isRestricted: isRestricted);
+    state = state.copyWith(isLoading: true, isRestricted: isRestricted, currentUser: _currentUser);
 
     try {
       final deletedChats = await _readDeletedChats(normalized);
-      state = state.copyWith(deletedChats: deletedChats);
+      state = state.copyWith(deletedChats: deletedChats, currentUser: _currentUser);
 
       // Load the persisted incremental-sync high-water mark and the oldest
       // pending background push, so the recovery pull below starts from a
@@ -538,6 +544,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         deletedChats: deletedChats,
         isLoading: false,
         isInitialized: true,
+        currentUser: _currentUser,
       );
       // Try to restore cached data so the UI is not blank while syncing.
       // The sync will update with server-authoritative data.
@@ -552,6 +559,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       state = state.copyWith(
         isLoading: false,
         isInitialized: true,
+        currentUser: _currentUser,
       );
       // Even if initialization fails, try to restore from cache as a fallback.
       unawaited(restoreLocalCache());
@@ -3482,35 +3490,21 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final senderNorm = msg.sender!.trim().toLowerCase();
     final isFromMe = me != null && senderNorm == me.trim().toLowerCase();
 
-    // For 1:1 outgoing messages the server returns sender=currentUser and
-    // toUser=the other party. Using sender as chatId would create a spurious
-    // "self-chat". Mirror Angular's logic: when isFromMe, use toUser as chatId.
-    //
-    // IMPORTANT: do NOT fall back to msg.recipient here.  The logs endpoint
-    // always sets recipient = requestedUser (= me), so using it as a fallback
-    // when toUser is absent produces chatId = me = self-chat.
-    String chatId;
-    if (isGroup) {
-      chatId = msg.groupId!;
-    } else if (isFromMe) {
-      final toUser = (msg.toUser ?? '').trim().toLowerCase();
-      final mePhone = me.trim().toLowerCase() ?? '';
-      // If toUser is absent or equals the sender (a self-chat DB artifact from
-      // old self-echo log entries where ToUser = sender), skip this message.
-      if (toUser.isEmpty || (mePhone.isNotEmpty && toUser == mePhone)) return null;
-      chatId = toUser;
-    } else {
-      chatId = senderNorm;
-      // Additional protection: skip messages that would create a self-chat
-      // This can happen if the sender normalization differs from current user
-      // normalization due to format differences (e.g., spaces, leading zeros)
-      if (me != null && chatId == me.trim().toLowerCase()) {
-        debugPrint(
-          '[CHAT] ⚠️ Skipping incoming message with self-chat risk: '
-          'sender=$senderNorm, me=$me, chatId=$chatId'
-        );
-        return null;
-      }
+    // Use the bulletproof helper to resolve chatId, preventing self-chats
+    final chatId = resolveChatRoomId(
+      groupId: msg.groupId,
+      senderId: msg.sender,
+      recipientId: isGroup ? null : (msg.toUser ?? ''),
+      currentUserId: me ?? '',
+    );
+
+    // Skip if resolution returned null (would create a self-chat)
+    if (chatId == null) {
+      debugPrint(
+        '[CHAT] ⚠️ Skipping message that would create self-chat: '
+        'sender=${msg.sender}, toUser=${msg.toUser}, groupId=${msg.groupId}, me=$me'
+      );
+      return null;
     }
 
     // If the echo is for a message *we* just sent, tag it as outgoing so
