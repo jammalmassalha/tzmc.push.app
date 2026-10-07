@@ -1,56 +1,117 @@
-# Docker Compose – local development
-# Start all services: docker compose up -d
-# Stop: docker compose down
+version: '3.8'
 
 services:
-  mysql:
-    image: mysql:8.0
-    restart: unless-stopped
-    environment:
-      MYSQL_ROOT_PASSWORD: rootpass
-      MYSQL_DATABASE: tzmc
-      MYSQL_USER: tzmc_user
-      MYSQL_PASSWORD: tzmc_pass
-    ports:
-      - '3306:3306'
-    volumes:
-      - mysql_data:/var/lib/mysql
-    healthcheck:
-      test: ['CMD', 'mysqladmin', 'ping', '-h', 'localhost']
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
+  # ==========================================
+  # Redis: BullMQ, Idempotency, Redis Streams
+  # ==========================================
   redis:
     image: redis:7-alpine
+    container_name: chat_redis
     restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - redis_data:/data
     ports:
-      - '6379:6379'
+      - "6379:6379"
     healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
-      interval: 10s
-      timeout: 5s
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 3s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
-  app:
-    build: .
+  # ==========================================
+  # Fast-Reply HTTP API Server
+  # ==========================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chat_api
     restart: unless-stopped
-    ports:
-      - '3000:3000'
-    env_file:
-      - .env
+    command: ["node", "server.js"]
     environment:
-      LOGS_DB_HOST: mysql
-      LOGS_DB_PORT: '3306'
-      LOGS_DB_USER: tzmc_user
-      LOGS_DB_PASSWORD: tzmc_pass
-      LOGS_DB_NAME: tzmc
-      REDIS_URL: redis://redis:6379
+      - NODE_ENV=production
+      - PORT=3000
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - DB_HOST=${DB_HOST}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - DB_CONNECTION_LIMIT=20
+    ports:
+      - "3000:3000"
     depends_on:
-      mysql:
-        condition: service_healthy
       redis:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+
+  # ==========================================
+  # Background Worker: FCM Dispatch & Chunking
+  # ==========================================
+  fcm-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chat_fcm_worker
+    restart: unless-stopped
+    command: ["node", "scripts/start-fcm-worker.js"]
+    environment:
+      - NODE_ENV=production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - DB_HOST=${DB_HOST}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - FIREBASE_SERVICE_ACCOUNT=${FIREBASE_SERVICE_ACCOUNT}
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.75'
+          memory: 512M
+
+  # ==========================================
+  # Background Worker: WebSocket Fan-Out
+  # ==========================================
+  ws-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chat_ws_worker
+    restart: unless-stopped
+    command: ["node", "scripts/start-websocket-worker.js"]
+    environment:
+      - NODE_ENV=production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - DB_HOST=${DB_HOST}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.75'
+          memory: 512M
 
 volumes:
-  mysql_data:
+  redis_data:
+    driver: local
