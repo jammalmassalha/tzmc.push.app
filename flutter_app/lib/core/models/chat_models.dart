@@ -6,6 +6,63 @@ library;
 
 import 'package:equatable/equatable.dart';
 
+/// Resolves the correct chat room ID for a message, preventing self-chats.
+/// 
+/// This function implements bulletproof logic to determine which chat thread
+/// a message belongs to:
+/// - For group messages: returns the groupId
+/// - For 1-on-1 sent messages (where currentUserId is the sender): returns the recipientId
+/// - For 1-on-1 received messages (where currentUserId is the recipient): returns the senderId
+/// 
+/// Returns null if the message would create a self-chat (sender == recipient == currentUserId).
+/// This prevents a user from ever opening a chat with themselves.
+/// 
+/// Example:
+///   User A sends to User B:
+///   - On A's device: senderId=A, recipientId=B → resolveChatRoomId returns B
+///   - On B's device: senderId=A, recipientId=B → resolveChatRoomId returns A
+String? resolveChatRoomId({
+  required String? groupId,
+  required String? senderId,
+  required String? recipientId,
+  required String currentUserId,
+}) {
+  // Group messages: use groupId as the chat room identifier
+  if (groupId != null && groupId.isNotEmpty) {
+    return groupId;
+  }
+
+  // Normalize for case-insensitive comparison
+  final senderNorm = (senderId ?? '').trim().toLowerCase();
+  final recipientNorm = (recipientId ?? '').trim().toLowerCase();
+  final currentNorm = currentUserId.trim().toLowerCase();
+
+  // Safety check: if sender and recipient are the same, this is invalid
+  if (senderNorm.isEmpty || recipientNorm.isEmpty || currentNorm.isEmpty) {
+    return null;
+  }
+
+  // Self-chat protection: if sender == recipient == current user, skip
+  if (senderNorm == recipientNorm && senderNorm == currentNorm) {
+    return null;
+  }
+
+  // Determine chat room based on message direction:
+  // If I sent the message (sender == currentUser), the chat room is with the recipient
+  if (senderNorm == currentNorm) {
+    return recipientNorm;
+  }
+
+  // If I received the message (recipient == currentUser), the chat room is with the sender
+  if (recipientNorm == currentNorm) {
+    return senderNorm;
+  }
+
+  // This shouldn't happen in normal operation (message not from/to current user)
+  // but we prevent self-chats as a last resort
+  return senderNorm == currentNorm ? null : senderNorm;
+}
+
 /// Group type enumeration
 enum GroupType { group, community }
 

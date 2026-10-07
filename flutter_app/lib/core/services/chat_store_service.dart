@@ -3490,35 +3490,21 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final senderNorm = msg.sender!.trim().toLowerCase();
     final isFromMe = me != null && senderNorm == me.trim().toLowerCase();
 
-    // For 1:1 outgoing messages the server returns sender=currentUser and
-    // toUser=the other party. Using sender as chatId would create a spurious
-    // "self-chat". Mirror Angular's logic: when isFromMe, use toUser as chatId.
-    //
-    // IMPORTANT: do NOT fall back to msg.recipient here.  The logs endpoint
-    // always sets recipient = requestedUser (= me), so using it as a fallback
-    // when toUser is absent produces chatId = me = self-chat.
-    String chatId;
-    if (isGroup) {
-      chatId = msg.groupId!;
-    } else if (isFromMe) {
-      final toUser = (msg.toUser ?? '').trim().toLowerCase();
-      final mePhone = me.trim().toLowerCase() ?? '';
-      // If toUser is absent or equals the sender (a self-chat DB artifact from
-      // old self-echo log entries where ToUser = sender), skip this message.
-      if (toUser.isEmpty || (mePhone.isNotEmpty && toUser == mePhone)) return null;
-      chatId = toUser;
-    } else {
-      chatId = senderNorm;
-      // Additional protection: skip messages that would create a self-chat
-      // This can happen if the sender normalization differs from current user
-      // normalization due to format differences (e.g., spaces, leading zeros)
-      if (me != null && chatId == me.trim().toLowerCase()) {
-        debugPrint(
-          '[CHAT] ⚠️ Skipping incoming message with self-chat risk: '
-          'sender=$senderNorm, me=$me, chatId=$chatId'
-        );
-        return null;
-      }
+    // Use the bulletproof helper to resolve chatId, preventing self-chats
+    final chatId = resolveChatRoomId(
+      groupId: msg.groupId,
+      senderId: msg.sender,
+      recipientId: isGroup ? null : (msg.toUser ?? ''),
+      currentUserId: me ?? '',
+    );
+
+    // Skip if resolution returned null (would create a self-chat)
+    if (chatId == null) {
+      debugPrint(
+        '[CHAT] ⚠️ Skipping message that would create self-chat: '
+        'sender=${msg.sender}, toUser=${msg.toUser}, groupId=${msg.groupId}, me=$me'
+      );
+      return null;
     }
 
     // If the echo is for a message *we* just sent, tag it as outgoing so
