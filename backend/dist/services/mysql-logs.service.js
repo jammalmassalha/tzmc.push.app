@@ -208,10 +208,12 @@ class MysqlLogsService {
     lifecycleTimestampColumnsReady = false;
     groupSenderNameColumnReady = false;
     dedupIndexReady = false;
+    logsSequenceColumnReady = false;
     communityGroupsTablesReady = false;
     chatGroupsTablesReady = false;
     messageActivitiesTableReady = false;
     messageActivitiesLifecycleReady = false;
+    messageActivitiesIdempotencyReady = false;
     serverStateTableReady = false;
     flutterPushRegistrationDebugTableReady = false;
     flutterPushRegistrationDebugActionColumnWidthReady = false;
@@ -251,6 +253,8 @@ class MysqlLogsService {
         void this.ensureSeenTimeColumn();
         void this.ensureLifecycleTimestampColumns();
         void this.ensureGroupSenderNameColumn();
+        void this.ensureDedupIndex();
+        void this.ensureLogsSequenceColumn();
         void this.ensureSecretariesTable();
         void this.ensureBotSessionsTable();
     }
@@ -407,6 +411,36 @@ class MysqlLogsService {
             }
         }
         this.dedupIndexReady = true;
+    }
+    async ensureLogsSequenceColumn() {
+        if (this.logsSequenceColumnReady)
+            return;
+        try {
+            // Add pts column for persistent sequence numbering (used by sync endpoints)
+            await this.pool.execute(`ALTER TABLE \`${this.tableName}\` ADD COLUMN \`pts\` BIGINT DEFAULT NULL`);
+            console.log('[MYSQL] Logs pts column added.');
+        }
+        catch (err) {
+            const code = err.code;
+            const message = String(err.message || '');
+            // ER_DUP_FIELDNAME = column already exists — expected on subsequent restarts.
+            if (code !== 'ER_DUP_FIELDNAME' && !message.includes('Duplicate column')) {
+                console.warn('[MYSQL] ensureLogsSequenceColumn warning:', message);
+            }
+        }
+        try {
+            // Create index for pts-based ordering (sync queries will use this)
+            await this.pool.execute(`CREATE INDEX \`idx_logs_pts\` ON \`${this.tableName}\` (\`pts\`, \`From\`, \`ToUser\`)`);
+        }
+        catch (err) {
+            const code = err.code;
+            const message = String(err.message || '');
+            // ER_DUP_KEYNAME = index already exists — expected on subsequent restarts.
+            if (code !== 'ER_DUP_KEYNAME' && !message.includes('Duplicate key name')) {
+                console.warn('[MYSQL] ensureLogsSequenceColumn index warning:', message);
+            }
+        }
+        this.logsSequenceColumnReady = true;
     }
     buildCompositeKeyFromPayload(payload) {
         return [
@@ -1577,6 +1611,7 @@ class MysqlLogsService {
             console.warn('[MYSQL] ensureMessageActivitiesTable warning:', message);
         }
         await this.ensureMessageActivitiesLifecycleColumns();
+        await this.ensureMessageActivitiesIdempotencyConstraints();
     }
     /**
      * Migration for pre-existing MessageActivities tables:
@@ -1658,6 +1693,41 @@ class MysqlLogsService {
         }
         this.messageActivitiesLifecycleReady = true;
     }
+    /**
+    * Ensures idempotency constraint on MessageActivities:
+    *   • Adds UNIQUE INDEX on ClientMsgId (allowing NULL for non-message activities)
+    *   • Ensures Pts column for sequence-number ordering
+    * This prevents duplicate message processing across server restarts or retries.
+    */
+    async ensureMessageActivitiesIdempotencyConstraints() {
+        if (this.messageActivitiesIdempotencyReady)
+            return;
+        try {
+            // Create UNIQUE INDEX on ClientMsgId (MySQL allows multiple NULLs, so this is safe)
+            const uniqueIndexStatements = [
+                'ALTER TABLE `MessageActivities` ADD UNIQUE INDEX `uk_client_msg_id_idempotency` (`ClientMsgId`)',
+            ];
+            for (const statement of uniqueIndexStatements) {
+                try {
+                    await this.pool.execute(statement);
+                }
+                catch (err) {
+                    const code = err.code;
+                    const message = String(err.message || '');
+                    // ER_DUP_KEYNAME = index already exists — expected on subsequent restarts.
+                    if (code !== 'ER_DUP_KEYNAME' && !message.includes('Duplicate key name')) {
+                        console.warn('[MYSQL] MessageActivities idempotency constraint warning:', message);
+                    }
+                }
+            }
+            this.messageActivitiesIdempotencyReady = true;
+            console.log('[MYSQL] MessageActivities idempotency constraints ensured.');
+        }
+        catch (err) {
+            const message = String(err.message || '');
+            console.warn('[MYSQL] ensureMessageActivitiesIdempotencyConstraints warning:', message);
+        }
+    }
     async insertMessageActivity(activity) {
         await this.ensureMessageActivitiesTable();
         const actionType = toTrimmedString(activity.actionType) || 'unknown';
@@ -1690,6 +1760,75 @@ class MysqlLogsService {
         catch (err) {
             const message = String(err.message || '');
             console.error('[MYSQL] insertMessageActivity error:', message);
+        }
+    }
+    /**
+     * Atomically insert both MessageActivities (audit) and Logs (main storage) in a transaction.
+     * This ensures that if either insert fails, both are rolled back, maintaining data consistency.
+     * Handles MySQL UNIQUE constraint on clientMsgId by catching ER_DUP_ENTRY and returning
+     * success (idempotent response) to the client.
+     */
+    async insertMessageActivityAndLog(activity, logPayload) {
+        await this.ensureMessageActivitiesTable();
+        const connection = await this.pool.getConnection();
+        try {
+            await connection.beginTransaction();
+            // Insert into MessageActivities (audit log)
+            const actionType = toTrimmedString(activity.actionType) || 'unknown';
+            const messageId = toTrimmedString(activity.messageId) || null;
+            const sender = toTrimmedString(activity.sender) || 'unknown';
+            const recipient = toTrimmedString(activity.recipient) || null;
+            const groupId = toTrimmedString(activity.groupId) || null;
+            const body = activity.body != null ? String(activity.body) : null;
+            const imageUrl = toTrimmedString(activity.imageUrl) || null;
+            const fileUrl = toTrimmedString(activity.fileUrl) || null;
+            const clientMsgId = toTrimmedString(activity.clientMsgId).slice(0, 64) || null;
+            const pts = Number(activity.pts) > 0 ? Number(activity.pts) : null;
+            const status = activity.status === 'delivered' || activity.status === 'read' ? activity.status : 'sent';
+            const actionTimestamp = Number(activity.actionTimestamp) || Date.now();
+            const sentDateTime = new Date(actionTimestamp);
+            await connection.execute(`INSERT INTO \`MessageActivities\`
+           (\`ActionType\`, \`MessageId\`, \`Sender\`, \`Recipient\`, \`GroupId\`, \`Body\`, \`ImageUrl\`, \`FileUrl\`, \`ClientMsgId\`, \`Pts\`, \`Status\`, \`ActionTimestamp\`, \`sentDateTime\`)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [actionType, messageId, sender, recipient, groupId, body, imageUrl, fileUrl, clientMsgId, pts, status, actionTimestamp, sentDateTime]);
+            // Insert into Logs (main message store)
+            const logsQuery = `INSERT INTO \`${this.tableName}\` (\`DateTime\`, \`ToUser\`, \`From\`, \`MsgID\`, \`Message Preview\`, \`SuccessOrFailed\`, \`ErrorMessageOrSuccessCount\`, \`RecipientAuthJSON\`, \`ImageUrl\`, \`FileUrl\`, \`GroupSenderName\`, \`sentDateTime\`, \`receiveDateTime\`, \`pts\`)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+            const dateTime = new Date();
+            const sentDT = logPayload.sentDateTime ? new Date(logPayload.sentDateTime) : dateTime;
+            const receiveDT = logPayload.receiveDateTime ? new Date(logPayload.receiveDateTime) : dateTime;
+            await connection.execute(logsQuery, [
+                dateTime,
+                logPayload.recipient || null,
+                logPayload.sender || 'System',
+                logPayload.msgId,
+                logPayload.message || '',
+                logPayload.status || 'Sent',
+                logPayload.details || '',
+                logPayload.recipientAuthJson || '',
+                logPayload.imageUrl || null,
+                logPayload.fileUrl || null,
+                logPayload.groupSenderName || null,
+                sentDT,
+                receiveDT,
+                logPayload.pts || null
+            ]);
+            await connection.commit();
+            return { success: true, isDuplicate: false };
+        }
+        catch (error) {
+            await connection.rollback();
+            const errCode = error.code;
+            const errMsg = String(error.message || '');
+            // MySQL UNIQUE constraint on ClientMsgId — this is expected for retried requests
+            if (errCode === 'ER_DUP_ENTRY' && errMsg.includes('uk_client_msg_id_idempotency')) {
+                console.log(`[MYSQL] Duplicate clientMsgId detected (idempotent) — returning success`);
+                return { success: true, isDuplicate: true };
+            }
+            console.error('[MYSQL] insertMessageActivityAndLog transaction error:', errMsg);
+            return { success: false, isDuplicate: false, error: errMsg };
+        }
+        finally {
+            connection.release();
         }
     }
     async markMessageDelivered(messageId, deliveredAt = Date.now()) {

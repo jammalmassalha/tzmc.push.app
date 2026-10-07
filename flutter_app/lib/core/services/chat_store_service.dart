@@ -223,6 +223,7 @@ class ChatState {
     }
 
     // Add direct contacts with messages
+    final currentUser = _currentUser ?? '';
     for (final entry in messagesByChat.entries) {
       final chatId = entry.key;
       final messages = entry.value;
@@ -234,13 +235,15 @@ class ChatState {
         continue; // Handle groups separately
       }
 
-      // Direct chat
-      final contact = contactFor(chatId);
+      // Direct chat - use the peer name from the last message using getPeerName()
       final lastMessage = messages.first;
+      final peerId = lastMessage.getPeerId(currentUser);
+      final peerName = lastMessage.getPeerName(currentUser);
+      final contact = contactFor(peerId);
 
       items.add(ChatListItem(
         id: chatId,
-        title: contact?.displayName ?? chatId,
+        title: contact?.displayName ?? peerName,
         info: contact?.info,
         phone: contact?.phone,
         subtitle: _getMessagePreview(lastMessage, includeSender: true),
@@ -1245,10 +1248,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   /// Fetch the current user's message history from the API for an opened chat.
   /// The result is kept only in the in-memory Riverpod state.
+  /// Uses incremental sync (since the last sync cursor) instead of full history.
   Future<void> loadChatHistory(String chatId) async {
     final user = _currentUser;
     if (user == null || user.isEmpty || chatId.trim().isEmpty) return;
-    await _pullAllMessagesFromLogs(user: user, since: 0);
+    // Use incremental sync to fetch only new messages since the last sync cursor
+    // instead of always requesting the full history (since: 0).
+    final since = await _resolveSyncCursor();
+    await _pullAllMessagesFromLogs(user: user, since: since);
   }
 
   /// PHASE 8: Load cached messages from SQLite for instant UI display.
@@ -2467,7 +2474,23 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       if (toUser.isEmpty || toUser == meNorm || toUser == senderNorm) return;
       chatId = toUser;
     } else {
-      chatId = senderNorm;
+      // For incoming DM messages from others, we need to use the sender as chatId.
+      // BUT first, protect against self-chat creation by checking if the sender
+      // is actually us (in case of normalization mismatches or race conditions).
+      if (meNorm.isNotEmpty && senderNorm == meNorm) {
+        // This is actually a self-echo that wasn't caught above.
+        // Try to use toUser if available, otherwise skip to prevent self-chat.
+        final toUser = (str(data['toUser']) ?? '').trim().toLowerCase();
+        if (toUser.isEmpty || toUser == meNorm) {
+          // Can't determine the other party, skip this message
+          debugPrint('[CHAT] ⚠️ Skipping self-echo without deterministic toUser: sender=$senderNorm, toUser=$toUser');
+          return;
+        }
+        chatId = toUser;
+      } else {
+        // Normal case: incoming message from someone else, group by their ID
+        chatId = senderNorm;
+      }
     }
 
     // Backend may include either the full body (messageText) or a truncated
@@ -3478,6 +3501,16 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       chatId = toUser;
     } else {
       chatId = senderNorm;
+      // Additional protection: skip messages that would create a self-chat
+      // This can happen if the sender normalization differs from current user
+      // normalization due to format differences (e.g., spaces, leading zeros)
+      if (me != null && chatId == me.trim().toLowerCase()) {
+        debugPrint(
+          '[CHAT] ⚠️ Skipping incoming message with self-chat risk: '
+          'sender=$senderNorm, me=$me, chatId=$chatId'
+        );
+        return null;
+      }
     }
 
     // If the echo is for a message *we* just sent, tag it as outgoing so
