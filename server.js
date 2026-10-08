@@ -57,6 +57,11 @@ const fetch = (...args) => {
 const sheetIntegrationService = createSheetIntegrationServiceFromEnv(process.env);
 const mysqlLogsService = createMysqlLogsServiceFromEnv(process.env);
 const webhookRegistryService = createWebhookRegistryFromEnv(process.env);
+
+// Initialize ToSendQueueService
+const { ToSendQueueService } = require('./backend/dist/services/tosend-queue.service');
+const toSendQueueService = new ToSendQueueService(mysqlLogsService.pool);
+
 const GOOGLE_SHEET_URL = sheetIntegrationService.googleSheetUrl;
 const redisStateStorePromise = createRedisStateStoreFromEnv(process.env)
     .then((store) => {
@@ -8892,17 +8897,40 @@ app.post('/notify', async (req, res) => {
 async function checkOutgoingQueue() {
     try {
         pruneRecentProcessedQueueMessages();
-        // Ask Google Script for pending messages
-        const response = await fetchWithRetry(
-            buildGoogleSheetGetUrl({ action: 'check_queue' }, { token: CHECK_QUEUE_SERVER_TOKEN }),
-            {},
-            { timeoutMs: 10000, retries: 2 }
-        );
-        const data = await response.json();
-
-        const queuedMessages = Array.isArray(data && data.messages) ? data.messages : [];
+        
+        // Array to hold all messages from both sources
+        let queuedMessages = [];
+        
+        // Try to get messages from MySQL database first
+        try {
+            const dbMessages = await toSendQueueService.getPendingMessages();
+            if (dbMessages && dbMessages.length > 0) {
+                console.log(`[QUEUE] Found ${dbMessages.length} messages from MySQL database.`);
+                queuedMessages = queuedMessages.concat(dbMessages);
+            }
+        } catch (dbErr) {
+            console.warn('[QUEUE] Error fetching from MySQL database:', dbErr.message);
+        }
+        
+        // Fallback: Ask Google Script for pending messages (for backward compatibility)
+        try {
+            const response = await fetchWithRetry(
+                buildGoogleSheetGetUrl({ action: 'check_queue' }, { token: CHECK_QUEUE_SERVER_TOKEN }),
+                {},
+                { timeoutMs: 10000, retries: 2 }
+            );
+            const data = await response.json();
+            const sheetMessages = Array.isArray(data && data.messages) ? data.messages : [];
+            if (sheetMessages.length > 0) {
+                console.log(`[QUEUE] Found ${sheetMessages.length} messages from Google Sheet.`);
+                queuedMessages = queuedMessages.concat(sheetMessages);
+            }
+        } catch (sheetErr) {
+            console.warn('[QUEUE] Error fetching from Google Sheet:', sheetErr.message);
+        }
+        
         if (queuedMessages.length > 0) {
-            console.log(`[QUEUE] Found ${queuedMessages.length} messages.`);
+            console.log(`[QUEUE] Total ${queuedMessages.length} messages to process.`);
 
             for (const msg of queuedMessages) {
                 const rawRecipients = parseUsernamesInput(msg && msg.recipient);
@@ -9126,6 +9154,170 @@ app.post(['/subscribe/sync', '/notify/subscribe/sync'], syncLimiter, async (req,
         res.json({ status: 'success', message: 'Subscriptions synced successfully from Google Sheet to DB.' });
     } catch (error) {
         console.error('[API-SUBSCRIBE-SYNC] Failed:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ======================================================
+// TOSEND QUEUE API ENDPOINTS
+// ======================================================
+
+/**
+ * POST /tosend/add
+ * Add a message to the ToSend queue
+ * Body: { recipient, sender, message_content }
+ */
+app.post(['/tosend/add', '/notify/tosend/add'], async (req, res) => {
+    const token = String(req.body?.token || req.query?.token || '').trim();
+    const configuredToken = String(process.env.TOSEND_QUEUE_TOKEN || CHECK_QUEUE_SERVER_TOKEN || '').trim();
+    
+    if (configuredToken && token !== configuredToken) {
+        return res.status(403).json({ error: 'Unauthorized' });
+    }
+    
+    try {
+        const { recipient, sender, message_content } = req.body || {};
+        
+        if (!recipient || !message_content) {
+            return res.status(400).json({ error: 'Missing required fields: recipient, message_content' });
+        }
+        
+        const messageId = await toSendQueueService.addMessage({
+            recipient: String(recipient).trim(),
+            sender: String(sender || 'System').trim(),
+            message_content: String(message_content).trim()
+        });
+        
+        res.json({ status: 'success', messageId, message: 'Message added to queue' });
+    } catch (error) {
+        console.error('[API-TOSEND-ADD] Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * POST /tosend/add-batch
+ * Add multiple messages to the ToSend queue
+ * Body: { messages: [{ recipient, sender, message_content }, ...] }
+ */
+app.post(['/tosend/add-batch', '/notify/tosend/add-batch'], async (req, res) => {
+    const token = String(req.body?.token || req.query?.token || '').trim();
+    const configuredToken = String(process.env.TOSEND_QUEUE_TOKEN || CHECK_QUEUE_SERVER_TOKEN || '').trim();
+    
+    if (configuredToken && token !== configuredToken) {
+        return res.status(403).json({ error: 'Unauthorized' });
+    }
+    
+    try {
+        const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
+        
+        if (messages.length === 0) {
+            return res.status(400).json({ error: 'No messages provided' });
+        }
+        
+        const formattedMessages = messages.map(msg => ({
+            recipient: String(msg.recipient || '').trim(),
+            sender: String(msg.sender || 'System').trim(),
+            message_content: String(msg.message_content || '').trim()
+        })).filter(msg => msg.recipient && msg.message_content);
+        
+        if (formattedMessages.length === 0) {
+            return res.status(400).json({ error: 'No valid messages after filtering' });
+        }
+        
+        const count = await toSendQueueService.addMessages(formattedMessages);
+        res.json({ status: 'success', count, message: `${count} messages added to queue` });
+    } catch (error) {
+        console.error('[API-TOSEND-ADD-BATCH] Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /tosend/get-messages or POST /tosend/get-messages
+ * Get pending messages from queue
+ * Query/Body: { recipient?, token }
+ */
+app.get(['/tosend/get-messages', '/notify/tosend/get-messages'], async (req, res) => {
+    const token = String(req.query?.token || '').trim();
+    const configuredToken = String(process.env.TOSEND_QUEUE_TOKEN || CHECK_QUEUE_SERVER_TOKEN || '').trim();
+    
+    if (configuredToken && token !== configuredToken) {
+        return res.status(403).json({ error: 'Unauthorized' });
+    }
+    
+    try {
+        const recipient = String(req.query?.recipient || '').trim() || undefined;
+        const messages = await toSendQueueService.getPendingMessages(recipient);
+        res.json({ status: 'success', messages });
+    } catch (error) {
+        console.error('[API-TOSEND-GET] Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post(['/tosend/get-messages', '/notify/tosend/get-messages'], async (req, res) => {
+    const token = String(req.body?.token || req.query?.token || '').trim();
+    const configuredToken = String(process.env.TOSEND_QUEUE_TOKEN || CHECK_QUEUE_SERVER_TOKEN || '').trim();
+    
+    if (configuredToken && token !== configuredToken) {
+        return res.status(403).json({ error: 'Unauthorized' });
+    }
+    
+    try {
+        const recipient = String(req.body?.recipient || '').trim() || undefined;
+        const messages = await toSendQueueService.getPendingMessages(recipient);
+        res.json({ status: 'success', messages });
+    } catch (error) {
+        console.error('[API-TOSEND-GET] Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /tosend/stats
+ * Get queue statistics
+ * Query: { token }
+ */
+app.get(['/tosend/stats', '/notify/tosend/stats'], async (req, res) => {
+    const token = String(req.query?.token || '').trim();
+    const configuredToken = String(process.env.TOSEND_QUEUE_TOKEN || CHECK_QUEUE_SERVER_TOKEN || '').trim();
+    
+    if (configuredToken && token !== configuredToken) {
+        return res.status(403).json({ error: 'Unauthorized' });
+    }
+    
+    try {
+        const stats = await toSendQueueService.getQueueStats();
+        res.json({ status: 'success', stats });
+    } catch (error) {
+        console.error('[API-TOSEND-STATS] Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * POST /tosend/clear
+ * Clear all messages from queue (for admin/testing)
+ * Body: { token, confirm: true }
+ */
+app.post(['/tosend/clear', '/notify/tosend/clear'], async (req, res) => {
+    const token = String(req.body?.token || req.query?.token || '').trim();
+    const configuredToken = String(process.env.TOSEND_QUEUE_TOKEN || CHECK_QUEUE_SERVER_TOKEN || '').trim();
+    
+    if (configuredToken && token !== configuredToken) {
+        return res.status(403).json({ error: 'Unauthorized' });
+    }
+    
+    if (req.body?.confirm !== true) {
+        return res.status(400).json({ error: 'Confirmation required. Send confirm: true in body.' });
+    }
+    
+    try {
+        await toSendQueueService.clearQueue();
+        res.json({ status: 'success', message: 'Queue cleared' });
+    } catch (error) {
+        console.error('[API-TOSEND-CLEAR] Error:', error.message);
         res.status(500).json({ error: error.message });
     }
 });
