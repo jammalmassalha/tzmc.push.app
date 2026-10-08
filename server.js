@@ -24,6 +24,9 @@ const { createFlutterPushService } = require('./backend/services/flutter-push-se
 const { registerFlutterPushRoutes } = require('./backend/routes/flutter-push.routes');
 const { registerMessageController } = require('./backend/controllers/message.controller');
 const { registerShuttleController } = require('./backend/controllers/shuttle.controller');
+const { registerShuttleBookingRoutes } = require('./backend/controllers/shuttle-booking.controller');
+const { startShuttleSyncWorker } = require('./backend/workers/shuttle-sheet-sync.worker');
+const { initializeShuttleOrdersTable } = require('./backend/services/shuttle-orders.service');
 const { registerHelpdeskController } = require('./backend/controllers/helpdesk.controller');
 const { createAccreditationAgentController } = require('./backend/controllers/accreditation-agent.controller');
 const { extractUsersUploadIdentityCandidatesFromFiles } = require('./backend/utils/users-upload-identity');
@@ -7828,6 +7831,11 @@ registerShuttleController(app, {
     runShuttleReminderJob
 });
 
+// Register new shuttle booking routes with Transactional Outbox pattern
+if (mysqlLogsService && mysqlLogsService.pool) {
+    registerShuttleBookingRoutes(app, mysqlLogsService.pool);
+}
+
 registerHelpdeskController(app, {
     requireAuthorizedUser,
     env: process.env,
@@ -9207,5 +9215,20 @@ httpServer.listen(PORT, () => {
             'tzmc-notifications-firebase-adminsdk-fbsvc-bb92594301.json next to server.js. ' +
             'See flutter_app/PLATFORM_SETUP.md §"Backend — Firebase service account".'
         );
+    }
+
+    // Initialize Shuttle Orders with Transactional Outbox Pattern
+    if (mysqlLogsService && mysqlLogsService.pool) {
+        initializeShuttleOrdersTable(mysqlLogsService.pool)
+            .then(() => {
+                console.log('[ShuttleOrders] Database table initialized');
+                // Start the background sync worker
+                startShuttleSyncWorker(mysqlLogsService.pool);
+            })
+            .catch((error) => {
+                console.error('[ShuttleOrders] Failed to initialize:', error.message);
+            });
+    } else {
+        console.warn('[ShuttleOrders] MySQL service not available, shuttle bookings will not be persisted');
     }
 });
