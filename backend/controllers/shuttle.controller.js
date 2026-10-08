@@ -271,10 +271,48 @@ function registerShuttleController(app, deps = {}) {
             const shift = String(payload.shift || '').trim();
             const station = String(payload.station || '').trim();
             const status = String(payload.status || '').trim();
+            const user = String(payload.user || '').trim();
             if (!employee || !date || !dateAlt || !shift || !station || !status) {
                 return res.status(400).json({ result: 'error', message: 'Shuttle payload is missing required fields' });
             }
 
+            // Try to save to database if pool is available
+            // This implements the Transactional Outbox Pattern:
+            // 1. Save to database immediately
+            // 2. Return success to user immediately (no waiting for Google Sheets)
+            // 3. Background worker syncs to Google Sheets asynchronously
+            let orderId = null;
+            if (global.mysqlLogsService && global.mysqlLogsService.pool) {
+                try {
+                    const { saveShuttleOperationsOrder } = require('../services/shuttle-operations-orders.service');
+                    orderId = await saveShuttleOperationsOrder(global.mysqlLogsService.pool, {
+                        employee,
+                        date,
+                        dateAlt,
+                        shift,
+                        station,
+                        status,
+                        userId: user || null
+                    });
+                    console.log(`[ShuttleOrders] Saved order #${orderId} to database for background sync`);
+                } catch (dbError) {
+                    console.error('[ShuttleOrders] Failed to save to database:', dbError.message);
+                    // Don't fail the request, continue with synchronous sync as fallback
+                }
+            }
+
+            // If we saved to database, return immediately to user (fast response)
+            // Background worker will sync to Google Sheets
+            if (orderId) {
+                return res.status(200).json({
+                    result: 'success',
+                    message: 'Order saved and is being processed',
+                    orderId
+                });
+            }
+
+            // Fallback: If database save failed or unavailable, do synchronous sync
+            // (This maintains backward compatibility)
             const requestUrl = buildShuttleUserOrdersUrl({
                 [SHUTTLE_ENTRY_EMPLOYEE]: employee,
                 [SHUTTLE_ENTRY_DATE]: date,
