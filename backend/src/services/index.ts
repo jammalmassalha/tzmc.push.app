@@ -7,3 +7,4 @@ export * from './upload-security.service';
 export * from './notification.service';
 export * from './auth-sms.service';
 export * from './session.service';
+export * from './tosend-queue.service';
