@@ -159,7 +159,8 @@ function registerShuttleController(app, deps = {}) {
         shuttleReminderOrdersCacheByUser,
         parseBooleanInput,
         generateMessageId,
-        runShuttleReminderJob
+        runShuttleReminderJob,
+        dbPool
     } = deps;
 
     const requireAuthorizedUserForOperations = typeof requireAuthorizedUser === 'function'
@@ -282,10 +283,10 @@ function registerShuttleController(app, deps = {}) {
             // 2. Return success to user immediately (no waiting for Google Sheets)
             // 3. Background worker syncs to Google Sheets asynchronously
             let orderId = null;
-            if (global.mysqlLogsService && global.mysqlLogsService.pool) {
+            if (dbPool) {
                 try {
                     const { saveShuttleOperationsOrder } = require('../services/shuttle-operations-orders.service');
-                    orderId = await saveShuttleOperationsOrder(global.mysqlLogsService.pool, {
+                    orderId = await saveShuttleOperationsOrder(dbPool, {
                         employee,
                         date,
                         dateAlt,
@@ -294,7 +295,7 @@ function registerShuttleController(app, deps = {}) {
                         status,
                         userId: user || null
                     });
-                    console.log(`[ShuttleOrders] Saved order #${orderId} to database for background sync`);
+                    console.log(`[ShuttleOrders] Saved order #${orderId} to database (${employee}) for background sync`);
                 } catch (dbError) {
                     console.error('[ShuttleOrders] Failed to save to database:', dbError.message);
                     // Don't fail the request, continue with synchronous sync as fallback

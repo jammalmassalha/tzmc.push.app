@@ -7828,7 +7828,9 @@ registerShuttleController(app, {
     shuttleReminderOrdersCacheByUser,
     parseBooleanInput,
     generateMessageId,
-    runShuttleReminderJob
+    runShuttleReminderJob,
+    // Add database pool for shuttle operations orders sync
+    dbPool: mysqlLogsService && mysqlLogsService.pool ? mysqlLogsService.pool : null
 });
 
 // Register new shuttle booking routes with Transactional Outbox pattern
@@ -9227,6 +9229,20 @@ httpServer.listen(PORT, () => {
             })
             .catch((error) => {
                 console.error('[ShuttleOrders] Failed to initialize:', error.message);
+            });
+
+        // Initialize Shuttle Operations Orders with Transactional Outbox Pattern
+        const { initializeShuttleOperationsOrdersTable } = require('./backend/services/shuttle-operations-orders.service');
+        const { startShuttleOperationsSyncWorker } = require('./backend/workers/shuttle-operations-sync.worker');
+        
+        initializeShuttleOperationsOrdersTable(mysqlLogsService.pool)
+            .then(() => {
+                console.log('[ShuttleOperationsOrders] Database table initialized');
+                // Start the background sync worker
+                startShuttleOperationsSyncWorker(mysqlLogsService.pool, fetchWithRetry, (queryParams) => sheetIntegrationService.buildShuttleUserOrdersUrl(queryParams));
+            })
+            .catch((error) => {
+                console.error('[ShuttleOperationsOrders] Failed to initialize:', error.message);
             });
     } else {
         console.warn('[ShuttleOrders] MySQL service not available, shuttle bookings will not be persisted');
