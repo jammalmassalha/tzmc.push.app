@@ -3,8 +3,6 @@
  * Handles posting shuttle orders to Google Sheets via webhook
  */
 
-const axios = require('axios');
-
 /**
  * Posts an order row to Google Apps Script / Google Sheets webhook
  * @param {Object} order - The shuttle order object from database
@@ -31,29 +29,42 @@ async function postOrderToGoogleSheet(order, webhookUrl) {
   };
 
   try {
-    const response = await axios.post(webhookUrl, payload, {
-      timeout: 15000,
-      headers: { 'Content-Type': 'application/json' }
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
 
-    // Check for successful response
-    if (response.status !== 200) {
-      throw new Error(`HTTP ${response.status} failed`);
+    try {
+      const response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      // Check for successful response
+      if (response.status !== 200) {
+        const text = await response.text();
+        throw new Error(`HTTP ${response.status}: ${text || 'No response body'}`);
+      }
+
+      const data = await response.json();
+
+      // Check if Google Apps Script returned an error
+      if (data && data.status === 'error') {
+        throw new Error(data.message || 'Google Sheets API returned an error');
+      }
+
+      return data;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    // Check if Google Apps Script returned an error
-    if (response.data && response.data.status === 'error') {
-      throw new Error(response.data.message || 'Google Sheets API returned an error');
-    }
-
-    return response.data;
   } catch (error) {
     // Re-throw with additional context
-    if (error.response) {
-      // Request made and server responded with error status
-      throw new Error(`Google Sheets API error: ${error.response.status} - ${error.response.data?.message || error.message}`);
-    } else if (error.code === 'ECONNABORTED') {
+    if (error.name === 'AbortError') {
       throw new Error('Google Sheets request timeout (15s)');
+    } else if (error instanceof SyntaxError) {
+      throw new Error(`Invalid JSON response from Google Sheets: ${error.message}`);
     } else {
       throw error;
     }

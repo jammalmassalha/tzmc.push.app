@@ -10,13 +10,13 @@
  * 5. Retries failed orders with exponential backoff
  */
 
-const { postOrderToGoogleSheet } = require('./sheet-integration-shuttle.service');
+const { postOrderToGoogleSheet } = require('../services/sheet-integration-shuttle.service');
 const {
   getPendingShuttleOrders,
   markOrderProcessing,
   markOrderSynced,
   markOrderFailed
-} = require('./shuttle-orders.service');
+} = require('../services/shuttle-orders.service');
 
 const BATCH_SIZE = parseInt(process.env.SHUTTLE_SYNC_BATCH_SIZE || '20');
 const POLL_INTERVAL_MS = parseInt(process.env.SHUTTLE_SYNC_POLL_INTERVAL_MS || '10000');
