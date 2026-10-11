@@ -51,7 +51,7 @@ export interface SessionServiceConfig {
    * Optional cookie `Domain`. Leave empty for a host-only cookie.
    *
    * Set this to share one session between the apex domain and `www` (e.g.
-   * `tzmc.co.il`), which otherwise keep separate cookie jars and force users to
+   * `tzmc.app`), which otherwise keep separate cookie jars and force users to
    * log in again whenever they switch hostname.
    */
   cookieDomain?: string;

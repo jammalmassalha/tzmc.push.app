@@ -111,7 +111,7 @@ const TRUST_PROXY_SETTING = (() => {
 })();
 app.set('trust proxy', TRUST_PROXY_SETTING);
 
-const DEFAULT_ALLOWED_HOSTS = ['tzmc.co.il', 'www.tzmc.co.il', '*.tzmc.co.il', 'localhost', '127.0.0.1', '::1'];
+const DEFAULT_ALLOWED_HOSTS = ['tzmc.app', 'www.tzmc.app', '*.tzmc.app', 'tzmc.co.il', 'www.tzmc.co.il', '*.tzmc.co.il', 'localhost', '127.0.0.1', '::1'];
 // Auto-detect the server's own hostname and IP addresses so requests arriving
 // via the machine's public/private IPs are not rejected by the host-header guard.
 (() => {
@@ -336,7 +336,7 @@ app.use((req, res, next) => {
 // When the browser sends credentialed requests (withCredentials/credentials:'include'),
 // the response must echo a specific origin – the wildcard '*' is not allowed. We
 // reflect the request origin if it is allowed by the host allowlist (which already
-// covers tzmc.co.il, www.tzmc.co.il, *.tzmc.co.il, localhost, etc.).
+// covers tzmc.app, www.tzmc.app, *.tzmc.app, tzmc.co.il, www.tzmc.co.il, *.tzmc.co.il, localhost, etc.).
 const corsOptions = {
     origin: (origin, callback) => {
         if (!origin) {
@@ -1062,8 +1062,8 @@ const SESSION_RENEWAL_THRESHOLD_MS = Math.floor(SESSION_COOKIE_TTL_MS / 2);
 const SESSION_COOKIE_SAME_SITE = String(process.env.SESSION_COOKIE_SAMESITE || 'Lax').trim();
 const SESSION_COOKIE_SECURE = String(process.env.SESSION_COOKIE_SECURE || 'true').trim().toLowerCase() !== 'false';
 // Optional cookie `Domain`. Empty (the default) yields a host-only cookie.
-// Setting it to `tzmc.co.il` lets one session cover both the apex domain and
-// `www.tzmc.co.il`, which otherwise keep separate cookie jars and make users
+// Setting it to `tzmc.app` lets one session cover both the apex domain and
+// `www.tzmc.app`, which otherwise keep separate cookie jars and make users
 // log in again whenever they switch between the two hostnames.
 const SESSION_COOKIE_DOMAIN = String(process.env.SESSION_COOKIE_DOMAIN || '').trim();
 const SESSION_SIGNING_SECRET = String(
@@ -6543,7 +6543,7 @@ app.post(['/verify-status', '/notify/verify-status'], async (req, res) => {
                 body: 'You do not have permission to use this app. Please contact the HR team.\nאין לך הרשאה להשתמש באפליקציה זו. אנא צור קשר עם משאבי אנוש.',
                 icon: 'assets/icons/icon-192x192.png',
                 data: {
-                    url: 'https://www.tzmc.co.il/subscribes/'
+                    url: 'https://tzmc.app/subscribes/'
                 }
             });
 

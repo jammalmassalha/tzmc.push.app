@@ -315,8 +315,8 @@ function createFlutterPushService(options = {}) {
         const payloadData = {
             title,
             body,
-            badge: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
-            icon: 'https://www.tzmc.co.il/subscribes/assets/icon-192.png',
+            badge: 'https://tzmc.app/subscribes/assets/icon-192.png',
+            icon: 'https://tzmc.app/subscribes/assets/icon-192.png',
             requireInteraction: true,
             image: imageUrl,
             sender,
