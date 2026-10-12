@@ -5,11 +5,11 @@
 /// for credentialed requests (with cookies) to work properly.
 ///
 /// Examples:
-/// - If deployed at https://tzmc.app/flutterapp/
-///   → baseUrl should be https://tzmc.app/notify
+/// - If deployed at https://app.tzmc.app/flutterapp/
+///   → baseUrl should be https://app.tzmc.app
 ///
 /// - If deployed at https://app.example.com/
-///   → baseUrl should be https://tzmc.app/notify (backend origin)
+///   → baseUrl should be https://app.tzmc.app (backend origin)
 ///   → Backend ALLOWED_HOSTS must include app.example.com
 ///
 /// Same-origin deployments (preferred) don't require CORS headers because
@@ -39,7 +39,7 @@ class EnvironmentConfig {
   /// Development environment pointing to production backend
   static const EnvironmentConfig development = EnvironmentConfig(
     environment: Environment.development,
-    baseUrl: 'https://tzmc.app/notify',
+    baseUrl: 'https://app.tzmc.app',
     enableLogging: true,
     enableAnalytics: false,
   );
@@ -47,7 +47,7 @@ class EnvironmentConfig {
   /// Production environment
   static const EnvironmentConfig production = EnvironmentConfig(
     environment: Environment.production,
-    baseUrl: 'https://tzmc.app/notify',
+    baseUrl: 'https://app.tzmc.app',
     enableLogging: false,
     enableAnalytics: true,
   );
