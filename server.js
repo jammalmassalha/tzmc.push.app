@@ -111,7 +111,7 @@ const TRUST_PROXY_SETTING = (() => {
 })();
 app.set('trust proxy', TRUST_PROXY_SETTING);
 
-const DEFAULT_ALLOWED_HOSTS = ['tzmc.co.il', 'www.tzmc.co.il', '*.tzmc.co.il', 'localhost', '127.0.0.1', '::1'];
+const DEFAULT_ALLOWED_HOSTS = ['tzmc.app', 'www.tzmc.app', '*.tzmc.app', 'tzmc.co.il', 'www.tzmc.co.il', '*.tzmc.co.il', 'localhost', '127.0.0.1', '::1'];
 // Auto-detect the server's own hostname and IP addresses so requests arriving
 // via the machine's public/private IPs are not rejected by the host-header guard.
 (() => {
@@ -242,6 +242,88 @@ function parseHostHeaderValues(rawValue) {
         .filter(Boolean);
 }
 
+// --- CORS CONFIGURATION (MUST RUN BEFORE HOST-GUARD AND ALL OTHER MIDDLEWARE) ---
+// When the browser sends credentialed requests (withCredentials/credentials:'include'),
+// the response must echo a specific origin – the wildcard '*' is not allowed. We
+// reflect the request origin if it is allowed by the host allowlist (which already
+// covers tzmc.app, www.tzmc.app, *.tzmc.app, tzmc.co.il, www.tzmc.co.il, *.tzmc.co.il, localhost, etc.).
+const corsOptions = {
+    origin: (origin, callback) => {
+       if (!origin) {
+           // Same-origin / non-browser requests (curl, server-to-server) – allow.
+           return callback(null, true);
+       }
+       let originHost = '';
+       try {
+           originHost = new URL(origin).hostname;
+       } catch (_) {
+           originHost = '';
+       }
+       if (!originHost) {
+           return callback(null, false);
+       }
+       if (isAllowedHost(originHost)) {
+           // Reflect the exact origin so credentialed requests pass the preflight.
+           return callback(null, true);
+       }
+       return callback(null, false);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+       'Content-Type',
+       'Authorization',
+       'Cache-Control',
+       'Pragma',
+       'Last-Event-ID',
+       'X-Requested-With',
+       'X-CSRF-Token'
+    ],
+    // Explicitly set the exposed headers so the client can read them
+    exposedHeaders: [
+       'Content-Length',
+       'X-CSRF-Token',
+       'Retry-After',
+       'X-RateLimit-Limit',
+       'X-RateLimit-Remaining',
+       'X-RateLimit-Reset'
+    ]
+};
+
+// Apply CORS middleware BEFORE any routes or static middleware
+// so that CORS headers are set on all responses
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
+
+// Additional middleware to ensure CORS credentials header is always set
+// for credentialed requests (when origin is allowed)
+app.use((req, res, next) => {
+    const origin = req.headers.origin || '';
+    const referer = req.headers.referer || '';
+    
+    // Only set explicit credentials header if we're dealing with a request that
+    // might have credentials (indicated by referer or origin header)
+    if (origin || referer) {
+       // Check if we already have CORS headers from the cors middleware
+       if (!res.getHeader('Access-Control-Allow-Credentials')) {
+           // The cors middleware should have set this, but ensure it's present
+           // for cross-origin credentialed requests
+           let originHost = '';
+           try {
+               originHost = new URL(origin).hostname;
+           } catch (_) {
+               originHost = '';
+           }
+            
+           // Only if the origin is allowed
+           if (originHost && isAllowedHost(originHost)) {
+               res.setHeader('Access-Control-Allow-Credentials', 'true');
+           }
+       }
+    }
+    next();
+});
+
 app.use((req, res, next) => {
     const hostHeaderValue = req.headers.host || '';
     const requestHost = parseHostHeaderValues(hostHeaderValue)[0] || '';
@@ -332,87 +414,9 @@ app.use((req, res, next) => {
     next();
 });
 
-// --- CORS CONFIGURATION (MUST RUN BEFORE STATIC/API MIDDLEWARE) ---
-// When the browser sends credentialed requests (withCredentials/credentials:'include'),
-// the response must echo a specific origin – the wildcard '*' is not allowed. We
-// reflect the request origin if it is allowed by the host allowlist (which already
-// covers tzmc.co.il, www.tzmc.co.il, *.tzmc.co.il, localhost, etc.).
-const corsOptions = {
-    origin: (origin, callback) => {
-        if (!origin) {
-            // Same-origin / non-browser requests (curl, server-to-server) – allow.
-            return callback(null, true);
-        }
-        let originHost = '';
-        try {
-            originHost = new URL(origin).hostname;
-        } catch (_) {
-            originHost = '';
-        }
-        if (!originHost) {
-            return callback(null, false);
-        }
-        if (isAllowedHost(originHost)) {
-            // Reflect the exact origin so credentialed requests pass the preflight.
-            return callback(null, true);
-        }
-        return callback(null, false);
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-        'Content-Type',
-        'Authorization',
-        'Cache-Control',
-        'Pragma',
-        'Last-Event-ID',
-        'X-Requested-With',
-        'X-CSRF-Token'
-    ],
-    // Explicitly set the exposed headers so the client can read them
-    exposedHeaders: [
-        'Content-Length',
-        'X-CSRF-Token',
-        'Retry-After',
-        'X-RateLimit-Limit',
-        'X-RateLimit-Remaining',
-        'X-RateLimit-Reset'
-    ]
-};
-
-// Apply CORS middleware BEFORE any routes or static middleware
-// so that CORS headers are set on all responses
-app.use(cors(corsOptions));
-app.options(/.*/, cors(corsOptions));
-
-// Additional middleware to ensure CORS credentials header is always set
-// for credentialed requests (when origin is allowed)
-app.use((req, res, next) => {
-    const origin = req.headers.origin || '';
-    const referer = req.headers.referer || '';
-    
-    // Only set explicit credentials header if we're dealing with a request that
-    // might have credentials (indicated by referer or origin header)
-    if (origin || referer) {
-        // Check if we already have CORS headers from the cors middleware
-        if (!res.getHeader('Access-Control-Allow-Credentials')) {
-            // The cors middleware should have set this, but ensure it's present
-            // for cross-origin credentialed requests
-            let originHost = '';
-            try {
-                originHost = new URL(origin).hostname;
-            } catch (_) {
-                originHost = '';
-            }
-            
-            // Only if the origin is allowed
-            if (originHost && isAllowedHost(originHost)) {
-                res.setHeader('Access-Control-Allow-Credentials', 'true');
-            }
-        }
-    }
-    next();
-});
+// CORS middleware has been moved to run BEFORE the host-guard middleware
+// (see earlier in this file after the function definitions) to ensure
+// CORS headers are set on all responses, including error responses.
 
 app.use(express.static(path.join(__dirname, 'public')));
 // API routes also use the /notify prefix. Never redirect missing API paths from
@@ -1062,8 +1066,8 @@ const SESSION_RENEWAL_THRESHOLD_MS = Math.floor(SESSION_COOKIE_TTL_MS / 2);
 const SESSION_COOKIE_SAME_SITE = String(process.env.SESSION_COOKIE_SAMESITE || 'Lax').trim();
 const SESSION_COOKIE_SECURE = String(process.env.SESSION_COOKIE_SECURE || 'true').trim().toLowerCase() !== 'false';
 // Optional cookie `Domain`. Empty (the default) yields a host-only cookie.
-// Setting it to `tzmc.co.il` lets one session cover both the apex domain and
-// `www.tzmc.co.il`, which otherwise keep separate cookie jars and make users
+// Setting it to `tzmc.app` lets one session cover both the apex domain and
+// `www.tzmc.app`, which otherwise keep separate cookie jars and make users
 // log in again whenever they switch between the two hostnames.
 const SESSION_COOKIE_DOMAIN = String(process.env.SESSION_COOKIE_DOMAIN || '').trim();
 const SESSION_SIGNING_SECRET = String(
@@ -6543,7 +6547,7 @@ app.post(['/verify-status', '/notify/verify-status'], async (req, res) => {
                 body: 'You do not have permission to use this app. Please contact the HR team.\nאין לך הרשאה להשתמש באפליקציה זו. אנא צור קשר עם משאבי אנוש.',
                 icon: 'assets/icons/icon-192x192.png',
                 data: {
-                    url: 'https://www.tzmc.co.il/subscribes/'
+                    url: 'https://tzmc.app/subscribes/'
                 }
             });
 
