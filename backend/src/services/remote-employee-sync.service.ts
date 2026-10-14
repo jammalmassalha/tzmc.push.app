@@ -398,6 +398,27 @@ export class RemoteEmployeeSyncService {
       publicUploadBasePath: this.remoteConfig.publicUploadBasePath,
     });
   }
+
+  async checkConnection(): Promise<{ ok: boolean; message: string; latencyMs?: number }> {
+    const startedAt = Date.now();
+    try {
+      const remotePool = await this.getRemotePool();
+      const request = remotePool.request();
+      await request.query('SELECT 1 AS ok');
+      return {
+        ok: true,
+        message: 'Remote database connection is healthy',
+        latencyMs: Date.now() - startedAt,
+      };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        ok: false,
+        message: message || 'Remote database connection failed',
+        latencyMs: Date.now() - startedAt,
+      };
+    }
+  }
 }
 
 export function createRemoteEmployeeSyncServiceFromEnv(

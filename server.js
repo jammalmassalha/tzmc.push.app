@@ -6046,6 +6046,27 @@ registerAuthController(app, {
     mysqlLogsService
 });
 
+registerReadRoute(
+    app,
+    ['/remote-employee-db/health', '/notify/remote-employee-db/health'],
+    async (req, res) => {
+        const token = String(
+            (req.query && req.query.token) ||
+            (req.headers && (req.headers['x-admin-token'] || req.headers['x-app-token'])) ||
+            ''
+        ).trim();
+        const isAdminTokenValid = APP_SERVER_TOKEN && token === APP_SERVER_TOKEN;
+        if (APP_SERVER_TOKEN && !isAdminTokenValid) {
+            return res.status(403).json({ ok: false, message: 'Forbidden' });
+        }
+        if (!remoteEmployeeSyncService) {
+            return res.status(503).json({ ok: false, message: 'Remote employee database is not configured' });
+        }
+        const result = await remoteEmployeeSyncService.checkConnection();
+        return res.status(result.ok ? 200 : 503).json(result);
+    }
+);
+
 // --- CLIENT TELEMETRY ---
 app.post(['/log', '/notify/log'], (req, res) => {
     const { event, payload, user, timestamp } = req.body || {};

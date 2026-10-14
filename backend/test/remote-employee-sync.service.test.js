@@ -118,3 +118,40 @@ test('syncRemoteUserIntoSubscribeTable downloads profile pictures and inserts Su
     'jane.doe',
   ]);
 });
+
+test('RemoteEmployeeSyncService.checkConnection reports remote db health', async () => {
+  const { RemoteEmployeeSyncService } = require('../dist/services/remote-employee-sync.service');
+  let queryCount = 0;
+  const service = new RemoteEmployeeSyncService({
+    mysqlPool: {
+      query: async () => [[], undefined],
+      execute: async () => [{ affectedRows: 1 }, undefined],
+    },
+    server: 'SRV-APPDB.poria.health.gov.il',
+    user: 'hrd',
+    password: 'secret',
+    database: 'msdb',
+    uploadDir: os.tmpdir(),
+  });
+
+  service.remotePoolPromise = Promise.resolve({
+    request() {
+      return {
+        input() {
+          return this;
+        },
+        async query(sql) {
+          queryCount += 1;
+          assert.match(sql, /SELECT 1 AS ok/);
+          return { recordset: [{ ok: 1 }] };
+        },
+      };
+    },
+  });
+
+  const result = await service.checkConnection();
+
+  assert.equal(result.ok, true);
+  assert.equal(result.message, 'Remote database connection is healthy');
+  assert.equal(queryCount, 1);
+});
