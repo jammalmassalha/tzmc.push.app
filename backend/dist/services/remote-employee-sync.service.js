@@ -336,6 +336,27 @@ class RemoteEmployeeSyncService {
             publicUploadBasePath: this.remoteConfig.publicUploadBasePath,
         });
     }
+    async checkConnection() {
+        const startedAt = Date.now();
+        try {
+            const remotePool = await this.getRemotePool();
+            const request = remotePool.request();
+            await request.query('SELECT 1 AS ok');
+            return {
+                ok: true,
+                message: 'Remote database connection is healthy',
+                latencyMs: Date.now() - startedAt,
+            };
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return {
+                ok: false,
+                message: message || 'Remote database connection failed',
+                latencyMs: Date.now() - startedAt,
+            };
+        }
+    }
 }
 exports.RemoteEmployeeSyncService = RemoteEmployeeSyncService;
 function createRemoteEmployeeSyncServiceFromEnv(env, mysqlPool, uploadDir) {
