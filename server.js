@@ -38,6 +38,7 @@ const {
     UploadSecurityService,
     NotificationService,
     SessionService,
+    createRemoteEmployeeSyncServiceFromEnv,
     formatAuthCodeSmsMessage: formatAuthCodeSmsMessageValue,
     buildInforuSmsXmlPayload: buildInforuSmsXmlPayloadValue,
     extractInforuStatusCode: extractInforuStatusCodeValue,
@@ -88,6 +89,7 @@ const uploadSecurityService = new UploadSecurityService({
     uploadDir,
     workerPath: uploadSecurityWorkerPath
 });
+const remoteEmployeeSyncService = createRemoteEmployeeSyncServiceFromEnv(process.env, mysqlLogsService.pool, uploadDir);
 const app = express();
 const httpServer = http.createServer(app);
 app.disable('x-powered-by');
@@ -3646,13 +3648,30 @@ async function ensureRequestedUserIsRegistered(requestedUser) {
         return { ok: true, status: 200, message: '' };
     }
     try {
-        const payload = await mysqlLogsService.checkAuth(normalizedUser);
+        let payload = await mysqlLogsService.checkAuth(normalizedUser);
         const status = String(payload && payload.status ? payload.status : '').trim().toLowerCase();
         const isActive = payload && Object.prototype.hasOwnProperty.call(payload, 'isActive')
             ? Boolean(payload.isActive)
             : status === 'success';
         if (status === 'success' && isActive) {
             return { ok: true, status: 200, message: '' };
+        }
+        if (payload && String(payload.message || '').trim().toLowerCase() === 'user not registered' && remoteEmployeeSyncService) {
+            try {
+                const synced = await remoteEmployeeSyncService.syncUser(normalizedUser);
+                if (synced) {
+                    payload = await mysqlLogsService.checkAuth(normalizedUser);
+                    const syncedStatus = String(payload && payload.status ? payload.status : '').trim().toLowerCase();
+                    const syncedIsActive = payload && Object.prototype.hasOwnProperty.call(payload, 'isActive')
+                        ? Boolean(payload.isActive)
+                        : syncedStatus === 'success';
+                    if (syncedStatus === 'success' && syncedIsActive) {
+                        return { ok: true, status: 200, message: '' };
+                    }
+                }
+            } catch (syncErr) {
+                console.warn('[AUTH REGISTER] Remote employee sync failed:', syncErr && syncErr.message ? syncErr.message : syncErr);
+            }
         }
         const backendMessage = String(payload && payload.message ? payload.message : '').trim();
         if (backendMessage && /inactive/i.test(backendMessage)) {
