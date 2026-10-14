@@ -2,7 +2,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import * as mssql from 'mssql';
 import { Pool, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 
 import { normalizeIsraeliPhoneNumberToLocal } from './auth-sms.service';
@@ -38,6 +37,25 @@ type RemotePoolLike = {
     query(sql: string): Promise<{ recordset?: Array<Record<string, unknown>> }>;
   };
 };
+
+type MssqlModuleLike = {
+  ConnectionPool: new (config: Record<string, unknown>) => {
+    connect(): Promise<RemotePoolLike>;
+  };
+  NVarChar: unknown;
+};
+
+let cachedMssqlModule: MssqlModuleLike | null = null;
+
+function loadMssqlModule(): MssqlModuleLike | null {
+  if (cachedMssqlModule) return cachedMssqlModule;
+  try {
+    cachedMssqlModule = require('mssql') as MssqlModuleLike;
+  } catch {
+    cachedMssqlModule = null;
+  }
+  return cachedMssqlModule;
+}
 
 function toTrimmedString(value: unknown): string {
   return String(value ?? '').trim();
@@ -229,7 +247,7 @@ export async function fetchRemoteUserDetails(
 
   for (const candidate of candidates) {
     const request = mssqlPool.request();
-    request.input('u', mssql.NVarChar, candidate);
+    request.input('u', loadMssqlModule()?.NVarChar ?? candidate, candidate);
     const result = await request.query(query);
     if (!result.recordset || result.recordset.length === 0) {
       continue;
@@ -359,15 +377,19 @@ export async function syncRemoteUserIntoSubscribeTable({
 export class RemoteEmployeeSyncService {
   private readonly mysqlPool: Pool;
   private readonly remoteConfig: RemoteEmployeeDirectoryConfig;
-  private remotePoolPromise: Promise<mssql.ConnectionPool> | null = null;
+  private remotePoolPromise: Promise<RemotePoolLike> | null = null;
 
   constructor(config: RemoteEmployeeDirectoryConfig & { mysqlPool: Pool }) {
     this.mysqlPool = config.mysqlPool;
     this.remoteConfig = config;
   }
 
-  private async getRemotePool(): Promise<mssql.ConnectionPool> {
+  private async getRemotePool(): Promise<RemotePoolLike> {
     if (!this.remotePoolPromise) {
+      const mssql = loadMssqlModule();
+      if (!mssql) {
+        throw new Error('mssql module is not installed');
+      }
       const pool = new mssql.ConnectionPool({
         server: this.remoteConfig.server,
         user: this.remoteConfig.user,

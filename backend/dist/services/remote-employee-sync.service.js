@@ -1,37 +1,4 @@
 "use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -44,8 +11,19 @@ const promises_1 = __importDefault(require("node:fs/promises"));
 const node_path_1 = __importDefault(require("node:path"));
 const node_crypto_1 = __importDefault(require("node:crypto"));
 const node_url_1 = require("node:url");
-const mssql = __importStar(require("mssql"));
 const auth_sms_service_1 = require("./auth-sms.service");
+let cachedMssqlModule = null;
+function loadMssqlModule() {
+    if (cachedMssqlModule)
+        return cachedMssqlModule;
+    try {
+        cachedMssqlModule = require('mssql');
+    }
+    catch {
+        cachedMssqlModule = null;
+    }
+    return cachedMssqlModule;
+}
 function toTrimmedString(value) {
     return String(value ?? '').trim();
 }
@@ -205,7 +183,7 @@ async function fetchRemoteUserDetails(mssqlPool, usernameOrPhone) {
   `;
     for (const candidate of candidates) {
         const request = mssqlPool.request();
-        request.input('u', mssql.NVarChar, candidate);
+        request.input('u', loadMssqlModule()?.NVarChar ?? candidate, candidate);
         const result = await request.query(query);
         if (!result.recordset || result.recordset.length === 0) {
             continue;
@@ -307,6 +285,10 @@ class RemoteEmployeeSyncService {
     }
     async getRemotePool() {
         if (!this.remotePoolPromise) {
+            const mssql = loadMssqlModule();
+            if (!mssql) {
+                throw new Error('mssql module is not installed');
+            }
             const pool = new mssql.ConnectionPool({
                 server: this.remoteConfig.server,
                 user: this.remoteConfig.user,
