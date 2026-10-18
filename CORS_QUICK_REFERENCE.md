@@ -4,8 +4,8 @@ Quick answers for common deployment scenarios.
 
 ## 🟢 Scenario 1: Same-Origin Deployment (Recommended)
 
-**Setup:** Flutter web app deployed from the same origin as the backend
-- Example: `https://www.tzmc.co.il/flutterapp/` → backend at `https://www.tzmc.co.il/notify`
+**Setup:** Flutter web app deployed from the same origin as the backend host
+- Example: `https://www.tzmc.co.il/fluttertest/` → backend at `https://www.tzmc.co.il/notify`
 
 ### What You Need
 - ✅ CORS is **NOT** required (same-origin requests work automatically)
@@ -14,7 +14,7 @@ Quick answers for common deployment scenarios.
 
 ### Backend Configuration
 ```bash
-# No special configuration needed!
+# No special configuration needed for the canonical backend host
 # Default ALLOWED_HOSTS already includes www.tzmc.co.il
 ```
 
@@ -28,16 +28,16 @@ static const EnvironmentConfig production = EnvironmentConfig(
 ```
 
 ### Deployment Steps
-1. Build Flutter web app with base-href `/flutterapp/`:
+1. Build Flutter web app with base-href `/fluttertest/`:
    ```bash
-   flutter build web --base-href /flutterapp/
+   flutter build web --base-href /fluttertest/
    ```
 
-2. Deploy `build/web` to `server.js` dist/web or similar directory
+2. Deploy `build/web` to your frontend host directory
 
-3. Configure server to serve it from `/flutterapp/` route
+3. Configure the frontend host to serve it from `/fluttertest/` route
 
-4. Verify by visiting `https://www.tzmc.co.il/flutterapp/`
+4. Verify by visiting `https://www.tzmc.co.il/fluttertest/`
 
 ### ✅ You're Done!
 If the app loads and you can log in, CORS is working correctly.

@@ -7,9 +7,9 @@
 /// On **web** the browser automatically attaches cookies to every request,
 /// including `<img>` tag loads. Using Dio (XHR) instead would trigger the
 /// browser's CORS policy when the Flutter app origin differs from the API
-/// origin (e.g. `https://example.com` vs `https://tzmc.app`). So on
-/// web we simply delegate to [Image.network] / [NetworkImage] and let the
-/// browser handle cookie forwarding natively.
+/// origin (for example, a frontend host vs `https://www.tzmc.co.il/notify`).
+/// So on web we simply delegate to [Image.network] / [NetworkImage] and let
+/// the browser handle cookie forwarding natively.
 library;
 
 import 'dart:io' show File, Platform;
@@ -32,8 +32,8 @@ import '../../core/utils/toast_utils.dart';
 /// Upload paths are stored as absolute-path references such as
 /// `/notify/uploads/filename.jpg`. Passing them directly to Dio's [get]
 /// concatenates them with the configured `baseUrl`
-/// (`https://app.tzmc.app`), and with the origin resolution we get the correct
-/// full URL (`https://app.tzmc.app/notify/uploads/filename.jpg`).
+/// (`https://www.tzmc.co.il/notify`), and with the origin resolution we get the
+/// correct full URL (`https://www.tzmc.co.il/notify/uploads/filename.jpg`).
 /// Resolving against the origin ensures we build correct absolute URLs.
 String resolveToAbsoluteUrl(String url) {
   if (url.startsWith('http://') || url.startsWith('https://')) return url;
