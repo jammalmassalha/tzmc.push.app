@@ -5,7 +5,7 @@
 /// to the canonical backend host: `https://www.tzmc.co.il/notify`.
 ///
 /// Example:
-/// - If deployed at `https://app.tzmc.app/` or `https://www.tzmc.co.il/fluttertest/`
+/// - If deployed at `https://www.tzmc.co.il/fluttertest/`
 ///   → baseUrl should still be `https://www.tzmc.co.il/notify`
 ///
 /// The backend must allow the web app origin in `ALLOWED_HOSTS` and return the

@@ -28,8 +28,8 @@ function resolveBackendOrigin(): string {
     return DEFAULT_REMOTE_ORIGIN;
   }
 
-  // The public web app may be hosted on a different origin (e.g. app.tzmc.app),
-  // but all API traffic must go to the canonical backend host.
+  // The public web app may be hosted on a different origin, but all API
+  // traffic must go to the canonical backend host.
   return DEFAULT_REMOTE_ORIGIN;
 }
 
