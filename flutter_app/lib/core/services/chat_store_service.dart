@@ -187,6 +187,45 @@ class ChatState {
     );
   }
 
+  String _messageDedupKey(ChatMessage message) {
+    final messageId = message.messageId.trim();
+    if (messageId.isNotEmpty) {
+      return 'message:${messageId.toLowerCase()}';
+    }
+
+    final clientMsgId = message.clientMsgId?.trim() ?? '';
+    if (clientMsgId.isNotEmpty) {
+      return 'client:${clientMsgId.toLowerCase()}';
+    }
+
+    final chatId = normalizeChatId(message.chatId);
+    final sender = message.sender.trim().toLowerCase();
+    final body = _normalizedIncomingTextForDedup(
+      message.body,
+      imageUrl: message.imageUrl,
+      fileUrl: message.fileUrl,
+    );
+    final imageUrl = message.imageUrl?.trim().toLowerCase() ?? '';
+    final fileUrl = message.fileUrl?.trim().toLowerCase() ?? '';
+    final replyToMessageId = message.replyTo?.messageId.trim().toLowerCase() ?? '';
+    final forwardedFrom = message.forwardedFrom?.trim().toLowerCase() ?? '';
+    final forwardedFromName = message.forwardedFromName?.trim().toLowerCase() ?? '';
+    final sentTime = message.effectiveSentTime;
+    return [
+      'fallback',
+      chatId,
+      sender,
+      body,
+      imageUrl,
+      fileUrl,
+      replyToMessageId,
+      forwardedFrom,
+      forwardedFromName,
+      sentTime,
+      message.forwarded,
+    ].join('|');
+  }
+
   /// Get all chat list items sorted by last message timestamp
   List<ChatListItem> get chatListItems {
     final items = <ChatListItem>[];
@@ -458,7 +497,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       final chatId = normalizeChatId(entry.key);
       final chatMessages = normalized.putIfAbsent(chatId, () => <ChatMessage>[]);
       for (final message in entry.value) {
-        chatMessages.add(message.chatId == chatId ? message : message.copyWith(chatId: chatId));
+        final normalizedMessage =
+            message.chatId == chatId ? message : message.copyWith(chatId: chatId);
+        final existingIndex = chatMessages.indexWhere(
+          (existing) => _messageDedupKey(existing) == _messageDedupKey(normalizedMessage),
+        );
+        if (existingIndex >= 0) {
+          chatMessages[existingIndex] =
+              _hydrateExistingMessage(chatMessages[existingIndex], normalizedMessage);
+        } else {
+          chatMessages.add(normalizedMessage);
+        }
       }
     }
     return normalized;
@@ -2783,6 +2832,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   int _findEquivalentMessageIndex(List<ChatMessage> messages, ChatMessage candidate) {
     if (messages.isEmpty) return -1;
 
+    final candidateKey = _messageDedupKey(candidate);
     final candidateMessageId = candidate.messageId.trim();
     final candidateClientMsgId = candidate.clientMsgId?.trim() ?? '';
     final candidateChatId = candidate.chatId.trim().toLowerCase();
@@ -2802,6 +2852,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     for (var i = 0; i < messages.length; i++) {
       final existing = messages[i];
+      if (_messageDedupKey(existing) == candidateKey) {
+        return i;
+      }
 
       if (candidateMessageId.isNotEmpty && existing.messageId.trim() == candidateMessageId) {
         return i;
