@@ -2,7 +2,9 @@
 
 ## Issue: Canceled Session Status Requests
 
-When the Flutter web app makes credentialed requests (like `/notify/auth/session/status`), browsers require proper CORS headers to be set on all responses. If CORS headers are missing or incomplete, the browser will cancel the request as a security measure.
+The canonical backend host is `https://www.tzmc.co.il`, and all app API calls must target `https://www.tzmc.co.il/notify`.
+
+When the Flutter web app makes credentialed requests (like `https://www.tzmc.co.il/notify/auth/session/status`), browsers require proper CORS headers to be set on all responses. If CORS headers are missing or incomplete, the browser will cancel the request as a security measure.
 
 ## Root Causes
 
@@ -32,16 +34,16 @@ When the Flutter web app makes credentialed requests (like `/notify/auth/session
 ## Deployment Configuration
 
 ### Same-Origin Deployment (Recommended)
-If deploying the Flutter web app from the same origin as the backend (e.g., both at `https://www.tzmc.co.il`):
+If deploying the Flutter web app from the same origin as the backend (for example, the app is served from `https://www.tzmc.co.il/fluttertest/` and calls the backend at `https://www.tzmc.co.il/notify`):
 - ✅ No additional configuration needed
 - ✅ CORS is not required (same-origin requests work automatically)
 - ✅ Browser cookies are sent/received automatically
 - ✅ No preflight requests needed
 
-**Deployment path example**: `https://www.tzmc.co.il/flutterapp/`
+**Deployment path example**: `https://www.tzmc.co.il/fluttertest/`
 
 ### Cross-Origin Deployment
-If deploying the Flutter web app to a different origin (e.g., `https://app.example.com`):
+If deploying the Flutter web app to a different origin (e.g., `https://app.example.com`), the backend still remains `https://www.tzmc.co.il/notify`:
 
 1. **Ensure the origin is in ALLOWED_HOSTS**
    ```bash
@@ -54,7 +56,7 @@ If deploying the Flutter web app to a different origin (e.g., `https://app.examp
    ```dart
    static const EnvironmentConfig production = EnvironmentConfig(
      environment: Environment.production,
-     baseUrl: 'https://www.tzmc.co.il/notify',  // Must be the backend origin
+     baseUrl: 'https://www.tzmc.co.il/notify',  // Canonical backend host + /notify prefix
      enableLogging: false,
      enableAnalytics: true,
    );

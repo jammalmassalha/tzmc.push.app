@@ -139,6 +139,16 @@ class AuthNotifier extends Notifier<AuthState> {
         _apiService.startSessionCacheRefreshTimer();  // Start 5-min cache refresh
         unawaited(_resetBadgeAfterAuth());
         _logger.i('Session restored for user: $sessionUser (isRestricted: ${sessionInfo.isRestricted})');
+      } else if (cachedUser != null && cachedUser.isNotEmpty) {
+        // Keep the last known signed-in user on startup when the persisted
+        // server session cannot be revalidated immediately. This preserves the
+        // remembered login across app restarts instead of forcing the user
+        // back to the login screen every time.
+        state = AuthAuthenticated(user: cachedUser, isRestricted: false);
+        _startSessionRefresh();
+        _apiService.startSessionCacheRefreshTimer();
+        unawaited(_resetBadgeAfterAuth());
+        _logger.i('Restored cached user without a fresh session check: $cachedUser');
       } else {
         await _secureStorage.delete(key: _userKey);
 
@@ -158,8 +168,20 @@ class AuthNotifier extends Notifier<AuthState> {
       }
     } catch (e) {
       _logger.e('Error checking session: $e');
-      await _secureStorage.delete(key: _userKey);
-      state = const AuthUnauthenticated();
+      // Web sessions can fail to revalidate transiently because of CORS,
+      // cookie propagation, or a temporary backend/network issue. Keep the
+      // cached user identity so the app stays signed in instead of dropping
+      // the user back to the login screen on every refresh.
+      if (cachedUser != null && cachedUser.isNotEmpty) {
+        state = AuthAuthenticated(user: cachedUser, isRestricted: false);
+        _startSessionRefresh();
+        _apiService.startSessionCacheRefreshTimer();
+        unawaited(_resetBadgeAfterAuth());
+        _logger.i('Restored cached user after session check error: $cachedUser');
+      } else {
+        await _secureStorage.delete(key: _userKey);
+        state = const AuthUnauthenticated();
+      }
     }
   }
 

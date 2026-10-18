@@ -16,7 +16,7 @@ class AppConfig {
   );
 
   /// Default backend origin (production)
-  static const String defaultBackendOrigin = 'https://tzmc.app';
+  static const String defaultBackendOrigin = 'https://www.tzmc.co.il/notify';
 
   /// VAPID public key for web push (not used in mobile, but kept for reference)
   static const String vapidPublicKey =

@@ -51,12 +51,9 @@ Output is generated under:
 frontend/dist/frontend
 ```
 
-### Deploying under `/subscribes/`
+### Deploying under a path
 
-This repository is configured so production builds use:
-
-- `baseHref: /subscribes/`
-- `deployUrl: /subscribes/`
+This repository is configured so production builds can be hosted under a sub-path such as `/fluttertest/`. The frontend must still call the canonical backend host at `https://www.tzmc.co.il/notify`.
 
 So a standard production build is enough:
 

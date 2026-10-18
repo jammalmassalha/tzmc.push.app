@@ -1316,6 +1316,81 @@ class PushNotificationService {
         {'sent', 'receive', 'received'}.contains(type);
   }
 
+  static bool _looksGenericNotificationText(String text) {
+    final normalized = text
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
+        .trim();
+    return normalized.isEmpty ||
+        const {
+          'new notification',
+          'new message',
+          'new alert',
+          'work alert',
+          'worker alert',
+          'alert',
+          'message',
+        }.contains(normalized);
+  }
+
+  static String _firstMeaningfulText(Iterable<Object?> values) {
+    for (final value in values) {
+      final text = value?.toString().trim() ?? '';
+      if (text.isEmpty || _looksGenericNotificationText(text)) continue;
+      return text;
+    }
+    return '';
+  }
+
+  static String _resolveNotificationTitle(Map<String, dynamic> data, RemoteNotification? notification) {
+    final title = _firstMeaningfulText([
+          notification?.title,
+          data['title'],
+          data['groupName'],
+          data['groupSenderName'],
+          data['sender'],
+          data['chatName'],
+          data['chatId'],
+          data['user'],
+        ]);
+    return title.isNotEmpty ? title : 'Work Alert';
+  }
+
+  static String _resolveNotificationBody(Map<String, dynamic> data, RemoteNotification? notification) {
+    final body = _firstMeaningfulText([
+      notification?.body,
+      data['body'],
+      data['shortText'],
+      data['longText'],
+      data['messageText'],
+      data['groupMessageText'],
+      data['locationText'],
+      data['locationName'],
+      data['address'],
+      data['placeName'],
+      data['caption'],
+      data['text'],
+    ]);
+    if (body.isNotEmpty) return body;
+
+    final hasImage = data['image'] != null || data['imageUrl'] != null;
+    if (hasImage) return 'Sent an image';
+
+    final hasLocation = data['location'] != null ||
+        data['locationText'] != null ||
+        data['locationName'] != null ||
+        data['address'] != null ||
+        data['placeName'] != null ||
+        data['lat'] != null ||
+        data['lng'] != null ||
+        data['latitude'] != null ||
+        data['longitude'] != null;
+    if (hasLocation) return 'Location shared';
+
+    return '';
+  }
+
   /// Show local notification for foreground messages
   Future<void> _showLocalNotification(RemoteMessage message) async {
     final notification = message.notification;
@@ -1377,6 +1452,8 @@ class PushNotificationService {
     // so the tap handler can distinguish them from regular chat notifications.
     final data = message.data;
     final type = (data['type'] ?? '').toString().trim().toLowerCase();
+    final displayTitle = _resolveNotificationTitle(data, notification);
+    final displayBody = _resolveNotificationBody(data, notification);
     final String notificationPayload;
     if (type == 'helpdesk_assigned' || type == 'helpdesk') {
       final ticketId = (data['ticketId'] ?? '').toString().trim();
@@ -1392,7 +1469,7 @@ class PushNotificationService {
     await callShow(
       _localNotifications!,
       message.hashCode,
-      notification.title,
+      displayTitle,
       (() {
         // For group chats, prefer the notification.body which includes sender name (from shortText)
         // For direct messages, use messageText
@@ -1401,15 +1478,23 @@ class PushNotificationService {
                        (message.data['groupId']?.toString().trim().isNotEmpty == true);
         
         if (isGroup) {
-          // For groups, use notification.body which has format "SenderName: Message"
-          // This comes from the backend's shortText field
-          if (notification.body?.isNotEmpty == true && notification.body!.toLowerCase() != 'new notification') {
-            return notification.body!;
+          // For groups, prefer the server-provided body, then rebuild from the
+          // available data fields if the payload fell back to a generic label.
+          if (displayBody.isNotEmpty && !_looksGenericNotificationText(displayBody)) {
+            final senderName = data['groupSenderName']?.toString().trim() ?? '';
+            if (senderName.isNotEmpty && !displayBody.toLowerCase().startsWith('${senderName.toLowerCase()}:')) {
+              return '$senderName: $displayBody';
+            }
+            return displayBody;
           }
           
-          // Fallback: reconstruct from group sender name and message text if notification.body is missing
+          // Fallback: reconstruct from group sender name and message text if the body is missing.
           final senderName = message.data['groupSenderName']?.toString().trim() ?? '';
           final messageText = message.data['messageText']?.toString().trim() ?? 
+                             message.data['groupMessageText']?.toString().trim() ??
+                             message.data['locationText']?.toString().trim() ??
+                             message.data['locationName']?.toString().trim() ??
+                             message.data['address']?.toString().trim() ??
                              message.data['body']?.toString().trim() ?? 
                              notification.body ?? '';
           if (senderName.isNotEmpty && messageText.isNotEmpty) {
@@ -1417,20 +1502,9 @@ class PushNotificationService {
           }
           return messageText;
         } else {
-          // For direct messages, prefer messageText from data fields
-          final fromData =
-              (message.data['messageText']?.toString().trim().isNotEmpty == true
-                  ? message.data['messageText']?.toString().trim()
-                  : null) ??
-              (message.data['body']?.toString().trim().isNotEmpty == true
-                  ? message.data['body']?.toString().trim()
-                  : null);
-          if (fromData != null && fromData.toLowerCase() != 'new notification') {
-            return fromData;
-          }
-          return (notification.body?.isNotEmpty == true)
-              ? notification.body
-              : fromData ?? '';
+          // For direct messages, use the resolved content first.
+          if (displayBody.isNotEmpty) return displayBody;
+          return '';
         }
       })(),
       details,

@@ -730,10 +730,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
     
     debugPrint('[SYNC-PIPELINE] Starting sync with lastSyncTimestamp: $_syncCursorMs');
-    // Start the durable history recovery immediately. The combined sync
-    // request can be slow, while logs are sufficient to build the chat list
-    // and must not wait behind that request.
-    final fallbackRecovery = recoverMissedMessages(force: true);
     try {
       // The combined sync endpoint is an optimization, not the source of
       // truth. It can be slow while the backend wakes up (or fail when its
@@ -790,6 +786,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       //     dovrutGroupSyncEffect that calls syncHardcodedCommunityGroups().
       await _loadCommunityGroupConfigs();
       _syncCommunityGroups();
+
+      // Start the durable history recovery only after the main sync has had a
+      // chance to hydrate state. This keeps the logs import from racing the
+      // initial sync and re-applying the same messages as duplicates.
+      final fallbackRecovery = recoverMissedMessages(force: true);
 
       // 3. Pull missed messages (gap analysis).
       //
@@ -864,7 +865,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   Map<String, List<ChatMessage>> _groupMessagesByChat(List<ChatMessage> messages) {
     final result = <String, List<ChatMessage>>{};
     for (final message in messages) {
-      (result[message.chatId] ??= []).add(message);
+      final chatMessages = result.putIfAbsent(message.chatId, () => []);
+      final existingIndex = _findEquivalentMessageIndex(chatMessages, message);
+      if (existingIndex >= 0) {
+        chatMessages[existingIndex] = _hydrateExistingMessage(chatMessages[existingIndex], message);
+      } else {
+        chatMessages.add(message);
+      }
     }
     // Sort each chat's messages by timestamp descending and keep only the most
     // recent [maxMessagesPerChat].  Persistence is non-destructive, so the
@@ -1386,13 +1393,19 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       final chatId = message.chatId.toLowerCase();
       final existing = updatedByChat[chatId] ?? [];
 
-      // Check if message already exists (by ID)
-      if (!existing.any((m) => m.id == message.id)) {
+      final existingIndex = _findEquivalentMessageIndex(existing, message);
+      if (existingIndex >= 0) {
+        existing[existingIndex] = _hydrateExistingMessage(existing[existingIndex], message);
+      } else {
         // Add and re-sort by timestamp descending (newest first)
-        final updated = [...existing, message]
-          ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
-        updatedByChat[chatId] = updated;
+        existing.add(message);
       }
+
+      existing.sort(compareMessagesBySentTimeDesc);
+      if (existing.length > maxMessagesPerChat) {
+        existing.removeRange(maxMessagesPerChat, existing.length);
+      }
+      updatedByChat[chatId] = existing;
     }
 
     state = state.copyWith(messagesByChat: updatedByChat);
@@ -1790,7 +1803,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     //   • keep action types (delete-action, edit-action, reaction, read-receipt,
     //     group-update) so deletions and edits are reflected in the history.
     //   • drop messages with no sender or sender == "system".
-    //   • drop sentinel bodies "new notification" / "new reaction".
+    //   • keep placeholder bodies when the row carries media; those are real
+    //     messages whose visible content is the attachment, not the text.
     const actionTypes = {
       'read',
       'read-receipt',
@@ -1809,7 +1823,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       final sender = (msg.sender ?? '').trim().toLowerCase();
       if (sender.isEmpty || sender == 'system') return false;
       final body = (msg.body ?? '').trim().toLowerCase();
-      if (body == 'new notification' || body == 'new reaction') return false;
+      if ((body == 'new notification' || body == 'new reaction') &&
+          msg.imageUrl == null &&
+          msg.fileUrl == null) {
+        return false;
+      }
       return true;
     }).toList();
 
@@ -2073,8 +2091,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       final chatMessages =
           List<ChatMessage>.from(newMessagesByChat[chatId] ?? const <ChatMessage>[]);
 
-      final existingIndex =
-          chatMessages.indexWhere((m) => m.messageId == message.messageId);
+      final existingIndex = _findEquivalentMessageIndex(chatMessages, message);
 
       if (existingIndex >= 0) {
         chatMessages[existingIndex] =
@@ -2552,8 +2569,19 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final locationUrl = str(data['locationUrl']) ?? str(data['location']);
     final lat = str(data['latitude']) ?? str(data['lat']);
     final lon = str(data['longitude']) ?? str(data['lng']) ?? str(data['lon']);
+    final isGenericPlaceholder = {
+      'new notification',
+      'new message',
+      'new alert',
+      'work alert',
+      'worker alert',
+      'alert',
+      'message',
+    }.contains(rawBody.trim().toLowerCase());
     final body = rawBody.isNotEmpty
-        ? rawBody
+        ? (isGenericPlaceholder && ((data['imageUrl'] ?? data['image']) != null || (data['fileUrl'] ?? data['file']) != null)
+            ? ''
+            : rawBody)
         : ((lat != null && lon != null)
             ? '📍 https://www.google.com/maps?q=$lat,$lon'
             : (locationUrl ?? ''));
@@ -2659,34 +2687,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final newMessagesByChat = Map<String, List<ChatMessage>>.from(state.messagesByChat);
     final chatMessages = List<ChatMessage>.from(newMessagesByChat[chatId] ?? []);
 
-    // Check for existing message (by messageId)
-    var existingIndex = chatMessages.indexWhere((m) => m.messageId == message.messageId);
-
-    // Fallback dedup for own-message echoes whose messageId is not preserved
-    // by the server. For group messages the backend rewrites
-    // `pollingMessage.sender = groupId` (server.js:2138), so the echo arrives
-    // with sender == groupId rather than the current user — the
-    // `_buildChatMessageFromServer` heuristic then tags it as `incoming` and,
-    // if any layer along the way regenerates the messageId, the echo would
-    // show up as a second "me" bubble next to the original outgoing one.
-    // Match against an optimistic outgoing message with the same body posted
-    // within the last 30s and treat the echo as a hydration of it. We scan
-    // newest-first (chatMessages is sorted descending by timestamp) and bail
-    // out as soon as we leave the window so the cost stays bounded on long
-    // chats.
-    if (existingIndex < 0 && message.direction == MessageDirection.incoming) {
-      final fingerprint = message.body?.trim() ?? '';
-      final ts = message.timestamp;
-      for (var i = 0; i < chatMessages.length; i++) {
-        final m = chatMessages[i];
-        if ((m.timestamp - ts).abs() >= 30000) break;
-        if (m.direction == MessageDirection.outgoing &&
-            (m.body?.trim() ?? '') == fingerprint) {
-          existingIndex = i;
-          break;
-        }
-      }
-    }
+    final existingIndex = _findEquivalentMessageIndex(chatMessages, message);
 
     final isNew = existingIndex < 0;
 
@@ -2727,6 +2728,91 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     state = state.copyWith(messagesByChat: newMessagesByChat);
 
     return isNew;
+  }
+
+  int _findEquivalentMessageIndex(List<ChatMessage> messages, ChatMessage candidate) {
+    if (messages.isEmpty) return -1;
+
+    final candidateMessageId = candidate.messageId.trim();
+    final candidateClientMsgId = candidate.clientMsgId?.trim() ?? '';
+    final candidateChatId = candidate.chatId.trim().toLowerCase();
+    final candidateSender = candidate.sender.trim().toLowerCase();
+    final candidateBody = _normalizedIncomingTextForDedup(
+      candidate.body,
+      imageUrl: candidate.imageUrl,
+      fileUrl: candidate.fileUrl,
+    );
+    final candidateImageUrl = candidate.imageUrl?.trim() ?? '';
+    final candidateFileUrl = candidate.fileUrl?.trim() ?? '';
+    final candidateReplyToMessageId = candidate.replyTo?.messageId.trim() ?? '';
+    final candidateForwardedFrom = candidate.forwardedFrom?.trim() ?? '';
+    final candidateForwardedFromName = candidate.forwardedFromName?.trim() ?? '';
+    final candidateSentTime = candidate.effectiveSentTime;
+    const dedupWindowMs = 2000;
+
+    for (var i = 0; i < messages.length; i++) {
+      final existing = messages[i];
+
+      if (candidateMessageId.isNotEmpty && existing.messageId.trim() == candidateMessageId) {
+        return i;
+      }
+
+      final existingClientMsgId = existing.clientMsgId?.trim() ?? '';
+      if (candidateClientMsgId.isNotEmpty &&
+          existingClientMsgId.isNotEmpty &&
+          existingClientMsgId == candidateClientMsgId) {
+        return i;
+      }
+
+      if (existing.chatId.trim().toLowerCase() != candidateChatId) continue;
+      if (existing.sender.trim().toLowerCase() != candidateSender) continue;
+      final existingBody = _normalizedIncomingTextForDedup(
+        existing.body,
+        imageUrl: existing.imageUrl,
+        fileUrl: existing.fileUrl,
+      );
+      final existingImageUrl = existing.imageUrl?.trim() ?? '';
+      final existingFileUrl = existing.fileUrl?.trim() ?? '';
+      if (existingBody != candidateBody ||
+          existingImageUrl != candidateImageUrl ||
+          existingFileUrl != candidateFileUrl) {
+        continue;
+      }
+      if ((existing.replyTo?.messageId.trim() ?? '') != candidateReplyToMessageId) continue;
+      if ((existing.forwardedFrom?.trim() ?? '') != candidateForwardedFrom) continue;
+      if ((existing.forwardedFromName?.trim() ?? '') != candidateForwardedFromName) continue;
+      if (existing.forwarded != candidate.forwarded) continue;
+
+      final existingSentTime = existing.effectiveSentTime;
+      if ((existingSentTime - candidateSentTime).abs() <= dedupWindowMs) {
+        return i;
+      }
+    }
+
+    return -1;
+  }
+
+  String _normalizedIncomingTextForDedup(
+    String? value, {
+    String? imageUrl,
+    String? fileUrl,
+  }) {
+    final normalized = (value ?? '').replaceAll(RegExp(r'\s+'), ' ').trim().toLowerCase();
+    if (normalized.isEmpty) return '';
+    const genericPlaceholders = {
+      'new notification',
+      'new message',
+      'new alert',
+      'work alert',
+      'worker alert',
+      'alert',
+      'message',
+    };
+    if (genericPlaceholders.contains(normalized) &&
+        ((imageUrl?.trim().isNotEmpty ?? false) || (fileUrl?.trim().isNotEmpty ?? false))) {
+      return '';
+    }
+    return normalized;
   }
 
   // ── Delivery acknowledgments ───────────────────────────────────────────────

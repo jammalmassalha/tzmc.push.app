@@ -1,20 +1,15 @@
 /// Environment-specific configuration
 ///
 /// **CORS Configuration Note:**
-/// The [baseUrl] must be the same origin as where the Flutter web app is deployed
-/// for credentialed requests (with cookies) to work properly.
+/// The Flutter web app can be hosted anywhere, but [baseUrl] must always point
+/// to the canonical backend host: `https://www.tzmc.co.il/notify`.
 ///
-/// Examples:
-/// - If deployed at https://app.tzmc.app/flutterapp/
-///   → baseUrl should be https://app.tzmc.app
+/// Example:
+/// - If deployed at `https://www.tzmc.co.il/fluttertest/`
+///   → baseUrl should still be `https://www.tzmc.co.il/notify`
 ///
-/// - If deployed at https://app.example.com/
-///   → baseUrl should be https://app.tzmc.app (backend origin)
-///   → Backend ALLOWED_HOSTS must include app.example.com
-///
-/// Same-origin deployments (preferred) don't require CORS headers because
-/// browsers allow same-origin requests automatically.
-/// Cross-origin deployments require proper CORS headers and allowed hosts configuration.
+/// The backend must allow the web app origin in `ALLOWED_HOSTS` and return the
+/// proper CORS headers when the app is hosted on a different origin.
 library;
 
 enum Environment {
@@ -39,7 +34,7 @@ class EnvironmentConfig {
   /// Development environment pointing to production backend
   static const EnvironmentConfig development = EnvironmentConfig(
     environment: Environment.development,
-    baseUrl: 'https://app.tzmc.app',
+    baseUrl: 'https://www.tzmc.co.il/notify',
     enableLogging: true,
     enableAnalytics: false,
   );
@@ -47,7 +42,7 @@ class EnvironmentConfig {
   /// Production environment
   static const EnvironmentConfig production = EnvironmentConfig(
     environment: Environment.production,
-    baseUrl: 'https://app.tzmc.app',
+    baseUrl: 'https://www.tzmc.co.il/notify',
     enableLogging: false,
     enableAnalytics: true,
   );

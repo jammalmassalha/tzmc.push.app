@@ -564,14 +564,12 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
         final localFilePath = await stageAttachment(pendingImage ?? pendingFile);
         String? imageUrl;
         String? fileUrl;
-        if (kIsWeb) {
-          final api = ref.read(chatApiServiceProvider);
-          if (pendingImage != null) {
-            imageUrl = (await api.uploadFile(pendingImage, chatId: chatId)).url;
-          }
-          if (pendingFile != null) {
-            fileUrl = (await api.uploadFile(pendingFile, chatId: chatId)).url;
-          }
+        final api = ref.read(chatApiServiceProvider);
+        if (pendingImage != null) {
+          imageUrl = (await api.uploadFile(pendingImage, chatId: chatId)).url;
+        }
+        if (pendingFile != null) {
+          fileUrl = (await api.uploadFile(pendingFile, chatId: chatId)).url;
         }
 
         final chatStore = ref.read(chatStoreProvider.notifier);

@@ -429,7 +429,9 @@ app.use('/notify', express.static(path.join(__dirname, 'public'), {
     redirect: false
 }));
 
-// Flutter web app — built with --base-href /fluttertest/ and deployed to dist/web/
+// Legacy Flutter web app mount kept for backwards compatibility with older
+// /fluttertest deployments; the current public mount is /notify (see near the
+// end of this file).
 const flutterWebDir = path.join(__dirname, 'dist', 'web');
 app.use('/fluttertest', express.static(flutterWebDir));
 // SPA fallback: return index.html for any /fluttertest/* path not matched by a static file
@@ -2750,6 +2752,8 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         let messageContent = reply;
         if (!messageContent && imageUrl) {
             messageContent = `[Image Sent]: ${imageUrl}`;
+        } else if (!messageContent && fileUrl) {
+            messageContent = `[File Sent]: ${fileUrl}`;
         }
         const normalizedReplyToMessageId = String(replyToMessageId || '').trim();
         const normalizedReplyToSender = normalizeUserKey(replyToSender || '');
@@ -2798,7 +2802,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         const isGroup = Boolean(groupId);
         const senderLabel = groupSenderName || senderName || user;
         const normalizedGroupName = (typeof groupName === 'string') ? groupName.trim() : groupName;
-        const messageBody = reply || (imageUrl ? 'Sent an image' : 'New Message');
+        const messageBody = reply || (imageUrl ? 'Sent an image' : (fileUrl ? 'Sent a file' : 'New Message'));
         // For group messages, prepend sender name to the notification short text
         // so the popup notification shows who sent the message in the group
         const shortText = isGroup && senderLabel 
@@ -2878,7 +2882,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
                 sender: user,
                 recipient: groupId || (originalSender || ''),
                 groupId: groupId || null,
-                body: reply || null,
+                body: messageBody || null,
                 imageUrl: imageUrl || null,
                 fileUrl: fileUrl || null,
                 clientMsgId: String(clientMessageId || messageId).slice(0, 64),
@@ -2889,7 +2893,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             {
                 sender: senderForPush || user,
                 recipient: Array.isArray(targetToNotify) ? targetToNotify.join(',') : (targetToNotify || ''),
-                message: reply || '',
+                message: messageBody || '',
                 status: 'Sent',
                 msgId: messageId,
                 imageUrl: imageUrl || '',
@@ -9236,6 +9240,18 @@ httpServer.requestTimeout = Math.max(
 // a "zombie" connection that blocks a clean reconnect.
 httpServer.on('connection', (socket) => {
     socket.setKeepAlive(true, Math.max(1000, Number(process.env.TCP_KEEP_ALIVE_DELAY_MS) || 30000));
+});
+
+// Serve the Flutter web app under /notify so the public domain can point
+// there without breaking the API routes that already live under the same
+// prefix.
+app.use('/notify', express.static(flutterWebDir, {
+    fallthrough: true,
+    redirect: false
+}));
+app.get('/notify/*splat', flutterSpaLimiter, (_req, res) => {
+    const indexPath = path.join(flutterWebDir, 'index.html');
+    res.sendFile(indexPath);
 });
 
 httpServer.listen(PORT, () => {
