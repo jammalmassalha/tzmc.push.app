@@ -2750,6 +2750,8 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         let messageContent = reply;
         if (!messageContent && imageUrl) {
             messageContent = `[Image Sent]: ${imageUrl}`;
+        } else if (!messageContent && fileUrl) {
+            messageContent = `[File Sent]: ${fileUrl}`;
         }
         const normalizedReplyToMessageId = String(replyToMessageId || '').trim();
         const normalizedReplyToSender = normalizeUserKey(replyToSender || '');
@@ -2798,7 +2800,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         const isGroup = Boolean(groupId);
         const senderLabel = groupSenderName || senderName || user;
         const normalizedGroupName = (typeof groupName === 'string') ? groupName.trim() : groupName;
-        const messageBody = reply || (imageUrl ? 'Sent an image' : 'New Message');
+        const messageBody = reply || (imageUrl ? 'Sent an image' : (fileUrl ? 'Sent a file' : 'New Message'));
         // For group messages, prepend sender name to the notification short text
         // so the popup notification shows who sent the message in the group
         const shortText = isGroup && senderLabel 
@@ -2878,7 +2880,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
                 sender: user,
                 recipient: groupId || (originalSender || ''),
                 groupId: groupId || null,
-                body: reply || null,
+                body: messageBody || null,
                 imageUrl: imageUrl || null,
                 fileUrl: fileUrl || null,
                 clientMsgId: String(clientMessageId || messageId).slice(0, 64),
@@ -2889,7 +2891,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
             {
                 sender: senderForPush || user,
                 recipient: Array.isArray(targetToNotify) ? targetToNotify.join(',') : (targetToNotify || ''),
-                message: reply || '',
+                message: messageBody || '',
                 status: 'Sent',
                 msgId: messageId,
                 imageUrl: imageUrl || '',
