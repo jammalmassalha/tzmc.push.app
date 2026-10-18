@@ -459,7 +459,7 @@ a Firebase **service account** with the `Firebase Cloud Messaging API` scope.
 
 ## Web Setup
 
-The web build is configured to serve from `/notify` path.
+The web build is configured to call the canonical backend host at `https://www.tzmc.co.il/notify` while the app itself can be hosted separately (for example under `/fluttertest/`).
 
 **Important:** Use `--pwa-strategy=none` to disable service worker caching. This ensures users always get the latest version when you deploy updates:
 
@@ -467,7 +467,7 @@ The web build is configured to serve from `/notify` path.
 flutter build web --release --base-href /notify/ --pwa-strategy=none
 ```
 
-Deploy `dist/web/` contents to your server's `/notify` directory.
+Deploy `dist/web/` contents to your web host (for example `/fluttertest/` on the frontend server). The app's API calls still go to `https://www.tzmc.co.il/notify`.
 
 ### Cache Busting
 

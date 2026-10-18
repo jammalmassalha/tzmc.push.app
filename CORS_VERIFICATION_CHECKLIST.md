@@ -28,7 +28,7 @@ Use this checklist to verify that the CORS fix for canceled requests is working 
 - [ ] Verify baseUrl is set to the backend origin
   ```bash
   grep -A 2 "baseUrl:" flutter_app/lib/core/config/environment.dart
-  # Should show https://www.tzmc.co.il/notify
+  # Should show https://www.tzmc.co.il/notify (canonical backend host)
   ```
 
 - [ ] Verify withCredentials is enabled
@@ -48,7 +48,7 @@ Run these steps after deploying the app:
    - Go to the Network tab
 
 2. **Trigger a session status check**
-   - The app should automatically check `/notify/auth/session/status` on load
+   - The app should automatically check `https://www.tzmc.co.il/notify/auth/session/status` on load
    - Or navigate to a page that requires authentication
    - Look for a POST request to `/auth/session/status` in the Network tab
 
@@ -61,7 +61,7 @@ Run these steps after deploying the app:
    - Check the "Headers" tab for the response
    - Should see these response headers:
      ```
-     Access-Control-Allow-Origin: https://your-origin.com (or the exact origin)
+     Access-Control-Allow-Origin: https://www.tzmc.co.il (or the exact web-app origin)
      Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS
      Access-Control-Allow-Headers: Content-Type, Authorization, Cache-Control, Pragma, Last-Event-ID, X-Requested-With, X-CSRF-Token
      Access-Control-Allow-Credentials: true
@@ -108,7 +108,7 @@ Response: { authenticated: true, user: "...", ... }
 ### 3. Manual cURL Testing (from the server)
 
 ```bash
-# Test OPTIONS preflight
+# Test OPTIONS preflight against the canonical backend host
 curl -v \
   -H "Origin: https://www.tzmc.co.il" \
   -H "Access-Control-Request-Method: POST" \
