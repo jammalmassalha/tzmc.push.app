@@ -32,6 +32,74 @@ class NotificationService {
             return text.slice(0, maxLength);
         return `${text.slice(0, maxLength - 3)}...`;
     }
+    normalizePushText(value) {
+        return String(value ?? '').trim();
+    }
+    isGenericNotificationText(value) {
+        const normalized = this.normalizePushText(value)
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, ' ')
+            .trim();
+        return !normalized || new Set([
+            'new notification',
+            'new message',
+            'new alert',
+            'work alert',
+            'worker alert',
+            'alert',
+            'message'
+        ]).has(normalized);
+    }
+    firstMeaningfulPushText(values) {
+        for (const value of values) {
+            const text = this.normalizePushText(value);
+            if (!text || this.isGenericNotificationText(text))
+                continue;
+            return text;
+        }
+        return '';
+    }
+    resolvePushNotificationContent(payloadData = {}) {
+        const title = this.firstMeaningfulPushText([
+            payloadData.title,
+            payloadData.groupName,
+            payloadData.groupSenderName,
+            payloadData.sender,
+            payloadData.chatName,
+            payloadData.chatId,
+            payloadData.user
+        ]) || 'Work Alert';
+        const body = this.firstMeaningfulPushText([
+            payloadData.body,
+            payloadData.shortText,
+            payloadData.longText,
+            payloadData.messageText,
+            payloadData.groupMessageText,
+            payloadData.locationText,
+            payloadData.locationName,
+            payloadData.address,
+            payloadData.placeName,
+            payloadData.caption,
+            payloadData.text
+        ]) || (() => {
+            const hasImage = Boolean(payloadData.image || payloadData.imageUrl);
+            if (hasImage)
+                return 'Sent an image';
+            const hasLocation = payloadData.location ||
+                payloadData.locationText ||
+                payloadData.locationName ||
+                payloadData.address ||
+                payloadData.placeName ||
+                payloadData.latitude != null ||
+                payloadData.longitude != null ||
+                payloadData.lat != null ||
+                payloadData.lng != null;
+            if (hasLocation)
+                return 'Location shared';
+            return 'New Notification';
+        })();
+        return { title, body };
+    }
     buildCompactPushCustomData(rawData = {}, messageType = '') {
         if (!rawData || typeof rawData !== 'object')
             return {};
@@ -73,11 +141,10 @@ class NotificationService {
         const buildPayloadEnvelope = (dataPayload) => {
             if (!includeNotification)
                 return { data: dataPayload };
-            const notificationTitle = String(dataPayload.title || '').trim();
-            const body = String(dataPayload.body || dataPayload.groupMessageText || dataPayload.messageText || 'New Notification').trim();
+            const { title: notificationTitle, body } = this.resolvePushNotificationContent(dataPayload);
             const notification = {
-                title: notificationTitle || 'Work Alert',
-                body: body || 'New Notification',
+                title: notificationTitle,
+                body,
                 icon: dataPayload.icon || dataPayload.badge,
                 badge: dataPayload.badge || dataPayload.icon,
                 image: dataPayload.image || undefined,
@@ -209,11 +276,28 @@ class NotificationService {
             ? Math.floor(configuredMaxEndpoints)
             : (shouldLimitPerUserEndpoints ? this.defaultMaxEndpointsPerUser : 0);
         const compactCustomData = this.buildCompactPushCustomData(customData, messageType);
-        let msgTitle = message.title || 'Work Alert';
-        let msgText = msgBody.shortText
-            || msgBody.longText
-            || String(compactCustomData.messageText || '').trim()
-            || 'New Notification';
+        const resolvedContent = this.resolvePushNotificationContent({
+            title: message.title,
+            body: msgBody.shortText,
+            shortText: msgBody.shortText,
+            longText: msgBody.longText,
+            messageText: compactCustomData.messageText,
+            groupMessageText: compactCustomData.groupMessageText,
+            locationText: compactCustomData.locationText,
+            locationName: compactCustomData.locationName,
+            address: compactCustomData.address,
+            placeName: compactCustomData.placeName,
+            caption: compactCustomData.caption,
+            text: compactCustomData.text,
+            image: imageUrl,
+            imageUrl,
+            sender: finalSender,
+            groupName: customData.groupName,
+            groupSenderName: customData.groupSenderName,
+            chatId: customData.chatId
+        });
+        let msgTitle = resolvedContent.title;
+        let msgText = resolvedContent.body;
         if (messageType === 'reaction') {
             const reactionGroupName = String(customData.groupName || message.title || finalSender || '').trim();
             msgTitle = reactionGroupName || 'Group';
