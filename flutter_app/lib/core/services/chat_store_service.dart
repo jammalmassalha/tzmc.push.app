@@ -730,10 +730,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
     
     debugPrint('[SYNC-PIPELINE] Starting sync with lastSyncTimestamp: $_syncCursorMs');
-    // Start the durable history recovery immediately. The combined sync
-    // request can be slow, while logs are sufficient to build the chat list
-    // and must not wait behind that request.
-    final fallbackRecovery = recoverMissedMessages(force: true);
     try {
       // The combined sync endpoint is an optimization, not the source of
       // truth. It can be slow while the backend wakes up (or fail when its
@@ -790,6 +786,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       //     dovrutGroupSyncEffect that calls syncHardcodedCommunityGroups().
       await _loadCommunityGroupConfigs();
       _syncCommunityGroups();
+
+      // Start the durable history recovery only after the main sync has had a
+      // chance to hydrate state. This keeps the logs import from racing the
+      // initial sync and re-applying the same messages as duplicates.
+      final fallbackRecovery = recoverMissedMessages(force: true);
 
       // 3. Pull missed messages (gap analysis).
       //
