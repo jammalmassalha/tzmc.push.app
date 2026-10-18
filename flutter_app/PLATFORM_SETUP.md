@@ -459,12 +459,12 @@ a Firebase **service account** with the `Firebase Cloud Messaging API` scope.
 
 ## Web Setup
 
-The web build is configured to call the canonical backend host at `https://www.tzmc.co.il/notify` while the app itself can be hosted separately (for example under `/fluttertest/`).
+The web app is hosted separately (for example under `/fluttertest/`), but all API calls go to the canonical backend host at `https://www.tzmc.co.il/notify`.
 
 **Important:** Use `--pwa-strategy=none` to disable service worker caching. This ensures users always get the latest version when you deploy updates:
 
 ```bash
-flutter build web --release --base-href /notify/ --pwa-strategy=none
+flutter build web --release --base-href /fluttertest/ --pwa-strategy=none
 ```
 
 Deploy `dist/web/` contents to your web host (for example `/fluttertest/` on the frontend server). The app's API calls still go to `https://www.tzmc.co.il/notify`.
