@@ -168,8 +168,20 @@ class AuthNotifier extends Notifier<AuthState> {
       }
     } catch (e) {
       _logger.e('Error checking session: $e');
-      await _secureStorage.delete(key: _userKey);
-      state = const AuthUnauthenticated();
+      // Web sessions can fail to revalidate transiently because of CORS,
+      // cookie propagation, or a temporary backend/network issue. Keep the
+      // cached user identity so the app stays signed in instead of dropping
+      // the user back to the login screen on every refresh.
+      if (cachedUser != null && cachedUser.isNotEmpty) {
+        state = AuthAuthenticated(user: cachedUser, isRestricted: false);
+        _startSessionRefresh();
+        _apiService.startSessionCacheRefreshTimer();
+        unawaited(_resetBadgeAfterAuth());
+        _logger.i('Restored cached user after session check error: $cachedUser');
+      } else {
+        await _secureStorage.delete(key: _userKey);
+        state = const AuthUnauthenticated();
+      }
     }
   }
 
