@@ -1790,7 +1790,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     //   • keep action types (delete-action, edit-action, reaction, read-receipt,
     //     group-update) so deletions and edits are reflected in the history.
     //   • drop messages with no sender or sender == "system".
-    //   • drop sentinel bodies "new notification" / "new reaction".
+    //   • keep placeholder bodies when the row carries media; those are real
+    //     messages whose visible content is the attachment, not the text.
     const actionTypes = {
       'read',
       'read-receipt',
@@ -1809,7 +1810,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       final sender = (msg.sender ?? '').trim().toLowerCase();
       if (sender.isEmpty || sender == 'system') return false;
       final body = (msg.body ?? '').trim().toLowerCase();
-      if (body == 'new notification' || body == 'new reaction') return false;
+      if ((body == 'new notification' || body == 'new reaction') &&
+          msg.imageUrl == null &&
+          msg.fileUrl == null) {
+        return false;
+      }
       return true;
     }).toList();
 
@@ -2552,8 +2557,19 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final locationUrl = str(data['locationUrl']) ?? str(data['location']);
     final lat = str(data['latitude']) ?? str(data['lat']);
     final lon = str(data['longitude']) ?? str(data['lng']) ?? str(data['lon']);
+    final isGenericPlaceholder = {
+      'new notification',
+      'new message',
+      'new alert',
+      'work alert',
+      'worker alert',
+      'alert',
+      'message',
+    }.contains(rawBody.trim().toLowerCase());
     final body = rawBody.isNotEmpty
-        ? rawBody
+        ? (isGenericPlaceholder && ((data['imageUrl'] ?? data['image']) != null || (data['fileUrl'] ?? data['file']) != null)
+            ? ''
+            : rawBody)
         : ((lat != null && lon != null)
             ? '📍 https://www.google.com/maps?q=$lat,$lon'
             : (locationUrl ?? ''));

@@ -281,6 +281,63 @@ function parseLogDetailsMap(detailsRawValue: unknown): Record<string, string> {
     }, {});
 }
 
+function looksLikeGenericNotificationText(value: unknown): boolean {
+  const normalized = toTrimmedString(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+  return !normalized || new Set([
+    'new notification',
+    'new message',
+    'new alert',
+    'work alert',
+    'worker alert',
+    'alert',
+    'message'
+  ]).has(normalized);
+}
+
+function resolveLogMessageBody(
+  body: string,
+  detailsMap: Record<string, string>,
+  imageUrl: string,
+  fileUrl: string
+): string {
+  const bodyText = toTrimmedString(body);
+  if (bodyText && !looksLikeGenericNotificationText(bodyText)) {
+    return bodyText;
+  }
+
+  const detailBody = [
+    detailsMap.messageText,
+    detailsMap.groupMessageText,
+    detailsMap.body,
+    detailsMap.caption,
+    detailsMap.text,
+    detailsMap.locationText,
+    detailsMap.locationName,
+    detailsMap.address,
+    detailsMap.placeName
+  ].map(toTrimmedString).find((text) => text && !looksLikeGenericNotificationText(text));
+  if (detailBody) {
+    return detailBody;
+  }
+
+  if (imageUrl) return 'Sent an image';
+  if (fileUrl) return 'Sent a file';
+
+  const hasLocation =
+    toTrimmedString(detailsMap.location) ||
+    toTrimmedString(detailsMap.locationUrl) ||
+    toTrimmedString(detailsMap.latitude) ||
+    toTrimmedString(detailsMap.longitude) ||
+    toTrimmedString(detailsMap.lat) ||
+    toTrimmedString(detailsMap.lng);
+  if (hasLocation) return 'Location shared';
+
+  return bodyText;
+}
+
 function resolveLogMessageId(explicitMsgId: unknown, detailsRawValue: unknown): string {
   const direct = toTrimmedString(explicitMsgId);
   if (direct) {
@@ -979,11 +1036,11 @@ export class MysqlLogsService {
         const body = toTrimmedString(row.messagePreview);
         const imageUrl = toTrimmedString(row.imageUrl);
         const fileUrl = toTrimmedString(row.fileUrl);
+        const resolvedBody = resolvedActionType
+          ? body
+          : resolveLogMessageBody(body, detailsMap, imageUrl, fileUrl);
         if (!resolvedActionType) {
-          if (!body && !imageUrl && !fileUrl) continue;
-          if (body.toLowerCase() === 'new notification') {
-            continue;
-          }
+          if (!resolvedBody && !imageUrl && !fileUrl) continue;
         }
 
         const timestamp = parseFlexibleTimestamp(row.dateTime) || Date.now();
@@ -1017,7 +1074,7 @@ export class MysqlLogsService {
           messageId,
           sender,
           toUser: resolvedToUser || undefined,
-          body,
+          body: resolvedBody || body,
           imageUrl: imageUrl || undefined,
           fileUrl: fileUrl || undefined,
           timestamp,
