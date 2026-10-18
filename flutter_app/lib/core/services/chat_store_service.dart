@@ -864,7 +864,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   Map<String, List<ChatMessage>> _groupMessagesByChat(List<ChatMessage> messages) {
     final result = <String, List<ChatMessage>>{};
     for (final message in messages) {
-      (result[message.chatId] ??= []).add(message);
+      final chatMessages = result.putIfAbsent(message.chatId, () => []);
+      final existingIndex = _findEquivalentMessageIndex(chatMessages, message);
+      if (existingIndex >= 0) {
+        chatMessages[existingIndex] = _hydrateExistingMessage(chatMessages[existingIndex], message);
+      } else {
+        chatMessages.add(message);
+      }
     }
     // Sort each chat's messages by timestamp descending and keep only the most
     // recent [maxMessagesPerChat].  Persistence is non-destructive, so the
@@ -1386,13 +1392,19 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       final chatId = message.chatId.toLowerCase();
       final existing = updatedByChat[chatId] ?? [];
 
-      // Check if message already exists (by ID)
-      if (!existing.any((m) => m.id == message.id)) {
+      final existingIndex = _findEquivalentMessageIndex(existing, message);
+      if (existingIndex >= 0) {
+        existing[existingIndex] = _hydrateExistingMessage(existing[existingIndex], message);
+      } else {
         // Add and re-sort by timestamp descending (newest first)
-        final updated = [...existing, message]
-          ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
-        updatedByChat[chatId] = updated;
+        existing.add(message);
       }
+
+      existing.sort(compareMessagesBySentTimeDesc);
+      if (existing.length > maxMessagesPerChat) {
+        existing.removeRange(maxMessagesPerChat, existing.length);
+      }
+      updatedByChat[chatId] = existing;
     }
 
     state = state.copyWith(messagesByChat: updatedByChat);
@@ -2078,8 +2090,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       final chatMessages =
           List<ChatMessage>.from(newMessagesByChat[chatId] ?? const <ChatMessage>[]);
 
-      final existingIndex =
-          chatMessages.indexWhere((m) => m.messageId == message.messageId);
+      final existingIndex = _findEquivalentMessageIndex(chatMessages, message);
 
       if (existingIndex >= 0) {
         chatMessages[existingIndex] =
@@ -2675,34 +2686,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final newMessagesByChat = Map<String, List<ChatMessage>>.from(state.messagesByChat);
     final chatMessages = List<ChatMessage>.from(newMessagesByChat[chatId] ?? []);
 
-    // Check for existing message (by messageId)
-    var existingIndex = chatMessages.indexWhere((m) => m.messageId == message.messageId);
-
-    // Fallback dedup for own-message echoes whose messageId is not preserved
-    // by the server. For group messages the backend rewrites
-    // `pollingMessage.sender = groupId` (server.js:2138), so the echo arrives
-    // with sender == groupId rather than the current user — the
-    // `_buildChatMessageFromServer` heuristic then tags it as `incoming` and,
-    // if any layer along the way regenerates the messageId, the echo would
-    // show up as a second "me" bubble next to the original outgoing one.
-    // Match against an optimistic outgoing message with the same body posted
-    // within the last 30s and treat the echo as a hydration of it. We scan
-    // newest-first (chatMessages is sorted descending by timestamp) and bail
-    // out as soon as we leave the window so the cost stays bounded on long
-    // chats.
-    if (existingIndex < 0 && message.direction == MessageDirection.incoming) {
-      final fingerprint = message.body?.trim() ?? '';
-      final ts = message.timestamp;
-      for (var i = 0; i < chatMessages.length; i++) {
-        final m = chatMessages[i];
-        if ((m.timestamp - ts).abs() >= 30000) break;
-        if (m.direction == MessageDirection.outgoing &&
-            (m.body?.trim() ?? '') == fingerprint) {
-          existingIndex = i;
-          break;
-        }
-      }
-    }
+    final existingIndex = _findEquivalentMessageIndex(chatMessages, message);
 
     final isNew = existingIndex < 0;
 
@@ -2743,6 +2727,73 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     state = state.copyWith(messagesByChat: newMessagesByChat);
 
     return isNew;
+  }
+
+  int _findEquivalentMessageIndex(List<ChatMessage> messages, ChatMessage candidate) {
+    if (messages.isEmpty) return -1;
+
+    final candidateMessageId = candidate.messageId.trim();
+    final candidateClientMsgId = candidate.clientMsgId?.trim() ?? '';
+    final candidateChatId = candidate.chatId.trim().toLowerCase();
+    final candidateSender = candidate.sender.trim().toLowerCase();
+    final candidateBody = candidate.body?.trim() ?? '';
+    final candidateImageUrl = candidate.imageUrl?.trim() ?? '';
+    final candidateFileUrl = candidate.fileUrl?.trim() ?? '';
+    final candidateReplyToMessageId = candidate.replyTo?.messageId.trim() ?? '';
+    final candidateForwardedFrom = candidate.forwardedFrom?.trim() ?? '';
+    final candidateForwardedFromName = candidate.forwardedFromName?.trim() ?? '';
+    final candidateSentTime = candidate.effectiveSentTime;
+    const dedupWindowMs = 2000;
+
+    for (var i = 0; i < messages.length; i++) {
+      final existing = messages[i];
+
+      if (candidateMessageId.isNotEmpty && existing.messageId.trim() == candidateMessageId) {
+        return i;
+      }
+
+      final existingClientMsgId = existing.clientMsgId?.trim() ?? '';
+      if (candidateClientMsgId.isNotEmpty &&
+          existingClientMsgId.isNotEmpty &&
+          existingClientMsgId == candidateClientMsgId) {
+        return i;
+      }
+
+      if (existing.chatId.trim().toLowerCase() != candidateChatId) {
+        continue;
+      }
+      if (existing.sender.trim().toLowerCase() != candidateSender) {
+        continue;
+      }
+      if ((existing.body?.trim() ?? '') != candidateBody) {
+        continue;
+      }
+      if ((existing.imageUrl?.trim() ?? '') != candidateImageUrl) {
+        continue;
+      }
+      if ((existing.fileUrl?.trim() ?? '') != candidateFileUrl) {
+        continue;
+      }
+      if ((existing.replyTo?.messageId.trim() ?? '') != candidateReplyToMessageId) {
+        continue;
+      }
+      if ((existing.forwardedFrom?.trim() ?? '') != candidateForwardedFrom) {
+        continue;
+      }
+      if ((existing.forwardedFromName?.trim() ?? '') != candidateForwardedFromName) {
+        continue;
+      }
+      if (existing.forwarded != candidate.forwarded) {
+        continue;
+      }
+
+      final existingSentTime = existing.effectiveSentTime;
+      if ((existingSentTime - candidateSentTime).abs() <= dedupWindowMs) {
+        return i;
+      }
+    }
+
+    return -1;
   }
 
   // ── Delivery acknowledgments ───────────────────────────────────────────────

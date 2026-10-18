@@ -139,6 +139,16 @@ class AuthNotifier extends Notifier<AuthState> {
         _apiService.startSessionCacheRefreshTimer();  // Start 5-min cache refresh
         unawaited(_resetBadgeAfterAuth());
         _logger.i('Session restored for user: $sessionUser (isRestricted: ${sessionInfo.isRestricted})');
+      } else if (cachedUser != null && cachedUser.isNotEmpty) {
+        // Keep the last known signed-in user on startup when the persisted
+        // server session cannot be revalidated immediately. This preserves the
+        // remembered login across app restarts instead of forcing the user
+        // back to the login screen every time.
+        state = AuthAuthenticated(user: cachedUser, isRestricted: false);
+        _startSessionRefresh();
+        _apiService.startSessionCacheRefreshTimer();
+        unawaited(_resetBadgeAfterAuth());
+        _logger.i('Restored cached user without a fresh session check: $cachedUser');
       } else {
         await _secureStorage.delete(key: _userKey);
 
