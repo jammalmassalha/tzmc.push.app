@@ -2736,7 +2736,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final candidateClientMsgId = candidate.clientMsgId?.trim() ?? '';
     final candidateChatId = candidate.chatId.trim().toLowerCase();
     final candidateSender = candidate.sender.trim().toLowerCase();
-    final candidateBody = _normalizedDedupBody(
+    final candidateBody = _normalizedIncomingTextForDedup(
       candidate.body,
       imageUrl: candidate.imageUrl,
       fileUrl: candidate.fileUrl,
@@ -2763,40 +2763,24 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         return i;
       }
 
-      if (existing.chatId.trim().toLowerCase() != candidateChatId) {
-        continue;
-      }
-      if (existing.sender.trim().toLowerCase() != candidateSender) {
-        continue;
-      }
-      final existingBody = _normalizedDedupBody(
+      if (existing.chatId.trim().toLowerCase() != candidateChatId) continue;
+      if (existing.sender.trim().toLowerCase() != candidateSender) continue;
+      final existingBody = _normalizedIncomingTextForDedup(
         existing.body,
         imageUrl: existing.imageUrl,
         fileUrl: existing.fileUrl,
       );
-      if (existingBody.isNotEmpty &&
-          candidateBody.isNotEmpty &&
-          existingBody != candidateBody) {
+      final existingImageUrl = existing.imageUrl?.trim() ?? '';
+      final existingFileUrl = existing.fileUrl?.trim() ?? '';
+      if (existingBody != candidateBody ||
+          existingImageUrl != candidateImageUrl ||
+          existingFileUrl != candidateFileUrl) {
         continue;
       }
-      if ((existing.imageUrl?.trim() ?? '') != candidateImageUrl) {
-        continue;
-      }
-      if ((existing.fileUrl?.trim() ?? '') != candidateFileUrl) {
-        continue;
-      }
-      if ((existing.replyTo?.messageId.trim() ?? '') != candidateReplyToMessageId) {
-        continue;
-      }
-      if ((existing.forwardedFrom?.trim() ?? '') != candidateForwardedFrom) {
-        continue;
-      }
-      if ((existing.forwardedFromName?.trim() ?? '') != candidateForwardedFromName) {
-        continue;
-      }
-      if (existing.forwarded != candidate.forwarded) {
-        continue;
-      }
+      if ((existing.replyTo?.messageId.trim() ?? '') != candidateReplyToMessageId) continue;
+      if ((existing.forwardedFrom?.trim() ?? '') != candidateForwardedFrom) continue;
+      if ((existing.forwardedFromName?.trim() ?? '') != candidateForwardedFromName) continue;
+      if (existing.forwarded != candidate.forwarded) continue;
 
       final existingSentTime = existing.effectiveSentTime;
       if ((existingSentTime - candidateSentTime).abs() <= dedupWindowMs) {
@@ -2807,12 +2791,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     return -1;
   }
 
-  String _normalizedDedupBody(
-    String? body, {
+  String _normalizedIncomingTextForDedup(
+    String? value, {
     String? imageUrl,
     String? fileUrl,
   }) {
-    final normalized = (body ?? '').trim().toLowerCase();
+    final normalized = (value ?? '').replaceAll(RegExp(r'\s+'), ' ').trim().toLowerCase();
     if (normalized.isEmpty) return '';
     const genericPlaceholders = {
       'new notification',
