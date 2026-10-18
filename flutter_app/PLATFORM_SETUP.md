@@ -459,15 +459,15 @@ a Firebase **service account** with the `Firebase Cloud Messaging API` scope.
 
 ## Web Setup
 
-The web build is configured to serve from `/fluttertest` path.
+The web build is configured to serve from `/notify` path.
 
 **Important:** Use `--pwa-strategy=none` to disable service worker caching. This ensures users always get the latest version when you deploy updates:
 
 ```bash
-flutter build web --release --base-href /fluttertest/ --pwa-strategy=none
+flutter build web --release --base-href /notify/ --pwa-strategy=none
 ```
 
-Deploy `dist/web/` contents to your server's `/fluttertest` directory.
+Deploy `dist/web/` contents to your server's `/notify` directory.
 
 ### Cache Busting
 

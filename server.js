@@ -429,7 +429,9 @@ app.use('/notify', express.static(path.join(__dirname, 'public'), {
     redirect: false
 }));
 
-// Flutter web app — built with --base-href /fluttertest/ and deployed to dist/web/
+// Legacy Flutter web app mount kept for backwards compatibility with older
+// /fluttertest deployments; the current public mount is /notify (see near the
+// end of this file).
 const flutterWebDir = path.join(__dirname, 'dist', 'web');
 app.use('/fluttertest', express.static(flutterWebDir));
 // SPA fallback: return index.html for any /fluttertest/* path not matched by a static file
@@ -9238,6 +9240,18 @@ httpServer.requestTimeout = Math.max(
 // a "zombie" connection that blocks a clean reconnect.
 httpServer.on('connection', (socket) => {
     socket.setKeepAlive(true, Math.max(1000, Number(process.env.TCP_KEEP_ALIVE_DELAY_MS) || 30000));
+});
+
+// Serve the Flutter web app under /notify so the public domain can point
+// there without breaking the API routes that already live under the same
+// prefix.
+app.use('/notify', express.static(flutterWebDir, {
+    fallthrough: true,
+    redirect: false
+}));
+app.get('/notify/*splat', flutterSpaLimiter, (_req, res) => {
+    const indexPath = path.join(flutterWebDir, 'index.html');
+    res.sendFile(indexPath);
 });
 
 httpServer.listen(PORT, () => {

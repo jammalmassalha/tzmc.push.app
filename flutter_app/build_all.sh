@@ -166,15 +166,15 @@ echo ""
 echo "=========================================="
 echo "Building for WEB (Browser)..."
 echo "=========================================="
-# Use MSYS_NO_PATHCONV to prevent Git Bash from converting /fluttertest/ to a Windows path
+# Use MSYS_NO_PATHCONV to prevent Git Bash from converting /notify/ to a Windows path
 # Use --pwa-strategy=none to disable service worker caching for easier updates
-MSYS_NO_PATHCONV=1 flutter build web --release --base-href "/fluttertest/" --pwa-strategy=none
+MSYS_NO_PATHCONV=1 flutter build web --release --base-href "/notify/" --pwa-strategy=none
 
 # Copy web build to output
 rm -rf "$OUTPUT_DIR/web"
 cp -r build/web "$OUTPUT_DIR/web"
 echo "✅ Web build completed: $OUTPUT_DIR/web"
-echo "   Deploy this folder to /fluttertest on your server"
+echo "   Deploy this folder to /notify on your server"
 
 echo ""
 echo "=========================================="
@@ -261,8 +261,8 @@ echo "iOS:"
 ls -la "$OUTPUT_DIR/ios" 2>/dev/null || echo "  No iOS builds"
 echo ""
 echo "To deploy web build to server:"
-echo "  1. Copy $OUTPUT_DIR/web/* to your server's /fluttertest folder"
-echo "  2. Ensure your web server is configured to serve it at /fluttertest"
+echo "  1. Copy $OUTPUT_DIR/web/* to your server's /notify folder"
+echo "  2. Ensure your web server is configured to serve it at /notify"
 echo ""
 echo "Alternative: Use GitHub Actions workflow for building in the cloud"
 echo "  - Go to: Actions > Flutter Build > Run workflow"

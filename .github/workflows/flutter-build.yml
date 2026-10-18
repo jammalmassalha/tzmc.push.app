@@ -145,7 +145,7 @@ jobs:
 
       - name: Build Web
         run: |
-          flutter build web --release --base-href /fluttertest/ --pwa-strategy=none
+          flutter build web --release --base-href /notify/ --pwa-strategy=none
           mkdir -p ../dist
           cp -r build/web ../dist/web
 
@@ -249,12 +249,12 @@ jobs:
           
           - \`android/tzmc-push-release.apk\` - Android APK for direct installation
           - \`android/tzmc-push-release.aab\` - Android App Bundle for Play Store
-          - \`web/\` - Web build (deploy to /fluttertest on server)
+          - \`web/\` - Web build (deploy to /notify on server)
           
           ## Deployment Instructions
           
           ### Web
-          Copy the contents of \`web/\` folder to your server's \`/fluttertest\` directory.
+          Copy the contents of \`web/\` folder to your server's \`/notify\` directory.
           
           ### Android
           - APK: Install directly on Android devices
