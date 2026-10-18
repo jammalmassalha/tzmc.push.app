@@ -187,34 +187,6 @@ class ChatState {
     );
   }
 
-  Map<String, List<ChatMessage>> _normalizeMessagesByChatMap(
-    Map<String, List<ChatMessage>> messagesByChat,
-  ) {
-    if (messagesByChat.isEmpty) return <String, List<ChatMessage>>{};
-
-    final normalized = <String, List<ChatMessage>>{};
-    for (final entry in messagesByChat.entries) {
-      final chatId = normalizeChatId(entry.key);
-      final chatMessages = normalized.putIfAbsent(chatId, () => <ChatMessage>[]);
-      for (final message in entry.value) {
-        chatMessages.add(message.chatId == chatId ? message : message.copyWith(chatId: chatId));
-      }
-    }
-    return normalized;
-  }
-
-  int? _deletedChatTimestamp(String chatId) {
-    final normalized = normalizeChatId(chatId);
-    final direct = state.deletedChats[normalized];
-    if (direct != null) return direct;
-    for (final entry in state.deletedChats.entries) {
-      if (normalizeChatId(entry.key) == normalized) {
-        return entry.value;
-      }
-    }
-    return null;
-  }
-
   /// Get all chat list items sorted by last message timestamp
   List<ChatListItem> get chatListItems {
     final items = <ChatListItem>[];
@@ -474,6 +446,34 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     });
     
     return const ChatState();
+  }
+
+  Map<String, List<ChatMessage>> _normalizeMessagesByChatMap(
+    Map<String, List<ChatMessage>> messagesByChat,
+  ) {
+    if (messagesByChat.isEmpty) return <String, List<ChatMessage>>{};
+
+    final normalized = <String, List<ChatMessage>>{};
+    for (final entry in messagesByChat.entries) {
+      final chatId = normalizeChatId(entry.key);
+      final chatMessages = normalized.putIfAbsent(chatId, () => <ChatMessage>[]);
+      for (final message in entry.value) {
+        chatMessages.add(message.chatId == chatId ? message : message.copyWith(chatId: chatId));
+      }
+    }
+    return normalized;
+  }
+
+  int? _deletedChatTimestamp(String chatId) {
+    final normalized = normalizeChatId(chatId);
+    final direct = state.deletedChats[normalized];
+    if (direct != null) return direct;
+    for (final entry in state.deletedChats.entries) {
+      if (normalizeChatId(entry.key) == normalized) {
+        return entry.value;
+      }
+    }
+    return null;
   }
 
   void _subscribeToTransport() {
