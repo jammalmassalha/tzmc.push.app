@@ -2736,7 +2736,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final candidateClientMsgId = candidate.clientMsgId?.trim() ?? '';
     final candidateChatId = candidate.chatId.trim().toLowerCase();
     final candidateSender = candidate.sender.trim().toLowerCase();
-    final candidateBody = candidate.body?.trim() ?? '';
+    final candidateBody = _normalizedDedupBody(
+      candidate.body,
+      imageUrl: candidate.imageUrl,
+      fileUrl: candidate.fileUrl,
+    );
     final candidateImageUrl = candidate.imageUrl?.trim() ?? '';
     final candidateFileUrl = candidate.fileUrl?.trim() ?? '';
     final candidateReplyToMessageId = candidate.replyTo?.messageId.trim() ?? '';
@@ -2765,7 +2769,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       if (existing.sender.trim().toLowerCase() != candidateSender) {
         continue;
       }
-      if ((existing.body?.trim() ?? '') != candidateBody) {
+      final existingBody = _normalizedDedupBody(
+        existing.body,
+        imageUrl: existing.imageUrl,
+        fileUrl: existing.fileUrl,
+      );
+      if (existingBody.isNotEmpty &&
+          candidateBody.isNotEmpty &&
+          existingBody != candidateBody) {
         continue;
       }
       if ((existing.imageUrl?.trim() ?? '') != candidateImageUrl) {
@@ -2794,6 +2805,29 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
 
     return -1;
+  }
+
+  String _normalizedDedupBody(
+    String? body, {
+    String? imageUrl,
+    String? fileUrl,
+  }) {
+    final normalized = (body ?? '').trim().toLowerCase();
+    if (normalized.isEmpty) return '';
+    const genericPlaceholders = {
+      'new notification',
+      'new message',
+      'new alert',
+      'work alert',
+      'worker alert',
+      'alert',
+      'message',
+    };
+    if (genericPlaceholders.contains(normalized) &&
+        ((imageUrl?.trim().isNotEmpty ?? false) || (fileUrl?.trim().isNotEmpty ?? false))) {
+      return '';
+    }
+    return normalized;
   }
 
   // ── Delivery acknowledgments ───────────────────────────────────────────────
