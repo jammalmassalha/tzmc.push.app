@@ -386,21 +386,28 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
     );
 
     if (pickedFile != null) {
-      // Read bytes for preview and cross-platform XFile
-      final bytes = await pickedFile.readAsBytes();
-      final mimeType = xfile.XFileUtils.mimeTypeFromExtension(
-        pickedFile.name.split('.').last,
-      );
-
-      setState(() {
-        _selectedImage = xfile.XFile.fromBytes(
-          name: pickedFile.name,
-          bytes: bytes,
-          mimeType: mimeType,
+      try {
+        // Read bytes for preview and cross-platform XFile
+        final bytes = await pickedFile.readAsBytes();
+        if (!mounted) return;
+        final mimeType = xfile.XFileUtils.mimeTypeFromExtension(
+          pickedFile.name.split('.').last,
         );
-        _selectedImageBytes = bytes;
-        _selectedFile = null;
-      });
+
+        setState(() {
+          _selectedImage = xfile.XFile.fromBytes(
+            name: pickedFile.name,
+            bytes: bytes,
+            mimeType: mimeType,
+          );
+          _selectedImageBytes = bytes;
+          _selectedFile = null;
+        });
+      } catch (e) {
+        if (mounted) {
+          showTopToast(context, 'שגיאה בבחירת תמונה: ${e.toString()}');
+        }
+      }
     }
   }
 
@@ -408,6 +415,7 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
     try {
       final picked = await pickPdfFile();
       if (picked == null) return;
+      if (!mounted) return;
 
       final mimeType =
           xfile.XFileUtils.mimeTypeFromExtension(picked.extension ?? 'pdf');
@@ -431,6 +439,7 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
         );
       }
 
+      if (!mounted) return;
       setState(() {
         _selectedFile = selectedFile;
         _selectedImage = null;
@@ -599,11 +608,13 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
           );
         }
       } catch (e) {
-        showTopToastOnOverlay(
-          overlay,
-          'שגיאה בשליחה: ${e.toString()}',
-          backgroundColor: errorColor,
-        );
+        if (mounted) {
+          showTopToastOnOverlay(
+            overlay,
+            'שגיאה בשליחה: ${e.toString()}',
+            backgroundColor: errorColor,
+          );
+        }
       } finally {
         if (mounted && hasAttachment) {
           setState(() => _isSending = false);

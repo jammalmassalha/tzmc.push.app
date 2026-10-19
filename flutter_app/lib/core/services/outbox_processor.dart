@@ -107,17 +107,26 @@ class OutboxProcessor {
           payloadMap['fileUrl'] = uploaded.url;
           payloadMap.remove('imageUrl');
         }
-        await _db.upsertMessage(
-          message!.copyWith(
-            imageUrl: imageExtensions.contains(extension) ? uploaded.url : message!.imageUrl,
-            fileUrl: imageExtensions.contains(extension) ? message!.fileUrl : uploaded.url,
-          ),
-        );
+        if (message != null) {
+          await _db.upsertMessage(
+            message.copyWith(
+              imageUrl: imageExtensions.contains(extension)
+                  ? uploaded.url
+                  : message.imageUrl,
+              fileUrl: imageExtensions.contains(extension)
+                  ? message.fileUrl
+                  : uploaded.url,
+            ),
+          );
+        }
       }
       final dispatchedPayload = ReplyPayload.fromJson(payloadMap);
       await _api.sendDirectMessage(dispatchedPayload);
       await _db.removeOutboxItem(item.id);
-      await _updateMessageStatus(item.messageId ?? dispatchedPayload.messageId, DeliveryStatus.sent);
+      await _updateMessageStatus(
+        item.messageId ?? dispatchedPayload.messageId,
+        DeliveryStatus.sent,
+      );
       if (localPath != null && localPath.isNotEmpty) {
         try {
           await deleteStagedFile(localPath);
