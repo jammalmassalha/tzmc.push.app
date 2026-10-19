@@ -47,7 +47,6 @@ class MessageComposer extends ConsumerStatefulWidget {
 class _MessageComposerState extends ConsumerState<MessageComposer> {
   final _textController = TextEditingController();
   final _focusNode = FocusNode();
-  bool _isSending = false;
   xfile.XFile? _selectedImage;
   xfile.XFile? _selectedFile;
   Uint8List? _selectedImageBytes; // For preview on all platforms
@@ -279,44 +278,23 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
                 const SizedBox(width: 6),
 
                 // ── Circular green send button ────────────────────────────
-                _isSending
-                    ? Container(
-                        width: 48,
-                        height: 48,
-                        decoration: const BoxDecoration(
-                          color: sendGreen,
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Center(
-                          child: SizedBox(
-                            width: 22,
-                            height: 22,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2.5,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ),
-                      )
-                    : Material(
-                        color: sendGreen,
-                        shape: const CircleBorder(),
-                        clipBehavior: Clip.antiAlias,
-                        child: InkWell(
-                          onTap: _handleSend,
-                          child: SizedBox(
-                            width: 48,
-                            height: 48,
-                            child: Icon(
-                              widget.editingMessage != null
-                                  ? Icons.check
-                                  : Icons.send,
-                              color: Colors.white,
-                              size: 22,
-                            ),
-                          ),
-                        ),
+                Material(
+                  color: sendGreen,
+                  shape: const CircleBorder(),
+                  clipBehavior: Clip.antiAlias,
+                  child: InkWell(
+                    onTap: _handleSend,
+                    child: SizedBox(
+                      width: 48,
+                      height: 48,
+                      child: Icon(
+                        widget.editingMessage != null ? Icons.check : Icons.send,
+                        color: Colors.white,
+                        size: 22,
                       ),
+                    ),
+                  ),
+                ),
               ],
             ),
           ],
@@ -524,7 +502,6 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
           );
     }
 
-    final hasAttachment = _selectedImage != null || _selectedFile != null;
     final editingMessage = widget.editingMessage;
     final replyTo = widget.replyTo;
     final isGroup = widget.isGroup;
@@ -559,9 +536,6 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
       _selectedImage = null;
       _selectedFile = null;
       _selectedImageBytes = null;
-      if (hasAttachment) {
-        _isSending = true;
-      }
     });
     widget.onMessageSent();
 
@@ -615,21 +589,12 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
             backgroundColor: errorColor,
           );
         }
-      } finally {
-        if (mounted && hasAttachment) {
-          setState(() => _isSending = false);
-        }
       }
     }
 
-    // Fire-and-forget for text-only sends so the composer stays interactive
-    // (no loader on the send button). For attachment uploads we still await
-    // so the loader is shown until the upload finishes.
-    if (hasAttachment) {
-      await doSend();
-    } else {
-      unawaited(doSend());
-    }
+    // Always send in the background so the composer stays responsive while
+    // attachments upload or the server finishes processing the message.
+    unawaited(doSend());
   }
 }
 
