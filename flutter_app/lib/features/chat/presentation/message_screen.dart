@@ -1727,7 +1727,11 @@ bool _isAuthenticatedUploadUrl(String url) {
   return path.startsWith('/notify/uploads/') || path.startsWith('/uploads/');
 }
 
-void _showFullScreenImage(BuildContext context, String imageUrl) {
+void _showFullScreenImage(
+  BuildContext context,
+  String? imageUrl, {
+  String? localFilePath,
+}) {
   final size = MediaQuery.of(context).size;
   showDialog<void>(
     context: context,
@@ -1747,7 +1751,8 @@ void _showFullScreenImage(BuildContext context, String imageUrl) {
             child: InteractiveViewer(
               maxScale: 4,
               child: AuthenticatedNetworkImage(
-                url: imageUrl,
+                url: imageUrl ?? '',
+                localFilePath: localFilePath,
                 width: size.width,
                 height: size.height * 0.85,
                 fit: BoxFit.contain,
@@ -1851,6 +1856,11 @@ bool _isImageUrl(String url) => RegExp(
   r'\.(jpeg|jpg|png|gif|webp)(\?|$)',
   caseSensitive: false,
 ).hasMatch(url);
+
+bool _isImagePath(String? path) {
+  if (path == null || path.isEmpty) return false;
+  return _isImageUrl(path);
+}
 
 bool _isFileUrl(String url) =>
     RegExp(r'\.(pdf|doc|docx)(\?|$)', caseSensitive: false).hasMatch(url);
@@ -2161,9 +2171,9 @@ class _MessageBubble extends StatelessWidget {
                       ),
 
                     // Image
-                    if ((message.imageUrl != null ||
-                            message.localFilePath != null) &&
-                        !isDeleted)
+                    if (!isDeleted &&
+                        (message.imageUrl != null ||
+                            _isImagePath(message.localFilePath)))
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
                         child: _ImageAttachmentCard(
@@ -2173,10 +2183,16 @@ class _MessageBubble extends StatelessWidget {
                       ),
 
                     // File attachment
-                    if (message.fileUrl != null && !isDeleted)
+                    if (!isDeleted &&
+                        (message.fileUrl != null ||
+                            (message.localFilePath != null &&
+                                !_isImagePath(message.localFilePath))))
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
-                        child: _FileAttachmentButton(url: message.fileUrl!),
+                        child: _FileAttachmentButton(
+                          url: message.fileUrl ?? message.localFilePath!,
+                          localFilePath: message.localFilePath,
+                        ),
                       ),
 
                     // Message body
@@ -2876,7 +2892,13 @@ class _ImageAttachmentCard extends StatelessWidget {
         side: BorderSide(color: _imageFileColor.withAlpha(40)),
       ),
       child: InkWell(
-        onTap: url == null ? null : () => _showFullScreenImage(context, url!),
+        onTap: (url != null || localFilePath != null)
+            ? () => _showFullScreenImage(
+                  context,
+                  url,
+                  localFilePath: localFilePath,
+                )
+            : null,
         borderRadius: BorderRadius.circular(12),
         child: Padding(
           padding: const EdgeInsets.all(8),
@@ -2936,8 +2958,9 @@ class _ImageAttachmentCard extends StatelessWidget {
 
 class _FileAttachmentButton extends StatelessWidget {
   final String url;
+  final String? localFilePath;
 
-  const _FileAttachmentButton({required this.url});
+  const _FileAttachmentButton({required this.url, this.localFilePath});
 
   bool get _isPdf => url.toLowerCase().contains('.pdf');
 
@@ -2965,6 +2988,13 @@ class _FileAttachmentButton extends StatelessWidget {
       ),
       child: InkWell(
         onTap: () async {
+          if (localFilePath != null && localFilePath!.isNotEmpty) {
+            final result = await OpenFilex.open(localFilePath!);
+            if (result.type != ResultType.done) {
+              showTopToast(context, 'שגיאה בפתיחת הקובץ');
+            }
+            return;
+          }
           if (_isAuthenticatedUploadUrl(url)) {
             final opened = await openAuthenticatedFileExternally(context, url);
             if (!opened) {
@@ -3150,7 +3180,7 @@ class _LinkButton extends StatelessWidget {
         // Opening it externally would write it to disk, so route it to the
         // in-app viewer instead.
         if (_isSaveBlockedUrl(url)) {
-          _showFullScreenImage(context, url);
+          _showFullScreenImage(context, url, localFilePath: localFilePath);
           return;
         }
         if (_isAuthenticatedUploadUrl(url)) {
