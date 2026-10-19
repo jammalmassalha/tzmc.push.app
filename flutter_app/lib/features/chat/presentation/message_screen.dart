@@ -3180,7 +3180,7 @@ class _LinkButton extends StatelessWidget {
         // Opening it externally would write it to disk, so route it to the
         // in-app viewer instead.
         if (_isSaveBlockedUrl(url)) {
-          _showFullScreenImage(context, url, localFilePath: localFilePath);
+          _showFullScreenImage(context, url);
           return;
         }
         if (_isAuthenticatedUploadUrl(url)) {
