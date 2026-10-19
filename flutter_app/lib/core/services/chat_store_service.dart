@@ -267,7 +267,7 @@ class ChatState {
     for (final entry in messagesByChat.entries) {
       final last = entry.value.isEmpty ? null : entry.value.first;
       final groupId = last?.groupId?.trim().isNotEmpty == true
-          ? last!.groupId!.trim()
+          ? normalizeChatId(last!.groupId!.trim())
           : (groups.containsKey(entry.key) ? entry.key : '');
       if (groupId.isNotEmpty) {
         groupEntries[groupId] = entry.value;
@@ -448,6 +448,83 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     return const ChatState();
   }
 
+  String _messageDedupKey(ChatMessage message) {
+    final messageId = message.messageId.trim();
+    if (messageId.isNotEmpty) {
+      return 'message:${messageId.toLowerCase()}';
+    }
+
+    final clientMsgId = message.clientMsgId?.trim() ?? '';
+    if (clientMsgId.isNotEmpty) {
+      return 'client:${clientMsgId.toLowerCase()}';
+    }
+
+    final chatId = normalizeChatId(message.chatId);
+    final sender = message.sender.trim().toLowerCase();
+    final body = _normalizedIncomingTextForDedup(
+      message.body,
+      imageUrl: message.imageUrl,
+      fileUrl: message.fileUrl,
+    );
+    final imageUrl = message.imageUrl?.trim().toLowerCase() ?? '';
+    final fileUrl = message.fileUrl?.trim().toLowerCase() ?? '';
+    final replyToMessageId = message.replyTo?.messageId.trim().toLowerCase() ?? '';
+    final forwardedFrom = message.forwardedFrom?.trim().toLowerCase() ?? '';
+    final forwardedFromName = message.forwardedFromName?.trim().toLowerCase() ?? '';
+    final sentTime = message.effectiveSentTime;
+    return [
+      'fallback',
+      chatId,
+      sender,
+      body,
+      imageUrl,
+      fileUrl,
+      replyToMessageId,
+      forwardedFrom,
+      forwardedFromName,
+      sentTime,
+      message.forwarded,
+    ].join('|');
+  }
+
+  Map<String, List<ChatMessage>> _normalizeMessagesByChatMap(
+    Map<String, List<ChatMessage>> messagesByChat,
+  ) {
+    if (messagesByChat.isEmpty) return <String, List<ChatMessage>>{};
+
+    final normalized = <String, List<ChatMessage>>{};
+    for (final entry in messagesByChat.entries) {
+      final chatId = normalizeChatId(entry.key);
+      final chatMessages = normalized.putIfAbsent(chatId, () => <ChatMessage>[]);
+      for (final message in entry.value) {
+        final normalizedMessage =
+            message.chatId == chatId ? message : message.copyWith(chatId: chatId);
+        final existingIndex = chatMessages.indexWhere(
+          (existing) => _messageDedupKey(existing) == _messageDedupKey(normalizedMessage),
+        );
+        if (existingIndex >= 0) {
+          chatMessages[existingIndex] =
+              _hydrateExistingMessage(chatMessages[existingIndex], normalizedMessage);
+        } else {
+          chatMessages.add(normalizedMessage);
+        }
+      }
+    }
+    return normalized;
+  }
+
+  int? _deletedChatTimestamp(String chatId) {
+    final normalized = normalizeChatId(chatId);
+    final direct = state.deletedChats[normalized];
+    if (direct != null) return direct;
+    for (final entry in state.deletedChats.entries) {
+      if (normalizeChatId(entry.key) == normalized) {
+        return entry.value;
+      }
+    }
+    return null;
+  }
+
   void _subscribeToTransport() {
     _messageSubscription = _transport.message$.listen(_handleServerMessage);
     _connectionSubscription = _transport.connected$.listen((connected) {
@@ -588,14 +665,16 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     for (final raw in rawMessages) {
       if (raw is! Map) continue;
-      final message = IncomingServerMessage.fromJson(
+      final normalized = _normalizeLogMessageForImport(
+        IncomingServerMessage.fromJson(
         Map<String, dynamic>.from(raw),
+        ),
       );
-      final type = (message.type ?? '').trim().toLowerCase();
+      final type = (normalized.type ?? '').trim().toLowerCase();
       if (actionTypes.contains(type)) {
-        actionMessages.add(message);
+        actionMessages.add(normalized);
       } else {
-        final chatMessage = _buildChatMessageFromServer(message);
+        final chatMessage = _buildChatMessageFromServer(normalized);
         if (chatMessage != null) textMessages.add(chatMessage);
       }
     }
@@ -865,12 +944,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   Map<String, List<ChatMessage>> _groupMessagesByChat(List<ChatMessage> messages) {
     final result = <String, List<ChatMessage>>{};
     for (final message in messages) {
-      final chatMessages = result.putIfAbsent(message.chatId, () => []);
-      final existingIndex = _findEquivalentMessageIndex(chatMessages, message);
+      final chatId = normalizeChatId(message.chatId);
+      final normalizedMessage = message.chatId == chatId ? message : message.copyWith(chatId: chatId);
+      final chatMessages = result.putIfAbsent(chatId, () => []);
+      final existingIndex = _findEquivalentMessageIndex(chatMessages, normalizedMessage);
       if (existingIndex >= 0) {
-        chatMessages[existingIndex] = _hydrateExistingMessage(chatMessages[existingIndex], message);
+        chatMessages[existingIndex] = _hydrateExistingMessage(chatMessages[existingIndex], normalizedMessage);
       } else {
-        chatMessages.add(message);
+        chatMessages.add(normalizedMessage);
       }
     }
     // Sort each chat's messages by timestamp descending and keep only the most
@@ -893,18 +974,21 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   ) {
     if (messagesByChat.isEmpty || deletedChats.isEmpty) return messagesByChat;
 
+    final normalizedDeletedChats = <String, int>{
+      for (final entry in deletedChats.entries) normalizeChatId(entry.key): entry.value,
+    };
     final filtered = <String, List<ChatMessage>>{};
     for (final entry in messagesByChat.entries) {
-      final deletedAt = deletedChats[entry.key];
+      final deletedAt = normalizedDeletedChats[normalizeChatId(entry.key)];
       if (deletedAt == null) {
-        filtered[entry.key] = entry.value;
+        filtered[normalizeChatId(entry.key)] = entry.value;
         continue;
       }
 
       final kept = entry.value.where((message) => message.timestamp > deletedAt).toList();
       if (kept.isNotEmpty) {
         kept.sort(compareMessagesBySentTimeDesc);
-        filtered[entry.key] = kept;
+        filtered[normalizeChatId(entry.key)] = kept;
       }
     }
     return filtered;
@@ -1259,7 +1343,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   /// Get messages for a chat
   List<ChatMessage> getMessages(String chatId) {
-    return state.messagesByChat[chatId] ?? [];
+    final normalizedChatId = normalizeChatId(chatId);
+    return state.messagesByChat[normalizedChatId] ?? state.messagesByChat[chatId] ?? [];
   }
 
   /// Fetch the current user's message history from the API for an opened chat.
@@ -1298,7 +1383,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
       // Load up to 100 recent messages from local database
       final cachedMessages = await _db.getMessagesByChatId(
-        chatId.toLowerCase(),
+        normalizeChatId(chatId),
         limit: 100,
       );
 
@@ -1355,7 +1440,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
       // Fetch older messages from database (up to 50 older messages before this timestamp)
       final olderMessages = await _db.getOlderMessages(
-        chatId: chatId.toLowerCase(),
+        chatId: normalizeChatId(chatId),
         beforeTimestamp: beforeTimestamp,
         limit: 50,
       );
@@ -1390,15 +1475,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final updatedByChat = Map<String, List<ChatMessage>>.from(state.messagesByChat);
 
     for (final message in newMessages) {
-      final chatId = message.chatId.toLowerCase();
-      final existing = updatedByChat[chatId] ?? [];
+      final chatId = normalizeChatId(message.chatId);
+      final normalizedMessage =
+          message.chatId == chatId ? message : message.copyWith(chatId: chatId);
+      final existing = List<ChatMessage>.from(updatedByChat[chatId] ?? []);
 
-      final existingIndex = _findEquivalentMessageIndex(existing, message);
+      final existingIndex = _findEquivalentMessageIndex(existing, normalizedMessage);
       if (existingIndex >= 0) {
-        existing[existingIndex] = _hydrateExistingMessage(existing[existingIndex], message);
+        existing[existingIndex] = _hydrateExistingMessage(existing[existingIndex], normalizedMessage);
       } else {
         // Add and re-sort by timestamp descending (newest first)
-        existing.add(message);
+        existing.add(normalizedMessage);
       }
 
       existing.sort(compareMessagesBySentTimeDesc);
@@ -1461,7 +1548,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // so that action payloads (read-receipt, delete-action, etc.) are handled
       // correctly and regular messages are applied to the chat store.
       for (final message in messages) {
-        _handleServerMessage(message);
+        _handleServerMessage(_normalizeLogMessageForImport(message));
       }
 
       _schedulePersistence();
@@ -1680,7 +1767,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       try {
         final polled = await _api.pollMessages();
         for (final msg in polled) {
-          _handleServerMessage(msg);
+          _handleServerMessage(_normalizeLogMessageForImport(msg));
         }
       } catch (_) {
         // Polling failures are non-fatal; the logs pull below covers any gaps.
@@ -1908,11 +1995,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final rawSender  = (msg.sender  ?? '').trim();
 
     // Resolve groupId from sender when sender looks like a group.
-    String resolvedGroupId = rawGroupId.toLowerCase();
+    String resolvedGroupId = normalizeChatId(rawGroupId);
     if (resolvedGroupId.isEmpty && rawSender.isNotEmpty) {
       final senderNorm = rawSender.toLowerCase();
       if (senderNorm.startsWith('group:') ||
-          state.groups.containsKey(senderNorm)) {
+          state.groups.keys.any((groupId) => normalizeChatId(groupId) == senderNorm)) {
         resolvedGroupId = senderNorm;
       }
     }
@@ -1929,7 +2016,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       return msg;
     }
 
-    final existingGroup  = state.groups[resolvedGroupId];
+    final existingGroup = state.groups[resolvedGroupId] ??
+        (() {
+          for (final entry in state.groups.entries) {
+            if (normalizeChatId(entry.key) == resolvedGroupId) {
+              return entry.value;
+            }
+          }
+          return null;
+        })();
     final rawGroupName   = (msg.groupName ?? '').trim();
     final rawBody        = (msg.body      ?? '').trim();
 
@@ -2080,24 +2175,26 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // will remain with empty messagesByChat even after sync completes.
 
     final newMessagesByChat =
-        Map<String, List<ChatMessage>>.from(state.messagesByChat);
+        _normalizeMessagesByChatMap(state.messagesByChat);
 
     for (final message in messages) {
-      final chatId = message.chatId;
-      final deletedAt = state.deletedChats[chatId];
-      if (deletedAt != null && message.timestamp <= deletedAt) {
+      final chatId = normalizeChatId(message.chatId);
+      final normalizedMessage =
+          message.chatId == chatId ? message : message.copyWith(chatId: chatId);
+      final deletedAt = _deletedChatTimestamp(chatId);
+      if (deletedAt != null && normalizedMessage.timestamp <= deletedAt) {
         continue;
       }
       final chatMessages =
           List<ChatMessage>.from(newMessagesByChat[chatId] ?? const <ChatMessage>[]);
 
-      final existingIndex = _findEquivalentMessageIndex(chatMessages, message);
+      final existingIndex = _findEquivalentMessageIndex(chatMessages, normalizedMessage);
 
       if (existingIndex >= 0) {
         chatMessages[existingIndex] =
-            _hydrateExistingMessage(chatMessages[existingIndex], message);
+            _hydrateExistingMessage(chatMessages[existingIndex], normalizedMessage);
       } else {
-        chatMessages.add(message);
+        chatMessages.add(normalizedMessage);
       }
 
       newMessagesByChat[chatId] = chatMessages;
@@ -2629,7 +2726,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       direction: (isSelfEcho || skipNotification) ? MessageDirection.outgoing : MessageDirection.incoming,
       timestamp: timestamp,
       deliveryStatus: (isSelfEcho || skipNotification) ? DeliveryStatus.sent : DeliveryStatus.delivered,
-      groupId: groupId,
+      groupId: groupId == null ? null : normalizeChatId(groupId),
       groupName: str(data['groupName']),
       groupType: groupType,
       sentDateTime: sentDateTime ??
@@ -2679,15 +2776,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// logs endpoint near the `since` boundary) and the user may have already
   /// read it, so re-incrementing the badge would be incorrect.
   bool _applyIncomingMessage(ChatMessage message) {
-    final chatId = message.chatId;
-    final deletedAt = state.deletedChats[chatId];
-    if (deletedAt != null && message.timestamp <= deletedAt) {
+    final chatId = normalizeChatId(message.chatId);
+    final normalizedMessage =
+        message.chatId == chatId ? message : message.copyWith(chatId: chatId);
+    final deletedAt = _deletedChatTimestamp(chatId);
+    if (deletedAt != null && normalizedMessage.timestamp <= deletedAt) {
       return false;
     }
-    final newMessagesByChat = Map<String, List<ChatMessage>>.from(state.messagesByChat);
+    final newMessagesByChat = _normalizeMessagesByChatMap(state.messagesByChat);
     final chatMessages = List<ChatMessage>.from(newMessagesByChat[chatId] ?? []);
 
-    final existingIndex = _findEquivalentMessageIndex(chatMessages, message);
+    final existingIndex = _findEquivalentMessageIndex(chatMessages, normalizedMessage);
 
     final isNew = existingIndex < 0;
 
@@ -2695,13 +2794,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     if (!isNew) {
       // Hydrate existing message (keep longer body)
       final existing = chatMessages[existingIndex];
-      final hydrated = _hydrateExistingMessage(existing, message);
+      final hydrated = _hydrateExistingMessage(existing, normalizedMessage);
       chatMessages[existingIndex] = hydrated;
       applied = hydrated;
     } else {
       // Insert new message
-      chatMessages.insert(0, message);
-      applied = message;
+      chatMessages.insert(0, normalizedMessage);
+      applied = normalizedMessage;
     }
 
     // Write the applied message straight through to the local DB so a
@@ -2733,6 +2832,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   int _findEquivalentMessageIndex(List<ChatMessage> messages, ChatMessage candidate) {
     if (messages.isEmpty) return -1;
 
+    final candidateKey = _messageDedupKey(candidate);
     final candidateMessageId = candidate.messageId.trim();
     final candidateClientMsgId = candidate.clientMsgId?.trim() ?? '';
     final candidateChatId = candidate.chatId.trim().toLowerCase();
@@ -2752,6 +2852,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     for (var i = 0; i < messages.length; i++) {
       final existing = messages[i];
+      if (_messageDedupKey(existing) == candidateKey) {
+        return i;
+      }
 
       if (candidateMessageId.isNotEmpty && existing.messageId.trim() == candidateMessageId) {
         return i;
@@ -3363,15 +3466,19 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       return;
     }
 
+    final normalizedChatId = normalizeChatId(chatId);
+
     // Clear unread count locally
-    final newUnread = Map<String, int>.from(state.unreadByChat);
-    newUnread[chatId] = 0;
+    final newUnread = <String, int>{
+      for (final entry in state.unreadByChat.entries) normalizeChatId(entry.key): entry.value,
+    };
+    newUnread[normalizedChatId] = 0;
     state = state.copyWith(unreadByChat: newUnread);
 
     // Persist the cleared count immediately so it survives app restart /
     // full sync without requiring the full state snapshot.
     try {
-      await _db.clearUnreadCount(chatId);
+      await _db.clearUnreadCount(normalizedChatId);
     } catch (_) {
       // Non-fatal – the in-memory count is already correct.
     }
@@ -3381,26 +3488,26 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // cold start.  The tray is written by firebaseMessagingBackgroundHandler
     // while the app is not running; without this call the badge would
     // re-appear after the user reads the messages and restarts the app.
-    unawaited(_clearChatFromPendingTray(chatId));
+    unawaited(_clearChatFromPendingTray(normalizedChatId));
 
     try {
-      final messages = state.messagesByChat[chatId] ?? const <ChatMessage>[];
+      final messages = state.messagesByChat[normalizedChatId] ?? const <ChatMessage>[];
       final readUpToPts = messages
           .where((message) => messageIds.contains(message.messageId))
           .map((message) => message.pts ?? 0)
           .fold<int>(0, (maxPts, pts) => pts > maxPts ? pts : maxPts);
       unawaited(_transport.emitWithAck('message:ack_read', {
         'message_ids': messageIds,
-        'chat_id': chatId,
+        'chat_id': normalizedChatId,
         'read_up_to_pts': readUpToPts,
       }));
       await _api.markMessagesAsRead(
-        chatId,
+        normalizedChatId,
         messageIds,
         _currentUser ?? '',
         deviceId: _transport.deviceId,
       );
-      await markChatSeen(chatId);
+      await markChatSeen(normalizedChatId);
     } catch (e) {
       // Silent failure
     }
@@ -3425,7 +3532,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   Future<void> markChatSeen(String chatId) async {
     final user = (_currentUser ?? '').trim().toLowerCase();
-    final normalizedChatId = chatId.trim().toLowerCase();
+    final normalizedChatId = normalizeChatId(chatId);
     if (user.isEmpty || normalizedChatId.isEmpty) return;
     try {
       await _api.markMessagesSeen(user, normalizedChatId, deviceId: _transport.deviceId);
@@ -3439,9 +3546,10 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   // ---------------------------------------------------------------------------
 
   void setCurrentChat(String? chatId) {
+    final normalizedChatId = chatId == null ? null : normalizeChatId(chatId);
     state = state.copyWith(
-      currentChatId: chatId,
-      clearCurrentChat: chatId == null,
+      currentChatId: normalizedChatId,
+      clearCurrentChat: normalizedChatId == null,
     );
 
     // Clear the local unread badge immediately when opening a chat.
@@ -3454,29 +3562,31 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final isAppForeground =
         WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
     if (isAppForeground &&
-        chatId != null &&
-        (state.unreadByChat[chatId] ?? 0) > 0) {
-      final newUnread = Map<String, int>.from(state.unreadByChat);
-      newUnread[chatId] = 0;
+        normalizedChatId != null &&
+        (state.unreadByChat[normalizedChatId] ?? state.unreadByChat[chatId] ?? 0) > 0) {
+      final newUnread = <String, int>{
+        for (final entry in state.unreadByChat.entries) normalizeChatId(entry.key): entry.value,
+      };
+      newUnread[normalizedChatId] = 0;
       state = state.copyWith(unreadByChat: newUnread);
 
       // Also persist to DB and send the server read-receipt for any messages
       // already in memory.  If messages aren't loaded yet the API call is
       // skipped (markAsRead returns early) but the local count is already 0.
-      final messages = getMessages(chatId);
+      final messages = getMessages(normalizedChatId);
       final messageIds = messages.map((m) => m.messageId).toList();
       if (messageIds.isNotEmpty) {
-        markAsRead(chatId, messageIds);
+        markAsRead(normalizedChatId, messageIds);
       } else {
         // Persist the cleared count to DB even without message IDs.
-        _db.clearUnreadCount(chatId).catchError((_) {});
+        _db.clearUnreadCount(normalizedChatId).catchError((_) {});
         // Also clear the FCM pending tray so the badge is not re-shown on
         // the next cold start when messages haven't been loaded yet.
-        unawaited(_clearChatFromPendingTray(chatId));
+        unawaited(_clearChatFromPendingTray(normalizedChatId));
         // Persist SeenTime on the server even when we couldn't build a
         // message-id read receipt (e.g. chat opened before messages loaded),
         // so other connected devices can sync badge clearing.
-        unawaited(markChatSeen(chatId));
+        unawaited(markChatSeen(normalizedChatId));
       }
     }
 
@@ -3488,18 +3598,22 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// messages and unread counter from the current device state.
   /// Returns true when the chat existed and was removed; false otherwise.
   Future<bool> deleteChat(String chatId) async {
-    final normalized = chatId.trim();
+    final normalized = normalizeChatId(chatId);
     if (normalized.isEmpty) return false;
 
-    final existingMessages = state.messagesByChat[normalized] ?? const <ChatMessage>[];
-    final newMessagesByChat = Map<String, List<ChatMessage>>.from(state.messagesByChat);
+    final newMessagesByChat = _normalizeMessagesByChatMap(state.messagesByChat);
+    final existingMessages = newMessagesByChat[normalized] ?? const <ChatMessage>[];
     final hadChat = newMessagesByChat.remove(normalized) != null;
     if (!hadChat) return false;
 
-    final newUnread = Map<String, int>.from(state.unreadByChat);
+    final newUnread = <String, int>{
+      for (final entry in state.unreadByChat.entries) normalizeChatId(entry.key): entry.value,
+    };
     newUnread.remove(normalized);
 
-    final newGroups = Map<String, ChatGroup>.from(state.groups);
+    final newGroups = <String, ChatGroup>{
+      for (final entry in state.groups.entries) normalizeChatId(entry.key): entry.value,
+    };
     newGroups.remove(normalized);
 
     final newDeletedChats = Map<String, int>.from(state.deletedChats);
@@ -3599,8 +3713,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       //    a message the user has already read).
       final isAppForeground =
           WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+      final activeChatId = normalizeChatId(state.currentChatId ?? '');
       if (isNew &&
-          (chatMessage.chatId != state.currentChatId || !isAppForeground) &&
+          (chatMessage.chatId != activeChatId || !isAppForeground) &&
           chatMessage.direction == MessageDirection.incoming) {
         final newUnread = Map<String, int>.from(state.unreadByChat);
         newUnread[chatMessage.chatId] = (newUnread[chatMessage.chatId] ?? 0) + 1;
@@ -3614,7 +3729,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   ChatMessage? _buildChatMessageFromServer(IncomingServerMessage msg) {
     if (msg.messageId == null || msg.sender == null) return null;
 
-    final isGroup = msg.groupId != null;
+    final normalizedGroupId = msg.groupId == null ? null : normalizeChatId(msg.groupId!);
+    final isGroup = normalizedGroupId != null;
     final me = _currentUser;
     final senderNorm = msg.sender!.trim().toLowerCase();
     final isFromMe = me != null && senderNorm == me.trim().toLowerCase();
@@ -3638,7 +3754,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
     
     final chatId = resolveChatRoomId(
-      groupId: msg.groupId,
+      groupId: normalizedGroupId,
       senderId: msg.sender,
       recipientId: recipientId,
       currentUserId: me ?? '',
@@ -3669,7 +3785,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
      // Scan only recent outgoing messages (chatMessages are sorted newest-first
      // by _applyIncomingMessage), bailing out as soon as we step outside the
      // 30s dedup window so the lookup stays O(k) instead of O(n) on long chats.
-     final existing = state.messagesByChat[chatId] ?? const <ChatMessage>[];
+     final existing = _normalizeMessagesByChatMap(state.messagesByChat)[chatId] ?? const <ChatMessage>[];
      bool hasOptimisticEcho = false;
      final trimmedBody = body.trim();
      for (final m in existing) {
@@ -3690,8 +3806,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // display name.
     bool isFromMeFallback = false;
     if (!isFromMe && isGroup) {
-      final groupIdNorm = msg.groupId!.trim().toLowerCase();
-      if (senderNorm == groupIdNorm) {
+      if (senderNorm == normalizedGroupId) {
         final gsn = (msg.groupSenderName ?? '').trim().toLowerCase();
         final meNorm = (me ?? '').trim().toLowerCase();
         if (meNorm.isNotEmpty && gsn.isNotEmpty) {
@@ -3718,7 +3833,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           ? getDisplayName(msg.groupSenderName!)
           : (isGroup &&
                   msg.sender!.trim().toLowerCase() ==
-                      (msg.groupId ?? '').trim().toLowerCase()
+                      (normalizedGroupId ?? '').trim().toLowerCase()
               ? null
               : getDisplayName(msg.sender!)),
       body: body,
@@ -3735,7 +3850,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
                   ? DeliveryStatus.delivered
                   : DeliveryStatus.sent))
           : DeliveryStatus.delivered,
-      groupId: msg.groupId,
+      groupId: normalizedGroupId,
       groupName: msg.groupName,
       groupType: msg.groupType == 'community' ? GroupType.community : GroupType.group,
       replyTo: msg.replyToMessageId != null
@@ -3774,7 +3889,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // Mirrors Angular: groupId takes precedence over chatId, then falls back
     // to sender (for direct messages the server sets toUser/targetUser but
     // sender is the easiest canonical key to use on the recipient side).
-    final chatId = msg.groupId ?? msg.chatId ?? sender;
+    final chatId = normalizeChatId(msg.groupId ?? msg.chatId ?? sender);
 
     final isTyping = msg.isTyping ?? true;
 
@@ -3823,14 +3938,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final user = _currentUser;
     if (user == null || user.isEmpty) return;
 
-    final group = isGroup ? state.groups[chatId] : null;
+    final normalizedChatId = normalizeChatId(chatId);
+    final group = isGroup ? state.groups[normalizedChatId] ?? state.groups[chatId] : null;
 
     final payload = TypingPayload(
       user: user,
       isTyping: isTyping,
-      targetUser: isGroup ? null : chatId,
-      chatId: chatId,
-      groupId: isGroup ? chatId : null,
+      targetUser: isGroup ? null : normalizedChatId,
+      chatId: normalizedChatId,
+      groupId: isGroup ? normalizedChatId : null,
       groupName: group?.name,
       groupMembers: group?.members,
     );
@@ -3847,9 +3963,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // The payload includes chatId to distinguish it from a regular read-receipt
     // (where the other party read OUR messages).
     if (msg.chatId != null && msg.chatId!.isNotEmpty) {
-      final chatId = msg.chatId!;
-      if ((state.unreadByChat[chatId] ?? 0) > 0) {
-        final newUnread = Map<String, int>.from(state.unreadByChat);
+      final chatId = normalizeChatId(msg.chatId!);
+      final newUnread = <String, int>{
+        for (final entry in state.unreadByChat.entries) normalizeChatId(entry.key): entry.value,
+      };
+      if ((newUnread[chatId] ?? 0) > 0) {
         newUnread[chatId] = 0;
         state = state.copyWith(unreadByChat: newUnread);
         _schedulePersistence();
@@ -4002,7 +4120,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           user: user,
         );
         for (final message in diff) {
-          _handleServerMessage(message);
+          _handleServerMessage(_normalizeLogMessageForImport(message));
         }
       } catch (_) {
         // The existing recovery path remains available on the next poll tick.
@@ -4461,7 +4579,8 @@ final chatListItemsProvider = Provider<List<ChatListItem>>((ref) {
 final currentChatMessagesProvider = Provider<List<ChatMessage>>((ref) {
   final state = ref.watch(chatStoreProvider);
   if (state.currentChatId == null) return [];
-  return state.messagesByChat[state.currentChatId!] ?? [];
+  final chatId = normalizeChatId(state.currentChatId!);
+  return state.messagesByChat[chatId] ?? state.messagesByChat[state.currentChatId!] ?? [];
 });
 
 /// Provider for current chat contact/group info
@@ -4469,7 +4588,7 @@ final currentChatInfoProvider = Provider<({String title, String? subtitle, bool 
   final state = ref.watch(chatStoreProvider);
   if (state.currentChatId == null) return null;
 
-  final chatId = state.currentChatId!;
+  final chatId = normalizeChatId(state.currentChatId!);
   final group = state.groups[chatId];
   
   if (group != null) {

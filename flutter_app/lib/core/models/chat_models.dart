@@ -29,7 +29,7 @@ String? resolveChatRoomId({
 }) {
   // Group messages: use groupId as the chat room identifier
   if (groupId != null && groupId.isNotEmpty) {
-    return groupId;
+    return normalizeChatId(groupId);
   }
 
   // Normalize for case-insensitive comparison
@@ -62,6 +62,8 @@ String? resolveChatRoomId({
   // but we prevent self-chats as a last resort
   return senderNorm == currentNorm ? null : senderNorm;
 }
+
+String normalizeChatId(String chatId) => chatId.trim().toLowerCase();
 
 /// Group type enumeration
 enum GroupType { group, community }
@@ -435,7 +437,7 @@ class ChatMessage extends Equatable {
   String getPeerId(String currentUserId) {
     if (groupId != null && groupId!.isNotEmpty) {
       // Group message - peer is the group
-      return groupId!;
+      return normalizeChatId(groupId!);
     }
     
     final currentUserNorm = currentUserId.trim().toLowerCase();
@@ -530,11 +532,12 @@ class ChatMessage extends Equatable {
       ];
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) {
+    final chatId = normalizeChatId(json['chatId'] as String? ?? '');
     return ChatMessage(
       id: json['id'] as String? ?? '',
       messageId: json['messageId'] as String? ?? '',
       clientMsgId: json['clientMsgId'] as String?,
-      chatId: json['chatId'] as String? ?? '',
+      chatId: chatId,
       pts: json['pts'] as int?,
       sender: json['sender'] as String? ?? '',
       senderDisplayName: json['senderDisplayName'] as String?,
@@ -553,7 +556,7 @@ class ChatMessage extends Equatable {
         (e) => e.name == json['deliveryStatus'],
         orElse: () => DeliveryStatus.delivered,
       ),
-      groupId: json['groupId'] as String?,
+      groupId: (json['groupId'] as String?)?.trim().toLowerCase(),
       groupName: json['groupName'] as String?,
       groupType: json['groupType'] != null
           ? GroupType.values.firstWhere(
