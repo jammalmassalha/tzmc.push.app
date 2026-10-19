@@ -3697,7 +3697,7 @@ class _DepartmentSettingsScreenState
                                     allUsers: allHelpdeskUsers,
                                     excludedUserIds: addedIds,
                                   );
-                                  if (selectedUser == null) return;
+                                  if (!mounted || selectedUser == null) return;
                                   setSt(() {
                                     final exists = deptPermissions.any((p) =>
                                         p.userId.toLowerCase() ==
