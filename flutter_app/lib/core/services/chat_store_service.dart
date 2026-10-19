@@ -2553,7 +2553,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           if (groupId == null) return;
           final msg = IncomingServerMessage(
             type: type,
-            groupId: normalizedGroupId,
+            groupId: normalizeChatId(groupId),
             groupName: str(data['groupName']),
             groupMembers: strList(data['groupMembers']),
             groupCreatedBy: str(data['groupCreatedBy']),
@@ -2601,7 +2601,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         data['skipNotification'] == 'true';
 
     final groupId = str(data['groupId']);
-    final isGroup = groupId != null;
+    final normalizedGroupId = groupId == null ? null : normalizeChatId(groupId);
+    final isGroup = normalizedGroupId != null;
 
     // For self-echo push notifications (skipNotification: true), the server
     // sends sender=currentUser and toUser=the other party. Using sender as

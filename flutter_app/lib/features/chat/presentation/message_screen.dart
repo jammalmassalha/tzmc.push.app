@@ -1164,7 +1164,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   }
 
   Future<void> _confirmDeleteCurrentChat() async {
-    final chatInfo = _getChatInfo(ref.read(chatStoreProvider));
+    final chatInfo = _getChatInfo(ref.read(chatStoreProvider), _normalizedChatId);
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -1343,7 +1343,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
 
   void _showChatInfo() {
     final state = ref.read(chatStoreProvider);
-    final chatInfo = _getChatInfo(state);
+    final chatInfo = _getChatInfo(state, _normalizedChatId);
     if (chatInfo.isGroup) {
       _openGroupInfo();
     } else if (chatInfo.avatarUrl != null) {
