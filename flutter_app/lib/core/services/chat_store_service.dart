@@ -47,6 +47,21 @@ const int _kFullSyncMaxMessages = 200000;
 /// Mirrors the 80-character cap in Angular's `normalizeLogsMessagesForImport`.
 const int _kGroupSenderPrefixMaxLength = 80;
 
+/// Message types that must be treated as actions instead of regular bubbles
+/// when importing server history during sync.
+const Set<String> _kImportedActionTypes = {
+  'read',
+  'read-receipt',
+  'delivered',
+  'delivery-receipt',
+  'delete',
+  'delete-action',
+  'edit',
+  'edit-action',
+  'reaction',
+  'group-update',
+};
+
 /// SharedPreferences key for the "pending chat updates" tray.
 ///
 /// Written by [firebaseMessagingBackgroundHandler] (in
@@ -645,44 +660,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   }
 
-  void _applyHydrationMessages(List<dynamic> rawMessages) {
+  Future<void> _applyHydrationMessages(List<dynamic> rawMessages) async {
     if (rawMessages.isEmpty) return;
 
-    const actionTypes = {
-      'read',
-      'read-receipt',
-      'delivered',
-      'delivery-receipt',
-      'delete',
-      'delete-action',
-      'edit',
-      'edit-action',
-      'reaction',
-      'group-update',
-    };
-    final textMessages = <ChatMessage>[];
-    final actionMessages = <IncomingServerMessage>[];
-
-    for (final raw in rawMessages) {
-      if (raw is! Map) continue;
-      final normalized = _normalizeLogMessageForImport(
-        IncomingServerMessage.fromJson(
-        Map<String, dynamic>.from(raw),
-        ),
-      );
-      final type = (normalized.type ?? '').trim().toLowerCase();
-      if (actionTypes.contains(type)) {
-        actionMessages.add(normalized);
-      } else {
-        final chatMessage = _buildChatMessageFromServer(normalized);
-        if (chatMessage != null) textMessages.add(chatMessage);
-      }
-    }
-
-    _applyMessagesBatch(textMessages);
-    for (final message in actionMessages) {
-      _handleServerMessage(message);
-    }
+    final importedMessages = rawMessages
+        .whereType<Map>()
+        .map((raw) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(raw)))
+        .toList();
+    await _applyImportedMessages(importedMessages);
   }
 
   /// Merge rows emitted directly by Drift into Riverpod when the initial
@@ -838,7 +823,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // rendered from Riverpod state. Apply the same response in memory too;
         // otherwise a fresh install sees an empty list until a later poll even
         // though the database already contains the user's chats.
-        _applyHydrationMessages(hydrationMessages);
+        await _applyHydrationMessages(hydrationMessages);
         final nextCursor = int.tryParse('${hydration['next_sync_timestamp'] ?? 0}') ?? 0;
         if (nextCursor > _syncCursorMs) {
           _syncCursorMs = nextCursor;
@@ -1730,58 +1715,67 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         syncProgressPercent: 50,
         syncProgressLabel: 'סנכרון כל השיחות...',
       );
+      List<dynamic> syncedChats = const [];
+      List<IncomingServerMessage> normalizedSyncedMessages = const [];
       try {
         final chatSync = await _api.syncChatsAndMessages(
           user: user,
           lastSyncTimestamp: 0, // Full sync from the beginning
         );
-        final syncedChats = (chatSync['mode'] == 'full'
+        syncedChats = (chatSync['mode'] == 'full'
             ? chatSync['chats']
             : chatSync['updatedChats']) as List? ?? const [];
         final syncedMessages = (chatSync['mode'] == 'full'
             ? chatSync['messages']
             : chatSync['newMessages']) as List? ?? const [];
-         
-        // Persist synced chats and messages to the database
-        if (syncedChats.isNotEmpty || syncedMessages.isNotEmpty) {
-          await _db.syncOneToOne(
-            chats: syncedChats,
-            messages: syncedMessages,
-            currentUserId: user,
-          );
-          // Apply synced messages to in-memory state
-          _applyHydrationMessages(syncedMessages);
-        }
-         
+        normalizedSyncedMessages = syncedMessages
+            .whereType<Map>()
+            .map((raw) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(raw)))
+            .toList();
         debugPrint(
           '[FULL-SYNC] Synced ${syncedChats.length} chats and ${syncedMessages.length} messages',
         );
       } catch (error) {
         debugPrint('[FULL-SYNC] Chat sync failed: $error (continuing with logs pull)');
-        // Non-fatal; the logs pull below will still fetch message history
       }
 
-      // 5a. Drain the /messages poll queue — mirrors Angular's `pullMessages(user)`
-      //     call inside forceSyncAllMessagesAndClearCache (which uses `pollMessages()`
-      //     on the /messages endpoint rather than the logs endpoint).
+      final polledMessages = <IncomingServerMessage>[];
       try {
         final polled = await _api.pollMessages();
-        for (final msg in polled) {
-          _handleServerMessage(_normalizeLogMessageForImport(msg));
-        }
+        polledMessages.addAll(polled);
       } catch (_) {
         // Polling failures are non-fatal; the logs pull below covers any gaps.
       }
+
+      List<IncomingServerMessage> logMessages = const [];
+      try {
+        logMessages = await _fetchAllMessagesFromLogs(user: user, since: 0);
+      } catch (error) {
+        debugPrint('[FULL-SYNC] Logs pull failed: $error (continuing with chat sync)');
+      }
+
+      if (syncedChats.isNotEmpty) {
+        await _db.syncOneToOne(
+          chats: syncedChats,
+          messages: const [],
+          currentUserId: user,
+        );
+      }
+
+      final importedMessages = <IncomingServerMessage>[
+        ...normalizedSyncedMessages,
+        ...polledMessages,
+        ...logMessages,
+      ];
+      if (importedMessages.isNotEmpty) {
+        await _applyImportedMessages(importedMessages);
+      }
+
       state = state.copyWith(
         syncProgressPercent: 60,
         syncProgressLabel: 'מושך הודעות...',
       );
 
-      // 6. Paginated logs pull — mirrors Angular's `recoverMissedMessagesFromLogs`
-      //    with `limit: LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT (200000)` and page
-      //    size 500.  Using since:0 so the full history is fetched after the
-      //    cache clear (the old DB high-water timestamp is gone).
-      await _pullAllMessagesFromLogs(user: user, since: 0);
       state = state.copyWith(
         syncProgressPercent: 85,
         syncProgressLabel: 'מסיים...',
@@ -1838,6 +1832,27 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     required String user,
     int since = 0,
   }) async {
+    final allRaw = await _fetchAllMessagesFromLogs(user: user, since: since);
+
+    debugPrint(
+      '[LOGS SYNC] Backend returned '
+      '${allRaw.map((message) => message.groupId ?? message.sender).whereType<String>().toSet().length} chats '
+      'and ${allRaw.length} total messages',
+    );
+
+    if (allRaw.isEmpty) {
+      debugPrint('[LOGS SYNC] ⚠️ No messages returned from backend');
+      return;
+    }
+
+    await _applyImportedMessages(allRaw);
+    debugPrint('[LOGS SYNC] Full sync logs pull completed successfully');
+  }
+
+  Future<List<IncomingServerMessage>> _fetchAllMessagesFromLogs({
+    required String user,
+    int since = 0,
+  }) async {
     // ── 1. Fetch all pages ──────────────────────────────────────────────────
     int offset = 0;
     int totalFetched = 0;
@@ -1870,91 +1885,37 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // Server returned fewer items than the page size → end of results.
       if (page.length < limit) break;
     }
+    return allRaw;
+  }
 
-    debugPrint(
-      '[LOGS SYNC] Backend returned '
-      '${allRaw.map((message) => message.groupId ?? message.sender).whereType<String>().toSet().length} chats '
-      'and ${allRaw.length} total messages (pagination fetched=$totalFetched)',
-    );
-    
-    // IMPORTANT: Don't return early if allRaw is empty! We still need to apply
-    // messages (even if the list is empty) to ensure state consistency. The 
-    // _applyMessagesBatch will handle empty lists correctly now.
-    if (allRaw.isEmpty) {
-      debugPrint('[LOGS SYNC] ⚠️ No messages returned from backend');
-      // Continue to apply empty list to maintain state consistency
+  ({List<ChatMessage> textMessages, List<IncomingServerMessage> actionMessages})
+      _prepareImportedMessages(List<IncomingServerMessage> rawMessages) {
+    final filtered = <IncomingServerMessage>[];
+    for (final raw in rawMessages) {
+      if (_shouldSkipImportedMessage(raw)) continue;
+      filtered.add(_normalizeLogMessageForImport(raw));
     }
 
-    // ── 2. Filter system/sentinel messages ──────────────────────────────────
-    // Mirrors Angular's `shouldSkipLogsMessage`:
-    //   • keep action types (delete-action, edit-action, reaction, read-receipt,
-    //     group-update) so deletions and edits are reflected in the history.
-    //   • drop messages with no sender or sender == "system".
-    //   • keep placeholder bodies when the row carries media; those are real
-    //     messages whose visible content is the attachment, not the text.
-    const actionTypes = {
-      'read',
-      'read-receipt',
-      'delivered',
-      'delivery-receipt',
-      'delete',
-      'delete-action',
-      'edit',
-      'edit-action',
-      'reaction',
-      'group-update',
-    };
-    final filtered = allRaw.where((msg) {
-      final type = (msg.type ?? '').trim().toLowerCase();
-      if (actionTypes.contains(type)) return true; // always keep actions
-      final sender = (msg.sender ?? '').trim().toLowerCase();
-      if (sender.isEmpty || sender == 'system') return false;
-      final body = (msg.body ?? '').trim().toLowerCase();
-      if ((body == 'new notification' || body == 'new reaction') &&
-          msg.imageUrl == null &&
-          msg.fileUrl == null) {
-        return false;
-      }
-      return true;
-    }).toList();
+    if (filtered.isEmpty) {
+      return (
+        textMessages: const <ChatMessage>[],
+        actionMessages: const <IncomingServerMessage>[],
+      );
+    }
 
     debugPrint(
       '[LOGS SYNC] After filtering: ${filtered.length} messages remain '
-      '(removed ${allRaw.length - filtered.length} system/sentinel messages)',
+      '(removed ${rawMessages.length - filtered.length} system/sentinel messages)',
     );
-    
-    // IMPORTANT: Don't return early if filtered is empty! We still need to apply
-    // messages (even if the list is empty) to ensure state consistency.
-    if (filtered.isEmpty) {
-      debugPrint('[LOGS SYNC] ⚠️ All messages filtered out (likely system/sentinel only)');
-      // Continue to apply empty list to maintain state consistency
-    }
 
-    // ── 3. Normalise group messages ─────────────────────────────────────────
-    // Mirrors Angular's `normalizeLogsMessagesForImport`:
-    //   • resolve groupId when sender holds a known group ID.
-    //   • strip the "SenderName: body" prefix that the server writes to the
-    //     body column for group messages, and promote the prefix to
-    //     groupSenderName.
-    final normalized = filtered.map(_normalizeLogMessageForImport).toList();
+    _ensureGroupsFromImportedLogs(filtered);
 
-    // ── 4. Synthesise missing groups ────────────────────────────────────────
-    // Mirrors Angular's `ensureGroupsFromImportedLogs`.
-    _ensureGroupsFromImportedLogs(normalized);
-
-    // ── 5. Apply messages ───────────────────────────────────────────────────
-    // Text messages are applied in a single batch state update — no unread
-    // increment (mirrors Angular's `applyIncomingMessagesBatch` with
-    // `incrementUnread: false`).
-    // Action messages (reaction, edit-action, delete-action, …) are collected
-    // separately and dispatched AFTER the text messages are in state, so that
-    // _applyReactionToState / _applyEditToState can find their target messages.
     final textMessages = <ChatMessage>[];
     final actionMessages = <IncomingServerMessage>[];
 
-    for (final msg in normalized) {
+    for (final msg in filtered) {
       final type = (msg.type ?? '').trim().toLowerCase();
-      if (actionTypes.contains(type)) {
+      if (_kImportedActionTypes.contains(type)) {
         actionMessages.add(msg);
       } else {
         final chatMsg = _buildChatMessageFromServer(msg);
@@ -1962,19 +1923,50 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       }
     }
 
-    // Apply text messages first so the target messages exist in state before
-    // reactions (and edits/deletes) are applied.
-    _applyMessagesBatch(textMessages);
-    debugPrint(
-      '[LOGS SYNC] Applied ${textMessages.length} text messages + '
-      '${actionMessages.length} action messages to state',
+    final dedupedTextMessages = _groupMessagesByChat(textMessages)
+        .values
+        .expand((messages) => messages)
+        .toList();
+
+    return (
+      textMessages: dedupedTextMessages,
+      actionMessages: actionMessages,
     );
-    
-    for (final msg in actionMessages) {
+  }
+
+  bool _shouldSkipImportedMessage(IncomingServerMessage msg) {
+    final type = (msg.type ?? '').trim().toLowerCase();
+    if (_kImportedActionTypes.contains(type)) return false;
+
+    final sender = (msg.sender ?? '').trim().toLowerCase();
+    if (sender.isEmpty || sender == 'system') return true;
+
+    final body = (msg.body ?? '').trim().toLowerCase();
+    if ((body == 'new notification' || body == 'new reaction') &&
+        msg.imageUrl == null &&
+        msg.fileUrl == null) {
+      return true;
+    }
+
+    return false;
+  }
+
+  Future<void> _applyImportedMessages(List<IncomingServerMessage> rawMessages) async {
+    if (rawMessages.isEmpty) return;
+
+    final prepared = _prepareImportedMessages(rawMessages);
+    if (prepared.textMessages.isNotEmpty) {
+      _applyMessagesBatch(prepared.textMessages);
+    }
+
+    for (final msg in prepared.actionMessages) {
       _handleServerMessage(msg); // delete / edit / reaction / group-update
     }
-    
-    debugPrint('[LOGS SYNC] Full sync logs pull completed successfully');
+
+    debugPrint(
+      '[LOGS SYNC] Applied ${prepared.textMessages.length} text messages + '
+      '${prepared.actionMessages.length} action messages to state',
+    );
   }
 
   // ---------------------------------------------------------------------------
