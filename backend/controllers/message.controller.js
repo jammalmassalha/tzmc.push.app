@@ -6,7 +6,6 @@ function registerMessageController(app, deps = {}) {
         normalizeUserKey,
         fetchWithRetry,
         buildGoogleSheetGetUrl,
-        getLogsMessagesForUser,
         getMessageActivitiesForUser,
         getGroupMessageSendersByMessageId,
         getUserAuthStatus,
@@ -492,54 +491,35 @@ function registerMessageController(app, deps = {}) {
                     return value === requestedChatId;
                 });
             }
-            if (hasLastSyncTimestamp) {
-                messages = messages.filter((message) => {
-                    const rawTimestamp = message && (
-                        message.sentDateTime || message.timestamp || message.createdAt
-                    );
-                    const timestamp = Number(rawTimestamp) || Date.parse(String(rawTimestamp || '')) || 0;
-                    return timestamp > lastSyncTimestamp;
-                });
-                if (!messages.length && typeof getLogsMessagesForUser === 'function') {
-                    try {
-                        const queryOptions = {
-                            limit: requestedLimit,
-                            offset: requestedOffset,
-                            since: lastSyncTimestamp
-                        };
-                        // OPTIMIZATION: Push chat_id filter to database query if specified
-                        if (requestedChatId) {
-                            queryOptions.chatId = requestedChatId;
-                        }
-                        messages = await getLogsMessagesForUser(user, queryOptions);
-                    } catch (error) {
-                        console.warn('[MYSQL] Delta chat sync failed:', error && error.message ? error.message : error);
-                    }
-                }
-            } else {
-                // OPTIMIZATION: Reduce initial sync limit from 20,000 to 1,000 for better performance.
-                // The mailbox is only a realtime buffer and may be empty after a server restart, so
-                // use the durable MySQL log as the source of truth when it is available.
-                if (typeof getLogsMessagesForUser === 'function') {
-                    try {
-                        const queryOptions = {
-                            limit: Math.min(requestedLimit, 1000), // Cap at 1000 for initial sync
-                            offset: requestedOffset,
-                            since: 0
-                        };
-                        // OPTIMIZATION: Push chat_id filter to database query if specified
-                        if (requestedChatId) {
-                            queryOptions.chatId = requestedChatId;
-                        }
-                        messages = await getLogsMessagesForUser(user, queryOptions);
-                    } catch (error) {
-                        console.warn('[MYSQL] Initial chat sync failed:', error && error.message ? error.message : error);
-                    }
+            if (typeof getMessageActivitiesForUser === 'function') {
+                try {
+                    messages = await getMessageActivitiesForUser(user, {
+                        limit: hasLastSyncTimestamp ? requestedLimit : Math.min(requestedLimit, 1000),
+                        offset: requestedOffset,
+                        since: hasLastSyncTimestamp ? lastSyncTimestamp : 0,
+                        includeActions: true,
+                        includeMessages: true,
+                        allowedGroupIds: Array.from(userAllowedGroupIds)
+                    });
+                } catch (error) {
+                    console.warn('[MYSQL] MessageActivities sync failed:', error && error.message ? error.message : error);
                 }
             }
-            // OPTIMIZATION: Remove duplicate sorting. Keep only single sort by pts/seq_id.
-            // Messages should already be sorted by timestamp at the database layer.
-            messages.sort((a, b) => Number(a && (a.pts || a.seq_id)) - Number(b && (b.pts || b.seq_id)));
+            if (requestedChatId) {
+                messages = messages.filter((message) => {
+                    const value = String(message && (message.chatId || message.groupId || message.toUser || '') || '').trim();
+                    return value === requestedChatId;
+                });
+            }
+            // OPTIMIZATION: Remove duplicate sorting. Keep only single sort by timestamp.
+            // MessageActivities rows are already returned in chronological order,
+            // but we still normalize here so mixed message/action payloads stay stable.
+            const sortTime = (entry) => {
+                const raw = entry && (entry.sentDateTime || entry.timestamp || entry.actionTimestamp || entry.createdAt || entry.pts || entry.seq_id);
+                const numeric = Number(raw);
+                return Number.isFinite(numeric) ? numeric : 0;
+            };
+            messages.sort((a, b) => sortTime(a) - sortTime(b));
             
             // ── Fetch group sender names from MessageActivities ──────────────────────
             // For group messages, look up the sender name from MessageActivities table
@@ -858,7 +838,6 @@ function registerMessageController(app, deps = {}) {
             } catch (_error) { }
 
             // Supplement group maps with MySQL DB groups (authoritative source)
-            const userDynamicGroupIds = [];
             try {
                 const dbGroups = typeof loadAllChatGroups === 'function'
                     ? await loadAllChatGroups()
@@ -879,12 +858,6 @@ function registerMessageController(app, deps = {}) {
                     if (!normalizedMembers.length || normalizedMembers.includes(user)) {
                         userAllowedGroupIds.add(gid);
                     }
-                    // Track dynamic groups (group:xxx) the user actually belongs to
-                    if (gid.startsWith('group:')) {
-                        if (normalizedMembers.length > 0 && normalizedMembers.includes(user)) {
-                            userDynamicGroupIds.push(gid);
-                        }
-                    }
                 }
             } catch (_dbError) { }
 
@@ -899,9 +872,8 @@ function registerMessageController(app, deps = {}) {
                     });
                 allowedHardcodedGroupIds.forEach((groupId) => userAllowedGroupIds.add(groupId));
 
-                const isFullSync = since <= 0;
                 let rawMessages = [];
-                if (isFullSync && typeof getMessageActivitiesForUser === 'function') {
+                if (typeof getMessageActivitiesForUser === 'function') {
                     rawMessages = await getMessageActivitiesForUser(user, {
                         since,
                         limit,
@@ -910,30 +882,16 @@ function registerMessageController(app, deps = {}) {
                         includeMessages: true,
                         allowedGroupIds: Array.from(userAllowedGroupIds)
                     });
-                } else if (typeof getLogsMessagesForUser === 'function') {
-                    rawMessages = await getLogsMessagesForUser(user, {
-                        limit,
-                        offset,
-                        since, // Optimization passed here
-                        excludeSystem: true,
-                        hardcodedGroupIds: isRestrictedUser ? [] : Array.from(hardcodedGroupKeySet),
-                        hardcodedGroupMembers,
-                        dynamicGroupIds: userDynamicGroupIds
-                    });
                 }
 
                 // Supplementary sender lookup from MessageActivities.
-                // For group messages whose GroupSenderName column is null in the
-                // Logs table, MessageActivities stores the actual human Sender phone
-                // number so we can display the correct sender label on the bubble.
-                // We collect the exact messageIds from rawMessages so the DB query
-                // returns precisely the needed rows regardless of how many total
-                // group messages exist in MessageActivities (fixes the off-by-limit
-                // bug where ORDER BY ASC + LIMIT caused recent messages to be missed).
+                // The MessageActivities rows already carry the sender label for
+                // group messages, but older rows may still need a defensive lookup
+                // so the in-app bubble can show the correct sender name.
                 let groupSenderByMsgId = new Map();
                 try {
                     if (typeof getGroupMessageSendersByMessageId === 'function') {
-                        // Collect unique messageIds present in the raw log result.
+                        // Collect unique messageIds present in the raw activity result.
                         const rawGroupMessageIds = [];
                         for (const m of rawMessages) {
                             if (!m || typeof m !== 'object') continue;
@@ -1123,30 +1081,9 @@ function registerMessageController(app, deps = {}) {
 
                 const dedupedMessages = dedupeLogsMessages(messages);
 
-                // Append action records (edit-action, reaction, delete-action) from
-                // MessageActivities so a fresh Flutter sync restores edits and
-                // reactions that were applied after the original messages were logged.
-                // Fire-and-forget failure — if this table doesn't exist yet or the
-                // query fails, the regular messages are still returned normally.
-                let actionRecords = [];
-                try {
-                    if (!isFullSync && typeof getMessageActivitiesForUser === 'function') {
-                        actionRecords = await getMessageActivitiesForUser(user, { since, limit });
-                    }
-                } catch (_actErr) {
-                    // Non-fatal: action records are supplementary
-                }
-
-                // Merge & sort by sentDateTime (fallback timestamp) so the client
-                // processes them in strict chronological order (original messages
-                // first, then their edits).
-                const chronologicalTime = (entry) =>
-                    Number(entry && (entry.sentDateTime ?? entry.timestamp)) || 0;
-                const allMessages = actionRecords.length
-                    ? [...dedupedMessages, ...actionRecords].sort(
-                        (a, b) => chronologicalTime(a) - chronologicalTime(b)
-                      )
-                    : dedupedMessages;
+                // MessageActivities already includes both message rows and action
+                // rows, so no additional log-table merge is needed here.
+                const allMessages = dedupedMessages;
 
                 console.log(
                     `SYNC_TRACE: Backend returned ${
