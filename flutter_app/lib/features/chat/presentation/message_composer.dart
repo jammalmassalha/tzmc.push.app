@@ -541,21 +541,20 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
 
     final overlay = Overlay.of(context, rootOverlay: true);
     final errorColor = Theme.of(context).colorScheme.error;
+    final api = ref.read(chatApiServiceProvider);
+    final chatStore = ref.read(chatStoreProvider.notifier);
 
     Future<void> doSend() async {
       try {
         final localFilePath = await stageAttachment(pendingImage ?? pendingFile);
         String? imageUrl;
         String? fileUrl;
-        final api = ref.read(chatApiServiceProvider);
         if (pendingImage != null) {
           imageUrl = (await api.uploadFile(pendingImage, chatId: chatId)).url;
         }
         if (pendingFile != null) {
           fileUrl = (await api.uploadFile(pendingFile, chatId: chatId)).url;
         }
-
-        final chatStore = ref.read(chatStoreProvider.notifier);
 
         if (editingMessage != null) {
           // Edit existing message
