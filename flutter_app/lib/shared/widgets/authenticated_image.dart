@@ -20,12 +20,12 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:open_filex/open_filex.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/api/http_client.dart';
 import '../../core/config/environment.dart';
 import '../../core/utils/toast_utils.dart';
+import '../../core/utils/app_storage.dart';
 
 /// Converts a server-issued relative upload path to an absolute URL.
 ///
@@ -65,7 +65,7 @@ String _sanitizeSaveFilename(String name) {
 }
 
 Future<File> _createUniqueFile(String filename) async {
-  final dir = await getApplicationDocumentsDirectory();
+  final dir = await resolveWritableAppDirectory(subdirectory: 'downloads');
   final safeName = _sanitizeSaveFilename(filename);
   final file = File('${dir.path}/$safeName');
   if (!await file.exists()) return file;
