@@ -47,7 +47,6 @@ class MessageComposer extends ConsumerStatefulWidget {
 class _MessageComposerState extends ConsumerState<MessageComposer> {
   final _textController = TextEditingController();
   final _focusNode = FocusNode();
-  bool _isSending = false;
   xfile.XFile? _selectedImage;
   xfile.XFile? _selectedFile;
   Uint8List? _selectedImageBytes; // For preview on all platforms
@@ -279,44 +278,23 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
                 const SizedBox(width: 6),
 
                 // ── Circular green send button ────────────────────────────
-                _isSending
-                    ? Container(
-                        width: 48,
-                        height: 48,
-                        decoration: const BoxDecoration(
-                          color: sendGreen,
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Center(
-                          child: SizedBox(
-                            width: 22,
-                            height: 22,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2.5,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ),
-                      )
-                    : Material(
-                        color: sendGreen,
-                        shape: const CircleBorder(),
-                        clipBehavior: Clip.antiAlias,
-                        child: InkWell(
-                          onTap: _handleSend,
-                          child: SizedBox(
-                            width: 48,
-                            height: 48,
-                            child: Icon(
-                              widget.editingMessage != null
-                                  ? Icons.check
-                                  : Icons.send,
-                              color: Colors.white,
-                              size: 22,
-                            ),
-                          ),
-                        ),
+                Material(
+                  color: sendGreen,
+                  shape: const CircleBorder(),
+                  clipBehavior: Clip.antiAlias,
+                  child: InkWell(
+                    onTap: _handleSend,
+                    child: SizedBox(
+                      width: 48,
+                      height: 48,
+                      child: Icon(
+                        widget.editingMessage != null ? Icons.check : Icons.send,
+                        color: Colors.white,
+                        size: 22,
                       ),
+                    ),
+                  ),
+                ),
               ],
             ),
           ],
@@ -386,21 +364,28 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
     );
 
     if (pickedFile != null) {
-      // Read bytes for preview and cross-platform XFile
-      final bytes = await pickedFile.readAsBytes();
-      final mimeType = xfile.XFileUtils.mimeTypeFromExtension(
-        pickedFile.name.split('.').last,
-      );
-
-      setState(() {
-        _selectedImage = xfile.XFile.fromBytes(
-          name: pickedFile.name,
-          bytes: bytes,
-          mimeType: mimeType,
+      try {
+        // Read bytes for preview and cross-platform XFile
+        final bytes = await pickedFile.readAsBytes();
+        if (!mounted) return;
+        final mimeType = xfile.XFileUtils.mimeTypeFromExtension(
+          pickedFile.name.split('.').last,
         );
-        _selectedImageBytes = bytes;
-        _selectedFile = null;
-      });
+
+        setState(() {
+          _selectedImage = xfile.XFile.fromBytes(
+            name: pickedFile.name,
+            bytes: bytes,
+            mimeType: mimeType,
+          );
+          _selectedImageBytes = bytes;
+          _selectedFile = null;
+        });
+      } catch (e) {
+        if (mounted) {
+          showTopToast(context, 'שגיאה בבחירת תמונה: ${e.toString()}');
+        }
+      }
     }
   }
 
@@ -408,6 +393,7 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
     try {
       final picked = await pickPdfFile();
       if (picked == null) return;
+      if (!mounted) return;
 
       final mimeType =
           xfile.XFileUtils.mimeTypeFromExtension(picked.extension ?? 'pdf');
@@ -431,6 +417,7 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
         );
       }
 
+      if (!mounted) return;
       setState(() {
         _selectedFile = selectedFile;
         _selectedImage = null;
@@ -515,7 +502,6 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
           );
     }
 
-    final hasAttachment = _selectedImage != null || _selectedFile != null;
     final editingMessage = widget.editingMessage;
     final replyTo = widget.replyTo;
     final isGroup = widget.isGroup;
@@ -550,29 +536,25 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
       _selectedImage = null;
       _selectedFile = null;
       _selectedImageBytes = null;
-      if (hasAttachment) {
-        _isSending = true;
-      }
     });
     widget.onMessageSent();
 
     final overlay = Overlay.of(context, rootOverlay: true);
     final errorColor = Theme.of(context).colorScheme.error;
+    final api = ref.read(chatApiServiceProvider);
+    final chatStore = ref.read(chatStoreProvider.notifier);
 
     Future<void> doSend() async {
       try {
         final localFilePath = await stageAttachment(pendingImage ?? pendingFile);
         String? imageUrl;
         String? fileUrl;
-        final api = ref.read(chatApiServiceProvider);
         if (pendingImage != null) {
           imageUrl = (await api.uploadFile(pendingImage, chatId: chatId)).url;
         }
         if (pendingFile != null) {
           fileUrl = (await api.uploadFile(pendingFile, chatId: chatId)).url;
         }
-
-        final chatStore = ref.read(chatStoreProvider.notifier);
 
         if (editingMessage != null) {
           // Edit existing message
@@ -599,26 +581,19 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
           );
         }
       } catch (e) {
-        showTopToastOnOverlay(
-          overlay,
-          'שגיאה בשליחה: ${e.toString()}',
-          backgroundColor: errorColor,
-        );
-      } finally {
-        if (mounted && hasAttachment) {
-          setState(() => _isSending = false);
+        if (mounted) {
+          showTopToastOnOverlay(
+            overlay,
+            'שגיאה בשליחה: ${e.toString()}',
+            backgroundColor: errorColor,
+          );
         }
       }
     }
 
-    // Fire-and-forget for text-only sends so the composer stays interactive
-    // (no loader on the send button). For attachment uploads we still await
-    // so the loader is shown until the upload finishes.
-    if (hasAttachment) {
-      await doSend();
-    } else {
-      unawaited(doSend());
-    }
+    // Always send in the background so the composer stays responsive while
+    // attachments upload or the server finishes processing the message.
+    unawaited(doSend());
   }
 }
 
