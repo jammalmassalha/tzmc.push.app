@@ -88,6 +88,10 @@ const String kDeletedChatsKeyPrefix = 'tzmc_deleted_chats_v1';
 /// re-download and, on the incremental path, an unread-count storm).
 const String kSyncCursorKeyPrefix = 'tzmc_sync_cursor_v1';
 
+/// SharedPreferences flag that records whether the first-launch local-data
+/// cleanup has already been performed on this install.
+const String kFirstLaunchCleanupCompleteKey = 'tzmc_first_launch_cleanup_v1';
+
 // ---------------------------------------------------------------------------
 // Community group seed data (mirrors Angular's SEED_COMMUNITY_GROUPS)
 // ---------------------------------------------------------------------------
@@ -595,6 +599,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // Always keep _currentUser up-to-date so own-message echoes are tagged
     // as outgoing (avoids the "see my message twice" bug).
     _currentUser = normalized;
+    await _clearLocalDataOnFirstLaunch(normalized);
     debugPrint('SYNC_TRACE: Auth complete, triggering syncOnLaunch()');
     unawaited(_retryOutbox());
     unawaited(ref.read(outboxProcessorProvider).drainQueue());
@@ -2548,7 +2553,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           if (groupId == null) return;
           final msg = IncomingServerMessage(
             type: type,
-            groupId: groupId,
+            groupId: normalizedGroupId,
             groupName: str(data['groupName']),
             groupMembers: strList(data['groupMembers']),
             groupCreatedBy: str(data['groupCreatedBy']),
@@ -3051,6 +3056,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     String? forwardedFrom,
     String? forwardedFromName,
   }) async {
+    final normalizedRecipient = normalizeChatId(recipient);
     final messageId = _generateMessageId();
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     final sender = _currentUser ?? '';
@@ -3063,7 +3069,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       id: messageId,
       messageId: messageId,
       clientMsgId: messageId,
-      chatId: recipient,  // ✅ Target chat ID is the recipient, not the sender
+      chatId: normalizedRecipient,  // ✅ Target chat ID is the recipient, not the sender
       sender: sender.isNotEmpty ? sender : 'me',
       body: body,
       imageUrl: imageUrl,
@@ -3092,7 +3098,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         reply: body,
         imageUrl: imageUrl,
         fileUrl: fileUrl,
-        originalSender: recipient,
+        originalSender: normalizedRecipient,
         messageId: messageId,
         replyToMessageId: replyTo?.messageId,
         replyToSender: replyTo?.sender,
@@ -3137,7 +3143,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     String? localFilePath,
     MessageReference? replyTo,
   }) async {
-    final group = state.groups[groupId];
+    final normalizedGroupId = normalizeChatId(groupId);
+    final group = state.groups[normalizedGroupId] ?? state.groups[groupId];
     if (group == null) throw Exception('Group not found');
 
     final messageId = _generateMessageId();
@@ -3149,7 +3156,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       id: messageId,
       messageId: messageId,
       clientMsgId: messageId,
-      chatId: groupId,
+      chatId: normalizedGroupId,
       sender: sender.isNotEmpty ? sender : 'me',
       body: body,
       imageUrl: imageUrl,
@@ -3158,7 +3165,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       direction: MessageDirection.outgoing,
       timestamp: timestamp,
       deliveryStatus: DeliveryStatus.pending,
-      groupId: groupId,
+      groupId: normalizedGroupId,
       groupName: group.name,
       groupType: group.type,
       replyTo: replyTo,
@@ -3178,7 +3185,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
       final originalSender = notify.isNotEmpty
           ? notify.first
-          : (group.members.isNotEmpty ? group.members.first : groupId);
+          : (group.members.isNotEmpty ? group.members.first : normalizedGroupId);
 
       final payload = ReplyPayload(
         user: sender,
@@ -3188,7 +3195,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         fileUrl: fileUrl,
         originalSender: originalSender,
         messageId: messageId,
-        groupId: groupId,
+        groupId: normalizedGroupId,
         groupName: group.name,
         groupMembers: group.members,
         groupCreatedBy: group.createdBy,
@@ -4381,6 +4388,23 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     await _clearSyncCursor(user);
   }
 
+  Future<void> _clearLocalDataOnFirstLaunch(String user) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getBool(kFirstLaunchCleanupCompleteKey) ?? false) {
+        return;
+      }
+
+      // Preserve the authenticated session; only the local chat cache is reset.
+      _currentUser = user;
+      await clearAll();
+      _currentUser = user;
+      await prefs.setBool(kFirstLaunchCleanupCompleteKey, true);
+    } catch (e) {
+      debugPrint('[ChatStore] First-launch local DB cleanup failed: $e');
+    }
+  }
+
   /// Advance the high-water mark when a newer message is applied.
   void _recordSyncCursor(int timestamp) {
     if (timestamp > _syncCursorMs) {
@@ -4555,7 +4579,7 @@ final chatStoreProvider = NotifierProvider<ChatStoreNotifier, ChatState>(() {
 /// change instead of depending on the entire store snapshot.
 final chatMessagesStreamProvider =
     StreamProvider.autoDispose.family<List<ChatMessage>, String>((ref, chatId) {
-  return ref.watch(chatDatabaseProvider).watchMessagesForChat(chatId);
+  return ref.watch(chatDatabaseProvider).watchMessagesForChat(normalizeChatId(chatId));
 });
 
 // ---------------------------------------------------------------------------

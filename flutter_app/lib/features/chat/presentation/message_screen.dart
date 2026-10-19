@@ -199,24 +199,25 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     if (!mounted) return;
     
     final store = ref.read(chatStoreProvider.notifier);
+    final chatId = _normalizedChatId;
     
     try {
-      debugPrint('📱🔄 [MessageScreen] PHASE 8: Loading cached messages for ${widget.chatId}');
+      debugPrint('📱🔄 [MessageScreen] PHASE 8: Loading cached messages for $chatId');
       
       // Step 1: Load cached messages from SQLite (instant display)
-      final cachedMessages = await store.loadCachedMessagesForChat(widget.chatId);
+      final cachedMessages = await store.loadCachedMessagesForChat(chatId);
       
       if (cachedMessages.isNotEmpty && mounted) {
         debugPrint('✅📱 [MessageScreen] PHASE 8: Loaded ${cachedMessages.length} cached messages, showing them now');
         // Apply cached messages to Riverpod state so UI renders them immediately
-        store.applyCachedMessagesForChat(widget.chatId, cachedMessages);
+        store.applyCachedMessagesForChat(chatId, cachedMessages);
         setState(() {}); // Trigger rebuild with cached messages
       }
       
       // Step 2: Trigger full sync in background (doesn't block UI)
-      debugPrint('📱🔄 [MessageScreen] PHASE 8: Triggering background sync for ${widget.chatId}');
+      debugPrint('📱🔄 [MessageScreen] PHASE 8: Triggering background sync for $chatId');
       unawaited(
-        store.loadChatHistory(widget.chatId).then((_) {
+        store.loadChatHistory(chatId).then((_) {
           if (mounted) {
             debugPrint('✅📱 [MessageScreen] PHASE 8: Background sync completed');
             setState(() => _isLoadingInitialMessages = false);
@@ -239,6 +240,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   void _clearCurrentChatSelection() {
     ref.read(chatStoreProvider.notifier).setCurrentChat(null);
   }
+
+  String get _normalizedChatId => widget.chatId.trim().toLowerCase();
 
   void _handleExit() {
     if (widget.embedded) {
@@ -404,8 +407,10 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(chatStoreProvider);
-    final messagesAsync = ref.watch(chatMessagesStreamProvider(widget.chatId));
-    final cachedMessages = state.messagesByChat[widget.chatId] ?? const <ChatMessage>[];
+    final normalizedChatId = _normalizedChatId;
+    final messagesAsync = ref.watch(chatMessagesStreamProvider(normalizedChatId));
+    final cachedMessages =
+        state.messagesByChat[normalizedChatId] ?? state.messagesByChat[widget.chatId] ?? const <ChatMessage>[];
     final streamedMessages = messagesAsync.when(
       data: (messages) => messages,
       loading: () => const <ChatMessage>[],
@@ -416,7 +421,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     // window or when the platform database is temporarily unavailable.
     final allMessages =
         streamedMessages.isNotEmpty ? streamedMessages : cachedMessages;
-    final chatInfo = _getChatInfo(state);
+    final chatInfo = _getChatInfo(state, normalizedChatId);
 
     // Filter messages when search is active
     final messages = (_searchActive && _searchQuery.isNotEmpty)
@@ -565,7 +570,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                           );
                         },
                       ),
-                    if (widget.chatId == _accreditationChatId)
+                    if (normalizedChatId == _accreditationChatId.toLowerCase())
                       IconButton(
                         icon: const Icon(Icons.auto_awesome_outlined),
                         tooltip: 'סוכן AI',
@@ -910,12 +915,12 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
 
               // Typing indicator (hidden while searching)
               if (!_searchActive)
-                _TypingIndicatorRow(chatId: widget.chatId, state: state),
+                _TypingIndicatorRow(chatId: normalizedChatId, state: state),
 
               // Message composer (hidden while searching)
               if (!_searchActive)
                 MessageComposer(
-                  chatId: widget.chatId,
+                  chatId: normalizedChatId,
                   isGroup: chatInfo.isGroup,
                   replyTo: _replyTo,
                   editingMessage: _editingMessage,
@@ -935,8 +940,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   }
 
   ({String title, String? subtitle, bool isGroup, String? avatarUrl})
-  _getChatInfo(ChatState state) {
-    final group = state.groups[widget.chatId];
+  _getChatInfo(ChatState state, String normalizedChatId) {
+    final group = state.groups[normalizedChatId] ?? state.groups[widget.chatId];
     if (group != null) {
       return (
         title: group.name,
