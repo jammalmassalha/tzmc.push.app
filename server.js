@@ -2442,6 +2442,26 @@ async function sendBotMessage(fromUser, toUser, bodyText, fromName) {
     await sendPushNotificationToUser([toUser], notificationData, fromUser, { messageId: botMessageId });
 }
 
+let contactNameCache = { at: 0, map: new Map() };
+async function resolveContactDisplayName(user) {
+    const key = String(user || '').trim();
+    if (!key) return '';
+    try {
+        if (Date.now() - contactNameCache.at > 5 * 60 * 1000) {
+            const contacts = await mysqlLogsService.getContacts();
+            const map = new Map();
+            for (const c of contacts || []) {
+                const name = String(c.fullName || '').trim();
+                if (c.username && name) map.set(String(c.username).trim(), name);
+            }
+            contactNameCache = { at: Date.now(), map };
+        }
+        return contactNameCache.map.get(key) || '';
+    } catch (_e) {
+        return '';
+    }
+}
+
 async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
     const {
         reply,
@@ -2800,7 +2820,13 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         }, { timeoutMs: 10000, retries: 2 }).catch(err => console.error('[SHEET ERROR] Failed to save reply:', err.message));
 
         const isGroup = Boolean(groupId);
-        const senderLabel = groupSenderName || senderName || user;
+        let resolvedSenderName = String(senderName || '').trim();
+        // Clients may send the phone number (or nothing) as the sender name;
+        // resolve the real display name so direct-chat titles show a name.
+        if (!isGroup && (!resolvedSenderName || resolvedSenderName.replace(/[\s+\-()]/g, '') === String(user).replace(/[\s+\-()]/g, ''))) {
+            resolvedSenderName = (await resolveContactDisplayName(user)) || resolvedSenderName;
+        }
+        const senderLabel = groupSenderName || resolvedSenderName || user;
         const normalizedGroupName = (typeof groupName === 'string') ? groupName.trim() : groupName;
         const messageBody = reply || (imageUrl ? 'Sent an image' : (fileUrl ? 'Sent a file' : 'New Message'));
         // For group messages, prepend sender name to the notification short text
