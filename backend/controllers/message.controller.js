@@ -472,7 +472,10 @@ function registerMessageController(app, deps = {}) {
             // Parse limit and offset for pagination (default to 100 results per page)
             const requestedLimit = Math.max(1, Math.min(1000, Number(req.query && req.query.limit) || 100));
             const requestedOffset = Math.max(0, Number(req.query && req.query.offset) || 0);
+            const requestedBefore = Math.max(0, Number(req.query && (req.query.before_timestamp ?? req.query.beforeTimestamp)) || 0);
+            const FULL_SYNC_MESSAGE_LIMIT = 500;
             let messages = [];
+            let chatFilteredInSql = false;
             const store = getActiveRedisStateStore();
             if (store && store.isEnabled && typeof store.readQueueSince === 'function') {
                 try {
@@ -524,35 +527,37 @@ function registerMessageController(app, deps = {}) {
                         includeMessages: true,
                         allowedGroupIds: Array.from(userAllowedGroupIds)
                     };
-                    if (hasLastSyncTimestamp || requestedChatId) {
+                    if (requestedBefore > 0 || requestedChatId) {
+                        // Older-history page for a chat room (scroll-back pagination).
+                        chatFilteredInSql = Boolean(requestedChatId);
+                        messages = await getMessageActivitiesForUser(user, {
+                            ...activityOptions,
+                            since: 0,
+                            beforeTimestamp: requestedBefore,
+                            chatId: requestedChatId,
+                            limit: requestedLimit,
+                            offset: requestedOffset
+                        });
+                    } else if (hasLastSyncTimestamp) {
                         messages = await getMessageActivitiesForUser(user, {
                             ...activityOptions,
                             limit: requestedLimit,
                             offset: requestedOffset
                         });
                     } else {
-                        // Full sync: page through the entire MessageActivities history
-                        // instead of returning only the newest page.
-                        const pageSize = 5000;
-                        const maxRows = 200000;
-                        const all = [];
-                        for (let offset = 0; offset < maxRows; offset += pageSize) {
-                            const page = await getMessageActivitiesForUser(user, {
-                                ...activityOptions,
-                                limit: pageSize,
-                                offset
-                            });
-                            if (!Array.isArray(page) || !page.length) break;
-                            all.push(...page);
-                            if (page.length < pageSize) break;
-                        }
-                        messages = all;
+                        // Full sync: only the newest FULL_SYNC_MESSAGE_LIMIT rows. Older
+                        // history is fetched on demand when scrolling inside a chat room.
+                        messages = await getMessageActivitiesForUser(user, {
+                            ...activityOptions,
+                            limit: FULL_SYNC_MESSAGE_LIMIT,
+                            offset: 0
+                        });
                     }
                 } catch (error) {
                     console.warn('[MYSQL] MessageActivities sync failed:', error && error.message ? error.message : error);
                 }
             }
-            if (requestedChatId) {
+            if (requestedChatId && !chatFilteredInSql) {
                 messages = messages.filter((message) => {
                     const value = String(message && (message.chatId || message.groupId || message.toUser || '') || '').trim();
                     return value === requestedChatId;

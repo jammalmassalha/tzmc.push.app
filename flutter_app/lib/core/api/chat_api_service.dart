@@ -741,6 +741,35 @@ class ChatApiService {
         .toList();
   }
 
+  /// Fetches one page of history older than [beforeTimestamp] for a chat room
+  /// from `/messages/sync` (used when scrolling back past the local history).
+  Future<List<IncomingServerMessage>> fetchOlderChatMessages({
+    required String user,
+    required String chatId,
+    required int beforeTimestamp,
+    int limit = 20,
+  }) async {
+    final response = await _client.post<Map<String, dynamic>>(
+      ApiEndpoints.chatSync,
+      data: {
+        'user': user.trim().toLowerCase(),
+        'last_sync_timestamp': 0,
+        'chat_id': chatId,
+        'before_timestamp': beforeTimestamp,
+        'limit': limit,
+      },
+      retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 15)),
+    );
+    if (!response.isSuccessful || response.data == null) {
+      throw ApiException('Older messages request failed with ${response.statusCode}');
+    }
+    final messages = (response.data!['messages'] as List?) ?? const [];
+    return messages
+        .whereType<Map>()
+        .map((raw) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(raw)))
+        .toList();
+  }
+
   Future<MessagesSyncResponse> syncChatsAndMessages({
     required String user,
     required int lastSyncTimestamp,

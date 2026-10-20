@@ -1428,12 +1428,28 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         '📱🔄 [ChatStoreService] Loading older messages for $chatId before $beforeTimestamp',
       );
 
-      // Fetch older messages from database (up to 50 older messages before this timestamp)
+      // Fetch older messages from database (up to 20 older messages before this timestamp)
       final olderMessages = await _db.getOlderMessages(
         chatId: normalizeChatId(chatId),
         beforeTimestamp: beforeTimestamp,
-        limit: 50,
+        limit: 20,
       );
+
+      if (olderMessages.isEmpty) {
+        // Local history exhausted: fetch the next page from the server.
+        final fetched = await _api.fetchOlderChatMessages(
+          user: user,
+          chatId: normalizeChatId(chatId),
+          beforeTimestamp: beforeTimestamp,
+          limit: 20,
+        );
+        if (fetched.isEmpty) return 0;
+        final before = state.messagesByChat[normalizeChatId(chatId)]?.length ?? 0;
+        await _applyImportedMessages(fetched);
+        _schedulePersistence();
+        final after = state.messagesByChat[normalizeChatId(chatId)]?.length ?? 0;
+        return after > before ? after - before : 0;
+      }
 
       if (olderMessages.isEmpty) {
         debugPrint(
