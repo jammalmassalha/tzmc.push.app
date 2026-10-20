@@ -2458,7 +2458,7 @@ async function resolveContactDisplayName(user) {
             const contacts = await mysqlLogsService.getContacts();
             const map = new Map();
             for (const c of contacts || []) {
-                const name = cleanDisplayName(c.fullName);
+                const name = cleanDisplayName(c.fullName) || cleanDisplayName(c.exceptionName);
                 if (c.username && name) map.set(String(c.username).trim(), name);
             }
             contactNameCache = { at: Date.now(), map };

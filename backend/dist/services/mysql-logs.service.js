@@ -2752,6 +2752,7 @@ class MysqlLogsService {
                     username: user,
                     displayName: finalName !== '' ? finalName : user,
                     fullName: finalName,
+          exceptionName: nameColI,
                     upic: upic,
                     status: normalizedStatus
                 });
