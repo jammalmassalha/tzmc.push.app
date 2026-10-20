@@ -493,6 +493,31 @@ function registerMessageController(app, deps = {}) {
             }
             if (typeof getMessageActivitiesForUser === 'function') {
                 try {
+                    // Resolve the groups this user may read. (Previously this referenced a
+                    // variable from another route's scope, which threw a ReferenceError and
+                    // silently fell back to the tiny in-memory mailbox.)
+                    const userAllowedGroupIds = new Set();
+                    try {
+                        const groups = typeof getGroups === 'function' ? getGroups() : {};
+                        Object.values(groups || {}).forEach((group) => {
+                            if (!group || typeof group !== 'object') return;
+                            const members = Array.isArray(group.members) ? group.members : (group.memberList || []);
+                            const normalizedMembers = members.map((m) => normalizeUserKey(m)).filter(Boolean);
+                            if (normalizedMembers.length > 0 && !normalizedMembers.includes(user)) return;
+                            const gid = normalizeUserKey(String(group.id || group.groupID || group.groupId || '').trim());
+                            if (gid) userAllowedGroupIds.add(gid);
+                        });
+                    } catch (_e) { }
+                    try {
+                        const dbGroups = typeof loadAllChatGroups === 'function' ? await loadAllChatGroups() : [];
+                        for (const dbGroup of dbGroups || []) {
+                            if (!dbGroup || !dbGroup.groupId) continue;
+                            const gid = normalizeUserKey(dbGroup.groupId);
+                            if (!gid) continue;
+                            const members = (dbGroup.members || []).map(normalizeUserKey).filter(Boolean);
+                            if (!members.length || members.includes(user)) userAllowedGroupIds.add(gid);
+                        }
+                    } catch (_e) { }
                     const activityOptions = {
                         since: hasLastSyncTimestamp ? lastSyncTimestamp : 0,
                         includeActions: true,
