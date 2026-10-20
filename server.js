@@ -2442,6 +2442,13 @@ async function sendBotMessage(fromUser, toUser, bodyText, fromName) {
     await sendPushNotificationToUser([toUser], notificationData, fromUser, { messageId: botMessageId });
 }
 
+// Strip role/department metadata, e.g. "תמר קורן (משאבי אנוש)" -> "תמר קורן".
+function cleanDisplayName(value) {
+    const text = String(value == null ? '' : value);
+    const idx = text.indexOf('(');
+    return (idx >= 0 ? text.slice(0, idx) : text).trim();
+}
+
 let contactNameCache = { at: 0, map: new Map() };
 async function resolveContactDisplayName(user) {
     const key = String(user || '').trim();
@@ -2451,7 +2458,7 @@ async function resolveContactDisplayName(user) {
             const contacts = await mysqlLogsService.getContacts();
             const map = new Map();
             for (const c of contacts || []) {
-                const name = String(c.fullName || '').trim();
+                const name = cleanDisplayName(c.fullName);
                 if (c.username && name) map.set(String(c.username).trim(), name);
             }
             contactNameCache = { at: Date.now(), map };
@@ -2820,13 +2827,13 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         }, { timeoutMs: 10000, retries: 2 }).catch(err => console.error('[SHEET ERROR] Failed to save reply:', err.message));
 
         const isGroup = Boolean(groupId);
-        let resolvedSenderName = String(senderName || '').trim();
+        let resolvedSenderName = cleanDisplayName(senderName);
         // Clients may send the phone number (or nothing) as the sender name;
         // resolve the real display name so direct-chat titles show a name.
         if (!isGroup && (!resolvedSenderName || resolvedSenderName.replace(/[\s+\-()]/g, '') === String(user).replace(/[\s+\-()]/g, ''))) {
             resolvedSenderName = (await resolveContactDisplayName(user)) || resolvedSenderName;
         }
-        const senderLabel = groupSenderName || resolvedSenderName || user;
+        const senderLabel = cleanDisplayName(groupSenderName) || resolvedSenderName || user;
         const normalizedGroupName = (typeof groupName === 'string') ? groupName.trim() : groupName;
         const messageBody = reply || (imageUrl ? 'Sent an image' : (fileUrl ? 'Sent a file' : 'New Message'));
         // For group messages, prepend sender name to the notification short text
