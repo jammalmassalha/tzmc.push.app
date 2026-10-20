@@ -1756,6 +1756,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         syncProgressLabel: 'סנכרון כל השיחות וההודעות...',
       );
       List<dynamic> syncedChats = const [];
+      List<dynamic> rawSyncedMessages = const [];
       List<IncomingServerMessage> normalizedSyncedMessages = const [];
       try {
         final chatSync = await _api.syncChatsAndMessages(
@@ -1764,6 +1765,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         );
         syncedChats = chatSync.chats;
         final syncedMessages = chatSync.messages;
+        rawSyncedMessages = syncedMessages;
         normalizedSyncedMessages = syncedMessages
             .whereType<Map>()
             .map((raw) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(raw)))
@@ -1789,11 +1791,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // Polling failures are non-fatal; syncChatsAndMessages covers history.
       }
 
-      if (syncedChats.isNotEmpty) {
+      if (syncedChats.isNotEmpty || rawSyncedMessages.isNotEmpty) {
         try {
           await _db.syncOneToOne(
             chats: syncedChats,
-            messages: const [],
+            messages: rawSyncedMessages,
             currentUserId: user,
           );
         } catch (e) {
