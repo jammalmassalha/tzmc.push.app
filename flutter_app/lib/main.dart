@@ -31,42 +31,17 @@ void main() async {
   // Initialize Hebrew (and default) date formatting symbols so DateFormat
   // calls like DateFormat.yMd('he') don't throw LocaleDataException at build
   // time (which would render screens as a blank/gray ErrorWidget).
-  await initializeDateFormatting('he', null);
-
-  // Initialize environment
+  // Initialize environment (must precede HttpClient.create()).
   Env.initialize(EnvironmentConfig.production);
 
-  // Initialize Firebase + register the background message handler before
-  // runApp(). The background handler must be a top-level function and must
-  // be registered after Firebase.initializeApp(). Firebase is now
-  // initialized on every platform (including web) so that FCM/push
-  // notifications work for the Flutter web build too. Pass explicit
-  // [DefaultFirebaseOptions] so we don't depend on FlutterFire CLI
-  // codegen at build time, and on web so we don't depend on a
-  // `firebase-config.js` script tag in `index.html`.
-  //
-  // We tolerate failures so the app still launches if Firebase is
-  // misconfigured (e.g. during early development).
-  try {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-    if (!kIsWeb) {
-      // The native background isolate handler must be registered on
-      // mobile only — it is a no-op on web where the JS service worker
-      // (`web/firebase-messaging-sw.js`) handles background messages.
-      FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
-    }
-  } catch (e, st) {
-    debugPrint('[main] Firebase init skipped: $e\n$st');
-  }
-
-  // Build the HTTP client up-front so that platform-specific cookie
-  // persistence (PersistCookieJar on native, withCredentials on web) is
-  // wired up before any request — including the initial session check —
-  // is sent. This is what keeps the user signed in across app restarts
-  // and browser refreshes.
-  final httpClient = await HttpClient.create();
+  // Run the independent startup tasks concurrently so the first frame is not
+  // delayed by their sum (date symbols, Firebase, HTTP client/cookie jar).
+  final results = await Future.wait<Object?>([
+    initializeDateFormatting('he', null),
+    _initFirebase(),
+    HttpClient.create(),
+  ]);
+  final httpClient = results[2] as HttpClient;
 
   // Set system UI overlay style
   SystemChrome.setSystemUIOverlayStyle(
@@ -306,5 +281,21 @@ class SplashScreen extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// Initializes Firebase and registers the native background handler.
+/// Failures are tolerated so the app still launches when Firebase is
+/// misconfigured.
+Future<void> _initFirebase() async {
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    if (!kIsWeb) {
+      FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+    }
+  } catch (e, st) {
+    debugPrint('[main] Firebase init skipped: $e\n$st');
   }
 }

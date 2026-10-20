@@ -814,6 +814,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         state.messagesByChat.values.any((messages) => messages.isNotEmpty);
     final startupSyncTimestamp = hasInMemoryMessages ? _syncCursorMs : 0;
     debugPrint('[SYNC-PIPELINE] Starting sync with lastSyncTimestamp: $startupSyncTimestamp');
+    var hydratedFromServer = false;
     try {
       try {
         final hydration = await _api.syncChatsAndMessages(
@@ -840,6 +841,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // otherwise a fresh install sees an empty list until a later poll even
         // though the database already contains the user's chats.
         await _applyHydrationMessages(hydrationMessages);
+        hydratedFromServer = true;
         final nextCursor = hydration.nextSyncTimestamp;
         if (nextCursor > _syncCursorMs) {
           _syncCursorMs = nextCursor;
@@ -873,7 +875,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // this point, which advances _lastGapAnalysisTime.  Without force the
       // cooldown would silently skip the initial pull and leave the chat list
       // empty until the next poll tick (≥15 s).
-      await recoverMissedMessages(force: true);
+      // The hydration request above already downloaded the same history, so
+      // only repeat the (heavy) recovery pull when it failed.
+      if (!hydratedFromServer) {
+        await recoverMissedMessages(force: true);
+      }
 
       // 4. Consume the pending sync floor; message and unread data come from
       // the server response rather than local notification storage.
