@@ -807,12 +807,18 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       }
     }
     
-    debugPrint('[SYNC-PIPELINE] Starting sync with lastSyncTimestamp: $_syncCursorMs');
+    // Startup state is not hydrated from the local cache, so a delta request
+    // would return only messages newer than the cursor and leave the chat
+    // list incomplete. Request the full history whenever nothing is in memory.
+    final hasInMemoryMessages =
+        state.messagesByChat.values.any((messages) => messages.isNotEmpty);
+    final startupSyncTimestamp = hasInMemoryMessages ? _syncCursorMs : 0;
+    debugPrint('[SYNC-PIPELINE] Starting sync with lastSyncTimestamp: $startupSyncTimestamp');
     try {
       try {
         final hydration = await _api.syncChatsAndMessages(
           user: _currentUser!,
-          lastSyncTimestamp: _syncCursorMs,
+          lastSyncTimestamp: startupSyncTimestamp,
         );
         final hydrationMessages = hydration.messages;
         final hydrationChats = hydration.chats;
