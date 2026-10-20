@@ -63,7 +63,6 @@ class ApiEndpoints {
   // Messages
   static const String messages = '/messages';
   static const String chatSync = '/messages/sync';
-  static const String messagesLogs = '/messages/logs';
   static const String messagesReceived = '/messages/received';
   static const String messagesReceivedBatch = '/messages/received-batch';
   static const String stream = '/stream';
@@ -172,9 +171,6 @@ class NetworkTimeouts {
 
   /// Upload timeout (longer for file uploads)
   static const Duration uploadTimeout = Duration(seconds: 30);
-
-  /// Messages logs timeout (may return large payloads)
-  static const Duration logsTimeout = Duration(seconds: 20);
 
   /// Chat synchronization can take longer while the backend wakes or the
   /// network reconnects after the app resumes.
