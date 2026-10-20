@@ -493,14 +493,36 @@ function registerMessageController(app, deps = {}) {
             }
             if (typeof getMessageActivitiesForUser === 'function') {
                 try {
-                    messages = await getMessageActivitiesForUser(user, {
-                        limit: hasLastSyncTimestamp ? requestedLimit : Math.min(requestedLimit, 1000),
-                        offset: requestedOffset,
+                    const activityOptions = {
                         since: hasLastSyncTimestamp ? lastSyncTimestamp : 0,
                         includeActions: true,
                         includeMessages: true,
                         allowedGroupIds: Array.from(userAllowedGroupIds)
-                    });
+                    };
+                    if (hasLastSyncTimestamp || requestedChatId) {
+                        messages = await getMessageActivitiesForUser(user, {
+                            ...activityOptions,
+                            limit: requestedLimit,
+                            offset: requestedOffset
+                        });
+                    } else {
+                        // Full sync: page through the entire MessageActivities history
+                        // instead of returning only the newest page.
+                        const pageSize = 5000;
+                        const maxRows = 200000;
+                        const all = [];
+                        for (let offset = 0; offset < maxRows; offset += pageSize) {
+                            const page = await getMessageActivitiesForUser(user, {
+                                ...activityOptions,
+                                limit: pageSize,
+                                offset
+                            });
+                            if (!Array.isArray(page) || !page.length) break;
+                            all.push(...page);
+                            if (page.length < pageSize) break;
+                        }
+                        messages = all;
+                    }
                 } catch (error) {
                     console.warn('[MYSQL] MessageActivities sync failed:', error && error.message ? error.message : error);
                 }
@@ -600,7 +622,11 @@ function registerMessageController(app, deps = {}) {
             }, lastSyncTimestamp);
             const chatById = new Map();
             for (const message of messages) {
-                const chatId = String(message.chatId || message.groupId || message.toUser || message.sender || '').trim();
+                const senderId = String(message.sender || '').trim().toLowerCase();
+                const peerId = senderId && senderId === String(user).trim().toLowerCase()
+                    ? message.toUser
+                    : message.sender;
+                const chatId = String(message.chatId || message.groupId || peerId || message.toUser || '').trim();
                 if (!chatId) continue;
                 const timestamp = Number(message.sentDateTime || message.timestamp || message.createdAt) ||
                     Date.parse(String(message.sentDateTime || message.timestamp || message.createdAt || '')) || 0;
