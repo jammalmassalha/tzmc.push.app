@@ -45,6 +45,7 @@ export interface MysqlLogsReadOptions {
   hardcodedGroupMembers?: Record<string, string[]>;
   /** Dynamic (non-hardcoded) group IDs the user belongs to, e.g. group:grp_xxx */
   dynamicGroupIds?: string[];
+  allowedGroupIds?: string[];
   since?: number;
 }
 
@@ -843,6 +844,34 @@ export class MysqlLogsService {
   }
 
   async getLogsMessagesForUser(user: string, options: MysqlLogsReadOptions = {}): Promise<Record<string, unknown>[]> {
+    const requestedUser = normalizePhone(user);
+    if (!requestedUser) {
+      return [];
+    }
+
+    // Redirect sync operations to MessageActivities instead of querying generic Logs table
+    const allowedGroupIds = [
+      ...(Array.isArray(options.allowedGroupIds) ? options.allowedGroupIds : []),
+      ...(Array.isArray(options.dynamicGroupIds) ? options.dynamicGroupIds : []),
+      ...(Array.isArray(options.hardcodedGroupIds) ? options.hardcodedGroupIds : []),
+    ];
+
+    return this.getMessageActivitiesForUser(requestedUser, {
+      since: options.since,
+      limit: options.limit,
+      offset: options.offset,
+      includeActions: true,
+      includeMessages: true,
+      allowedGroupIds
+    });
+  }
+
+  /**
+   * Raw audit log query for the generic Logs table.
+   * Logs is strictly used for audit logging and debugging; message synchronization
+   * is redirected to MessageActivities.
+   */
+  async getRawLogsAuditMessagesForUser(user: string, options: MysqlLogsReadOptions = {}): Promise<Record<string, unknown>[]> {
     const requestedUser = normalizePhone(user);
     if (!requestedUser) {
       return [];
@@ -2359,6 +2388,7 @@ export class MysqlLogsService {
     try {
       const actionTypePlaceholders = actionTypes.map(() => '?').join(', ');
       let sql = `SELECT
+          \`Id\`              AS id,
           \`ActionType\`      AS actionType,
           \`MessageId\`       AS messageId,
           \`Sender\`          AS sender,
@@ -2369,6 +2399,8 @@ export class MysqlLogsService {
           \`FileUrl\`         AS fileUrl,
           \`Emoji\`           AS emoji,
           \`TargetMessageId\` AS targetMessageId,
+          \`ClientMsgId\`     AS clientMsgId,
+          \`Status\`          AS status,
           \`ActionTimestamp\` AS actionTimestamp,
           \`sentDateTime\`    AS sentDateTime,
           \`receiveDateTime\` AS receiveDateTime,
@@ -2428,10 +2460,14 @@ export class MysqlLogsService {
         const recipient = String(row.recipient || '').trim();
 
         const record: Record<string, unknown> = {
+          id: msgId || (row.id ? `ma-${row.id}` : `ma-${ts}`),
           type: actionType,
           messageId: msgId,
+          clientMsgId: toTrimmedString(row.clientMsgId) || undefined,
+          status: toTrimmedString(row.status) || undefined,
           sender,
           toUser: recipient || undefined,
+          recipient: requestedUser,
           groupId: groupId || undefined,
           timestamp: ts,
         };
@@ -2448,6 +2484,8 @@ export class MysqlLogsService {
           record.deletedAt = ts;
         } else {
           record.body = String(row.body || '').trim() || undefined;
+          record.message = record.body;
+          record.messagePreview = record.body;
           record.imageUrl = String(row.imageUrl || '').trim() || undefined;
           record.fileUrl = String(row.fileUrl || '').trim() || undefined;
           // Lifecycle timestamps (epoch ms) drive the client's chronological

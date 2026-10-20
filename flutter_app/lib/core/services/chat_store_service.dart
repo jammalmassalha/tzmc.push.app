@@ -52,8 +52,18 @@ const int _kGroupSenderPrefixMaxLength = 80;
 const Set<String> _kImportedActionTypes = {
   'read',
   'read-receipt',
+  'read_receipt',
   'delivered',
   'delivery-receipt',
+  'delivery_receipt',
+  'message_send',
+  'message_sent',
+  'message_receive',
+  'message_received',
+  'message_read',
+  'typing',
+  'typing_indicator',
+  'typing-indicator',
   'delete',
   'delete-action',
   'edit',
@@ -2211,6 +2221,44 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     }
 
     state = state.copyWith(messagesByChat: newMessagesByChat);
+
+    // Asynchronously persist imported messages to Drift via _db.upsertMessages(...)
+    // so SQLite remains in sync with in-memory history.
+    if (messages.isNotEmpty) {
+      try {
+        final messagesToPersist = messages.where((m) {
+          final type = (m.recordType ?? '').trim().toLowerCase();
+          const silentTypes = {
+            'message_send',
+            'message_sent',
+            'message_receive',
+            'message_received',
+            'message_read',
+            'read',
+            'read-receipt',
+            'read_receipt',
+            'delivered',
+            'delivery-receipt',
+            'delivery_receipt',
+            'typing',
+            'typing_indicator',
+            'typing-indicator',
+            'delete-action',
+            'edit-action',
+            'group-update',
+          };
+          return !silentTypes.contains(type);
+        }).toList();
+
+        if (messagesToPersist.isNotEmpty) {
+          _db.upsertMessages(messagesToPersist).catchError((Object err) {
+            debugPrint('⚠️ [ChatStoreService] Failed to persist imported messages batch to Drift: $err');
+          });
+        }
+      } catch (err) {
+        debugPrint('⚠️ [ChatStoreService] Drift unavailable for batch persist: $err');
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -2567,7 +2615,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         }
 
       case 'typing':
-        return; // Typing indicators from push are not actionable.
+      case 'typing_indicator':
+      case 'typing-indicator':
+      case 'message_send':
+      case 'message_sent':
+      case 'message_receive':
+      case 'message_received':
+      case 'message_read':
+        return; // Silent status and typing indicators from push are not actionable.
 
       case 'reaction':
         {
@@ -2625,7 +2680,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     if (payloadChatId != null) {
       chatId = payloadChatId.toLowerCase();
     } else if (isGroup) {
-      chatId = groupId;
+      chatId = normalizedGroupId!;
     } else if (isSelfEcho || skipNotification) {
       // Use only toUser — never fall back to recipient for self-echo messages.
       final toUser = (str(data['toUser']) ?? '').trim().toLowerCase();
@@ -2774,6 +2829,30 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// logs endpoint near the `since` boundary) and the user may have already
   /// read it, so re-incrementing the badge would be incorrect.
   bool _applyIncomingMessage(ChatMessage message) {
+    final recordType = (message.recordType ?? '').trim().toLowerCase();
+    const silentTypes = {
+      'message_send',
+      'message_sent',
+      'message_receive',
+      'message_received',
+      'message_read',
+      'read',
+      'read-receipt',
+      'read_receipt',
+      'delivered',
+      'delivery-receipt',
+      'delivery_receipt',
+      'typing',
+      'typing_indicator',
+      'typing-indicator',
+      'delete-action',
+      'edit-action',
+      'group-update',
+    };
+    if (silentTypes.contains(recordType)) {
+      return false;
+    }
+
     final chatId = normalizeChatId(message.chatId);
     final normalizedMessage =
         message.chatId == chatId ? message : message.copyWith(chatId: chatId);
@@ -3662,15 +3741,26 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     switch (type) {
       case 'typing':
+      case 'typing_indicator':
+      case 'typing-indicator':
         _handleTypingIndicator(message);
         break;
       case 'read':
       case 'read-receipt':
+      case 'read_receipt':
+      case 'message_read':
         _handleReadReceipt(message);
         break;
       case 'delivered':
       case 'delivery-receipt':
+      case 'delivery_receipt':
+      case 'message_received':
+      case 'message_receive':
         _handleDeliveryReceipt(message);
+        break;
+      case 'message_send':
+      case 'message_sent':
+        // Outgoing status ack - silent, do not render as chat bubble
         break;
       case 'reaction':
         _handleReaction(message);

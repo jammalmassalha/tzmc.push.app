@@ -268,8 +268,14 @@ function isSilentPushData(data) {
             'read receipt',
             'read',
             'sent',
+            'send',
+            'message send',
+            'message sent',
             'receive',
             'received',
+            'message receive',
+            'message received',
+            'message read',
             'delivery receipt',
             'delivered',
             'delete action',
@@ -278,6 +284,7 @@ function isSilentPushData(data) {
             'edit',
             'group update',
             'typing',
+            'typing indicator',
             'reaction'
         ]).has(type);
 }

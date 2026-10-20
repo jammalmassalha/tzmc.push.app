@@ -513,7 +513,8 @@ export class ChatStoreService {
   readonly activeMessages = computed<ChatMessage[]>(() => {
     const active = this.activeChatId();
     if (!active) return [];
-    return this.messagesByChat()[active] ?? [];
+    const list = this.messagesByChat()[active] ?? [];
+    return list.filter((m) => !this.isSilentReceiptOrStatusEvent(m));
   });
 
   readonly canSendToActiveChat = computed<boolean>(() => {
@@ -6173,14 +6174,53 @@ export class ChatStoreService {
     return appliedCount;
   }
 
-  private isIncomingActionType(incomingType: string): boolean {
+  private isSilentReceiptOrStatusEvent(message: ChatMessage | null | undefined): boolean {
+    if (!message) return false;
+    const type = String(message.recordType || '').trim().toLowerCase();
     return (
-      incomingType === 'delete-action' ||
-      incomingType === 'edit-action' ||
-      incomingType === 'reaction' ||
-      incomingType === 'group-update' ||
-      incomingType === 'read-receipt' ||
-      incomingType === 'delivery-receipt'
+      type === 'message_send' ||
+      type === 'message_sent' ||
+      type === 'message_receive' ||
+      type === 'message_received' ||
+      type === 'message_read' ||
+      type === 'read' ||
+      type === 'read-receipt' ||
+      type === 'read_receipt' ||
+      type === 'delivered' ||
+      type === 'delivery-receipt' ||
+      type === 'delivery_receipt' ||
+      type === 'typing' ||
+      type === 'typing_indicator' ||
+      type === 'typing-indicator' ||
+      type === 'delete-action' ||
+      type === 'edit-action' ||
+      type === 'group-update'
+    );
+  }
+
+  private isIncomingActionType(incomingType: string): boolean {
+    const t = String(incomingType || '').trim().toLowerCase();
+    return (
+      t === 'delete-action' ||
+      t === 'delete' ||
+      t === 'edit-action' ||
+      t === 'edit' ||
+      t === 'reaction' ||
+      t === 'group-update' ||
+      t === 'read-receipt' ||
+      t === 'read_receipt' ||
+      t === 'read' ||
+      t === 'delivery-receipt' ||
+      t === 'delivery_receipt' ||
+      t === 'delivered' ||
+      t === 'message_send' ||
+      t === 'message_sent' ||
+      t === 'message_receive' ||
+      t === 'message_received' ||
+      t === 'message_read' ||
+      t === 'typing' ||
+      t === 'typing_indicator' ||
+      t === 'typing-indicator'
     );
   }
 
@@ -6224,6 +6264,7 @@ export class ChatStoreService {
     };
 
     for (const incoming of messages) {
+      if (this.isIncomingActionType(String(incoming.type || ''))) continue;
       const sender = this.normalizeUser(incoming.sender ?? '');
       if (!sender) continue;
       const currentUser = this.normalizeUser(this.currentUser() ?? '');
@@ -6562,13 +6603,13 @@ export class ChatStoreService {
 
   private applyIncomingMessage(incoming: IncomingServerMessage): boolean {
     const incomingType = String(incoming.type ?? '').trim().toLowerCase();
-    if (incomingType === 'typing') {
+    if (incomingType === 'typing' || incomingType === 'typing_indicator' || incomingType === 'typing-indicator') {
       return this.applyIncomingTypingSignal(incoming);
     }
-    if (incomingType === 'delete-action') {
+    if (incomingType === 'delete-action' || incomingType === 'delete') {
       return this.applyIncomingDeleteAction(incoming);
     }
-    if (incomingType === 'edit-action') {
+    if (incomingType === 'edit-action' || incomingType === 'edit') {
       return this.applyIncomingEditAction(incoming);
     }
     if (incomingType === 'reaction') {
@@ -6577,11 +6618,14 @@ export class ChatStoreService {
     if (incomingType === 'group-update') {
       return this.applyIncomingGroupUpdate(incoming);
     }
-    if (incomingType === 'read-receipt') {
+    if (incomingType === 'read-receipt' || incomingType === 'read_receipt' || incomingType === 'read' || incomingType === 'message_read') {
       return this.applyIncomingReadReceipt(incoming);
     }
-    if (incomingType === 'delivery-receipt') {
+    if (incomingType === 'delivery-receipt' || incomingType === 'delivery_receipt' || incomingType === 'delivered' || incomingType === 'message_receive' || incomingType === 'message_received') {
       return this.applyIncomingDeliveryReceipt(incoming);
+    }
+    if (incomingType === 'message_send' || incomingType === 'message_sent') {
+      return false;
     }
 
     const sender = this.normalizeUser(incoming.sender ?? '');
@@ -8811,7 +8855,7 @@ export class ChatStoreService {
       timestamp: resolvedIncomingTimestamp
     };
 
-    if (payloadType !== 'reaction' && payloadType !== 'group-update' && payloadType !== 'read-receipt' && payloadType !== 'delivery-receipt') {
+    if (!this.isIncomingActionType(payloadType)) {
       const immediateIncoming = this.buildIncomingMessageFromPushPayload(payload, incoming);
       if (immediateIncoming) {
         this.incrementDeliveryTelemetry('pushImmediateMessageBuilt');
