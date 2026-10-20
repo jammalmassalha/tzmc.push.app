@@ -1516,7 +1516,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         latestTimestamp = await _resolveSyncCursor();
       }
 
-      if (latestTimestamp <= 0) return;
+      // A zero cursor with nothing in memory means the startup full sync did
+      // not deliver any history (e.g. first request failed right after a fresh
+      // install). Retry it as a full sync instead of silently doing nothing,
+      // otherwise the chat list stays empty until the app is reinstalled.
+      final needsFullSync = latestTimestamp <= 0 &&
+          !state.messagesByChat.values.any((messages) => messages.isNotEmpty);
+      if (latestTimestamp <= 0 && !needsFullSync) return;
 
       final syncResult = await _api.syncChatsAndMessages(
         user: user,
@@ -1541,6 +1547,17 @@ class ChatStoreNotifier extends Notifier<ChatState> {
             .whereType<Map>()
             .map((raw) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(raw)))
             .toList();
+
+        if (needsFullSync) {
+          await _applyImportedMessages(normalizedMessages);
+          state = state.copyWith(unreadByChat: const {});
+          if (syncResult.nextSyncTimestamp > _syncCursorMs) {
+            _syncCursorMs = syncResult.nextSyncTimestamp;
+            await _writeSyncCursor(user);
+          }
+          _schedulePersistence();
+          return;
+        }
 
         // Route each message through the same handler used by realtime transport
         // so that action payloads (read-receipt, delete-action, etc.) are handled
