@@ -854,17 +854,16 @@ class _HelpdeskUserDetailsDialogState
                               contacts: widget.contacts,
                             ),
                           );
-                          if (picked != null) {
-                            setState(() {
-                              _selectedContact = picked;
-                              final contactInfo = (picked.info ?? '').trim();
-                              _contactTextController.text =
-                                  contactInfo.isNotEmpty
-                                      ? '${picked.displayName} ($contactInfo)'
-                                      : picked.displayName;
-                              _applyContactDepartment(picked);
-                            });
-                          }
+                          if (!mounted || picked == null) return;
+                          setState(() {
+                            _selectedContact = picked;
+                            final contactInfo = (picked.info ?? '').trim();
+                            _contactTextController.text =
+                                contactInfo.isNotEmpty
+                                    ? '${picked.displayName} ($contactInfo)'
+                                    : picked.displayName;
+                            _applyContactDepartment(picked);
+                          });
                         },
                 ),
                 const SizedBox(height: 12),

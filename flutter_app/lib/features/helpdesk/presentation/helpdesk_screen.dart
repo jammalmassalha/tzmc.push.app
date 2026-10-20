@@ -788,7 +788,10 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
     Uint8List? attachedFileBytes;
     bool isUploadingAttachment = false;
 
-    Future<void> pickAttachment(StateSetter setSt) async {
+    Future<void> pickAttachment(
+      BuildContext dialogContext,
+      StateSetter setSt,
+    ) async {
       // Show source picker for images; on web only gallery is available.
       final picker = img_picker.ImagePicker();
 
@@ -801,7 +804,9 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
           maxHeight: 1920,
         );
         if (picked != null) {
+          if (!dialogContext.mounted) return;
           final bytes = await picked.readAsBytes();
+          if (!dialogContext.mounted) return;
           final mimeType =
               xfile.XFileUtils.mimeTypeFromExtension(picked.name.split('.').last);
           setSt(() {
@@ -815,7 +820,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
 
       // Native: ask camera or gallery.
       final source = await showModalBottomSheet<img_picker.ImageSource>(
-        context: ctx,
+        context: dialogContext,
         shape: const RoundedRectangleBorder(
             borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
         builder: (_) => SafeArea(
@@ -829,19 +834,19 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                   ListTile(
                     leading: const Icon(Icons.camera_alt),
                     title: const Text('צלם תמונה'),
-                    onTap: () =>
-                        Navigator.of(ctx).pop(img_picker.ImageSource.camera),
+                    onTap: () => Navigator.of(dialogContext)
+                        .pop(img_picker.ImageSource.camera),
                   ),
                   ListTile(
                     leading: const Icon(Icons.photo_library),
                     title: const Text('בחר מהגלריה'),
-                    onTap: () =>
-                        Navigator.of(ctx).pop(img_picker.ImageSource.gallery),
+                    onTap: () => Navigator.of(dialogContext)
+                        .pop(img_picker.ImageSource.gallery),
                   ),
                   ListTile(
                     leading: const Icon(Icons.cancel_outlined),
                     title: const Text('ביטול'),
-                    onTap: () => Navigator.of(ctx).pop(),
+                    onTap: () => Navigator.of(dialogContext).pop(),
                   ),
                 ],
               ),
@@ -849,6 +854,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
           ),
         ),
       );
+      if (!dialogContext.mounted) return;
 
       if (source == null) return;
 
@@ -859,7 +865,9 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
         maxHeight: 1920,
       );
       if (picked != null) {
+        if (!dialogContext.mounted) return;
         final bytes = await picked.readAsBytes();
+        if (!dialogContext.mounted) return;
         final mimeType =
             xfile.XFileUtils.mimeTypeFromExtension(picked.name.split('.').last);
         setSt(() {
@@ -874,15 +882,18 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
       context: ctx,
       builder: (_) => StatefulBuilder(
         builder: (context, setSt) {
+          final dialogContext = context;
           // Load locations once
           if (!locFetchStarted) {
             locFetchStarted = true;
             ref.read(helpdeskProvider.notifier).loadLocations().then((locs) {
+              if (!dialogContext.mounted) return;
               setSt(() {
                 locations = locs;
                 loadingLoc = false;
               });
             }).catchError((_) {
+              if (!dialogContext.mounted) return;
               setSt(() => loadingLoc = false);
             });
           }
@@ -895,6 +906,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                   dept,
                 )
                 .then((config) {
+              if (!dialogContext.mounted) return;
               final fields = config.fields;
               // Build controllers with initial values
               final ctrlMap = <String, TextEditingController>{};
@@ -925,6 +937,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                 selectValues = selectMap;
               });
             }).catchError((error) {
+              if (!dialogContext.mounted) return;
               // Non-critical — continue with empty dynamic fields
               debugPrint('Failed to load helpdesk department form config: $error');
             });
@@ -1184,7 +1197,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                       OutlinedButton.icon(
                         onPressed: isUploadingAttachment
                             ? null
-                            : () => pickAttachment(setSt),
+                            : () => pickAttachment(dialogContext, setSt),
                         icon: const Icon(Icons.attach_file),
                         label: const Text('צרף תמונה / קובץ'),
                         style: OutlinedButton.styleFrom(
@@ -1220,6 +1233,8 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                 onPressed: isUploadingAttachment
                     ? null
                     : () async {
+                        final helpdesk = ref.read(helpdeskProvider.notifier);
+                        final api = ref.read(chatApiServiceProvider);
                         if (initialForm.showTitle &&
                             subjectCtrl.text.trim().isEmpty) {
                           showTopToast(context, 'יש להזין כותרת');
@@ -1286,11 +1301,9 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                         if (pendingFile != null) {
                           setSt(() => isUploadingAttachment = true);
                           try {
-                            final api = ref.read(chatApiServiceProvider);
                             attachmentUrl =
                                 await api.uploadHelpdeskAttachment(pendingFile);
                           } catch (e) {
-                            setSt(() => isUploadingAttachment = false);
                             if (ctx.mounted) {
                               showTopToast(
                                 ctx,
@@ -1300,8 +1313,11 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                               );
                             }
                             return;
+                          } finally {
+                            if (ctx.mounted) {
+                              setSt(() => isUploadingAttachment = false);
+                            }
                           }
-                          setSt(() => isUploadingAttachment = false);
                         }
 
                         final subjectValue = initialForm.showTitle
@@ -1322,9 +1338,7 @@ class _HelpdeskScreenState extends ConsumerState<HelpdeskScreen>
                         disposeCustomCtrls();
                         Navigator.of(context).pop();
                         try {
-                          await ref
-                              .read(helpdeskProvider.notifier)
-                              .createTicket(
+                          await helpdesk.createTicket(
                                 subject: subjectValue,
                                 description: descriptionValue,
                                 department: dept,
@@ -3683,7 +3697,7 @@ class _DepartmentSettingsScreenState
                                     allUsers: allHelpdeskUsers,
                                     excludedUserIds: addedIds,
                                   );
-                                  if (selectedUser == null) return;
+                                  if (!mounted || selectedUser == null) return;
                                   setSt(() {
                                     final exists = deptPermissions.any((p) =>
                                         p.userId.toLowerCase() ==

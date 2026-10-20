@@ -364,6 +364,7 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
     );
 
     if (pickedFile != null) {
+      if (!mounted) return;
       try {
         // Read bytes for preview and cross-platform XFile
         final bytes = await pickedFile.readAsBytes();
@@ -432,6 +433,7 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
   /// sends `📍 https://www.google.com/maps?q=<lat>,<lon>` as a text message.
   Future<void> _shareLocation() async {
     final overlay = Overlay.of(context, rootOverlay: true);
+    final chatStore = ref.read(chatStoreProvider.notifier);
     try {
       // Check/request permission
       var permission = await Geolocator.checkPermission();
@@ -440,6 +442,7 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
       }
       if (permission == LocationPermission.denied ||
           permission == LocationPermission.deniedForever) {
+        if (!mounted) return;
         showTopToastOnOverlay(
           overlay,
           'לא ניתן לקבל מיקום. אנא אשר הרשאות.',
@@ -454,13 +457,13 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
           timeLimit: Duration(seconds: 15),
         ),
       );
+      if (!mounted) return;
 
       final lat = position.latitude.toStringAsFixed(6);
       final lon = position.longitude.toStringAsFixed(6);
       final mapLink = 'https://www.google.com/maps?q=$lat,$lon';
       final body = '📍 $mapLink';
 
-      final chatStore = ref.read(chatStoreProvider.notifier);
       if (widget.isGroup) {
         await chatStore.sendGroupMessage(
           groupId: widget.chatId,
@@ -476,6 +479,7 @@ class _MessageComposerState extends ConsumerState<MessageComposer> {
       showTopToastOnOverlay(overlay, 'המיקום נשלח.',
           duration: const Duration(seconds: 2));
     } catch (_) {
+      if (!mounted) return;
       showTopToastOnOverlay(
         overlay,
         'לא ניתן לקבל מיקום. אנא אשר הרשאות.',

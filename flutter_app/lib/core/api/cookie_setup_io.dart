@@ -8,15 +8,14 @@ library;
 import 'package:cookie_jar/cookie_jar.dart';
 import 'package:dio/dio.dart';
 import 'package:dio_cookie_manager/dio_cookie_manager.dart';
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
+
+import '../utils/app_storage.dart';
 
 Future<Future<void> Function()> configureCookieJar(Dio dio) async {
-  final dir = await getApplicationDocumentsDirectory();
-  final cookieDir = p.join(dir.path, '.cookies');
+  final dir = await resolveWritableAppDirectory(subdirectory: '.cookies');
   final jar = PersistCookieJar(
     ignoreExpires: false,
-    storage: FileStorage(cookieDir),
+    storage: FileStorage(dir.path),
   );
   dio.interceptors.add(CookieManager(jar));
   return () async {

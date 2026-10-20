@@ -199,24 +199,25 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     if (!mounted) return;
     
     final store = ref.read(chatStoreProvider.notifier);
+    final chatId = _normalizedChatId;
     
     try {
-      debugPrint('📱🔄 [MessageScreen] PHASE 8: Loading cached messages for ${widget.chatId}');
+      debugPrint('📱🔄 [MessageScreen] PHASE 8: Loading cached messages for $chatId');
       
       // Step 1: Load cached messages from SQLite (instant display)
-      final cachedMessages = await store.loadCachedMessagesForChat(widget.chatId);
+      final cachedMessages = await store.loadCachedMessagesForChat(chatId);
       
       if (cachedMessages.isNotEmpty && mounted) {
         debugPrint('✅📱 [MessageScreen] PHASE 8: Loaded ${cachedMessages.length} cached messages, showing them now');
         // Apply cached messages to Riverpod state so UI renders them immediately
-        store.applyCachedMessagesForChat(widget.chatId, cachedMessages);
+        store.applyCachedMessagesForChat(chatId, cachedMessages);
         setState(() {}); // Trigger rebuild with cached messages
       }
       
       // Step 2: Trigger full sync in background (doesn't block UI)
-      debugPrint('📱🔄 [MessageScreen] PHASE 8: Triggering background sync for ${widget.chatId}');
+      debugPrint('📱🔄 [MessageScreen] PHASE 8: Triggering background sync for $chatId');
       unawaited(
-        store.loadChatHistory(widget.chatId).then((_) {
+        store.loadChatHistory(chatId).then((_) {
           if (mounted) {
             debugPrint('✅📱 [MessageScreen] PHASE 8: Background sync completed');
             setState(() => _isLoadingInitialMessages = false);
@@ -239,6 +240,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   void _clearCurrentChatSelection() {
     ref.read(chatStoreProvider.notifier).setCurrentChat(null);
   }
+
+  String get _normalizedChatId => widget.chatId.trim().toLowerCase();
 
   void _handleExit() {
     if (widget.embedded) {
@@ -404,8 +407,10 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(chatStoreProvider);
-    final messagesAsync = ref.watch(chatMessagesStreamProvider(widget.chatId));
-    final cachedMessages = state.messagesByChat[widget.chatId] ?? const <ChatMessage>[];
+    final normalizedChatId = _normalizedChatId;
+    final messagesAsync = ref.watch(chatMessagesStreamProvider(normalizedChatId));
+    final cachedMessages =
+        state.messagesByChat[normalizedChatId] ?? state.messagesByChat[widget.chatId] ?? const <ChatMessage>[];
     final streamedMessages = messagesAsync.when(
       data: (messages) => messages,
       loading: () => const <ChatMessage>[],
@@ -416,7 +421,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     // window or when the platform database is temporarily unavailable.
     final allMessages =
         streamedMessages.isNotEmpty ? streamedMessages : cachedMessages;
-    final chatInfo = _getChatInfo(state);
+    final chatInfo = _getChatInfo(state, normalizedChatId);
 
     // Filter messages when search is active
     final messages = (_searchActive && _searchQuery.isNotEmpty)
@@ -565,7 +570,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                           );
                         },
                       ),
-                    if (widget.chatId == _accreditationChatId)
+                    if (normalizedChatId == _accreditationChatId.toLowerCase())
                       IconButton(
                         icon: const Icon(Icons.auto_awesome_outlined),
                         tooltip: 'סוכן AI',
@@ -910,12 +915,12 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
 
               // Typing indicator (hidden while searching)
               if (!_searchActive)
-                _TypingIndicatorRow(chatId: widget.chatId, state: state),
+                _TypingIndicatorRow(chatId: normalizedChatId, state: state),
 
               // Message composer (hidden while searching)
               if (!_searchActive)
                 MessageComposer(
-                  chatId: widget.chatId,
+                  chatId: normalizedChatId,
                   isGroup: chatInfo.isGroup,
                   replyTo: _replyTo,
                   editingMessage: _editingMessage,
@@ -935,8 +940,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   }
 
   ({String title, String? subtitle, bool isGroup, String? avatarUrl})
-  _getChatInfo(ChatState state) {
-    final group = state.groups[widget.chatId];
+  _getChatInfo(ChatState state, String normalizedChatId) {
+    final group = state.groups[normalizedChatId] ?? state.groups[widget.chatId];
     if (group != null) {
       return (
         title: group.name,
@@ -1159,7 +1164,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   }
 
   Future<void> _confirmDeleteCurrentChat() async {
-    final chatInfo = _getChatInfo(ref.read(chatStoreProvider));
+    final chatInfo = _getChatInfo(ref.read(chatStoreProvider), _normalizedChatId);
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -1338,7 +1343,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
 
   void _showChatInfo() {
     final state = ref.read(chatStoreProvider);
-    final chatInfo = _getChatInfo(state);
+    final chatInfo = _getChatInfo(state, _normalizedChatId);
     if (chatInfo.isGroup) {
       _openGroupInfo();
     } else if (chatInfo.avatarUrl != null) {
@@ -1727,7 +1732,11 @@ bool _isAuthenticatedUploadUrl(String url) {
   return path.startsWith('/notify/uploads/') || path.startsWith('/uploads/');
 }
 
-void _showFullScreenImage(BuildContext context, String imageUrl) {
+void _showFullScreenImage(
+  BuildContext context,
+  String? imageUrl, {
+  String? localFilePath,
+}) {
   final size = MediaQuery.of(context).size;
   showDialog<void>(
     context: context,
@@ -1747,7 +1756,8 @@ void _showFullScreenImage(BuildContext context, String imageUrl) {
             child: InteractiveViewer(
               maxScale: 4,
               child: AuthenticatedNetworkImage(
-                url: imageUrl,
+                url: imageUrl ?? '',
+                localFilePath: localFilePath,
                 width: size.width,
                 height: size.height * 0.85,
                 fit: BoxFit.contain,
@@ -1851,6 +1861,11 @@ bool _isImageUrl(String url) => RegExp(
   r'\.(jpeg|jpg|png|gif|webp)(\?|$)',
   caseSensitive: false,
 ).hasMatch(url);
+
+bool _isImagePath(String? path) {
+  if (path == null || path.isEmpty) return false;
+  return _isImageUrl(path);
+}
 
 bool _isFileUrl(String url) =>
     RegExp(r'\.(pdf|doc|docx)(\?|$)', caseSensitive: false).hasMatch(url);
@@ -2161,9 +2176,9 @@ class _MessageBubble extends StatelessWidget {
                       ),
 
                     // Image
-                    if ((message.imageUrl != null ||
-                            message.localFilePath != null) &&
-                        !isDeleted)
+                    if (!isDeleted &&
+                        (message.imageUrl != null ||
+                            _isImagePath(message.localFilePath)))
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
                         child: _ImageAttachmentCard(
@@ -2173,10 +2188,16 @@ class _MessageBubble extends StatelessWidget {
                       ),
 
                     // File attachment
-                    if (message.fileUrl != null && !isDeleted)
+                    if (!isDeleted &&
+                        (message.fileUrl != null ||
+                            (message.localFilePath != null &&
+                                !_isImagePath(message.localFilePath))))
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
-                        child: _FileAttachmentButton(url: message.fileUrl!),
+                        child: _FileAttachmentButton(
+                          url: message.fileUrl ?? message.localFilePath!,
+                          localFilePath: message.localFilePath,
+                        ),
                       ),
 
                     // Message body
@@ -2876,7 +2897,13 @@ class _ImageAttachmentCard extends StatelessWidget {
         side: BorderSide(color: _imageFileColor.withAlpha(40)),
       ),
       child: InkWell(
-        onTap: url == null ? null : () => _showFullScreenImage(context, url!),
+        onTap: (url != null || localFilePath != null)
+            ? () => _showFullScreenImage(
+                  context,
+                  url,
+                  localFilePath: localFilePath,
+                )
+            : null,
         borderRadius: BorderRadius.circular(12),
         child: Padding(
           padding: const EdgeInsets.all(8),
@@ -2936,8 +2963,9 @@ class _ImageAttachmentCard extends StatelessWidget {
 
 class _FileAttachmentButton extends StatelessWidget {
   final String url;
+  final String? localFilePath;
 
-  const _FileAttachmentButton({required this.url});
+  const _FileAttachmentButton({required this.url, this.localFilePath});
 
   bool get _isPdf => url.toLowerCase().contains('.pdf');
 
@@ -2965,6 +2993,13 @@ class _FileAttachmentButton extends StatelessWidget {
       ),
       child: InkWell(
         onTap: () async {
+          if (localFilePath != null && localFilePath!.isNotEmpty) {
+            final result = await OpenFilex.open(localFilePath!);
+            if (result.type != ResultType.done) {
+              showTopToast(context, 'שגיאה בפתיחת הקובץ');
+            }
+            return;
+          }
           if (_isAuthenticatedUploadUrl(url)) {
             final opened = await openAuthenticatedFileExternally(context, url);
             if (!opened) {
