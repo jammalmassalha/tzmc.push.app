@@ -2625,7 +2625,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     if (payloadChatId != null) {
       chatId = payloadChatId.toLowerCase();
     } else if (isGroup) {
-      chatId = groupId;
+      chatId = normalizedGroupId!;
     } else if (isSelfEcho || skipNotification) {
       // Use only toUser — never fall back to recipient for self-echo messages.
       final toUser = (str(data['toUser']) ?? '').trim().toLowerCase();
